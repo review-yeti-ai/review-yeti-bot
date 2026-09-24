@@ -64,10 +64,26 @@ export interface JevChoiceAnswer {
   confidence: number;
 }
 
+/**
+ * The score answer as the live API returns it (captured from jev-1.13.0, REL-1100):
+ *
+ *   {"type":"score","score":0.32,"confidence":0.74,
+ *    "legend":{"0":"Level 1, trivial",...,"4":"Level 5, critical"},
+ *    "probabilities":{"0":0.81,"1":0.07,"2":0.11,"3":0.01,"4":0.0}}
+ *
+ * `legend` and `probabilities` are keyed by the 0-based index of the question's `criteria`
+ * entry, as a string. `score` is a continuous value in [0,1], NOT a level number: the level
+ * a caller wants is the most probable legend index. An ordered legend ARRAY (the shape this
+ * client first assumed) is still accepted and normalized to this keyed form by the client, so
+ * every consumer sees exactly one shape.
+ */
 export interface JevScoreAnswer {
   type: 'score';
+  /** Continuous value in [0,1]. Not a level number. */
   score: number;
-  legend: string[];
+  /** Level description per 0-based criteria index ("0".."n-1"). */
+  legend: Record<string, string>;
+  /** Probability per level, keyed by the same index strings as `legend`. */
   probabilities: Record<string, number>;
   confidence: number;
 }
@@ -238,31 +254,90 @@ function raceWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<
   return sharedRaceWithAbort(operation, signal, () => new Error('Jev request was cancelled'));
 }
 
-function validAnswerShape(question: JevQuestion, answer: unknown): answer is JevAnswer {
-  if (!answer || typeof answer !== 'object') return false;
-  const a = answer as Record<string, unknown>;
-  if (a.type !== question.type) return false;
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** A 0-based level index as the API keys it: "0", "1", ... (no sign, no leading zeros). */
+const SCORE_INDEX_KEY = /^(0|[1-9][0-9]*)$/;
+
+/**
+ * True when `key` is a score level index key in the live contract's format. The single definition
+ * of that format: score consumers (e.g. the shadow triage's risk level) import this rather than
+ * re-encoding it, so a future contract change is one edit here.
+ */
+export function isScoreIndexKey(key: string): boolean {
+  return SCORE_INDEX_KEY.test(key);
+}
+
+/**
+ * Validates a score answer against the question that produced it and normalizes it to the keyed
+ * `JevScoreAnswer` shape. Null means malformed. Rules:
+ *   - `score` and `confidence` are finite numbers.
+ *   - `legend` is a non-empty object keyed by level index strings below the question's level
+ *     count, with string values -- or, for back-compat, a non-empty array of strings no longer
+ *     than the level count (normalized to index keys).
+ *   - `probabilities` is an object whose every key names a legend entry (by index, or by the
+ *     legend text for a legacy array legend) and whose every value is a finite number, so a
+ *     consumer taking the argmax can never be pointed at a level the legend does not define.
+ */
+function normalizeScoreAnswer(question: JevScoreQuestion, a: Record<string, unknown>): JevScoreAnswer | null {
+  if (!isFiniteNumber(a.score) || !isFiniteNumber(a.confidence)) return null;
+  const levels = Array.isArray(question.criteria) ? question.criteria.length : 0;
+  const legend: Record<string, string> = {};
+  const legacyTextToIndex = new Map<string, string>();
+  if (Array.isArray(a.legend)) {
+    if (a.legend.length === 0 || a.legend.length > levels) return null;
+    for (let index = 0; index < a.legend.length; index++) {
+      const text = a.legend[index];
+      if (typeof text !== 'string') return null;
+      legend[String(index)] = text;
+      if (!legacyTextToIndex.has(text)) legacyTextToIndex.set(text, String(index));
+    }
+  } else if (isPlainObject(a.legend)) {
+    const entries = Object.entries(a.legend);
+    if (entries.length === 0) return null;
+    for (const [key, text] of entries) {
+      if (!isScoreIndexKey(key) || Number(key) >= levels || typeof text !== 'string') return null;
+      legend[key] = text;
+    }
+  } else {
+    return null;
+  }
+  if (!isPlainObject(a.probabilities)) return null;
+  const probabilities: Record<string, number> = {};
+  for (const [key, probability] of Object.entries(a.probabilities)) {
+    const index = Object.prototype.hasOwnProperty.call(legend, key) ? key : legacyTextToIndex.get(key);
+    if (index === undefined || !isFiniteNumber(probability)) return null;
+    probabilities[index] = probability;
+  }
+  return { type: 'score', score: a.score, confidence: a.confidence, legend, probabilities };
+}
+
+/** Validates one answer against its question; returns the (normalized) answer, or null when malformed. */
+function normalizeAnswer(question: JevQuestion, answer: unknown): JevAnswer | null {
+  if (!isPlainObject(answer)) return null;
+  const a = answer;
+  if (a.type !== question.type) return null;
   if (question.type === 'noul') {
-    return typeof a.noul === 'number' && Number.isFinite(a.noul);
+    return isFiniteNumber(a.noul) ? (a as unknown as JevNoulAnswer) : null;
   }
   if (question.type === 'choice') {
-    return (
-      typeof a.choice === 'string' &&
+    return typeof a.choice === 'string' &&
       typeof a.confidence === 'number' &&
       typeof a.probabilities === 'object' &&
       a.probabilities !== null
-    );
+      ? (a as unknown as JevChoiceAnswer)
+      : null;
   }
   if (question.type === 'score') {
-    return (
-      typeof a.score === 'number' &&
-      Array.isArray(a.legend) &&
-      typeof a.confidence === 'number' &&
-      typeof a.probabilities === 'object' &&
-      a.probabilities !== null
-    );
+    return normalizeScoreAnswer(question, a);
   }
-  return false;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +364,38 @@ export interface JevClientOptions {
   random?: () => number;
 }
 
+const DEFAULT_JEV_ORIGIN = 'https://api.typesafe.ai';
+/** The System One endpoint path. The client POSTs to the base URL verbatim, so it must include this. */
+export const JEV_SYSTEM_ONE_PATH = '/v1/systemone';
+
+/**
+ * The URL the client POSTs to. A base URL with no path (just the host, e.g.
+ * `https://api.typesafe.ai`) gets `/v1/systemone` appended: REL-1081's org-wide shadow logged
+ * every call `malformed` because TYPESAFE_BASE_URL was the bare host and the host root 404s.
+ * Any URL that already has a path, query or fragment is used as given (trailing slashes
+ * trimmed), so an explicit endpoint is never rewritten. An unparseable value is returned
+ * unchanged for the https guard to reject.
+ */
+export function resolveJevEndpoint(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed;
+  }
+  // `search`/`hash` read '' both when absent and when present-but-empty ("host?", "host#"), so a
+  // stray empty '?' or '#' is treated as absent and dropped -- building the endpoint through the
+  // URL object (not by string concatenation) keeps the path out of the query or fragment.
+  if ((parsed.pathname === '' || parsed.pathname === '/') && !parsed.search && !parsed.hash) {
+    parsed.pathname = JEV_SYSTEM_ONE_PATH;
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.href;
+  }
+  return trimmed;
+}
+
 const DEFAULT_STAGE_BUDGET_MS = 20_000;
 const DEFAULT_PER_CALL_CAP_MS = 5_000;
 const DEFAULT_MAX_RETRIES = 2;
@@ -310,7 +417,7 @@ export class JevClient implements JevAsker {
   private readonly stageDeadline: number;
 
   constructor(options: JevClientOptions = {}) {
-    this.baseUrl = (options.baseUrl || 'https://api.typesafe.ai/v1/systemone').replace(/\/+$/, '');
+    this.baseUrl = resolveJevEndpoint(options.baseUrl || `${DEFAULT_JEV_ORIGIN}${JEV_SYSTEM_ONE_PATH}`);
     validateHttpsBaseUrl(this.baseUrl);
     this.apiKey = options.apiKey || '';
     this.model = options.model || 'jev-latest';
@@ -503,8 +610,8 @@ export class JevClient implements JevAsker {
     const answers = envelope.answers as Record<string, unknown>;
     const validatedAnswers: Record<string, JevAnswer> = {};
     for (const [key, question] of Object.entries(questions) as Array<[string, JevQuestion]>) {
-      const answer = answers[key];
-      if (!validAnswerShape(question, answer)) return null;
+      const answer = normalizeAnswer(question, answers[key]);
+      if (!answer) return null;
       validatedAnswers[key] = answer;
     }
 

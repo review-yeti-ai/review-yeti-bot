@@ -13,6 +13,7 @@ import {
   JevCassetteNotFoundError,
 } from '../support/jevStub';
 import { JEV_UNAVAILABLE_REASONS, type JevQuestion } from '../../src/gateway/jevClient';
+import { JEV_LIVE_RESPONSES } from '../../src/gateway/__tests__/jevLiveResponses.fixture';
 
 const QUESTIONS: Record<string, JevQuestion> = {
   is_ambiguous: { type: 'noul', instructions: 'Is this ambiguous?' },
@@ -157,6 +158,25 @@ describe('createLlmBackedJevStub — mode 3: LLM-backed adapter, hard-gated off 
     if (outcome.status !== 'ok') throw new Error('expected ok');
     expect(outcome.answers.is_ambiguous).toEqual({ type: 'noul', noul: 0.7 });
     expect(client.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks the LLM for the LIVE score contract: index-keyed legend and probabilities, score in [0,1] (REL-1100)', async () => {
+    const live = JEV_LIVE_RESPONSES.score.answers.risk;
+    const criteria = Object.values(live.legend) as string[];
+    const client = {
+      complete: vi.fn().mockResolvedValue({ model: 'test/model', content: JSON.stringify(live), usage: null, costUSD: 0, raw: {} }),
+    };
+    const stub = createLlmBackedJevStub({ client, model: 'test/model', nodeEnv: 'test' });
+    const outcome = await stub.ask({ state: 's', questions: { risk: { type: 'score', instructions: 'How risky?', criteria } } });
+    expect(outcome.status).toBe('ok');
+
+    const schema = client.complete.mock.calls[0][0].responseFormat.json_schema.schema;
+    expect(schema.properties.score).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+    expect(schema.properties.legend).toMatchObject({ type: 'object', required: Object.keys(live.legend), additionalProperties: false });
+    expect(schema.properties.probabilities).toMatchObject({ type: 'object', required: Object.keys(live.probabilities), additionalProperties: false });
+    // Negative proof: the schema no longer describes the array legend the real API never returns.
+    expect(schema.properties.legend.type).not.toBe('array');
+    for (const [key, text] of Object.entries(live.legend)) expect(schema.properties.legend.properties[key]).toEqual({ const: text });
   });
 
   it('resolves unavailable/malformed (never rejects) when the LLM output does not parse', async () => {
