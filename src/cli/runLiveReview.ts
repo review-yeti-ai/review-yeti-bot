@@ -1747,8 +1747,10 @@ export async function runWorker(
     const checkClient = new GitHubInstallationClient({ token });
 
     const rootAbortController = new AbortController();
-    const onSigterm = () => {
-      logger.info('Received SIGTERM/SIGINT, aborting review worker pipeline');
+    let terminationSignal: NodeJS.Signals | undefined;
+    const onSigterm = (signal: NodeJS.Signals) => {
+      terminationSignal = signal;
+      logger.info('Received SIGTERM/SIGINT, aborting review worker pipeline', { signal });
       rootAbortController.abort(new Error('Process received SIGTERM'));
     };
     process.once('SIGTERM', onSigterm);
@@ -1788,6 +1790,17 @@ export async function runWorker(
         // REL-1057: a newer head superseded this run. That is a terminal
         // outcome, not a failure: end cleanly and tell the operator why.
         if (!isReviewSuperseded(error)) throw error;
+        // REL-1093: a superseded run that was stopped by the operator deleting
+        // its Job is a cancellation, not a dispatch failure; say so distinctly.
+        if (terminationSignal) {
+          logger.info('Review worker cancelled: superseded', {
+            reason: 'superseded_by_new_head',
+            signal: terminationSignal,
+            stage: error.stage,
+            reviewedHeadSha: error.reviewedHeadSha,
+            ...(error.currentHeadSha ? { currentHeadSha: error.currentHeadSha } : {}),
+          });
+        }
         recordSupersededWorkerExit(error, workerEnv);
         return;
       }
