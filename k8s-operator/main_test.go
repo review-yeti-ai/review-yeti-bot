@@ -175,3 +175,15 @@ func TestPublishingConfigFromEnvReadsIncremental(t *testing.T) {
 		t.Fatalf("incremental flag not read: %+v", config)
 	}
 }
+
+// REL-1082: the review budget has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsReviewBudget(t *testing.T) {
+	t.Setenv("REVIEW_YETI_BUDGET", "")
+	if config := publishingConfigFromEnv(); config.Budget != "" {
+		t.Fatalf("unset review budget must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_BUDGET", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
+	if config := publishingConfigFromEnv(); config.Budget != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+		t.Fatalf("review budget not read: %+v", config)
+	}
+}

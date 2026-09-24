@@ -146,6 +146,9 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1084: incremental re-review, off unless the deployment sets it
 		// (a comma-separated owner/repo allowlist for pilots).
 		Incremental: strings.TrimSpace(os.Getenv("REVIEW_YETI_INCREMENTAL")),
+		// REL-1082: risk-ordered review budget, off unless the deployment
+		// sets it (a comma-separated owner/repo allowlist for pilots).
+		Budget: strings.TrimSpace(os.Getenv("REVIEW_YETI_BUDGET")),
 	}
 }
 

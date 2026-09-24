@@ -48,10 +48,18 @@ import {
 } from '../review/diffShrink';
 import {
   attachIncrementalDisclosure,
-  resolveScopedReviewApplicability,
   type IncrementalReviewDisclosure,
   type IncrementalReviewScope,
 } from '../review/incrementalReview';
+import {
+  COMPOSED_BUDGET_LANE_ID,
+  applyLaneBudgetPack,
+  attachReviewBudgetDisclosure,
+  clipToolOutputToRequestCap,
+  resolveBudgetedReviewApplicability,
+  type ReviewBudgetInput,
+  type ReviewBudgetPlan,
+} from '../review/reviewBudget';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -117,6 +125,8 @@ export interface ComposedReviewOptions {
   diffShrink?: DiffShrinkInput;
   /** REL-1084: incremental re-review scope (`REVIEW_YETI_INCREMENTAL`); absent reviews every file in full. */
   incremental?: IncrementalReviewScope;
+  /** REL-1082: risk-ordered review budget (`REVIEW_YETI_BUDGET`); absent or disabled sends today's content. */
+  reviewBudget?: ReviewBudgetInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -524,8 +534,11 @@ function buildStaticPrefix(input: {
   repositoryVisibility: RepositoryVisibility;
   rules: string[];
   preCheckEvidence: { zoekt?: ZoektPreCheckResult; analyzers?: PreCheckSummary; symbolAppendix?: SymbolResolutionAppendixResult };
+  /** REL-1082: token budget that inlines the whole budgeted pack; absent is today's default. */
+  inlineTokenBudget?: number;
 }): string {
   const diffSection = buildDiffSection(input.effectiveFiles, {
+    ...(input.inlineTokenBudget ? { tokenBudget: input.inlineTokenBudget } : {}),
     baseSha: input.baseSha || '',
     headSha: input.headSha,
     domainLanes: input.domainLanes,
@@ -714,6 +727,8 @@ async function runPlanPhase(input: {
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
+  /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
+  requestCapBytes?: number;
 }): Promise<PlanPhaseOutcome> {
   let messages = [...input.messages];
   const turnUsages: LaneTurnUsage[] = [];
@@ -754,9 +769,12 @@ async function runPlanPhase(input: {
         zoektConfig: input.zoektConfig,
         signal: input.signal,
       });
+      const toolOutput = input.requestCapBytes
+        ? clipToolOutputToRequestCap(result.toolOutput, messages, input.requestCapBytes)
+        : result.toolOutput;
       messages = [...messages, {
         role: 'user',
-        content: `${PI_TOOL_RESULT_MARKER}\n${result.toolOutput}\n[SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]`,
+        content: `${PI_TOOL_RESULT_MARKER}\n${toolOutput}\n[SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]`,
       }];
       continue;
     }
@@ -854,6 +872,8 @@ async function runTaskWorkPhase(input: {
   deadlineAtMs?: number;
   /** Policy may LOWER this task's turn ceiling, never raise it past `COMPOSED_TASK_MAX_TURNS`. */
   maxTurnsPerTask?: number;
+  /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
+  requestCapBytes?: number;
 }): Promise<TaskOutcome> {
   const startedAt = Date.now();
   // Per-task nonce, retained so the finalize object can be bound to THIS task's request. Without
@@ -905,9 +925,12 @@ async function runTaskWorkPhase(input: {
         signal: input.signal,
       });
       toolCallsLog.push({ tool: parsed.tool as string, args: parsed.args, scope: result.toolScope, exhaustive: result.isExhaustive });
+      const toolOutput = input.requestCapBytes
+        ? clipToolOutputToRequestCap(result.toolOutput, taskMessages, input.requestCapBytes)
+        : result.toolOutput;
       taskMessages = [...taskMessages, {
         role: 'user',
-        content: `${PI_TOOL_RESULT_MARKER}\n${result.toolOutput}\n[SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]`,
+        content: `${PI_TOOL_RESULT_MARKER}\n${toolOutput}\n[SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]`,
       }];
       continue;
     }
@@ -1011,6 +1034,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let incrementalDisclosure: IncrementalReviewDisclosure | null = null;
   // REL-1092: truncated and unavailable patches, from the same decision.
   let depthDisclosure: ReviewDepthDisclosure | null = null;
+  // REL-1082: the one budget pack for this single context, from the same decision.
+  let reviewBudgetPlan: ReviewBudgetPlan | null = null;
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -1029,15 +1054,24 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const enabledPersonas = config.personas.filter((persona) => persona.enabled);
     // REL-1079: diff shrinking runs after, and cannot change, that decision.
     // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
-    const applicability = resolveScopedReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1082: so does the review budget: one pack over the whole diff for this one context.
+    const applicability = resolveBudgetedReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
+      reviewBudget: options.reviewBudget,
+      budgetScope: 'whole-diff',
     });
     diffShrinkDisclosure = applicability.diffShrink;
     incrementalDisclosure = applicability.incremental;
     depthDisclosure = reviewDepthDisclosureOf(applicability);
+    reviewBudgetPlan = applicability.reviewBudget;
     const effectiveFiles = applicability.effectiveFiles;
+    const budgetPack = reviewBudgetPlan?.packs.get(COMPOSED_BUDGET_LANE_ID);
+    const budgeted = budgetPack ? applyLaneBudgetPack(effectiveFiles, budgetPack) : null;
+    // Read-only tools and findings validation read whole patches for files sent whole.
+    const toolFiles = budgeted ? budgeted.toolFiles : effectiveFiles;
+    const requestCapBytes = budgetPack?.requestCapBytes;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {
         throw personaCoverageError(
@@ -1070,7 +1104,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const zoektConfig = mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt);
 
     const staticPrefixText = buildStaticPrefix({
-      effectiveFiles,
+      effectiveFiles: budgeted ? budgeted.promptFiles : effectiveFiles,
+      ...(budgetPack ? { inlineTokenBudget: budgetPack.inlineTokenBudget } : {}),
       domainLanes,
       repository,
       headSha,
@@ -1128,8 +1163,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       requestPolicy,
       jobId,
       signal,
-      changedFilesForTools: effectiveFiles,
+      changedFilesForTools: toolFiles,
       expectedNonce: planNonce,
+      ...(requestCapBytes ? { requestCapBytes } : {}),
       deadlineAtMs: composedDeadlineAtMs,
       repoFileProvider,
       zoektConfig,
@@ -1171,7 +1207,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         model,
         providerId,
         baseMessages: persistentMessages,
-        changedFilesForTools: effectiveFiles,
+        changedFilesForTools: toolFiles,
+        ...(requestCapBytes ? { requestCapBytes } : {}),
         timeoutMs,
         inactivityTimeoutMs,
         requestPolicy,
@@ -1279,5 +1316,6 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
+    .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .finally(deadline.cleanup);
 }
