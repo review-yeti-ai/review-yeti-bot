@@ -296,6 +296,15 @@ const resultSchema = z.object({
    * `deriveCanonicalWorkerReviewEvidence` refuses the completion.
    */
   verdictCache: verdictCacheClaimSchema.optional(),
+  /**
+   * OPTIONAL, additive (REL-1084): the configured lane roster the worker's own verdict required
+   * (`panelResult.applicablePersonaIds`), sent only on non-authoritative WorkerReviewEvidence and
+   * only for a valid panel roster. A later run may rest on a non-authoritative prior only when
+   * every roster lane completed (`storedEvidenceShipCompleteReason`); without it the prior is
+   * refused.
+   */
+  roster: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u)).min(1).max(MAX_PERSONAS)
+    .refine((ids) => new Set(ids).size === ids.length, 'roster lane ids must be unique').optional(),
 }).strict();
 
 const completionSchema = z.object({
@@ -599,7 +608,14 @@ const SHIP_VERDICT: ReviewGateEvidence['verdict'] = 'SHIP';
 export const STORED_PRIOR_REFUSALS = [
   // Set by `priorReviewRecordFromRows` before this predicate runs.
   'run-not-succeeded',
+  // An authoritative-gate run never rests on a record the gate did not decide.
   'no-gate-evidence-record',
+  // Non-authoritative WorkerReviewEvidence priors (`storedEvidenceShipCompleteReason`).
+  'evidence-prior-run-authoritative',
+  'evidence-conclusion-not-success',
+  'evidence-roster-unknown',
+  'evidence-roster-mismatch',
+  'evidence-exemption',
   // Set by `storedCompletionShipCompleteReason`.
   'gate-row-missing',
   'gate-row-mismatch',
@@ -674,15 +690,23 @@ export function storedCompletionShipCompleteReason(
   if (evidence.coverageComplete !== true || evidence.quorumSatisfied !== true) return 'gate-incomplete';
   if (evidence.infrastructureFailure !== false) return 'gate-infrastructure-failure';
   if (evidence.verdict !== SHIP_VERDICT || evidence.p0Count !== 0 || evidence.p1Count !== 0) return 'gate-not-ship';
+  return storedLanesRefusal(result, expectedLanes);
+}
+
+/**
+ * The lane half of both prior predicates: the stored lanes, re-derived with `expectedLanes`
+ * required lanes through the same arbitration as the published verdict, must be a complete SHIP
+ * with no P0/P1 at published severity on any lane.
+ */
+function storedLanesRefusal(result: WorkerReviewResult, expectedLanes: number): StoredPriorRefusal | null {
   if (result.quorumSatisfied !== true) return 'worker-quorum-unmet';
   if (result.coverageComplete !== true) return 'worker-coverage-incomplete';
   if (result.personas.some((persona) => persona.findings.some((finding) => {
     const severity = publishedFindingSeverity(finding);
     return severity === 'P0' || severity === 'P1';
   }))) return 'blocking-finding';
-  // Re-derived with the gate's required lane count: quorum there needs exactly that many lanes,
-  // none failed (error lanes included) and complete coverage, so a missing, extra, duplicate or
-  // failed lane is refused here even if the stored gate record were wrong.
+  // Quorum there needs exactly that many lanes, none failed (error lanes included) and complete
+  // coverage, so a missing, extra, duplicate or failed lane is refused.
   const canonical = deriveStoredCompletionVerdict(result, { expectedLanes, coverageComplete: true });
   if (canonical === null) return 'rederived-invalid';
   const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
@@ -690,6 +714,41 @@ export function storedCompletionShipCompleteReason(
   if (!canonical.quorumSatisfied || canonical.completedPersonas !== expectedLanes) return 'lane-missing';
   if (canonical.verdict !== 'SHIP') return 'rederived-not-ship';
   return null;
+}
+
+/**
+ * REL-1084: whether a stored non-authoritative WorkerReviewEvidence record (the worker published
+ * its own Review Yeti check; no service gate) was a complete SHIP review. Only a non-authoritative
+ * run may rest on one (`priorReviewRecordFromRows`). Requires, from the stored evidence alone:
+ *
+ * - the published check conclusion for that exact head was `success`;
+ * - the configured lane roster the worker's verdict required (`result.roster`); a record without
+ *   it cannot show that no lane is missing and is refused;
+ * - every gating lane is a roster lane, once, and every roster lane is present
+ *   (`evidence-roster-mismatch` / `lane-missing`);
+ * - the verdict re-derived from the stored lanes with the roster size as the required lane
+ *   count is SHIP, with no P0/P1 at published severity and no failed lane (`storedLanesRefusal`).
+ *
+ * Head, base and digests are bound to the run row and the policy/config digests are compared by
+ * the shared decision, as for authoritative priors.
+ */
+export function storedEvidenceShipCompleteReason(
+  result: WorkerReviewResult,
+  conclusion: 'success' | 'failure',
+): StoredPriorRefusal | null {
+  if (conclusion !== 'success') return 'evidence-conclusion-not-success';
+  const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
+  if (gating.length === 1 && gating[0].id === 'documentation-only') return 'evidence-exemption';
+  const roster = result.roster;
+  if (!roster || roster.length === 0) return 'evidence-roster-unknown';
+  const rosterIds = new Set(roster);
+  const seen = new Set<string>();
+  for (const lane of gating) {
+    if (!rosterIds.has(lane.id) || seen.has(lane.id)) return 'evidence-roster-mismatch';
+    seen.add(lane.id);
+  }
+  if (roster.some((id) => !seen.has(id))) return 'lane-missing';
+  return storedLanesRefusal(result, roster.length);
 }
 
 /** `storedCompletionShipCompleteReason(...) === null`. */
