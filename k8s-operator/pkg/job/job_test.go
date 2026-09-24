@@ -1236,3 +1236,104 @@ func TestBuildWorkerJobForwardsZoektGroundingEnvOnlyWhenSet(t *testing.T) {
 		t.Fatalf("disabled lane must not receive ZOEKT_GROUNDING_DISABLED")
 	}
 }
+
+// REL-1086: the worker's jevTransport throws when only SOME of the four
+// TYPESAFE_* variables are present, so a partial projection would fail every
+// review. The operator must project all four from one Secret, optional (a
+// missing Secret leaves all four absent together), or none of them.
+func TestBuildWorkerJobProjectsJevTransportAllOrNothing(t *testing.T) {
+	now := time.Date(2026, 9, 23, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	for _, key := range append(append([]string{}, job.JevTransportEnvKeys...), job.JevShadowEnv) {
+		if hasEnv(baseline.Spec.Template.Spec.Containers[0], key) {
+			t.Fatalf("unprovisioned Jev must not reach the worker, found %s", key)
+		}
+	}
+
+	want := []string{"TYPESAFE_BASE_URL", "TYPESAFE_MODEL", "TYPESAFE_API_KEY", "TYPESAFE_MODEL_PIN"}
+	if strings.Join(job.JevTransportEnvKeys, ",") != strings.Join(want, ",") {
+		t.Fatalf("Jev transport keys drifted from the worker contract: %v", job.JevTransportEnvKeys)
+	}
+
+	input.Publishing.JevSecretName = "review-yeti-typesafe"
+	provisioned, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with Jev: %v", err)
+	}
+	container := provisioned.Spec.Template.Spec.Containers[0]
+	projected := 0
+	for _, env := range container.Env {
+		if !strings.HasPrefix(env.Name, "TYPESAFE_") {
+			continue
+		}
+		projected++
+		ref := env.ValueFrom
+		if env.Value != "" || ref == nil || ref.SecretKeyRef == nil {
+			t.Fatalf("%s must come from a secretKeyRef, never a literal", env.Name)
+		}
+		if ref.SecretKeyRef.Name != "review-yeti-typesafe" || ref.SecretKeyRef.Key != env.Name {
+			t.Fatalf("%s projected from %s/%s", env.Name, ref.SecretKeyRef.Name, ref.SecretKeyRef.Key)
+		}
+		if ref.SecretKeyRef.Optional == nil || !*ref.SecretKeyRef.Optional {
+			t.Fatalf("%s must be optional so a missing Secret disables Jev instead of failing admission", env.Name)
+		}
+	}
+	if projected != len(want) {
+		t.Fatalf("projected %d TYPESAFE_* vars, want exactly %d", projected, len(want))
+	}
+	for _, key := range want {
+		if !hasEnv(container, key) {
+			t.Fatalf("missing %s: a partial projection fails every review", key)
+		}
+	}
+	if hasEnv(container, job.JevShadowEnv) {
+		t.Fatalf("shadow flag must stay unset until configured")
+	}
+
+	input.Publishing.JevShadow = "on"
+	shadow, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with Jev shadow: %v", err)
+	}
+	if envValue(shadow.Spec.Template.Spec.Containers[0], job.JevShadowEnv) != "on" {
+		t.Fatalf("operator must forward %s verbatim", job.JevShadowEnv)
+	}
+
+	// Mode-driven isolation: the fields stay SET, the disabled lane still gets
+	// nothing.
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	for _, key := range append(append([]string{}, want...), job.JevShadowEnv) {
+		if hasEnv(receipt.Spec.Template.Spec.Containers[0], key) {
+			t.Fatalf("disabled lane must not receive %s", key)
+		}
+	}
+}
+
+func TestBuildWorkerJobRefusesMalformedJevConfig(t *testing.T) {
+	now := time.Date(2026, 9, 23, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.JevSecretName = "Not_A_Valid/Name"
+	if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "jev transport secret name") {
+		t.Fatalf("malformed Jev secret name must refuse the Job, got %v", err)
+	}
+	input.Publishing.JevSecretName = "review-yeti-typesafe"
+	input.Publishing.JevShadow = "on\n"
+	if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "jev shadow") {
+		t.Fatalf("whitespace in the Jev shadow flag must refuse the Job, got %v", err)
+	}
+}

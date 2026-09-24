@@ -135,3 +135,19 @@ func TestPublishingConfigFromEnvReadsTransport(t *testing.T) {
 		t.Fatal("completion URL not read")
 	}
 }
+
+// REL-1086: Jev has no default Secret -- unset projects nothing.
+func TestPublishingConfigFromEnvReadsJev(t *testing.T) {
+	t.Setenv("REVIEW_YETI_JEV_SECRET_NAME", "")
+	t.Setenv("REVIEW_YETI_JEV_SHADOW", "")
+	config := publishingConfigFromEnv()
+	if config.JevSecretName != "" || config.JevShadow != "" {
+		t.Fatalf("unset Jev config must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_JEV_SECRET_NAME", " review-yeti-typesafe ")
+	t.Setenv("REVIEW_YETI_JEV_SHADOW", "on")
+	config = publishingConfigFromEnv()
+	if config.JevSecretName != "review-yeti-typesafe" || config.JevShadow != "on" {
+		t.Fatalf("Jev config not read: %+v", config)
+	}
+}
