@@ -83,6 +83,21 @@ describe('REL-1088: uncovered source beside an applying lane is routed, never dr
     ]);
   });
 
+  it('routes to every required lane and lists each one on the routed file', () => {
+    const personas = enabled('architecture,security,performance').map((persona) => ({
+      ...persona,
+      required: persona.id !== 'arch-lane',
+      paths: persona.id === 'arch-lane' ? ['src/**'] : ['**/*.ex'],
+    }));
+    const result = resolveReviewApplicability(personas, files('src/app.py', UNCOVERED));
+    expect(result.applicable.map((persona) => [persona.id, routedOf(persona)])).toEqual([
+      ['arch-lane', undefined],
+      ['sec-lane', [UNCOVERED]],
+      ['perf-lane', [UNCOVERED]],
+    ]);
+    expect(result.routedFiles).toEqual([{ path: UNCOVERED, laneIds: ['sec-lane', 'perf-lane'], reason: 'uncovered-source' }]);
+  });
+
   it('labels fallback-routed and uncovered-source files separately on the same lane', () => {
     const result = resolveReviewApplicability(sourceOnlyRoster(), files('src/auth/login.ts', 'config/app.toml', UNCOVERED));
     expect(result.routedFiles).toEqual([
