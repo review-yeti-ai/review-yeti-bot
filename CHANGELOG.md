@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.91.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.3...v1.91.0) (2026-09-24)
+
+
+### Features
+
+* **telemetry:** push worker metrics to VictoriaMetrics at exit (REL-1104) ([#1043](https://github.com/review-yeti-ai/review-yeti-bot/issues/1043)) ([d81be45](https://github.com/review-yeti-ai/review-yeti-bot/commit/d81be456759a775aa66932caecca5efe3194216c))
+
 ## [1.90.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.2...v1.90.3) (2026-09-24)
 
 
