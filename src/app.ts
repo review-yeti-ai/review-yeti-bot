@@ -5,6 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { parseAndValidateConfig, createDefaultV4Config, normalizeConfigToV4 } from './config/configLoader';
 import { CtReviewConfigV3 } from './config/schema';
 import { OpenRouterClient, resolveCachedTokens } from './gateway/openRouterClient';
+import { missingGatewaySettings, requireGatewaySettings } from './review/openaiTransport';
+import { hasWebhookSecret } from './github/webhookServer';
 import { getGitHubAppBotLogin, getGitHubAppInstallationIdForRepository, getGitHubAppInstallationToken } from './github/appAuth';
 import { GitHubEventHandler, ParsedPRPayload } from './github/eventHandler';
 import { GitHubInstallationClient } from './github/installationClient';
@@ -101,10 +103,16 @@ export function assertSupportedReviewExecution(env: NodeJS.ProcessEnv = process.
 }
 
 function openRouterClient(): OpenRouterClient {
-  return new OpenRouterClient({
-    baseUrl: process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1',
-    apiKey: requiredEnv('OPENROUTER_API_KEY'),
-  });
+  // The class name is historical; the transport it speaks is the admitted
+  // OpenAI-compatible gateway. Values come from the shared resolver so a
+  // Bifrost deployment in OPENAI_* is used without an OpenRouter variable,
+  // and the vendor default URL is gone: an unconfigured base URL must fail
+  // closed rather than silently pointing at a vendor.
+  // The PAIR, so a standard key is never paired with the legacy vendor URL.
+  // `requireGatewaySettings` throws, naming what to fix, and never re-reads the
+  // raw env -- so a refused pairing cannot be reinstated by a fallback.
+  const { baseUrl, apiKey } = requireGatewaySettings(process.env);
+  return new OpenRouterClient({ baseUrl, apiKey });
 }
 
 export function usage(value: { prompt: number; completion: number; total: number; cached?: number; cached_tokens?: number } | null): string {
@@ -812,8 +820,23 @@ export function createApp(): Express {
   });
 
   app.get('/ready', async (_req, res) => {
-    const configurationReady = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'WEBHOOK_SECRET', 'OPENROUTER_API_KEY']
-      .every((name) => Boolean(process.env[name]?.trim()));
+    // REL-1069: the webhook name and the model key were both wrong here, which
+    // made the full app report not-ready on a correctly-configured Bifrost
+    // deployment: no environment sets `WEBHOOK_SECRET` (the app, the wizard and
+    // every synced env use `GITHUB_WEBHOOK_SECRET`), and the review lane has no
+    // OpenRouter credential because it is Bifrost-backed.
+    //
+    // Read the SHARED contract rather than re-listing fields. An earlier
+    // revision of this gate listed only the key, while `openRouterClient()`
+    // requires the base URL too -- so the probe answered 200 on a pod where
+    // every request threw, a fail-open signal worse than the bug being fixed.
+    // `missingGatewaySettings` is derived from the resolvers the transport
+    // itself uses, so adding or renaming a required setting moves both together.
+    const missingGateway = missingGatewaySettings(process.env);
+    const configurationReady = Boolean(process.env.GITHUB_APP_ID?.trim())
+      && Boolean(process.env.GITHUB_APP_PRIVATE_KEY?.trim())
+      && hasWebhookSecret()
+      && missingGateway.length === 0;
     return res.status(configurationReady ? 200 : 503).json({
       status: configurationReady ? 'ready' : 'not_ready',
       configurationReady,
