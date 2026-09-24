@@ -3435,6 +3435,7 @@ export function personaCoverageError(
   unmatched: readonly string[],
   enabledPersonas: ReadonlyArray<{ id: string }>,
   unverifiedLockfiles: ReadonlyArray<{ path: string; reason: string }> = [],
+  excludedPaths: readonly string[] = [],
 ): PanelConfigurationError {
   const shown = unmatched.slice(0, 10);
   const overflow = unmatched.length - shown.length;
@@ -3446,11 +3447,20 @@ export function personaCoverageError(
     ? ` Lockfile change not verifiable as a default-registry update: ${unverifiedLockfiles.slice(0, 10)
       .map((file) => `${file.path} (${file.reason})`).join(', ')}; it needs a human review.`
     : '';
+  // REL-972: files the review filter dropped (generated output, path_filters)
+  // are read by no lane, so they cannot ride along under a documentation-only
+  // pass. Extending a persona's paths does not help here; say so.
+  const excludedNote = excludedPaths.length > 0
+    ? ` Excluded from review by the generated-file filter or path_filters, so no lane reads them: ${excludedPaths.slice(0, 10).join(', ')}`
+      + `${excludedPaths.length > 10 ? `, +${excludedPaths.length - 10} more` : ''}; `
+      + 'a diff carrying them is not documentation-only and needs a reviewed change or a human review.'
+    : '';
   return new PanelConfigurationError(
     `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
     + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
     + `Extend that persona's paths to cover these files, or enable a persona that does.`
-    + lockfileNote,
+    + lockfileNote
+    + excludedNote,
     { failureClass: 'contract' },
   );
 }
@@ -3542,12 +3552,14 @@ export async function executePersonaPanel(options: {
         // persona's paths -- so the message now says which paths to extend.
         throw personaCoverageError(
           repository, headSha, applicability.unmatchedPaths, enabledPersonas, applicability.unverifiedLockfiles,
+          applicability.excludedPaths,
         );
       }
 
       // Reaching here means every changed path is documentation, an asset or
-      // data -- an unmatched source path throws above rather than falling
-      // through. So this is not "the roster is misconfigured", it is "there is
+      // a run artifact (or a verified lockfile) -- an unmatched source path, an
+      // excluded generated/path_filters file, throws above rather than falling
+      // through; uncovered data/config is routed to a lane (REL-972). So this is not "the roster is misconfigured", it is "there is
       // nothing to analyze", and those need opposite outcomes. Emitting a
       // zero-lane non-evidence receipt made documentation- and evidence-only
       // pull requests permanently unmergeable: publishing refuses a zero-lane

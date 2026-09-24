@@ -1012,6 +1012,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       if (!applicability.noReviewableContent) {
         throw personaCoverageError(
           repository, headSha, applicability.unmatchedPaths, enabledPersonas, applicability.unverifiedLockfiles,
+          applicability.excludedPaths,
         );
       }
       return buildZeroLaneResult(
