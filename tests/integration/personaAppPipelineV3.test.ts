@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { runReviewPipeline } from '../../src/app';
 import { ParsedPRPayload } from '../../src/github/eventHandler';
 import { extractMessageContentText } from '../../src/panel/panelEngine';
@@ -267,7 +267,8 @@ describe('GitHub App configurable persona pipeline', () => {
     vi.stubGlobal('fetch', mock.fetchMock);
     // REL-1113: a sustained gateway 503 first rides the lane transport budget; zero jitter keeps
     // that instant. The outage outlasts it, so the lane still fails closed.
-    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+    onTestFinished(() => random.mockRestore());
 
     await expect(runReviewPipeline(payload(9103))).rejects.toThrow(/required persona failure/i);
     expect(mock.requests.filter((request) => request.url.endsWith('/reviews'))).toHaveLength(0);

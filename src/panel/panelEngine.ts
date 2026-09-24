@@ -1440,7 +1440,6 @@ export function transportRetryDelayMs(attempt: number, random: () => number = Ma
  * from it: a restarting upstream behind nginx (502/504), an overloaded or
  * draining one (503), or an explicit "slow down" (429). */
 const TRANSIENT_GATEWAY_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
-const TRANSIENT_TRANSPORT_MESSAGE = /\b(?:ECONNRESET|ECONNREFUSED|ECONNABORTED|EPIPE|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|UND_ERR_SOCKET|UND_ERR_CLOSED)\b|fetch failed|socket hang up|other side closed|\bterminated\b/iu;
 const TRANSIENT_GATEWAY_MESSAGE = /\bHTTP (?:429|502|503|504)\b|\bBad Gateway\b|\bService Unavailable\b|\bGateway Time-?out\b/iu;
 const NON_RETRYABLE_CLIENT_STATUS_MESSAGE = /\bHTTP 4(?!29)\d\d\b/u;
 
@@ -1448,6 +1447,13 @@ const NON_RETRYABLE_CLIENT_STATUS_MESSAGE = /\bHTTP 4(?!29)\d\d\b/u;
  * REL-1113: whether one persona attempt failed on the PATH to the model -- a
  * dropped/refused/reset connection, an interrupted stream ("terminated"), or a
  * gateway/proxy 429/502/503/504 -- rather than on anything the model said.
+ *
+ * Not a second classification ladder: the connection half IS
+ * `classifyPersonaAttemptFailure(error) === 'transport'` (the same shared
+ * classifier that assigns the lane's published `failureClass`); this only adds
+ * the gateway statuses, which that classifier publishes as `provider_error` /
+ * `rate_limit`. Every error this accepts therefore publishes a class inside
+ * `INFRASTRUCTURE_LANE_FAILURE_CLASSES` (pinned by a test).
  *
  * Retrying such an attempt from scratch is safe: a persona lane is an
  * idempotent read of the model. Its tools are read-only (`runReadOnlyTool`),
@@ -1458,21 +1464,20 @@ const NON_RETRYABLE_CLIENT_STATUS_MESSAGE = /\bHTTP 4(?!29)\d\d\b/u;
  * Deliberately NOT transient: a 4xx other than 429 (auth, contract, payload
  * size -- the same request fails the same way), a request deadline or caller
  * cancellation (`OpenRouterTimeoutError`), an explicit upstream capacity
- * rejection (fast failover owns it), the empty-completion signature (its own
- * budget), and any structured-output/contract error.
+ * rejection error (fast failover owns it), the empty-completion signature (its
+ * own budget), and any structured-output/contract error.
  */
 export function isTransientLaneTransportError(error: unknown): boolean {
   if (error instanceof OpenRouterTimeoutError) return false;
   if (error instanceof UpstreamCapacityRejectionError) return false;
-  if (error instanceof OpenRouterConnectionError) return true;
+  if (error instanceof PanelConfigurationError) return false;
   if (error instanceof OpenRouterResponseError) {
     if (isEmptyCompletionError(error)) return false;
     return error.status !== undefined && TRANSIENT_GATEWAY_STATUSES.has(error.status);
   }
-  if (error instanceof PanelConfigurationError) return false;
   const message = panelErrorMessage(error);
   if (NON_RETRYABLE_CLIENT_STATUS_MESSAGE.test(message)) return false;
-  return TRANSIENT_TRANSPORT_MESSAGE.test(message) || TRANSIENT_GATEWAY_MESSAGE.test(message);
+  return classifyPersonaAttemptFailure(error) === 'transport' || TRANSIENT_GATEWAY_MESSAGE.test(message);
 }
 
 /** REL-1113: milliseconds left before a transport backoff would crowd the

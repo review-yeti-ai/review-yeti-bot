@@ -7,6 +7,7 @@ import {
   isRecoverablePanelRetryEligible,
 } from './publicationFailurePolicy';
 import { deriveReviewRunId } from './reviewAdmission';
+import { reviewGateErrorText } from './reviewGatePolicy';
 import type { WorkerReviewCompletion } from './workerReviewCompletion';
 import type { AuthoritativeReviewAdmission } from './authoritativeServiceContracts';
 import type { ReviewAdmission, ReviewAdmissionInput, ReviewRunIdentity, PublicationMode } from './reviewRun';
@@ -113,8 +114,8 @@ export async function requeueRecoverableIncompletePanelFailure(
 }
 
 /** REL-1113: the error text the authoritative completion records for an
- * `infrastructure-failure` gate decision (`review gate: <reason>`). */
-export const AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT = 'review gate: infrastructure-failure';
+ * `infrastructure-failure` gate decision, from the recording side's own definition. */
+export const AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT = reviewGateErrorText('infrastructure-failure');
 
 export interface RequeueAuthoritativeInfrastructureIncompleteOptions {
   event: WorkerReviewCompletion;
