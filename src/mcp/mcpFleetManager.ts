@@ -843,9 +843,14 @@ export class McpFleetManager {
         }
         const timeoutMs = options.timeoutMs ?? 15000;
         const controller = new AbortController();
-        const timer = setTimeout(() => {
-          controller.abort(new Error(`HTTP request timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+        // The timer is armed immediately before the request, NOT before the work that
+        // precedes it. `getHttpHeaders()` awaits a Doppler secret lookup (measured ~470ms),
+        // and with a short budget the signal was already aborted by the time `fetch()` was
+        // called -- `addEventListener('abort')` then never fired because the event had
+        // already passed, and the awaiting promise hung FOREVER rather than rejecting. That
+        // is a hang on a timeout path, which is the one outcome a timeout must never have
+        // (REL-1107 follow-up).
+        let timer: ReturnType<typeof setTimeout> | undefined;
 
         const effectiveSignal = options.signal
           ? (typeof (AbortSignal as any).any === 'function'
@@ -867,6 +872,27 @@ export class McpFleetManager {
         try {
           const endpoint = this.resolveRpcEndpoint(server.url, 'tools/call');
           const headers = await this.getHttpHeaders(server);
+          // Budget starts here: everything above is setup, and charging it to the caller's
+          // request timeout made a short budget abort before the request existed.
+          timer = setTimeout(() => {
+            controller.abort(new Error(`HTTP request timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+          // An ALREADY-ABORTED signal must fail now, not hang. Setup above awaits a Doppler
+          // lookup (measured ~470ms), so a caller that aborts during it -- or a caller whose
+          // signal was aborted before entry -- otherwise reaches `fetch` with the signal already
+          // aborted. The request is still issued, its `abort` listener is registered after the
+          // event has fired, and the awaiting promise NEVER settles. Verified: signal.aborted
+          // was true at fetch time and the call hung past 3s under a 50ms budget.
+          if (effectiveSignal.aborted) {
+            const reason: any = effectiveSignal.reason;
+            const aborted = new Error(
+              reason?.name === 'AbortError' || /abort/iu.test(String(reason?.message ?? reason ?? ''))
+                ? 'Operation aborted'
+                : `HTTP request timed out after ${timeoutMs}ms`,
+            );
+            aborted.name = 'AbortError';
+            throw aborted;
+          }
 
           const res = await fetch(endpoint, {
             method: 'POST',
