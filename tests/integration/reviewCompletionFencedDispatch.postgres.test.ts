@@ -22,7 +22,10 @@ import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventReposi
  */
 
 const TEST_SCHEMA = 'test_rel1053_fenced_dispatch';
-const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL || 'postgres://localhost/postgres';
+// REL-1069 follow-up: no hardcoded fallback; skip when Postgres is absent
+// rather than trying to reach a guessed host.
+const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim() || '';
+const describeWithPostgres = DATABASE_URL ? describe : describe.skip;
 const LEASE_MS = 1_000;
 
 interface Gate {
@@ -39,7 +42,7 @@ function gate(): Gate {
   return { entered, release, wait: async () => { markEntered(); await released; } };
 }
 
-describe('REL-1053 fenced CI-request dispatch across dispatcher replicas', () => {
+describeWithPostgres('REL-1053 fenced CI-request dispatch across dispatcher replicas', () => {
   let pool: Pool;
   let repository: PostgresReviewCompletionRepository;
 
