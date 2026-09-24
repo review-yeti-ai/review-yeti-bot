@@ -211,7 +211,7 @@ describe('REL-1113 authoritative infrastructure re-attempt', () => {
 });
 
 describe('REL-1113 completion API wiring', () => {
-  function app(recordStatus: 'recorded' | 'duplicate') {
+  function app(recordStatus: 'recorded' | 'duplicate', resolveImpl?: () => Promise<unknown>) {
     vi.spyOn(logger, 'error').mockImplementation(() => undefined);
     vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
     vi.spyOn(logger, 'info').mockImplementation(() => undefined);
@@ -219,7 +219,7 @@ describe('REL-1113 completion API wiring', () => {
     const retryAdmit = vi.fn(async () => ({}) as never);
     const readRunRetryContext = vi.fn(async () => ({ publicationMode: 'app-gate' as const, authoritativeGateAppId: EXPECTED_APP_ID,
       repositoryId: 123, installationId: 55, identity, runStatus: 'failed', errorText: AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT }));
-    const resolve = vi.fn(async () => ({ identity, prepared }));
+    const resolve = vi.fn(resolveImpl ?? (async () => ({ identity, prepared })));
     const server = express();
     server.use(express.json({ limit: 1_000_000, strict: true }));
     server.use('/api/dispatch', createActionDispatchRouter({
@@ -230,7 +230,7 @@ describe('REL-1113 completion API wiring', () => {
       workerCompletion: { verifier: { verify: vi.fn() }, repository: { markWorkerFailure: vi.fn(), markWorkerSuccess: vi.fn(),
         authorizeWorkerEvidence: vi.fn(), admit: retryAdmit, readRunRetryContext } } as never,
     }));
-    return { server, retryAdmit, recordWorkerResult };
+    return { server, retryAdmit, recordWorkerResult, resolve };
   }
 
   it('acknowledges the recorded completion, then re-admits the next attempt', async () => {
@@ -240,6 +240,19 @@ describe('REL-1113 completion API wiring', () => {
     expect(response.body).toEqual({ version: 'WorkerReviewCompletionAccepted.v1', runId: RUN_ID, status: 'recorded' });
     await vi.waitFor(() => expect(a.retryAdmit).toHaveBeenCalledOnce());
     expect(a.retryAdmit).toHaveBeenCalledWith(expect.objectContaining({ retryRequested: true, retryAfterExecutionAttempt: 1 }));
+  });
+
+  it('writes the 200 before the resolver runs, so resolver latency never delays the worker ACK', async () => {
+    const pending = Promise.withResolvers<unknown>();
+    const a = app('recorded', () => pending.promise);
+    const response = await request(a.server).post('/api/dispatch/completion').auth('ghs_x', { type: 'bearer' }).send(completion());
+    // The worker already has its acknowledgement while the GitHub re-read is still outstanding.
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'recorded' });
+    await vi.waitFor(() => expect(a.resolve).toHaveBeenCalledOnce());
+    expect(a.retryAdmit).not.toHaveBeenCalled();
+    pending.resolve({ identity, prepared });
+    await vi.waitFor(() => expect(a.retryAdmit).toHaveBeenCalledOnce());
   });
 
   it('never re-admits on a duplicate delivery', async () => {
