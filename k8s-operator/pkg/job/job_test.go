@@ -1657,3 +1657,91 @@ func TestBuildWorkerJobRefusesVerdictCacheWithLineBreak(t *testing.T) {
 		}
 	}
 }
+
+// REL-1083: REVIEW_YETI_MAP_REDUCE must reach the app-gate worker verbatim when
+// configured, together with the review's terminal deadline, stay absent (both)
+// when not, and never reach the receipt-only lane.
+func TestBuildWorkerJobForwardsMapReduceAndDeadlineOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.MapReduceEnv != "REVIEW_YETI_MAP_REDUCE" {
+		t.Fatalf("map-reduce env drifted from the worker's MAP_REDUCE_FLAG: %s", job.MapReduceEnv)
+	}
+	if job.TerminalDeadlineEnv != "REVIEW_TERMINAL_DEADLINE" {
+		t.Fatalf("terminal deadline env drifted from the worker's TERMINAL_DEADLINE_ENV: %s", job.TerminalDeadlineEnv)
+	}
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	for _, name := range []string{job.MapReduceEnv, job.TerminalDeadlineEnv} {
+		if hasEnv(baseline.Spec.Template.Spec.Containers[0], name) {
+			t.Fatalf("unset operator config must not reach the worker as %s", name)
+		}
+	}
+
+	want := review.Spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)
+	for _, value := range []string{"review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta", "all", "off", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+		input.Publishing.MapReduce = value
+		forwarded, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build app-gate job with map-reduce %q: %v", value, err)
+		}
+		container := forwarded.Spec.Template.Spec.Containers[0]
+		if got := envValue(container, job.MapReduceEnv); got != value {
+			t.Fatalf("operator must forward %q verbatim, got %q", value, got)
+		}
+		if got := envValue(container, job.TerminalDeadlineEnv); got != want {
+			t.Fatalf("operator must forward the terminal deadline %q, got %q", want, got)
+		}
+		parsed, err := time.Parse(time.RFC3339Nano, envValue(container, job.TerminalDeadlineEnv))
+		if err != nil || !parsed.Equal(review.Spec.TerminalDeadline.Time) {
+			t.Fatalf("terminal deadline must round-trip exactly, got %v (%v)", parsed, err)
+		}
+		for _, name := range []string{job.MapReduceEnv, job.TerminalDeadlineEnv} {
+			count := 0
+			for _, env := range container.Env {
+				if env.Name == name {
+					count++
+					if env.ValueFrom != nil {
+						t.Fatalf("%s must be a literal value, not a reference", name)
+					}
+				}
+			}
+			if count != 1 {
+				t.Fatalf("%s projected %d times, want exactly once", name, count)
+			}
+		}
+	}
+
+	input.Publishing.MapReduce = "all"
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	for _, name := range []string{job.MapReduceEnv, job.TerminalDeadlineEnv} {
+		if hasEnv(receipt.Spec.Template.Spec.Containers[0], name) {
+			t.Fatalf("disabled lane must not receive %s", name)
+		}
+	}
+}
+
+func TestBuildWorkerJobRefusesMapReduceWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+		input.Publishing.MapReduce = value
+		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "map-reduce flag") {
+			t.Fatalf("a line break in the map-reduce flag must refuse the Job, got %v", err)
+		}
+	}
+}

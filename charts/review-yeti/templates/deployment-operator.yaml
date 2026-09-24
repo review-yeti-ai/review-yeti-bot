@@ -88,6 +88,10 @@ spec:
             - name: REVIEW_YETI_VERDICT_CACHE
               value: {{ .Values.publishing.verdictCache | quote }}
             {{- end }}
+            {{- if .Values.publishing.mapReduce }}
+            - name: REVIEW_YETI_MAP_REDUCE
+              value: {{ .Values.publishing.mapReduce | quote }}
+            {{- end }}
             - name: REVIEW_YETI_GATEWAY_SECRET_NAME
               value: {{ .Values.publishing.gatewaySecretName | quote }}
             - name: REVIEW_YETI_GATEWAY_SECRET_KEY

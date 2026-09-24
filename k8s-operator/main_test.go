@@ -199,3 +199,15 @@ func TestPublishingConfigFromEnvReadsVerdictCache(t *testing.T) {
 		t.Fatalf("verdict cache flag not read: %+v", config)
 	}
 }
+
+// REL-1083: map-reduce has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsMapReduce(t *testing.T) {
+	t.Setenv("REVIEW_YETI_MAP_REDUCE", "")
+	if config := publishingConfigFromEnv(); config.MapReduce != "" {
+		t.Fatalf("unset map-reduce must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_MAP_REDUCE", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
+	if config := publishingConfigFromEnv(); config.MapReduce != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+		t.Fatalf("map-reduce not read: %+v", config)
+	}
+}
