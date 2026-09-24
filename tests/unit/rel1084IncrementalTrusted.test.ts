@@ -12,6 +12,7 @@ import type { IncrementalVerificationInput, PriorReviewRecord } from '../../src/
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { publishingWorkerAdapters } from '../../src/review/publishingWorkerAdapters';
 import { sha256 } from '../../src/review/reviewCore';
+import { logger } from '../../src/utils/logger';
 
 /**
  * REL-1084: the trusted completion side re-decides a carried-forward completion
@@ -249,6 +250,27 @@ describe('incremental base route', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ version: 'IncrementalBase.v1', runId: RUN, maxAgeMs: 3_600_000, prior });
     expect(read).toHaveBeenCalledWith({ runId: RUN, executionAttempt: 1, workerTokenDigest: sha256(TOKEN) });
+  });
+
+  it('logs why a refused prior was not SHIP-complete, and carries the code to the worker', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+    try {
+      const refused = { ...prior, shipComplete: false, shipIncompleteReason: 'gate-not-clean' as const };
+      const { server } = app(vi.fn(async () => ({ status: 'ok' as const, prior: refused, maxAgeMs: 3_600_000 })));
+      const res = await request(server).post('/api/dispatch/incremental-base').set('Authorization', `Bearer ${TOKEN}`).send(body);
+      expect(res.body.prior).toEqual(refused);
+      expect(info).toHaveBeenCalledWith('Incremental base prior not SHIP-complete', {
+        runId: RUN, priorRunId: prior.runId, priorHeadSha: prior.headSha, priorRefusal: 'gate-not-clean' });
+      // A worker built with this schema accepts the code.
+      const source = new HttpIncrementalBaseSource({ token: TOKEN, completionEndpoint: 'https://svc.example/api/dispatch/completion',
+        runId: RUN, executionAttempt: 1, fetchImplementation: vi.fn<typeof fetch>(async () => json(res.body)) });
+      expect((await source.read()).prior).toEqual(refused);
+      info.mockClear();
+      await request(app().server).post('/api/dispatch/incremental-base').set('Authorization', `Bearer ${TOKEN}`).send(body);
+      expect(info).not.toHaveBeenCalledWith('Incremental base prior not SHIP-complete', expect.anything());
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('refuses a missing bearer, a malformed body, an unauthorized worker, and reports storage failure as 503', async () => {

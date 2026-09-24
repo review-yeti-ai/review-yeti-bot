@@ -29,10 +29,13 @@ import {
   type PriorReviewRows,
 } from '../../src/review/incrementalReview';
 import { gateRecordFor } from '../support/priorGateRecord';
+import { logger } from '../../src/utils/logger';
+import { computeArbitration } from '../../src/review/reviewCore';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
 import {
   deriveCanonicalWorkerReviewEvidence,
   parseWorkerReviewCompletion,
+  publishedFindingSeverity,
   workerReviewCompletionDigest,
   workerReviewEvidenceDigest,
 } from '../../src/review/workerReviewCompletion';
@@ -263,8 +266,9 @@ describe('prior review record', () => {
     const good = rows(completion);
     expect(priorReviewRecordFromRows(good)?.shipComplete).toBe(true);
     // No gate row, or one that recorded a different completion.
-    expect(priorReviewRecordFromRows({ ...good, gate: null })?.shipComplete).toBe(false);
-    expect(priorReviewRecordFromRows({ ...good, gate: { ...good.gate!, worker_result_digest: 'f'.repeat(64) } })?.shipComplete).toBe(false);
+    expect(priorReviewRecordFromRows({ ...good, gate: null })).toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-row-missing' });
+    expect(priorReviewRecordFromRows({ ...good, gate: { ...good.gate!, worker_result_digest: 'f'.repeat(64) } }))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-row-mismatch' });
     // A gate that failed the review (incomplete coverage) even though the run row says succeeded.
     const incomplete = gateRecordFor(completion, { expectedPersonaIds: PRIOR_LANES, changedFiles: files(DIFF), coverageComplete: false });
     expect(incomplete.status).toBe('failed');
@@ -290,29 +294,31 @@ describe('prior review record', () => {
     const decision = JSON.parse(String(good.gate!.decision));
     const withGate = (patch: { evidence?: object; decision?: object }) => ({ ...good, gate: { ...good.gate!,
       evidence: JSON.stringify({ ...evidence, ...patch.evidence }), decision: JSON.stringify({ ...decision, ...patch.decision }) } });
-    const tampered: Array<[string, PriorReviewRows]> = [
-      ['gate decision is a human risk acceptance', withGate({ decision: { reason: 'human-accepted-risk' } })],
-      ['gate decision failed', withGate({ decision: { status: 'failure', eligible: false, reason: 'incomplete-review' } })],
-      ['gate decision not a success', withGate({ decision: { status: 'failure' } })],
-      ['gate verdict FIX_FIRST', withGate({ evidence: { verdict: 'FIX_FIRST' } })],
-      ['gate P1 count', withGate({ evidence: { p1Count: 1 } })],
-      ['gate P0 count', withGate({ evidence: { p0Count: 1 } })],
-      ['gate completed fewer lanes than required', withGate({ evidence: { completedLanes: 1 } })],
-      ['gate required no lanes', withGate({ evidence: { expectedLanes: 0, completedLanes: 0 } })],
-      ['gate coverage incomplete', withGate({ evidence: { coverageComplete: false } })],
-      ['gate quorum unmet', withGate({ evidence: { quorumSatisfied: false } })],
-      ['gate infrastructure failure', withGate({ evidence: { infrastructureFailure: true } })],
-      ['gate exemption', withGate({ evidence: { exemption: { kind: 'no-reviewable-content', auditDigest: 'a'.repeat(64) } } })],
-      ['gate required more lanes than the completion carries', withGate({ evidence: { expectedLanes: 3, completedLanes: 3 } })],
-      ['gate evidence missing', { ...good, gate: { ...good.gate!, evidence: null } }],
+    const tampered: Array<[string, PriorReviewRows, string]> = [
+      ['gate decision is a human risk acceptance', withGate({ decision: { reason: 'human-accepted-risk' } }), 'gate-not-clean'],
+      ['gate decision failed', withGate({ decision: { status: 'failure', eligible: false, reason: 'incomplete-review' } }), 'gate-not-clean'],
+      ['gate decision not a success', withGate({ decision: { status: 'failure' } }), 'gate-not-clean'],
+      ['gate verdict FIX_FIRST', withGate({ evidence: { verdict: 'FIX_FIRST' } }), 'gate-not-ship'],
+      ['gate P1 count', withGate({ evidence: { p1Count: 1 } }), 'gate-not-ship'],
+      ['gate P0 count', withGate({ evidence: { p0Count: 1 } }), 'gate-not-ship'],
+      ['gate completed fewer lanes than required', withGate({ evidence: { completedLanes: 1 } }), 'gate-lane-missing'],
+      ['gate required no lanes', withGate({ evidence: { expectedLanes: 0, completedLanes: 0 } }), 'gate-record-unreadable'],
+      ['gate coverage incomplete', withGate({ evidence: { coverageComplete: false } }), 'gate-incomplete'],
+      ['gate quorum unmet', withGate({ evidence: { quorumSatisfied: false } }), 'gate-incomplete'],
+      ['gate infrastructure failure', withGate({ evidence: { infrastructureFailure: true } }), 'gate-infrastructure-failure'],
+      ['gate exemption', withGate({ evidence: { exemption: { kind: 'no-reviewable-content', auditDigest: 'a'.repeat(64) } } }), 'gate-exemption'],
+      ['gate required more lanes than the completion carries', withGate({ evidence: { expectedLanes: 3, completedLanes: 3 } }), 'lane-missing'],
+      ['gate evidence missing', { ...good, gate: { ...good.gate!, evidence: null } }, 'gate-record-unreadable'],
     ];
-    for (const [name, variant] of tampered) {
-      expect([name, priorReviewRecordFromRows(variant)?.shipComplete]).toEqual([name, false]);
+    for (const [name, variant, reason] of tampered) {
+      const record = priorReviewRecordFromRows(variant);
+      expect([name, record?.shipComplete, record?.shipIncompleteReason]).toEqual([name, false, reason]);
     }
   });
 
-  it('refuses stored lanes the gate record alone would not catch: a calibrated P1, a duplicate lane, an unmet worker quorum', () => {
-    // A P1 titled as advisory is re-filed P2 by calibration, so the gate says SHIP; a raw P1 still disqualifies.
+  it('judges findings at published severity: a P1 calibration re-filed as P2 qualifies, a surviving P1 does not', () => {
+    // review-yeti-bot#1034 (82381c85): a lane filed a P1 that calibration re-filed as P2, the gate
+    // said clean SHIP, and the prior was refused by the raw-severity rule.
     const calibrated = priorCompletion({ personas: [
       { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE',
         findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11, title: 'Naming is inconsistent', body: 'b' }] },
@@ -320,20 +326,51 @@ describe('prior review record', () => {
     ] });
     const calibratedRows = rows(calibrated);
     expect(calibratedRows.run.status).toBe('succeeded');
-    expect(priorReviewRecordFromRows(calibratedRows)?.shipComplete).toBe(false);
-    // The same lane twice, over a gate record copied from a clean two-lane review.
+    const record = priorReviewRecordFromRows(calibratedRows);
+    expect(record).toMatchObject({ shipComplete: true, findingPaths: ['src/changed.ts'] });
+    expect(record).not.toHaveProperty('shipIncompleteReason');
+    // An unverified-premise P1 is also published as P2.
+    const hedged = priorCompletion({ personas: [
+      { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11,
+        title: 'Missing import', body: 'Repo tooling could not confirm the import exists.' }] },
+      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+    ] });
+    expect(priorReviewRecordFromRows(rows(hedged))?.shipComplete).toBe(true);
+    // A P1 that survives calibration disqualifies even over a clean gate record copied onto it,
+    // on a gating lane or a shadow lane.
     const good = rows(priorCompletion());
+    const surviving = [
+      { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE',
+        findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11, title: 'Unchecked input reaches the query', body: 'b' }] },
+      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+    ];
+    for (const personas of [surviving, [
+      { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'shadow_composed', decision: 'FINDINGS', status: 'COMPLETE', evidenceSource: 'shadow',
+        findings: [{ severity: 'P0', path: 'src/changed.ts', line: 11, title: 'Remote code execution', body: 'b' }] },
+    ]]) {
+      const blocked = priorCompletion({ personas });
+      expect(priorReviewRecordFromRows({ ...rows(blocked, { status: 'succeeded' }), gate: { ...good.gate!,
+        worker_result_digest: workerReviewCompletionDigest(blocked) } })).toMatchObject({
+        shipComplete: false, shipIncompleteReason: 'blocking-finding' });
+    }
+  });
+
+  it('refuses stored lanes the gate record alone would not catch: a duplicate lane, an unmet worker quorum', () => {
+    const good = rows(priorCompletion());
+    // The same lane twice, over a gate record copied from a clean two-lane review.
     const duplicate = priorCompletion({ personas: [
       { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
       { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
     ] });
     const duplicateDigest = workerReviewCompletionDigest(duplicate);
     expect(priorReviewRecordFromRows({ ...rows(duplicate, { status: 'succeeded' }),
-      gate: { ...good.gate!, worker_result_digest: duplicateDigest } })?.shipComplete).toBe(false);
+      gate: { ...good.gate!, worker_result_digest: duplicateDigest } })?.shipIncompleteReason).toBe('rederived-invalid');
     // The worker reported an unmet quorum; the gate record is copied from a clean review.
     const noQuorum = parseWorkerReviewCompletion({ ...priorCompletion(), result: { ...priorCompletion().result, quorumSatisfied: false } });
     expect(priorReviewRecordFromRows({ ...rows(noQuorum, { status: 'succeeded' }), gate: { ...good.gate!,
-      worker_result_digest: workerReviewCompletionDigest(noQuorum) } })?.shipComplete).toBe(false);
+      worker_result_digest: workerReviewCompletionDigest(noQuorum) } })?.shipIncompleteReason).toBe('worker-quorum-unmet');
   });
 
   it('ignores a stale non-SHIP worker verdict field when the derivation says SHIP', () => {
@@ -348,7 +385,39 @@ describe('prior review record', () => {
     const clean = rows(priorCompletion());
     const partial = priorCompletion({ coverageComplete: false });
     expect(priorReviewRecordFromRows({ ...rows(partial, { status: 'succeeded' }), gate: { ...clean.gate!,
-      worker_result_digest: workerReviewCompletionDigest(partial) } })?.shipComplete).toBe(false);
+      worker_result_digest: workerReviewCompletionDigest(partial) } })).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'worker-coverage-incomplete' });
+  });
+
+  it('names a failed gating lane over a clean gate record, and a record published without the gate', () => {
+    const clean = rows(priorCompletion());
+    const failed = priorCompletion({ personas: [
+      { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'arch-lane', decision: 'ERROR', status: 'ERROR', errorClass: 'transport', findings: [] },
+    ] });
+    expect(priorReviewRecordFromRows({ ...rows(failed, { status: 'succeeded' }), gate: { ...clean.gate!,
+      worker_result_digest: workerReviewCompletionDigest(failed) } })).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'lane-failed' });
+    const evidence = { ...priorCompletion(), version: 'WorkerReviewEvidence.v1', checkId: 99, conclusion: 'success' };
+    expect(priorReviewRecordFromRows(rows(evidence))).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'no-gate-evidence-record' });
+  });
+
+  it('judges blocking findings with the exact per-finding severity arbitration publishes', () => {
+    // One definition: the gate check and computeArbitration both use publishFinding.
+    const findings = [
+      { severity: 'P1', path: 'src/a.ts', line: 1, title: 'Naming is inconsistent', body: 'b' },
+      { severity: 'P1', path: 'src/b.ts', line: 1, title: 'Missing import', body: 'Tooling could not confirm the import exists.' },
+      { severity: 'P1', path: 'src/c.ts', line: 1, title: 'Unchecked input reaches the query', body: 'b' },
+      { severity: 'P0', path: 'src/d.ts', line: 1, title: 'Remote code execution', body: 'b' },
+      { severity: 'P2', path: 'src/e.ts', line: 1, title: 'Nit', body: 'b' },
+    ];
+    const published = computeArbitration([{ id: 'sec-lane', decision: 'FINDINGS', findings } as never], 1).findings;
+    for (const finding of findings) {
+      expect([finding.path, publishedFindingSeverity(finding)])
+        .toEqual([finding.path, published.find((item) => item.path === finding.path)!.severity]);
+    }
+    expect(findings.map(publishedFindingSeverity)).toEqual(['P2', 'P2', 'P1', 'P0', 'P2']);
   });
 
   it('keeps a raw P1 on a shadow lane disqualifying, as before (shadow lanes never gate, but never excuse)', () => {
@@ -786,7 +855,7 @@ describe('publishing worker wiring', () => {
     };
   }
 
-  async function runWorker(env: NodeJS.ProcessEnv, comparisons = world()) {
+  async function runWorker(env: NodeJS.ProcessEnv, comparisons = world(), priorRecord: PriorReviewRecord = prior()) {
     // Stands in for an engine: it applies the scope it was given and attaches that disclosure.
     const panelRunner = vi.fn(async (runOptions: any) => attachIncrementalDisclosure({
       headSha: HEAD,
@@ -799,7 +868,7 @@ describe('publishing worker wiring', () => {
     }, applyIncrementalScope(buildEffectiveReviewFiles(runOptions.changedFiles).files, runOptions.incremental).disclosure));
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     const reportReviewEvidence = vi.fn(async () => {});
-    const incrementalBase = { read: vi.fn(async () => ({ prior: prior(), maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) };
+    const incrementalBase = { read: vi.fn(async () => ({ prior: priorRecord, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) };
     await runPublishingReviewWorker(env, {
       checkClient,
       completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
@@ -837,6 +906,20 @@ describe('publishing worker wiring', () => {
       previousHeadSha: PREV_HEAD, previousBaseSha: PREV_BASE, previousCompletionDigest: 'e'.repeat(64),
       carriedForwardPaths: ['src/unchanged.ts'],
     });
+  });
+
+  it('names the refusing check in the plan log and the check summary, and only for a refused prior', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const refused = prior({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
+    const { summary } = await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }), world(), refused);
+    expect(info).toHaveBeenCalledWith('Incremental re-review planned', expect.objectContaining({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'gate-not-clean' }));
+    expect(summary).toContain('(`gate-not-clean`: the gate did not pass it as a clean review)');
+    info.mockClear();
+    await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }), world({ [`${PREV_HEAD}...${HEAD}`]: comparison('diverged', []) }));
+    const planned = info.mock.calls.find((call) => call[0] === 'Incremental re-review planned');
+    expect(planned?.[1]).toMatchObject({ reason: 'not-ancestor' });
+    expect(planned?.[1]).not.toHaveProperty('priorRefusal');
   });
 
   it('runs a full review after a force-push and says why in the check summary', async () => {

@@ -103,6 +103,8 @@ export function calibrateSeverity(finding: ReviewFinding): ReviewFinding;
 export const UNVERIFIED_PREMISE_PHRASES: readonly string[];
 export function hasUnverifiedPremise(text: string): boolean;
 export function downgradeUnverifiedPremise(finding: ReviewFinding): ReviewFinding;
+/** Every per-finding pass `computeArbitration` applies before clustering: the published severity. */
+export function publishFinding(finding: ReviewFinding): ReviewFinding;
 export function clusterFindings(findings: ReviewFinding[]): ReviewFinding[];
 export interface ReviewFindingsValidation {
   valid: boolean;
