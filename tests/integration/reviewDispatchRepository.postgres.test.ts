@@ -4184,4 +4184,133 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       });
     });
   });
+
+  describe('claimed-run cancellation race (REL-1073)', () => {
+    const projectionName = 'ct-review-orphaned';
+
+    async function outboxRow(client: PoolClient, runId: string) {
+      return (await client.query(
+        `SELECT status, projection_name, cancel_requested_at, cancel_propagated_at, cancel_reason
+           FROM review_dispatch_outbox WHERE run_id = $1`, [runId])).rows[0];
+    }
+
+    it('reopens a supersede that landed mid-claim so the sweep owns the created PRReviewJob', async () => {
+      const { repository, client } = await createRepository();
+      const prior = await repository.admit(sameHeadAdmission('race-prior', 1_000));
+      const claim = (await repository.claimNext('dispatcher-a', 1_100, 30_000))!;
+      expect(claim.runId).toBe(prior.run.runId);
+
+      // Admission supersedes while the dispatcher still holds the claim.
+      await repository.admit(sameHeadAdmission('race-current', 1_200, { baseSha: '1'.repeat(40) }));
+      const retired = await outboxRow(client, claim.runId);
+      expect(retired).toMatchObject({ status: 'terminal', projection_name: null, cancel_reason: 'superseded_by_new_head' });
+      // The bug's precondition: already marked propagated, invisible to the sweep.
+      expect(retired.cancel_propagated_at).not.toBeNull();
+      expect(await repository.findPendingCancellations(10)).toEqual([]);
+
+      // The dispatcher's ensure() created the PRReviewJob; markProjected loses.
+      await expect(repository.markProjected(claim.runId, 'dispatcher-a', claim.claimAttempt, projectionName, 1_300))
+        .resolves.toBe(false);
+
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt, projectionName, 1_400,
+      )).resolves.toEqual({
+        runId: claim.runId, executionAttempt: claim.executionAttempt, projectionName,
+        cancelReason: 'superseded_by_new_head',
+      });
+      expect(await outboxRow(client, claim.runId)).toMatchObject({
+        status: 'terminal', projection_name: projectionName, cancel_propagated_at: null,
+      });
+      expect((await client.query('SELECT cancel_propagated_at FROM review_runs WHERE run_id = $1', [claim.runId]))
+        .rows[0].cancel_propagated_at).toBeNull();
+      expect(await repository.findPendingCancellations(10)).toEqual([{
+        runId: claim.runId, executionAttempt: claim.executionAttempt, projectionName,
+        cancelReason: 'superseded_by_new_head',
+      }]);
+
+      // Once: a row that now carries a projection name belongs to the sweep.
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt, projectionName, 1_500,
+      )).resolves.toBeNull();
+      await expect(repository.markCancelPropagated(claim.runId, claim.executionAttempt, 1_600)).resolves.toBe(true);
+      expect(await repository.findPendingCancellations(10)).toEqual([]);
+      expect((await client.query('SELECT cancel_propagated_at FROM review_runs WHERE run_id = $1', [claim.runId]))
+        .rows[0].cancel_propagated_at).not.toBeNull();
+    });
+
+    it('reopens a pull-request-closed cancel that landed mid-claim', async () => {
+      const { repository, client } = await createRepository();
+      await repository.admit(sameHeadAdmission('race-closed', 1_000));
+      const claim = (await repository.claimNext('dispatcher-a', 1_100, 30_000))!;
+      await repository.cancelRunsForPullRequest(claim.repositoryId, claim.prNumber, 'pull_request_closed', 1_200);
+      expect((await outboxRow(client, claim.runId)).cancel_propagated_at).not.toBeNull();
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt, projectionName, 1_300,
+      )).resolves.toMatchObject({ runId: claim.runId, cancelReason: 'pull_request_closed' });
+    });
+
+    it('refuses a foreign claim attempt, a live claim, and a terminal row no cancel retired', async () => {
+      const { repository, client } = await createRepository();
+      await repository.admit(sameHeadAdmission('race-guards', 1_000));
+      const claim = (await repository.claimNext('dispatcher-a', 1_100, 30_000))!;
+      // Still claimed, not cancelled: nothing to reopen.
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt, projectionName, 1_150,
+      )).resolves.toBeNull();
+      // Retired by the dispatcher itself (not a cancel).
+      await expect(repository.markTerminal(claim.runId, 'dispatcher-a', claim.claimAttempt, 1_200,
+        'review job projection rejected', { reason: 'review_job_projection_rejected', logTail: 'x' })).resolves.toBe(true);
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt, projectionName, 1_300,
+      )).resolves.toBeNull();
+      // A cancel on a different claim attempt is not this dispatcher's projection.
+      await client.query(`UPDATE review_dispatch_outbox SET cancel_requested_at = to_timestamp(1.2),
+        cancel_propagated_at = to_timestamp(1.2) WHERE run_id = $1`, [claim.runId]);
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt + 1, projectionName, 1_400,
+      )).resolves.toBeNull();
+      await expect(repository.reopenOrphanedProjectionCancellation(
+        claim.runId, claim.claimAttempt, '  ', 1_400,
+      )).rejects.toThrow('projection name is required');
+    });
+
+    it('cancels the PRReviewJob the dispatcher created when admission supersedes during ensure()', async () => {
+      const { repository, client } = await createRepository();
+      await repository.admit(sameHeadAdmission('race-engine-prior', 1_000));
+      let clock = 1_100;
+      const created: string[] = [];
+      const patched: Array<{ name: string; reason?: string }> = [];
+      const projector = {
+        ensure: vi.fn(async (projection: { metadata: { name: string } }) => {
+          // The race: admission commits between claim and markProjected.
+          await repository.admit(sameHeadAdmission('race-engine-current', 1_150, { baseSha: '1'.repeat(40) }));
+          created.push(projection.metadata.name);
+        }),
+        patchCancellation: vi.fn(async (name: string, _namespace: string, reason?: string) => {
+          patched.push({ name, reason });
+          return { status: 'patched' as const, cancelRequested: true };
+        }),
+      };
+      const { ReviewJobDispatchEngine } = await import('../../src/k8s/reviewJobDispatchEngine');
+      const engine = new ReviewJobDispatchEngine({
+        repository,
+        projector,
+        runSecretProvisioner: { provision: async () => ({ workerTokenDigest: 'f'.repeat(64) }) },
+        workerId: 'dispatcher-a',
+        workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+        namespace: 'ct-review',
+        now: () => clock++,
+      });
+
+      const outcome = await engine.runOnce();
+      expect(outcome).toMatchObject({ status: 'lease-lost', orphanedCancellation: 'propagated' });
+      expect(created).toHaveLength(1);
+      expect(patched).toEqual([{ name: created[0], reason: 'superseded_by_new_head' }]);
+      const row = await outboxRow(client, (outcome as { runId: string }).runId);
+      expect(row).toMatchObject({ status: 'terminal', projection_name: created[0] });
+      expect(row.cancel_propagated_at).not.toBeNull();
+      // Nothing left for the sweep: the cancel is verified and recorded.
+      expect(await repository.findPendingCancellations(10)).toEqual([]);
+    });
+  });
 });
