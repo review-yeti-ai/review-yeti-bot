@@ -38,25 +38,30 @@ describe('postgresSuite tripwire', () => {
     vi.unstubAllEnvs();
   });
 
-  it('RUNS when the URL is present and SKIPS when it is absent', async () => {
-    // The DECISION, not the type. A previous revision asserted only
-    // `toBeTypeOf('function')`, which an inverted branch
-    // (`if (databaseUrl) describe.skip(...)`) also satisfies -- and that inversion
-    // would skip all thirteen suites in CI and report the database job green with
-    // zero Postgres assertions (REL-1069 review).
-    //
-    // vitest forbids calling `describe` inside a test, so the decision is observed
-    // by spying on vitest's own exported functions with `importOriginal`: the
-    // helper called `describe` (run) rather than `describe.skip`.
+  it('the EFFECT follows the decision: run registers, skip skips', async () => {
+    // The spy must be ASSERTED, not merely installed. An earlier revision wired a
+    // vi.fn() around `describe` and never referenced it, so a broken implementation
+    // that kept `return dispatch` but inverted the effect
+    // (`if (dispatch === 'run') describe.skip(...)`) passed everything -- while all
+    // fifteen suites registered SKIPPED in the CI database job and it reported green
+    // with zero Postgres assertions (REL-1069 review).
+    const calls: string[] = [];
     vi.stubEnv('REVIEW_YETI_TEST_DATABASE_URL', 'postgresql://example/db');
     vi.resetModules();
     vi.doMock('vitest', async (importOriginal) => {
       const actual = await importOriginal<typeof import('vitest')>();
-      return { ...actual, describe: Object.assign(vi.fn(), actual.describe) };
+      const runner = Object.assign(
+        (name: string) => { calls.push(`run:${name}`); },
+        { ...actual.describe, skip: (name: string) => { calls.push(`skip:${name}`); } },
+      );
+      return { ...actual, describe: runner };
     });
-    const withDb = await import('../support/postgresSuite');
-    expect(withDb.postgresDatabaseUrl()).toBe('postgresql://example/db');
-    expect(withDb.describeWithPostgres('probe', () => {})).toBe('run');
+    const { describeWithPostgres: withDb } = await import('../support/postgresSuite');
+    const dispatch = withDb('probe-run', () => {});
+    expect(dispatch).toBe('run');
+    // The EFFECT, which is what actually decides whether a suite runs.
+    expect(calls).toContain('run:probe-run');
+    expect(calls).not.toContain('skip:probe-run');
     vi.doUnmock('vitest');
     vi.unstubAllEnvs();
   });

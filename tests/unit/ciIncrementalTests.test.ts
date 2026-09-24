@@ -300,6 +300,22 @@ describe('CI incremental test selection (REL-1074)', () => {
       expect(isPostgresFile('tests/integration/x.postgres.test.ts', 'const u = postgresDatabaseUrl();')).toBe(true);
     });
 
+    it('classifies an INTEGRATION suite by content, for the legacy spelling', () => {
+      // The content-marker branch was retained but never driven: every other call
+      // passes a tests/unit path (returns false at the integration guard) or a
+      // *.postgres.test.ts name (returns true at the name check), so both returned
+      // before consulting the markers. Replacing the final marker check with
+      // `return false` would have left this file fully green while legacy-spelled
+      // integration suites were silently routed into the shards with no database
+      // (REL-1069 review).
+      const integration = 'tests/integration/legacySpelling.test.ts';
+      expect(isPostgresFile(integration, 'const url = process.env.REVIEW_YETI_TEST_DATABASE_URL;')).toBe(true);
+      expect(isPostgresFile(integration, 'const url = postgresDatabaseUrl();')).toBe(true);
+      expect(isPostgresFile(integration, 'requireDatabaseUrlInCi();')).toBe(true);
+      // ...and an integration suite with no marker at all is still not Postgres.
+      expect(isPostgresFile(integration, "import { describe, it } from 'vitest';")).toBe(false);
+    });
+
     it('every postgres suite in the tree is CLASSIFIED (by name, not content)', () => {
       // Asserted through isPostgresFile, the classifier CI actually uses, rather
       // than through content matching. The previous form demanded marker presence,
