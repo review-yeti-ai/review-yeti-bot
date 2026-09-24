@@ -1,7 +1,7 @@
 import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
 import { classifyLockfileOrGeneratedPath, filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
-import { isDocumentationOrAssetPath } from './reviewableContent';
+import { isDataOrConfigPath, isDocumentationOrAssetPath, isNoReviewableContentFile } from './reviewableContent';
 import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { isSubmodulePatch } from './submodulePatch';
 
@@ -81,16 +81,26 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  * - `.mdx` / `.mdoc` pages. They are documentation, but compile to component
  *   modules (imports, exports, expressions run in the docs build), so they are
  *   never exempted as inert prose. A documentation persona covers them.
+ * - Data and configuration files (REL-972): JSON, YAML, TOML, CSV, XML and the
+ *   like. A one-line inventory JSON change no persona's paths name used to fail
+ *   every review with "no enabled persona applies"; it is not source, but it
+ *   can change behaviour, so it is reviewed rather than exempted. Run artifacts
+ *   (`runs/`, `evidence/`, `artifacts/`) keep their documentation exemption.
+ *
+ * Uncovered SOURCE is not in this list: it still fails closed as a persona
+ * coverage gap.
  */
 export function isFallbackRoutedFile(file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }): boolean {
-  return isSubmoduleEntry(file) || /\.(mdx|mdoc)$/iu.test(file.path);
+  return isSubmoduleEntry(file)
+    || /\.(mdx|mdoc)$/iu.test(file.path)
+    || (isDataOrConfigPath(file.path) && !isDocumentationOrAssetPath(file.path));
 }
 
 /**
  * Deterministic owner for fallback-routed files no enabled persona covers: the
  * roster's required personas (security by default -- a pointer bump is a
- * supply-chain change, MDX is executable), or the first enabled persona when
- * none is required. Personas are returned unchanged when nothing is orphaned,
+ * supply-chain change, MDX is executable, data and config drive behaviour), or
+ * the first enabled persona when none is required. Personas are returned unchanged when nothing is orphaned,
  * so a roster that already covers these files is never widened.
  *
  * Routing is expressed as exact per-diff `routedPaths`, so applicability,
@@ -248,6 +258,13 @@ export interface ReviewApplicability<P> {
    * their change could not be verified (also listed in `unmatchedPaths`).
    */
   unverifiedLockfiles: ReadonlyArray<{ path: string; reason: string }>;
+  /**
+   * Changed files the review filter dropped (generated output or a
+   * `path_filters` exclusion) that kept a zero-lane diff from the exemption:
+   * no lane reads them, and they are neither documentation nor a verified
+   * lockfile (also listed in `unmatchedPaths`).
+   */
+  excludedPaths: string[];
 }
 
 export const DOCUMENTATION_ONLY_RATIONALE =
@@ -271,7 +288,7 @@ function unverifiedLockfileChanges(
   return changedFiles
     .filter((file) => isLockfilePath(file?.path))
     .flatMap((file) => {
-      if (isFallbackRoutedFile(file)) return [{ path: file.path, reason: 'is a submodule gitlink' }];
+      if (isSubmoduleEntry(file)) return [{ path: file.path, reason: 'is a submodule gitlink' }];
       if (!isRegularFileMode(file.mode)) return [{ path: file.path, reason: 'is not a regular file' }];
       const verified = verifyLockfileOnlyChange(file.path, file.patch);
       return verified.ok ? [] : [{ path: file.path, reason: verified.reason }];
@@ -310,24 +327,29 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
   if (applicable.length > 0) {
     // Routing may only add a lane for the routed files themselves. When no
     // configured persona applied before routing, any other uncovered analyzable
-    // path is still the coverage failure it always was -- routing an .mdx or a
-    // gitlink must not turn that failure into a silently under-scoped review.
+    // path is still the coverage failure it always was -- routing an .mdx, a
+    // gitlink or a data file must not turn that failure into a silently
+    // under-scoped review.
     const routedOnly = deriveApplicablePersonas(enabledPersonas, effectiveFiles).length === 0;
     const uncovered = routedOnly ? computeUnmatchedPaths(effectiveFiles, roster) : [];
     if (uncovered.length > 0) {
-      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, unmatchedPaths: uncovered };
+      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, excludedPaths: [], unmatchedPaths: uncovered };
     }
-    return { effectiveFiles, hunkResult, applicable, ...reviewed, unmatchedPaths: [] };
+    return { effectiveFiles, hunkResult, applicable, ...reviewed, excludedPaths: [], unmatchedPaths: [] };
   }
-  const documentationOnly = effectiveFiles.length > 0
-    && effectiveFiles.every((file) => isDocumentationOrAssetPath(file.path));
-  // REL-972: a Dependabot-style lockfile bump. Every changed file must be a
-  // lockfile, so a manifest (package.json), any source, a path_filters-only
-  // exclusion or a generated file keeps the review-or-fail-closed decision.
-  const lockfileOnly = changedFiles.length > 0
-    && effectiveFiles.length === 0
-    && changedFiles.every((file) => isLockfilePath(file?.path));
-  if (documentationOnly || lockfileOnly) {
+  // Zero lanes apply. The exemption is judged over the RAW changed files, not
+  // the post-filter projection: every changed file must itself be
+  // documentation/an asset/a run artifact, or a dependency lockfile. A file the
+  // review filter dropped for any other reason -- generated output, a
+  // `path_filters` exclusion -- is not reviewed by anyone, so it cannot ride
+  // along under a documentation-only pass (REL-972). Judging the post-filter
+  // files here while the service re-checked the raw files is how a docs +
+  // generated diff passed on the worker and was refused at completion
+  // (REL-1056). A diff made only of such excluded files already failed closed;
+  // adding a README to it no longer changes that.
+  const exemptCandidate = changedFiles.length > 0
+    && changedFiles.every((file) => isDocumentationOrAssetPath(file.path) || isLockfilePath(file?.path));
+  if (exemptCandidate) {
     const unverifiedLockfiles = unverifiedLockfileChanges(changedFiles);
     if (unverifiedLockfiles.length > 0) {
       return {
@@ -336,25 +358,39 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
         applicable,
         ...reviewed,
         unverifiedLockfiles,
+        excludedPaths: [],
         unmatchedPaths: unverifiedLockfiles.map((file) => file.path),
       };
     }
-    return {
-      effectiveFiles,
-      hunkResult,
-      applicable,
-      ...reviewed,
-      noReviewableContent: true,
-      noReviewableContentKind: documentationOnly ? 'documentation' : 'lockfile-only',
-      noReviewableContentRationale: documentationOnly ? DOCUMENTATION_ONLY_RATIONALE : lockfileOnlyRationale(changedFiles),
-      unmatchedPaths: [],
-    };
+    // Identical, by construction, to the per-file rule the service applies to
+    // the admitted files before it accepts a no-reviewable-content completion.
+    if (changedFiles.every((file) => isNoReviewableContentFile(file))) {
+      const lockfileOnly = changedFiles.every((file) => isLockfilePath(file.path));
+      return {
+        effectiveFiles,
+        hunkResult,
+        applicable,
+        ...reviewed,
+        noReviewableContent: true,
+        noReviewableContentKind: lockfileOnly ? 'lockfile-only' : 'documentation',
+        noReviewableContentRationale: lockfileOnly ? lockfileOnlyRationale(changedFiles) : DOCUMENTATION_ONLY_RATIONALE,
+        excludedPaths: [],
+        unmatchedPaths: [],
+      };
+    }
   }
+  const effectivePaths = new Set(effectiveFiles.map((file) => file.path));
+  const excludedPaths = changedFiles
+    .filter((file) => typeof file?.path === 'string' && file.path.length > 0 && !effectivePaths.has(file.path))
+    .filter((file) => !isNoReviewableContentFile(file))
+    .map((file) => file.path);
+  const unmatched = computeUnmatchedPaths(effectiveFiles, roster);
   return {
     effectiveFiles,
     hunkResult,
     applicable,
     ...reviewed,
-    unmatchedPaths: computeUnmatchedPaths(effectiveFiles, roster),
+    excludedPaths,
+    unmatchedPaths: [...unmatched, ...excludedPaths.filter((path) => !unmatched.includes(path))],
   };
 }
