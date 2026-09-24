@@ -76,6 +76,14 @@ describe('Review Yeti opts out of gateway MCP tool injection (REL-1115)', () => 
     expect(new Headers(init.headers).get('x-openrouter-metadata')).toBe('enabled');
   });
 
+  it('caller metadata cannot re-open injection on the non-streaming (SDK) path', async () => {
+    const fetchImplementation = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => chatJson());
+    const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: 'https://gw.test/v1', fetchImplementation });
+    await client.complete({ ...base, stream: false, metadata: { 'X-BF-MCP-Include-Tools': '*' } } as any);
+    // Headers.set replaces every case variant, so exactly one empty value is sent.
+    expect(mcpValues(fetchImplementation.mock.calls[0][1] as RequestInit)).toEqual(['']);
+  });
+
   describe('on the wire', () => {
     let server: http.Server | undefined;
     afterEach(async () => {
