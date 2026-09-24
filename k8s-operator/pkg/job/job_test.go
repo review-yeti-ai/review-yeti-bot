@@ -1573,3 +1573,87 @@ func TestBuildWorkerJobRefusesReviewBudgetWithLineBreak(t *testing.T) {
 		}
 	}
 }
+
+// REL-1085: REVIEW_YETI_VERDICT_CACHE must reach the app-gate worker verbatim
+// when configured, stay absent when not, and never reach the receipt-only lane.
+func TestBuildWorkerJobForwardsVerdictCacheOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.VerdictCacheEnv != "REVIEW_YETI_VERDICT_CACHE" {
+		t.Fatalf("verdict cache env drifted from the worker's VERDICT_CACHE_FLAG: %s", job.VerdictCacheEnv)
+	}
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.VerdictCacheEnv) {
+		t.Fatalf("unset operator config must not reach the worker as %s", job.VerdictCacheEnv)
+	}
+
+	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	input.Publishing.VerdictCache = pilots
+	forwarded, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with verdict cache: %v", err)
+	}
+	container := forwarded.Spec.Template.Spec.Containers[0]
+	if envValue(container, job.VerdictCacheEnv) != pilots {
+		t.Fatalf("operator must forward the %s allowlist verbatim, got %q", job.VerdictCacheEnv, envValue(container, job.VerdictCacheEnv))
+	}
+	count := 0
+	for _, env := range container.Env {
+		if env.Name == job.VerdictCacheEnv {
+			count++
+			if env.ValueFrom != nil {
+				t.Fatalf("%s must be a literal value, not a reference", job.VerdictCacheEnv)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%s projected %d times, want exactly once", job.VerdictCacheEnv, count)
+	}
+	// Independent of the incremental flag: setting one never sets the other.
+	if hasEnv(container, job.IncrementalEnv) {
+		t.Fatalf("verdict cache config must not project %s", job.IncrementalEnv)
+	}
+
+	for _, value := range []string{"off", "all", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+		input.Publishing.VerdictCache = value
+		verbatim, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build app-gate job with verdict cache %q: %v", value, err)
+		}
+		if got := envValue(verbatim.Spec.Template.Spec.Containers[0], job.VerdictCacheEnv); got != value {
+			t.Fatalf("operator must forward %q verbatim, got %q", value, got)
+		}
+	}
+
+	input.Publishing.VerdictCache = pilots
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.VerdictCacheEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.VerdictCacheEnv)
+	}
+}
+
+func TestBuildWorkerJobRefusesVerdictCacheWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+		input.Publishing.VerdictCache = value
+		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "verdict cache flag") {
+			t.Fatalf("a line break in the verdict cache flag must refuse the Job, got %v", err)
+		}
+	}
+}
