@@ -1220,6 +1220,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       headSha,
       repositoryVisibility,
       applicablePersonaIds: planOutcome.tasks.map((t) => t.id),
+      // REL-1088: the composed reviewer reads every effective file; files no
+      // persona's paths cover are still disclosed as routed.
+      ...(applicability.routedFiles.length > 0 ? { routedFiles: applicability.routedFiles } : {}),
       personas,
       optionalFailures,
       unreportedLanes,
