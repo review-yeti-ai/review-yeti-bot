@@ -187,6 +187,8 @@ describe('a prior built by the real completion builder and the real gate', () =>
   it('is SHIP-complete although the worker never sets result.verdict, and the next head carries files forward', async () => {
     const completion = await realPriorCompletion();
     expect(completion.result).not.toHaveProperty('verdict');
+    // The authoritative gate owns the roster; the authoritative completion never carries one.
+    expect(completion.result).not.toHaveProperty('roster');
     const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
     expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
     const rows = storedRows(completion, recorded);
