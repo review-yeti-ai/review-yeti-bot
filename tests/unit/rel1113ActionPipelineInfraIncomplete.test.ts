@@ -119,6 +119,17 @@ describe('REL-1113 Action pipeline: the two #1056 shapes (negative proof)', () =
     expect(comment).not.toContain('Verdict: BLOCK');
   });
 
+  it.each([
+    ['provider status parsed from the lane error', { error: 'HTTP 502: <html>Bad Gateway</html>', responseStatus: 502 }, { id: 'testing', failureClass: 'provider_error', providerStatus: 502 }, 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: 502)'],
+    ['provider status from responseStatus when the error text has none', { error: 'Service Unavailable', responseStatus: 503 }, { id: 'testing', failureClass: 'provider_error', providerStatus: 503 }, 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: 503)'],
+    ['rate limit keeps its status', { error: 'HTTP 429: slow down', responseStatus: 429 }, { id: 'testing', failureClass: 'rate_limit', providerStatus: 429 }, 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: 429)'],
+  ])('names the provider status in the INCOMPLETE title: %s', (_label, failure, expectedLane, title) => {
+    const lanes = [lane('security'), lane('testing', { decision: 'ERROR', ...failure })];
+    const incomplete = pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true });
+    expect(incomplete?.lanes).toEqual([expectedLane]);
+    expect(incomplete?.title).toBe(title);
+  });
+
   it('a real pipeline lane whose stream is dropped ("terminated") is classified transport and reported INCOMPLETE', async () => {
     const result = await pipeline.reviewWithModel(
       { id: 'testing', name: 'Testing Specialist', charter: 'Check tests.' },
@@ -209,6 +220,18 @@ describe('REL-1113 Action pipeline: in-budget lane re-attempts', () => {
     });
     expect(stopReason).toBe('budget');
     expect(results[3].error).toBe(TERMINATED);
+    expect(pipeline.resolveInfrastructureIncomplete(results, { coverageComplete: true })?.lanes)
+      .toEqual([{ id: 'testing', failureClass: 'transport' }]);
+  });
+
+  it('a rejecting re-attempt becomes an ERROR lane classified from its own error', async () => {
+    const rerun = vi.fn(async () => { throw new Error('fetch failed'); });
+    const { results, retries, stopReason } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, {
+      coverageComplete: true, deadlineMs: Date.now() + 780_000, laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet,
+    });
+    expect(retries).toBe(shared.TRANSPORT_MAX_RETRIES);
+    expect(stopReason).toBe('exhausted');
+    expect(results[3]).toMatchObject({ personaId: 'testing', decision: 'ERROR', findings: [], error: 'fetch failed' });
     expect(pipeline.resolveInfrastructureIncomplete(results, { coverageComplete: true })?.lanes)
       .toEqual([{ id: 'testing', failureClass: 'transport' }]);
   });
