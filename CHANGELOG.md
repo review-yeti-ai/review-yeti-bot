@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.91.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.0...v1.91.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **REL-1107:** retry transient identity probes, and say why publishing was refused ([#1049](https://github.com/review-yeti-ai/review-yeti-bot/issues/1049)) ([9f0ed7d](https://github.com/review-yeti-ai/review-yeti-bot/commit/9f0ed7df06d016f118e37480f283f2ad5312eb6a))
+
 ## [1.91.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.3...v1.91.0) (2026-09-24)
 
 
