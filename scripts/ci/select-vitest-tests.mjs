@@ -33,7 +33,8 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const CODE_EXT = /\.(?:[cm]?[jt]sx?|sh)$/u;
-const REAPER_ACCEPTANCE = 'tests/integration/reaperMetricsAcceptance.postgres.test.ts';
+/** The REL-817 harness `npm run test:acceptance:reaper` runs (pinned to that script by a unit test). */
+export const REAPER_ACCEPTANCE = 'tests/integration/reaperMetricsAcceptance.postgres.test.ts';
 const POSTGRES_MARKER = /process\.env\.REVIEW_YETI_TEST_DATABASE_URL\b/u;
 
 /** Any change matching one of these runs the whole suite. */
@@ -74,18 +75,31 @@ function git(args) {
   return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
-export function changedFiles(base, head) {
-  if (!/^[0-9a-f]{40}$/u.test(base)) throw new Error(`base must be a full commit SHA, got '${base}'`);
-  git(['cat-file', '-e', `${base}^{commit}`]);
-  const out = git(['diff', '--name-status', '-M', '-z', base, head]);
-  const fields = out.split('\0').filter(Boolean);
+/** Parse `git diff --name-status -z` output; a rename or copy contributes both of its paths. */
+export function parseNameStatus(output) {
+  const fields = output.split('\0').filter(Boolean);
   const files = new Set();
   for (let i = 0; i < fields.length;) {
     const status = fields[i];
-    if (/^[RC]/u.test(status)) { files.add(fields[i + 1]); files.add(fields[i + 2]); i += 3; }
-    else { files.add(fields[i + 1]); i += 2; }
+    if (!/^[ACDMRTUXB]\d*$/u.test(status)) throw new Error(`unexpected name-status field '${status}'`);
+    if (/^[RC]/u.test(status)) {
+      if (i + 2 >= fields.length) throw new Error(`truncated ${status} entry`);
+      files.add(fields[i + 1]);
+      files.add(fields[i + 2]);
+      i += 3;
+    } else {
+      if (i + 1 >= fields.length) throw new Error(`truncated ${status} entry`);
+      files.add(fields[i + 1]);
+      i += 2;
+    }
   }
   return [...files].sort();
+}
+
+export function changedFiles(base, head) {
+  if (!/^[0-9a-f]{40}$/u.test(base)) throw new Error(`base must be a full commit SHA, got '${base}'`);
+  git(['cat-file', '-e', `${base}^{commit}`]);
+  return parseNameStatus(git(['diff', '--name-status', '-M', '-z', base, head]));
 }
 
 export function fullSuiteTrigger(file) {
@@ -343,7 +357,8 @@ async function main() {
     plan.reason = `${changed.length} changed file(s) reach ${sorted.length}/${allTests.length} test files`;
     plan.tests = sorted.filter((file) => !postgresAll.includes(file));
     plan.postgresTests = sorted.filter((file) => postgresAll.includes(file));
-    plan.reaperAcceptance = selected.has(REAPER_ACCEPTANCE);
+    // Fail closed: if the harness moved and this constant went stale, run it rather than skip it.
+    plan.reaperAcceptance = selected.has(REAPER_ACCEPTANCE) || !allTests.includes(REAPER_ACCEPTANCE);
   });
 
   const json = JSON.stringify(plan, null, 2);

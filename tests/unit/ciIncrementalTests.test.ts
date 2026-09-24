@@ -4,8 +4,11 @@ import yaml from 'js-yaml';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
+  REAPER_ACCEPTANCE,
+  changedFiles,
   fullSuiteTrigger,
   literalText,
+  parseNameStatus,
   textReferenceClosure,
 } from '../../scripts/ci/select-vitest-tests.mjs';
 import { planOutputs, shardCount } from '../../scripts/ci/plan-outputs.mjs';
@@ -51,6 +54,27 @@ describe('CI incremental test selection (REL-1074)', () => {
         expect(fullSuiteTrigger(file)).toBeNull();
       },
     );
+  });
+
+  describe('changed files', () => {
+    it('keeps both sides of a rename or copy and stays aligned across entries', () => {
+      const output = ['M', 'src/a.ts', 'R100', 'tests/fixtures/old.json', 'tests/fixtures/new.json',
+        'C075', 'scripts/x.mjs', 'scripts/y.mjs', 'D', 'docs/gone.md', 'A', 'src/b.ts', ''].join('\0');
+      expect(parseNameStatus(output)).toEqual([
+        'docs/gone.md', 'scripts/x.mjs', 'scripts/y.mjs', 'src/a.ts', 'src/b.ts',
+        'tests/fixtures/new.json', 'tests/fixtures/old.json',
+      ]);
+    });
+
+    it('rejects output it does not understand instead of guessing', () => {
+      expect(() => parseNameStatus('R100\0only-one-path\0')).toThrow(/truncated/u);
+      expect(() => parseNameStatus('src/a.ts\0M\0')).toThrow(/unexpected/u);
+    });
+
+    it('refuses a floating ref or an unknown commit as the base', () => {
+      expect(() => changedFiles('main', 'HEAD')).toThrow(/full commit SHA/u);
+      expect(() => changedFiles('0'.repeat(40), 'HEAD')).toThrow();
+    });
   });
 
   describe('references the module graph cannot see', () => {
@@ -104,6 +128,16 @@ describe('CI incremental test selection (REL-1074)', () => {
       expect(reached).not.toContain('src/cli/routing.ts');
     });
 
+    it('narrows a directory reference that continues into a literal subdirectory', () => {
+      const corpus = corpusOf({
+        'tests/unit/dir.test.ts': "fs.readdirSync(path.join(root, 'src', 'review'));",
+        'tests/unit/sub.test.ts': "fs.readdirSync(path.join(root, 'src', 'review', 'sub'));",
+      });
+      const { reached } = textReferenceClosure(['src/review/reviewCore.js'], corpus, new Map([['src/review', new Set(['sub'])]]));
+      expect(reached).toContain('tests/unit/dir.test.ts');
+      expect(reached).not.toContain('tests/unit/sub.test.ts');
+    });
+
     it('treats an ancestor directory as the root of a recursive walk', () => {
       const corpus = corpusOf({
         'tests/unit/walk.test.ts': "const files = walk(path.join(root, 'src'));",
@@ -118,33 +152,50 @@ describe('CI incremental test selection (REL-1074)', () => {
   });
 
   describe('plan outputs', () => {
-    const plan = (mode: string, tests: number, postgres: string[] = []) => ({
+    const plan = (mode: string, tests: number, postgres: string[] = [], reaper = false) => ({
       mode,
       reason: 'r',
       changed: [],
       tests: Array.from({ length: tests }, (_, i) => `tests/unit/t${i}.test.ts`),
       postgresTests: postgres,
       postgresExcludes: ['tests/integration/a.postgres.test.ts'],
-      reaperAcceptance: false,
+      reaperAcceptance: reaper,
     });
 
     it('always shards the full suite four ways and passes no file list', () => {
-      const outputs = planOutputs(plan('full', 0));
+      const outputs = planOutputs(plan('full', 0, ['tests/integration/a.postgres.test.ts'], true));
       expect(outputs['shard-count']).toBe('4');
       expect(JSON.parse(outputs.shards)).toEqual([1, 2, 3, 4]);
       expect(outputs.tests).toBe('[]');
+      expect(JSON.parse(outputs['postgres-tests'])).toEqual(['tests/integration/a.postgres.test.ts']);
+      expect(outputs['reaper-acceptance']).toBe('true');
     });
 
-    it('sizes incremental shards by selected files, never beyond the full count', () => {
-      expect(shardCount(plan('none', 0))).toBe(0);
-      expect(shardCount(plan('subset', 1))).toBe(1);
-      expect(shardCount(plan('subset', 60))).toBe(2);
-      expect(shardCount(plan('subset', 500))).toBe(4);
+    it.each([[0, 0], [1, 1], [25, 1], [26, 2], [80, 2], [81, 3], [160, 3], [161, 4], [500, 4]])(
+      'sizes an incremental run of %i files at %i shard(s)',
+      (files, shards) => {
+        expect(shardCount(plan(files ? 'subset' : 'none', files))).toBe(shards);
+      },
+    );
+
+    it('hands the selected Postgres files and the reaper flag to the Postgres job', () => {
+      const selected = planOutputs(plan('subset', 3, ['tests/integration/a.postgres.test.ts'], true));
+      expect(JSON.parse(selected['postgres-tests'])).toEqual(['tests/integration/a.postgres.test.ts']);
+      expect(selected['reaper-acceptance']).toBe('true');
+      const none = planOutputs(plan('subset', 3));
+      expect(none['postgres-tests']).toBe('[]');
+      expect(none['reaper-acceptance']).toBe('false');
     });
 
     it('always excludes every Postgres-backed file from the plain shards', () => {
       const outputs = planOutputs(plan('subset', 3));
       expect(JSON.parse(outputs['exclude-tests'])).toEqual(['tests/integration/a.postgres.test.ts']);
+    });
+
+    it('names the same reaper harness file the npm script runs', () => {
+      const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+      expect(packageJson.scripts['test:acceptance:reaper'].split(/\s+/u)).toContain(REAPER_ACCEPTANCE);
+      expect(fs.existsSync(path.join(root, REAPER_ACCEPTANCE))).toBe(true);
     });
   });
 
@@ -157,6 +208,13 @@ describe('CI incremental test selection (REL-1074)', () => {
       expect(String(jobs.test.if)).toMatch(/^always\(\) && /u);
       const script = jobs.test.steps.map((step: any) => step.run ?? '').join('\n');
       expect(script).toContain('require test-plan "$PLAN" success');
+      expect(script).toContain(
+        'if [ "$SHARD_COUNT" = "0" ]; then require vitest "$VITEST" skipped; else require vitest "$VITEST" success; fi',
+      );
+      expect(script).toContain(
+        'if [ "$POSTGRES_TESTS" = "[]" ]; then require vitest-postgres "$VITEST_POSTGRES" skipped; '
+          + 'else require vitest-postgres "$VITEST_POSTGRES" success; fi',
+      );
       expect(script).toContain('require worker-helper "$WORKER_HELPER" success');
       expect(script).toContain('require build "$BUILD" success');
       expect(script).toContain('exit "$failed"');
