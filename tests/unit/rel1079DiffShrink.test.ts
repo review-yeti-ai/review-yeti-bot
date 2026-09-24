@@ -333,6 +333,11 @@ describe('.gitattributes linguist rules', () => {
     expect(at('a/**/b.ts', 'a/b.ts')).toBe(true);
     expect(at('a/**/b.ts', 'a/x/y/b.ts')).toBe(true);
     expect(at('file[0-9].ts', 'file7.ts')).toBe(true);
+    expect(at('file[!0].ts', 'file1.ts')).toBe(true); // negated class
+    expect(at('file[!0].ts', 'file0.ts')).toBe(false);
+    expect(at('file[^0].ts', 'file1.ts')).toBe(true); // ^ negation, same as !
+    expect(at('file[^0].ts', 'file0.ts')).toBe(false);
+    expect(at('*.[!o]pb.go', 'api.opb.go')).toBe(false);
     expect(compileGitattributesPattern('vendor/')).toBeNull(); // directories never match files
     // A bare `**` (no slash) is a file-name glob that matches everything, not a directory walk.
     expect(at('**', 'src/deep/file.ts')).toBe(true);
@@ -813,6 +818,38 @@ describe('publishing worker wiring', () => {
     );
     expect(panelOptions).toHaveProperty('diffShrink');
     expect(summary).not.toContain('Diff shrinking');
+  });
+
+  it('passes the shrink input to the non-gating shadow engine as well as the gating panel', async () => {
+    const composedReviewRunner = vi.fn(async () => { throw new Error('shadow evidence only'); });
+    const panelRunner = vi.fn(async () => ({
+      headSha: HEAD,
+      applicablePersonaIds: ['sec-lane'],
+      personas: [{ id: 'sec-lane', providerId: 'bifrost', model: 'm', decision: 'APPROVE', findings: [] }],
+      optionalFailures: [],
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      moderator: { providerId: 'bifrost', model: 'none', decision: 'RECONCILED', findings: [], usage: null, costUSD: null, durationMs: 0 },
+      arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'stub', usage: null, costUSD: null, durationMs: 0 },
+    }));
+    await runPublishingReviewWorker(workerEnv({
+      REVIEW_YETI_DIFF_SHRINK: 'calltelemetry/ct-meta',
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }),
+    }), {
+      checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+      sourceLoader: vi.fn(async () => ({ diff: WORKER_DIFF, githubReads: 1 })) as never,
+      visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
+      panelRunner: panelRunner as never,
+      composedReviewRunner: composedReviewRunner as never,
+      client: {} as never,
+      repoFileProviderFactory: (() => ({
+        readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []), treeTruncated: vi.fn(async () => false),
+      })) as never,
+    });
+    const expected = { enabled: true, linguist: { status: 'none-declared' } };
+    expect(panelRunner).toHaveBeenCalledTimes(1);
+    expect(composedReviewRunner).toHaveBeenCalledTimes(1);
+    expect((panelRunner.mock.calls as unknown[][])[0][0]).toMatchObject({ diffShrink: expected });
+    expect((composedReviewRunner.mock.calls as unknown[][])[0][0]).toMatchObject({ diffShrink: expected });
   });
 
   it('stays off for a repository the per-repository flag does not name', async () => {
