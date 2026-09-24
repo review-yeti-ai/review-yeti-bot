@@ -99,7 +99,11 @@ function persuasiveAsker() {
     for (const [key, question] of Object.entries(request.questions)) {
       if (question.type === 'choice') answers[key] = { type: 'choice', choice: 'generated', confidence: 0.99, probabilities: { generated: 0.99 } };
       else if (question.type === 'score') {
-        answers[key] = { type: 'score', score: 1, legend: question.criteria, confidence: 0.99, probabilities: { [question.criteria[0]]: 0.99 } };
+        answers[key] = {
+          type: 'score', score: 0.01, confidence: 0.99,
+          legend: Object.fromEntries(question.criteria.map((c, i) => [String(i), c])),
+          probabilities: { '0': 0.99 },
+        };
       } else answers[key] = { type: 'noul', noul: 0.01 };
     }
     return { status: 'ok', answers: answers as never, model: 'jev-1.13.0', usage: { input_tokens: 500, output_tokens: 5 }, durationMs: 3 };
