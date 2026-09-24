@@ -15,3 +15,9 @@ describe('effective review policy', () => {
     expect(result.digest).toMatch(/^[a-f0-9]{64}$/);
   });
 });
+
+describe('REL-1074 proof (e): planted shard failure', () => {
+  it('fails on purpose so one shard goes red', () => {
+    expect('planted').toBe('not planted');
+  });
+});
