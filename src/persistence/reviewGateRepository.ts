@@ -13,6 +13,8 @@ import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationCallback,
   type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
+import { selectPriorReviewRecord } from './incrementalPriorReview';
+import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput } from '../review/incrementalReview';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -27,6 +29,8 @@ export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
+type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput)
+  => Promise<TrustedGateCompletionContext>;
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
@@ -69,6 +73,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     /** Explicit service enrollment only. Invoked after terminal updates under
      * the same transaction/PR lock; a failure rolls back the entire completion. */
     onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
+    /** REL-1084: the oldest prior review a carry-forward may rest on (service configuration). */
+    incrementalMaxAgeMs?: number;
   }) {
     this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review gate repository');
     this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
@@ -104,11 +110,11 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     }
   }
 
-  private async resolveCompletion(resolve: (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext>,
-    gate: StoredReviewGate): Promise<TrustedGateCompletionContext> {
+  private async resolveCompletion(resolve: TrustedCompletionResolver,
+    gate: StoredReviewGate, incremental?: IncrementalVerificationInput): Promise<TrustedGateCompletionContext> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await Promise.race([resolve(gate), new Promise<never>((_, reject) => {
+      return await Promise.race([incremental ? resolve(gate, incremental) : resolve(gate), new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Gate completion resolution deadline exceeded')),
           this.completionResolutionTimeoutMs);
       })]);
@@ -122,7 +128,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
   async recordWorkerResult(
     input: unknown,
     proof: WorkerCompletionProof,
-    resolve: (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext>,
+    resolve: TrustedCompletionResolver,
     now = Date.now(),
   ): Promise<GateWorkerResultTransition> {
     const event = parseWorkerReviewCompletion(input);
@@ -184,7 +190,17 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       const deadline = new Date(row.terminal_deadline).getTime();
       const deadlineValid = Number.isFinite(deadline) && row.terminal_deadline != null && now < deadline;
       stage = 'trusted-completion-resolution';
-      const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate) : undefined;
+      // REL-1084: a carried-forward completion is verified against the service's OWN
+      // selection of the prior review record, read under this transaction and PR lock.
+      const claim = event.result.incremental;
+      const incremental: IncrementalVerificationInput | undefined = deadlineValid && claim ? {
+        claim,
+        prior: await selectPriorReviewRecord(client, event.runId),
+        maxAgeMs: this.options.incrementalMaxAgeMs ?? DEFAULT_INCREMENTAL_MAX_AGE_MS,
+        run: { runId: coordinates.runId, executionAttempt: coordinates.executionAttempt,
+          configDigest: String(row.effective_config_digest) },
+      } : undefined;
+      const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate, incremental) : undefined;
       const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
       const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
         ...trusted.coverage,

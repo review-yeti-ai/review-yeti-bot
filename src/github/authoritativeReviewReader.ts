@@ -401,6 +401,36 @@ export class AuthoritativeReviewReader {
         ? { expectedFileCount: after.expectedFileCount } : {}) };
   }
 
+  /**
+   * REL-1084: one immutable commit comparison (`base...head`), for the incremental
+   * re-review decision. Only the status, merge base and the listed file paths are
+   * returned; patches are never used. GitHub lists at most 300 files, so the caller
+   * treats a list that long as possibly incomplete.
+   */
+  async commitComparison(input: ReviewRepositoryIdentity, baseSha: string, headSha: string, signal?: AbortSignal): Promise<{
+    status: 'ahead' | 'behind' | 'diverged' | 'identical';
+    mergeBaseSha: string;
+    files: Array<{ path: string; previousPath?: string }>;
+  }> {
+    parse(sha, baseSha); parse(sha, headSha);
+    const { path } = this.route(input);
+    const comparisonPath = `${path}/compare/${encodeURIComponent(baseSha)}...${encodeURIComponent(headSha)}`;
+    let comparison: z.infer<typeof comparisonResponse>; let files: ComparisonFileEvidence[];
+    try {
+      comparison = comparisonResponse.parse(JSON.parse(await this.text(`${comparisonPath}?per_page=1&page=1`,
+        'application/vnd.github+json', MAX_COMPARISON_RESPONSE_BYTES, signal)));
+      files = parseComparisonFiles(comparison.files ?? []);
+    } catch { throw new Error('Review reader comparison evidence unavailable'); }
+    if (comparison.url !== `${this.api}${comparisonPath}` || comparison.base_commit.sha !== baseSha) {
+      throw new Error('Review reader comparison identity mismatch');
+    }
+    return {
+      status: comparison.status,
+      mergeBaseSha: comparison.merge_base_commit.sha,
+      files: files.map((file) => ({ path: file.path, ...(file.previousPath ? { previousPath: file.previousPath } : {}) })),
+    };
+  }
+
   /** Resolve only a service-configured policy reference, then retain the exact
    * SHA. Never resolve candidate-provided references or use a mutable ref when
    * reading the actual policy file. */
