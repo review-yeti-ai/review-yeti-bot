@@ -1337,3 +1337,89 @@ func TestBuildWorkerJobRefusesMalformedJevConfig(t *testing.T) {
 		t.Fatalf("whitespace in the Jev shadow flag must refuse the Job, got %v", err)
 	}
 }
+
+// REL-1079: REVIEW_YETI_DIFF_SHRINK was inert in production because the
+// operator builds a fixed worker env and never forwarded it. It must reach the
+// app-gate worker verbatim when configured, stay absent when not, and never
+// reach the receipt-only lane.
+func TestBuildWorkerJobForwardsDiffShrinkOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 23, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.DiffShrinkEnv != "REVIEW_YETI_DIFF_SHRINK" {
+		t.Fatalf("diff shrink env drifted from the worker's DIFF_SHRINK_FLAG: %s", job.DiffShrinkEnv)
+	}
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.DiffShrinkEnv) {
+		t.Fatalf("unset operator config must not reach the worker as %s", job.DiffShrinkEnv)
+	}
+
+	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	input.Publishing.DiffShrink = pilots
+	forwarded, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with diff shrink: %v", err)
+	}
+	container := forwarded.Spec.Template.Spec.Containers[0]
+	if envValue(container, job.DiffShrinkEnv) != pilots {
+		t.Fatalf("operator must forward the %s allowlist verbatim, got %q", job.DiffShrinkEnv, envValue(container, job.DiffShrinkEnv))
+	}
+	count := 0
+	for _, env := range container.Env {
+		if env.Name == job.DiffShrinkEnv {
+			count++
+			if env.ValueFrom != nil {
+				t.Fatalf("%s must be a literal value, not a reference", job.DiffShrinkEnv)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%s projected %d times, want exactly once", job.DiffShrinkEnv, count)
+	}
+
+	// The worker owns interpretation: an off value and a space-separated
+	// allowlist are both forwarded untouched, never coerced or dropped.
+	for _, value := range []string{"off", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+		input.Publishing.DiffShrink = value
+		verbatim, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build app-gate job with diff shrink %q: %v", value, err)
+		}
+		if got := envValue(verbatim.Spec.Template.Spec.Containers[0], job.DiffShrinkEnv); got != value {
+			t.Fatalf("operator must forward %q verbatim, got %q", value, got)
+		}
+	}
+
+	// Mode-driven isolation: the field stays SET, the disabled lane still gets
+	// nothing.
+	input.Publishing.DiffShrink = pilots
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.DiffShrinkEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.DiffShrinkEnv)
+	}
+}
+
+func TestBuildWorkerJobRefusesDiffShrinkWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 23, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+		input.Publishing.DiffShrink = value
+		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "diff shrink flag") {
+			t.Fatalf("a line break in the diff shrink flag must refuse the Job, got %v", err)
+		}
+	}
+}

@@ -201,7 +201,17 @@ type PublishingConfig struct {
 	// verbatim as JevShadowEnv when non-empty.
 	JevSecretName string
 	JevShadow     string
+	// REL-1079: deterministic diff shrinking. Forwarded verbatim as
+	// DiffShrinkEnv when non-empty; the worker owns its interpretation (a
+	// comma-separated owner/repo allowlist, or an on/off switch). Empty keeps
+	// shrinking off, byte-identical to before this field existed.
+	DiffShrink string
 }
+
+// DiffShrinkEnv is the worker's deterministic diff-shrinking flag (REL-1079,
+// src/review/diffShrink.ts DIFF_SHRINK_FLAG). The operator forwards the
+// deployment value verbatim; the worker owns its interpretation.
+const DiffShrinkEnv = "REVIEW_YETI_DIFF_SHRINK"
 
 // JevShadowEnv is the worker's Jev (TypeSafe AI) shadow-triage flag
 // (REL-1081). The operator forwards the deployment value verbatim; the worker
@@ -446,6 +456,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		env = append(env, jevTransportEnv(input.Publishing.JevSecretName)...)
 		if input.Publishing.JevShadow != "" {
 			env = append(env, corev1.EnvVar{Name: JevShadowEnv, Value: input.Publishing.JevShadow})
+		}
+		if input.Publishing.DiffShrink != "" {
+			env = append(env, corev1.EnvVar{Name: DiffShrinkEnv, Value: input.Publishing.DiffShrink})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -785,6 +798,12 @@ func validatePublishing(config PublishingConfig) error {
 	}
 	if strings.ContainsAny(config.JevShadow, "\r\n\t ") {
 		return configErr("jev shadow flag contains whitespace")
+	}
+	// The worker accepts a comma- OR space-separated allowlist, so spaces are
+	// legitimate here (unlike the on/off Jev flag); only a line break, which
+	// no allowlist needs and a pasted value can smuggle in, is refused.
+	if strings.ContainsAny(config.DiffShrink, "\r\n") {
+		return configErr("diff shrink flag contains a line break")
 	}
 	return nil
 }
