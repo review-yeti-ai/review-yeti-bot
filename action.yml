@@ -58,6 +58,14 @@ inputs:
       against; a slower gateway needs more or every lane dies mid-stream.
     required: false
     default: ''
+  action-budget-ms:
+    description: >-
+      REL-1113: wall-clock budget in ms for the review pipeline process. When reviewer lanes fail on
+      transport, provider or deadline and no lane reported a finding, the pipeline re-attempts those
+      lanes only while a full lane still fits inside this budget, then reports INCOMPLETE (never a
+      BLOCK verdict). Keep it below the calling job's timeout. Defaults to 780000 (13 minutes).
+    required: false
+    default: ''
   transport-compat:
     description: >-
       Per-transport request compatibility. Leave unset for OpenRouter. Set to `opencode` when
@@ -352,17 +360,20 @@ inputs:
 
 outputs:
   verdict:
-    description: 'SHIP, FIX_FIRST, BLOCK, or NO_VERDICT when the review cannot complete safely.'
+    description: 'SHIP, FIX_FIRST, BLOCK, NO_VERDICT when the review cannot complete safely, or INCOMPLETE when reviewer lanes failed on infrastructure with no finding (not a verdict; re-run).'
     value: ${{ steps.review.outputs.verdict || steps.doks-dispatch.outputs.verdict }}
   findings-count:
     description: 'Total findings across all personas.'
     value: ${{ steps.review.outputs.findings-count || steps.doks-dispatch.outputs.findings-count }}
   review-status:
-    description: 'Overall review outcome: SHIP, FIX_FIRST, BLOCK, or DISPATCHED while the App gate is pending.'
+    description: 'Overall review outcome: SHIP, FIX_FIRST, BLOCK, INCOMPLETE (infrastructure, not a verdict), or DISPATCHED while the App gate is pending.'
     value: ${{ steps.review.outputs.review-status || steps.doks-dispatch.outputs.review-status }}
   gate-decision:
-    description: 'Exact-head gate result: PASS, BLOCK, or PENDING after remote admission.'
+    description: 'Exact-head gate result: PASS, BLOCK, INCOMPLETE (infrastructure, not a verdict), or PENDING after remote admission.'
     value: ${{ steps.review.outputs.gate-decision || steps.doks-dispatch.outputs.gate-decision }}
+  incomplete-reason:
+    description: "REL-1113: when verdict is INCOMPLETE, the lanes that failed on infrastructure, e.g. 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: transport)'. Empty otherwise."
+    value: ${{ steps.review.outputs.incomplete-reason }}
   merge-eligible:
     description: 'Whether the exact-head review is eligible for merge.'
     value: ${{ steps.review.outputs.merge-eligible || steps.doks-dispatch.outputs.merge-eligible }}
@@ -634,6 +645,7 @@ runs:
         OPENROUTER_MODEL: ${{ inputs.model }}
         REVIEW_TRANSPORT_COMPAT: ${{ inputs.transport-compat }}
         REVIEW_LANE_TIMEOUT_MS: ${{ inputs.lane-timeout-ms }}
+        REVIEW_ACTION_BUDGET_MS: ${{ inputs.action-budget-ms }}
         FIREWORKS_PR_REVIEW_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY }}
         FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
         OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}

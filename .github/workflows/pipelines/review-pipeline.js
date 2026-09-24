@@ -29,6 +29,19 @@ const {
   planFindingPublication,
 } = require('../../../src/review/findingPublication');
 const { applyFalsificationOutcomes, runFindingFalsification } = require('../../../src/review/findingFalsification');
+// REL-1113: the shared lane-infrastructure decision, classifier, retry schedule and INCOMPLETE
+// title -- the same module the TypeScript worker/panel re-export. Never fork these here.
+const {
+  classifyLaneFailure,
+  INCOMPLETE_INFRASTRUCTURE_REASON,
+  isInfrastructureIncompleteResult,
+  isNonRetryableClientStatus,
+  laneProviderStatus,
+  renderIncompleteInfrastructureTitle,
+  TRANSPORT_MAX_RETRIES,
+  TRANSPORT_RETRY_TERMINAL_MARGIN_MS,
+  transportRetryDelayMs,
+} = require('../../../src/review/laneInfrastructure');
 const {
   resolveOpenRouterReviewPolicy,
   buildOpenRouterRequestOptions,
@@ -5853,21 +5866,174 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
 }
 
 /**
+ * REL-1113 (Action pipeline): the wall-clock budget this pipeline process may spend before it must
+ * have published its outcome. The calling job has its own hard `timeout-minutes`; a lane
+ * re-attempt that cannot finish inside this budget is never started, so the job ends with an
+ * accurate INCOMPLETE instead of being killed mid-retry with no outcome at all.
+ */
+const DEFAULT_ACTION_BUDGET_MS = 780_000;
+const PIPELINE_START_MS = Date.now();
+
+function resolveActionDeadlineMs(env = process.env, startMs = PIPELINE_START_MS) {
+  const raw = Number(env.REVIEW_ACTION_BUDGET_MS);
+  const budget = Number.isSafeInteger(raw) && raw > 0 ? raw : DEFAULT_ACTION_BUDGET_MS;
+  return startMs + budget;
+}
+
+/** The coded failure of one Action lane, through the shared classifier (`laneInfrastructure`):
+ * the provider status when the lane ended on an HTTP error response, else the message ladder. */
+function describeFailedLane(lane) {
+  const status = Number(lane?.responseStatus);
+  const providerStatus = laneProviderStatus(lane?.error)
+    ?? (Number.isInteger(status) && status >= 400 && status <= 599 ? status : undefined);
+  return {
+    id: String(lane?.personaId || 'unknown'),
+    failureClass: classifyLaneFailure({ status: lane?.responseStatus, error: lane?.error }),
+    ...(providerStatus === undefined ? {} : { providerStatus }),
+  };
+}
+
+/**
+ * REL-1113 (Action pipeline): is this set of lane results "incomplete for an infrastructure
+ * reason" -- lanes died on transport/provider/deadline and no lane reported a finding -- rather
+ * than a review verdict? Decided ONLY by the shared `isInfrastructureIncompleteResult`, the same
+ * function the publishing worker and the trusted completion service evaluate; this adapter only
+ * maps the Action's lane shape onto it. Returns the failed lanes and the shared INCOMPLETE title,
+ * or null when the result is a verdict (a finding anywhere, a non-infrastructure lane failure, an
+ * omitted file, or no failed lane at all).
+ */
+function resolveInfrastructureIncomplete(laneResults, { coverageComplete } = {}) {
+  if (!Array.isArray(laneResults) || laneResults.length === 0) return null;
+  const personas = laneResults.map((lane) => ({
+    decision: lane?.decision === 'ERROR' ? 'ERROR' : String(lane?.decision || ''),
+    ...(lane?.decision === 'ERROR' ? { errorClass: describeFailedLane(lane).failureClass } : {}),
+    findings: Array.isArray(lane?.findings) ? lane.findings : [],
+  }));
+  const anyFailed = personas.some((persona) => persona.decision === 'ERROR');
+  const result = {
+    personas,
+    coverageComplete: coverageComplete === true,
+    quorumSatisfied: !anyFailed,
+    failureDiagnostics: { reason: INCOMPLETE_INFRASTRUCTURE_REASON, recoverableIncompletePanel: true },
+  };
+  if (!isInfrastructureIncompleteResult(result)) return null;
+  const lanes = laneResults.filter((lane) => lane?.decision === 'ERROR').map(describeFailedLane);
+  return { lanes, title: renderIncompleteInfrastructureTitle(lanes) };
+}
+
+/**
+ * REL-1113 (Action pipeline): re-attempt the lanes that failed on infrastructure, within the
+ * Action's budget, on the shared lane transport-retry schedule (`transportRetryDelayMs` full-jitter
+ * backoff, at most `TRANSPORT_MAX_RETRIES`, never inside `TRANSPORT_RETRY_TERMINAL_MARGIN_MS` of
+ * the deadline). Runs only while the shared decision says the result is infrastructure-incomplete,
+ * so a findings result is never re-rolled. A 4xx other than 429 is not re-attempted (the same
+ * request fails the same way). A re-attempt starts only when a full lane (`laneTimeoutMs`) still
+ * fits; the re-attempt is aborted at the deadline, and a lane the deadline cut keeps its original
+ * infrastructure failure. A lane a re-attempt completes -- clean or with findings -- replaces its
+ * failure; a re-attempt that fails differently replaces it too, so a real non-infrastructure
+ * failure still reaches the verdict.
+ */
+async function retryInfrastructureFailedLanes(laneResults, rerunLane, options = {}) {
+  const {
+    coverageComplete = false,
+    deadlineMs = resolveActionDeadlineMs(),
+    laneTimeoutMs = resolveAutoTransportTimeoutMs(),
+    now = Date.now,
+    sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    random = Math.random,
+    log = console,
+  } = options;
+  let results = Array.isArray(laneResults) ? [...laneResults] : [];
+  let retries = 0;
+  for (let attempt = 1; attempt <= TRANSPORT_MAX_RETRIES; attempt += 1) {
+    const incomplete = resolveInfrastructureIncomplete(results, { coverageComplete });
+    if (!incomplete) return { results, retries, stopReason: 'resolved' };
+    const retryable = results
+      .map((lane, index) => ({ lane, index }))
+      .filter(({ lane }) => lane?.decision === 'ERROR'
+        && !isNonRetryableClientStatus(Number(lane.responseStatus))
+        && !isNonRetryableClientStatus(String(lane.error || '')))
+      .map(({ index }) => index);
+    if (retryable.length === 0) return { results, retries, stopReason: 'not_retryable' };
+    const backoffMs = transportRetryDelayMs(attempt, random);
+    const usableMs = deadlineMs - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now();
+    if (usableMs < backoffMs + laneTimeoutMs) {
+      log.warn(`[Infrastructure] ${incomplete.title}. Not re-attempting: ${Math.max(0, Math.floor(usableMs / 1000))}s of the Action budget remain, a lane needs up to ${Math.ceil(laneTimeoutMs / 1000)}s.`);
+      return { results, retries, stopReason: 'budget' };
+    }
+    const ids = retryable.map((index) => String(results[index]?.personaId || index)).join(', ');
+    log.warn(`[Infrastructure] ${incomplete.title}. Re-attempting lane(s) ${ids} (${attempt}/${TRANSPORT_MAX_RETRIES}) after ${backoffMs}ms; not a review verdict.`);
+    await sleep(backoffMs);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(0, deadlineMs - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now()));
+    if (timer?.unref) timer.unref();
+    let rerun;
+    try {
+      rerun = await Promise.all(retryable.map((index) => Promise.resolve()
+        .then(() => rerunLane(index, controller.signal))
+        .catch((error) => ({ ...results[index], decision: 'ERROR', findings: [], error: error?.message || String(error) }))));
+    } finally {
+      clearTimeout(timer);
+    }
+    retries += 1;
+    const cutByDeadline = controller.signal.aborted;
+    rerun.forEach((lane, k) => {
+      const index = retryable[k];
+      const previous = results[index];
+      if (!lane || (cutByDeadline && lane.decision === 'ERROR')) return;
+      results[index] = {
+        ...lane,
+        attemptCount: (Number(previous?.attemptCount) || 0) + (Number(lane.attemptCount) || 0),
+        retryReasons: [...new Set([...(previous?.retryReasons || []), ...(lane.retryReasons || []), previous?.failureClass].filter(Boolean))],
+        recoveryAction: lane.recoveryAction || 'bounded_retry',
+      };
+    });
+    if (cutByDeadline) return { results, retries, stopReason: 'budget' };
+  }
+  return { results, retries, stopReason: 'exhausted' };
+}
+
+/** REL-1113 (Action pipeline): the arbitration reported for an infrastructure-incomplete run. It
+ * carries no verdict word: `verdict` is INCOMPLETE, and the rationale names the lanes. */
+function toInfrastructureIncompleteArbitration(arbitration, incomplete) {
+  return {
+    ...(arbitration || {}),
+    verdict: 'INCOMPLETE',
+    status: 'INCOMPLETE_INFRASTRUCTURE',
+    quorumSatisfied: false,
+    incompleteTitle: incomplete.title,
+    incompleteLanes: incomplete.lanes,
+    rationale: `${incomplete.title}. Not a review verdict: ${incomplete.lanes.length === 1 ? 'a reviewer lane' : 'reviewer lanes'} could not reach the model and no lane reported a finding. Re-run this review once the provider is healthy.`,
+  };
+}
+
+/** REL-1113 (Action pipeline): the step failure for an infrastructure-incomplete run -- a distinct
+ * error annotation, never a verdict, so a re-run is the obvious action. */
+function reportInfrastructureIncomplete(incomplete, log = console) {
+  log.error(`::error title=Review Yeti: INCOMPLETE — infrastructure::${incomplete.title}. This is not a review verdict; re-run this job.`);
+}
+
+/**
  * Formats persona evaluation findings into a GitHub PR comment containing
  * a Mermaid summary graph/diagram and persona findings breakdown.
  */
 function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = {}, modelConfig = {}, coverage = null) {
+  // REL-1113: an infrastructure-incomplete run is labelled INCOMPLETE, never a verdict.
   const verdictBadge = arbitration.verdict === 'SHIP'
     ? '🟢 **Verdict: SHIP**'
     : arbitration.verdict === 'FIX_FIRST'
       ? '🟡 **Verdict: FIX_FIRST**'
-      : '🔴 **Verdict: BLOCK**';
+      : arbitration.verdict === 'INCOMPLETE'
+        ? '⚪ **INCOMPLETE — infrastructure (not a verdict)**'
+        : '🔴 **Verdict: BLOCK**';
 
   const alertHeader = arbitration.verdict === 'SHIP'
     ? '> [!TIP]\n> **Verdict: SHIP** — All reviewer personas passed.'
     : arbitration.verdict === 'FIX_FIRST'
       ? `> [!WARNING]\n> **Verdict: FIX_FIRST** — ${arbitration.metrics?.p1Count || 0} issue(s) and ${arbitration.metrics?.p2Count || 0} recommendation(s) found across ${personaResults.length} reviewer personas.`
-      : `> [!CAUTION]\n> **Verdict: BLOCK** — Critical issues detected. Merge approval blocked.`;
+      : arbitration.verdict === 'INCOMPLETE'
+        ? `> [!WARNING]\n> **${arbitration.incompleteTitle || 'Review Yeti: INCOMPLETE — infrastructure'}** — not a review verdict. A reviewer lane could not reach the model and no lane reported a finding. Re-run this review once the provider is healthy; do not merge on this result.`
+        : `> [!CAUTION]\n> **Verdict: BLOCK** — Critical issues detected. Merge approval blocked.`;
 
   const mcpStatusLine = mcpTelemetry.mcpStatusSummary || 'Default Built-in MCP Adapters Active';
 
@@ -6107,7 +6273,10 @@ function writeStepSummary(arbitration, personaResults, prContext, coverage) {
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (!summaryPath) return;
   try {
-    const badge = arbitration.verdict === 'SHIP' ? '🟢 SHIP' : arbitration.verdict === 'FIX_FIRST' ? '🟡 FIX_FIRST' : '🔴 BLOCK';
+    const badge = arbitration.verdict === 'SHIP' ? '🟢 SHIP'
+      : arbitration.verdict === 'FIX_FIRST' ? '🟡 FIX_FIRST'
+        : arbitration.verdict === 'INCOMPLETE' ? '⚪ INCOMPLETE — infrastructure (not a verdict)'
+          : '🔴 BLOCK';
     const totalFiles = coverage?.reviewed?.length || 'all';
     const summaryMd = `### 🏔️ Review Yeti Executive Summary\n\n` +
       `| Metric | Value |\n|---|---|\n` +
@@ -7512,11 +7681,16 @@ function writeStepOutputs(arbitration, outputPath = process.env.GITHUB_OUTPUT, c
   const coveragePct = coverage?.coveragePercent ?? (totalFiles > 0 && omittedFiles === 0 ? 100 : Math.round(((totalFiles - omittedFiles) / Math.max(1, totalFiles)) * 100));
   const mergeEligible = arbitration.verdict === 'SHIP' && arbitration.quorumSatisfied !== false && omittedFiles === 0 && Boolean(runReport);
   const rationale = String(arbitration.rationale || '').replace(/[\r\n]+/g, ' ');
+  // REL-1113: an infrastructure-incomplete run reports INCOMPLETE on every verdict-shaped output
+  // -- never BLOCK -- and names the failed lanes in `incomplete-reason`.
+  const incomplete = arbitration.verdict === 'INCOMPLETE';
+  const incompleteReason = incomplete ? String(arbitration.incompleteTitle || '').replace(/[\r\n]+/g, ' ') : '';
 
   const lines = [
     `verdict=${arbitration.verdict}`,
     `review-status=${arbitration.verdict}`,
-    `gate-decision=${mergeEligible ? 'PASS' : 'BLOCK'}`,
+    `gate-decision=${incomplete ? 'INCOMPLETE' : mergeEligible ? 'PASS' : 'BLOCK'}`,
+    `incomplete-reason=${incompleteReason}`,
     `merge-eligible=${mergeEligible}`,
     `dispatch-reflection-status=${runReport ? 'complete' : ''}`,
     `provider-receipt-digest=${runReport?.digest || ''}`,
@@ -7891,6 +8065,12 @@ async function main() {
 
   let personaResults = [];
   let arbitration = null;
+  let infrastructureIncomplete = null;
+  // REL-1113: inputs to the shared infrastructure-incomplete decision. A file the diff budget or
+  // the submodule policy left unreviewed is a deterministic property of this head, so it is never
+  // the re-attempt shape; the deadline bounds every lane re-attempt.
+  const laneCoverageComplete = submoduleReview.coverageComplete !== false && !(coverage?.omitted?.length > 0);
+  const actionDeadlineMs = resolveActionDeadlineMs();
   const reviewedPersonaIds = reviewScope.mode === 'delta'
     ? new Set(reviewScope.reviewedPersonaIds)
     : new Set(enabledPersonas.map((persona) => persona.id));
@@ -7931,20 +8111,29 @@ async function main() {
           dispatchSeed,
         );
         console.log(`[Dispatch] mode=${dispatchMode} primary lanes: ${summarizeTransportDispatchPlans(transportPlans)}`);
-        const reviewResults = await mapWithConcurrency(
+        const runPartitionJob = ({ partition, persona }, jobIndex, signal = null) => {
+          const partitionOptions = {
+            ...modelConfig,
+            transports: transportPlans[jobIndex],
+            partition,
+            partitionPlan,
+            maxDiffChars: safeDiffCapacityChars,
+            priorFindings: priorFindingsByPersonaId.get(persona.id),
+            ...(signal ? { signal } : {}),
+          };
+          return reviewWithModel(persona, partition.files, prContext, sessionContext, partitionOptions);
+        };
+        const initialReviewResults = await mapWithConcurrency(
           reviewJobs,
           personaConcurrency,
-          async ({ partition, persona }, jobIndex) => {
-            const partitionOptions = {
-              ...modelConfig,
-              transports: transportPlans[jobIndex],
-              partition,
-              partitionPlan,
-              maxDiffChars: safeDiffCapacityChars,
-              priorFindings: priorFindingsByPersonaId.get(persona.id),
-            };
-            return reviewWithModel(persona, partition.files, prContext, sessionContext, partitionOptions);
-          }
+          async (job, jobIndex) => runPartitionJob(job, jobIndex),
+        );
+        // REL-1113: a partition-lane lost to transport/provider/deadline with nothing found is
+        // re-attempted within the Action budget before any verdict is derived.
+        const { results: reviewResults } = await retryInfrastructureFailedLanes(
+          initialReviewResults,
+          (jobIndex, signal) => runPartitionJob(reviewJobs[jobIndex], jobIndex, signal),
+          { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs },
         );
         const partitionRuns = partitionPlan.partitions.map((_, partitionIndex) =>
           reviewPersonas.map((_, personaIndex) =>
@@ -8012,17 +8201,31 @@ async function main() {
           dispatchSeed,
         );
         console.log(`[Dispatch] mode=${dispatchMode} primary lanes: ${summarizeTransportDispatchPlans(transportPlans)}`);
-        personaResults = await mapWithConcurrency(
+        const runPersonaLane = (persona, personaIndex, signal = null) => reviewWithModel(
+          persona,
+          reviewDiffFiles,
+          prContext,
+          sessionContext,
+          {
+            ...modelConfig,
+            transports: transportPlans[personaIndex],
+            priorFindings: priorFindingsByPersonaId.get(persona.id),
+            ...(signal ? { signal } : {}),
+          },
+        );
+        const initialPersonaResults = await mapWithConcurrency(
           reviewPersonas,
           personaConcurrency,
-          (persona, personaIndex) => reviewWithModel(
-            persona,
-            reviewDiffFiles,
-            prContext,
-            sessionContext,
-            { ...modelConfig, transports: transportPlans[personaIndex], priorFindings: priorFindingsByPersonaId.get(persona.id) },
-          )
+          (persona, personaIndex) => runPersonaLane(persona, personaIndex),
         );
+        // REL-1113: a lane lost to transport/provider/deadline with nothing found is re-attempted
+        // within the Action budget before any verdict is derived (review-yeti-bot#1056 twice
+        // published BLOCK with 0 findings from a 'terminated' lane and a 420s streaming deadline).
+        ({ results: personaResults } = await retryInfrastructureFailedLanes(
+          initialPersonaResults,
+          (personaIndex, signal) => runPersonaLane(reviewPersonas[personaIndex], personaIndex, signal),
+          { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs },
+        ));
       }
 
       const failed = personaResults.filter((r) => r.decision === 'ERROR');
@@ -8031,11 +8234,17 @@ async function main() {
       }
       if (failed.length === reviewPersonas.length) {
         console.error('[Review] Every persona lane failed. Refusing to post a verdict derived from zero completed reviews.');
-        const failedArbitration = computeArbitrationQuorum(personaResults, reviewPersonas.length, {
+        const computedFailedArbitration = computeArbitrationQuorum(personaResults, reviewPersonas.length, {
           changedFiles: arbitrationDiffFiles,
         });
+        // REL-1113: every lane lost on infrastructure is INCOMPLETE, not a BLOCK verdict.
+        const allFailedIncomplete = resolveInfrastructureIncomplete(personaResults, { coverageComplete: laneCoverageComplete });
+        const failedArbitration = allFailedIncomplete
+          ? toInfrastructureIncompleteArbitration(computedFailedArbitration, allFailedIncomplete)
+          : computedFailedArbitration;
         const failedTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
         writeStepOutputs(failedArbitration, process.env.GITHUB_OUTPUT, coverage, null, failedTelemetry);
+        if (allFailedIncomplete) reportInfrastructureIncomplete(allFailedIncomplete);
         process.exitCode = 1;
         return;
       }
@@ -8101,6 +8310,11 @@ async function main() {
       coverageComplete: submoduleReview.coverageComplete,
       coverageGaps: submoduleReview.coverageGaps,
     });
+    // REL-1113: lanes still lost to transport/provider/deadline after the in-budget re-attempts,
+    // with no finding anywhere, is INCOMPLETE -- never the BLOCK/FIX_FIRST arbitration derives
+    // from the missing lane. Evaluated on the exact lane set arbitration just consumed.
+    infrastructureIncomplete = resolveInfrastructureIncomplete(personaResults, { coverageComplete: laneCoverageComplete });
+    if (infrastructureIncomplete) arbitration = toInfrastructureIncompleteArbitration(arbitration, infrastructureIncomplete);
   }
 
   console.log(`[Verdict] ${arbitration.verdict} | Rationale: ${arbitration.rationale}`);
@@ -8121,7 +8335,11 @@ async function main() {
   // before it reached GITHUB_OUTPUT -- which is why a consuming gate reported
   // "Review Yeti did not produce a verdict" over a run whose log said SHIP. Emit the
   // verdict first, then decide the run's exit status.
-  const runReport = writeRunReport(arbitration, personaResults, prContext, process.env.RUNNER_TEMP, reviewScope);
+  // REL-1113: an infrastructure-incomplete run is not review evidence; it writes no run report
+  // (so it can never be reused as an incremental parent or satisfy merge eligibility).
+  const runReport = infrastructureIncomplete
+    ? null
+    : writeRunReport(arbitration, personaResults, prContext, process.env.RUNNER_TEMP, reviewScope);
   const providerTelemetry = writeProviderTelemetryReceiptBestEffort(personaResults, prContext);
   const publicationReceipt = writePublicationReceipt(prContext, publicationPlan, publication);
   writeStepOutputs(arbitration, process.env.GITHUB_OUTPUT, coverage, runReport, providerTelemetry, publicationReceipt);
@@ -8134,6 +8352,17 @@ async function main() {
     // But the verdict above is now readable by `steps.<id>.outputs.verdict`, so a
     // consumer can distinguish "could not deliver" from "did not judge".
     console.error('::error::Review Yeti computed a verdict but could not publish it. The verdict is in this step\'s outputs and the run summary.');
+    process.exitCode = 1;
+    return;
+  }
+
+  if (infrastructureIncomplete) {
+    // REL-1113: fail the step with the distinct INCOMPLETE message, never a verdict. No session
+    // ledger turn is recorded: nothing was reviewed to completion.
+    reportInfrastructureIncomplete(infrastructureIncomplete);
+    console.log('=====================================================');
+    console.log(`⚠️ Review Pipeline INCOMPLETE (infrastructure): ${infrastructureIncomplete.title}`);
+    console.log('=====================================================');
     process.exitCode = 1;
     return;
   }
@@ -8265,6 +8494,12 @@ module.exports = {
   evaluateDownstreamImpact,
   evaluatePersonaLane,
   computeArbitrationQuorum,
+  DEFAULT_ACTION_BUDGET_MS,
+  resolveActionDeadlineMs,
+  resolveInfrastructureIncomplete,
+  retryInfrastructureFailedLanes,
+  toInfrastructureIncompleteArbitration,
+  reportInfrastructureIncomplete,
   resolveFindingFalsificationPolicy,
   flattenPersonaFindings,
   callFalsificationModelTurn,
