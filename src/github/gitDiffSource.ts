@@ -203,12 +203,20 @@ function runGit(context: RunContext, args: string[], maxStdoutBytes = 64 * 1024)
     }
     let settled = false; let stdoutBytes = 0; let failure: GitDiffSourceError | undefined;
     const chunks: Buffer[] = [];
+    // Own process group: git fetch runs helpers (remote-https, index-pack) that can
+    // hold stdout open, so a stop kills the whole group and settles immediately
+    // instead of waiting for every descendant to close the pipe.
     const child = spawn(context.gitBinary, args, {
       cwd: context.scratch, env: context.env as NodeJS.ProcessEnv, stdio: ['ignore', 'pipe', 'ignore'], shell: false,
+      detached: true,
     });
     const stop = (error: GitDiffSourceError) => {
       if (!failure) failure = error;
-      child.kill('SIGKILL');
+      try {
+        if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL');
+        else child.kill('SIGKILL');
+      } catch { child.kill('SIGKILL'); }
+      finish(failure);
     };
     const onAbort = () => stop(new GitDiffSourceError('timeout'));
     const timer = setTimeout(onAbort, remaining);

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -68,6 +68,8 @@ beforeAll(() => {
   git(work, 'checkout', '-q', '-b', 'feature');
   for (let i = 0; i < MODIFIED; i++) write(`src/mod-${i}.ts`, fileLines(`m${i}`, 5) + fileLines(`n${i}`, LINES_PER_FILE));
   for (let i = 0; i < ADDED; i++) write(`src/new/added-${i}.ts`, fileLines(`a${i}`, 10));
+  // No trailing newline: the git diff carries a '\\ No newline at end of file' marker.
+  write('src/new/added-0.ts', fileLines('a0', 10).trimEnd());
   git(work, 'mv', 'src/rename-me.ts', 'src/renamed.ts');
   write('src/renamed.ts', fileLines('renamed', 20) + 'export const extra = 1;\n');
   git(work, 'rm', '-q', 'src/delete-me.ts');
@@ -132,6 +134,13 @@ describe('REL-1080 acceptance rule (shared by worker and trusted side)', () => {
     expect(GIT_DIFF_MAX_BYTES).toBe(MAX_AUTHORITATIVE_CHANGED_FILES_BYTES);
   });
 
+  it('accepts a no-newline marker that follows a content line', () => {
+    const marker = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n'
+      + '\\ No newline at end of file\n+new\n\\ No newline at end of file\n';
+    expect(hunksClosed(marker)).toBe(true);
+    expect(verifyGitDerivedDiff(marker, { expectedFileCount: 1 })).toHaveLength(1);
+  });
+
   it('leaves hunk-less chunks (binary, pure rename) to the existing no-hunk handling', () => {
     expect(hunksClosed('diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n')).toBe(true);
     expect(hunksClosed('diff --git a/a b/b\nsimilarity index 100%\nrename from a\nrename to b\n')).toBe(true);
@@ -181,6 +190,8 @@ describe('REL-1080 git diff source against a real repository', () => {
     expect(files.map((file) => file.path)).toContain('src/delete-me.ts');
     // Three-dot: the independently advanced base-only file is not part of the PR.
     expect(files.map((file) => file.path)).not.toContain('release/base-only.ts');
+    // The real diff includes a no-newline marker and is still accepted.
+    expect(files.find((file) => file.path === 'src/new/added-0.ts')?.patch).toContain('\\ No newline at end of file');
   }, 60_000);
 
   it('removes its scratch repository and never puts the token in argv', async () => {
@@ -214,6 +225,42 @@ describe('REL-1080 git diff source against a real repository', () => {
   ] as const)('fails closed with a fixed reason for %s', async (_label, run, expected) => {
     expect(await reason(run())).toBe(expected);
   }, 60_000);
+
+  it('kills a hung git (and its children) when the deadline fires', async () => {
+    const wrapper = join(tmpdir(), `rel1080-hung-git-${process.pid}.js`);
+    // A unique sleep duration marks the grandchild so the test can find it.
+    const marker = `29.${process.pid}${Date.now() % 100000}`;
+    // A child that inherits stdout, like git's fetch helpers: killing only the parent
+    // would leave it running with the pipe open.
+    // The absolute node path, not `/usr/bin/env node`: a version-manager shim can take longer
+    // to start than the deadline, and the child would never be spawned.
+    writeFileSync(wrapper, `#!${process.execPath}\nrequire("child_process").spawn("sleep", ["${marker}"], { stdio: "inherit" });\n`
+      + 'setInterval(() => undefined, 1000);\n');
+    chmodSync(wrapper, 0o755);
+    const alive = (pattern = `sleep ${marker}`) => {
+      try { return execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8' }).trim() !== ''; }
+      catch (error) {
+        // pgrep exits 1 for "no match"; anything else would make this check vacuous.
+        if ((error as { status?: number }).status === 1) return false;
+        throw error;
+      }
+    };
+    // Positive control: the probe does see a live marked process.
+    const control = spawn('sleep', [`${marker}1`], { stdio: 'ignore' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(alive(`sleep ${marker}1`)).toBe(true);
+    control.kill('SIGKILL');
+    try {
+      const started = Date.now();
+      expect(await reason(localSource({ gitBinary: wrapper, timeoutMs: 1_500 })(request()))).toBe('timeout');
+      expect(Date.now() - started).toBeLessThan(8_000);
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(alive()).toBe(false);
+    } finally {
+      try { execFileSync('pkill', ['-f', `sleep ${marker}`]); } catch { /* already gone */ }
+      rmSync(wrapper, { force: true });
+    }
+  }, 30_000);
 
   it('honours the caller abort signal', async () => {
     const abort = new AbortController(); abort.abort();
@@ -324,7 +371,7 @@ describe('REL-1080 worker: a 406 diff is computed from git, not failed', () => {
 const target = () => ({ repositoryId: 321, owner: 'example', repo: 'candidate', prNumber: 7, headSha, baseSha: baseTipSha });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 function trustedFetcher(options: { finalHead?: string; movesOnPullRead?: number; changedFiles?: number;
-  compareFiles?: unknown[] } = {}) {
+  compareFiles?: unknown[]; compareUrl?: string; compareBase?: string } = {}) {
   let pullReads = 0; const paths: string[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init) => {
     const url = new URL(String(input)); paths.push(`${url.pathname}${url.search}`);
@@ -340,8 +387,8 @@ function trustedFetcher(options: { finalHead?: string; movesOnPullRead?: number;
         changed_files: options.changedFiles ?? EXPECTED_FILES });
     }
     if (url.pathname === `/repos/example/candidate/compare/${t.baseSha}...${t.headSha}`) {
-      return json({ url: `https://api.github.com/repos/example/candidate/compare/${t.baseSha}...${t.headSha}`,
-        base_commit: { sha: t.baseSha }, merge_base_commit: { sha: mergeBaseSha }, status: 'diverged',
+      return json({ url: options.compareUrl ?? `https://api.github.com/repos/example/candidate/compare/${t.baseSha}...${t.headSha}`,
+        base_commit: { sha: options.compareBase ?? t.baseSha }, merge_base_commit: { sha: mergeBaseSha }, status: 'diverged',
         ahead_by: 1, behind_by: 1, total_commits: 1, files: options.compareFiles ?? [] });
     }
     throw new Error(`unexpected request ${url}`);
@@ -385,6 +432,32 @@ describe('REL-1080 trusted side accepts the git-derived diff with the same ident
     const result = await readerWith(fetcher, localSource()).exactCurrentDiff(target());
     expect(result.changedFiles).toEqual([{ path: 'src/compare.ts', patch: entry.patch }]);
   }, 60_000);
+
+  it.each([
+    ['names another compare URL', { compareUrl: 'https://api.github.com/repos/example/other/compare/x...y' },
+      'Review reader file count unavailable'],
+    ['names another base commit', { compareBase: 'e'.repeat(40) }, 'Review reader file count unavailable'],
+  ] as const)('never runs git when the compare response %s, and keeps the compare path', async (_label, pin, error) => {
+    const gitDiffSource = vi.fn<GitDiffSource>(localSource());
+    const { fetcher } = trustedFetcher(pin);
+    // 317 files: the compare path refuses them, exactly as before REL-1080.
+    await expect(readerWith(fetcher, gitDiffSource).exactCurrentDiff(target())).rejects.toThrow(error);
+    expect(gitDiffSource).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['names another compare URL', { compareUrl: 'https://api.github.com/repos/example/other/compare/x...y' }],
+    ['names another base commit', { compareBase: 'e'.repeat(40) }],
+  ] as const)('refuses a small PR on the compare path too, without running git, when the compare response %s', async (_label, pin) => {
+    const entry = { sha: 'c'.repeat(40), filename: 'src/compare.ts', status: 'modified', additions: 1, deletions: 1,
+      changes: 2, patch: '@@ -1 +1 @@\n-old\n+new' };
+    const gitDiffSource = vi.fn<GitDiffSource>(localSource());
+    const { fetcher } = trustedFetcher({ ...pin, changedFiles: 1, compareFiles: [entry] });
+    const pending = readerWith(fetcher, gitDiffSource).exactCurrentDiff(target());
+    // The compare path applies its own pins: a wrong base is refused there too, a wrong URL likewise.
+    await expect(pending).rejects.toThrow(/Review reader comparison identity mismatch/u);
+    expect(gitDiffSource).not.toHaveBeenCalled();
+  });
 
   it('never calls git when the diff API renders the diff', async () => {
     const gitDiffSource = vi.fn<GitDiffSource>();
