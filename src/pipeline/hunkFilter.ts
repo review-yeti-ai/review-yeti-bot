@@ -4,6 +4,19 @@ export interface ChangedFile {
   content?: string;
 }
 
+/**
+ * Largest single-file patch, in characters, sent to a reviewer. A longer patch
+ * is cut here; the cut is recorded on the file (`truncation`) so every engine
+ * can disclose it (REL-1092, plan section 3.5: nothing dropped silently).
+ */
+export const MAX_FILE_PATCH_CHARS = 20_000;
+
+/** A patch cut at `MAX_FILE_PATCH_CHARS`: its size before and after the cut. */
+export interface PatchTruncation {
+  originalChars: number;
+  keptChars: number;
+}
+
 export interface FilteredFileResult {
   path: string;
   status: 'included' | 'ignored' | 'truncated';
@@ -12,6 +25,8 @@ export interface FilteredFileResult {
   filteredPatchLength: number;
   patch?: string;
   content?: string;
+  /** Set exactly when `status` is `'truncated'`. */
+  truncation?: PatchTruncation;
 }
 
 export interface HunkFilterResult {
@@ -148,10 +163,14 @@ export function filterDiffHunks(
     // 3. Patch Truncation / Hunk Filtering
     let filteredPatch = file.patch;
     let status: 'included' | 'truncated' = 'included';
+    let truncation: PatchTruncation | undefined;
 
-    if (filteredPatch && filteredPatch.length > 20000) {
-      // Truncate excessively large single diffs
-      filteredPatch = filteredPatch.slice(0, 20000) + '\n\n... [Diff truncated to 20k chars by Smart Hunk Filter] ...';
+    if (filteredPatch && filteredPatch.length > MAX_FILE_PATCH_CHARS) {
+      // Truncate excessively large single diffs. The remaining hunks are not
+      // sent; the cut is recorded so the check summary discloses it. Reviewing
+      // the rest as further chunks is W5/W6 (REL-1082 / REL-1083).
+      truncation = { originalChars: filteredPatch.length, keptChars: MAX_FILE_PATCH_CHARS };
+      filteredPatch = filteredPatch.slice(0, MAX_FILE_PATCH_CHARS) + '\n\n... [Diff truncated to 20k chars by Smart Hunk Filter] ...';
       status = 'truncated';
     }
 
@@ -166,6 +185,7 @@ export function filterDiffHunks(
       filteredPatchLength: filteredText.length,
       patch: filteredPatch,
       content: file.content,
+      ...(truncation ? { truncation } : {}),
     };
   });
 

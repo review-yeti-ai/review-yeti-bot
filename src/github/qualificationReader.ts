@@ -4,6 +4,7 @@ import {
   GitDiffSourceError, mergeBaseFromComparison, verifyGitDerivedDiff,
   type GitDiffFailureReason, type GitDiffSource,
 } from './gitDiffSource';
+import { patchUnavailableNote } from '../review/patchAvailability';
 
 const PR_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}';
 const FILES_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files';
@@ -146,17 +147,50 @@ type PullFileEntry = {
   previous_filename?: unknown;
   status?: unknown;
   patch?: unknown;
+  additions?: unknown;
+  deletions?: unknown;
+  changes?: unknown;
 };
 
-function renderFilePatch(file: PullFileEntry): string {
+function lineCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * One pull-files entry as a unified-diff chunk.
+ *
+ * REL-1092: GitHub returns no `patch` for binary files and for patches it
+ * considers too large. Such a file used to render as '' and vanish from the
+ * review diff: no lane saw it, no summary named it, and the worker derived its
+ * lanes from fewer paths than the trusted completion side. It now renders as a
+ * header-only chunk carrying a `patchUnavailableNote`, so it keeps its place in
+ * the changed-file list (same paths as the trusted side, so the same lanes) and
+ * the shared decision can disclose it and, for omitted source, refuse to count
+ * it as reviewed. A pure rename with no changed lines renders as git's own
+ * rename header.
+ */
+export function renderFilePatch(file: PullFileEntry): string {
   const filename = typeof file.filename === 'string' ? file.filename : '';
-  const patch = typeof file.patch === 'string' ? file.patch : '';
-  if (!filename || !patch) return '';
+  if (!filename) return '';
   const previous =
     file.status === 'renamed' && typeof file.previous_filename === 'string'
       ? file.previous_filename
       : filename;
-  return `diff --git a/${previous} b/${filename}\n${patch}\n`;
+  const header = `diff --git a/${previous} b/${filename}\n`;
+  const patch = typeof file.patch === 'string' ? file.patch : '';
+  if (patch) return `${header}${patch}\n`;
+  const changes = lineCount(file.changes)
+    ?? (lineCount(file.additions) !== undefined && lineCount(file.deletions) !== undefined
+      ? lineCount(file.additions)! + lineCount(file.deletions)! : undefined);
+  if (file.status === 'renamed' && changes === 0) {
+    return `${header}similarity index 100%\nrename from ${previous}\nrename to ${filename}\n`;
+  }
+  // No changed lines: binary (or an empty file). Unknown or nonzero: GitHub
+  // omitted a text patch -- never assume the safer-looking binary case.
+  const note = changes === 0 ? patchUnavailableNote('binary') : patchUnavailableNote('omitted', changes);
+  const before = file.status === 'added' ? '/dev/null' : `a/${previous}`;
+  const after = file.status === 'removed' ? '/dev/null' : `b/${filename}`;
+  return `${header}--- ${before}\n+++ ${after}\n${note}\n`;
 }
 
 /**

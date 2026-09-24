@@ -92,7 +92,9 @@ describe('same-head qualification reader', () => {
     expect(source.diff).toContain(filePatchA);
     expect(source.diff).toContain('diff --git a/old.ts b/renamed.ts');
     expect(source.diff).toContain(filePatchB);
-    expect(source.diff).not.toContain('binary.png');
+    // REL-1092: a file without a patch keeps its place, marked, instead of vanishing.
+    expect(source.diff).toContain('diff --git a/binary.png b/binary.png\n--- a/binary.png\n+++ b/binary.png\n'
+      + '\\ Review Yeti: patch unavailable (omitted by GitHub)\n');
     expect(source.githubReads).toBe(4);
     expect(request).toHaveBeenCalledTimes(4);
     expect(request.mock.calls[2][0]).toBe('GET /repos/{owner}/{repo}/pulls/{pull_number}/files');
