@@ -437,6 +437,48 @@ describe('McpFleetManager Unit Tests', () => {
       }
     });
 
+    it('charges a short budget to the request, not to setup (timer placement)', async () => {
+      // Discriminates the timer placement ALONE, given the pre-abort guard is present.
+      //
+      // The budget (50ms) is deliberately SHORTER than setup: `getHttpHeaders()` awaits a
+      // Doppler lookup measured at ~470ms, so with the pre-fix placement (timer armed before
+      // that await) the controller is already aborted by the time `fetch` would be called and
+      // the guard prevents dispatch. Arming the timer after setup lets the request go out.
+      //
+      // Scope, verified rather than assumed -- this cost me two wrong claims already:
+      //   * reverting the TIMER PLACEMENT alone      -> this test FAILS (fetchCalls 0 != 1)
+      //   * reverting the timer AND the guard together -> this test PASSES, because the request
+      //     is dispatched with an aborted signal and the mock counts it. That full-revert case
+      //     is caught by the pre-abort test above, not by this one.
+      // So the two tests cover the two halves separately, and neither covers both.
+      let fetchCalls = 0;
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => {
+        fetchCalls += 1;
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(Object.assign(new Error('already aborted'), { name: 'AbortError' }));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted on timeout'), { name: 'AbortError' }));
+          });
+        });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool(
+          'ct_impact', { target: 'short-budget' }, { timeoutMs: 50 },
+        );
+        expect(result).toMatchObject({ success: false });
+        expect(String(result.error)).toMatch(/timed out/iu);
+        // The request was ISSUED: the budget was charged to the request, not to setup.
+        expect(fetchCalls).toBe(1);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
     it('handles HTTP request timeout gracefully', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
         const signal = init?.signal;
