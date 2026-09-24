@@ -7,7 +7,6 @@ import {
 } from './reviewJobProjection';
 
 import type { ReviewJobProjector } from './reviewJobProjector';
-import { kubernetesStatusCode } from './kubernetesReviewJobProjector';
 export type { ReviewJobProjector };
 
 /** One cancellation the sweep could not apply; carries no upstream error text. */
@@ -272,7 +271,9 @@ export class ReviewJobDispatchEngine {
         failed++;
         // REL-1073: surfaced so a permanently failing patch (e.g. a 403 from a
         // Role without `patch`) is visible instead of retrying silently forever.
-        const statusCode = kubernetesStatusCode(error);
+        // Projectors attach a structured `statusCode` (never upstream text); the
+        // engine stays adapter-agnostic and reads only that field.
+        const statusCode = projectorStatusCode(error);
         failures.push({
           runId: item.runId,
           projectionName: item.projectionName,
@@ -308,4 +309,11 @@ export class ReviewJobDispatchEngine {
       return false;
     }
   }
+}
+
+function projectorStatusCode(error: unknown): number | undefined {
+  const status = error !== null && typeof error === 'object'
+    ? (error as { statusCode?: unknown }).statusCode
+    : undefined;
+  return Number.isSafeInteger(status) && Number(status) >= 100 && Number(status) <= 599 ? Number(status) : undefined;
 }
