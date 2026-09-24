@@ -124,7 +124,8 @@
         "body": {
           "model": "openai/gpt-4o-mini",
           "messages": [{"role": "user", "content": "replay reliability boundary"}],
-          "stream": true
+          "stream": true,
+          "stream_options": {"include_usage": true}
         }
       },
       "response": {
