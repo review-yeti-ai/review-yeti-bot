@@ -526,6 +526,25 @@ function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
   return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
+const MAX_LISTED_ROUTED_FILES = 20;
+
+/**
+ * REL-1088: files a lane reviewed only because the shared applicability
+ * decision routed them there -- no persona's paths cover them. Always shown,
+ * so an author can see which lane read the file and extend the roster.
+ */
+export function renderRoutedFiles(panelResult: Pick<PanelResult, 'routedFiles'>): string | null {
+  const routed = panelResult.routedFiles;
+  if (!Array.isArray(routed) || routed.length === 0) return null;
+  const safe = (text: string) => text.replace(/[`<>\r\n]/gu, ' ').slice(0, 300);
+  const lines = routed.slice(0, MAX_LISTED_ROUTED_FILES).map((file) => `- \`${safe(file.path)}\` -> `
+    + `${file.laneIds.map((id) => `\`${safe(id)}\``).join(', ')}`
+    + (file.reason === 'uncovered-source' ? ' (source no persona covers)' : ''));
+  const overflow = routed.length - MAX_LISTED_ROUTED_FILES;
+  return `Routed files (no persona's paths cover them; reviewed by the routed lane):\n${lines.join('\n')}`
+    + (overflow > 0 ? `\n- +${overflow} more` : '');
+}
+
 function renderUnreportedLanes(panelResult: PanelResult): string | null {
   const gaps = panelResult.unreportedLanes;
   if (!Array.isArray(gaps) || gaps.length === 0) return null;
@@ -1517,6 +1536,7 @@ export async function runPublishingReviewWorker(
           `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           renderCoverageSummary(coverage),
+          ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
         ]
@@ -1534,6 +1554,7 @@ export async function runPublishingReviewWorker(
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
           renderCoverageSummary(coverage),
+          ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,

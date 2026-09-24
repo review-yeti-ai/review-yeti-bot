@@ -377,6 +377,29 @@ describe('service-owned authoritative completion context', () => {
     expect(context.coverage).toMatchObject({ expectedPersonaIds: ['sec-lane'], coverageComplete: true, quorumSatisfied: true });
   });
 
+  // REL-1088: a source file no persona covers, beside a file a configured lane
+  // covers, used to be dropped on both sides (qual-lane only). The shared
+  // decision now routes it to the required lane, and the service requires that
+  // lane too -- the exact roster the worker runs, so the completion is acked.
+  it('requires the routed required lane for uncovered source beside a covered file, as the worker does', async () => {
+    const f = fixture();
+    const changedFiles = [
+      { path: 'tests/fixtures/sample.snap', patch: '@@ -1 +1 @@\n-old\n+new' },
+      { path: 'tools/inventory.lua', patch: '@@ -1 +1 @@\n-old\n+new' },
+    ];
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 2 });
+
+    const context = await f.context(f.gate);
+    const worker = personaApplicability.resolveReviewApplicability(
+      f.stored.config.personas.filter((persona) => persona.enabled), changedFiles, { pathFilters: f.stored.config.path_filters },
+    );
+    expect(worker.applicable.map((persona) => persona.id)).toEqual(['sec-lane', 'qual-lane']);
+    expect(worker.routedFiles).toEqual([{ path: 'tools/inventory.lua', laneIds: ['sec-lane'], reason: 'uncovered-source' }]);
+    expect(context.coverage).toMatchObject({
+      expectedPersonaIds: worker.applicable.map((persona) => persona.id), coverageComplete: true, quorumSatisfied: true,
+    });
+  });
+
   it('refuses a documentation-only completion over an unverifiable lockfile', () => {
     // Defense in depth behind the shared decision: the completion check itself
     // re-verifies each admitted lockfile change.
