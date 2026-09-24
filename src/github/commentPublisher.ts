@@ -619,6 +619,9 @@ export class CommentPublisher {
       // REL-1103: with an idempotency marker a 5xx POST is retried only after
       // the marker lookup proves the lost attempt published nothing. Without a
       // marker there is no exact identity to reconcile, so it is not retried.
+      // `findExistingReview` searches both pull-request reviews and issue
+      // comments, so the same closure also reconciles the issue-comment
+      // fallback below (its body carries the same marker).
       const reconcileByMarker = marker ? async () => {
         const landed = await this.findExistingReview(marker, owner, repo, prNumber);
         return landed === undefined ? undefined : markerResponse({ id: landed });

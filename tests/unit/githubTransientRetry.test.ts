@@ -4,11 +4,13 @@ import {
   computeGitHubRetryDelay,
   githubRetryDeadlineFromEnv,
   withGitHubRetry,
+  type GitHubRetryOptions,
 } from '../../src/github/githubRetry';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { CommentPublisher } from '../../src/github/commentPublisher';
 import { loadSameHeadReviewSource } from '../../src/github/qualificationReader';
 import { logger } from '../../src/utils/logger';
+import { githubRetryOptionsFromEnv } from '../../src/cli/publishingReview';
 
 // REL-1103: PRReviewJob ct-review-c3924d5e (ct-infrastructure#778) failed on a
 // single `GitHub API 503 .../check-runs` ("No server is currently available to
@@ -29,7 +31,7 @@ const unavailable = (status = 503, headers: Record<string, string> = {}) => new 
   { status, headers: { 'content-type': 'application/json', ...headers } },
 );
 
-function client(fetchImplementation: any, retry: Record<string, unknown> = {}) {
+function client(fetchImplementation: any, retry: GitHubRetryOptions = {}) {
   const sleep = vi.fn(async (_ms: number) => undefined);
   const instance = new GitHubInstallationClient({
     token, fetchImplementation, now: () => NOW, sleep, random: () => 0.5, retry,
@@ -84,6 +86,69 @@ describe('githubRetryDeadlineFromEnv', () => {
       .toBe(Date.parse('2026-09-24T17:00:00Z') - 60_000);
     expect(githubRetryDeadlineFromEnv({})).toBeUndefined();
     expect(githubRetryDeadlineFromEnv({ REVIEW_TERMINAL_DEADLINE: 'nope' })).toBeUndefined();
+  });
+});
+
+describe('githubRetryOptionsFromEnv (worker wiring)', () => {
+  it('forwards the operator deadline into the client retry policy as deadlineAtMs', () => {
+    expect(githubRetryOptionsFromEnv({ REVIEW_TERMINAL_DEADLINE: '2026-09-24T17:00:00Z' }))
+      .toEqual({ deadlineAtMs: Date.parse('2026-09-24T17:00:00Z') - 60_000 });
+    expect(githubRetryOptionsFromEnv({})).toEqual({});
+  });
+
+  it('a worker client built from that env refuses a retry the deadline cannot fit', async () => {
+    const fetchImplementation = vi.fn()
+      .mockResolvedValueOnce(unavailable(503))
+      .mockResolvedValueOnce(json({ id: 7 }));
+    // Job-kill point (deadline - 60 s) is 2 s after NOW: less than the attempt reserve.
+    const retry = githubRetryOptionsFromEnv({ REVIEW_TERMINAL_DEADLINE: new Date(NOW + 62_000).toISOString() });
+    const { instance, sleep } = client(fetchImplementation, retry);
+    await expect(instance.updateCheck({ owner: 'o', repo: 'r', checkId: 7 })).rejects.toThrow(/^GitHub API 503 /u);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('network errors (no HTTP status)', () => {
+  const networkError = () => Object.assign(new TypeError('fetch failed'), { cause: 'ECONNRESET' });
+
+  it('retries an idempotent read when enabled', async () => {
+    const attempt = vi.fn()
+      .mockRejectedValueOnce(networkError())
+      .mockResolvedValueOnce(json({ ok: true }));
+    const result = await withGitHubRetry<Response>({
+      operation: 'GET /x', method: 'GET', attempt, retryNetworkErrors: true,
+    }, { sleep: async () => undefined });
+    expect(result.status).toBe(200);
+    expect(attempt).toHaveBeenCalledTimes(2);
+  });
+
+  it('never retries a POST that failed at the connection level (it may have landed)', async () => {
+    const attempt = vi.fn().mockRejectedValue(networkError());
+    await expect(withGitHubRetry({
+      operation: 'POST /x', method: 'POST', attempt, retryNetworkErrors: true,
+    }, { sleep: async () => undefined })).rejects.toThrow('fetch failed');
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry network errors unless the caller opts in', async () => {
+    const attempt = vi.fn().mockRejectedValue(networkError());
+    await expect(withGitHubRetry({ operation: 'GET /x', method: 'GET', attempt }, { sleep: async () => undefined }))
+      .rejects.toThrow('fetch failed');
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('CommentPublisher does not re-send a review POST after a connection failure', async () => {
+    let posts = 0;
+    const fetchImplementation = vi.fn(async (_input: any, init: RequestInit = {}) => {
+      if (init.method === 'POST') { posts += 1; throw networkError(); }
+      return json([]);
+    });
+    const result = await new CommentPublisher({
+      githubToken: token, fetchImplementation, sleep: async () => undefined, random: () => 0,
+    }).publishReview({ owner: 'o', repo: 'r', prNumber: 9, commitSha: HEAD, event: 'COMMENT', body: 'b' });
+    expect(result.success).toBe(false);
+    expect(posts).toBe(1);
   });
 });
 
@@ -283,6 +348,33 @@ describe('CommentPublisher transient retry', () => {
 
     expect(result).toMatchObject({ success: true, reviewId: 42 });
     expect(posts).toBe(1);
+  });
+
+  it('reconciles the self-approval issue-comment fallback by the same marker (the lookup spans issue comments)', async () => {
+    const issueComments: any[] = [];
+    let issuePosts = 0;
+    const fetchImplementation = vi.fn(async (input: any, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      if (init.method === 'POST' && url.pathname === '/repos/o/r/pulls/9/reviews') {
+        return json({ message: 'Unprocessable Entity: Can not approve your own pull request' }, 422);
+      }
+      if (init.method === 'POST' && url.pathname === '/repos/o/r/issues/9/comments') {
+        issuePosts += 1;
+        issueComments.push({ id: 77, body: JSON.parse(String(init.body)).body });
+        return unavailable(503);
+      }
+      if (url.pathname === '/repos/o/r/pulls/9/reviews') return json([]);
+      if (url.pathname === '/repos/o/r/issues/9/comments') return json(issueComments);
+      return json({ message: 'Not Found' }, 404);
+    });
+
+    const result = await publisher(fetchImplementation).publishReview({
+      ...request, event: 'APPROVE', idempotencyKey: 'attempt-1',
+    });
+
+    expect(result).toMatchObject({ success: true, reviewId: 77 });
+    expect(issuePosts).toBe(1);
+    expect(issueComments).toHaveLength(1);
   });
 
   it('does not retry a 5xx review POST that has no idempotency marker', async () => {
