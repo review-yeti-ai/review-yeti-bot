@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_JEV_TRIAGE_SHADOW_LIMITS,
   JEV_RISK_CRITERIA,
   JEV_TRIAGE_CATEGORIES,
   JEV_TRIAGE_LOG,
@@ -24,6 +25,7 @@ import {
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../src/types/jevContract';
 import { createFailingJevStub } from '../support/jevStub';
 import { logger } from '../../src/utils/logger';
+import { getMetrics } from '../../src/telemetry';
 import type { ChangedFile } from '../../src/review/changedFiles';
 
 /**
@@ -460,6 +462,72 @@ describe('join -- one structured log line per file, joined with actual findings'
     const handle = startJevTriageShadow(input({ asker: createFailingJevStub('http_529') }));
     await handle.join(JOIN);
     expect(logsOf(info, JEV_TRIAGE_LOG.join)[0]).toMatchObject({ outcome: 'unavailable', reason: 'http_529', findings_total: 2 });
+  });
+});
+
+describe('telemetry counters', () => {
+  it('increments the files counter once per decision and the join counter once per joined file, with their labels', async () => {
+    const metrics = getMetrics();
+    const files = vi.spyOn(metrics.jevTriageShadowFiles, 'add');
+    const join = vi.spyOn(metrics.jevTriageShadowJoin, 'add');
+    const handle = startJevTriageShadow(input({ asker: okAsker() }));
+    await handle.join(JOIN);
+    expect(files.mock.calls).toEqual([
+      [1, { outcome: 'ok', category: 'source', risk_level: '4' }],
+      [1, { outcome: 'ok', category: 'source', risk_level: '4' }],
+    ]);
+    expect(join.mock.calls).toEqual([
+      [1, { risk_level: '4', finding_class: 'blocking' }],
+      [1, { risk_level: '4', finding_class: 'none' }],
+    ]);
+  });
+
+  it('labels unavailable and file-capped files with category and risk "none"', async () => {
+    const files = vi.spyOn(getMetrics().jevTriageShadowFiles, 'add');
+    await startJevTriageShadow(input({ asker: createFailingJevStub('http_429'), limits: { maxFiles: 1 } })).settled;
+    expect(files.mock.calls).toEqual(expect.arrayContaining([
+      [1, { outcome: 'unavailable', category: 'none', risk_level: 'none' }],
+      [1, { outcome: 'file_cap', category: 'none', risk_level: 'none' }],
+    ]));
+  });
+
+  it('a throwing metrics backend never reaches the review path', async () => {
+    vi.spyOn(getMetrics().jevTriageShadowFiles, 'add').mockImplementation(() => { throw new Error('otel down'); });
+    vi.spyOn(getMetrics().jevTriageShadowJoin, 'add').mockImplementation(() => { throw new Error('otel down'); });
+    const handle = startJevTriageShadow(input({ asker: okAsker() }));
+    await expect(handle.settled).resolves.toMatchObject({ status: 'completed' });
+    await expect(handle.join(JOIN)).resolves.toBeUndefined();
+  });
+});
+
+describe('default limits -- the documented bounds', () => {
+  it('pins the defaults the docs and the "never slows the review" invariant rely on', () => {
+    expect(DEFAULT_JEV_TRIAGE_SHADOW_LIMITS).toEqual({
+      maxFiles: 40,
+      concurrency: 4,
+      maxHunkChars: 12_000,
+      stageBudgetMs: 15_000,
+      perCallCapMs: 5_000,
+      maxRetries: 1,
+      hardTimeoutMs: 16_000,
+    });
+    expect(Object.isFrozen(DEFAULT_JEV_TRIAGE_SHADOW_LIMITS)).toBe(true);
+  });
+
+  it('with no limits override, a hanging Jev is cut off by the default 16 s hard deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const asker: JevAsker = { ask: vi.fn(() => new Promise<never>(() => undefined)) as never };
+      const handle = startJevTriageShadow(input({ asker }));
+      let settledStatus: string | undefined;
+      void handle.settled.then((summary) => { settledStatus = summary.status; });
+      await vi.advanceTimersByTimeAsync(15_999);
+      expect(settledStatus).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settledStatus).toBe('timeout');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
