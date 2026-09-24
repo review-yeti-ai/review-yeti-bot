@@ -67,6 +67,39 @@ describe('Runner mode selection and configuration', () => {
       }
     });
 
+    it('generic mode accepts a digest-pinned non-vendor image (the branch this PR changed)', () => {
+      // The diff switched this branch from a trusted-registry pattern to the shared
+      // contract, so generic mode newly accepts ANY registry when digest-pinned. A
+      // self-hoster running generic mode depends on it; a regression to a stale or
+      // registry-scoped pattern would otherwise pass every test in the suite.
+      const digest = `sha256:${'a'.repeat(64)}`;
+      const partner = `registry.partner.example/rev/worker@${digest}`;
+      const config = reviewJobDispatcherConfigFromEnv({
+        REVIEW_JOB_DISPATCH_ENABLED: 'true',
+        REVIEW_JOB_NAMESPACE: 'ct-review-system',
+        REVIEW_JOB_RUNNER_MODE: 'generic',
+        REVIEW_JOB_WORKER_IMAGE: partner,
+        HOSTNAME: 'dispatcher-pod-0',
+      });
+      expect(config.runnerMode).toBe('generic');
+      expect(config.workerImage).toBe(partner);
+    });
+
+    it('generic mode still rejects an unpinned image from any registry', () => {
+      // The control that remains after the switch: mutability.
+      for (const image of ['registry.partner.example/rev/worker:latest', 'evil.example/backdoor:latest']) {
+        expect(() =>
+          reviewJobDispatcherConfigFromEnv({
+            REVIEW_JOB_DISPATCH_ENABLED: 'true',
+            REVIEW_JOB_NAMESPACE: 'ct-review-system',
+            REVIEW_JOB_RUNNER_MODE: 'generic',
+            REVIEW_JOB_WORKER_IMAGE: image,
+            HOSTNAME: 'dispatcher-pod-0',
+          }),
+        ).toThrow(/generic runner image|digest-pinned/u);
+      }
+    });
+
     it('supports generic mode and defaults worker image to node:24-bookworm-slim', () => {
       const config = reviewJobDispatcherConfigFromEnv({
         REVIEW_JOB_DISPATCH_ENABLED: 'true',
