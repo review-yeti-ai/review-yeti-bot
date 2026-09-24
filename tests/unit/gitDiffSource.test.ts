@@ -282,6 +282,16 @@ describe('REL-1080 git diff source against a real repository', () => {
     }
   }, 30_000);
 
+  it('refuses non-UTF-8 diff output instead of decoding it lossily', async () => {
+    const wrapper = join(tmpdir(), `rel1080-latin1-git-${process.pid}.sh`);
+    // Real git for every step except the diff, which emits an invalid UTF-8 byte.
+    writeFileSync(wrapper, '#!/bin/sh\nfor a in "$@"; do [ "$a" = diff ] && { printf \'diff --git a/x b/x\\n+\\377\\n\'; exit 0; }; done\nexec git "$@"\n');
+    chmodSync(wrapper, 0o755);
+    try {
+      expect(await reason(localSource({ gitBinary: wrapper })(request()))).toBe('unreadable');
+    } finally { rmSync(wrapper, { force: true }); }
+  }, 60_000);
+
   it('honours the caller abort signal', async () => {
     const abort = new AbortController(); abort.abort();
     expect(await reason(localSource()(request({ signal: abort.signal })))).toBe('timeout');
@@ -292,7 +302,7 @@ describe('REL-1080 git diff source against a real repository', () => {
 // Worker side: loadSameHeadReviewSource with a mocked GitHub API.
 // ---------------------------------------------------------------------------
 function workerApi(options: { finalHead?: string; finalFiles?: number; changedFiles?: number;
-  compareBase?: string } = {}) {
+  compareBase?: string; compareFailure?: 'status' | 'plain' } = {}) {
   let pullReads = 0; const routes: string[] = [];
   const request = vi.fn<GitHubQualificationRequest>(async (route, parameters) => {
     routes.push(route);
@@ -307,6 +317,8 @@ function workerApi(options: { finalHead?: string; finalFiles?: number; changedFi
     }
     if (route === 'GET /repos/{owner}/{repo}/compare/{basehead}') {
       expect(parameters.basehead).toBe(`${baseTipSha}...${headSha}`);
+      if (options.compareFailure === 'status') throw Object.assign(new Error('upstream'), { status: 502 });
+      if (options.compareFailure === 'plain') throw new Error('socket hang up');
       return { data: { base_commit: { sha: options.compareBase ?? baseTipSha }, merge_base_commit: { sha: mergeBaseSha } } };
     }
     if (route === 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files') {
@@ -355,6 +367,19 @@ describe('REL-1080 worker: a 406 diff is computed from git, not failed', () => {
     expect(parseChangedFiles(source.diff).files.map((file) => file.path)).toEqual(['src/from-pull-files.ts']);
     expect(outcomes).toEqual([{ source: 'pull-files', reason: expected }]);
   }, 60_000);
+
+  it.each([
+    ['a GitHub 5xx', 'status'],
+    ['a transport error', 'plain'],
+  ] as const)('falls back to pull-files when the compare read fails with %s', async (_label, compareFailure) => {
+    const api = workerApi({ compareFailure }); const outcomes: unknown[] = [];
+    const gitDiffSource = vi.fn<GitDiffSource>(localSource());
+    const source = await loadSameHeadReviewSource(worker(), api.request, {
+      gitDiffSource, onLargeDiffSource: (outcome) => outcomes.push(outcome) });
+    expect(parseChangedFiles(source.diff).files.map((file) => file.path)).toEqual(['src/from-pull-files.ts']);
+    expect(outcomes).toEqual([{ source: 'pull-files', reason: 'unavailable' }]);
+    expect(gitDiffSource).not.toHaveBeenCalled();
+  });
 
   it('keeps the pre-REL-1080 behaviour exactly when no git source is wired', async () => {
     const api = workerApi();
