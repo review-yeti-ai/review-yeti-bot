@@ -8,7 +8,7 @@ import {
 import {
   deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, workerReviewCompletionDigest,
 } from '../review/workerReviewCompletion';
-import { evaluateReviewGate, type ReviewGateDecision, type ReviewGateEvidence } from '../review/reviewGatePolicy';
+import { evaluateReviewGate, reviewGateErrorText, type ReviewGateDecision, type ReviewGateEvidence } from '../review/reviewGatePolicy';
 import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type TrustedGateCompletionContext,
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationCallback,
   type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
@@ -295,7 +295,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
           lease_owner = NULL, lease_expires_at = NULL,
           updated_at = to_timestamp($5/1000.0) WHERE run_id = $1`,
       [event.runId, decision.status === 'success' ? 'succeeded' : decision.status === 'cancelled' ? 'superseded' : 'failed',
-        resultDigest, decision.status === 'success' ? null : `review gate: ${decision.reason}`, now, failureDiagnostics]);
+        resultDigest, decision.status === 'success' ? null : reviewGateErrorText(decision.reason), now, failureDiagnostics]);
       stage = 'lifecycle-append';
       await this.appendLifecycle(client, event.runId, 'review.lifecycle.terminal', now, {
         stage: 'terminal', terminal_class: decision.status, result_digest: resultDigest,
@@ -475,7 +475,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         await client.query(`UPDATE review_runs SET status = $2, stage = 'publish', error_text = $3,
             failure_diagnostics = CASE WHEN $5::jsonb IS NULL THEN failure_diagnostics ELSE $5::jsonb END,
             lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4/1000.0)
-          WHERE run_id = $1`, [row.run_id, cancelled ? 'superseded' : 'failed', `review gate: ${decision.reason}`, now, failureDiagnostics]);
+          WHERE run_id = $1`, [row.run_id, cancelled ? 'superseded' : 'failed', reviewGateErrorText(decision.reason), now, failureDiagnostics]);
         // A bound token means a Job may have started before a lost projection
         // ACK. Preserve that execution so retry allocates a fresh Job/Secret.
         await client.query(`UPDATE review_dispatch_outbox SET
