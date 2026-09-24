@@ -549,6 +549,39 @@ export function renderRoutedFiles(panelResult: Pick<PanelResult, 'routedFiles'>)
     + (overflow > 0 ? `\n- +${overflow} more` : '');
 }
 
+const MAX_LISTED_DEPTH_FILES = 20;
+
+/**
+ * REL-1092 (plan section 3.5, nothing dropped silently): files the lanes saw
+ * only in part -- a patch cut at the per-file limit -- or not at all -- a patch
+ * that is binary or that GitHub omitted. Read from the shared decision the
+ * engine attached to its result, sanitized and capped like `renderRoutedFiles`.
+ */
+export function renderReviewDepthDisclosure(
+  panelResult: Pick<PanelResult, 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'>,
+): string[] {
+  const safe = (text: string) => String(text).replace(/[`<>\r\n]/gu, ' ').slice(0, 300);
+  const count = (value: unknown) => (Number.isSafeInteger(value) ? (value as number).toLocaleString('en-US') : '?');
+  const capped = <T>(rows: readonly T[], line: (row: T) => string) => {
+    const overflow = rows.length - MAX_LISTED_DEPTH_FILES;
+    return rows.slice(0, MAX_LISTED_DEPTH_FILES).map(line).join('\n') + (overflow > 0 ? `\n- +${overflow} more` : '');
+  };
+  const parts: string[] = [];
+  const truncated = Array.isArray(panelResult.truncatedFiles) ? panelResult.truncatedFiles : [];
+  if (truncated.length > 0) {
+    parts.push('Truncated patches (reviewed in part: lanes saw only the first part of the patch; the rest was not sent):\n'
+      + capped(truncated, (file) => `- \`${safe(file.path)}\`: kept ${count(file.keptChars)} of ${count(file.originalChars)} characters`));
+  }
+  const unavailable = Array.isArray(panelResult.unavailablePatches) ? panelResult.unavailablePatches : [];
+  if (unavailable.length > 0) {
+    const omitted = new Set(Array.isArray(panelResult.omittedSourcePaths) ? panelResult.omittedSourcePaths : []);
+    parts.push('Not reviewed: patch unavailable (binary/omitted):\n'
+      + capped(unavailable, (file) => `- \`${safe(file.path)}\` (${file.kind === 'binary' ? 'binary' : 'omitted by GitHub'})`
+        + (omitted.has(file.path) ? ' -- source, so coverage is incomplete' : '')));
+  }
+  return parts;
+}
+
 function renderUnreportedLanes(panelResult: PanelResult): string | null {
   const gaps = panelResult.unreportedLanes;
   if (!Array.isArray(gaps) || gaps.length === 0) return null;
@@ -1417,6 +1450,16 @@ export async function runPublishingReviewWorker(
       const rawFindings = (Array.isArray(panelResult.personas) ? panelResult.personas : [])
         .flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
       const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true;
+      // REL-1092: analyzable files whose changed text GitHub omitted (the pull-files
+      // fallback of a 406 diff). No lane saw them, so they are never counted as reviewed:
+      // coverage is incomplete here, and the service ANDs this into its own coverage, so
+      // the canonical derivation reaches the same verdict.
+      const omittedSourcePaths = Array.isArray(panelResult.omittedSourcePaths) ? panelResult.omittedSourcePaths : [];
+      const coverageGaps = [
+        ...(unreadable.length > 0 ? ['unreadable diff header(s)'] : []),
+        ...(omittedSourcePaths.length > 0
+          ? [`${omittedSourcePaths.length} source file(s) whose patch GitHub omitted were not reviewed`] : []),
+      ];
       // The model arbiter is evidence, not the policy boundary. The canonical
       // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
       // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
@@ -1424,8 +1467,8 @@ export async function runPublishingReviewWorker(
       // the same fail-closed severity contract as the hosted review path.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
-        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && unreadable.length === 0,
-        ...(unreadable.length > 0 ? { coverageGaps: ['unreadable diff header(s)'] } : {}),
+        coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0,
+        ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
         // would let a longer task plan silently raise its own P1 blocking threshold (7 tasks moves
@@ -1471,7 +1514,9 @@ export async function runPublishingReviewWorker(
       const firstFailedLane = panelResult.optionalFailures?.[0];
       const recoverablePanelFailure = isRecoverableIncompletePanel({
         authoritative,
-        unreadableDiffCount: unreadable.length,
+        // A file no lane could read is a deterministic property of this diff; a
+        // fresh attempt reads the same diff, so it is never the retryable shape.
+        unreadableDiffCount: unreadable.length + omittedSourcePaths.length,
         mode: rawRoster.mode,
         rosterValid: rawRoster.rosterValid,
         failedLaneCount: rawRoster.failedLaneCount,
@@ -1591,6 +1636,7 @@ export async function runPublishingReviewWorker(
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
+          ...renderReviewDepthDisclosure(panelResult),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
         ]
@@ -1611,6 +1657,7 @@ export async function runPublishingReviewWorker(
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
+          ...renderReviewDepthDisclosure(panelResult),
           ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
@@ -1729,7 +1776,7 @@ export async function runPublishingReviewWorker(
           // caps the combined panel + shadow lane count so an oversized composed task plan cannot
           // push this past `resultSchema.personas`'s own bound.
           personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
-          coverageComplete: unreadable.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true,
+          coverageComplete: coverageGaps.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true,
           // See `resultSchema.panelWallClockMs`: the panel's own wall-clock measurement, carried
           // across the completion boundary so downstream comparisons stop relying on a summed
           // per-lane duration that overstates wall time under fan-out. Omitted (not a fabricated

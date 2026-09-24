@@ -1,4 +1,5 @@
-import type { RoutedReviewFile } from '../review/personaApplicability';
+import type { RoutedReviewFile, TruncatedReviewFile } from '../review/personaApplicability';
+import type { UnavailablePatchFile } from '../review/patchAvailability';
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
@@ -165,6 +166,21 @@ export interface PanelResult {
    * summary. Absent when nothing was routed.
    */
   routedFiles?: RoutedReviewFile[];
+  /**
+   * REL-1092: files whose patch was cut before the lanes saw it (path, size
+   * before and after). Disclosed in the check summary. Absent when none.
+   */
+  truncatedFiles?: TruncatedReviewFile[];
+  /**
+   * REL-1092: files no lane could read line by line (binary, or patch omitted by
+   * GitHub). Disclosed in the check summary as not reviewed. Absent when none.
+   */
+  unavailablePatches?: UnavailablePatchFile[];
+  /**
+   * REL-1092: analyzable files whose changed text was omitted. Never counted as
+   * reviewed: the worker marks coverage incomplete. Absent when none.
+   */
+  omittedSourcePaths?: string[];
   zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {
