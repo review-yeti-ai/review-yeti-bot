@@ -6,6 +6,7 @@ import { RepositoryVisibility } from '../review/repositoryVisibility';
 // (REL-892 finding 3): a panel domain type must not reach into the worker-completion/HTTP
 // boundary module for a plain value type. See `../types/workerFailure` for the full rationale.
 import type { WorkerFailureClass } from '../types/workerFailure';
+import type { DiffShrinkDisclosure } from '../types/diffShrink';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -118,6 +119,12 @@ export interface PanelResult {
    * Absent means documentation/asset/data only (the original exemption).
    */
   noReviewableContentKind?: 'documentation' | 'lockfile-only';
+  /**
+   * REL-1079: what diff shrinking did to the content these lanes received. Set only when
+   * `REVIEW_YETI_DIFF_SHRINK` applied to a run with at least one lane; the check summary
+   * publishes exactly this.
+   */
+  diffShrink?: DiffShrinkDisclosure;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];
