@@ -80,6 +80,10 @@ spec:
             - name: REVIEW_YETI_INCREMENTAL
               value: {{ .Values.publishing.incremental | quote }}
             {{- end }}
+            {{- if .Values.publishing.reviewBudget }}
+            - name: REVIEW_YETI_BUDGET
+              value: {{ .Values.publishing.reviewBudget | quote }}
+            {{- end }}
             - name: REVIEW_YETI_GATEWAY_SECRET_NAME
               value: {{ .Values.publishing.gatewaySecretName | quote }}
             - name: REVIEW_YETI_GATEWAY_SECRET_KEY

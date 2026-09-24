@@ -168,7 +168,8 @@ export function filterDiffHunks(
     if (filteredPatch && filteredPatch.length > MAX_FILE_PATCH_CHARS) {
       // Truncate excessively large single diffs. The remaining hunks are not
       // sent; the cut is recorded so the check summary discloses it. Reviewing
-      // the rest as further chunks is W5/W6 (REL-1082 / REL-1083).
+      // the rest as further chunks is W6 (REL-1083). With REVIEW_YETI_BUDGET (REL-1082,
+      // src/review/reviewBudget.ts) a file that fits a lane's budget is sent whole instead.
       truncation = { originalChars: filteredPatch.length, keptChars: MAX_FILE_PATCH_CHARS };
       filteredPatch = filteredPatch.slice(0, MAX_FILE_PATCH_CHARS)
         + `\n\n... [Diff truncated to ${MAX_FILE_PATCH_CHARS / 1000}k chars by Smart Hunk Filter] ...`;
