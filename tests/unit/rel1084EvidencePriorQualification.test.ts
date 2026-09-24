@@ -21,6 +21,7 @@ import {
 } from '../../src/review/verdictCache';
 import { parseWorkerReviewEvidence, workerReviewEvidenceDigest, type WorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { logger } from '../../src/utils/logger';
+import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 
 /**
  * REL-1084 (pilot, non-authoritative repos): review-yeti-bot and ct-meta publish their own Review
@@ -73,7 +74,8 @@ const contentReader = () => ({
 type LaneFinding = PanelResult['personas'][number]['findings'][number];
 
 /** The WorkerReviewEvidence the real non-authoritative worker reports for the PRIOR head. */
-async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {}): Promise<WorkerReviewEvidence> {
+async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
+  override?: { diff?: string; panel?: PanelResult }): Promise<WorkerReviewEvidence> {
   const env: NodeJS.ProcessEnv = {
     NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate', REVIEW_RUN_ID: PRIOR_RUN, REVIEW_REPO: 'acme/app',
     REVIEW_REPOSITORY_ID: String(REPO_ID), REVIEW_POLICY_DIGEST: POLICY, REVIEW_CONFIG_DIGEST: CONFIG,
@@ -83,7 +85,7 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {}): 
   };
   // Stands in for the model engine only: every lane covers every file. It applies the
   // verdict-cache scope it was given, as both engines do, so the real builder records entries.
-  const panelRunner = vi.fn(async (runOptions: any) => attachVerdictCacheDisclosure({
+  const panelRunner = vi.fn(async (runOptions: any) => override?.panel ?? attachVerdictCacheDisclosure({
     headSha: PRIOR_HEAD,
     applicablePersonaIds: LANES,
     personas: LANES.map((id) => {
@@ -104,7 +106,7 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {}): 
   await runPublishingReviewWorker(env, {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
     completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
-    sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
+    sourceLoader: vi.fn(async () => ({ diff: override?.diff ?? DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: panelRunner as never,
     client: {} as never,
@@ -130,7 +132,7 @@ function storedRows(evidence: WorkerReviewEvidence, options: { status?: string; 
       payload: JSON.stringify(evidence), created_at: '2026-09-24T10:00:05.000Z' },
     gate: null,
     currentReceivedAt: '2026-09-24T11:00:05.000Z',
-    currentAuthoritative: options.currentAuthoritative ?? false,
+    currentAuthoritativeGateAppId: options.currentAuthoritative ? 7001 : null,
   };
 }
 
@@ -197,7 +199,7 @@ describe('a non-authoritative prior built by the real worker', () => {
     expect(priorReviewRecordFromRows(storedRows(evidence, { currentAuthoritative: true })))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'no-gate-evidence-record' });
     const unknownMode = storedRows(evidence);
-    delete unknownMode.currentAuthoritative;
+    delete unknownMode.currentAuthoritativeGateAppId;
     expect(priorReviewRecordFromRows(unknownMode)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'no-gate-evidence-record' });
     expect(priorReviewRecordFromRows(storedRows(evidence, { priorAppId: 7001 })))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-prior-run-authoritative' });
@@ -263,6 +265,28 @@ describe('negative proof: a non-authoritative prior that must not be rested on',
     expect(decideNext(rows, { heads: comparison('diverged', ['src/changed.ts']) })).toEqual({ mode: 'full', reason: 'not-ancestor' });
     expect(decideNext(rows, { current: { executionAttempt: 2 } })).toEqual({ mode: 'full', reason: 'retry-attempt' });
     expect(decideNext(rows, { maxAgeMs: 60_000 })).toEqual({ mode: 'full', reason: 'prior-too-old' });
+  });
+
+  it('records no roster, so the prior is ineligible, for a documentation-only exemption or an invalid panel roster', async () => {
+    const docsDiff = modified('docs/plan.md', 'DOCS');
+    const exempt = await realPriorEvidence({}, { diff: docsDiff,
+      panel: buildDocumentationOnlyPanelResult(PRIOR_HEAD, 'bifrost', 'No analyzable source changed.') });
+    expect(exempt.result).not.toHaveProperty('roster');
+    expect(priorReviewRecordFromRows(storedRows(exempt, { status: 'succeeded' })))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-exemption' });
+    // A lane the configured roster never asked for makes the roster invalid.
+    const invalid = await realPriorEvidence({}, { panel: {
+      headSha: PRIOR_HEAD, applicablePersonaIds: LANES,
+      personas: [...LANES, 'rogue-lane'].map((id) => ({ id, required: true, providerId: 'bifrost', model: 'm', decision: 'APPROVE',
+        findings: [], usage: null, costUSD: null, durationMs: 0 })),
+      optionalFailures: [], quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+      moderator: { providerId: 'bifrost', model: 'none', decision: 'RECONCILED', findings: [], usage: null, costUSD: null, durationMs: 0 },
+      arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'stub', usage: null, costUSD: null, durationMs: 0 },
+    } as PanelResult });
+    expect(invalid.result).not.toHaveProperty('roster');
+    const forged = edited(invalid, (copy) => { copy.conclusion = 'success'; });
+    expect(priorReviewRecordFromRows(storedRows(forged)))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-roster-unknown' });
   });
 
   it('bounds the recorded roster: non-empty and unique', async () => {

@@ -161,11 +161,20 @@ export interface PriorReviewRows {
   /** The current run's admission time; ages are measured from it, so a slow worker cannot age a record out. */
   currentReceivedAt: unknown;
   /**
-   * REL-1084: whether the CURRENT run is decided by the authoritative gate. Only an explicit
-   * `false` lets it rest on a non-authoritative WorkerReviewEvidence prior; an authoritative-gate
-   * run keeps requiring the gate's own record.
+   * REL-1084: the CURRENT run's `review_runs.authoritative_gate_app_id`, raw. Interpreted only by
+   * `isNonAuthoritativeRun`: only a non-authoritative current run may rest on a non-authoritative
+   * WorkerReviewEvidence prior; an authoritative-gate run keeps requiring the gate's own record.
    */
-  currentAuthoritative?: boolean;
+  currentAuthoritativeGateAppId?: unknown;
+}
+
+/**
+ * REL-1084: the one reading of `review_runs.authoritative_gate_app_id`. A run is
+ * non-authoritative only when the column is present and null; anything else, including an
+ * unknown value, is treated as gate-decided, which only ever refuses a non-authoritative prior.
+ */
+export function isNonAuthoritativeRun(authoritativeGateAppId: unknown): boolean {
+  return authoritativeGateAppId === null;
 }
 
 function timeOf(value: unknown): number {
@@ -221,8 +230,8 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
     // only for a non-authoritative current run, from its own stored conclusion, roster and lanes.
     const shipIncompleteReason: StoredPriorRefusal | null = rows.run.status !== 'succeeded' ? 'run-not-succeeded'
       : authoritative ? storedCompletionShipCompleteReason(result, rows.gate, storedDigest)
-      : rows.currentAuthoritative !== false ? 'no-gate-evidence-record'
-      : rows.run.authoritative_gate_app_id != null ? 'evidence-prior-run-authoritative'
+      : !isNonAuthoritativeRun(rows.currentAuthoritativeGateAppId) ? 'no-gate-evidence-record'
+      : !isNonAuthoritativeRun(rows.run.authoritative_gate_app_id) ? 'evidence-prior-run-authoritative'
       : storedEvidenceShipCompleteReason(result, conclusion);
     const findingPaths = [...new Set(result.personas.flatMap((persona) => persona.findings.map((finding) => finding.path)))].sort();
     return priorReviewRecordSchema.parse({

@@ -59,7 +59,7 @@ export async function selectPriorReviewRows(queryable: Queryable, currentRunId: 
   const gate = row.gate_worker_result_digest == null ? null
     : { worker_result_digest: row.gate_worker_result_digest, evidence: row.gate_evidence, decision: row.gate_decision };
   return { run: row, completion: row, gate, currentReceivedAt: current.received_at,
-    currentAuthoritative: current.authoritative_gate_app_id != null };
+    currentAuthoritativeGateAppId: current.authoritative_gate_app_id ?? null };
 }
 
 export async function selectPriorReviewRecord(queryable: Queryable, currentRunId: string): Promise<PriorReviewRecord | null> {
