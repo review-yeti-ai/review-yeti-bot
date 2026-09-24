@@ -59,7 +59,8 @@ import type {
 } from '../types/reviewBudget';
 import { MAX_FILE_PATCH_CHARS } from '../pipeline/hunkFilter';
 import { resolveShrunkReviewApplicability } from './diffShrink';
-import { resolveScopedReviewApplicability } from './incrementalReview';
+import { resolveCachedReviewApplicability } from './verdictCache';
+import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { DiffShrinkDisclosure } from '../types/diffShrink';
 import { scopeFilesForPersona, type EffectiveReviewFile, type ReviewApplicability } from './personaApplicability';
@@ -478,7 +479,7 @@ export interface ReviewBudgetPlan {
 
 export const COMPOSED_BUDGET_LANE_ID = 'composed';
 
-type ScopedOptions = NonNullable<Parameters<typeof resolveScopedReviewApplicability>[2]>;
+type ScopedOptions = NonNullable<Parameters<typeof resolveCachedReviewApplicability>[2]>;
 
 /**
  * The shared applicability decision, diff shrinking, the incremental scope
@@ -498,10 +499,13 @@ export function resolveBudgetedReviewApplicability<P extends Parameters<typeof r
 ): ReviewApplicability<P> & {
   diffShrink: DiffShrinkDisclosure | null;
   incremental: IncrementalReviewDisclosure | null;
+  verdictCache: VerdictCacheDisclosure | null;
   reviewBudget: ReviewBudgetPlan | null;
 } {
   const { reviewBudget, budgetScope = 'per-lane', ...scopedOptions } = options;
-  const decision = resolveScopedReviewApplicability(enabledPersonas, changedFiles, scopedOptions);
+  // REL-1085: the verdict cache (a thin pass-through when absent) runs before the budget, so a
+  // file served from cache is packed as its one-line note.
+  const decision = resolveCachedReviewApplicability(enabledPersonas, changedFiles, scopedOptions);
   if (!reviewBudget?.enabled || decision.applicable.length === 0) return { ...decision, reviewBudget: null };
 
   // The whole patch of a file the per-file cut shortened, when nothing after

@@ -149,6 +149,9 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1082: risk-ordered review budget, off unless the deployment
 		// sets it (a comma-separated owner/repo allowlist for pilots).
 		Budget: strings.TrimSpace(os.Getenv("REVIEW_YETI_BUDGET")),
+		// REL-1085: per-file verdict cache, off unless the deployment sets it
+		// (a comma-separated owner/repo allowlist for pilots).
+		VerdictCache: strings.TrimSpace(os.Getenv("REVIEW_YETI_VERDICT_CACHE")),
 	}
 }
 

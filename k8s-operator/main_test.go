@@ -187,3 +187,15 @@ func TestPublishingConfigFromEnvReadsReviewBudget(t *testing.T) {
 		t.Fatalf("review budget not read: %+v", config)
 	}
 }
+
+// REL-1085: the verdict cache has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsVerdictCache(t *testing.T) {
+	t.Setenv("REVIEW_YETI_VERDICT_CACHE", "")
+	if config := publishingConfigFromEnv(); config.VerdictCache != "" {
+		t.Fatalf("unset verdict cache flag must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_VERDICT_CACHE", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
+	if config := publishingConfigFromEnv(); config.VerdictCache != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+		t.Fatalf("verdict cache flag not read: %+v", config)
+	}
+}

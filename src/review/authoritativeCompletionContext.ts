@@ -10,6 +10,7 @@ import { parseChangedFiles } from './changedFiles';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { resolveReviewApplicability } from './personaApplicability';
 import { verifyIncrementalClaim, type IncrementalVerificationInput } from './incrementalReview';
+import { routedLanesOf, verifyVerdictCacheClaim, type VerdictCacheVerificationInput } from './verdictCache';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import {
@@ -39,7 +40,7 @@ export interface AuthoritativeCompletionContextOptions {
   /** Mint only a repository-scoped read token. Neither credentials nor readers are cached. */
   readerFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
     Promise<Pick<AuthoritativeReviewReader, 'currentCandidate' | 'exactCurrentDiff'>
-      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison'>>>;
+      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'comparisonContent'>>>;
   /** Already configured with the service's trusted central policy/ref/transport. */
   publishingResolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
   /** Whole operation, including storage, token mint, policy refresh and body reads. */
@@ -94,7 +95,8 @@ function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublis
  * evidence nor concludes a review. Canonical callback derivation must still
  * require every expected persona, validate findings, and determine the verdict. */
 export function createAuthoritativeCompletionContext(options: AuthoritativeCompletionContextOptions):
-  (gate: StoredReviewGate, incremental?: IncrementalVerificationInput) => Promise<TrustedGateCompletionContext> {
+  (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
+    verdictCache?: VerdictCacheVerificationInput) => Promise<TrustedGateCompletionContext> {
   let timeoutMs: number;
   try {
     // Large exact-head diffs can require bounded pinned-file reconstruction
@@ -107,7 +109,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
   const { getStoredPrepared, readerFactory } = options;
   const resolvePublishing = options.publishingResolver.resolve.bind(options.publishingResolver);
 
-  return async (gate, incremental): Promise<TrustedGateCompletionContext> => {
+  return async (gate, incremental, verdictCache): Promise<TrustedGateCompletionContext> => {
     let substage: TrustedCompletionResolutionSubstage = 'stored-policy';
     const abort = new AbortController();
     const deadline = performance.now() + timeoutMs;
@@ -240,6 +242,28 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
           signal: abort.signal,
         }))).verified : false;
       }
+      // REL-1085: a completion that served files from the verdict cache is re-decided here from
+      // the service's own source record, exact-SHA comparisons and THIS applicability decision's
+      // routing. A read failure is transient (retry); a decision that does not permit every served
+      // file leaves it unverified, which the canonical derivation refuses.
+      let verdictCacheVerified: boolean | undefined;
+      if (verdictCache?.claim.hits) {
+        substage = 'exact-diff';
+        const content = reader.comparisonContent?.bind(reader);
+        const effective = new Map(applicability.effectiveFiles.map((file) => [file.path, file]));
+        verdictCacheVerified = content ? (await step(() => verifyVerdictCacheClaim({
+          claim: verdictCache.claim, source: verdictCache.source, maxAgeMs: verdictCache.maxAgeMs,
+          current: { runId: verdictCache.run.runId, repositoryId: requested.repositoryId, prNumber: requested.prNumber,
+            headSha: requested.headSha, baseSha: requested.baseSha, policyDigest,
+            configDigest: verdictCache.run.configDigest, executionAttempt: verdictCache.run.executionAttempt },
+          routedLanes: (path) => {
+            const file = effective.get(path);
+            return file ? routedLanesOf(applicability.applicable, file) : undefined;
+          },
+          reader: { content: (base, head, signal) => content({ ...repository }, base, head, signal ?? abort.signal) },
+          signal: abort.signal,
+        }))).verified : false;
+      }
       checkDeadline();
       return { current: { ...final, policyDigest }, coverage: {
         expectedPersonaIds, changedFiles: files,
@@ -250,6 +274,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         // worker quorum. Derivation separately requires ALL these exact IDs.
         quorumSatisfied: expectedPersonaIds.length > 0,
         ...(incrementalVerified === undefined ? {} : { incrementalVerified }),
+        ...(verdictCacheVerified === undefined ? {} : { verdictCacheVerified }),
       } };
     };
     try { return await Promise.race([resolve(), expired]); }

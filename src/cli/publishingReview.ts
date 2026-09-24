@@ -75,7 +75,16 @@ import {
   type CommitComparisonReader, type IncrementalBaseSource,
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
-import { loadReviewBudgetInput, renderReviewBudgetSummary } from '../review/reviewBudget';
+import { loadReviewBudgetInput, renderReviewBudgetSummary, reviewBudgetEnabledFor } from '../review/reviewBudget';
+import {
+  buildVerdictCacheRecord, planVerdictCache, renderVerdictCacheSummary, verdictCacheEnabledFor, verdictCacheLaneKeys,
+  type ComparisonContentReader, type VerdictCacheBaseSource,
+} from '../review/verdictCache';
+import { createVerdictCacheCompareReader } from '../github/verdictCacheCompareReader';
+import { incrementalReviewEnabledFor } from '../review/incrementalReview';
+import { diffShrinkEnabledFor } from '../review/diffShrink';
+import { personaLaneViewIdentity } from '../panel/panelEngine';
+import workerPackage from '../../package.json';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
@@ -848,6 +857,14 @@ export interface PublishingReviewDeps {
   incrementalBase?: IncrementalBaseSource;
   /** REL-1084 test seam; production compares with this run's `GH_TOKEN`. */
   incrementalCompareReader?: CommitComparisonReader;
+  /**
+   * REL-1085: the service's verdict-cache source record (`REVIEW_YETI_VERDICT_CACHE`). Built by
+   * `publishingWorkerAdapters` only when the flag is on for this repository; absent means nothing
+   * is served from cache (entries are still recorded when this run's comparison is readable).
+   */
+  verdictCacheBase?: VerdictCacheBaseSource;
+  /** REL-1085 test seam; production compares with this run's `GH_TOKEN`. */
+  verdictCacheCompareReader?: ComparisonContentReader;
 }
 
 /**
@@ -1294,6 +1311,52 @@ export async function runPublishingReviewWorker(
       }) : undefined),
     });
     const incrementalScope = incrementalPlan?.scope ?? undefined;
+
+    // REL-1085: per-file verdict cache, default off (`REVIEW_YETI_VERDICT_CACHE`). Null when off;
+    // never throws. Both engines apply the scope after the shared applicability decision (and after
+    // shrinking and the incremental scope) and return what they served as `panelResult.verdictCache`.
+    const verdictCacheOn = verdictCacheEnabledFor(env, identity.repo);
+    const verdictCachePlan = !verdictCacheOn ? null : await planVerdictCache({
+      env,
+      repository: identity.repo,
+      current: {
+        runId: identity.runId, repositoryId: identity.repositoryId, prNumber: identity.prNumber,
+        headSha: identity.headSha, baseSha: identity.baseSha, executionAttempt: identity.executionAttempt,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+      },
+      laneKeys: verdictCacheLaneKeys({
+        personas: workerConfig.personas,
+        providers: workerConfig.reviewers.providers,
+        // The panel prompts from the configured charter and, off the authoritative roster, dashboard overrides.
+        promptOf: (persona) => personaLaneViewIdentity(persona as Parameters<typeof personaLaneViewIdentity>[0], !authoritative),
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        engine: reviewEngine,
+        workerVersion: String(workerPackage.version),
+        viewFlags: {
+          diffShrink: diffShrinkEnabledFor(env, identity.repo),
+          incremental: incrementalReviewEnabledFor(env, identity.repo),
+          budget: reviewBudgetEnabledFor(env, identity.repo),
+          mapReduce: String(env.REVIEW_YETI_MAP_REDUCE ?? '').trim(),
+        },
+      }),
+      base: deps.verdictCacheBase,
+      reader: deps.verdictCacheCompareReader ?? (repoReadToken ? createVerdictCacheCompareReader({
+        token: repoReadToken, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+      }) : undefined),
+    });
+    const verdictCacheScope = verdictCachePlan?.scope ?? undefined;
+    if (verdictCachePlan) {
+      logger.info('Verdict cache planned', {
+        runId: identity.runId,
+        repository: identity.repo,
+        mode: verdictCachePlan.decision.mode,
+        ...(verdictCachePlan.decision.mode === 'full'
+          ? { reason: verdictCachePlan.decision.reason }
+          : { permitted: verdictCachePlan.decision.permitted.length, sourceRunId: verdictCachePlan.decision.source.runId }),
+        recording: verdictCacheScope !== undefined,
+      });
+    }
     if (incrementalPlan) {
       logger.info('Incremental re-review planned', {
         runId: identity.runId,
@@ -1442,6 +1505,7 @@ export async function runPublishingReviewWorker(
               ...(diffShrink ? { diffShrink } : {}),
               ...(incrementalScope ? { incremental: incrementalScope } : {}),
               ...(reviewBudget ? { reviewBudget } : {}),
+              ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
             } as Parameters<typeof executeComposedReview>[0])),
@@ -1475,6 +1539,7 @@ export async function runPublishingReviewWorker(
           ...(diffShrink ? { diffShrink } : {}),
           ...(incrementalScope ? { incremental: incrementalScope } : {}),
           ...(reviewBudget ? { reviewBudget } : {}),
+          ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1530,6 +1595,32 @@ export async function runPublishingReviewWorker(
       }
 
       const isFastShip = isFastShipPanelResult(panelResult);
+      // REL-1085: what the engine served from cache, and this run's clean per-file lane results
+      // for later runs. A fast-ship or zero-lane result reviewed nothing, so it records nothing.
+      const verdictCacheDisclosure = panelResult.verdictCache ?? null;
+      const verdictCacheRecord = buildVerdictCacheRecord({
+        disclosure: verdictCacheDisclosure,
+        scope: verdictCacheScope,
+        contentIndex: verdictCachePlan?.contentIndex,
+        lanes: isFastShip || (panelResult as any).zeroLaneNonEvidence ? [] : panelResult.personas,
+        failedLaneIds: (panelResult.optionalFailures || []).map((failure) => failure.id),
+        changedPaths: changedFiles.map((file) => file.path),
+        // REL-1082: a file some lane got as signatures, truncated or as a listing was not deeply reviewed.
+        reducedDepthPaths: (panelResult.reviewBudget?.lanes ?? [])
+          .flatMap((lane) => lane.files.filter((file) => file.depth !== 'full').map((file) => file.path)),
+      });
+      if (verdictCachePlan) {
+        logger.info('Verdict cache applied', {
+          runId: identity.runId,
+          repository: identity.repo,
+          served: verdictCacheDisclosure?.cached.length ?? 0,
+          ...(verdictCacheDisclosure?.source ? { sourceRunId: verdictCacheDisclosure.source.runId } : {}),
+          reviewed: verdictCacheDisclosure?.reviewedPaths.length ?? 0,
+          recorded: verdictCacheRecord?.entries.length ?? 0,
+          estimatedTokensBefore: verdictCacheDisclosure?.estimatedTokensBefore,
+          estimatedTokensAfter: verdictCacheDisclosure?.estimatedTokensAfter,
+        });
+      }
       // Owner-declared not-applicable: when every changed path matches the
       // repository's `auto_review.ignore_patterns`, no persona can ever match and
       // the honest outcome is a skipped check that claims no verdict -- not the
@@ -1752,6 +1843,8 @@ export async function runPublishingReviewWorker(
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
+          // REL-1085: every file served from the verdict cache, or why none was.
+          ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
@@ -1776,6 +1869,8 @@ export async function runPublishingReviewWorker(
           // REL-1084: every carried-forward file, or why the review stayed full.
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
+          // REL-1085: every file served from the verdict cache, or why none was.
+          ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
@@ -1905,7 +2000,10 @@ export async function runPublishingReviewWorker(
           ...(typeof panelWallClockMs === 'number' ? { panelWallClockMs } : {}),
           // REL-1084: what the lanes did not see, and the prior review it rests on. The trusted
           // completion side verifies it before any carried-forward verdict counts.
-          ...(incrementalClaim ? { incremental: incrementalClaim } : {}) },
+          ...(incrementalClaim ? { incremental: incrementalClaim } : {}),
+          // REL-1085: the files served from cache (verified by the trusted completion side before
+          // they count) and this run's clean per-file results for later runs.
+          ...(verdictCacheRecord ? { verdictCache: verdictCacheRecord } : {}) },
       }).result;
     };
     if (recoverablePanelFailure) {
