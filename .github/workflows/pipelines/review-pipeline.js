@@ -6603,12 +6603,13 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
 
   try {
     assertCurrentPullRequest(prContext, { commandRunner });
-    const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
+    const publisher = resolveAuthenticatedPublisher(commandRunner);
+    const expectedPublisherLogin = publisher.verified ? publisher.login : null;
     // Without an identity nothing can be matched (issueCommentBelongsToPublisher fails closed), so
     // every run would post a fresh summary and the comment would stop being sticky. Say so instead
     // of quietly reintroducing the comment-per-push behaviour this surface exists to prevent.
     if (!expectedPublisherLogin) {
-      return { success: false, postedViaGh: false, error: 'could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment' };
+      return { success: false, postedViaGh: false, error: publisherIdentityRefusal(publisher) };
     }
     if (options.expectedPublisherLogin && !isExpectedPublisherLogin(expectedPublisherLogin, options.expectedPublisherLogin)) {
       throw new Error('Action review publisher changed before sticky publication');
@@ -6980,8 +6981,9 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     const bodyWithRejected = `${commentBody}${rejectedDetails}${overflowDetails}`;
     try {
       assertCurrentPullRequest(prContext, { commandRunner });
-      const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
-      if (!expectedPublisherLogin) throw new Error('could not determine the publishing GitHub identity');
+      const expectedPublisherLogin = requirePublisherIdentity(
+        resolveAuthenticatedPublisher(commandRunner),
+      );
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
@@ -7136,8 +7138,87 @@ function cleanPublisherLoginScalar(stdout) {
   return normalizedPublisherLogin(value) ? value : null;
 }
 
+/**
+ * Transient-failure predicate for the identity probes.
+ *
+ * Each probe is a plain authenticated READ, so a 5xx or a secondary rate limit says nothing
+ * about the token -- yet a single unlucky response used to fail the whole publish attempt, and
+ * the verdict was computed but never posted. Retrying is safe precisely because these calls
+ * mutate nothing.
+ *
+ * A 4xx other than 429 is NOT retried: that is a real answer about the credential or its
+ * permissions, and retrying would only delay the diagnostic.
+ */
+/**
+ * The HTTP status a probe's stderr reports, or null.
+ *
+ * ONE parser, shared by the transient classifier and the failure describer. They previously
+ * re-derived the status with different regexes and disagreed at birth: the classifier accepted
+ * bare codes (`gh: 502 Bad Gateway`) while the describer only understood the `HTTP <code>` form,
+ * so a bare-code 5xx was retried and then reported as `user=exit 1` -- hiding the status an
+ * operator needs (REL-1107 review).
+ */
+function parseProbeHttpStatus(stderr) {
+  const text = String(stderr || '');
+  const explicit = /\bHTTP (\d{3})\b/u.exec(text);
+  if (explicit) return explicit[1];
+  const bare = /(?:^|[^\d])(\d{3})(?:[^\d]|$)/u.exec(text);
+  return bare ? bare[1] : null;
+}
+
+function isTransientIdentityProbeFailure(status, stderr) {
+  if (status === 0) return false;
+  const text = String(stderr || '');
+  const code = parseProbeHttpStatus(text);
+  if (code && (code.startsWith('5') || code === '429')) return true;
+  // Secondary rate limit: 403 carrying retry-after, or exhausted primary quota.
+  if (/\b429\b/u.test(text)) return true;
+  if (code === '403' && /retry-after|x-ratelimit-remaining:\s*0/iu.test(text)) return true;
+  return false;
+}
+
+/** Probe one identity endpoint, retrying only transient failures. Never logs token material. */
+function probePublisherIdentity(commandRunner, args) {
+  const attempts = 3;
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    last = ghApi(commandRunner, args);
+    if (last && last.status === 0) return last;
+    if (!isTransientIdentityProbeFailure(last?.status, last?.stderr) || attempt === attempts) break;
+    // Bounded, jittered backoff. No sleep past a few seconds: publishing runs inside the
+    // action's own ceiling, and a stuck publish is worse than a diagnosed failure.
+    const delay = Math.min(2_000, 250 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 100);
+    try { commandRunner('sleep', [String(delay / 1_000)]); } catch (_) { /* best effort */ }
+  }
+  return last;
+}
+
+/**
+ * Why the identity could not be established, in operator-readable form.
+ *
+ * The original code discarded every probe's status and stderr and returned a bare
+ * `{ login: null, verified: false }`, so CI logged only "could not determine the publishing
+ * GitHub identity" with nothing to act on -- no way to tell a missing token from an expired one
+ * from a GitHub 5xx. This is redacted: status codes and the endpoint name only, never a token,
+ * header, or response body.
+ */
+function describePublisherIdentityFailure(probes) {
+  const parts = probes.map(({ name, status, stderr }) => {
+    const code = parseProbeHttpStatus(stderr);
+    const detail = code ? `HTTP ${code}` : `exit ${status}`;
+    return `${name}=${detail}`;
+  });
+  return `identity probes failed (${parts.join(', ')})`;
+}
+
 function resolveAuthenticatedPublisher(commandRunner) {
-  const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
+  const probes = [];
+  const record = (name, result) => {
+    probes.push({ name, status: result?.status ?? null, stderr: result?.stderr ?? '' });
+    return result;
+  };
+
+  const result = record('user', probePublisherIdentity(commandRunner, ['api', 'user', '--jq', '.login']));
   if (result && result.status === 0) {
     const login = cleanPublisherLoginScalar(result.stdout);
     if (login) return { login, verified: true };
@@ -7145,7 +7226,9 @@ function resolveAuthenticatedPublisher(commandRunner) {
 
   // Installation tokens cannot call GET /user. Their installation metadata identifies the App
   // whose reviews must be trusted; GitHub exposes that App's comments as `<app_slug>[bot]`.
-  const installation = ghApi(commandRunner, ['api', 'installation', '--jq', '.app_slug']);
+  const installation = record('installation', probePublisherIdentity(
+    commandRunner, ['api', 'installation', '--jq', '.app_slug'],
+  ));
   if (installation && installation.status === 0) {
     const slug = cleanPublisherLoginScalar(installation.stdout);
     if (slug) return { login: slug.endsWith('[bot]') ? slug : `${slug}[bot]`, verified: true };
@@ -7154,9 +7237,9 @@ function resolveAuthenticatedPublisher(commandRunner) {
   // The same token may expose its viewer through GraphQL even when the REST
   // identity endpoints are unavailable to an installation token. This is a fixed
   // authenticated query, never an identity supplied by the environment or PR.
-  const viewer = ghApi(commandRunner, [
+  const viewer = record('viewer', probePublisherIdentity(commandRunner, [
     'api', 'graphql', '-f', 'query=query ReviewYetiPublisher { viewer { login } }',
-  ]);
+  ]));
   if (viewer && viewer.status === 0) {
     try {
       const response = JSON.parse(viewer.stdout);
@@ -7171,12 +7254,53 @@ function resolveAuthenticatedPublisher(commandRunner) {
 
   // GITHUB_ACTIONS identifies the runner, not the token's publisher. Never use
   // an assumed github-actions[bot] identity to adopt comments or start writing.
-  return { login: null, verified: false };
+  // The reason travels with the refusal so the failure is actionable in CI.
+  return { login: null, verified: false, reason: describePublisherIdentityFailure(probes) };
 }
 
 function readAuthenticatedPublisherLogin(commandRunner) {
   const publisher = resolveAuthenticatedPublisher(commandRunner);
   return publisher.verified ? publisher.login : null;
+}
+
+/**
+ * The identity refusal, carrying the probe statuses that produced it.
+ *
+ * The reason is passed IN, never read from module state. An earlier revision threaded it
+ * through a module-level variable that `readAuthenticatedPublisherLogin` wrote on failure; that
+ * made an exported function non-deterministic (the message depended on hidden call ordering, not
+ * on its argument) and it was never cleared on success, so any later error site embedding it
+ * could attach a reason from an unrelated earlier attempt. `resolveAuthenticatedPublisher`
+ * already returns the reason in-band, so the global was a second, lossy channel for the same
+ * data (REL-1107 review).
+ */
+function publisherIdentityError(reason) {
+  const suffix = reason ? `; ${reason}` : '';
+  return new Error(`could not determine the publishing GitHub identity${suffix}`);
+}
+
+/**
+ * The publisher login, or the diagnostic refusing publication.
+ *
+ * Extracted so the wiring is covered BEHAVIOURALLY. An earlier revision asserted the call site by
+ * pinning exact source substrings, which turned the suite red on any prettier re-wrap or local
+ * extraction with zero behaviour change -- a brittle guard standing in for a seam that did not
+ * exist (REL-1107 review).
+ */
+function requirePublisherIdentity(publisher) {
+  if (!publisher.verified) throw publisherIdentityError(publisher.reason);
+  return publisher.login;
+}
+
+/**
+ * The sticky-summary refusal text, with the reason when one is known.
+ *
+ * Same reason for extraction: the reason must be provably carried, not source-pinned.
+ */
+function publisherIdentityRefusal(publisher) {
+  const suffix = publisher.reason ? ` (${publisher.reason})` : '';
+  return 'could not determine the publishing GitHub identity; refusing to adopt or patch an '
+    + `unverified summary comment${suffix}`;
 }
 
 /**
@@ -8053,6 +8177,14 @@ if (require.main === module) {
 }
 
 module.exports = {
+  // REL-1107: exported so the identity-probe retry and its diagnostics are testable.
+  resolveAuthenticatedPublisher,
+  isTransientIdentityProbeFailure,
+  parseProbeHttpStatus,
+  describePublisherIdentityFailure,
+  publisherIdentityError,
+  requirePublisherIdentity,
+  publisherIdentityRefusal,
   resolvesToOpenRouterDestination,
   resolveAutoTransportTimeoutMs,
   DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS,
