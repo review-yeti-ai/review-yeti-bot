@@ -346,6 +346,160 @@ describe('McpFleetManager Unit Tests', () => {
       }
     });
 
+    it('fails immediately when the signal is already aborted at fetch time', async () => {
+      // REL-1116: the timeout path used to HANG rather than fail.
+      //
+      // `executeTool` armed the timeout timer and computed the effective signal BEFORE
+      // `await getHttpHeaders()` (~470ms of Doppler lookup), so with a short budget the signal
+      // was already aborted by the time `fetch()` was called. The request was still issued, its
+      // `abort` listener registered AFTER the event had fired, and the awaiting promise never
+      // settled. A timeout that hangs is the one outcome a timeout must never have.
+      //
+      // Counterfactual the review named: deleting the early-throw recreates exactly that hang,
+      // so this asserts settlement, not merely a rejection shape.
+      const controller = new AbortController();
+      controller.abort(); // aborted BEFORE entry — the pre-abort case
+
+      let fetchCalls = 0;
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        fetchCalls += 1;
+        return new Promise(() => { /* never settles, like the real pre-aborted request */ });
+      });
+
+      try {
+        const settled = await Promise.race([
+          mcpFleetManager.executeTool('ct_impact', { target: 'pre-aborted' }, { signal: controller.signal }),
+          new Promise((resolve) => setTimeout(() => resolve('HUNG'), 2000)),
+        ]);
+        // The whole point: it must NOT hang.
+        expect(settled).not.toBe('HUNG');
+        expect(settled).toMatchObject({ success: false });
+        expect(String((settled as { error?: string }).error)).toMatch(/abort/i);
+        // ...and a pre-aborted signal must not issue a request whose abort can never arrive.
+        expect(fetchCalls).toBe(0);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('a caller abort with a CUSTOM reason is still aborted, not a timeout', async () => {
+      // The taxonomy lives in ONE place: the outer HTTP catch keys on `options.signal.aborted`,
+      // so the reason text cannot change the verdict. The inline copy this replaced sniffed the
+      // reason's name/message instead, which is the shape that mislabels a custom caller reason
+      // as a timeout -- two sites for one rule, and it had already drifted (REL-1116 review).
+      //
+      // Scope note, verified rather than assumed: a pre-aborted caller signal is turned into a
+      // controller abort at the `AbortSignal.any` polyfill, so this reaches the OUTER catch and
+      // asserts the shared taxonomy. The pre-fetch guard added in this change is a backstop for
+      // an abort that lands during setup; planting the old inline copy does not fail this test,
+      // which is exactly why the copy was removed rather than merely re-tested.
+      const controller = new AbortController();
+      controller.abort(new Error('operator cancelled the run'));
+
+      const result = await mcpFleetManager.executeTool(
+        'ct_impact', { target: 'custom-reason' }, { signal: controller.signal, timeoutMs: 5000 },
+      );
+      expect(result).toMatchObject({ success: false });
+      expect(result.error).toBe('Operation aborted');
+      expect(result.error).not.toMatch(/timed out/u);
+    });
+
+    it('a caller abort in flight is reported as aborted, not as a timeout', async () => {
+      // Covers the caller-abort branch end to end. Note WHICH branch: the outer HTTP catch
+      // classifies `wasAbortedByCaller` first, so this asserts the observable contract
+      // ('aborted', never 'timed out') rather than claiming to pin the inner ternary -- an
+      // earlier version of this test did claim that and passed with the ternary inverted,
+      // because the outer branch answered first (REL-1116 review).
+      const controller = new AbortController();
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => {
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          // Abort AFTER fetch is in flight: the realistic caller-abort case.
+          if (signal) {
+            signal.addEventListener('abort', () => {
+              reject(Object.assign(new Error('The operation was aborted'), { name: 'AbortError' }));
+            });
+          }
+          // Abort the CALLER's signal shortly after the request starts.
+          setTimeout(() => controller.abort(new Error('The operation was aborted')), 30);
+        });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool(
+          'ct_impact', { target: 'abort-in-flight' }, { signal: controller.signal, timeoutMs: 5000 },
+        );
+        expect(result).toMatchObject({ success: false });
+        expect(result.error).toBe('Operation aborted');
+        expect(result.error).not.toMatch(/timed out/u);
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it('charges a short budget to the request, not to setup (timer placement)', async () => {
+      // Discriminates the timer placement ALONE, deterministically.
+      //
+      // The earlier version of this test relied on the REAL `getHttpHeaders()` latency (~470ms
+      // of Doppler lookup) outrunning a 50ms budget, which made its power contingent on the
+      // environment: mock, cache or remove that lookup and the test silently stops
+      // discriminating (REL-1116 review). Here the slow setup is SUPPLIED, not hoped for.
+      //
+      // `resolveBifrostApiKey()` is skipped whenever an env key is present, and otherwise awaits
+      // `dopplerManager.getSecret()`. With no env key set, stubbing that method to a 300ms
+      // resolve makes setup deterministic: with the timer armed before it (pre-fix placement)
+      // the budget expires during setup and the request is never dispatched; with the timer
+      // armed at the request boundary it is.
+      const savedKey = process.env.REVIEW_YETI_BIFROST_API_KEY;
+      const savedGateway = process.env.CT_LLM_GATEWAY_API_KEY;
+      const savedBifrost = process.env.BIFROST_API_KEY;
+      const savedMcp = process.env.CT_MCP_KEY;
+      delete process.env.REVIEW_YETI_BIFROST_API_KEY;
+      delete process.env.CT_LLM_GATEWAY_API_KEY;
+      delete process.env.BIFROST_API_KEY;
+      delete process.env.CT_MCP_KEY;
+
+      const manager = mcpFleetManager as unknown as {
+        dopplerManager: { getSecret: (key: string) => Promise<string | null> };
+      };
+      const originalGetSecret = manager.dopplerManager.getSecret;
+      manager.dopplerManager.getSecret = () =>
+        new Promise<string | null>((resolve) => setTimeout(() => resolve(''), 300));
+
+      let fetchCalls = 0;
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => {
+        fetchCalls += 1;
+        return new Promise((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(Object.assign(new Error('already aborted'), { name: 'AbortError' }));
+            return;
+          }
+          signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted on timeout'), { name: 'AbortError' }));
+          });
+        });
+      });
+
+      try {
+        const result = await mcpFleetManager.executeTool(
+          'ct_impact', { target: 'short-budget' }, { timeoutMs: 50 },
+        );
+        expect(result).toMatchObject({ success: false });
+        expect(String(result.error)).toMatch(/timed out/iu);
+        // The request was ISSUED: the 50ms budget was charged to the request, not to the 300ms
+        // of setup that preceded it.
+        expect(fetchCalls).toBe(1);
+      } finally {
+        fetchSpy.mockRestore();
+        manager.dopplerManager.getSecret = originalGetSecret;
+        if (savedKey !== undefined) process.env.REVIEW_YETI_BIFROST_API_KEY = savedKey;
+        if (savedGateway !== undefined) process.env.CT_LLM_GATEWAY_API_KEY = savedGateway;
+        if (savedBifrost !== undefined) process.env.BIFROST_API_KEY = savedBifrost;
+        if (savedMcp !== undefined) process.env.CT_MCP_KEY = savedMcp;
+      }
+    });
+
     it('handles HTTP request timeout gracefully', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
         const signal = init?.signal;
