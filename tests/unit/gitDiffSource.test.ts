@@ -31,12 +31,13 @@ import type { StoredReviewGate } from '../../src/persistence/reviewGateRepositor
 // A synthetic large pull request in a real git repository:
 //   merge base M: 300 modifiable files, plus files to rename and delete.
 //   head H (branch from M): 300 files each gain 70 lines (21,000 added lines),
-//     15 files added, 1 renamed with an edit, 1 deleted => 317 changed files.
+//     15 files added, 1 renamed with an edit, 1 deleted, 1 edited in two far-apart
+//     places (a two-hunk patch) => 318 changed files.
 //   base tip B (main after M): an unrelated base-only file. A three-dot diff
 //     must exclude it; a two-dot diff would not.
 // ---------------------------------------------------------------------------
 const MODIFIED = 300; const ADDED = 15; const LINES_PER_FILE = 70;
-const EXPECTED_FILES = MODIFIED + ADDED + 2;
+const EXPECTED_FILES = MODIFIED + ADDED + 3;
 let root: string; let remote: string; let work: string;
 let mergeBaseSha: string; let headSha: string; let baseTipSha: string;
 const token = 'ghs_large-pr.header.signature';
@@ -63,6 +64,7 @@ beforeAll(() => {
   for (let i = 0; i < MODIFIED; i++) write(`src/mod-${i}.ts`, fileLines(`m${i}`, 5));
   write('src/rename-me.ts', fileLines('renamed', 20));
   write('src/delete-me.ts', fileLines('deleted', 3));
+  write('src/multi-hunk.ts', fileLines('multi', 40));
   git(work, 'add', '-A'); git(work, 'commit', '-q', '-m', 'merge base');
   mergeBaseSha = git(work, 'rev-parse', 'HEAD');
   git(work, 'checkout', '-q', '-b', 'feature');
@@ -73,6 +75,7 @@ beforeAll(() => {
   git(work, 'mv', 'src/rename-me.ts', 'src/renamed.ts');
   write('src/renamed.ts', fileLines('renamed', 20) + 'export const extra = 1;\n');
   git(work, 'rm', '-q', 'src/delete-me.ts');
+  write('src/multi-hunk.ts', fileLines('multi', 40).replace('multi_1 = 1;', 'multi_1 = 100;').replace('multi_35 = 35;', 'multi_35 = 3500;'));
   git(work, 'add', '-A'); git(work, 'commit', '-q', '-m', 'large change');
   headSha = git(work, 'rev-parse', 'HEAD');
   git(work, 'checkout', '-q', 'main');
@@ -134,6 +137,21 @@ describe('REL-1080 acceptance rule (shared by worker and trusted side)', () => {
     expect(GIT_DIFF_MAX_BYTES).toBe(MAX_AUTHORITATIVE_CHANGED_FILES_BYTES);
   });
 
+  it('checks every hunk of a multi-hunk chunk, not just the last', () => {
+    const header = 'diff --git a/src/m.ts b/src/m.ts\n--- a/src/m.ts\n+++ b/src/m.ts\n';
+    const first = '@@ -1,2 +1,2 @@\n ctx\n-old\n+new\n';
+    const second = '@@ -10,2 +10,3 @@\n ctx\n-a\n+b\n+c\n';
+    expect(hunksClosed(`${header}${first}${second}`)).toBe(true);
+    expect(verifyGitDerivedDiff(`${header}${first}${second}`, { expectedFileCount: 1 })).toHaveLength(1);
+    // A truncated NON-final hunk: the next header arrives while lines are still owed.
+    const truncatedFirst = `${header}${first.replace(' ctx\n', '')}${second}`;
+    expect(hunksClosed(truncatedFirst)).toBe(false);
+    try { verifyGitDerivedDiff(truncatedFirst, { expectedFileCount: 1 }); throw new Error('expected rejection'); }
+    catch (error) { expect((error as GitDiffSourceError).reason).toBe('unclosed-hunk'); }
+    // An overlong non-final hunk steals a line the header did not declare.
+    expect(hunksClosed(`${header}${first.replace('+new\n', '+new\n+extra\n')}${second}`)).toBe(false);
+  });
+
   it('accepts a no-newline marker that follows a content line', () => {
     const marker = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n'
       + '\\ No newline at end of file\n+new\n\\ No newline at end of file\n';
@@ -190,6 +208,8 @@ describe('REL-1080 git diff source against a real repository', () => {
     expect(files.map((file) => file.path)).toContain('src/delete-me.ts');
     // Three-dot: the independently advanced base-only file is not part of the PR.
     expect(files.map((file) => file.path)).not.toContain('release/base-only.ts');
+    // A real two-hunk patch is accepted (every hunk closed, not just the last).
+    expect(files.find((file) => file.path === 'src/multi-hunk.ts')?.patch.match(/^@@ /gmu)).toHaveLength(2);
     // The real diff includes a no-newline marker and is still accepted.
     expect(files.find((file) => file.path === 'src/new/added-0.ts')?.patch).toContain('\\ No newline at end of file');
   }, 60_000);
@@ -428,7 +448,7 @@ describe('REL-1080 trusted side accepts the git-derived diff with the same ident
     const entry = { sha: 'c'.repeat(40), filename: 'src/compare.ts', status: 'modified', additions: 1, deletions: 1,
       changes: 2, patch: '@@ -1 +1 @@\n-old\n+new' };
     const { fetcher } = trustedFetcher({ changedFiles: 1, compareFiles: [entry] });
-    // GitHub says one file; git computes 317. The git evidence is refused, never trusted.
+    // GitHub says one file; git computes 318. The git evidence is refused, never trusted.
     const result = await readerWith(fetcher, localSource()).exactCurrentDiff(target());
     expect(result.changedFiles).toEqual([{ path: 'src/compare.ts', patch: entry.patch }]);
   }, 60_000);
@@ -440,7 +460,7 @@ describe('REL-1080 trusted side accepts the git-derived diff with the same ident
   ] as const)('never runs git when the compare response %s, and keeps the compare path', async (_label, pin, error) => {
     const gitDiffSource = vi.fn<GitDiffSource>(localSource());
     const { fetcher } = trustedFetcher(pin);
-    // 317 files: the compare path refuses them, exactly as before REL-1080.
+    // 318 files: the compare path refuses them, exactly as before REL-1080.
     await expect(readerWith(fetcher, gitDiffSource).exactCurrentDiff(target())).rejects.toThrow(error);
     expect(gitDiffSource).not.toHaveBeenCalled();
   });
