@@ -71,7 +71,7 @@ export function detectFileStatus(file: { path: string; patch?: string; status?: 
 /**
  * Splits an oversized diff patch with multiple hunks into consecutive sub-patches if it exceeds safe capacity.
  */
-function splitOversizedFileHunks(
+export function splitOversizedFileHunks(
   file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
   safeDiffChars: number
 ): PartitionFile[] {

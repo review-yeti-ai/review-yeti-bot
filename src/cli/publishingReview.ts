@@ -85,6 +85,7 @@ import { incrementalReviewEnabledFor } from '../review/incrementalReview';
 import { diffShrinkEnabledFor } from '../review/diffShrink';
 import { personaLaneViewIdentity } from '../panel/panelEngine';
 import workerPackage from '../../package.json';
+import { loadMapReduceInput, renderMapReduceSummary } from '../review/mapReduceReview';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
@@ -1292,6 +1293,10 @@ export async function runPublishingReviewWorker(
     // engines pack after the shared decision and return what each lane received as
     // `panelResult.reviewBudget`, which the check summary publishes.
     const reviewBudget = loadReviewBudgetInput({ env, repository: identity.repo });
+    // REL-1083: map-reduce review for a lane larger than one budget, default off
+    // (`REVIEW_YETI_MAP_REDUCE`). Deadline-aware through REVIEW_TERMINAL_DEADLINE when the
+    // operator forwards it; the engine returns what it chunked as `panelResult.mapReduce`.
+    const mapReduce = loadMapReduceInput({ env, repository: identity.repo });
 
     // REL-1084: incremental re-review, default off (`REVIEW_YETI_INCREMENTAL`). Null when off;
     // never throws. Both engines apply the scope after the shared applicability decision and
@@ -1506,6 +1511,7 @@ export async function runPublishingReviewWorker(
               ...(incrementalScope ? { incremental: incrementalScope } : {}),
               ...(reviewBudget ? { reviewBudget } : {}),
               ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
+              ...(mapReduce ? { mapReduce } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
             } as Parameters<typeof executeComposedReview>[0])),
@@ -1540,6 +1546,7 @@ export async function runPublishingReviewWorker(
           ...(incrementalScope ? { incremental: incrementalScope } : {}),
           ...(reviewBudget ? { reviewBudget } : {}),
           ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
+          ...(mapReduce ? { mapReduce } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1574,6 +1581,22 @@ export async function runPublishingReviewWorker(
           notDeeplyReviewed: count('not-deeply-reviewed'),
           truncated: count('truncated'),
           packedCharsMax: Math.max(0, ...lanes.map((lane) => lane.packedChars)),
+        });
+      }
+      if (panelResult.mapReduce) {
+        const lanes = panelResult.mapReduce.lanes;
+        logger.info('Map-reduce review chunked lane content', {
+          runId: identity.runId,
+          repository: identity.repo,
+          lanes: lanes.length,
+          chunks: lanes.reduce((sum, lane) => sum + lane.chunks.length, 0),
+          collapsedChunks: lanes.reduce((sum, lane) => sum + lane.chunks.filter((chunk) => chunk.collapsed).length, 0),
+          concurrency: panelResult.mapReduce.concurrency,
+          findingsFromChunks: lanes.reduce((sum, lane) => sum + lane.findings.fromChunks, 0),
+          duplicatesMerged: lanes.reduce((sum, lane) => sum + lane.findings.exactDuplicates + lane.findings.reduceMerged, 0),
+          crossChunkFindings: lanes.reduce((sum, lane) => sum + lane.findings.crossChunk, 0),
+          reduceStatuses: lanes.map((lane) => lane.reduce.status),
+          notApplied: panelResult.mapReduce.notApplied?.length ?? 0,
         });
       }
 
@@ -1845,6 +1868,7 @@ export async function runPublishingReviewWorker(
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
           // REL-1085: every file served from the verdict cache, or why none was.
           ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
+          ...renderMapReduceSummary(panelResult.mapReduce),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
@@ -1871,6 +1895,7 @@ export async function runPublishingReviewWorker(
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
           // REL-1085: every file served from the verdict cache, or why none was.
           ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
+          ...renderMapReduceSummary(panelResult.mapReduce),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
