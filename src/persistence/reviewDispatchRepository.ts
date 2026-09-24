@@ -453,6 +453,18 @@ export interface ReviewDispatchRepository {
    */
   findPendingCancellations(limit?: number): Promise<PendingCancellation[]>;
   /**
+   * REL-1073: record the PRReviewJob a dispatcher created after admission had
+   * already cancelled its claimed run. Admission marks such a cancel propagated
+   * at once because no projection existed yet; this reopens it against the
+   * projection that now does, so the cancellation sweep owns it from here.
+   */
+  reopenOrphanedProjectionCancellation(
+    runId: string,
+    claimAttempt: number,
+    projectionName: string,
+    now: number,
+  ): Promise<PendingCancellation | null>;
+  /**
    * Get authenticated status for an execution attempt of a run.
    */
   getRunStatus(runId: string, executionAttempt: number): Promise<RunStatusResult | null>;
@@ -2233,6 +2245,50 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [runId, nowArg],
       );
       return true;
+    });
+  }
+
+  async reopenOrphanedProjectionCancellation(
+    runId: string,
+    claimAttempt: number,
+    projectionName: string,
+    now: number,
+  ): Promise<PendingCancellation | null> {
+    validateClaimAttempt(claimAttempt);
+    if (!projectionName.trim()) throw new Error('projection name is required');
+    return this.inTransaction(async (client) => {
+      // Only the exact claim that created the projection, only a row a cancel
+      // retired while it had no projection name, and only once: a row that
+      // already carries a projection name is the sweep's, not ours.
+      const reopened = await client.query(
+        `UPDATE review_dispatch_outbox
+            SET projection_name = $3,
+                cancel_propagated_at = NULL,
+                updated_at = to_timestamp($4 / 1000.0)
+          WHERE run_id = $1
+            AND attempt = $2
+            AND status = 'terminal'
+            AND cancel_requested_at IS NOT NULL
+            AND projection_name IS NULL
+        RETURNING run_id, execution_attempt + 1 AS execution_attempt, cancel_reason`,
+        [runId, claimAttempt, projectionName, now],
+      );
+      const row = reopened.rows[0];
+      if (!row) return null;
+      await client.query(
+        `UPDATE review_runs
+            SET cancel_propagated_at = NULL,
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE run_id = $1
+            AND cancel_requested_at IS NOT NULL`,
+        [runId, now],
+      );
+      return {
+        runId: String(row.run_id),
+        executionAttempt: Number(row.execution_attempt),
+        projectionName,
+        cancelReason: row.cancel_reason ? String(row.cancel_reason) : undefined,
+      };
     });
   }
 
