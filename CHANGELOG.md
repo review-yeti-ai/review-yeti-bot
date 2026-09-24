@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.90.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.0...v1.90.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **panel:** find_files supports globs and searches the full tree (REL-1102) ([#1042](https://github.com/review-yeti-ai/review-yeti-bot/issues/1042)) ([c31f964](https://github.com/review-yeti-ai/review-yeti-bot/commit/c31f9640b595f28e61729a82a391ec262e481f25))
+
 ## [1.90.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.89.0...v1.90.0) (2026-09-24)
 
 
