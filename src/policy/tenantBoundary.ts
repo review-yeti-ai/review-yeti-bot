@@ -25,3 +25,5 @@ export class TenantBoundary {
     }
   }
 }
+
+// REL-1074 proof (a): leaf-module touch; do not merge.
