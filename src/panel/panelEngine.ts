@@ -36,9 +36,14 @@ import {
   isArchitecturePersona,
   personaCoversFile,
   scopeFilesForPersona,
-  resolveReviewApplicability,
   DOCUMENTATION_ONLY_RATIONALE,
 } from '../review/personaApplicability';
+import {
+  attachDiffShrinkDisclosure,
+  resolveShrunkReviewApplicability,
+  type DiffShrinkDisclosure,
+  type DiffShrinkInput,
+} from '../review/diffShrink';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -3490,10 +3495,15 @@ export async function executePersonaPanel(options: {
    * path applicability; mutable dashboard overrides and model pruning cannot
    * alter the evidence roster after admission. */
   deterministicRoster?: boolean;
+  /** REL-1079: deterministic diff shrinking (`REVIEW_YETI_DIFF_SHRINK`); absent or disabled sends every change in full. */
+  diffShrink?: DiffShrinkInput;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
+  // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and
+  // attached to whichever result this run returns.
+  let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   // REL-1088: files a lane reviews only because the shared decision routed
   // them there. Attached once, below, to whichever result the panel returns.
   let routedFiles: PanelResult['routedFiles'] = [];
@@ -3522,9 +3532,12 @@ export async function executePersonaPanel(options: {
     // path_filters, same gitlink policy -- the service's trusted completion
     // context derives, so the lanes this worker runs and the lanes the service
     // requires cannot disagree (REL-1056 / REL-1058).
-    const applicability = resolveReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1079: diff shrinking runs after, and cannot change, that decision.
+    const applicability = resolveShrunkReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
+      diffShrink: options.diffShrink,
     });
+    diffShrinkDisclosure = applicability.diffShrink;
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
     routedFiles = applicability.routedFiles;
@@ -4511,5 +4524,6 @@ export async function executePersonaPanel(options: {
       }
     }
   }).then((result) => (routedFiles && routedFiles.length > 0 ? { ...result, routedFiles } : result))
+    .then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .finally(deadline.cleanup);
 }
