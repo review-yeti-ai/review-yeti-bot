@@ -234,9 +234,10 @@ func TestV1Alpha2CRDExposesBoundedWorkerTermination(t *testing.T) {
 // workerImage pattern could ship: the chart copy is what Helm installs, so a
 // divergence there keeps enforcing an old control while every test stays green.
 //
-// This compares the FULL spec schema, so any future hand-sync that misses the
-// chart copy fails here rather than on a partner's cluster.
-func TestHelmChartCRDSpecMatchesGeneratedSpec(t *testing.T) {
+// This compares spec.workerImage specifically — the field that carried the
+// registry allowlist and is duplicated across five artifacts. It is named for
+// what it asserts rather than claiming full-spec parity it does not check.
+func TestHelmChartCRDWorkerImageMatchesGenerated(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "charts", "review-yeti", "files", "review-yeti.ai_prreviewjobs.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -354,7 +355,8 @@ func TestV1Alpha2WorkerImagePatternIsExecutable(t *testing.T) {
 		{"vendor digest", "ghcr.io/review-yeti-ai/review-yeti-worker@" + digest, true},
 		{"self-host registry digest", "registry.partner.example/rev/worker@" + digest, true},
 		{"registry with port", "registry.partner.example:5000/rev/worker@" + digest, true},
-		{"generic runner", "node:20-alpine", true},
+		{"generic runner, tag", "node:20-alpine", true},
+		{"generic runner, digest-pinned", "node:20-alpine@sha256:" + strings.Repeat("a", 64), true},
 
 		// Attacks the OLD pattern permitted. These are the regressions that
 		// matter: a mutable tag inside the vendor namespace was accepted before.

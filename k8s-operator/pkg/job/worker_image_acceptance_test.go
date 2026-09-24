@@ -24,6 +24,9 @@ func TestBuildWorkerJobAcceptsDigestPinnedForeignImage(t *testing.T) {
 	for _, image := range []string{
 		"registry.partner.example/rev/worker@" + digest, // the self-host case
 		"ghcr.io/review-yeti-ai/review-yeti-worker@" + digest,
+		// The pattern ships a digest-pinned generic-runner alternative, so the
+		// runtime path must actually accept it rather than only the regexp test.
+		"node:20-alpine@" + digest,
 	} {
 		review := reviewFixture(now)
 		review.Spec.WorkerImage = image
