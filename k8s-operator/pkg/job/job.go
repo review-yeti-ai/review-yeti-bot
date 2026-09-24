@@ -211,7 +211,17 @@ type PublishingConfig struct {
 	// comma-separated owner/repo allowlist, or an on/off switch). Empty keeps
 	// every review full, byte-identical to before this field existed.
 	Incremental string
+	// REL-1082: risk-ordered review budget per lane. Forwarded verbatim as
+	// BudgetEnv when non-empty; the worker owns its interpretation (a
+	// comma- or space-separated owner/repo allowlist, or an on/off switch).
+	// Empty keeps the budget off, byte-identical to before this field existed.
+	Budget string
 }
+
+// BudgetEnv is the worker's risk-ordered review-budget flag (REL-1082,
+// src/review/reviewBudget.ts REVIEW_BUDGET_FLAG). The operator forwards the
+// deployment value verbatim; the worker owns its interpretation.
+const BudgetEnv = "REVIEW_YETI_BUDGET"
 
 // IncrementalEnv is the worker's incremental re-review flag (REL-1084,
 // src/review/incrementalReview.ts INCREMENTAL_FLAG). The operator forwards the
@@ -472,6 +482,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.Incremental != "" {
 			env = append(env, corev1.EnvVar{Name: IncrementalEnv, Value: input.Publishing.Incremental})
+		}
+		if input.Publishing.Budget != "" {
+			env = append(env, corev1.EnvVar{Name: BudgetEnv, Value: input.Publishing.Budget})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -821,6 +834,11 @@ func validatePublishing(config PublishingConfig) error {
 	// Same allowlist grammar as the diff shrink flag.
 	if strings.ContainsAny(config.Incremental, "\r\n") {
 		return configErr("incremental flag contains a line break")
+	}
+	// Same allowlist grammar as the diff shrink flag: spaces are legitimate,
+	// a line break is not.
+	if strings.ContainsAny(config.Budget, "\r\n") {
+		return configErr("review budget flag contains a line break")
 	}
 	return nil
 }

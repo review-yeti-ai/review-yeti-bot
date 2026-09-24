@@ -75,6 +75,7 @@ import {
   type CommitComparisonReader, type IncrementalBaseSource,
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
+import { loadReviewBudgetInput, renderReviewBudgetSummary } from '../review/reviewBudget';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
@@ -1270,6 +1271,10 @@ export async function runPublishingReviewWorker(
       changedPaths: changedFiles.map((file) => file.path),
       repoFileProvider,
     });
+    // REL-1082: risk-ordered review budget per lane, default off (`REVIEW_YETI_BUDGET`). Both
+    // engines pack after the shared decision and return what each lane received as
+    // `panelResult.reviewBudget`, which the check summary publishes.
+    const reviewBudget = loadReviewBudgetInput({ env, repository: identity.repo });
 
     // REL-1084: incremental re-review, default off (`REVIEW_YETI_INCREMENTAL`). Null when off;
     // never throws. Both engines apply the scope after the shared applicability decision and
@@ -1436,6 +1441,7 @@ export async function runPublishingReviewWorker(
               isCurrentHead: deps.isCurrentHead,
               ...(diffShrink ? { diffShrink } : {}),
               ...(incrementalScope ? { incremental: incrementalScope } : {}),
+              ...(reviewBudget ? { reviewBudget } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
             } as Parameters<typeof executeComposedReview>[0])),
@@ -1468,6 +1474,7 @@ export async function runPublishingReviewWorker(
           ...(authoritative ? { deterministicRoster: true } : {}),
           ...(diffShrink ? { diffShrink } : {}),
           ...(incrementalScope ? { incremental: incrementalScope } : {}),
+          ...(reviewBudget ? { reviewBudget } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1487,6 +1494,21 @@ export async function runPublishingReviewWorker(
           keptFullDepth: diffShrinkDisclosure.keptFullDepth.length,
           estimatedTokensBefore: diffShrinkDisclosure.estimatedTokensBefore,
           estimatedTokensAfter: diffShrinkDisclosure.estimatedTokensAfter,
+        });
+      }
+      if (panelResult.reviewBudget) {
+        const lanes = panelResult.reviewBudget.lanes;
+        const count = (depth: string) => lanes.reduce((sum, lane) => sum + lane.files.filter((file) => file.depth === depth).length, 0);
+        logger.info('Review budget packed lane content', {
+          runId: identity.runId,
+          repository: identity.repo,
+          lanes: lanes.length,
+          full: count('full'),
+          pastPerFileCut: lanes.reduce((sum, lane) => sum + lane.files.filter((file) => file.pastPerFileCut).length, 0),
+          signatures: count('signatures'),
+          notDeeplyReviewed: count('not-deeply-reviewed'),
+          truncated: count('truncated'),
+          packedCharsMax: Math.max(0, ...lanes.map((lane) => lane.packedChars)),
         });
       }
 
@@ -1729,6 +1751,7 @@ export async function runPublishingReviewWorker(
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
+          ...renderReviewBudgetSummary(panelResult.reviewBudget),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
@@ -1752,6 +1775,7 @@ export async function runPublishingReviewWorker(
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           // REL-1084: every carried-forward file, or why the review stayed full.
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
+          ...renderReviewBudgetSummary(panelResult.reviewBudget),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
