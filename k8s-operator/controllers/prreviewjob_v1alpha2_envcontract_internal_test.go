@@ -58,3 +58,47 @@ func TestManagedWorkerEnvMatchesBindsTheBuilderGatewayEnvName(t *testing.T) {
 	}
 
 }
+
+// The FULL-PANEL branch carries the same coupling and its own copy of the gateway
+// name check, so covering only same-head would leave half the contract unpinned
+// (REL-1069 review).
+func TestManagedWorkerEnvMatchesBindsTheBuilderGatewayEnvNameFullPanel(t *testing.T) {
+	review := &reviewv1alpha2.PRReviewJob{}
+	review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+	review.Spec.QualificationModel = "pr-reviewer"
+	review.Spec.RunSecretName = "ct-review-run-abc"
+
+	secretRef := func(name, key string, optional bool) corev1.EnvVar {
+		return corev1.EnvVar{
+			Name: name,
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "ct-review-run-abc"},
+				Key:                  key, Optional: &optional,
+			}},
+		}
+	}
+	base := func(gatewayName string) []corev1.EnvVar {
+		return []corev1.EnvVar{
+			{Name: job.FullPanelQualificationEnv, Value: "true"},
+			{Name: job.QualificationModelEnv, Value: "pr-reviewer"},
+			secretRef(gatewayName, gatewayName, true),
+		}
+	}
+
+	if !managedWorkerEnvMatches(review, base(job.QualificationGatewayKeyEnv)) {
+		t.Fatalf("full-panel: the validator rejected the env the builder emits (%s)", job.QualificationGatewayKeyEnv)
+	}
+	if managedWorkerEnvMatches(review, base("OPENROUTER_API_KEY")) {
+		t.Fatalf("full-panel: the validator accepted the LEGACY gateway env name")
+	}
+	drifted := base(job.QualificationGatewayKeyEnv)
+	drifted[2].ValueFrom.SecretKeyRef.Key = "OPENROUTER_API_KEY"
+	if managedWorkerEnvMatches(review, drifted) {
+		t.Fatalf("full-panel: the validator accepted a drifted gateway secret key")
+	}
+	// The branch also requires exactly ONE gateway ref.
+	dup := append(base(job.QualificationGatewayKeyEnv), secretRef(job.QualificationGatewayKeyEnv, job.QualificationGatewayKeyEnv, true))
+	if managedWorkerEnvMatches(review, dup) {
+		t.Fatalf("full-panel: the validator accepted two gateway refs")
+	}
+}
