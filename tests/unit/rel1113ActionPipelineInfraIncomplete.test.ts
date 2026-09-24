@@ -130,6 +130,25 @@ describe('REL-1113 Action pipeline: the two #1056 shapes (negative proof)', () =
     expect(incomplete?.title).toBe(title);
   });
 
+  it('the step summary labels an infrastructure-incomplete run INCOMPLETE, never BLOCK', () => {
+    const lanes = panelWithTestingLost(TERMINATED);
+    const arbitration = pipeline.computeArbitrationQuorum(lanes, lanes.length, { changedFiles: [{ path: 'src/a.ts' }] });
+    const reported = pipeline.toInfrastructureIncompleteArbitration(arbitration, pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true }));
+    const summaryPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rel1113-summary-')), 'summary.md');
+    const previous = process.env.GITHUB_STEP_SUMMARY;
+    process.env.GITHUB_STEP_SUMMARY = summaryPath;
+    try {
+      pipeline.writeStepSummary(reported, lanes, { prNumber: '1056' }, { reviewed: ['src/a.ts'], omitted: [] });
+    } finally {
+      if (previous === undefined) delete process.env.GITHUB_STEP_SUMMARY;
+      else process.env.GITHUB_STEP_SUMMARY = previous;
+    }
+    const summary = fs.readFileSync(summaryPath, 'utf8');
+    expect(summary).toContain('⚪ INCOMPLETE — infrastructure (not a verdict)');
+    expect(summary).toContain('lane testing failed: transport');
+    expect(summary).not.toContain('BLOCK');
+  });
+
   it('a real pipeline lane whose stream is dropped ("terminated") is classified transport and reported INCOMPLETE', async () => {
     const result = await pipeline.reviewWithModel(
       { id: 'testing', name: 'Testing Specialist', charter: 'Check tests.' },
@@ -234,6 +253,20 @@ describe('REL-1113 Action pipeline: in-budget lane re-attempts', () => {
     expect(results[3]).toMatchObject({ personaId: 'testing', decision: 'ERROR', findings: [], error: 'fetch failed' });
     expect(pipeline.resolveInfrastructureIncomplete(results, { coverageComplete: true })?.lanes)
       .toEqual([{ id: 'testing', failureClass: 'transport' }]);
+  });
+
+  it('re-attempts a 429 lane (a rate limit is transient, unlike other 4xx)', async () => {
+    const rerun = vi.fn(async () => lane('testing'));
+    const lanes = [lane('security'), lane('testing', { decision: 'ERROR', error: 'HTTP 429: slow down', responseStatus: 429 })];
+    const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+      coverageComplete: true, deadlineMs: Date.now() + 780_000, laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet,
+    });
+    expect(rerun).toHaveBeenCalledTimes(1);
+    expect(stopReason).toBe('resolved');
+    expect(results[1].decision).toBe('APPROVE');
+    expect(shared.isNonRetryableClientStatus(429)).toBe(false);
+    expect(shared.isNonRetryableClientStatus(404)).toBe(true);
+    expect(shared.isNonRetryableClientStatus(502)).toBe(false);
   });
 
   it('never re-attempts a 4xx other than 429 (the same request fails the same way)', async () => {
