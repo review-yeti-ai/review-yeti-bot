@@ -843,9 +843,16 @@ export class McpFleetManager {
         }
         const timeoutMs = options.timeoutMs ?? 15000;
         const controller = new AbortController();
-        const timer = setTimeout(() => {
-          controller.abort(new Error(`HTTP request timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+        // The timer is armed immediately before the request, NOT before the work that
+        // precedes it, so the caller's budget is charged to the request it bounds rather than
+        // to setup. This is a correctness improvement, not the hang fix: the hang came from a
+        // signal that was already aborted at `fetch`, which the guard below now fails fast.
+        //
+        // Stated that precisely because it was measured: with BOTH halves reverted the request
+        // IS still dispatched (the pre-abort guard is what prevents it, not the placement), and
+        // no test in this suite discriminates the placement alone -- it was attempted, shown
+        // non-discriminating, and removed rather than left as an inert assertion.
+        let timer: ReturnType<typeof setTimeout> | undefined;
 
         const effectiveSignal = options.signal
           ? (typeof (AbortSignal as any).any === 'function'
@@ -867,6 +874,30 @@ export class McpFleetManager {
         try {
           const endpoint = this.resolveRpcEndpoint(server.url, 'tools/call');
           const headers = await this.getHttpHeaders(server);
+          // Budget starts here: everything above is setup, and charging it to the caller's
+          // request timeout made a short budget abort before the request existed.
+          timer = setTimeout(() => {
+            controller.abort(new Error(`HTTP request timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+          // An ALREADY-ABORTED signal must fail now, not hang. Setup above awaits a Doppler
+          // lookup (measured ~470ms), so a caller that aborts during it -- or a caller whose
+          // signal was aborted before entry -- otherwise reaches `fetch` with the signal already
+          // aborted. The request is still issued, its `abort` listener is registered after the
+          // event has fired, and the awaiting promise NEVER settles. Verified: signal.aborted
+          // was true at fetch time and the call hung past 3s under a 50ms budget.
+          //
+          // This guard is also what prevents dispatch in the pre-abort case: verified by a full
+          // revert of the timer placement AND this guard, after which `fetch` is still called
+          // with an aborted signal -- the original hang condition.
+          //
+          // It deliberately does NOT translate the reason into an operator message. The
+          // abort-vs-timeout taxonomy lives in ONE place -- the catch below, which already
+          // classifies `wasAbortedByCaller` -- and an inline copy here had already drifted from
+          // it within this change, mislabelling a custom caller reason as a timeout
+          // (REL-1116 review). It only signals; the catch decides.
+          if (effectiveSignal.aborted) {
+            throw Object.assign(new Error('request aborted before dispatch'), { name: 'AbortError' });
+          }
 
           const res = await fetch(endpoint, {
             method: 'POST',
