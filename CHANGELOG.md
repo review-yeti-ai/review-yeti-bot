@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.89.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.88.0...v1.89.0) (2026-09-24)
+
+
+### Features
+
+* **review:** per-file verdict cache behind REVIEW_YETI_VERDICT_CACHE (REL-1085) ([#1036](https://github.com/review-yeti-ai/review-yeti-bot/issues/1036)) ([b2dddff](https://github.com/review-yeti-ai/review-yeti-bot/commit/b2dddff6829784d65fd486423d90ade025a33de0))
+
 ## [1.88.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.87.1...v1.88.0) (2026-09-24)
 
 
