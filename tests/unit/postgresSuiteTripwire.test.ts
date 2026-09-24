@@ -38,17 +38,53 @@ describe('postgresSuite tripwire', () => {
     vi.unstubAllEnvs();
   });
 
-  it('skips via the shared predicate exactly when the URL is absent', async () => {
-    vi.stubEnv('REVIEW_YETI_TEST_DATABASE_URL', '');
-    vi.resetModules();
-    const withoutDb = await import('../support/postgresSuite');
-    // vitest's describe.skip and describe are distinct; the helper must pick skip.
-    expect(withoutDb.describeWithPostgres).toBeTypeOf('function');
-
+  it('RUNS when the URL is present and SKIPS when it is absent', async () => {
+    // The DECISION, not the type. A previous revision asserted only
+    // `toBeTypeOf('function')`, which an inverted branch
+    // (`if (databaseUrl) describe.skip(...)`) also satisfies -- and that inversion
+    // would skip all thirteen suites in CI and report the database job green with
+    // zero Postgres assertions (REL-1069 review).
+    //
+    // vitest forbids calling `describe` inside a test, so the decision is observed
+    // by spying on vitest's own exported functions with `importOriginal`: the
+    // helper called `describe` (run) rather than `describe.skip`.
     vi.stubEnv('REVIEW_YETI_TEST_DATABASE_URL', 'postgresql://example/db');
     vi.resetModules();
+    vi.doMock('vitest', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('vitest')>();
+      return { ...actual, describe: Object.assign(vi.fn(), actual.describe) };
+    });
     const withDb = await import('../support/postgresSuite');
     expect(withDb.postgresDatabaseUrl()).toBe('postgresql://example/db');
+    expect(withDb.describeWithPostgres('probe', () => {})).toBe('run');
+    vi.doUnmock('vitest');
     vi.unstubAllEnvs();
+  });
+
+  it('the skip/run decision is a pure function over the URL', async () => {
+    // The rule itself, directly testable. An inverted branch would skip all
+    // thirteen suites in CI and report the database job green with zero
+    // Postgres assertions (REL-1069 review).
+    const { postgresSuiteDispatch } = await import('../support/postgresSuite');
+    expect(postgresSuiteDispatch('postgresql://example/db')).toBe('run');
+    expect(postgresSuiteDispatch('')).toBe('skip');
+    expect(postgresSuiteDispatch('   ')).toBe('skip');
+  });
+
+  it('every Postgres suite adopts the tripwire', async () => {
+    // Adoption was thirteen hand-added calls that nothing verified. A 14th suite
+    // wired only with describeWithPostgres would keep the skip-only behaviour this
+    // module exists to remove, so a lost CI env var would skip it green while its
+    // siblings fail loudly -- partial silent coverage loss.
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const dir = path.join(process.cwd(), 'tests/integration');
+    const { assertEveryPostgresSuiteAdoptsTripwire } = await import('../support/postgresSuite');
+    expect(() => assertEveryPostgresSuiteAdoptsTripwire(() => fs.readdirSync(dir)
+      .filter((name: string) => name.endsWith('.postgres.test.ts'))
+      .map((name: string) => ({
+        path: name,
+        source: fs.readFileSync(path.join(dir, name), 'utf8'),
+      })))).not.toThrow();
   });
 });

@@ -300,16 +300,20 @@ describe('CI incremental test selection (REL-1074)', () => {
       expect(isPostgresFile('tests/integration/x.postgres.test.ts', 'const u = postgresDatabaseUrl();')).toBe(true);
     });
 
-    it('every postgres suite in the tree is classified', () => {
-      // The end-to-end form of the same check: no suite named *.postgres.test.ts
-      // may exist without being detected, which is exactly what the refactor broke.
+    it('every postgres suite in the tree is CLASSIFIED (by name, not content)', () => {
+      // Asserted through isPostgresFile, the classifier CI actually uses, rather
+      // than through content matching. The previous form demanded marker presence,
+      // which classification does not require: a suite delegating connection setup
+      // to a shared fixture still routes correctly by name yet would have failed
+      // here. It also overstated its own name -- a broken name regex passed it while
+      // being caught only by the sibling test (REL-1069 review).
       const dir = path.join(root, 'tests/integration');
       const suites = fs.readdirSync(dir).filter((name: string) => name.endsWith('.postgres.test.ts'));
       expect(suites.length).toBeGreaterThan(0);
-      const undetected = suites.filter(
-        (name: string) => !matches(fs.readFileSync(path.join(dir, name), 'utf8')),
+      const unclassified = suites.filter(
+        (name: string) => !isPostgresFile(`tests/integration/${name}`),
       );
-      expect(undetected).toEqual([]);
+      expect(unclassified).toEqual([]);
     });
   });
 });
