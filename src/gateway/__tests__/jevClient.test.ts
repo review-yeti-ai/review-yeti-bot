@@ -1,6 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   JevClient,
+  JEV_SYSTEM_ONE_PATH,
+  resolveJevEndpoint,
   DisabledJevClient,
   calculateFullJitterDelay,
   isTransientJevStatus,
@@ -22,6 +26,11 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
     headers: { 'content-type': 'application/json', ...headers },
   });
 }
+
+/** Verbatim live responses (jev-1.13.0), captured for REL-1100. */
+const LIVE = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, '../../../tests/fixtures/jev/systemone-live-jev-1.13.0.json'), 'utf8'),
+) as Record<'score' | 'noul' | 'choice', { model: string; answers: Record<string, any>; usage: { input_tokens: number; output_tokens: number } }>;
 
 const BASE_QUESTIONS = {
   is_ambiguous: { type: 'noul', instructions: 'Is this ambiguous?' } as JevQuestion,
@@ -412,9 +421,55 @@ describe('JevClient — https enforced at the client, not only at jevTransport',
     expect(() => new JevClient({ baseUrl: 'not a url', apiKey: 'k' })).toThrow();
   });
 
+  it('does not throw for a bare https host (the endpoint path is appended, not required)', () => {
+    expect(() => new JevClient({ baseUrl: 'https://api.typesafe.ai', apiKey: 'k' })).not.toThrow();
+  });
+
   it('does not throw for the default https baseUrl or an explicit https baseUrl', () => {
     expect(() => new JevClient({ apiKey: 'k' })).not.toThrow();
     expect(() => new JevClient({ baseUrl: 'https://api.typesafe.ai/v1/systemone', apiKey: 'k' })).not.toThrow();
+  });
+});
+
+describe('JevClient — endpoint resolution (REL-1100)', () => {
+  it.each([
+    ['https://api.typesafe.ai', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://api.typesafe.ai/', 'https://api.typesafe.ai/v1/systemone'],
+    ['  https://api.typesafe.ai//  ', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://api.typesafe.ai:8443', 'https://api.typesafe.ai:8443/v1/systemone'],
+    ['https://api.typesafe.ai/v1/systemone', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://api.typesafe.ai/v1/systemone/', 'https://api.typesafe.ai/v1/systemone'],
+    ['https://proxy.example/typesafe/v1/systemone', 'https://proxy.example/typesafe/v1/systemone'],
+    ['https://api.typesafe.ai/?region=us', 'https://api.typesafe.ai/?region=us'],
+    ['not a url', 'not a url'],
+  ])('resolveJevEndpoint(%j) -> %j', (input, expected) => {
+    expect(resolveJevEndpoint(input)).toBe(expected);
+  });
+
+  it('POSTs to /v1/systemone when configured with the bare host (the Doppler value REL-1081 shipped with)', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(jsonResponse(200, LIVE.noul));
+    const client = baseClient({ baseUrl: 'https://api.typesafe.ai', fetchImplementation });
+    const outcome = await client.ask({ state: 's', questions: { lane__sec: { type: 'noul', instructions: 'Review?' } } });
+    expect(outcome.status).toBe('ok');
+    expect(String(fetchImplementation.mock.calls[0][0])).toBe(`https://api.typesafe.ai${JEV_SYSTEM_ONE_PATH}`);
+  });
+
+  it('negative proof: an explicit endpoint path is never rewritten', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(jsonResponse(200, LIVE.noul));
+    const client = baseClient({ baseUrl: 'https://proxy.example/jev', fetchImplementation });
+    await client.ask({ state: 's', questions: { lane__sec: { type: 'noul', instructions: 'Review?' } } });
+    expect(String(fetchImplementation.mock.calls[0][0])).toBe('https://proxy.example/jev');
+  });
+});
+
+describe('JevClient — live noul and choice responses (REL-1100)', () => {
+  it('accepts the live noul and choice responses verbatim', async () => {
+    const noul = await baseClient({ fetchImplementation: vi.fn().mockResolvedValue(jsonResponse(200, LIVE.noul)) })
+      .ask({ state: 's', questions: { lane__sec: { type: 'noul', instructions: 'Review?' } } });
+    expect(noul).toMatchObject({ status: 'ok', answers: LIVE.noul.answers, usage: LIVE.noul.usage });
+    const choice = await baseClient({ fetchImplementation: vi.fn().mockResolvedValue(jsonResponse(200, LIVE.choice)) })
+      .ask({ state: 's', questions: { category: { type: 'choice', instructions: 'Which?', criteria: { source: 'src', test: 'tests' } } } });
+    expect(choice).toMatchObject({ status: 'ok', answers: LIVE.choice.answers, usage: LIVE.choice.usage });
   });
 });
 
@@ -548,9 +603,12 @@ describe('JevClient — telemetry', () => {
  * varied only envelope-level fields. Dropping the `probabilities` object check, or any other
  * loosening of these branches, passed the whole suite unchanged.
  *
- * These pin the branches as they actually behave TODAY, including the deliberate limit: the
- * client validates answer SHAPE, not the CONTENT of the probability map. The values inside are
- * not checked and `choice` is not required to be one of the question's criteria keys. That is a
+ * These pin the branches as they actually behave TODAY, including the deliberate limit for
+ * CHOICE answers: the client validates answer SHAPE, not the CONTENT of the probability map. The
+ * values inside are not checked and `choice` is not required to be one of the question's
+ * criteria keys. SCORE answers are the exception since REL-1100: their probability keys must name
+ * a legend index and their values must be numbers, because the shadow triage derives the risk
+ * level as the argmax over them and a key outside the legend would name a level nobody defined. That is a
  * real boundary -- the vendor guarantees a typed answer, so content validation here would be
  * duplicating a contract we do not own -- and it should change by decision, not by drift. If it
  * is ever tightened, the last test here is the one that must be updated deliberately.
@@ -562,15 +620,20 @@ describe('JevClient — answer shape validation for choice and score', () => {
       criteria: { c1: 'same module', c2: 'other module' },
     } as JevQuestion,
   };
+  // Five levels, like the shadow triage's risk question: the live legend has indices 0..4.
   const SCORE_Q = {
-    risk: { type: 'score', instructions: 'How risky?', criteria: ['low', 'medium', 'high'] } as JevQuestion,
+    risk: {
+      type: 'score', instructions: 'How risky?',
+      criteria: ['Level 1, trivial: x', 'Level 2, low: x', 'Level 3, moderate: x', 'Level 4, high: x', 'Level 5, critical: x'],
+    } as JevQuestion,
   };
 
   function okChoice(over: Record<string, unknown> = {}) {
     return { type: 'choice', choice: 'c1', confidence: 0.94, probabilities: { c1: 0.97, c2: 0.03 }, ...over };
   }
+  /** The live score answer (REL-1100 capture), optionally overridden. */
   function okScore(over: Record<string, unknown> = {}) {
-    return { type: 'score', score: 2.1, legend: ['low', 'medium', 'high'], confidence: 0.8, probabilities: { low: 0.1 }, ...over };
+    return { ...LIVE.score.answers.risk, ...over };
   }
 
   it('accepts a well-formed choice answer', async () => {
@@ -605,19 +668,70 @@ describe('JevClient — answer shape validation for choice and score', () => {
     expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
   });
 
-  it('accepts a well-formed score answer', async () => {
+  async function askScore(answer: unknown) {
     const fetchImplementation = vi.fn().mockResolvedValue(
-      jsonResponse(200, { model: 'jev-1.13.0', answers: { risk: okScore() }, usage: { input_tokens: 5, output_tokens: 1 } }),
+      jsonResponse(200, { model: 'jev-1.13.0', answers: { risk: answer }, usage: { input_tokens: 5, output_tokens: 1 } }),
     );
-    expect((await baseClient({ fetchImplementation }).ask({ state: 's', questions: SCORE_Q })).status).toBe('ok');
+    return baseClient({ fetchImplementation }).ask({ state: 's', questions: SCORE_Q });
+  }
+  const MALFORMED = { status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) };
+
+  it('accepts the live score response verbatim: index-keyed legend, continuous score (REL-1100)', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(jsonResponse(200, LIVE.score));
+    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: SCORE_Q });
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') throw new Error('expected ok');
+    expect(outcome.model).toBe('jev-1.13.0');
+    expect(outcome.usage).toEqual({ input_tokens: 333, output_tokens: 17 });
+    expect(outcome.answers.risk).toEqual(LIVE.score.answers.risk);
   });
 
-  it('rejects a score answer whose legend is not an array', async () => {
-    const fetchImplementation = vi.fn().mockResolvedValue(
-      jsonResponse(200, { model: 'jev-1.13.0', answers: { risk: okScore({ legend: 'low,medium' }) }, usage: { input_tokens: 5, output_tokens: 1 } }),
-    );
-    const outcome = await baseClient({ fetchImplementation }).ask({ state: 's', questions: SCORE_Q });
-    expect(outcome).toEqual({ status: 'unavailable', reason: 'malformed', durationMs: expect.any(Number) });
+  it('negative proof: the pre-REL-1100 array-only legend check rejects the live score response', () => {
+    // A literal copy of the score branch this PR replaced. It is why every shadow call on
+    // 2026-09-24 logged outcome=unavailable reason=malformed. If this ever passes, the live
+    // fixture no longer represents the contract and the suite above proves nothing.
+    const legacyScoreShape = (a: Record<string, unknown>) =>
+      typeof a.score === 'number' && Array.isArray(a.legend) && typeof a.confidence === 'number' &&
+      typeof a.probabilities === 'object' && a.probabilities !== null;
+    expect(legacyScoreShape(LIVE.score.answers.risk)).toBe(false);
+  });
+
+  it('back-compat: accepts an array legend and normalizes it (and text-keyed probabilities) to index keys', async () => {
+    const outcome = await askScore({
+      type: 'score', score: 0.5, confidence: 0.6,
+      legend: ['low', 'medium', 'high'],
+      probabilities: { low: 0.1, high: 0.7, '1': 0.2 },
+    });
+    expect(outcome.status).toBe('ok');
+    if (outcome.status !== 'ok') throw new Error('expected ok');
+    expect(outcome.answers.risk).toEqual({
+      type: 'score', score: 0.5, confidence: 0.6,
+      legend: { '0': 'low', '1': 'medium', '2': 'high' },
+      probabilities: { '0': 0.1, '2': 0.7, '1': 0.2 },
+    });
+  });
+
+  it.each([
+    ['a string legend', { legend: 'low,medium' }],
+    ['a null legend', { legend: null }],
+    ['a missing legend', { legend: undefined }],
+    ['an empty legend object', { legend: {} }],
+    ['an empty legend array', { legend: [] }],
+    ['a non-index legend key', { legend: { low: 'Level 1' } }],
+    ['a negative legend index', { legend: { '-1': 'Level 0' } }],
+    ['a zero-padded legend index', { legend: { '00': 'Level 1' } }],
+    ['a legend index past the question\'s levels', { legend: { '0': 'a', '5': 'b' }, probabilities: { '0': 1 } }],
+    ['a non-string legend value', { legend: { '0': 1 } }],
+    ['an array legend longer than the question\'s levels', { legend: ['a', 'b', 'c', 'd', 'e', 'f'], probabilities: {} }],
+    ['a probability key not in the legend', { probabilities: { '0': 0.5, '7': 0.5 } }],
+    ['a probability keyed by level text for an object legend', { probabilities: { 'Level 1, trivial': 1 } }],
+    ['a non-numeric probability', { probabilities: { '0': 'high' } }],
+    ['a probabilities array', { probabilities: [0.8, 0.2] }],
+    ['null probabilities', { probabilities: null }],
+    ['a non-numeric score', { score: '0.32' }],
+    ['a non-finite confidence', { confidence: Number.NaN }],
+  ])('rejects a score answer with %s as malformed', async (_label, over) => {
+    expect(await askScore(okScore(over))).toEqual(MALFORMED);
   });
 
   it('does NOT validate probability-map contents, by design', async () => {

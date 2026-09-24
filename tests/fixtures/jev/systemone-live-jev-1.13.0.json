@@ -1,0 +1,6 @@
+{
+  "_comment": "Verbatim responses captured from live calls to https://api.typesafe.ai/v1/systemone (request model jev-latest, answered by jev-1.13.0) on 2026-09-24 for REL-1100. No secrets. The score answer's legend and probabilities are keyed by the 0-based criteria index as a string, and score is continuous in [0,1].",
+  "score": {"model":"jev-1.13.0","answers":{"risk":{"type":"score","score":0.32,"confidence":0.74,"legend":{"0":"Level 1, trivial","1":"Level 2, low","2":"Level 3, moderate","3":"Level 4, high","4":"Level 5, critical"},"probabilities":{"0":0.81,"1":0.07,"2":0.11,"3":0.01,"4":0.0}}},"usage":{"input_tokens":333,"output_tokens":17}},
+  "noul": {"model":"jev-1.13.0","answers":{"lane__sec":{"type":"noul","noul":0.52}},"usage":{"input_tokens":300,"output_tokens":22}},
+  "choice": {"model":"jev-1.13.0","answers":{"category":{"type":"choice","choice":"source","confidence":1.0,"probabilities":{"source":1.0,"test":0.0}}},"usage":{"input_tokens":361,"output_tokens":31}}
+}

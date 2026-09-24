@@ -92,7 +92,10 @@ export const JEV_TRIAGE_CATEGORIES: Record<string, string> = {
   security_sensitive: 'Authentication, authorization, cryptography, secrets handling, CI/CD workflows, container or infrastructure definitions, or dependency manifests.',
 };
 
-/** Ordered risk levels 1..5. Index 0 is level 1. */
+/**
+ * Ordered risk levels 1..5. Index 0 is level 1. Jev keys the score answer's `legend` and
+ * `probabilities` by this index as a string ("0".."4"), so level = index + 1.
+ */
 export const JEV_RISK_CRITERIA: readonly string[] = [
   'Level 1, trivial: no behavioural effect (documentation, comments, formatting, a pure rename).',
   'Level 2, low: an isolated change with a small blast radius (tests, non-critical configuration, a local refactor with unchanged behaviour).',
@@ -351,28 +354,35 @@ function numericRecord(value: unknown): Record<string, number> {
   return out;
 }
 
+/** Criteria index (0-based) for a score-answer key, or -1 if the key is not a defined risk level. */
+function riskIndexFromKey(answer: JevScoreAnswer, key: string): number {
+  if (!/^(0|[1-9][0-9]*)$/.test(key)) return -1;
+  if (answer.legend && !Object.prototype.hasOwnProperty.call(answer.legend, key)) return -1;
+  const index = Number(key);
+  return index < JEV_RISK_CRITERIA.length ? index : -1;
+}
+
 /**
- * Risk level 1..5 from the score answer: the most probable legend entry, mapped to its position
- * in `JEV_RISK_CRITERIA`. Falls back to rounding a raw score that already lies in 1..5. Null when
- * neither is interpretable -- a shadow log records "unknown", it never guesses.
+ * Risk level 1..5 from the score answer: the argmax of `probabilities` over the legend indices,
+ * plus one. `score` is deliberately NOT used: the live API returns it as a continuous value in
+ * [0,1], not a level (REL-1100), so rounding it would log level 0 or 1 for every file. A tie
+ * resolves to the HIGHER level, so a shadow log never under-reports risk. Null when no
+ * probability names a defined level -- a shadow log records "unknown", it never guesses.
  */
 export function riskLevelFromAnswer(answer: JevScoreAnswer | undefined): number | null {
   if (!answer) return null;
   const probabilities = numericRecord(answer.probabilities);
-  let best: string | null = null;
+  let bestIndex = -1;
+  let bestProbability = -Infinity;
   for (const [key, probability] of Object.entries(probabilities)) {
-    if (best === null || probability > probabilities[best]) best = key;
+    const index = riskIndexFromKey(answer, key);
+    if (index < 0) continue;
+    if (probability > bestProbability || (probability === bestProbability && index > bestIndex)) {
+      bestIndex = index;
+      bestProbability = probability;
+    }
   }
-  if (best !== null) {
-    const byCriteria = JEV_RISK_CRITERIA.indexOf(best);
-    if (byCriteria >= 0) return byCriteria + 1;
-    const legend = Array.isArray(answer.legend) ? answer.legend : [];
-    const byLegend = legend.indexOf(best);
-    if (byLegend >= 0 && byLegend < JEV_RISK_CRITERIA.length) return byLegend + 1;
-  }
-  const score = finiteOrNull(answer.score);
-  if (score !== null && score >= 1 && score <= JEV_RISK_CRITERIA.length) return Math.round(score);
-  return null;
+  return bestIndex >= 0 ? bestIndex + 1 : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,14 +685,12 @@ function decisionFromAnswers(
   };
 }
 
-/** Re-keys score probabilities as `level_1`..`level_5` so log fields stay short and queryable. */
+/** Re-keys score probabilities (index-keyed) as `level_1`..`level_5` so log fields stay short and queryable. */
 function riskProbabilitiesByLevel(answer: JevScoreAnswer | undefined): Record<string, number> {
-  const probabilities = numericRecord(answer?.probabilities);
-  const legend = Array.isArray(answer?.legend) ? answer!.legend : [];
+  if (!answer) return {};
   const out: Record<string, number> = {};
-  for (const [key, probability] of Object.entries(probabilities)) {
-    let index = JEV_RISK_CRITERIA.indexOf(key);
-    if (index < 0) index = legend.indexOf(key);
+  for (const [key, probability] of Object.entries(numericRecord(answer.probabilities))) {
+    const index = riskIndexFromKey(answer, key);
     out[index >= 0 ? `level_${index + 1}` : key] = probability;
   }
   return out;

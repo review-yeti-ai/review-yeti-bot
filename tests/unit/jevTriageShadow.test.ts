@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_JEV_TRIAGE_SHADOW_LIMITS,
@@ -35,6 +37,11 @@ import type { ChangedFile } from '../../src/review/changedFiles';
  * the per-file join log a W1-style LogsQL analysis reads.
  */
 
+/** Verbatim live responses (jev-1.13.0), captured for REL-1100. */
+const LIVE = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, '../fixtures/jev/systemone-live-jev-1.13.0.json'), 'utf8'),
+) as Record<'score' | 'noul' | 'choice', { model: string; answers: Record<string, any>; usage: { input_tokens: number; output_tokens: number } }>;
+
 const TYPESAFE_ENV = {
   TYPESAFE_BASE_URL: 'https://api.typesafe.example/v1/systemone',
   TYPESAFE_MODEL: 'jev-latest',
@@ -63,9 +70,11 @@ function okOutcome(request: JevAskRequest<string>, over: Partial<{ model: string
       answers[key] = { type: 'choice', choice: over.choice ?? 'source', confidence: 0.81, probabilities: { source: 0.81, test: 0.19 } };
     } else if (question.type === 'score') {
       const level = over.level ?? 4;
+      // The live contract (REL-1100): legend and probabilities keyed by criteria index, score a
+      // continuous value in [0,1] that is NOT the level.
       answers[key] = {
-        type: 'score', score: level, legend: question.criteria, confidence: 0.7,
-        probabilities: Object.fromEntries(question.criteria.map((c, i) => [c, i === level - 1 ? 0.7 : 0.075])),
+        type: 'score', score: 0.62, legend: Object.fromEntries(question.criteria.map((c, i) => [String(i), c])), confidence: 0.7,
+        probabilities: Object.fromEntries(question.criteria.map((_c, i) => [String(i), i === level - 1 ? 0.7 : 0.075])),
       };
     } else {
       answers[key] = { type: 'noul', noul: key === laneQuestionKey('sec-lane') ? 0.92 : 0.12 };
@@ -272,45 +281,80 @@ describe('isSecuritySensitivePath / isTestPath', () => {
   });
 });
 
-describe('riskLevelFromAnswer', () => {
-  it('maps the most probable legend entry to its 1-based level', () => {
-    const level = riskLevelFromAnswer({
-      type: 'score', score: 0.4, legend: [...JEV_RISK_CRITERIA], confidence: 0.5,
-      probabilities: { [JEV_RISK_CRITERIA[1]]: 0.6, [JEV_RISK_CRITERIA[4]]: 0.4 },
-    });
-    expect(level).toBe(2);
+describe('riskLevelFromAnswer -- argmax over legend indices + 1 (REL-1100)', () => {
+  const LEGEND = Object.fromEntries(JEV_RISK_CRITERIA.map((c, i) => [String(i), c]));
+
+  it('derives level 1 from the live jev-1.13.0 score answer, ignoring the continuous score', () => {
+    // score 0.32 is not a level; probabilities "0" (0.81) is the argmax, so level = 0 + 1.
+    expect(riskLevelFromAnswer(LIVE.score.answers.risk)).toBe(1);
   });
 
-  it('maps by legend position when the probabilities are keyed by the returned legend', () => {
+  it('negative proof: the pre-REL-1100 derivation returned null for the live answer', () => {
+    // Literal copy of the replaced logic: criteria/array-legend text lookup, then rounding a raw
+    // score that lies in 1..5. Neither applies to the live contract, so every file logged
+    // risk_level=null (and, before that, the client had already rejected the answer).
+    const legacy = (answer: any): number | null => {
+      const probabilities = answer.probabilities as Record<string, number>;
+      let best: string | null = null;
+      for (const [key, p] of Object.entries(probabilities)) if (best === null || p > probabilities[best]) best = key;
+      if (best !== null) {
+        const byCriteria = JEV_RISK_CRITERIA.indexOf(best);
+        if (byCriteria >= 0) return byCriteria + 1;
+        const legend = Array.isArray(answer.legend) ? answer.legend : [];
+        if (legend.indexOf(best) >= 0) return legend.indexOf(best) + 1;
+      }
+      return answer.score >= 1 && answer.score <= 5 ? Math.round(answer.score) : null;
+    };
+    expect(legacy(LIVE.score.answers.risk)).toBeNull();
+  });
+
+  it('picks the most probable level regardless of the raw score', () => {
     expect(riskLevelFromAnswer({
-      type: 'score', score: 0, legend: ['a', 'b', 'c', 'd', 'e'], confidence: 0.5, probabilities: { c: 0.9, a: 0.1 },
+      type: 'score', score: 0.05, legend: LEGEND, confidence: 0.5,
+      probabilities: { '0': 0.1, '1': 0.1, '2': 0.6, '3': 0.1, '4': 0.1 },
     })).toBe(3);
+    expect(riskLevelFromAnswer({
+      type: 'score', score: 0.99, legend: LEGEND, confidence: 0.5, probabilities: { '4': 0.51, '0': 0.49 },
+    })).toBe(5);
   });
 
-  it('re-keys legend-keyed risk probabilities as level_N in the recorded decision', async () => {
+  it('resolves a tie to the higher level so a shadow log never under-reports risk', () => {
+    expect(riskLevelFromAnswer({
+      type: 'score', score: 0.5, legend: LEGEND, confidence: 0.5, probabilities: { '3': 0.4, '1': 0.4, '0': 0.2 },
+    })).toBe(4);
+  });
+
+  it('ignores keys outside the legend or the five levels, and never falls back to the raw score', () => {
+    expect(riskLevelFromAnswer({
+      type: 'score', score: 0.3, legend: { '0': 'a', '1': 'b' }, confidence: 0.5, probabilities: { '4': 0.9, '1': 0.1 },
+    })).toBe(2);
+    expect(riskLevelFromAnswer({
+      type: 'score', score: 0.3, legend: { ...LEGEND, '7': 'x' }, confidence: 0.5, probabilities: { '7': 0.9 },
+    })).toBeNull();
+    expect(riskLevelFromAnswer({ type: 'score', score: 3.4, legend: LEGEND, confidence: 1, probabilities: {} })).toBeNull();
+    expect(riskLevelFromAnswer({ type: 'score', score: 0.3, legend: LEGEND, confidence: 1, probabilities: { low: 1 } })).toBeNull();
+    expect(riskLevelFromAnswer(undefined)).toBeNull();
+  });
+
+  it('re-keys index-keyed risk probabilities as level_N and logs the raw score and confidence', async () => {
+    const info = vi.spyOn(logger, 'info');
     const asker: JevAsker = {
       ask: vi.fn(async (request: JevAskRequest<string>) => {
         const outcome = okOutcome(request);
         if (outcome.status === 'ok') {
-          (outcome.answers as Record<string, unknown>).risk = {
-            type: 'score', score: 2, legend: ['l1', 'l2', 'l3', 'l4', 'l5'], confidence: 0.6,
-            probabilities: { l2: 0.6, l5: 0.3, unexpected: 0.1 },
-          };
+          (outcome.answers as Record<string, unknown>).risk = { ...LIVE.score.answers.risk, probabilities: { ...LIVE.score.answers.risk.probabilities, unexpected: 0.5 } };
         }
         return outcome;
       }) as never,
     };
     const summary = await startJevTriageShadow(input({ asker })).settled;
     expect(summary.decisions[0]).toMatchObject({
-      risk_level: 2,
-      risk_probabilities: { level_2: 0.6, level_5: 0.3, unexpected: 0.1 },
+      risk_level: 1,
+      risk_score: 0.32,
+      risk_confidence: 0.74,
+      risk_probabilities: { level_1: 0.81, level_2: 0.07, level_3: 0.11, level_4: 0.01, level_5: 0, unexpected: 0.5 },
     });
-  });
-
-  it('falls back to an in-range raw score and is null when uninterpretable', () => {
-    expect(riskLevelFromAnswer({ type: 'score', score: 3.4, legend: [], confidence: 1, probabilities: {} })).toBe(3);
-    expect(riskLevelFromAnswer({ type: 'score', score: 42, legend: [], confidence: 1, probabilities: {} })).toBeNull();
-    expect(riskLevelFromAnswer(undefined)).toBeNull();
+    expect(logsOf(info, JEV_TRIAGE_LOG.decision)[0]).toMatchObject({ risk_level: 1, risk_score: 0.32, risk_confidence: 0.74 });
   });
 });
 
@@ -374,7 +418,8 @@ describe('startJevTriageShadow -- fail open, never throws, no work when off', ()
         answers[key] = question.type === 'choice'
           ? { type: 'choice', choice: 'test', confidence: 0.6, probabilities: { test: 0.6 } }
           : question.type === 'score'
-            ? { type: 'score', score: 2, legend: question.criteria, confidence: 0.5, probabilities: { [question.criteria[1]]: 0.5 } }
+            // Live contract: index-keyed legend/probabilities; "1" is the argmax, so level 2.
+            ? { type: 'score', score: 0.4, legend: Object.fromEntries(question.criteria.map((c: string, i: number) => [String(i), c])), confidence: 0.5, probabilities: { '0': 0.2, '1': 0.5, '2': 0.3 } }
             : { type: 'noul', noul: 0.3 };
       }
       return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 700, output_tokens: 7 } }), { status: 200 });
@@ -395,6 +440,56 @@ describe('startJevTriageShadow -- fail open, never throws, no work when off', ()
       });
       // The pin is compared against the response, never sent.
       expect(JSON.stringify(bodies)).not.toContain(TYPESAFE_ENV.TYPESAFE_MODEL_PIN);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('production path with the live jev-1.13.0 answers: outcome ok, level from argmax, even from a bare-host base URL', async () => {
+    // Each answer object is verbatim from the REL-1100 capture; the lane answer is reused per persona.
+    const urls: string[] = [];
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      urls.push(String(url));
+      const body = JSON.parse(String(init.body));
+      const answers: Record<string, unknown> = {};
+      for (const [key, question] of Object.entries(body.questions as Record<string, { type: string }>)) {
+        answers[key] = question.type === 'choice' ? LIVE.choice.answers.category
+          : question.type === 'score' ? LIVE.score.answers.risk
+            : LIVE.noul.answers.lane__sec;
+      }
+      return new Response(JSON.stringify({ model: LIVE.score.model, answers, usage: LIVE.score.usage }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const env = { REVIEW_YETI_JEV_SHADOW: 'true', ...TYPESAFE_ENV, TYPESAFE_BASE_URL: 'https://api.typesafe.example' };
+      const summary = await startJevTriageShadow(input({ env })).settled;
+      expect(urls).toEqual(['https://api.typesafe.example/v1/systemone', 'https://api.typesafe.example/v1/systemone']);
+      expect(summary.decisions[0]).toMatchObject({
+        outcome: 'ok', category: 'source', category_valid: true, category_confidence: 1,
+        risk_level: 1, risk_score: 0.32, risk_confidence: 0.74,
+        lanes: { 'sec-lane': { noul: 0.52 }, 'perf-lane': { noul: 0.52 } },
+        model: 'jev-1.13.0', model_pin_match: true, input_tokens: 333,
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('negative proof: a live-shaped answer with a malformed legend is still logged unavailable/malformed', async () => {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      const answers: Record<string, unknown> = {};
+      for (const [key, question] of Object.entries(body.questions as Record<string, { type: string }>)) {
+        answers[key] = question.type === 'choice' ? LIVE.choice.answers.category
+          : question.type === 'score' ? { ...LIVE.score.answers.risk, legend: 'Level 1, Level 2' }
+            : LIVE.noul.answers.lane__sec;
+      }
+      return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: LIVE.score.usage }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const summary = await startJevTriageShadow(input()).settled;
+      expect(summary.decisions.map((d) => [d.outcome, d.reason])).toEqual([['unavailable', 'malformed'], ['unavailable', 'malformed']]);
     } finally {
       vi.unstubAllGlobals();
     }

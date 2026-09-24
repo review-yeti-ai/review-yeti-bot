@@ -246,14 +246,28 @@ function jevAnswerJsonSchema(question: JevQuestion): Record<string, unknown> {
       additionalProperties: false,
     };
   }
+  // The live score contract (REL-1100, captured from jev-1.13.0): `legend` and `probabilities`
+  // are objects keyed by the 0-based criteria index as a string, and `score` is continuous in
+  // [0,1] -- not a level number.
   const q = question as JevScoreQuestion;
+  const indexKeys = q.criteria.map((_criterion, index) => String(index));
   return {
     type: 'object',
     properties: {
       type: { const: 'score' },
-      score: { type: 'number' },
-      legend: { type: 'array', items: { type: 'string' }, const: q.criteria },
-      probabilities: { type: 'object' },
+      score: { type: 'number', minimum: 0, maximum: 1 },
+      legend: {
+        type: 'object',
+        properties: Object.fromEntries(q.criteria.map((criterion, index) => [String(index), { const: criterion }])),
+        required: indexKeys,
+        additionalProperties: false,
+      },
+      probabilities: {
+        type: 'object',
+        properties: Object.fromEntries(indexKeys.map((key) => [key, { type: 'number', minimum: 0, maximum: 1 }])),
+        required: indexKeys,
+        additionalProperties: false,
+      },
       confidence: { type: 'number', minimum: 0, maximum: 1 },
     },
     required: ['type', 'score', 'legend', 'probabilities', 'confidence'],
