@@ -181,6 +181,22 @@ describe('whitespace-only collapse', () => {
     expect(out[0].patch).toContain('WS_ONLY_MARKER');
   });
 
+  it('never shrinks a submodule gitlink, a symlink or a binary file', () => {
+    const gitlink = 'diff --git a/vendor/lib b/vendor/lib\nindex 6c3f36d..f84610f 160000\n--- a/vendor/lib\n+++ b/vendor/lib\n'
+      + '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
+    const symlink = 'diff --git a/src/link.ts b/src/link.ts\nindex 1111111..2222222 120000\n--- a/src/link.ts\n+++ b/src/link.ts\n'
+      + '@@ -1 +1 @@\n-target.ts\n+  target.ts\n';
+    const binary = 'diff --git a/src/data.bin.ts b/src/data.bin.ts\nindex 1111111..2222222 100644\nBinary files a/src/data.bin.ts and b/src/data.bin.ts differ\n';
+    const everything: DiffShrinkInput = { enabled: true, linguist: { status: 'applied', content: '* linguist-generated\n' } };
+    for (const diff of [gitlink, symlink, binary]) {
+      const before = effective(diff);
+      const { files: out, disclosure } = planDiffShrink(before, everything);
+      expect(out).toEqual(before);
+      expect(disclosure.linguistExcluded).toEqual([]);
+      expect(disclosure.whitespaceOnlyFiles).toEqual([]);
+    }
+  });
+
   it('never shrinks a file whose mode changes', () => {
     const diff = [
       'diff --git a/src/run.ts b/src/run.ts', 'old mode 100644', 'new mode 100755',
@@ -682,6 +698,33 @@ describe('composed engine wiring', () => {
     const text = await planPrompt(ON);
     expect(text).not.toContain('WS_ONLY_MARKER');
     expect(text).toContain('REAL_CHANGE_MARKER');
+  });
+
+  it('returns the disclosure of its own shrink on a completed run, and none without the flag', async () => {
+    const run = (diffShrink?: DiffShrinkInput) => {
+      const client = {
+        complete: vi.fn(async (req: any) => {
+          const all = req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+          const nonces = [...all.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)];
+          const nonce = nonces.length > 0 ? nonces[nonces.length - 1][1] : 'n';
+          const body = all.includes('WORK TURN')
+            ? { nonce, task: 't1', status: 'COMPLETE', findings: [] }
+            : { nonce, tasks: [{ id: 't1', dimension: 'architecture', paths: ['src/app.ts', 'src/other.ts'], question: 'q', rationale: 'r' }] };
+          return { model: 'm', content: JSON.stringify(body), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+        }),
+      };
+      return executeComposedReview({
+        config: COMPOSED_CONFIG(),
+        changedFiles: files(modified('src/app.ts', [WS_HUNK, REAL_HUNK]) + modified('src/other.ts', [WS_HUNK])),
+        repository: 'acme/app',
+        headSha: 'e'.repeat(40),
+        client: client as never,
+        ...(diffShrink ? { diffShrink } : {}),
+      });
+    };
+    const shrunk = await run(ON);
+    expect(shrunk.diffShrink).toMatchObject({ whitespaceOnlyFiles: ['src/other.ts'] });
+    expect((await run()).diffShrink).toBeUndefined();
   });
 });
 
