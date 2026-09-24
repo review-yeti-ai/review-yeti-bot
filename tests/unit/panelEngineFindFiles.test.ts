@@ -205,8 +205,8 @@ describe('panelEngine find_files — bounded full-repository hit list', () => {
   it('caps an unbounded hit list and reports the total, so a broad query cannot flood the prompt', async () => {
     const many = Array.from({ length: 5000 }, (_, i) => `src/generated/file-${i}.ts`);
     const out = await runFindFilesScenario({ findFiles: async () => many, readFile: async () => null }, { tool: 'find_files', args: { query: 'generated' } });
-    expect(out).toContain('5000 paths match');
-    expect(out).toContain(`first ${REPO_FIND_FILES_MAX_HITS}`);
+    expect(out).toContain('Found 5000 path(s)');
+    expect(out).toContain(`first ${REPO_FIND_FILES_MAX_HITS} of 5000`);
     expect(out).toContain('src/generated/file-0.ts');
     expect(out).not.toContain('src/generated/file-4999.ts');
   });
@@ -279,12 +279,15 @@ describe('panelEngine — a diff hit always wins over the repository provider', 
     expect(provider.readFile).not.toHaveBeenCalled();
   });
 
-  it('find_files with a diff hit reports the diff and never consults the provider', async () => {
+  it('find_files with a diff hit still searches the full tree, so files outside the diff are not hidden (REL-1102)', async () => {
+    // A diff-only answer used to stop here and hide a committed file (e.g. a JSON fixture)
+    // that also matched, without saying the list was partial.
     const provider = spy();
     const out = await runFindFilesScenario(provider, { tool: 'find_files', args: { query: 'writer' } });
-    expect(out).toContain('Files found in diff: src/ledger/writer.ts');
-    expect(out).not.toContain('src/other/writer.ts');
-    expect(provider.findFiles).not.toHaveBeenCalled();
+    expect(out).toContain('Found 2 path(s)');
+    expect(out).toContain('src/ledger/writer.ts, src/other/writer.ts');
+    expect(out).toContain('full-repository tree');
+    expect(provider.findFiles).toHaveBeenCalledWith('writer');
   });
 });
 

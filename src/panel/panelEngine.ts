@@ -120,6 +120,7 @@ export type {
   PanelResult,
   PanelRequestPolicy,
 } from './types';
+import { FIND_FILES_TOOL_GUIDE } from './pathMatch';
 export { isDocumentationOrAssetPath } from '../review/reviewableContent';
 export {
   isSubmoduleEntry,
@@ -201,7 +202,11 @@ export function isOversizedFileDiff(
   return filePatchChars(file) > maxChars;
 }
 export interface RepoFileProvider {
-  /** Case-insensitive substring match of `query` against every file path in the repository at the reviewed head. */
+  /**
+   * Every file path in the repository at the reviewed head that matches `query`: a case-insensitive
+   * substring, or a glob (`*`, `**`, `?`, `{a,b}`) when the query has glob characters. See
+   * `createPathMatcher` in `./pathMatch.ts`.
+   */
   findFiles(query: string): Promise<string[]>;
   /** Full content of a single file at the reviewed head, or null if it does not exist there. */
   readFile(path: string): Promise<string | null>;
@@ -1604,6 +1609,7 @@ export function buildCompactDiffManifest(
     `Fetch diff hunks or inspect source context on-demand using:`,
     `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
     `- read_file: {"tool": "read_file", "args": {"path": "<path>", "startLine": 1, "endLine": 80}}`,
+    `- ${FIND_FILES_TOOL_GUIDE}`,
     `- zoekt / symbol_search: to audit cross-file symbols across the repository.`,
     `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
     `SKIPPED paths are larger than max-file-diff-chars; do not request their payloads.`,
@@ -2163,6 +2169,7 @@ async function invoke(
     `- TOOL USAGE IS STRICTLY A FALLBACK:`,
     `  * get_diff: Use ONLY for files explicitly marked [INDEXED: on-demand get_diff available] that exceeded the prompt budget.`,
     `  * read_file: Use ONLY when necessary to inspect surrounding unchanged repository context, imported module definitions, or caller contracts.`,
+    `  * ${FIND_FILES_TOOL_GUIDE}`,
     `  * zoekt / symbol_search: Use ONLY when verifying cross-repository symbol definitions or call hierarchies.`,
     `  * External Documentation (${mcpToolListStr || 'fetch_docs, context7_search'}): Use Context7 ONLY when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.`,
     `- IMPORTANT EVIDENCE BOUNDARY: Default code reading and symbol search tools are patch-scoped: they only inspect the patch hunks of files modified in this PR. They DO NOT search unchanged files across the repository. Never claim a function, module, or symbol is undefined, missing, or broken in the repository simply because a patch-scoped search returns no hits. Use read_file or zoekt before claiming missing symbols.`,
