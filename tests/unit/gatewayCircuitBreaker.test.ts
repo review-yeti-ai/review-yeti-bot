@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from 'vitest';
 import {
   isProvider5xxError,
   executePersonaPanel,
@@ -254,6 +254,7 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
       // (zero jitter here); only once that is spent does the breaker stop the lane -- still
       // without fanning out to the secondary pool.
       const random = vi.spyOn(Math, 'random').mockReturnValue(0);
+      onTestFinished(() => random.mockRestore());
 
       const capturedModels: string[] = [];
       const mockClient = {
@@ -318,7 +319,6 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
       expect(capturedModels).toContain('primary-model');
       expect(capturedModels).not.toContain('secondary-model');
       expect(capturedModels.filter((model) => model === 'primary-model')).toHaveLength(TRANSPORT_MAX_RETRIES + 1);
-      random.mockRestore();
     });
   });
 

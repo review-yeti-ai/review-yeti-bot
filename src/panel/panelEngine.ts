@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
+import { workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, isSameFile, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import {
   executeSymbolResolutionAppendix,
@@ -1481,16 +1482,16 @@ export function isTransientLaneTransportError(error: unknown): boolean {
 }
 
 /** REL-1113: milliseconds left before a transport backoff would crowd the
- * worker's terminal deadline (`REVIEW_TERMINAL_DEADLINE`, projected by the
- * operator), or Infinity when this process has no such deadline. */
+ * worker's terminal deadline, or Infinity when this process was given none. The
+ * env contract (name, format) is owned by `config/terminalDeadline`; absence is
+ * not unbounded -- the panel deadline (`remainingPanelTimeoutMs`) still bounds
+ * every backoff. */
 export function remainingTerminalDeadlineMs(
   env: Readonly<Record<string, string | undefined>> = process.env,
   now: number = Date.now(),
 ): number {
-  const raw = String(env.REVIEW_TERMINAL_DEADLINE ?? '').trim();
-  if (!raw) return Infinity;
-  const at = Date.parse(raw);
-  return Number.isFinite(at) ? at - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now : Infinity;
+  const at = workerTerminalDeadlineAtMs(env);
+  return at === undefined ? Infinity : at - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now;
 }
 
 /** Default token budget for inlined diffs in Turn 1 */
