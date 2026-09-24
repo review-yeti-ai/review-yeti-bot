@@ -8,6 +8,7 @@ import {
 
 import type { CancellationPatchResult, ReviewJobProjector } from './reviewJobProjector';
 export type { CancellationPatchResult, ReviewJobProjector };
+import { recoverOrphanedProjectionCancellation, type OrphanedCancellationOutcome } from './orphanedProjectionCancellation';
 
 /**
  * One cancellation the sweep could not apply; carries no upstream error text.
@@ -56,7 +57,10 @@ export interface ReviewJobDispatchEngineOptions {
   repository: Pick<
     ReviewDispatchRepository,
     'claimNext' | 'markProjected' | 'bindWorkerTokenDigest' | 'releaseForRetry' | 'markTerminal'
-  > & Partial<Pick<ReviewDispatchRepository, 'markCancelPropagated' | 'findPendingCancellations'>>;
+  > & Partial<Pick<
+    ReviewDispatchRepository,
+    'markCancelPropagated' | 'findPendingCancellations' | 'reopenOrphanedProjectionCancellation'
+  >>;
   projector: ReviewJobProjector;
   /** Required to dispatch an app-gate review; absent, publishing runs are refused. */
   runSecretProvisioner?: RunSecretProvisioner;
@@ -78,7 +82,7 @@ export type ReviewJobDispatchOutcome =
   | { status: 'projected'; runId: string; projectionName: string }
   | { status: 'terminal'; runId: string; reason: 'projection-rejected' | 'run-secret-unavailable' }
   | { status: 'retry'; runId: string; availableAt: number; reason: 'run-secret-provisioning' | 'projection' }
-  | { status: 'lease-lost'; runId: string };
+  | { status: 'lease-lost'; runId: string; orphanedCancellation?: OrphanedCancellationOutcome };
 
 export class ReviewJobDispatchEngine {
   private readonly now: () => number;
@@ -253,8 +257,23 @@ export class ReviewJobDispatchEngine {
         projection.metadata.name,
         this.now(),
       );
-    return projected
-      ? { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name }
+    if (projected) {
+      return { status: 'projected', runId: claim.runId, projectionName: projection.metadata.name };
+    }
+    // The PRReviewJob now exists but the row is not ours: if a cancel retired it
+    // mid-claim, that job must still be cancelled (REL-1073 claimed-run race).
+    const orphanedCancellation = this.options.repository.reopenOrphanedProjectionCancellation
+      ? await recoverOrphanedProjectionCancellation({
+        repository: { reopenOrphanedProjectionCancellation: this.options.repository.reopenOrphanedProjectionCancellation.bind(this.options.repository) },
+        cancel: (event) => this.handleCancellation(event),
+        runId: claim.runId,
+        claimAttempt: claim.claimAttempt,
+        projectionName: projection.metadata.name,
+        now: this.now(),
+      })
+      : undefined;
+    return orphanedCancellation
+      ? { status: 'lease-lost', runId: claim.runId, orphanedCancellation }
       : { status: 'lease-lost', runId: claim.runId };
   }
 
