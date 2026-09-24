@@ -76,20 +76,39 @@ describe('postgresSuite tripwire', () => {
     expect(postgresSuiteDispatch('   ')).toBe('skip');
   });
 
-  it('every Postgres suite adopts the tripwire', async () => {
-    // Adoption was thirteen hand-added calls that nothing verified. A 14th suite
-    // wired only with describeWithPostgres would keep the skip-only behaviour this
-    // module exists to remove, so a lost CI env var would skip it green while its
-    // siblings fail loudly -- partial silent coverage loss.
+  it('every Postgres suite adopts the tripwire (real tree)', async () => {
+    // Adoption was hand-added calls nothing verified: a 15th suite wired only with
+    // describeWithPostgres would keep the skip-only behaviour this module exists to
+    // remove, so a lost CI env var would skip it green while siblings fail loudly.
     const fs = await import('node:fs');
     const path = await import('node:path');
     const dir = path.join(process.cwd(), 'tests/integration');
     const { assertEveryPostgresSuiteAdoptsTripwire } = await import('../support/postgresSuite');
-    expect(() => assertEveryPostgresSuiteAdoptsTripwire(() => fs.readdirSync(dir)
+    const readSuites = () => fs.readdirSync(dir)
       .filter((name: string) => name.endsWith('.postgres.test.ts'))
       .map((name: string) => ({
         path: name,
         source: fs.readFileSync(path.join(dir, name), 'utf8'),
-      })))).not.toThrow();
+      }));
+    expect(readSuites().length).toBeGreaterThan(0);
+    expect(() => assertEveryPostgresSuiteAdoptsTripwire(readSuites)).not.toThrow();
+  });
+
+  it('the adoption guard THROWS on a suite that has not adopted it', async () => {
+    // The throw branch is the guard's only value, and asserting only
+    // `.not.toThrow()` over the real tree passes identically under a vacuous
+    // implementation (`.filter(() => false)`, or a loosened regex). This is the
+    // same standard this PR applies to requireDatabaseUrlInCi() (REL-1069 review).
+    const { assertEveryPostgresSuiteAdoptsTripwire } = await import('../support/postgresSuite');
+    const compliant = { path: 'a.postgres.test.ts', source: 'requireDatabaseUrlInCi();' };
+    const nonCompliant = { path: 'forgot.postgres.test.ts', source: "import { describe } from 'vitest';" };
+
+    expect(() => assertEveryPostgresSuiteAdoptsTripwire(() => [compliant])).not.toThrow();
+    // Names the offender, so a new suite is actionable rather than merely red.
+    expect(() => assertEveryPostgresSuiteAdoptsTripwire(() => [compliant, nonCompliant]))
+      .toThrow(/forgot\.postgres\.test\.ts/);
+    // ...and reports ONLY the offenders.
+    expect(() => assertEveryPostgresSuiteAdoptsTripwire(() => [compliant, nonCompliant]))
+      .not.toThrow(/a\.postgres\.test\.ts/);
   });
 });
