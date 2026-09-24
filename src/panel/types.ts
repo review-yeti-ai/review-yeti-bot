@@ -1,11 +1,11 @@
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
-import type { DiffShrinkDisclosure } from '../review/diffShrink';
 // Imported from the neutral `../types/workerFailure` module, not `../review/workerCompletion`
 // (REL-892 finding 3): a panel domain type must not reach into the worker-completion/HTTP
 // boundary module for a plain value type. See `../types/workerFailure` for the full rationale.
 import type { WorkerFailureClass } from '../types/workerFailure';
+import type { DiffShrinkDisclosure } from '../types/diffShrink';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 

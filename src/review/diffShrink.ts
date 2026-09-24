@@ -51,7 +51,8 @@
  * and plugins are repository code. It stays a documented follow-up until the
  * worker has a formatter it can run without executing repository code.
  */
-import { linguistExclusionFor, parseLinguistAttributes, type LinguistAttribute } from './gitattributesLinguist';
+import type { DiffShrinkDisclosure, DiffShrinkInput, DiffShrinkRename } from '../types/diffShrink';
+import { linguistExclusionFor, parseLinguistAttributes } from './gitattributesLinguist';
 import { isRegularFileMode } from './lockfileChangeVerification';
 import {
   isSubmoduleEntry,
@@ -64,41 +65,13 @@ import { isSecuritySensitivePath } from './securitySensitivePaths';
 
 export const DIFF_SHRINK_FLAG = 'REVIEW_YETI_DIFF_SHRINK';
 
-/** Why the root `.gitattributes` linguist rules are or are not applied. */
-export type LinguistRulesState =
-  | { status: 'applied'; content: string }
-  | { status: 'none-declared' }
-  | { status: 'not-applied'; reason: string };
-
-export interface DiffShrinkInput {
-  enabled: boolean;
-  linguist?: LinguistRulesState;
-}
-
-export type ShrinkRule = 'whitespace' | 'rename' | 'linguist';
-
-export interface DiffShrinkRename {
-  from: string;
-  to: string;
-  /** Percentage from the diff header, or 100 for a content-matched move; null when the header gave none. */
-  similarity: number | null;
-  kind: 'rename' | 'copy';
-  detectedBy: 'diff-header' | 'content-match';
-  /** `none` for a pure rename/move, `changed-hunks` when the file also changed. */
-  contentSent: 'none' | 'changed-hunks';
-}
-
-export interface DiffShrinkDisclosure {
-  whitespaceOnlyFiles: string[];
-  collapsedWhitespaceHunks: Array<{ path: string; hunks: number }>;
-  renames: DiffShrinkRename[];
-  linguistExcluded: Array<{ path: string; attribute: LinguistAttribute }>;
-  linguistRules: 'applied' | 'none-declared' | 'not-provided' | { notApplied: string };
-  /** Security-sensitive files a rule would have shrunk, kept at full depth instead. */
-  keptFullDepth: Array<{ path: string; rule: ShrinkRule }>;
-  estimatedTokensBefore: number;
-  estimatedTokensAfter: number;
-}
+export type {
+  DiffShrinkDisclosure,
+  DiffShrinkInput,
+  DiffShrinkRename,
+  LinguistRulesState,
+  ShrinkRule,
+} from '../types/diffShrink';
 
 const NOTE_PREFIX = '\\ Review Yeti:';
 

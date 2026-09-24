@@ -21,7 +21,9 @@
  * are repository content.
  */
 
-export type LinguistAttribute = 'linguist-generated' | 'linguist-vendored';
+import type { LinguistAttribute } from '../types/diffShrink';
+
+export type { LinguistAttribute };
 
 interface LinguistRule {
   matcher: GitattributesMatcher;
