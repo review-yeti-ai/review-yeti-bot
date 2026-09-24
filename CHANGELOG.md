@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.86.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.0...v1.86.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **review:** disclose patch truncation and omitted patches (REL-1092) ([#1019](https://github.com/review-yeti-ai/review-yeti-bot/issues/1019)) ([3f67a54](https://github.com/review-yeti-ai/review-yeti-bot/commit/3f67a544729bcf221d2ceedd8677a92521378908))
+
 ## [1.86.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.85.0...v1.86.0) (2026-09-24)
 
 
