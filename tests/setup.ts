@@ -94,6 +94,12 @@ process.env.CT_DASHBOARD_STORE = path.join(workerStateRoot, `test_store_${testSt
 process.env.CT_REVIEW_PLATFORM_DB = process.env.CT_REVIEW_PLATFORM_DB || ':memory:';
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'test_webhook_secret';
 process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+// REL-1069: the gateway standard is OPENAI_API_KEY + OPENAI_BASE_URL, and the
+// app's client now fails closed rather than defaulting to a vendor URL. This
+// harness simulates a CONFIGURED environment, so it must supply both, exactly
+// as a real deployment does. Previously it set only the key and relied on the
+// removed vendor default -- the gap the full-suite run exposed.
+process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://gateway.test/v1';
 process.env.GITHUB_APP_ID = process.env.GITHUB_APP_ID || '123456';
 process.env.GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3\n-----END RSA PRIVATE KEY-----';
 process.env.OMNIROUTE_BASE_URL = process.env.OMNIROUTE_BASE_URL || 'http://localhost:8080';
