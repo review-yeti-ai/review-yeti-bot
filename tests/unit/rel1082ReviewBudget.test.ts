@@ -7,7 +7,7 @@ import { executePersonaPanel, extractMessageContentText, MAX_INLINE_DIFF_CHARS_C
 import { executeComposedReview } from '../../src/panel/composedEngine';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { parseChangedFiles } from '../../src/review/changedFiles';
-import { resolveShrunkReviewApplicability } from '../../src/review/diffShrink';
+import { resolveScopedReviewApplicability } from '../../src/review/incrementalReview';
 import { resolveReviewApplicability } from '../../src/review/personaApplicability';
 import {
   BIFROST_PROXY_BODY_LIMIT_BYTES,
@@ -474,6 +474,24 @@ describe('one applicability decision', () => {
     expect(pack.disclosure.files.find((file) => file.path === 'src/core.ts')!.pastPerFileCut).toBe(true);
   });
 
+  // REL-1084 runs before the budget: a carried-forward file keeps its carry-forward note even
+  // when the per-file cut shortened it, and is never restored to its whole patch.
+  it('never restores a file the incremental scope carried forward', () => {
+    const changed = files(addedFile('src/unchanged.ts', 900, 'kept') + addedFile('src/core.ts', 900, 'core'));
+    const incremental = {
+      previous: { runId: `run_${'a'.repeat(32)}`, executionAttempt: 1, headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40), completionDigest: 'e'.repeat(64) },
+      carriedForwardPaths: ['src/unchanged.ts'],
+      openFindingPaths: [],
+    };
+    const worker = resolveBudgetedReviewApplicability(roster, changed, { incremental, reviewBudget: ON, budgetScope: 'whole-diff' });
+    expect(worker.incremental?.carriedForwardPaths).toEqual(['src/unchanged.ts']);
+    const pack = worker.reviewBudget!.packs.get(COMPOSED_BUDGET_LANE_ID)!;
+    const carried = worker.effectiveFiles.find((file) => file.path === 'src/unchanged.ts')!.patch;
+    expect(pack.entries.get('src/unchanged.ts')!.promptPatch).toBe(carried);
+    expect(pack.entries.get('src/unchanged.ts')!.promptPatch).not.toContain('kept_TAIL_MARKER');
+    expect(pack.entries.get('src/core.ts')!.promptPatch).toContain('core_TAIL_MARKER');
+  });
+
   it('builds each lane\'s pack from exactly the files that lane is scoped to', () => {
     const personas = [
       { id: 'src-lane', enabled: true, required: true, charter: 'builtin:correctness', paths: ['src/**'], providers: ['p'] },
@@ -486,9 +504,9 @@ describe('one applicability decision', () => {
     expect([...worker.reviewBudget!.packs.get('test-lane')!.entries.keys()]).toEqual(['tests/a.test.ts']);
   });
 
-  it('is exactly the shrunk decision, with no budget, when the flag is off or no lane applies', () => {
+  it('is exactly the scoped (shrink + incremental) decision, with no budget, when the flag is off or no lane applies', () => {
     const changed = files(corpus['large mixed']);
-    const shrunk = resolveShrunkReviewApplicability(roster, changed, {});
+    const shrunk = resolveScopedReviewApplicability(roster, changed, {});
     for (const reviewBudget of [undefined, { enabled: false }]) {
       const worker = resolveBudgetedReviewApplicability(roster, changed, { reviewBudget });
       expect(worker.reviewBudget).toBeNull();
