@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingGatewaySettings, requireGatewaySettings, resolveGatewayBaseUrl, resolveGatewayApiKey, resolveGatewaySettings } from '../../src/review/openaiTransport';
+import { missingGatewaySettings, requireGatewaySettings, resolveGatewaySettings } from '../../src/review/openaiTransport';
 
 describe('gateway setting contract', () => {
   it('reports the base URL missing when every spelling is absent', () => {
@@ -21,8 +21,9 @@ describe('gateway setting contract', () => {
   it('is empty when both standard names are set', () => {
     const env = { OPENAI_API_KEY: 'sk-bf-x', OPENAI_BASE_URL: 'https://gw.example/v1' } as unknown as NodeJS.ProcessEnv;
     expect(missingGatewaySettings(env)).toEqual([]);
-    expect(resolveGatewayApiKey(env)).toBe('sk-bf-x');
-    expect(resolveGatewayBaseUrl(env)).toBe('https://gw.example/v1');
+    const resolved = requireGatewaySettings(env);
+    expect(resolved.apiKey).toBe('sk-bf-x');
+    expect(resolved.baseUrl).toBe('https://gw.example/v1');
   });
 
   // Every accepted spelling must be proven to resolve ALONE. Without this, a
@@ -35,7 +36,7 @@ describe('gateway setting contract', () => {
   ])('accepts %s as the only base URL spelling', (name) => {
     const env = { OPENAI_API_KEY: 'sk-bf-x', [name]: 'https://gw.example/v1' } as unknown as NodeJS.ProcessEnv;
     expect(missingGatewaySettings(env)).toEqual([]);
-    expect(resolveGatewayBaseUrl(env)).toBe('https://gw.example/v1');
+    expect(requireGatewaySettings(env).baseUrl).toBe('https://gw.example/v1');
   });
 
   it.each([
@@ -47,7 +48,7 @@ describe('gateway setting contract', () => {
   ])('accepts %s as the only gateway key spelling', (name) => {
     const env = { OPENAI_BASE_URL: 'https://gw.example/v1', [name]: 'k' } as unknown as NodeJS.ProcessEnv;
     expect(missingGatewaySettings(env)).toEqual([]);
-    expect(resolveGatewayApiKey(env)).toBe('k');
+    expect(requireGatewaySettings(env).apiKey).toBe('k');
   });
 
   it('prefers the standard name when several spellings are present', () => {
@@ -55,8 +56,9 @@ describe('gateway setting contract', () => {
       OPENAI_API_KEY: 'standard', OPENROUTER_API_KEY: 'legacy',
       OPENAI_BASE_URL: 'https://standard/v1', OPENROUTER_BASE_URL: 'https://legacy/v1',
     } as unknown as NodeJS.ProcessEnv;
-    expect(resolveGatewayApiKey(env)).toBe('standard');
-    expect(resolveGatewayBaseUrl(env)).toBe('https://standard/v1');
+    const resolved = requireGatewaySettings(env);
+    expect(resolved.apiKey).toBe('standard');
+    expect(resolved.baseUrl).toBe('https://standard/v1');
   });
 
   describe('mixed-generation provenance is refused', () => {

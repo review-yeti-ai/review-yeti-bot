@@ -34,8 +34,15 @@ export function invalidPublishingReviewContract(): Error {
  * readiness probe report 503 on a correctly-configured Bifrost deployment
  * (REL-1069) while every other review workload was healthy.
  */
-/** Resolve the admitted gateway key, in GATEWAY_SETTING_NAMES order. */
-export function resolveGatewayApiKey(env: NodeJS.ProcessEnv): string {
+/****INTERNAL****
+ * Unpaired read. NOT exported: calling this alone is how two incidents in this
+ * file were caused -- readiness answering 200 while the client threw, and the
+ * `|| requiredWorkerEnv(...)` fallback reinstating a refused pairing. Callers
+ * must use `resolveGatewaySettings` (guarded pair) or `requireGatewaySettings`
+ * (throws). Kept module-private so misuse is a compile error, not a review
+ * comment (REL-1069 review).
+ */
+function resolveGatewayApiKey(env: NodeJS.ProcessEnv): string {
   return firstValue(env, GATEWAY_SETTING_NAMES.apiKey);
 }
 
@@ -82,13 +89,8 @@ export function missingGatewaySettings(env: NodeJS.ProcessEnv): string[] {
   return [GATEWAY_SETTING_NAMES.baseUrl[0], GATEWAY_SETTING_NAMES.apiKey[0]];
 }
 
-/** Resolve the admitted gateway base URL, preferring the standard OpenAI name.
- *
- * Resolved as a PAIR with the key by `resolveGatewaySettings`; calling this
- * alone can pair a standard Bifrost key with a legacy vendor URL, which would
- * send the CT credential to a third party.
- */
-export function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
+/** Unpaired read; see the note on resolveGatewayApiKey. NOT exported. */
+function resolveGatewayBaseUrl(env: NodeJS.ProcessEnv): string {
   return firstValue(env, GATEWAY_SETTING_NAMES.baseUrl);
 }
 
