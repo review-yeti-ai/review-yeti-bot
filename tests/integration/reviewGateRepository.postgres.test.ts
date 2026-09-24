@@ -9,6 +9,12 @@ import {
   type ReviewGateCreateRequest,
   type ReviewGateUpdateRequest,
 } from '../../src/github/reviewGateClient';
+
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var
+// cannot turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
 import {
   gateAttemptId,
   PostgresReviewGateRepository,
@@ -27,8 +33,8 @@ import {
 MAX_COMPLETION_BYTES,
 } from '../../src/review/workerReviewCompletion';
 
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const databaseUrl = postgresDatabaseUrl();
+const describeWithPostgres = describeWithPostgresShared;
 const OWNED_SCHEMA = /^review_gate_test_[0-9a-f]{16}$/u;
 const APP_ID = 7001;
 const CONFIG_DIGEST = 'e'.repeat(64);

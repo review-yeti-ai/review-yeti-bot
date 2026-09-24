@@ -20,13 +20,18 @@ import {
   type WorkerReviewCompletion,
 } from '../../src/review/workerReviewCompletion';
 
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: skip locally, fail loudly in CI if the database URL is lost.
+requireDatabaseUrlInCi();
+
 /**
  * REL-1084: the one selection of the prior review a carry-forward rests on, in
  * real SQL, and the trusted completion transaction handing the service's OWN
  * record (never the worker's) to the resolver that verifies the claim.
  */
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const databaseUrl = postgresDatabaseUrl();
+const describeWithPostgres = describeWithPostgresShared;
 const OWNED_SCHEMA = /^incremental_prior_test_[0-9a-f]{16}$/u;
 const APP_ID = 7001;
 const POLICY = 'c'.repeat(64);
