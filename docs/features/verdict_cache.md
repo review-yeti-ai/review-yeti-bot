@@ -62,7 +62,7 @@ In every case below, the review runs as it does today. No file is served from th
 | `no-prior-review` | The pull request has no earlier stored completion. |
 | `retry-attempt` | This is any execution attempt after the first. Retrying is also how the service recovers from any problem with the cache. |
 | `same-head` | The source record reviewed this same head. |
-| `prior-not-ship-complete` | The source run did not succeed, or it was not a complete SHIP. |
+| `prior-not-ship-complete` | The source run did not succeed, or it was not a complete SHIP. The same derivation as incremental re-review decides this: the gate's own record of the completion plus the verdict re-derived from its stored lanes, never the worker's optional `result.verdict`. |
 | `policy-or-config-changed` | The policy digest or the config digest changed. |
 | `prior-too-old` | The source record is older than the configured age. |
 | `no-cache-entries` | The source record has no entries. |

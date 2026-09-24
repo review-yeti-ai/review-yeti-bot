@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
-import type { ReviewGateEvidence } from './reviewGatePolicy';
+import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
@@ -521,6 +521,124 @@ function rawFieldsMatchCanonical(result: WorkerReviewResult, canonical: Canonica
 }
 
 /**
+ * The one canonical arbitration of a completion's persona lanes: strict finding validation, then
+ * `computeAppVerdict`. `deriveCanonicalWorkerReviewEvidence` (the gate) and
+ * `deriveStoredCompletionVerdict` (a stored prior review, REL-1084/REL-1085) both call it, so the
+ * verdict a later run relies on is computed exactly as the gate computed it.
+ */
+function arbitrateLanes(
+  personas: readonly WorkerReviewPersonaEvidence[],
+  expectedLanes: number,
+  coverageComplete: boolean,
+  changedFiles: ReviewChangedFile[] | undefined,
+): { valid: true; canonical: CanonicalArbitration } | { valid: false; message: string } {
+  const lanes: ReviewLane[] = [];
+  for (const persona of personas) {
+    const validation = validateReviewFindings(persona.findings, changedFiles);
+    if (!validation.valid) {
+      const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
+      return { valid: false, message: `invalid findings for persona ${persona.id}${suffix}: ${validation.error || 'unknown error'}` };
+    }
+    lanes.push({
+      id: persona.id,
+      decision: persona.decision,
+      ...(persona.status ? { status: persona.status } : {}),
+      findings: validation.findings as ReviewFinding[],
+    });
+  }
+  return { valid: true, canonical: computeAppVerdict({ lanes, expectedLanes, changedFiles, coverageComplete }) };
+}
+
+/**
+ * REL-1084/REL-1085: the canonical verdict of a completion the service already accepted and
+ * stored, for deciding whether a later run may rest on it. The worker's optional `result.verdict`
+ * is never read (the authoritative worker does not even set it). The two trusted inputs the gate
+ * took from its live coverage contract come from the gate's own stored evidence for this exact
+ * completion: how many lanes the service required, and whether coverage was complete.
+ *
+ * The changed files' patch text is not stored, so findings are validated without it. That can
+ * only keep a finding the gate dropped as unanchored, never drop one the gate kept, so this is
+ * never more lenient than the gate. Null when the lanes do not validate.
+ */
+export function deriveStoredCompletionVerdict(
+  result: WorkerReviewResult,
+  trusted: { expectedLanes: number; coverageComplete: boolean },
+): CanonicalArbitration | null {
+  if (!Number.isSafeInteger(trusted.expectedLanes) || trusted.expectedLanes <= 0) return null;
+  // Shadow lanes never gated a verdict; the authoritative completion never carries them.
+  const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
+  if (new Set(gating.map((persona) => persona.id)).size !== gating.length) return null;
+  const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
+    trusted.coverageComplete === true && result.coverageComplete, undefined);
+  return arbitration.valid ? arbitration.canonical : null;
+}
+
+/**
+ * REL-1084/REL-1085: the gate attempt row that recorded a stored completion
+ * (`review_gate_attempts.worker_result_digest/evidence/decision`), as selected beside it. The
+ * writer is `PostgresReviewGateRepository.recordWorkerResult`, which stores the
+ * `ReviewGateEvidence` from `deriveCanonicalWorkerReviewEvidence` and the `ReviewGateDecision`
+ * from `evaluateReviewGate`; `storedCompletionShipComplete` below is its one reader.
+ */
+export interface StoredGateRecord { worker_result_digest: unknown; evidence: unknown; decision: unknown }
+
+function jsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return undefined; }
+}
+
+// Typed against the gate's own vocabulary, so a rename there fails to compile here.
+const CLEAN_REVIEW_DECISION: Extract<ReviewGateDecision, { status: 'success' }>['reason'] = 'clean-review';
+const SHIP_VERDICT: ReviewGateEvidence['verdict'] = 'SHIP';
+
+/**
+ * REL-1084/REL-1085: whether a stored authoritative completion was a complete SHIP review.
+ *
+ * The verdict is derived, never read from the worker's optional `result.verdict` (the
+ * authoritative worker does not set it, so reading it made every prior review
+ * `prior-not-ship-complete`). Two service-side sources must both say SHIP:
+ *
+ * - the gate's own record of THIS completion (the attempt whose `worker_result_digest` is the
+ *   stored content digest): a `clean-review` success whose evidence, computed by
+ *   `deriveCanonicalWorkerReviewEvidence` from the service's trusted lane set, is SHIP with every
+ *   required lane completed, coverage and quorum met and no P0/P1. A `human-accepted-risk`
+ *   success is a FIX_FIRST review and never qualifies;
+ * - the canonical verdict re-derived from the stored lanes with the gate's required lane count
+ *   (`deriveStoredCompletionVerdict`, the same arbitration the gate ran).
+ *
+ * Also refused, as before: an error lane, any raw P0/P1 even if calibration later downgraded it,
+ * and an audited no-reviewable-content exemption (it reviewed nothing to carry forward; the gate
+ * records it with zero required lanes and an `exemption`).
+ */
+export function storedCompletionShipComplete(
+  result: WorkerReviewResult,
+  gate: StoredGateRecord | null | undefined,
+  storedDigest: string,
+): boolean {
+  if (!gate || String(gate.worker_result_digest ?? '') !== storedDigest) return false;
+  const evidence = jsonValue(gate.evidence);
+  const decision = jsonValue(gate.decision);
+  if (!isRecord(evidence) || !isRecord(decision)) return false;
+  if (decision.status !== 'success' || decision.reason !== CLEAN_REVIEW_DECISION) return false;
+  const expectedLanes = evidence.expectedLanes;
+  if (evidence.verdict !== SHIP_VERDICT || evidence.coverageComplete !== true || evidence.quorumSatisfied !== true
+    || evidence.infrastructureFailure !== false || evidence.exemption != null
+    || evidence.p0Count !== 0 || evidence.p1Count !== 0
+    || typeof expectedLanes !== 'number' || !Number.isSafeInteger(expectedLanes) || expectedLanes <= 0
+    || evidence.completedLanes !== expectedLanes) return false;
+  if (result.quorumSatisfied !== true) return false;
+  // Stricter than the gate: a raw P0/P1 that calibration re-filed as P2 still disqualifies.
+  // Any lane, shadow included, exactly as before this derivation existed.
+  if (result.personas.some((persona) => persona.findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1'))) return false;
+  // Re-derived with the gate's required lane count: quorum there needs exactly that many lanes,
+  // none failed (error lanes included) and complete coverage, so a missing, extra, duplicate or
+  // failed lane is refused here even if the stored gate record were wrong.
+  const canonical = deriveStoredCompletionVerdict(result, { expectedLanes, coverageComplete: true });
+  return canonical !== null && canonical.verdict === 'SHIP' && canonical.quorumSatisfied
+    && canonical.completedPersonas === expectedLanes;
+}
+
+/**
  * Re-derives service evidence from the worker's persona lanes. The worker's verdict and summary
  * counts are checked for consistency only; `computeAppVerdict` is the decision source. Required
  * lanes and coverage remain service-owned inputs.
@@ -608,28 +726,10 @@ export function deriveCanonicalWorkerReviewEvidence(
     seen.add(persona.id);
   }
 
-  const lanes: ReviewLane[] = [];
-  for (const persona of completion.result.personas) {
-    const validation = validateReviewFindings(persona.findings, changedFiles);
-    if (!validation.valid) {
-      const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
-      return invalidEvidence(`invalid findings for persona ${persona.id}${suffix}: ${validation.error || 'unknown error'}`);
-    }
-    lanes.push({
-      id: persona.id,
-      decision: persona.decision,
-      ...(persona.status ? { status: persona.status } : {}),
-      findings: validation.findings as ReviewFinding[],
-    });
-  }
-
   const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
-  const canonical = computeAppVerdict({
-    lanes,
-    expectedLanes: expectedPersonaIds.length,
-    changedFiles,
-    coverageComplete,
-  });
+  const arbitration = arbitrateLanes(completion.result.personas, expectedPersonaIds.length, coverageComplete, changedFiles);
+  if (!arbitration.valid) return invalidEvidence(arbitration.message);
+  const { canonical } = arbitration;
   const quorumSatisfied = contract.quorumSatisfied && completion.result.quorumSatisfied && canonical.quorumSatisfied;
   const evidence: ReviewGateEvidence = {
     verdict: canonical.verdict,
