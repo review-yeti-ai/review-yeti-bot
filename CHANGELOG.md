@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.10...v1.84.11) (2026-09-24)
+
+
+### Bug Fixes
+
+* **operator:** regenerate the PRReviewJob CRD so cancelRequested is not pruned (REL-1073) ([#1013](https://github.com/review-yeti-ai/review-yeti-bot/issues/1013)) ([92cbca9](https://github.com/review-yeti-ai/review-yeti-bot/commit/92cbca9bec60d00e5eb3664e1905b80e0327e9e0))
+
 ## [1.84.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.9...v1.84.10) (2026-09-24)
 
 
