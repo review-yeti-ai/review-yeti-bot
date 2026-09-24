@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.9...v1.84.10) (2026-09-24)
+
+
+### Bug Fixes
+
+* **review:** route uncovered source beside an applying lane to the required lane (REL-1088) ([#1008](https://github.com/review-yeti-ai/review-yeti-bot/issues/1008)) ([dbbf56c](https://github.com/review-yeti-ai/review-yeti-bot/commit/dbbf56c3a7122f4a044c744016a9c9a46ae27ebe))
+
 ## [1.84.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.8...v1.84.9) (2026-09-24)
 
 
