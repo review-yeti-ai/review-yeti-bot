@@ -382,7 +382,29 @@ describe('McpFleetManager Unit Tests', () => {
       }
     });
 
-    it('an aborted signal in flight is reported as aborted, not as a timeout', async () => {
+    it('a caller abort with a CUSTOM reason is still aborted, not a timeout', async () => {
+      // The taxonomy lives in ONE place: the outer HTTP catch keys on `options.signal.aborted`,
+      // so the reason text cannot change the verdict. The inline copy this replaced sniffed the
+      // reason's name/message instead, which is the shape that mislabels a custom caller reason
+      // as a timeout -- two sites for one rule, and it had already drifted (REL-1116 review).
+      //
+      // Scope note, verified rather than assumed: a pre-aborted caller signal is turned into a
+      // controller abort at the `AbortSignal.any` polyfill, so this reaches the OUTER catch and
+      // asserts the shared taxonomy. The pre-fetch guard added in this change is a backstop for
+      // an abort that lands during setup; planting the old inline copy does not fail this test,
+      // which is exactly why the copy was removed rather than merely re-tested.
+      const controller = new AbortController();
+      controller.abort(new Error('operator cancelled the run'));
+
+      const result = await mcpFleetManager.executeTool(
+        'ct_impact', { target: 'custom-reason' }, { signal: controller.signal, timeoutMs: 5000 },
+      );
+      expect(result).toMatchObject({ success: false });
+      expect(result.error).toBe('Operation aborted');
+      expect(result.error).not.toMatch(/timed out/u);
+    });
+
+    it('a caller abort in flight is reported as aborted, not as a timeout', async () => {
       // Covers the caller-abort branch end to end. Note WHICH branch: the outer HTTP catch
       // classifies `wasAbortedByCaller` first, so this asserts the observable contract
       // ('aborted', never 'timed out') rather than claiming to pin the inner ternary -- an

@@ -883,15 +883,14 @@ export class McpFleetManager {
           // aborted. The request is still issued, its `abort` listener is registered after the
           // event has fired, and the awaiting promise NEVER settles. Verified: signal.aborted
           // was true at fetch time and the call hung past 3s under a 50ms budget.
+          //
+          // This guard deliberately does NOT translate the reason into an operator message. The
+          // abort-vs-timeout taxonomy lives in ONE place -- the catch below, which already
+          // classifies `wasAbortedByCaller` -- and an inline copy here had already drifted from
+          // it within this change, mislabelling a custom caller reason as a timeout
+          // (REL-1116 review). It only signals; the catch decides.
           if (effectiveSignal.aborted) {
-            const reason: any = effectiveSignal.reason;
-            const aborted = new Error(
-              reason?.name === 'AbortError' || /abort/iu.test(String(reason?.message ?? reason ?? ''))
-                ? 'Operation aborted'
-                : `HTTP request timed out after ${timeoutMs}ms`,
-            );
-            aborted.name = 'AbortError';
-            throw aborted;
+            throw Object.assign(new Error('request aborted before dispatch'), { name: 'AbortError' });
           }
 
           const res = await fetch(endpoint, {
