@@ -226,6 +226,16 @@ function downgradeUnverifiedPremise(finding) {
 }
 
 /**
+ * The one definition of the severity a finding is published with: every per-finding pass
+ * `computeArbitration` applies before clustering. A cluster's severity is the highest its members
+ * keep after this. The prior-review gate (REL-1084, `publishedFindingSeverity`) calls this same
+ * function, so the two cannot drift.
+ */
+function publishFinding(finding) {
+  return downgradeUnverifiedPremise(calibrateSeverity(finding));
+}
+
+/**
  * One defect, one finding. Personas describe the same defect under different titles a few lines
  * apart; counting each description separately let a single defect reach the P1 block threshold
  * on its own (three lanes agreeing on one P1 == BLOCK on a three-lane panel). Clusters use the
@@ -405,7 +415,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   // unverified premise, then collapse paraphrases. Severity of a cluster is the highest any
   // reporter kept after these per-finding passes, so one lane naming the real, verified defect is
   // enough to keep it P1 even when another lane only filed the same claim as a question.
-  const findings = clusterFindings(rawFindings.map(calibrateSeverity).map(downgradeUnverifiedPremise), options);
+  const findings = clusterFindings(rawFindings.map(publishFinding), options);
   let p0Count = 0;
   let p1Count = 0;
   let p2Count = 0;
@@ -525,6 +535,7 @@ module.exports = {
   UNVERIFIED_PREMISE_PHRASES,
   hasUnverifiedPremise,
   downgradeUnverifiedPremise,
+  publishFinding,
   clusterFindings,
   resolvePanelSize,
   computeArbitration,

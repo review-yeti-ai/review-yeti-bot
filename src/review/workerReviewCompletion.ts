@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
-import { calibrateSeverity, canonicalJson, downgradeUnverifiedPremise, sha256, validateReviewFindings } from './reviewCore';
+import { canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
@@ -621,13 +621,13 @@ export const STORED_PRIOR_REFUSALS = [
 export type StoredPriorRefusal = typeof STORED_PRIOR_REFUSALS[number];
 
 /**
- * The severity a finding is published with: the same per-finding calibration
- * (`calibrateSeverity`, then `downgradeUnverifiedPremise`) `computeArbitration` applies before
- * clustering. A cluster's severity is the highest its members keep after this, so a finding whose
- * published severity is P2 never made any published finding P0/P1.
+ * The severity a finding is published with, through `publishFinding`: the same function
+ * `computeArbitration` applies to every finding before clustering. A cluster's severity is the
+ * highest its members keep after it, so a finding published as P2 never made any published
+ * finding P0/P1.
  */
 export function publishedFindingSeverity(finding: { severity: string; title?: string; body?: string }): string {
-  return downgradeUnverifiedPremise(calibrateSeverity(finding as ReviewFinding)).severity;
+  return publishFinding(finding as ReviewFinding).severity;
 }
 
 /**

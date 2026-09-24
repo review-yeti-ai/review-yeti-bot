@@ -29,10 +29,12 @@ import {
   type PriorReviewRows,
 } from '../../src/review/incrementalReview';
 import { gateRecordFor } from '../support/priorGateRecord';
+import { computeArbitration } from '../../src/review/reviewCore';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
 import {
   deriveCanonicalWorkerReviewEvidence,
   parseWorkerReviewCompletion,
+  publishedFindingSeverity,
   workerReviewCompletionDigest,
   workerReviewEvidenceDigest,
 } from '../../src/review/workerReviewCompletion';
@@ -381,7 +383,39 @@ describe('prior review record', () => {
     const clean = rows(priorCompletion());
     const partial = priorCompletion({ coverageComplete: false });
     expect(priorReviewRecordFromRows({ ...rows(partial, { status: 'succeeded' }), gate: { ...clean.gate!,
-      worker_result_digest: workerReviewCompletionDigest(partial) } })?.shipComplete).toBe(false);
+      worker_result_digest: workerReviewCompletionDigest(partial) } })).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'worker-coverage-incomplete' });
+  });
+
+  it('names a failed gating lane over a clean gate record, and a record published without the gate', () => {
+    const clean = rows(priorCompletion());
+    const failed = priorCompletion({ personas: [
+      { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'arch-lane', decision: 'ERROR', status: 'ERROR', errorClass: 'transport', findings: [] },
+    ] });
+    expect(priorReviewRecordFromRows({ ...rows(failed, { status: 'succeeded' }), gate: { ...clean.gate!,
+      worker_result_digest: workerReviewCompletionDigest(failed) } })).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'lane-failed' });
+    const evidence = { ...priorCompletion(), version: 'WorkerReviewEvidence.v1', checkId: 99, conclusion: 'success' };
+    expect(priorReviewRecordFromRows(rows(evidence))).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'no-gate-evidence-record' });
+  });
+
+  it('judges blocking findings with the exact per-finding severity arbitration publishes', () => {
+    // One definition: the gate check and computeArbitration both use publishFinding.
+    const findings = [
+      { severity: 'P1', path: 'src/a.ts', line: 1, title: 'Naming is inconsistent', body: 'b' },
+      { severity: 'P1', path: 'src/b.ts', line: 1, title: 'Missing import', body: 'Tooling could not confirm the import exists.' },
+      { severity: 'P1', path: 'src/c.ts', line: 1, title: 'Unchecked input reaches the query', body: 'b' },
+      { severity: 'P0', path: 'src/d.ts', line: 1, title: 'Remote code execution', body: 'b' },
+      { severity: 'P2', path: 'src/e.ts', line: 1, title: 'Nit', body: 'b' },
+    ];
+    const published = computeArbitration([{ id: 'sec-lane', decision: 'FINDINGS', findings } as never], 1).findings;
+    for (const finding of findings) {
+      expect([finding.path, publishedFindingSeverity(finding)])
+        .toEqual([finding.path, published.find((item) => item.path === finding.path)!.severity]);
+    }
+    expect(findings.map(publishedFindingSeverity)).toEqual(['P2', 'P2', 'P1', 'P0', 'P2']);
   });
 
   it('keeps a raw P1 on a shadow lane disqualifying, as before (shadow lanes never gate, but never excuse)', () => {
