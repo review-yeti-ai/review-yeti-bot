@@ -58,5 +58,5 @@ The feature is on by default because it runs only after GitHub has already refus
 ## Operator notes
 
 - The trusted side runs in the `review-yeti-bot` image, which now installs git (`Dockerfile.bot`). Until an image with git is deployed, the trusted side keeps using the compare path, because a missing git binary is one of the failures that falls back.
-- The dispatcher's `/tmp` is a 32Mi emptyDir. Repositories whose depth-1 trees plus changed blobs exceed 16 MiB fall back to the compare path. To cover them, raise the emptyDir limit in ct-infrastructure and `TRUSTED_GIT_DIFF_MAX_SCRATCH_BYTES` together.
+- The dispatcher's `/tmp` is a 32Mi emptyDir. Repositories whose depth-1 trees plus changed blobs exceed 16 MiB fall back to the compare path. To cover them, raise the emptyDir limit in ct-infrastructure and, in the same change, raise the code constant `TRUSTED_GIT_DIFF_MAX_SCRATCH_BYTES` in `src/github/largeDiffSourceWiring.ts`. It is not an environment setting; the only environment control is `REVIEW_YETI_GIT_DIFF_FALLBACK`.
 - Worker log line: `GitHub could not render this diff; large-diff source selected`, with `source` (`git` or `pull-files`) and, on fallback, `gitDiffFailure`.
