@@ -158,7 +158,26 @@ spec:
                 format: date-time
                 type: string
               workerImage:
-                pattern: ^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$
+                description: |-
+                  The real control here is DIGEST PINNING, not a registry allowlist.
+
+
+                  The previous pattern named exactly two registries. That is both too narrow
+                  and too weak, and the weakness is the more serious half:
+                    too weak  — `ghcr.io/review-yeti-ai/<anything>:<anytag>` was permitted, so a
+                                mutable tag on the vendor registry passed while a digest-pinned
+                                image from any other registry was rejected. A tenant could not
+                                pin from their own registry, and the vendor namespace allowed
+                                tags. That inverts the control.
+                    too narrow — it hardcoded two CallTelemetry-controlled registries, so a
+                                self-hosted install could not pull from its own registry at
+                                all. Self-hosting was impossible by construction.
+
+
+                  This accepts any registry, and requires every non-node image to be pinned to
+                  a sha256 digest. `node:<tag>` remains allowed because the generic-runner mode
+                  executes runtime install steps and is not the review worker.
+                pattern: ^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$
                 type: string
             required:
             - baseSha

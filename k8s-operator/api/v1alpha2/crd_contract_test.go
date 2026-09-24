@@ -94,7 +94,12 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		"baseSha":       `^[a-f0-9]{40}$`,
 		"policyDigest":  `^[a-f0-9]{64}$`,
 		"configDigest":  `^[a-f0-9]{64}$`,
-		"workerImage":   `^(?:(?:ghcr\.io/review-yeti-ai/review-yeti-worker|registry\.digitalocean\.com/calltelemetry/review-yeti-worker)@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+|ghcr\.io/review-yeti-ai/[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.-]+)$`,
+		// workerImage pins DIGEST, not registry. The previous pattern named two
+		// CallTelemetry registries, which blocked self-hosted installs outright
+		// while still permitting a mutable tag inside the vendor namespace
+		// (`ghcr.io/review-yeti-ai/<any>:<tag>`). Requiring a sha256 digest on
+		// every non-node image is strictly stronger and tenant-neutral.
+		"workerImage":   `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
 		"runSecretName": `^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`,
 	}
 	for field, want := range wants {
@@ -271,5 +276,44 @@ func TestHelmChartCRDMatchesGeneratedWorkerTermination(t *testing.T) {
 	}
 	if got, want := strip(fromChart), strip(generated); !reflect.DeepEqual(got, want) {
 		t.Fatalf("chart workerTermination schema drifted from config/crd/bases\nchart: %#v\n  gen: %#v", got, want)
+	}
+}
+
+// The pattern assertions above compare pattern STRINGS, which cannot tell a
+// working control from a decorative one: a pattern that permits everything
+// would still match its own expected string. These cases EXECUTE the shipped
+// pattern against real inputs, so weakening it fails here (ADR 0641).
+func TestV1Alpha2WorkerImagePatternIsExecutable(t *testing.T) {
+	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+	pattern, err := regexp.Compile(spec.Properties["workerImage"].Pattern)
+	if err != nil {
+		t.Fatalf("workerImage pattern does not compile: %v", err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	cases := []struct {
+		name  string
+		image string
+		want  bool
+	}{
+		// Legitimate, including a self-hoster's own registry — the whole point.
+		{"vendor digest", "ghcr.io/review-yeti-ai/review-yeti-worker@" + digest, true},
+		{"self-host registry digest", "registry.partner.example/rev/worker@" + digest, true},
+		{"registry with port", "registry.partner.example:5000/rev/worker@" + digest, true},
+		{"generic runner", "node:20-alpine", true},
+
+		// Attacks the OLD pattern permitted. These are the regressions that
+		// matter: a mutable tag inside the vendor namespace was accepted before.
+		{"mutable tag in vendor namespace", "ghcr.io/review-yeti-ai/evil:latest", false},
+		{"vendor worker without digest", "ghcr.io/review-yeti-ai/review-yeti-worker:latest", false},
+		{"untagged foreign image", "evil.example/backdoor", false},
+		{"mutable tag foreign", "evil.example/backdoor:latest", false},
+		{"digest too short", "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:" + strings.Repeat("a", 63), false},
+		{"digest not hex", "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:" + strings.Repeat("z", 64), false},
+		{"empty", "", false},
+	}
+	for _, tc := range cases {
+		if got := pattern.MatchString(tc.image); got != tc.want {
+			t.Errorf("%s: pattern.MatchString(%q) = %v, want %v", tc.name, tc.image, got, tc.want)
+		}
 	}
 }
