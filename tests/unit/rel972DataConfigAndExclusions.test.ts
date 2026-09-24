@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { executeComposedReview } from '../../src/panel/composedEngine';
-import { executePersonaPanel } from '../../src/panel/panelEngine';
+import { executePersonaPanel, personaCoverageError } from '../../src/panel/panelEngine';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { resolveReviewApplicability, scopeFilesForPersona } from '../../src/review/personaApplicability';
 import { isDataOrConfigPath, isNoReviewableContentFile } from '../../src/review/reviewableContent';
@@ -190,6 +190,18 @@ describe('REL-972 (2): generated and path_filters-excluded files never ride alon
     await expect(executeComposedReview({
       config, changedFiles, repository: 'r/r', headSha: 'd'.repeat(40), client: unreachableClient,
     })).rejects.toThrow(message);
+  });
+
+  it('bounds the excluded-file list in the coverage error and counts the rest', () => {
+    const excluded = Array.from({ length: 11 }, (_, index) => `dist/chunk${index}.js`);
+    const message = personaCoverageError('r/r', 'e'.repeat(40), excluded, [{ id: 'sec-lane' }], [], excluded).message;
+    const note = message.slice(message.indexOf('Excluded from review'));
+    expect(note).toContain('dist/chunk9.js, +1 more;');
+    expect(note).not.toContain('dist/chunk10.js');
+
+    const exact = personaCoverageError('r/r', 'e'.repeat(40), excluded.slice(0, 10), [{ id: 'sec-lane' }], [], excluded.slice(0, 10)).message;
+    expect(exact).toContain('dist/chunk9.js; a diff carrying them');
+    expect(exact).not.toMatch(/more;/);
   });
 
   it('still reviews the covered files and drops the generated one when a lane applies', () => {
