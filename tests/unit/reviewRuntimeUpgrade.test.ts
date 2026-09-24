@@ -30,10 +30,15 @@ function canonicalProgram(runtime: string, projection: string): string {
     }
     return matches[0].getText(source).replace(/^export\s+/u, '');
   };
+  // The dispatcher now IMPORTS the worker-image patterns from the projection
+  // module instead of declaring private copies (that duplication was the fourth
+  // drift of this contract), so the extraction pulls them from where they are
+  // now declared: the exported pair plus the projection's own alias.
   const selected = [
-    ...['TRUSTED_WORKER_IMAGE_REPOSITORIES', 'DEFAULT_GENERIC_RUNNER_IMAGE', 'GENERIC_RUNNER_IMAGE_PATTERN']
+    ...['TRUSTED_WORKER_IMAGE_REPOSITORIES', 'DEFAULT_GENERIC_RUNNER_IMAGE', 'GENERIC_RUNNER_IMAGE_PATTERN',
+        'WORKER_IMAGE_PATTERN', 'PINNED_WORKER_IMAGE_PATTERN', 'digestOnlyImagePattern']
       .map((name) => declaration(projectionAst, name)),
-    ...['workerImagePattern', 'hostnamePattern'].map((name) => declaration(runtimeAst, name)),
+    ...['hostnamePattern'].map((name) => declaration(runtimeAst, name)),
     functions[0].getText(runtimeAst).replace(/^export\s+/u, ''),
   ].join('\n');
   const { outputText, diagnostics } = ts.transpileModule(selected, {
