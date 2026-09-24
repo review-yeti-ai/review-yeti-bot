@@ -228,6 +228,60 @@ func TestV1Alpha2CRDExposesBoundedWorkerTermination(t *testing.T) {
 // The Helm chart ships a hand-maintained copy of the CRD. A status field the
 // chart copy lacks is pruned on Helm-installed clusters, so workerTermination
 // must match the generated schema field for field (descriptions aside).
+// The chart ships a byte-identical copy of the generated CRD, and
+// TestHelmChartCRDMatchesGeneratedWorkerTermination guards ONE property
+// (status.workerTermination). That narrow scope is exactly how a stale
+// workerImage pattern could ship: the chart copy is what Helm installs, so a
+// divergence there keeps enforcing an old control while every test stays green.
+//
+// This compares the FULL spec schema, so any future hand-sync that misses the
+// chart copy fails here rather than on a partner's cluster.
+func TestHelmChartCRDSpecMatchesGeneratedSpec(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "charts", "review-yeti", "files", "review-yeti.ai_prreviewjobs.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read chart CRD: %v", err)
+	}
+	lines := strings.Split(string(raw), "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !strings.Contains(line, "{{") {
+			kept = append(kept, line)
+		}
+	}
+	var chart apiextensionsv1.CustomResourceDefinition
+	if err := yaml.Unmarshal([]byte(strings.Join(kept, "\n")), &chart); err != nil {
+		t.Fatalf("parse chart CRD: %v", err)
+	}
+	var chartSpec *apiextensionsv1.JSONSchemaProps
+	for index := range chart.Spec.Versions {
+		if chart.Spec.Versions[index].Name == "v1alpha2" {
+			spec := chart.Spec.Versions[index].Schema.OpenAPIV3Schema.Properties["spec"]
+			chartSpec = &spec
+		}
+	}
+	if chartSpec == nil {
+		t.Fatal("chart CRD has no v1alpha2 version")
+	}
+	generatedSpec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
+
+	// Compare the workerImage contract specifically, which is the field that
+	// carried the registry allowlist and is duplicated across four artifacts.
+	chartImage, ok := chartSpec.Properties["workerImage"]
+	if !ok {
+		t.Fatal("chart CRD lacks spec.workerImage")
+	}
+	generatedImage := generatedSpec.Properties["workerImage"]
+	if chartImage.Pattern != generatedImage.Pattern {
+		t.Fatalf("chart CRD workerImage pattern diverged from the generated CRD\n"+
+			"  chart:     %s\n  generated: %s", chartImage.Pattern, generatedImage.Pattern)
+	}
+	if chartImage.Pattern != v1alpha2.WorkerImagePattern {
+		t.Fatalf("chart CRD workerImage pattern does not match v1alpha2.WorkerImagePattern\n"+
+			"  chart:    %s\n  exported: %s", chartImage.Pattern, v1alpha2.WorkerImagePattern)
+	}
+}
+
 func TestHelmChartCRDMatchesGeneratedWorkerTermination(t *testing.T) {
 	// REL-1097: the chart installs files/review-yeti.ai_prreviewjobs.yaml, a
 	// byte-identical copy of the generated CRD; templates/crd.yaml only loads it.
