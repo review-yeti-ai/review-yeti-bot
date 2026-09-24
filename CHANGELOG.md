@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.4...v1.92.0) (2026-09-24)
+
+
+### Features
+
+* **review:** let non-authoritative runs rest on a qualifying WorkerReviewEvidence prior (REL-1084, REL-1085) ([#1061](https://github.com/review-yeti-ai/review-yeti-bot/issues/1061)) ([ac1a5d8](https://github.com/review-yeti-ai/review-yeti-bot/commit/ac1a5d84f03dbb04624a2bdb82b14dcd25c561ae))
+
 ## [1.91.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.3...v1.91.4) (2026-09-24)
 
 
