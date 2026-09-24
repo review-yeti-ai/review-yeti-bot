@@ -6,14 +6,15 @@ import {
   DEFAULT_GENERIC_RUNNER_IMAGE,
   GENERIC_RUNNER_IMAGE_PATTERN,
   type RunnerMode,
-  TRUSTED_WORKER_IMAGE_REPOSITORIES,
-  TRUSTED_WORKER_IMAGE_REPOSITORY,
 } from './reviewJobProjection';
 
 const workerImagePattern = new RegExp(
-  `^(?:${TRUSTED_WORKER_IMAGE_REPOSITORIES.map((repo) => repo.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('|')})@sha256:[a-f0-9]{64}$`,
+    `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
   'u',
 );
+// Worker images (prebaked mode) must be digest-pinned AND not a bare node tag:
+// the node alternative is a generic-runner affordance, not a worker image.
+const PURE_DIGEST_PATTERN = /^(?:[a-z0-9](?:[a-z0-9._\/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-zA-Z0-9._\/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64})$/u;
 const hostnamePattern = /^[a-z0-9](?:[a-z0-9.-]{0,198}[a-z0-9])?$/u;
 
 /**
@@ -73,9 +74,9 @@ export function reviewJobDispatcherConfigFromEnv(
       );
     }
   } else {
-    if (!workerImagePattern.test(workerImage)) {
+    if (!PURE_DIGEST_PATTERN.test(workerImage)) {
       throw new Error(
-        `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned trusted worker image (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
+        `REVIEW_JOB_WORKER_IMAGE must be a digest-pinned worker image: any registry is accepted, but the reference must be pinned to @sha256:<64 hex> so the executed content cannot change between runs.`,
       );
     }
   }

@@ -25,7 +25,7 @@ const validBaseSpec = {
 
 describe('Runner mode selection and configuration', () => {
   describe('reviewJobDispatcherConfigFromEnv', () => {
-    it('defaults to prebaked mode and requires a trusted digest-pinned image', () => {
+    it('defaults to prebaked mode and requires a digest-pinned image', () => {
       const validDigest = `${TRUSTED_WORKER_IMAGE_REPOSITORY}@sha256:${'e'.repeat(64)}`;
       const config = reviewJobDispatcherConfigFromEnv({
         REVIEW_JOB_DISPATCH_ENABLED: 'true',
@@ -43,7 +43,28 @@ describe('Runner mode selection and configuration', () => {
           REVIEW_JOB_WORKER_IMAGE: 'node:24-bookworm-slim',
           HOSTNAME: 'dispatcher-pod-0',
         }),
-      ).toThrow(/must be a digest-pinned trusted worker image/);
+      ).toThrow(/must be a digest-pinned worker image/);
+    });
+
+    it('accepts a digest-pinned image from a non-vendor registry (self-host)', () => {
+      // The headline contract: pinning is required, but the REGISTRY is not
+      // restricted. A vendor-only allowlist here would reject a self-hoster's
+      // image even after the CRD and the Go operator accepted it — the same
+      // layer mismatch that made self-hosting impossible in REL-1025.
+      const digest = `sha256:${'a'.repeat(64)}`;
+      for (const image of [
+        `registry.partner.example/rev/worker@${digest}`,
+        `alpine@${digest}`,
+        `node:20-alpine@${digest}`,
+      ]) {
+        const config = reviewJobDispatcherConfigFromEnv({
+          REVIEW_JOB_DISPATCH_ENABLED: 'true',
+          REVIEW_JOB_NAMESPACE: 'ct-review-system',
+          REVIEW_JOB_WORKER_IMAGE: image,
+          HOSTNAME: 'dispatcher-pod-0',
+        });
+        expect(config.workerImage).toBe(image);
+      }
     });
 
     it('supports generic mode and defaults worker image to node:24-bookworm-slim', () => {
