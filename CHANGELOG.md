@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.90.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.2...v1.90.3) (2026-09-24)
+
+
+### Bug Fixes
+
+* **review:** derive the prior review's verdict instead of reading result.verdict (REL-1084, REL-1085) ([#1047](https://github.com/review-yeti-ai/review-yeti-bot/issues/1047)) ([03b736f](https://github.com/review-yeti-ai/review-yeti-bot/commit/03b736fb42dc0501597d2b7bee225181011d36ce))
+
 ## [1.90.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.1...v1.90.2) (2026-09-24)
 
 
