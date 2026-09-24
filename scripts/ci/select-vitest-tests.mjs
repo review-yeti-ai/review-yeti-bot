@@ -36,24 +36,46 @@ const CODE_EXT = /\.(?:[cm]?[jt]sx?|sh)$/u;
 /** The REL-817 harness `npm run test:acceptance:reaper` runs (pinned to that script by a unit test). */
 export const REAPER_ACCEPTANCE = 'tests/integration/reaperMetricsAcceptance.postgres.test.ts';
 /**
- * How a suite is recognised as Postgres-backed.
+ * A suite is Postgres-backed when it is NAMED as such, or (legacy) greps as such.
  *
- * This MUST NOT depend on a suite spelling the env var literally. It did, and the
- * marker was a landmine: REL-1069 consolidated thirteen suites onto a shared
- * `postgresDatabaseUrl()` helper, every file stopped matching, all thirteen were
- * routed back into the plain shards (which have no database), and the CI run went
- * red. A detector that a refactor can silently disable is worse than none -- it
- * fails by moving tests to the wrong job rather than by erroring here.
+ * The name is the primary signal because content matching over-reaches: REL-1069
+ * added `/\bpostgresDatabaseUrl\s*\(/` and the tripwire regex, and those matched
+ * the PR's own UNIT tests -- `tests/unit/postgresSuiteTripwire.test.ts` calls
+ * `mod.requireDatabaseUrlInCi()`, and `tests/unit/ciIncrementalTests.test.ts`
+ * contains the helper text as a string literal. Both are globbed by
+ * `globTestSpecifications()`, so both landed in `postgresExcludes`, were dropped
+ * from the plain unit shards, and would have run only in the database job. The
+ * module under test is not Postgres-backed just because its NAME contains the word.
  *
- * A Postgres suite is now identified by EITHER the legacy literal OR the shared
- * helper, so consolidating onto the helper is safe and the next refactor cannot
- * quietly drop a suite out of its dedicated job.
+ * So: `*.postgres.test.ts` is the rule; the content markers remain for suites that
+ * follow the legacy spelling without the naming convention.
  */
+export const POSTGRES_SUITE_NAME = /\.postgres\.test\.[cm]?[jt]sx?$/u;
 export const POSTGRES_MARKERS = [
   /process\.env\.REVIEW_YETI_TEST_DATABASE_URL\b/u,
   /\bpostgresDatabaseUrl\s*\(/u,
   /\brequireDatabaseUrlInCi\s*\(/u,
 ];
+
+/**
+ * Whether a repo-relative path is a Postgres-backed suite.
+ *
+ * Exported so the classification is directly testable: it decides which CI JOB
+ * owns a file, and getting it wrong moves tests to the wrong job silently.
+ */
+export function isPostgresFile(file, source) {
+  // Named as a Postgres suite -> yes, whatever its contents.
+  if (POSTGRES_SUITE_NAME.test(file)) return true;
+  // Content markers apply ONLY to integration suites. Every Postgres suite lives
+  // in tests/integration, and a UNIT test that mentions the helper or the env var
+  // is testing that behaviour, not using a database -- which is precisely how this
+  // PR's own unit tests got misrouted into the database job.
+  if (!/^tests\/integration\//u.test(file)) return false;
+  const text = source === undefined
+    ? fs.readFileSync(path.join(repoRoot, file), 'utf8')
+    : source;
+  return POSTGRES_MARKERS.some((marker) => marker.test(text));
+}
 
 /** Any change matching one of these runs the whole suite. */
 export const FULL_SUITE_TRIGGERS = [
@@ -296,10 +318,7 @@ async function main() {
   await withVitest(async (vitest) => {
     const allSpecs = await vitest.specifications.globTestSpecifications();
     const allTests = [...new Set(allSpecs.map((spec) => rel(spec.moduleId)))].sort();
-    const isPostgres = (file) => {
-      const source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
-      return POSTGRES_MARKERS.some((marker) => marker.test(source));
-    };
+    const isPostgres = (file) => isPostgresFile(file);
     const postgresAll = allTests.filter(isPostgres);
     plan.postgresExcludes = postgresAll;
     const finishFull = (reason) => {

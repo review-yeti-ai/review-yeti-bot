@@ -10,6 +10,7 @@ import {
   fullSuiteTrigger,
   literalText,
   parseNameStatus,
+  isPostgresFile,
   textReferenceClosure,
 } from '../../scripts/ci/select-vitest-tests.mjs';
 import { planOutputs, shardCount } from '../../scripts/ci/plan-outputs.mjs';
@@ -282,6 +283,21 @@ describe('CI incremental test selection (REL-1074)', () => {
       // job with a database and a narrower file set.
       expect(matches("import { describe, it } from 'vitest';\nit('adds', () => {});")).toBe(false);
       expect(matches('const databaseUrl = process.env.SOME_OTHER_DATABASE;')).toBe(false);
+    });
+
+    it('classifies by NAME, so a unit test mentioning the helper is not swept in', () => {
+      // The concrete regression: this PR's OWN unit tests call the helper
+      // (`mod.requireDatabaseUrlInCi()`) or quote it as a literal, so content
+      // matching put them in postgresExcludes and dropped them from the unit
+      // shards. The module under test is not Postgres-backed because its name
+      // contains the word.
+      expect(isPostgresFile('tests/unit/postgresSuiteTripwire.test.ts', 'mod.requireDatabaseUrlInCi();'))
+        .toBe(false);
+      expect(isPostgresFile('tests/unit/ciIncrementalTests.test.ts', "expect(matches('requireDatabaseUrlInCi();')).toBe(true);"))
+        .toBe(false);
+      // ...while a genuinely named suite is always classified.
+      expect(isPostgresFile('tests/integration/reviewRunLifecycle.postgres.test.ts', '')).toBe(true);
+      expect(isPostgresFile('tests/integration/x.postgres.test.ts', 'const u = postgresDatabaseUrl();')).toBe(true);
     });
 
     it('every postgres suite in the tree is classified', () => {
