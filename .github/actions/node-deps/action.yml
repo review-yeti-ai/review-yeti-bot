@@ -9,8 +9,12 @@ runs:
   using: composite
   steps:
     - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      # Blacksmith's image caches an older Node 24 (24.13) than GitHub's (24.21), and node:sqlite
+      # still warns as experimental there, which tests that assert an empty stderr notice.
+      # Resolve the newest 24.x on every runner instead of whatever the image cached.
       with:
         node-version: "24"
+        check-latest: true
 
     # The root package's own version is rewritten by every release-please PR but changes nothing
     # that is installed, so it is dropped from the key; every dependency entry still counts.
