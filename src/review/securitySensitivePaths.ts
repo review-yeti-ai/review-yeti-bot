@@ -15,6 +15,19 @@
 const SENSITIVE_SEGMENT =
   /(^|[/._-])(auth|authn|authz|oauth2?|oidc|saml|sso|login|logout|session|sessions|passw(or)?d|passwd|credentials?|secrets?|tokens?|jwt|jwks|crypto|cryptography|cipher|encrypt|encryption|decrypt|signing|signature|signer|certs?|certificates?|tls|ssl|x509|keys?|keystore|keychain|permissions?|rbac|acl|policy|policies|sandbox|csrf|cors|security|sanitize|sanitizer|webhook|webhooks)([/._-]|$)/iu;
 
+/**
+ * Stems that name security code as a prefix of a longer word: `authentication`,
+ * `authorize`, `passwords`, `encryption`, `credentialStore`. Matched at the
+ * start of a path segment or name part, with any continuation (`author` is the
+ * one common non-security word excluded).
+ */
+const SENSITIVE_STEM =
+  /(^|[/._-])(auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|oauth|passw|credential|secret|crypt|encrypt|decrypt|cipher|certif|permission|privilege|session|login|logout|signin|signon|sso|saml|oidc|jwt|token|csrf|xsrf|sanitiz|security|secure|policy|policies|rbac|acl|keystore|keychain|sandbox)/iu;
+
+/** The same stems at a camelCase boundary: `userAuthService.ts`, `loadSecrets.go`. */
+const SENSITIVE_CAMEL_STEM =
+  /[a-z0-9](Auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|OAuth|Passw|Credential|Secret|Crypt|Encrypt|Decrypt|Cipher|Certif|Permission|Privilege|Session|Login|Logout|SignIn|Signin|Token|Csrf|Sanitiz|Security|Secure|Policy|Policies|Rbac|Acl|Keystore|Keychain|Sandbox)/u;
+
 /** CI, container, infrastructure-as-code and repository-control paths. */
 const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
   /^\.github\//iu,
@@ -98,5 +111,5 @@ export function isSecuritySensitivePath(filePath: unknown): boolean {
   const normalized = filePath.replace(/\\/gu, '/').replace(/^\.\//u, '');
   if (SENSITIVE_PATH_PATTERNS.some((pattern) => pattern.test(normalized))) return true;
   if (isDependencyManifestPath(normalized)) return true;
-  return SENSITIVE_SEGMENT.test(normalized);
+  return SENSITIVE_SEGMENT.test(normalized) || SENSITIVE_STEM.test(normalized) || SENSITIVE_CAMEL_STEM.test(normalized);
 }

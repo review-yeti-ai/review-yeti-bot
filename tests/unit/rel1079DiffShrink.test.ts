@@ -123,8 +123,8 @@ describe('whitespace-only collapse', () => {
     expect(parseChangedFiles(out[0].patch!).files[0].path).toBe('src/app.ts');
   });
 
-  it('treats trailing whitespace, CRLF conversion, blank lines and a final newline as whitespace', () => {
-    expect(isWhitespaceOnlyHunk(['-a = 1;  ', '+a = 1;'])).toBe(true);
+  it('treats indentation, CRLF conversion, blank lines and a final newline as whitespace', () => {
+    expect(isWhitespaceOnlyHunk(['-a = 1;', '+\t\ta = 1;'])).toBe(true);
     expect(isWhitespaceOnlyHunk(['-a = 1;\r', '+a = 1;'])).toBe(true);
     expect(isWhitespaceOnlyHunk([' a();', '+', '+\t', ' b();'])).toBe(true);
     expect(isWhitespaceOnlyHunk(['-last();', '\\ No newline at end of file', '+last();'])).toBe(true);
@@ -139,8 +139,27 @@ describe('whitespace-only collapse', () => {
     expect(disclosure.whitespaceOnlyFiles).toEqual([]);
   });
 
+  it('never treats trailing whitespace as ignorable: it is part of a multi-line literal\'s value', () => {
+    expect(isWhitespaceOnlyHunk(['-a = 1;  ', '+a = 1;'])).toBe(false);
+    expect(isWhitespaceOnlyHunk([' SELECT id', '-FROM t', '+FROM t  '])).toBe(false);
+  });
+
+  it.each([
+    [' const q = `', '-  SELECT *', '+SELECT *', ' `;'],
+    [' doc = ' + '"'.repeat(3), '-  body', '+body'],
+    [" doc = " + "'".repeat(3), '-  body', '+body'],
+    [' cat <<EOF', '-  body', '+body', ' EOF'],
+    [" cat <<-'EOF'", '-  body', '+body'],
+    [' auto s = R"(', '-  body', '+body'],
+  ])('never collapses a hunk that shows a multi-line literal delimiter: %j', (...lines: string[]) => {
+    expect(isWhitespaceOnlyHunk(lines)).toBe(false);
+  });
+
   it('never treats a reordering or a real edit as whitespace', () => {
     expect(isWhitespaceOnlyHunk(['-a();', '-b();', '+b();', '+a();'])).toBe(false);
+    // A line removed above a context line and re-added below it is a move, not whitespace.
+    expect(isWhitespaceOnlyHunk(['-  item_a,', '   item_b,', '+  item_a,'])).toBe(false);
+    expect(isWhitespaceOnlyHunk(['-  item_a,', ' item_b,', '+item_a,', ' item_c,'])).toBe(false);
     expect(isWhitespaceOnlyHunk([' context only'])).toBe(false);
     expect(isWhitespaceOnlyHunk(['-gone();'])).toBe(false);
   });
@@ -286,6 +305,17 @@ describe('.gitattributes linguist rules', () => {
     expect(at('a/**/b.ts', 'a/x/y/b.ts')).toBe(true);
     expect(at('file[0-9].ts', 'file7.ts')).toBe(true);
     expect(compileGitattributesPattern('vendor/')).toBeNull(); // directories never match files
+  });
+
+  it('matches crafted repository patterns in linear time (no regex backtracking)', () => {
+    const manyGlobstars = compileGitattributesPattern(`a/${Array.from({ length: 40 }, () => '**').join('/x/')}/z.ts`)!;
+    const deepPath = `a/${Array.from({ length: 250 }, () => 'x').join('/')}/nope.ts`;
+    const starHeavy = compileGitattributesPattern(`${'*a'.repeat(30)}*b`)!;
+    const started = performance.now();
+    expect(manyGlobstars.test(deepPath)).toBe(false);
+    expect(starHeavy.test('a'.repeat(250))).toBe(false);
+    expect(compileGitattributesPattern('a/**/**/**/b.ts')!.test('a/x/y/b.ts')).toBe(true);
+    expect(performance.now() - started).toBeLessThan(500);
   });
 
   it('lets the last matching line decide, and honours unset, false and unspecified', () => {
@@ -500,7 +530,9 @@ describe('check-summary disclosure', () => {
 
 describe('security-sensitive path list', () => {
   it.each([
-    'src/auth/login.ts', 'lib/crypto/aes.go', 'app/secrets.rb', 'pkg/oauth2/client.go', '.github/workflows/ci.yml',
+    'src/auth/login.ts', 'src/authentication.ts', 'src/authorization.ts', 'src/auth/authentication/index.go',
+    'lib/authenticate.ts', 'lib/authorize.ts', 'src/userAuthService.ts', 'src/loadSecrets.go', 'src/passwords.ts',
+    'src/encryption/aes.go', 'src/credentialStore.ts', 'lib/crypto/aes.go', 'app/secrets.rb', 'pkg/oauth2/client.go', '.github/workflows/ci.yml',
     '.gitlab-ci.yml', 'Dockerfile', 'docker/api.Dockerfile', 'infra/main.tf', 'charts/app/values.yaml', 'package.json',
     'requirements-dev.txt', 'go.mod', 'App.csproj', '.gitattributes', 'scripts/release.sh', 'db/migrations/001.sql',
     '.env.production', '', 42,
@@ -508,7 +540,7 @@ describe('security-sensitive path list', () => {
     expect(isSecuritySensitivePath(path)).toBe(true);
   });
 
-  it.each(['src/app.ts', 'src/keyboard.ts', 'src/tokenizer.ts', 'tests/app.test.ts', 'docs/guide.md', 'src/monkey.ts'])(
+  it.each(['src/app.ts', 'src/keyboard.ts', 'tests/app.test.ts', 'docs/guide.md', 'src/monkey.ts', 'src/author.ts'])(
     '%s is not on the list', (path) => {
       expect(isSecuritySensitivePath(path)).toBe(false);
     },
