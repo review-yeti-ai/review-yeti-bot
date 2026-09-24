@@ -69,6 +69,29 @@ describe('REL-1104 worker metrics push', () => {
     return out;
   }
 
+  function histogramPoints(requests: Captured[], name: string): Array<{ count: number; sum: number; bucketCounts: number[]; bounds: number[]; temporality: number }> {
+    const out: Array<{ count: number; sum: number; bucketCounts: number[]; bounds: number[]; temporality: number }> = [];
+    for (const request of requests) {
+      for (const rm of decode(request.body).resourceMetrics ?? []) {
+        for (const sm of rm.scopeMetrics ?? []) {
+          for (const metric of sm.metrics ?? []) {
+            if (metric.name !== name || !metric.histogram) continue;
+            for (const dp of metric.histogram.dataPoints ?? []) {
+              out.push({
+                count: Number(dp.count),
+                sum: Number(dp.sum),
+                bucketCounts: (dp.bucketCounts ?? []).map(Number),
+                bounds: dp.explicitBounds ?? [],
+                temporality: metric.histogram.aggregationTemporality,
+              });
+            }
+          }
+        }
+      }
+    }
+    return out;
+  }
+
   beforeEach(() => {
     captured.length = 0;
   });
@@ -132,6 +155,14 @@ describe('REL-1104 worker metrics push', () => {
       labels: { seam: 'triage_shadow', outcome: 'ok' },
     });
 
+    // The histogram stream (what the documented p50 query reads) is pushed too, as delta.
+    const latency = histogramPoints(captured, 'review_yeti_jev_duration_seconds');
+    expect(latency).toHaveLength(1);
+    expect(latency[0]).toMatchObject({ count: 1, sum: 0.4, temporality: AGGREGATION_TEMPORALITY_DELTA });
+    expect(latency[0].bounds).toEqual([0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]);
+    // 0.4s lands in the (0.25, 0.5] bucket and nowhere else.
+    expect(latency[0].bucketCounts).toEqual([0, 0, 0, 1, 0, 0, 0, 0]);
+
     const request = decode(captured[0].body);
     const resourceAttrs = Object.fromEntries(
       (request.resourceMetrics[0].resource.attributes ?? []).map((kv: any) => [kv.key, kv.value?.stringValue]),
@@ -153,6 +184,7 @@ describe('REL-1104 worker metrics push', () => {
     counters.jevTriageShadowFiles.add(2, { outcome: 'ok', category: 'source', risk_level: 'low' });
     await metrics.flushMetrics(5000);
     expect(sumPoints(captured, 'review_yeti_jev_triage_shadow_files_total').map((p) => p.value)).toEqual([2]);
+    expect(histogramPoints(captured, 'review_yeti_jev_duration_seconds').reduce((n, p) => n + p.count, 0)).toBe(0);
   });
 
   it('pushes nothing when the endpoint is unset or malformed', async () => {
@@ -200,8 +232,19 @@ describe('REL-1104 worker metrics push', () => {
     await expect(closed.flushMetrics(2000)).resolves.toBeUndefined();
   });
 
-  it('bounds a single push request well under the flush budget', async () => {
-    const { WORKER_METRICS_EXPORT_TIMEOUT_MS } = await freshMetrics();
-    expect(WORKER_METRICS_EXPORT_TIMEOUT_MS).toBeLessThanOrEqual(5000);
-  });
+  it('bounds a single push by its own export timeout, not only by the flush budget', async () => {
+    // Against a collector that never answers, give flushMetrics a budget far above
+    // WORKER_METRICS_EXPORT_TIMEOUT_MS. If the exporter/reader timeouts were dropped,
+    // the SDK defaults (10 s request, 30 s export) would hold the flush until the budget.
+    const url = await startCollector(() => { /* never respond */ });
+    const metrics = await freshMetrics();
+    expect(metrics.WORKER_METRICS_EXPORT_TIMEOUT_MS).toBeLessThanOrEqual(5000);
+    metrics.initMetrics(workerEnv({ REVIEW_YETI_WORKER_METRICS_ENDPOINT: url })).jevRequests.add(1, { seam: 'triage_shadow', outcome: 'ok' });
+    const budget = 20000;
+    const started = Date.now();
+    await expect(metrics.flushMetrics(budget)).resolves.toBeUndefined();
+    const elapsed = Date.now() - started;
+    expect(captured.length).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(2 * metrics.WORKER_METRICS_EXPORT_TIMEOUT_MS + 1500);
+  }, 30000);
 });
