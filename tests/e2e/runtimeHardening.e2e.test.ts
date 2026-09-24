@@ -738,7 +738,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
     // R5: DOKS Infrastructure: Worker Deployment & Terminal Run Re-queueing (5 tests)
     // ------------------------------------------------------------------------
     describe('R5: DOKS Infrastructure & Terminal Run Re-queueing', () => {
-      it('1.5.1: Worker image pattern validator enforces trusted repository and immutable sha256 digest format via production dispatcher config', () => {
+      it('1.5.1: Worker image validator enforces an immutable sha256 digest, from any registry, via production dispatcher config', () => {
         const trustedGhcr = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[0]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
         const trustedDoks = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[1]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
 
@@ -762,23 +762,24 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
             REVIEW_JOB_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
             HOSTNAME: 'dispatcher-pod-0',
           })
-        ).toThrow(/must be a digest-pinned trusted worker image/);
+        ).toThrow(/must be a digest-pinned worker image/);
 
-        // Reject untrusted registries
+        // A non-vendor registry is no longer rejected: the contract pins DIGEST,
+        // not registry, so a self-hoster can pull from their own registry
+        // (ADR 0675). What stays rejected is an UNPINNED reference, asserted
+        // above. This case replaces the former vendor-trust assertion, which the
+        // product direction made wrong.
+        const partnerImage =
+          'registry.partner.example/rev/worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635';
+        expect(isTrustedWorkerImage(partnerImage)).toBe(false); // vendor-name predicate, unchanged
         expect(
-          isTrustedWorkerImage(
-            'docker.io/untrusted/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635'
-          )
-        ).toBe(false);
-        expect(() =>
           reviewJobDispatcherConfigFromEnv({
             REVIEW_JOB_DISPATCH_ENABLED: 'true',
             REVIEW_JOB_NAMESPACE: 'ct-review-system',
-            REVIEW_JOB_WORKER_IMAGE:
-              'docker.io/untrusted/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635',
+            REVIEW_JOB_WORKER_IMAGE: partnerImage,
             HOSTNAME: 'dispatcher-pod-0',
-          })
-        ).toThrow(/must be a digest-pinned trusted worker image/);
+          }).workerImage
+        ).toBe(partnerImage);
       });
 
       it('1.5.2: Verifies target release digest is enforced by production buildReviewJobProjection projection', () => {
