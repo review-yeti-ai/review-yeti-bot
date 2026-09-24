@@ -27,6 +27,8 @@ func TestBuildWorkerJobAcceptsDigestPinnedForeignImage(t *testing.T) {
 		// The pattern ships a digest-pinned generic-runner alternative, so the
 		// runtime path must actually accept it rather than only the regexp test.
 		"node:20-alpine@" + digest,
+		// Single-segment Docker Hub reference: valid and digest-pinnable.
+		"alpine@" + digest,
 	} {
 		review := reviewFixture(now)
 		review.Spec.WorkerImage = image

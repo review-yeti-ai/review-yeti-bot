@@ -100,7 +100,7 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		// while still permitting a mutable tag inside the vendor namespace
 		// (`ghcr.io/review-yeti-ai/<any>:<tag>`). Requiring a sha256 digest on
 		// every non-node image is strictly stronger and tenant-neutral.
-		"workerImage":   `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
+		"workerImage":   `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
 		"runSecretName": `^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`,
 	}
 	for field, want := range wants {
@@ -355,6 +355,9 @@ func TestV1Alpha2WorkerImagePatternIsExecutable(t *testing.T) {
 		{"vendor digest", "ghcr.io/review-yeti-ai/review-yeti-worker@" + digest, true},
 		{"self-host registry digest", "registry.partner.example/rev/worker@" + digest, true},
 		{"registry with port", "registry.partner.example:5000/rev/worker@" + digest, true},
+		{"docker hub library image, digest-pinned", "alpine@sha256:" + strings.Repeat("a", 64), true},
+		{"single-segment name, digest-pinned", "busybox@sha256:" + strings.Repeat("a", 64), true},
+		{"docker hub library image, mutable tag", "alpine:latest", false},
 		{"generic runner, tag", "node:20-alpine", true},
 		{"generic runner, digest-pinned", "node:20-alpine@sha256:" + strings.Repeat("a", 64), true},
 
