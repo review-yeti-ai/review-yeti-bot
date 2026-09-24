@@ -329,6 +329,13 @@ publishing:
   # comma-separated owner/repo allowlist, e.g. "acme/app,acme/api".
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   diffShrink: ""
+  # REL-1084: incremental re-review on synchronize (worker flag REVIEW_YETI_INCREMENTAL). Empty by
+  # default, so nothing is forwarded and every review is full. The operator forwards a non-empty
+  # value verbatim to app-gate workers only; the worker reads it as off/on or a comma-separated
+  # owner/repo allowlist, e.g. "acme/app,acme/api". The prior-review age limit is service config
+  # (REVIEW_YETI_INCREMENTAL_MAX_AGE_HOURS on the dispatch service, default 72).
+  # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
+  incremental: ""
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
   # which already defines that component's ServiceAccount, Role, RoleBinding and
   # Deployment. Defining them here too would give the same resources two owners.

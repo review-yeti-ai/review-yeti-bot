@@ -163,3 +163,15 @@ func TestPublishingConfigFromEnvReadsDiffShrink(t *testing.T) {
 		t.Fatalf("diff shrink not read: %+v", config)
 	}
 }
+
+// REL-1084: incremental re-review has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsIncremental(t *testing.T) {
+	t.Setenv("REVIEW_YETI_INCREMENTAL", "")
+	if config := publishingConfigFromEnv(); config.Incremental != "" {
+		t.Fatalf("unset incremental flag must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_INCREMENTAL", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
+	if config := publishingConfigFromEnv(); config.Incremental != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+		t.Fatalf("incremental flag not read: %+v", config)
+	}
+}

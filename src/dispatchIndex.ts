@@ -28,6 +28,8 @@ import { findReviewCiEnrollment } from './review/reviewCi';
 import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
 import { initTelemetry } from './telemetry';
 import { deriveReviewRunId } from './review/reviewAdmission';
+import { PostgresIncrementalBaseLookup } from './persistence/incrementalPriorReview';
+import { incrementalMaxAgeMsFrom } from './review/incrementalReview';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -57,6 +59,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       : { appId, privateKey, owner, repo, baseUrl };
   };
   const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
+  // REL-1084: one configured age for both the worker's planning read and trusted verification.
+  const incrementalMaxAgeMs = incrementalMaxAgeMsFrom(environment);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
   const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
   const store = new PostgresStore();
@@ -65,6 +69,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
+      incrementalMaxAgeMs,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
         if (findReviewCiEnrollment(ciConfig,
           { expectedAppId: gate.expectedAppId, repository: gate.coordinates })) {
@@ -185,6 +190,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       repository,
       evidence: new PostgresWorkerCompletionStore(pool),
     },
+    incrementalBase: new PostgresIncrementalBaseLookup(pool, { maxAgeMs: incrementalMaxAgeMs }),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(
       installationCredentialsForRepository(owner, repo)),

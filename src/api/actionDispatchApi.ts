@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { Router, type Request, type Response } from 'express';
 import {
   type GitHubActionsOidcClaims,
@@ -37,13 +37,9 @@ import {
   unknownWorkerCompletionPersistenceStage,
 } from '../review/workerCompletionPersistenceError';
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
+import type { IncrementalBaseLookup } from '../persistence/incrementalPriorReview';
+import { createIncrementalBaseHandler } from './incrementalBaseRoute';
 
-function constantTimeDigestEqual(expected: unknown, actual: string): boolean {
-  if (typeof expected !== 'string' || !/^[a-f0-9]{64}$/u.test(expected) || !/^[a-f0-9]{64}$/u.test(actual)) {
-    return false;
-  }
-  return timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(actual, 'hex'));
-}
 
 export interface ActionOidcVerifier {
   verify(token: string): Promise<GitHubActionsOidcClaims>;
@@ -72,6 +68,8 @@ export interface ActionDispatchRouterOptions {
   };
   authoritativeWorkerCompletion?: AuthoritativeReviewCompletion;
   runStatusRepository?: Pick<ReviewDispatchRepository, 'getRunStatus'>;
+  /** REL-1084: the prior review record a worker's incremental re-review may plan from. */
+  incrementalBase?: IncrementalBaseLookup;
   now?: () => number;
 }
 
@@ -449,6 +447,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
   };
 
   router.get('/runs/:runId/attempts/:attempt/status', handleRunStatus);
+  if (options.incrementalBase) router.post('/incremental-base', createIncrementalBaseHandler(options.incrementalBase));
   router.get('/status', handleRunStatus);
 
   return router;

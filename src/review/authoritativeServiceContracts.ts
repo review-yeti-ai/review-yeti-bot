@@ -3,6 +3,7 @@ import type { GateWorkerResultTransition, StoredReviewGate, TrustedGateCompletio
 import type { WorkerCompletionProof, WorkerTerminalFailure, WorkerTerminalSuccess } from './workerCompletion';
 import type { WorkerReviewCompletion, WorkerReviewEvidence } from './workerReviewCompletion';
 import { sha256 } from './reviewCore';
+import type { IncrementalVerificationInput } from './incrementalReview';
 
 export interface WorkerCompletionVerifier {
   verify(token: string, event: WorkerTerminalFailure | WorkerTerminalSuccess | WorkerReviewCompletion | WorkerReviewEvidence): Promise<WorkerCompletionProof>;
@@ -17,9 +18,11 @@ export interface AuthoritativeReviewCompletion {
   verifier: WorkerCompletionVerifier;
   repository: {
     recordWorkerResult(input: unknown, proof: WorkerCompletionProof,
-      resolve: (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext>, now?: number): Promise<GateWorkerResultTransition>;
+      resolve: (gate: StoredReviewGate, incremental?: IncrementalVerificationInput) => Promise<TrustedGateCompletionContext>,
+      now?: number): Promise<GateWorkerResultTransition>;
   };
-  resolve(gate: StoredReviewGate): Promise<TrustedGateCompletionContext>;
+  /** REL-1084: `incremental` carries the service's own prior record for a carried-forward completion. */
+  resolve(gate: StoredReviewGate, incremental?: IncrementalVerificationInput): Promise<TrustedGateCompletionContext>;
 }
 /** Bearer shape is only a transport check. Persistence compares this digest
  * with the exact dispatcher's token/execution/generation before trusting it. */

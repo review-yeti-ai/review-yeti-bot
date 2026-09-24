@@ -143,6 +143,9 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1079: deterministic diff shrinking, off unless the deployment
 		// sets it (a comma-separated owner/repo allowlist for pilots).
 		DiffShrink: strings.TrimSpace(os.Getenv("REVIEW_YETI_DIFF_SHRINK")),
+		// REL-1084: incremental re-review, off unless the deployment sets it
+		// (a comma-separated owner/repo allowlist for pilots).
+		Incremental: strings.TrimSpace(os.Getenv("REVIEW_YETI_INCREMENTAL")),
 	}
 }
 

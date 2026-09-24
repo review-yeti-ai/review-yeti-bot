@@ -6,6 +6,7 @@ import type { ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
+import { incrementalReviewClaimSchema } from './incrementalReviewClaim';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 
@@ -279,6 +280,13 @@ const resultSchema = z.object({
   panelWallClockMs: boundedInteger.optional(),
   /** Optional bounded context for a terminal error result; persisted after a second redaction. */
   failureDiagnostics: workerFailureDiagnosticsSchema.optional(),
+  /**
+   * OPTIONAL, additive (REL-1084, `REVIEW_YETI_INCREMENTAL`): the files whose content this run
+   * carried forward from a named prior review instead of sending. Never evidence on its own: the
+   * trusted completion side must verify it (`TrustedReviewCoverageContract.incrementalVerified`)
+   * or `deriveCanonicalWorkerReviewEvidence` refuses the completion.
+   */
+  incremental: incrementalReviewClaimSchema.optional(),
 }).strict();
 
 const completionSchema = z.object({
@@ -322,6 +330,12 @@ export interface TrustedReviewCoverageContract {
   /** Trusted service-side coverage and quorum decisions. */
   coverageComplete: boolean;
   quorumSatisfied: boolean;
+  /**
+   * REL-1084: true only when the service re-derived the incremental decision from its own prior
+   * review record and GitHub reads and it permits every path the completion carried forward.
+   * A completion that carries anything forward without this is refused.
+   */
+  incrementalVerified?: boolean;
 }
 
 export interface DerivedWorkerReviewEvidence {
@@ -507,6 +521,18 @@ export function deriveCanonicalWorkerReviewEvidence(
     return invalidEvidence('worker completion coordinates do not match the trusted review run identity');
   }
   const changedFiles = validateChangedFiles(contract.changedFiles);
+  // REL-1084: a carried-forward verdict counts toward the gate only when the service verified it
+  // against the prior review record it names, and only for files in this exact changed set.
+  const carried = completion.result.incremental;
+  if (carried) {
+    if (contract.incrementalVerified !== true) {
+      return invalidEvidence('carried-forward completion was not verified against its prior review record');
+    }
+    const paths = new Set(changedFiles.map((file) => file.path));
+    if (isDocumentationOnlyCompletion(completion.result) || !carried.carriedForwardPaths.every((path) => paths.has(path))) {
+      return invalidEvidence('carried-forward completion names a file outside the trusted changed set');
+    }
+  }
   if (isDocumentationOnlyCompletion(completion.result)) {
     // REL-972: the exemption also covers registry-verified lockfile changes.
     // The trusted completion context has already required the shared
