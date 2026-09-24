@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.87.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.3...v1.87.0) (2026-09-24)
+
+
+### Features
+
+* **review:** incremental re-review on synchronize behind REVIEW_YETI_INCREMENTAL (REL-1084) ([#1028](https://github.com/review-yeti-ai/review-yeti-bot/issues/1028)) ([86307eb](https://github.com/review-yeti-ai/review-yeti-bot/commit/86307eb9a6c4d0de817726f36a9e6f6e521ce5d8))
+
 ## [1.86.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.2...v1.86.3) (2026-09-24)
 
 
