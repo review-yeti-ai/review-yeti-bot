@@ -223,7 +223,9 @@ func TestV1Alpha2CRDExposesBoundedWorkerTermination(t *testing.T) {
 // chart copy lacks is pruned on Helm-installed clusters, so workerTermination
 // must match the generated schema field for field (descriptions aside).
 func TestHelmChartCRDMatchesGeneratedWorkerTermination(t *testing.T) {
-	path := filepath.Join("..", "..", "..", "charts", "review-yeti", "templates", "crd.yaml")
+	// REL-1097: the chart installs files/review-yeti.ai_prreviewjobs.yaml, a
+	// byte-identical copy of the generated CRD; templates/crd.yaml only loads it.
+	path := filepath.Join("..", "..", "..", "charts", "review-yeti", "files", "review-yeti.ai_prreviewjobs.yaml")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read chart CRD: %v", err)
