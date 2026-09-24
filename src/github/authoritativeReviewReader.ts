@@ -412,6 +412,32 @@ export class AuthoritativeReviewReader {
     mergeBaseSha: string;
     files: Array<{ path: string; previousPath?: string }>;
   }> {
+    const { status, mergeBaseSha, files } = await this.comparisonEvidence(input, baseSha, headSha, signal);
+    return {
+      status,
+      mergeBaseSha,
+      files: files.map((file) => ({ path: file.path, ...(file.previousPath ? { previousPath: file.previousPath } : {}) })),
+    };
+  }
+
+  /**
+   * REL-1085: the same immutable comparison with each file's head blob SHA, status
+   * and closed-hunk patch (absent when GitHub omitted or truncated it), for the
+   * verdict cache's repository-scoped content keys. Callers treat a list of 300
+   * files as possibly incomplete.
+   */
+  async comparisonContent(input: ReviewRepositoryIdentity, baseSha: string, headSha: string, signal?: AbortSignal): Promise<{
+    files: ComparisonFileEvidence[];
+  }> {
+    const { files } = await this.comparisonEvidence(input, baseSha, headSha, signal);
+    return { files };
+  }
+
+  private async comparisonEvidence(input: ReviewRepositoryIdentity, baseSha: string, headSha: string, signal?: AbortSignal): Promise<{
+    status: 'ahead' | 'behind' | 'diverged' | 'identical';
+    mergeBaseSha: string;
+    files: ComparisonFileEvidence[];
+  }> {
     parse(sha, baseSha); parse(sha, headSha);
     const { path } = this.route(input);
     const comparisonPath = `${path}/compare/${encodeURIComponent(baseSha)}...${encodeURIComponent(headSha)}`;
@@ -424,11 +450,7 @@ export class AuthoritativeReviewReader {
     if (comparison.url !== `${this.api}${comparisonPath}` || comparison.base_commit.sha !== baseSha) {
       throw new Error('Review reader comparison identity mismatch');
     }
-    return {
-      status: comparison.status,
-      mergeBaseSha: comparison.merge_base_commit.sha,
-      files: files.map((file) => ({ path: file.path, ...(file.previousPath ? { previousPath: file.previousPath } : {}) })),
-    };
+    return { status: comparison.status, mergeBaseSha: comparison.merge_base_commit.sha, files };
   }
 
   /** Resolve only a service-configured policy reference, then retain the exact

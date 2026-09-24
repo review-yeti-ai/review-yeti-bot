@@ -216,7 +216,17 @@ type PublishingConfig struct {
 	// comma- or space-separated owner/repo allowlist, or an on/off switch).
 	// Empty keeps the budget off, byte-identical to before this field existed.
 	Budget string
+	// REL-1085: per-file verdict cache. Forwarded verbatim as VerdictCacheEnv
+	// when non-empty; the worker owns its interpretation (a comma-separated
+	// owner/repo allowlist, or an on/off switch). Empty keeps the cache off,
+	// byte-identical to before this field existed.
+	VerdictCache string
 }
+
+// VerdictCacheEnv is the worker's per-file verdict cache flag (REL-1085,
+// src/review/verdictCache.ts VERDICT_CACHE_FLAG). The operator forwards the
+// deployment value verbatim; the worker owns its interpretation.
+const VerdictCacheEnv = "REVIEW_YETI_VERDICT_CACHE"
 
 // BudgetEnv is the worker's risk-ordered review-budget flag (REL-1082,
 // src/review/reviewBudget.ts REVIEW_BUDGET_FLAG). The operator forwards the
@@ -485,6 +495,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.Budget != "" {
 			env = append(env, corev1.EnvVar{Name: BudgetEnv, Value: input.Publishing.Budget})
+		}
+		if input.Publishing.VerdictCache != "" {
+			env = append(env, corev1.EnvVar{Name: VerdictCacheEnv, Value: input.Publishing.VerdictCache})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -839,6 +852,10 @@ func validatePublishing(config PublishingConfig) error {
 	// a line break is not.
 	if strings.ContainsAny(config.Budget, "\r\n") {
 		return configErr("review budget flag contains a line break")
+	}
+	// Same allowlist grammar as the diff shrink flag.
+	if strings.ContainsAny(config.VerdictCache, "\r\n") {
+		return configErr("verdict cache flag contains a line break")
 	}
 	return nil
 }

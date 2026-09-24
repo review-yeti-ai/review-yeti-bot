@@ -308,6 +308,19 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('incrementalBase.maxAgeMs', 24 * 60 * 60 * 1000);
   });
 
+  it('feeds REVIEW_YETI_VERDICT_CACHE_MAX_AGE_HOURS to both trusted verification and the planning read', async () => {
+    vi.stubEnv('REVIEW_YETI_VERDICT_CACHE_MAX_AGE_HOURS', '12');
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    await start();
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, expect.objectContaining({
+      verdictCacheMaxAgeMs: 12 * 60 * 60 * 1000,
+      // Independent of W7's age: an unset incremental age stays at its own default.
+      incrementalMaxAgeMs: 72 * 60 * 60 * 1000,
+    }));
+    expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('verdictCacheBase.maxAgeMs', 12 * 60 * 60 * 1000);
+  });
+
   it('composes bounded storage and prepared lookup, then passes the exact service validator into admission', async () => {
     const config = authoritativeConfig();
     mocks.serviceConfig.mockReturnValue(config);
@@ -317,8 +330,11 @@ describe('Action dispatch startup transport and admission wiring', () => {
       lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
       // REL-1084: the service's incremental age limit (72 h default), shared with the planning read.
       incrementalMaxAgeMs: 72 * 60 * 60 * 1000,
+      // REL-1085: the verdict cache's age limit (72 h default), shared with its planning read.
+      verdictCacheMaxAgeMs: 72 * 60 * 60 * 1000,
     });
     expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('incrementalBase.maxAgeMs', 72 * 60 * 60 * 1000);
+    expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('verdictCacheBase.maxAgeMs', 72 * 60 * 60 * 1000);
     expect(mocks.authoritative).toHaveBeenCalledExactlyOnceWith({
       config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: '4385771',
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
@@ -428,7 +444,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, {
       lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000, onEligibleCompletion: expect.any(Function),
-      incrementalMaxAgeMs: 72 * 60 * 60 * 1000,
+      incrementalMaxAgeMs: 72 * 60 * 60 * 1000, verdictCacheMaxAgeMs: 72 * 60 * 60 * 1000,
     });
     const serviceOptions = mocks.authoritative.mock.calls[0][0];
     expect(serviceOptions.repository).toBe(mocks.gateStorage);

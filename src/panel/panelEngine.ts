@@ -60,6 +60,11 @@ import {
   type ReviewBudgetInput,
   type ReviewBudgetPlan,
 } from '../review/reviewBudget';
+import {
+  attachVerdictCacheDisclosure,
+  type VerdictCacheDisclosure,
+  type VerdictCacheScope,
+} from '../review/verdictCache';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -2562,6 +2567,33 @@ class Semaphore {
 
 export const processPersonaLimiter = new Semaphore(MAX_CONCURRENT_PERSONAS);
 
+/** The charter text a lane is prompted with: a dashboard or config custom prompt, else the builtin charter. */
+function effectiveCharterOf(
+  persona: { charter: string },
+  storePersona: { customPrompt?: string } | undefined,
+): string {
+  const customPromptOverride = (storePersona?.customPrompt && storePersona.customPrompt.trim())
+    ? storePersona.customPrompt
+    : ((persona as any).customPrompt && (persona as any).customPrompt.trim())
+      ? (persona as any).customPrompt
+      : undefined;
+  return customPromptOverride || BUILTIN_CHARTERS[persona.charter] || persona.charter;
+}
+
+/**
+ * REL-1085: everything outside the configuration digest that decides what a lane is
+ * prompted with -- its effective charter text and any dashboard override of its prompt,
+ * model, effort or turns. The verdict cache keys each lane on a digest of this, so a
+ * changed builtin charter or override invalidates that lane's cached results.
+ */
+export function personaLaneViewIdentity(
+  persona: { id: string; charter: string },
+  allowDashboardOverrides = true,
+): { charter: string; dashboard: unknown } {
+  const storePersona = allowDashboardOverrides ? dashboardStore.getPersonaSetting(persona.id) : undefined;
+  return { charter: effectiveCharterOf(persona, storePersona), dashboard: storePersona ?? null };
+}
+
 async function runPersona(
   config: CtReviewConfigV3,
   client: ReviewModelClient,
@@ -2597,12 +2629,7 @@ async function runPersona(
     const storePersona = allowDashboardOverrides
       ? dashboardStore.getPersonaSetting(persona.id)
       : undefined;
-    const customPromptOverride = (storePersona?.customPrompt && storePersona.customPrompt.trim())
-      ? storePersona.customPrompt
-      : ((persona as any).customPrompt && (persona as any).customPrompt.trim())
-        ? (persona as any).customPrompt
-        : undefined;
-    const effectiveCharter = customPromptOverride || BUILTIN_CHARTERS[persona.charter] || persona.charter;
+    const effectiveCharter = effectiveCharterOf(persona, storePersona);
 
     const bus = LiveStreamBus.getInstance();
     const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
@@ -3548,6 +3575,8 @@ export async function executePersonaPanel(options: {
   incremental?: IncrementalReviewScope;
   /** REL-1082: risk-ordered review budget per lane (`REVIEW_YETI_BUDGET`); absent or disabled sends today's content. */
   reviewBudget?: ReviewBudgetInput;
+  /** REL-1085: per-file verdict cache scope (`REVIEW_YETI_VERDICT_CACHE`); absent serves nothing from cache. */
+  verdictCache?: VerdictCacheScope;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -3557,6 +3586,8 @@ export async function executePersonaPanel(options: {
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   // REL-1084: what the incremental scope actually carried forward, from the same call.
   let incrementalDisclosure: IncrementalReviewDisclosure | null = null;
+  // REL-1085: what the verdict cache actually served, from the same call.
+  let verdictCacheDisclosure: VerdictCacheDisclosure | null = null;
   // REL-1088: files a lane reviews only because the shared decision routed
   // them there. Attached once, below, to whichever result the panel returns.
   let routedFiles: PanelResult['routedFiles'] = [];
@@ -3592,15 +3623,18 @@ export async function executePersonaPanel(options: {
     // REL-1079: diff shrinking runs after, and cannot change, that decision.
     // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
     // REL-1082: so does the review budget, which only packs what each lane is sent.
+    // REL-1085: the verdict cache runs before the budget and, like the others, only replaces patch text.
     const applicability = resolveBudgetedReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
+      verdictCache: options.verdictCache,
       reviewBudget: options.reviewBudget,
       budgetScope: 'per-lane',
     });
     diffShrinkDisclosure = applicability.diffShrink;
     incrementalDisclosure = applicability.incremental;
+    verdictCacheDisclosure = applicability.verdictCache;
     reviewBudgetPlan = applicability.reviewBudget;
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
@@ -4592,6 +4626,7 @@ export async function executePersonaPanel(options: {
   }).then((result) => (routedFiles && routedFiles.length > 0 ? { ...result, routedFiles } : result))
     .then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
+    .then((result) => attachVerdictCacheDisclosure(result, verdictCacheDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .finally(deadline.cleanup);
