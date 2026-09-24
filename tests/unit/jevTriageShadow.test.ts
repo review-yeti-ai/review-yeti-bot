@@ -281,6 +281,12 @@ describe('riskLevelFromAnswer', () => {
     expect(level).toBe(2);
   });
 
+  it('maps by legend position when the probabilities are keyed by the returned legend', () => {
+    expect(riskLevelFromAnswer({
+      type: 'score', score: 0, legend: ['a', 'b', 'c', 'd', 'e'], confidence: 0.5, probabilities: { c: 0.9, a: 0.1 },
+    })).toBe(3);
+  });
+
   it('falls back to an in-range raw score and is null when uninterpretable', () => {
     expect(riskLevelFromAnswer({ type: 'score', score: 3.4, legend: [], confidence: 1, probabilities: {} })).toBe(3);
     expect(riskLevelFromAnswer({ type: 'score', score: 42, legend: [], confidence: 1, probabilities: {} })).toBeNull();
@@ -329,9 +335,49 @@ describe('startJevTriageShadow -- fail open, never throws, no work when off', ()
     expect(asker.calls).not.toHaveBeenCalled();
   });
 
-  it('never throws even when its input is garbage', () => {
+  it('never throws even when its input is garbage, and logs the start error once', async () => {
+    const warn = vi.spyOn(logger, 'warn');
+    let handle: ReturnType<typeof startJevTriageShadow> | undefined;
     expect(() => startJevTriageShadow(undefined as never)).not.toThrow();
-    expect(() => startJevTriageShadow(input({ changedFiles: null as never }))).not.toThrow();
+    expect(() => { handle = startJevTriageShadow(input({ changedFiles: null as never })); }).not.toThrow();
+    await expect(handle!.settled).resolves.toEqual({ status: 'error', decisions: [] });
+    expect(logsOf(warn, JEV_TRIAGE_LOG.skipped).map((meta) => meta.reason)).toEqual(['start_error', 'start_error']);
+  });
+
+  it('production path: builds a real JevClient from TYPESAFE_* and posts to the configured endpoint', async () => {
+    const bodies: Array<Record<string, any>> = [];
+    const fetchMock = vi.fn(async (url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      bodies.push({ url, auth: (init.headers as Record<string, string>).authorization, ...body });
+      const answers: Record<string, unknown> = {};
+      for (const [key, question] of Object.entries(body.questions as Record<string, { type: string; criteria: any }>)) {
+        answers[key] = question.type === 'choice'
+          ? { type: 'choice', choice: 'test', confidence: 0.6, probabilities: { test: 0.6 } }
+          : question.type === 'score'
+            ? { type: 'score', score: 2, legend: question.criteria, confidence: 0.5, probabilities: { [question.criteria[1]]: 0.5 } }
+            : { type: 'noul', noul: 0.3 };
+      }
+      return new Response(JSON.stringify({ model: 'jev-1.13.0', answers, usage: { input_tokens: 700, output_tokens: 7 } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const summary = await startJevTriageShadow(input()).settled;
+      expect(summary.status).toBe('completed');
+      expect(summary.decisions.map((d) => [d.outcome, d.category, d.risk_level, d.model_pin_match])).toEqual([
+        ['ok', 'test', 2, true], ['ok', 'test', 2, true],
+      ]);
+      expect(bodies).toHaveLength(2);
+      expect(bodies[0]).toMatchObject({
+        url: TYPESAFE_ENV.TYPESAFE_BASE_URL,
+        auth: `Bearer ${TYPESAFE_ENV.TYPESAFE_API_KEY}`,
+        model: TYPESAFE_ENV.TYPESAFE_MODEL,
+        state: { file: { path: 'src/auth/session.ts' } },
+      });
+      // The pin is compared against the response, never sent.
+      expect(JSON.stringify(bodies)).not.toContain(TYPESAFE_ENV.TYPESAFE_MODEL_PIN);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it.each(JEV_UNAVAILABLE_REASONS.map((reason) => [reason]))(
