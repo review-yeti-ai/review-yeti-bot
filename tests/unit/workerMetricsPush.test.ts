@@ -1,7 +1,8 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-// Decoder only: the exporter's own generated protobuf root, so the test reads the
+// Decoder only (@opentelemetry/otlp-transformer is a declared devDependency, pinned to the
+// exporter's release): the exporter's own generated protobuf root, so the test reads the
 // exact wire format VictoriaMetrics receives rather than a re-implementation.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const protoRoot = require('@opentelemetry/otlp-transformer/build/src/generated/root');

@@ -130,6 +130,7 @@
     "typebox"
   ],
   "devDependencies": {
+    "@opentelemetry/otlp-transformer": "0.57.2",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.2",
     "@types/express": "^4.17.21",

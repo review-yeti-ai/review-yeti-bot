@@ -1852,6 +1852,9 @@ func TestBuildWorkerJobProjectsWorkerMetricsEndpointFailOpen(t *testing.T) {
 		"vm:8428",
 		"/opentelemetry/v1/metrics",
 		"http://",
+		// url.Parse errors: the err != nil branch must drop, not panic or refuse.
+		"http://[::1",
+		"http://vm:8428/%zz",
 	} {
 		input.Publishing.WorkerMetricsEndpoint = bad
 		built, err := job.BuildWorkerJob(input)
