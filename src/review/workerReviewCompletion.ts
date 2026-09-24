@@ -7,6 +7,7 @@ import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCo
 import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { incrementalReviewClaimSchema } from './incrementalReviewClaim';
+import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 
@@ -287,6 +288,14 @@ const resultSchema = z.object({
    * or `deriveCanonicalWorkerReviewEvidence` refuses the completion.
    */
   incremental: incrementalReviewClaimSchema.optional(),
+  /**
+   * OPTIONAL, additive (REL-1085, `REVIEW_YETI_VERDICT_CACHE`): this run's clean per-file lane
+   * results for later runs, and any files it served from a named earlier record instead of
+   * sending. Served files are never evidence on their own: the trusted completion side must verify
+   * them (`TrustedReviewCoverageContract.verdictCacheVerified`) or
+   * `deriveCanonicalWorkerReviewEvidence` refuses the completion.
+   */
+  verdictCache: verdictCacheClaimSchema.optional(),
 }).strict();
 
 const completionSchema = z.object({
@@ -336,6 +345,12 @@ export interface TrustedReviewCoverageContract {
    * A completion that carries anything forward without this is refused.
    */
   incrementalVerified?: boolean;
+  /**
+   * REL-1085: true only when the service re-derived the verdict-cache decision from its own
+   * source record and GitHub reads and it permits every file the completion served from cache.
+   * A completion that served anything from cache without this is refused.
+   */
+  verdictCacheVerified?: boolean;
 }
 
 export interface DerivedWorkerReviewEvidence {
@@ -531,6 +546,18 @@ export function deriveCanonicalWorkerReviewEvidence(
     const paths = new Set(changedFiles.map((file) => file.path));
     if (isDocumentationOnlyCompletion(completion.result) || !carried.carriedForwardPaths.every((path) => paths.has(path))) {
       return invalidEvidence('carried-forward completion names a file outside the trusted changed set');
+    }
+  }
+  // REL-1085: a verdict served from cache counts toward the gate only when the service verified it
+  // against the source record it names, and only for files in this exact changed set.
+  const served = completion.result.verdictCache?.hits;
+  if (served) {
+    if (contract.verdictCacheVerified !== true) {
+      return invalidEvidence('verdict-cache completion was not verified against its source record');
+    }
+    const paths = new Set(changedFiles.map((file) => file.path));
+    if (isDocumentationOnlyCompletion(completion.result) || !served.paths.every((path) => paths.has(path))) {
+      return invalidEvidence('verdict-cache completion names a file outside the trusted changed set');
     }
   }
   if (isDocumentationOnlyCompletion(completion.result)) {

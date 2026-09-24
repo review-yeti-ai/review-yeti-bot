@@ -30,6 +30,8 @@ import { initTelemetry } from './telemetry';
 import { deriveReviewRunId } from './review/reviewAdmission';
 import { PostgresIncrementalBaseLookup } from './persistence/incrementalPriorReview';
 import { incrementalMaxAgeMsFrom } from './review/incrementalReview';
+import { PostgresVerdictCacheBaseLookup } from './persistence/verdictCacheSource';
+import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -61,6 +63,8 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const authoritativeConfig = authoritativeServiceConfigFromEnv(environment, policy);
   // REL-1084: one configured age for both the worker's planning read and trusted verification.
   const incrementalMaxAgeMs = incrementalMaxAgeMsFrom(environment);
+  // REL-1085: likewise one configured age for the verdict cache's planning read and verification.
+  const verdictCacheMaxAgeMs = verdictCacheMaxAgeMsFrom(environment);
   const webhookConfig = githubWebhookConfigFromEnv(environment, policy);
   const ciConfig = reviewCiConfigFromEnv(environment, authoritativeConfig);
   const store = new PostgresStore();
@@ -69,7 +73,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
-      incrementalMaxAgeMs,
+      incrementalMaxAgeMs, verdictCacheMaxAgeMs,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
         if (findReviewCiEnrollment(ciConfig,
           { expectedAppId: gate.expectedAppId, repository: gate.coordinates })) {
@@ -191,6 +195,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       evidence: new PostgresWorkerCompletionStore(pool),
     },
     incrementalBase: new PostgresIncrementalBaseLookup(pool, { maxAgeMs: incrementalMaxAgeMs }),
+    verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(
       installationCredentialsForRepository(owner, repo)),

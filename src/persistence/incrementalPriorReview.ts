@@ -13,13 +13,18 @@
  * older SHIP past newer evidence.
  */
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
-import { priorReviewRecordFromRows, type PriorReviewRecord } from '../review/incrementalReview';
+import { priorReviewRecordFromRows, type PriorReviewRecord, type PriorReviewRows } from '../review/incrementalReview';
 
-interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
+export interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
 
 const RUN_ID = /^run_[a-f0-9]{32}$/u;
 
-export async function selectPriorReviewRecord(queryable: Queryable, currentRunId: string): Promise<PriorReviewRecord | null> {
+/**
+ * The stored rows of the prior review record, selected as described above. Shared
+ * by `selectPriorReviewRecord` (REL-1084) and the verdict cache's source
+ * selection (REL-1085), so both features always name the same record.
+ */
+export async function selectPriorReviewRows(queryable: Queryable, currentRunId: string): Promise<PriorReviewRows | null> {
   if (!RUN_ID.test(currentRunId)) return null;
   const current = (await queryable.query(
     'SELECT repository_id, pr_number, received_at FROM review_runs WHERE run_id = $1',
@@ -38,11 +43,30 @@ export async function selectPriorReviewRecord(queryable: Queryable, currentRunId
     [current.repository_id, current.pr_number, currentRunId, current.received_at],
   )).rows[0];
   if (!row) return null;
-  return priorReviewRecordFromRows({
-    run: row,
-    completion: row,
-    currentReceivedAt: current.received_at,
-  });
+  return { run: row, completion: row, currentReceivedAt: current.received_at };
+}
+
+export async function selectPriorReviewRecord(queryable: Queryable, currentRunId: string): Promise<PriorReviewRecord | null> {
+  const rows = await selectPriorReviewRows(queryable, currentRunId);
+  return rows ? priorReviewRecordFromRows(rows) : null;
+}
+
+/**
+ * True only for the exact live execution the bearer was minted for: the run is
+ * queued or running and the token digest matches that attempt's dispatch record.
+ * Shared by every worker planning read (REL-1084, REL-1085).
+ */
+export async function workerExecutionAuthorized(queryable: Queryable,
+  input: { runId: string; executionAttempt: number; workerTokenDigest: string }): Promise<boolean> {
+  if (!RUN_ID.test(input.runId) || !Number.isSafeInteger(input.executionAttempt) || input.executionAttempt < 1) return false;
+  const binding = (await queryable.query(
+    `SELECT runs.status, outbox.worker_token_digest
+       FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
+      WHERE runs.run_id = $1 AND outbox.execution_attempt + 1 = $2`,
+    [input.runId, input.executionAttempt],
+  )).rows[0];
+  return Boolean(binding) && constantTimeDigestEqual(binding.worker_token_digest, input.workerTokenDigest)
+    && ['queued', 'running'].includes(String(binding.status));
 }
 
 export type IncrementalBaseLookupResult =
@@ -63,17 +87,7 @@ export class PostgresIncrementalBaseLookup implements IncrementalBaseLookup {
   get maxAgeMs(): number { return this.options.maxAgeMs; }
 
   async read(input: { runId: string; executionAttempt: number; workerTokenDigest: string }): Promise<IncrementalBaseLookupResult> {
-    if (!RUN_ID.test(input.runId) || !Number.isSafeInteger(input.executionAttempt) || input.executionAttempt < 1) {
-      return { status: 'unauthorized' };
-    }
-    const binding = (await this.queryable.query(
-      `SELECT runs.status, outbox.worker_token_digest
-         FROM review_runs runs JOIN review_dispatch_outbox outbox USING (run_id)
-        WHERE runs.run_id = $1 AND outbox.execution_attempt + 1 = $2`,
-      [input.runId, input.executionAttempt],
-    )).rows[0];
-    if (!binding || !constantTimeDigestEqual(binding.worker_token_digest, input.workerTokenDigest)
-      || !['queued', 'running'].includes(String(binding.status))) return { status: 'unauthorized' };
+    if (!await workerExecutionAuthorized(this.queryable, input)) return { status: 'unauthorized' };
     return { status: 'ok', prior: await selectPriorReviewRecord(this.queryable, input.runId), maxAgeMs: this.options.maxAgeMs };
   }
 }

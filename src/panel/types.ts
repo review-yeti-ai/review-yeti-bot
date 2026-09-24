@@ -10,6 +10,7 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 import type { DiffShrinkDisclosure } from '../types/diffShrink';
 import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
+import type { VerdictCacheDisclosure } from '../types/verdictCache';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -140,6 +141,12 @@ export interface PanelResult {
    * publishes exactly this.
    */
   reviewBudget?: ReviewBudgetDisclosure;
+  /**
+   * REL-1085: what the verdict cache served and what the lanes saw in full. Set only when
+   * `REVIEW_YETI_VERDICT_CACHE` handed the engine a scope for a run with at least one lane;
+   * the check summary, the served-file claim and the recorded entries are built from exactly this.
+   */
+  verdictCache?: VerdictCacheDisclosure;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];

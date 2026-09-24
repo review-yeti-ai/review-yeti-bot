@@ -60,6 +60,11 @@ import {
   type ReviewBudgetInput,
   type ReviewBudgetPlan,
 } from '../review/reviewBudget';
+import {
+  attachVerdictCacheDisclosure,
+  type VerdictCacheDisclosure,
+  type VerdictCacheScope,
+} from '../review/verdictCache';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -127,6 +132,8 @@ export interface ComposedReviewOptions {
   incremental?: IncrementalReviewScope;
   /** REL-1082: risk-ordered review budget (`REVIEW_YETI_BUDGET`); absent or disabled sends today's content. */
   reviewBudget?: ReviewBudgetInput;
+  /** REL-1085: per-file verdict cache scope (`REVIEW_YETI_VERDICT_CACHE`); absent serves nothing from cache. */
+  verdictCache?: VerdictCacheScope;
 }
 
 // ---------------------------------------------------------------------------
@@ -1032,6 +1039,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   // REL-1084: what the incremental scope actually carried forward, from the same call.
   let incrementalDisclosure: IncrementalReviewDisclosure | null = null;
+  // REL-1085: what the verdict cache actually served, from the same call.
+  let verdictCacheDisclosure: VerdictCacheDisclosure | null = null;
   // REL-1092: truncated and unavailable patches, from the same decision.
   let depthDisclosure: ReviewDepthDisclosure | null = null;
   // REL-1082: the one budget pack for this single context, from the same decision.
@@ -1055,15 +1064,18 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     // REL-1079: diff shrinking runs after, and cannot change, that decision.
     // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
     // REL-1082: so does the review budget: one pack over the whole diff for this one context.
+    // REL-1085: the verdict cache runs before the budget and, like the others, only replaces patch text.
     const applicability = resolveBudgetedReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
+      verdictCache: options.verdictCache,
       reviewBudget: options.reviewBudget,
       budgetScope: 'whole-diff',
     });
     diffShrinkDisclosure = applicability.diffShrink;
     incrementalDisclosure = applicability.incremental;
+    verdictCacheDisclosure = applicability.verdictCache;
     depthDisclosure = reviewDepthDisclosureOf(applicability);
     reviewBudgetPlan = applicability.reviewBudget;
     const effectiveFiles = applicability.effectiveFiles;
@@ -1315,6 +1327,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     };
   }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
+    .then((result) => attachVerdictCacheDisclosure(result, verdictCacheDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .finally(deadline.cleanup);
