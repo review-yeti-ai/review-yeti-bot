@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.87.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.87.0...v1.87.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **jev:** accept the live score contract and derive risk level by argmax (REL-1100) ([#1030](https://github.com/review-yeti-ai/review-yeti-bot/issues/1030)) ([8b5703b](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b5703b6aa0065fef8c15a253ed2c8cd29cbc906))
+
 ## [1.87.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.3...v1.87.0) (2026-09-24)
 
 
