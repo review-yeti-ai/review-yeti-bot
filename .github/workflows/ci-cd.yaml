@@ -2,7 +2,7 @@ name: Test, build, and deploy
 
 on:
   pull_request:
-    branches: [main, "ci/REL-1074-incremental-tests"]
+    branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
