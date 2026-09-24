@@ -210,7 +210,7 @@ describe('zero-replica review job dispatcher deployment', () => {
     }
   });
 
-  it('grants namespaced get/list/create on prreviewjobs and get/create on run secrets', () => {
+  it('grants namespaced get/list/create/patch on prreviewjobs and get/create on run secrets', () => {
     const docs = documents();
     const role = docs.find((document) => document.kind === 'Role');
     expect(role).toBeDefined();
@@ -218,12 +218,13 @@ describe('zero-replica review job dispatcher deployment', () => {
     // Exact. Dynamic run-Secret recovery needs namespace-level get/create.
     // REL-896 adds `list` on prreviewjobs only, for the delegated-failure
     // reader; secrets remain get/create only -- no list, patch, or delete
-    // over credentials in this namespace.
+    // over credentials in this namespace. REL-1073 adds `patch` on prreviewjobs
+    // only, so the cancellation sweep can set spec.cancelRequested.
     expect(role!.rules).toEqual([
       {
         apiGroups: ['review-yeti.ai'],
         resources: ['prreviewjobs'],
-        verbs: ['get', 'list', 'create'],
+        verbs: ['get', 'list', 'create', 'patch'],
       },
       {
         apiGroups: [''],

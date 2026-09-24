@@ -989,7 +989,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
       });
 
       const outcome = await engine.sweepPendingCancellations(10);
-      expect(outcome).toEqual({ propagated: 1, failed: 0 });
+      expect(outcome).toEqual({ propagated: 1, failed: 0, failures: [] });
 
       // Outbox was marked propagated
       expect(ob.cancel_propagated_at).toEqual(new Date(BASE_NOW + 10_000));
@@ -1030,7 +1030,11 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
 
       // First sweep fails
       const sweep1 = await engine.sweepPendingCancellations(10);
-      expect(sweep1).toEqual({ propagated: 0, failed: 1 });
+      expect(sweep1).toEqual({
+        propagated: 0,
+        failed: 1,
+        failures: [{ runId, projectionName: 'prj-flaky-cr', statusCode: 500 }],
+      });
       expect(ob.cancel_propagated_at).toBeNull(); // Still unpropagated!
 
       // K8s recovers
@@ -1038,7 +1042,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
 
       // Second sweep succeeds
       const sweep2 = await engine.sweepPendingCancellations(10);
-      expect(sweep2).toEqual({ propagated: 1, failed: 0 });
+      expect(sweep2).toEqual({ propagated: 1, failed: 0, failures: [] });
       expect(ob.cancel_propagated_at).toEqual(new Date(BASE_NOW + 10_000));
     });
 
@@ -1075,19 +1079,19 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
 
       // Sweep with limit = 2
       const s1 = await engine.sweepPendingCancellations(2);
-      expect(s1).toEqual({ propagated: 2, failed: 0 });
+      expect(s1).toEqual({ propagated: 2, failed: 0, failures: [] });
 
       // Next batch of 2
       const s2 = await engine.sweepPendingCancellations(2);
-      expect(s2).toEqual({ propagated: 2, failed: 0 });
+      expect(s2).toEqual({ propagated: 2, failed: 0, failures: [] });
 
       // Final 1
       const s3 = await engine.sweepPendingCancellations(2);
-      expect(s3).toEqual({ propagated: 1, failed: 0 });
+      expect(s3).toEqual({ propagated: 1, failed: 0, failures: [] });
 
       // Empty
       const s4 = await engine.sweepPendingCancellations(2);
-      expect(s4).toEqual({ propagated: 0, failed: 0 });
+      expect(s4).toEqual({ propagated: 0, failed: 0, failures: [] });
     });
   });
 
