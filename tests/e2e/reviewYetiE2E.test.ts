@@ -680,7 +680,13 @@ enabled: true
       } catch (err: any) {
         result = '';
       }
-      expect(result.trim(), 'charts/ must have 0 calltelemetry mentions').toBe('');
+      // REL-1097: the chart CRD is a byte-identical copy of the controller-gen
+      // output (pinned by tests/unit/chartCrdGenerated.test.ts), whose
+      // workerImage pattern admits the production worker registry. That one
+      // generated line is the only permitted mention; anything else still fails.
+      const permitted = /^charts\/review-yeti\/files\/review-yeti\.ai_prreviewjobs\.yaml:\d+:\s*pattern: .*registry\\\.digitalocean\\\.com\/calltelemetry\/review-yeti-worker\)@sha256/u;
+      const leaks = result.trim().split('\n').filter((line) => line && !permitted.test(line));
+      expect(leaks, 'charts/ must have 0 calltelemetry mentions').toEqual([]);
     });
 
     it.skipIf(!hasHelmGuide || !hasTroubleshooting)('Feature 25: zero "calltelemetry" occurrences in newly authored docs', () => {
