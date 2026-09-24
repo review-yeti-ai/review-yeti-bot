@@ -11,14 +11,14 @@ import {
 import { preparePublishingPolicy, type PreparedPublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 
-import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
 // turn these suites into a silent green skip.
 requireDatabaseUrlInCi();
 
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const databaseUrl = postgresDatabaseUrl();
+const describeWithPostgres = describeWithPostgresShared;
 const OWNED_SCHEMA = /^prepared_review_test_[0-9a-f]{16}$/u;
 const RAW_SECRET = 'synthetic-policy-credential-do-not-retain';
 const SAVE_ERROR = 'Prepared review policy could not be saved';

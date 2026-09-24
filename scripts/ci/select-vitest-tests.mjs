@@ -35,7 +35,25 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const CODE_EXT = /\.(?:[cm]?[jt]sx?|sh)$/u;
 /** The REL-817 harness `npm run test:acceptance:reaper` runs (pinned to that script by a unit test). */
 export const REAPER_ACCEPTANCE = 'tests/integration/reaperMetricsAcceptance.postgres.test.ts';
-const POSTGRES_MARKER = /process\.env\.REVIEW_YETI_TEST_DATABASE_URL\b/u;
+/**
+ * How a suite is recognised as Postgres-backed.
+ *
+ * This MUST NOT depend on a suite spelling the env var literally. It did, and the
+ * marker was a landmine: REL-1069 consolidated thirteen suites onto a shared
+ * `postgresDatabaseUrl()` helper, every file stopped matching, all thirteen were
+ * routed back into the plain shards (which have no database), and the CI run went
+ * red. A detector that a refactor can silently disable is worse than none -- it
+ * fails by moving tests to the wrong job rather than by erroring here.
+ *
+ * A Postgres suite is now identified by EITHER the legacy literal OR the shared
+ * helper, so consolidating onto the helper is safe and the next refactor cannot
+ * quietly drop a suite out of its dedicated job.
+ */
+const POSTGRES_MARKERS = [
+  /process\.env\.REVIEW_YETI_TEST_DATABASE_URL\b/u,
+  /\bpostgresDatabaseUrl\s*\(/u,
+  /\brequireDatabaseUrlInCi\s*\(/u,
+];
 
 /** Any change matching one of these runs the whole suite. */
 export const FULL_SUITE_TRIGGERS = [
@@ -278,7 +296,10 @@ async function main() {
   await withVitest(async (vitest) => {
     const allSpecs = await vitest.specifications.globTestSpecifications();
     const allTests = [...new Set(allSpecs.map((spec) => rel(spec.moduleId)))].sort();
-    const isPostgres = (file) => POSTGRES_MARKER.test(fs.readFileSync(path.join(repoRoot, file), 'utf8'));
+    const isPostgres = (file) => {
+      const source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+      return POSTGRES_MARKERS.some((marker) => marker.test(source));
+    };
     const postgresAll = allTests.filter(isPostgres);
     plan.postgresExcludes = postgresAll;
     const finishFull = (reason) => {
