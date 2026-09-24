@@ -11,6 +11,7 @@ import {
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
+import { gateRecordFor } from '../support/priorGateRecord';
 import type { VerdictCacheVerificationInput } from '../../src/review/verdictCache';
 import {
   workerReviewCompletionDigest,
@@ -58,7 +59,8 @@ function completionFor(id: string, headSha: string, baseSha: string, options: { 
     result: {
       version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T11:00:00.000Z',
       personas: [{ id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
-      coverageComplete: true, quorumSatisfied: true, verdict: 'SHIP',
+      // No `verdict`: the authoritative worker never sets it (REL-1084).
+      coverageComplete: true, quorumSatisfied: true,
       ...(options.verdictCache === false ? {} : {
         verdictCache: { version: 'VerdictCache.v1', laneKeys: LANE_KEYS, entries: [ENTRY] },
       }),
@@ -93,6 +95,15 @@ describeWithPostgres('verdict cache source selection (real SQL)', () => {
       INSERT INTO review_worker_completions (run_id, execution_attempt, content_digest, payload, byte_length, created_at)
       VALUES ($1, $2, $3, $4::jsonb, $5, to_timestamp($6/1000.0))
     `, [event.runId, event.executionAttempt, workerReviewCompletionDigest(event), json, Buffer.byteLength(json, 'utf8'), createdAt]);
+    // The gate attempt row the trusted transaction writes for it (REL-1084: the source's verdict is derived from it).
+    const recorded = gateRecordFor(event, { expectedPersonaIds: ['sec-lane'], changedFiles: [{ path: 'src/changed.ts' }, { path: 'src/same.ts' }] });
+    await pool!.query(`
+      INSERT INTO review_gate_attempts (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number,
+        expected_app_id, coordinates, external_id, current_attempt, desired_state, evidence, decision, worker_result_digest)
+      VALUES ($1, $2, 0, $3, $4, $5, $6, '{}'::jsonb, $7, false, $8, $9::jsonb, $10::jsonb, $11)
+    `, [`gate_${event.runId}_${event.executionAttempt}`, event.runId, event.executionAttempt, event.repositoryId, event.prNumber,
+      APP_ID, `external_${event.runId}_${event.executionAttempt}`, recorded.decision.status,
+      recorded.gate.evidence, recorded.gate.decision, recorded.gate.worker_result_digest]);
   }
 
   beforeAll(async () => {
