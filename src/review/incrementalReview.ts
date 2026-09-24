@@ -63,8 +63,10 @@ import {
   parseWorkerReviewCompletion,
   parseWorkerReviewEvidence,
   workerReviewCompletionDigest,
-  storedCompletionShipComplete,
+  STORED_PRIOR_REFUSALS,
+  storedCompletionShipCompleteReason,
   workerReviewEvidenceDigest,
+  type StoredPriorRefusal,
   type StoredGateRecord,
   type WorkerReviewResult,
 } from './workerReviewCompletion';
@@ -135,6 +137,8 @@ export const priorReviewRecordSchema = z.object({
   /** Service clock: current run admission minus the prior record's storage time. */
   ageMs: z.number().int().nonnegative().safe(),
   shipComplete: z.boolean(),
+  /** REL-1084: when not SHIP-complete, the check that refused it (disclosure and logs only). */
+  shipIncompleteReason: z.enum(STORED_PRIOR_REFUSALS).optional(),
   /** Every path any lane of the prior review reported a finding on. */
   findingPaths: z.array(path).max(10_000),
 }).strict();
@@ -201,6 +205,12 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
     const recordedAt = timeOf(rows.completion.created_at);
     const receivedAt = timeOf(rows.currentReceivedAt);
     if (!Number.isFinite(recordedAt) || !Number.isFinite(receivedAt)) return null;
+    // A WorkerReviewEvidence record (the worker published its own check, no authoritative gate)
+    // has no service-side gate evidence: the service never learned which lanes were required,
+    // so a missing lane could not be detected. It is never SHIP-complete.
+    const shipIncompleteReason: StoredPriorRefusal | null = rows.run.status !== 'succeeded' ? 'run-not-succeeded'
+      : !authoritative ? 'no-gate-evidence-record'
+      : storedCompletionShipCompleteReason(result, rows.gate, storedDigest);
     const findingPaths = [...new Set(result.personas.flatMap((persona) => persona.findings.map((finding) => finding.path)))].sort();
     return priorReviewRecordSchema.parse({
       runId: coordinates.runId,
@@ -213,11 +223,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       configDigest: coordinates.configDigest,
       completionDigest: storedDigest,
       ageMs: Math.max(0, Math.floor(receivedAt - recordedAt)),
-      // A WorkerReviewEvidence record (the worker published its own check, no authoritative gate)
-      // has no service-side gate evidence: the service never learned which lanes were required,
-      // so a missing lane could not be detected. It is never SHIP-complete.
-      shipComplete: rows.run.status === 'succeeded' && authoritative
-        && storedCompletionShipComplete(result, rows.gate, storedDigest),
+      ...(shipIncompleteReason === null ? { shipComplete: true } : { shipComplete: false, shipIncompleteReason }),
       findingPaths,
     });
   } catch {
@@ -298,7 +304,7 @@ export type IncrementalFallbackReason =
   | 'error';
 
 export type IncrementalDecision =
-  | { mode: 'full'; reason: IncrementalFallbackReason }
+  | { mode: 'full'; reason: IncrementalFallbackReason; priorRefusal?: StoredPriorRefusal }
   | {
     mode: 'incremental';
     previous: IncrementalPriorIdentity;
@@ -336,7 +342,10 @@ export function incrementalPrecheck(input: {
     return full('prior-identity-mismatch');
   }
   if (prior.headSha === current.headSha) return full('same-head');
-  if (!prior.shipComplete) return full('prior-not-ship-complete');
+  if (!prior.shipComplete) {
+    return { mode: 'full', reason: 'prior-not-ship-complete',
+      ...(prior.shipIncompleteReason ? { priorRefusal: prior.shipIncompleteReason } : {}) };
+  }
   if (prior.policyDigest !== current.policyDigest || prior.configDigest !== current.configDigest) {
     return full('policy-or-config-changed');
   }
@@ -644,6 +653,32 @@ const FALLBACK_TEXT: Record<IncrementalFallbackReason, string> = {
   error: 'the previous review could not be read or verified',
 };
 
+const PRIOR_REFUSAL_TEXT: Record<StoredPriorRefusal, string> = {
+  'run-not-succeeded': 'its run did not succeed',
+  'no-gate-evidence-record': 'it was published without the authoritative gate',
+  'gate-row-missing': 'the gate has no record of that completion',
+  'gate-row-mismatch': 'the gate record is for a different completion',
+  'gate-record-unreadable': 'the gate record could not be read',
+  'gate-not-clean': 'the gate did not pass it as a clean review',
+  'gate-exemption': 'it was a no-reviewable-content exemption',
+  'gate-lane-missing': 'the gate recorded a required lane as not completed',
+  'gate-incomplete': 'the gate recorded incomplete coverage or quorum',
+  'gate-infrastructure-failure': 'the gate recorded an infrastructure failure',
+  'gate-not-ship': 'the gate verdict was not SHIP',
+  'worker-quorum-unmet': 'the worker reported an unmet quorum',
+  'worker-coverage-incomplete': 'the worker reported incomplete coverage',
+  'blocking-finding': 'it has a P0/P1 finding at published severity',
+  'rederived-invalid': 'its lanes could not be re-derived',
+  'lane-failed': 'a lane failed',
+  'lane-missing': 'a required lane is missing',
+  'rederived-not-ship': 'the re-derived verdict is not SHIP',
+};
+
+/** ` (reason code: text)` for a refused prior, or nothing. Shared with the verdict-cache summary. */
+export function priorRefusalSuffix(refusal: StoredPriorRefusal | undefined): string {
+  return refusal ? ` (\`${refusal}\`: ${PRIOR_REFUSAL_TEXT[refusal]})` : '';
+}
+
 /** Check-summary lines (plan section 3, invariant 5). Empty when the flag is off. */
 export function renderIncrementalSummary(
   disclosure: IncrementalReviewDisclosure | null | undefined,
@@ -664,6 +699,8 @@ export function renderIncrementalSummary(
     return lines;
   }
   if (!plan) return [];
-  const reason = plan.decision.mode === 'full' ? FALLBACK_TEXT[plan.decision.reason] : 'no file could be carried forward';
+  const reason = plan.decision.mode === 'full'
+    ? FALLBACK_TEXT[plan.decision.reason] + priorRefusalSuffix(plan.decision.priorRefusal)
+    : 'no file could be carried forward';
   return [`**Incremental re-review** (\`${INCREMENTAL_FLAG}\`): full review, because ${reason}.`];
 }

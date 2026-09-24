@@ -36,6 +36,14 @@ export function createIncrementalBaseHandler(lookup: IncrementalBaseLookup) {
         runId: parsed.data.runId, executionAttempt: parsed.data.executionAttempt, workerTokenDigest: sha256(token),
       });
       if (result.status === 'unauthorized') return response.status(403).json({ error: 'Worker is not authorized for this run' });
+      if (result.prior && !result.prior.shipComplete) {
+        // REL-1084: why the prior this run would rest on was refused, visible even to a worker
+        // that does not disclose it.
+        logger.info('Incremental base prior not SHIP-complete', {
+          runId: parsed.data.runId, priorRunId: result.prior.runId, priorHeadSha: result.prior.headSha,
+          priorRefusal: result.prior.shipIncompleteReason ?? 'unknown',
+        });
+      }
       return response.status(200).json({
         version: INCREMENTAL_BASE_RESPONSE_VERSION, runId: parsed.data.runId, maxAgeMs: result.maxAgeMs, prior: result.prior,
       });

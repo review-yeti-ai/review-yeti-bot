@@ -66,6 +66,7 @@ import {
   incrementalPrecheck,
   INCREMENTAL_MAX_AGE_ENV,
   priorReviewRecordFromRows,
+  priorRefusalSuffix,
   priorReviewRecordSchema,
   resolveScopedReviewApplicability,
   type IncrementalCurrentIdentity,
@@ -76,6 +77,7 @@ import {
 import { isRegularFileMode } from './lockfileChangeVerification';
 import { isSubmoduleEntry, personaCoversFile, type EffectiveReviewFile, type ReviewApplicabilityInputFile } from './personaApplicability';
 import { sha256 } from './reviewCore';
+import type { StoredPriorRefusal } from './workerReviewCompletion';
 import {
   MAX_VERDICT_CACHE_ENTRIES,
   MAX_VERDICT_CACHE_PATH_CHARACTERS,
@@ -290,7 +292,7 @@ export type VerdictCacheFallbackReason =
   | 'nothing-cached';
 
 export type VerdictCacheDecision =
-  | { mode: 'full'; reason: VerdictCacheFallbackReason }
+  | { mode: 'full'; reason: VerdictCacheFallbackReason; priorRefusal?: StoredPriorRefusal }
   | { mode: 'cache'; source: VerdictCacheSourceIdentity; permitted: VerdictCacheEntry[] };
 
 function fullCache(reason: VerdictCacheFallbackReason): VerdictCacheDecision {
@@ -304,7 +306,10 @@ export function verdictCachePrecheck(input: {
   current: IncrementalCurrentIdentity;
 }): VerdictCacheDecision | null {
   const early = incrementalPrecheck({ prior: input.source?.prior ?? null, maxAgeMs: input.maxAgeMs, current: input.current });
-  if (early) return fullCache(early.mode === 'full' ? early.reason : 'error');
+  if (early) {
+    if (early.mode !== 'full') return fullCache('error');
+    return { mode: 'full', reason: early.reason, ...(early.priorRefusal ? { priorRefusal: early.priorRefusal } : {}) };
+  }
   if (input.source!.entries.length === 0) return fullCache('no-cache-entries');
   return null;
 }
@@ -695,8 +700,10 @@ export async function planVerdictCache(options: {
     const contentIndex = contentIndexOf(current.repositoryId,
       (await options.reader!.content(current.baseSha, current.headSha, abort.signal)).files);
     if (!contentIndex) return { scope: null, decision: fullCache('comparison-incomplete'), contentIndex: null };
-    const recordOnly = (reason: VerdictCacheFallbackReason, sourceLaneKeys: Record<string, string> = {}): VerdictCachePlan => ({
-      scope: { source: null, permitted: [], laneKeys: options.laneKeys, sourceLaneKeys }, decision: fullCache(reason), contentIndex,
+    const recordOnly = (reason: VerdictCacheFallbackReason | Extract<VerdictCacheDecision, { mode: 'full' }>,
+      sourceLaneKeys: Record<string, string> = {}): VerdictCachePlan => ({
+      scope: { source: null, permitted: [], laneKeys: options.laneKeys, sourceLaneKeys },
+      decision: typeof reason === 'string' ? fullCache(reason) : reason, contentIndex,
     });
     let base: { source: VerdictCacheSource | null; maxAgeMs: number };
     try {
@@ -706,7 +713,8 @@ export async function planVerdictCache(options: {
       return recordOnly('error');
     }
     const early = verdictCachePrecheck({ source: base.source, maxAgeMs: base.maxAgeMs, current });
-    if (early) return recordOnly(early.mode === 'full' ? early.reason : 'error');
+    // The whole fallback, so a refused prior's `priorRefusal` reaches the log and the disclosure.
+    if (early) return recordOnly(early.mode === 'full' ? early : 'error');
     const source = base.source!;
     const sourceContent = contentIndexOf(current.repositoryId,
       (await options.reader!.content(source.prior.baseSha, source.prior.headSha, abort.signal)).files);
@@ -785,7 +793,8 @@ export function renderVerdictCacheSummary(
       `- Reviewed in full (${disclosure.reviewedPaths.length}): ${listed(disclosure.reviewedPaths)}`,
     ];
   }
-  const reason = plan.decision.mode === 'full' ? FALLBACK_TEXT[plan.decision.reason]
+  const reason = plan.decision.mode === 'full'
+    ? FALLBACK_TEXT[plan.decision.reason] + priorRefusalSuffix(plan.decision.priorRefusal)
     : 'no permitted file matched this run\'s view and routing';
   return [`**Verdict cache** (\`${VERDICT_CACHE_FLAG}\`): no file served from cache, because ${reason}.${plan.scope ? tail : ''}`];
 }
