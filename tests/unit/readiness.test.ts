@@ -86,6 +86,22 @@ describe('review bot readiness', () => {
     expect(withUrl.status).toBe(200);
   });
 
+  it('is NOT ready on a scheme-less base URL that the transport would reject', async () => {
+    // The bug this guards: `isVendorHost`'s catch returned false for an
+    // unparseable URL, so resolution reported 'ok' and /ready answered 200 while
+    // openRouterClient() threw at request time -- a fail-open probe.
+    stubBifrostEnv({ OPENAI_BASE_URL: 'gateway.internal/v1' });
+    const response = await request(createApp()).get('/ready');
+    expect(response.status).toBe(503);
+  });
+
+  it('is NOT ready on a plaintext base URL', async () => {
+    // A plaintext gateway would ship diffs off the intended path.
+    stubBifrostEnv({ OPENAI_BASE_URL: 'http://gateway.internal/v1' });
+    const response = await request(createApp()).get('/ready');
+    expect(response.status).toBe(503);
+  });
+
   it('still returns 503 when the gateway key is genuinely absent', async () => {
     // The gate must still fail closed: readiness must not become unconditional.
     // EVERY source must be cleared, including the legacy names that

@@ -100,12 +100,27 @@ function winningName(env: NodeJS.ProcessEnv, names: readonly string[]): string |
 /** True when the winning base URL points at the OpenRouter vendor host. */
 function isVendorHost(baseUrl: string): boolean {
   try {
-    // A trailing dot is a valid FQDN root and the same endpoint to every
-    // resolver, so `openrouter.ai.` must be refused exactly like
-    // `openrouter.ai` (REL-1069 review: the un-normalised form was a silent
-    // bypass of the credential-leak guard).
-    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '');
+    // Strip ALL trailing dots: `openrouter.ai..` is the same endpoint to a
+    // resolver, and normalising only one was itself a bypass of this guard.
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.+$/, '');
     return host === 'openrouter.ai' || host.endsWith('.openrouter.ai');
+  } catch {
+    return false;
+  }
+}
+
+/** True when the base URL parses as an absolute https URL.
+ *
+ * A scheme-less value like `gateway.internal/v1` (a one-keystroke typo) is not
+ * a usable gateway URL, but `isVendorHost`'s catch returned false, so resolution
+ * reported `ok` and `/ready` answered 200 while the client threw at request
+ * time. Validity is now checked where resolution happens, so readiness and
+ * construction agree. https is required for the same reason `openaiTransport`
+ * enforces it: a plaintext gateway would ship diffs off the intended path.
+ */
+function isAbsoluteHttpsUrl(candidate: string): boolean {
+  try {
+    return new URL(candidate).protocol === 'https:';
   } catch {
     return false;
   }
@@ -136,6 +151,12 @@ export function resolveGatewaySettings(env: NodeJS.ProcessEnv): GatewayResolutio
   const baseUrl = resolveGatewayBaseUrl(env);
   const apiKey = resolveGatewayApiKey(env);
   if (!baseUrl || !apiKey) return { status: 'missing', missing: missingNames(env) };
+  if (!isAbsoluteHttpsUrl(baseUrl)) {
+    return {
+      status: 'refused',
+      reason: `gateway base URL is not an absolute https URL: ${baseUrl}`,
+    };
+  }
   // Refuse ONLY the credential-leak case: a key that did NOT come from an
   // OpenRouter variable, aimed at the OpenRouter vendor host. Sending a CT
   // (Bifrost) credential to a third-party vendor is the harm; a legacy key
