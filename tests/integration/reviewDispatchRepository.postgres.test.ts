@@ -30,7 +30,7 @@ import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recov
 import { logger } from '../../src/utils/logger';
 import { ReviewGenerationRecoveryLedgerError } from '../../src/review/reviewGenerationRecovery';
 
-import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
 // turn these suites into a silent green skip.
@@ -102,9 +102,7 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
   };
 }
 
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
-
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const databaseUrl = postgresDatabaseUrl();
 type TestDispatchRepositoryOptions = Omit<ReviewDispatchRepositoryOptions, 'lifecycleEvents'>
   & Partial<Pick<ReviewDispatchRepositoryOptions, 'lifecycleEvents'>>;
 const trustedValidation: ReviewDispatchRepositoryOptions = {

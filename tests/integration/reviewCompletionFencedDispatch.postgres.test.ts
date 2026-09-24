@@ -11,7 +11,7 @@ import {
 import type { ReviewCIRequestPayload } from '../../src/github/reviewCIRequest';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 
-import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
 // turn these suites into a silent green skip.
@@ -30,8 +30,7 @@ requireDatabaseUrlInCi();
 const TEST_SCHEMA = 'test_rel1053_fenced_dispatch';
 // REL-1069 follow-up: no hardcoded fallback; skip when Postgres is absent
 // rather than trying to reach a guessed host.
-const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim() || '';
-const describeWithPostgres = DATABASE_URL ? describe : describe.skip;
+const DATABASE_URL = postgresDatabaseUrl();
 const LEASE_MS = 1_000;
 
 interface Gate {
