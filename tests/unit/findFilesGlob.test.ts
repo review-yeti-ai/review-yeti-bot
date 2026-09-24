@@ -187,6 +187,46 @@ describe('find_files through the real provider and tool runtime (REL-1102)', () 
   });
 });
 
+describe('lookup failures never read as absence (REL-1102)', () => {
+  const changedFiles = [{ path: 'src/gateway/jevClient.ts', patch: '+x' }];
+  const failingTree = () => ({
+    findFiles: vi.fn(async () => { throw new Error('tree 502'); }),
+    readFile: vi.fn(async () => null),
+  });
+
+  it('find_files: a tree failure still surfaces the diff hits and is not exhaustive', async () => {
+    const res = await runReadOnlyTool('find_files', { query: 'src/**/*.ts' }, { changedFiles, repoFileProvider: failingTree() });
+    expect(res.isExhaustive).toBe(false);
+    expect(res.toolOutput).toContain('lookup failure');
+    expect(res.toolOutput).toContain('tree 502');
+    expect(res.toolOutput).toContain('Matching files in the diff: src/gateway/jevClient.ts');
+  });
+
+  it('find_files: a tree failure with no diff hits lists nothing from the diff', async () => {
+    const res = await runReadOnlyTool('find_files', { query: 'tests/fixtures/jev/*.json' }, { changedFiles, repoFileProvider: failingTree() });
+    expect(res.isExhaustive).toBe(false);
+    expect(res.toolOutput).not.toContain('Matching files in the diff');
+    expect(res.toolOutput).not.toMatch(/does not exist|found anywhere/);
+  });
+
+  it('read_file: a failed tree cross-check is reported as such, not as absence', async () => {
+    const res = await runReadOnlyTool('read_file', { path: 'tests/fixtures/jev/live-score.json' }, { changedFiles, repoFileProvider: failingTree() });
+    expect(res.isExhaustive).toBe(false);
+    expect(res.toolOutput).toContain('cross-check failed');
+    expect(res.toolOutput).toContain('tree 502');
+    expect(res.toolOutput).not.toContain('does not exist');
+  });
+
+  it('read_file: a glob with no tree hits points to find_files and is not exhaustive', async () => {
+    const repoFileProvider = createRepoFileProvider(stubGitHub(TREE), 'o', 'r', 'sha');
+    const res = await runReadOnlyTool('read_file', { path: 'tests/fixtures/jev/*.yaml' }, { changedFiles, repoFileProvider });
+    expect(res.isExhaustive).toBe(false);
+    expect(res.toolOutput).toContain('is a pattern');
+    expect(res.toolOutput).toContain('Use find_files');
+    expect(res.toolOutput).not.toContain('does not exist');
+  });
+});
+
 describe('read_file on the fixture path class (REL-1102)', () => {
   const changedFiles = [{ path: 'src/gateway/jevClient.ts', patch: '+x' }];
   const fixture = 'tests/fixtures/jev/live-score.json';
