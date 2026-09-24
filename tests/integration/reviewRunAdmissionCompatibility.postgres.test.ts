@@ -13,7 +13,7 @@ import {
 } from '../../src/persistence/reviewRunRepository';
 import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
 
-import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
 // turn these suites into a silent green skip.
@@ -23,7 +23,7 @@ const configuredDatabaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const databaseUrl = configuredDatabaseUrl || '';
 // REL-1069 follow-up: skip cleanly without Postgres, like the ten sibling
 // suites. Previously an absent URL reached a thrown error instead of a skip.
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const describeWithPostgres = describeWithPostgresShared;
 
 const repositoryId = 123;
 const owner = 'calltelemetry';

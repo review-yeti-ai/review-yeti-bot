@@ -4,6 +4,7 @@ import yaml from 'js-yaml';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
+  POSTGRES_MARKERS,
   REAPER_ACCEPTANCE,
   changedFiles,
   fullSuiteTrigger,
@@ -251,6 +252,48 @@ describe('CI incremental test selection (REL-1074)', () => {
     it('keeps the worker-helper tests and the build as gates of `test`', () => {
       expect(jobs['worker-helper'].steps.some((step: any) => step.run === 'npm run test:worker-helper')).toBe(true);
       expect(jobs.build.steps.some((step: any) => step.run === 'npm run build')).toBe(true);
+    });
+  });
+
+  describe('Postgres classification (REL-1069)', () => {
+    // The detector decides which JOB owns a suite. A refactor once silently emptied
+    // it: thirteen suites stopped spelling the env var literally, all were routed
+    // into the plain shards (which have no database), and CI went red. These pin
+    // both directions -- recognition must survive the helper, and must not widen.
+    const matches = (source: string) => POSTGRES_MARKERS.some((marker: RegExp) => marker.test(source));
+
+    it('recognises the legacy literal spelling', () => {
+      expect(matches("const url = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();")).toBe(true);
+    });
+
+    it('recognises the shared helper, so consolidating cannot declassify a suite', () => {
+      expect(matches('const databaseUrl = postgresDatabaseUrl();')).toBe(true);
+    });
+
+    it('recognises the CI tripwire call', () => {
+      // The CALL, not the import: importing the module without invoking the guard
+      // is not evidence a suite is Postgres-backed, and matching the import would
+      // classify any file that merely references it.
+      expect(matches('requireDatabaseUrlInCi();')).toBe(true);
+    });
+
+    it('does not classify an ordinary unit test', () => {
+      // Over-matching is the silent failure: real unit tests would be routed to a
+      // job with a database and a narrower file set.
+      expect(matches("import { describe, it } from 'vitest';\nit('adds', () => {});")).toBe(false);
+      expect(matches('const databaseUrl = process.env.SOME_OTHER_DATABASE;')).toBe(false);
+    });
+
+    it('every postgres suite in the tree is classified', () => {
+      // The end-to-end form of the same check: no suite named *.postgres.test.ts
+      // may exist without being detected, which is exactly what the refactor broke.
+      const dir = path.join(root, 'tests/integration');
+      const suites = fs.readdirSync(dir).filter((name: string) => name.endsWith('.postgres.test.ts'));
+      expect(suites.length).toBeGreaterThan(0);
+      const undetected = suites.filter(
+        (name: string) => !matches(fs.readFileSync(path.join(dir, name), 'utf8')),
+      );
+      expect(undetected).toEqual([]);
     });
   });
 });

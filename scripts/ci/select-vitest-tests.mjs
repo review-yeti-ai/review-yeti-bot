@@ -49,7 +49,7 @@ export const REAPER_ACCEPTANCE = 'tests/integration/reaperMetricsAcceptance.post
  * helper, so consolidating onto the helper is safe and the next refactor cannot
  * quietly drop a suite out of its dedicated job.
  */
-const POSTGRES_MARKERS = [
+export const POSTGRES_MARKERS = [
   /process\.env\.REVIEW_YETI_TEST_DATABASE_URL\b/u,
   /\bpostgresDatabaseUrl\s*\(/u,
   /\brequireDatabaseUrlInCi\s*\(/u,

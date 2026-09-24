@@ -9,7 +9,7 @@ import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersisten
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
 
-import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
 // turn these suites into a silent green skip.
@@ -20,8 +20,8 @@ requireDatabaseUrlInCi();
 // failed instead of skipping -- unlike the ten sibling `*.postgres.test.ts`
 // suites, which skip cleanly. CI always provides the URL, so guarding loses no
 // coverage there and makes a local/DB-less run honest.
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim() || '';
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const databaseUrl = postgresDatabaseUrl();
+const describeWithPostgres = describeWithPostgresShared;
 const LIFECYCLE_OPTIONS = { lifecycleEvents: 'enabled' as const };
 // `reapExpiredLeases` serializes per-PR work with `pg_try_advisory_xact_lock(
 // hashtextextended('review-dispatch:<repositoryId>:<prNumber>', 0))`. That

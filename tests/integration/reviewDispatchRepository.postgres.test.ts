@@ -104,7 +104,7 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
 
 const databaseUrl = postgresDatabaseUrl();
 
-const describeWithPostgres = databaseUrl ? describe : describe.skip;
+const describeWithPostgres = describeWithPostgresShared;
 type TestDispatchRepositoryOptions = Omit<ReviewDispatchRepositoryOptions, 'lifecycleEvents'>
   & Partial<Pick<ReviewDispatchRepositoryOptions, 'lifecycleEvents'>>;
 const trustedValidation: ReviewDispatchRepositoryOptions = {
