@@ -33,6 +33,13 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(isTransientIdentityProbeFailure(1, 'gh: Gateway Timeout (HTTP 504)')).toBe(true);
       expect(isTransientIdentityProbeFailure(1, 'gh: Too Many Requests (HTTP 429)')).toBe(true);
       expect(isTransientIdentityProbeFailure(1, 'gh: HTTP 403 with retry-after: 30')).toBe(true);
+      // BARE codes, not only the "HTTP <code>" form. Real stderr varies: a raw status line or a
+      // bare number. Narrowing the regex to the "HTTP " form would silently stop retrying these
+      // (REL-1107 review).
+      expect(isTransientIdentityProbeFailure(1, 'HTTP/1.1 502 Bad Gateway')).toBe(true);
+      expect(isTransientIdentityProbeFailure(1, 'gh: 502 Bad Gateway')).toBe(true);
+      expect(isTransientIdentityProbeFailure(1, 'gh: 503')).toBe(true);
+      expect(isTransientIdentityProbeFailure(1, 'gh: 429')).toBe(true);
       // Primary-quota exhaustion: a 403 whose headers show the quota is gone.
       expect(isTransientIdentityProbeFailure(1, 'gh: HTTP 403; x-ratelimit-remaining: 0')).toBe(true);
       // NOT transient: a real answer about the credential. Retrying only delays the diagnostic.
@@ -104,6 +111,24 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(resolved.reason).toContain('user=HTTP 502');
     });
 
+    it('survives a commandRunner that throws on the retry sleep', () => {
+      // The `try { commandRunner('sleep', ...) } catch {}` guard is best-effort error handling:
+      // a runner image without `sleep`, or a spawn failure, must not crash the probe loop and fail
+      // the whole publish. Deleting the guard would crash here (REL-1107 review).
+      let userCalls = 0;
+      const runner = ((cmd: string, args: string[]) => {
+        // The command NAME is the first parameter; args[0] is the delay.
+        if (cmd === 'sleep') throw new Error('spawn sleep ENOENT');
+        if (!args.includes('user')) return fail('gh: Bad credentials (HTTP 401)');
+        userCalls += 1;
+        return userCalls === 1 ? fail('gh: Server Error (HTTP 502)') : ok('calltelemetry-jason\n');
+      }) as unknown as CommandRunner;
+      expect(pipeline.resolveAuthenticatedPublisher(runner))
+        .toMatchObject({ login: 'calltelemetry-jason', verified: true });
+      // It still retried through the failed sleep rather than abandoning the probe.
+      expect(userCalls).toBe(2);
+    });
+
     it('does NOT retry a non-transient failure', () => {
       let userCalls = 0;
       const runner: CommandRunner = (_cmd, args) => {
@@ -165,22 +190,31 @@ describe('publishing identity probes (REL-1107)', () => {
       expect(message).not.toBe('could not determine the publishing GitHub identity');
     });
 
-    it('the publish call site passes the reason, not a bare message', () => {
-      // The helper carrying a reason proves nothing about the CALL SITE. Verified: reverting the
-      // throw to `publisherIdentityError('')` left every other test green, because nothing
-      // observed the wiring. This asserts the wiring itself.
-      //
-      // A source assertion is weaker than behavioural coverage and is used deliberately here:
-      // reaching the real throw requires driving the whole publication path, and the repo already
-      // pins structural properties this way (tests/unit/reviewPipeline.test.ts reads the source).
-      const source = fs.readFileSync(
-        path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'), 'utf-8',
-      );
-      const bare = source.match(/throw publisherIdentityError\(\s*\)/gu) ?? [];
-      expect(bare).toEqual([]);
-      expect(source).toContain('throw publisherIdentityError(publisher.reason);');
-      // The sticky-comment return carries it too.
-      expect(source).toContain('${publisher.reason ?');
+    it('requirePublisherIdentity returns the login when verified', () => {
+      // Behaviour, not source text: an earlier revision pinned exact substrings, which went red
+      // on a prettier re-wrap with zero behaviour change (REL-1107 review).
+      expect(pipeline.requirePublisherIdentity({ login: 'calltelemetry-jason', verified: true }))
+        .toBe('calltelemetry-jason');
+    });
+
+    it('requirePublisherIdentity THROWS carrying the reason when unverified', () => {
+      // The wiring itself: a call site that dropped the reason would fail here.
+      const thrown = (() => {
+        try {
+          pipeline.requirePublisherIdentity({ login: null, verified: false, reason: 'identity probes failed (user=HTTP 401)' });
+          return null;
+        } catch (error) { return error as Error; }
+      })();
+      expect(thrown).toBeInstanceOf(Error);
+      expect(thrown?.message).toContain('identity probes failed (user=HTTP 401)');
+      expect(thrown?.message).not.toBe('could not determine the publishing GitHub identity');
+    });
+
+    it('the refusal text carries the reason when known, and omits it otherwise', () => {
+      expect(pipeline.publisherIdentityRefusal({ reason: 'identity probes failed (user=HTTP 401)' }))
+        .toContain('identity probes failed (user=HTTP 401)');
+      expect(pipeline.publisherIdentityRefusal({}))
+        .toMatch(/unverified summary comment$/u);
     });
 
     it('omits the suffix when no reason is supplied', () => {

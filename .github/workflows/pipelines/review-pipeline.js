@@ -6609,7 +6609,7 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
     // every run would post a fresh summary and the comment would stop being sticky. Say so instead
     // of quietly reintroducing the comment-per-push behaviour this surface exists to prevent.
     if (!expectedPublisherLogin) {
-      return { success: false, postedViaGh: false, error: `could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment${publisher.reason ? ` (${publisher.reason})` : ''}` };
+      return { success: false, postedViaGh: false, error: publisherIdentityRefusal(publisher) };
     }
     if (options.expectedPublisherLogin && !isExpectedPublisherLogin(expectedPublisherLogin, options.expectedPublisherLogin)) {
       throw new Error('Action review publisher changed before sticky publication');
@@ -6981,9 +6981,9 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     const bodyWithRejected = `${commentBody}${rejectedDetails}${overflowDetails}`;
     try {
       assertCurrentPullRequest(prContext, { commandRunner });
-      const publisher = resolveAuthenticatedPublisher(commandRunner);
-      if (!publisher.verified) throw publisherIdentityError(publisher.reason);
-      const expectedPublisherLogin = publisher.login;
+      const expectedPublisherLogin = requirePublisherIdentity(
+        resolveAuthenticatedPublisher(commandRunner),
+      );
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
@@ -7259,6 +7259,30 @@ function readAuthenticatedPublisherLogin(commandRunner) {
 function publisherIdentityError(reason) {
   const suffix = reason ? `; ${reason}` : '';
   return new Error(`could not determine the publishing GitHub identity${suffix}`);
+}
+
+/**
+ * The publisher login, or the diagnostic refusing publication.
+ *
+ * Extracted so the wiring is covered BEHAVIOURALLY. An earlier revision asserted the call site by
+ * pinning exact source substrings, which turned the suite red on any prettier re-wrap or local
+ * extraction with zero behaviour change -- a brittle guard standing in for a seam that did not
+ * exist (REL-1107 review).
+ */
+function requirePublisherIdentity(publisher) {
+  if (!publisher.verified) throw publisherIdentityError(publisher.reason);
+  return publisher.login;
+}
+
+/**
+ * The sticky-summary refusal text, with the reason when one is known.
+ *
+ * Same reason for extraction: the reason must be provably carried, not source-pinned.
+ */
+function publisherIdentityRefusal(publisher) {
+  const suffix = publisher.reason ? ` (${publisher.reason})` : '';
+  return 'could not determine the publishing GitHub identity; refusing to adopt or patch an '
+    + `unverified summary comment${suffix}`;
 }
 
 /**
@@ -8140,6 +8164,8 @@ module.exports = {
   isTransientIdentityProbeFailure,
   describePublisherIdentityFailure,
   publisherIdentityError,
+  requirePublisherIdentity,
+  publisherIdentityRefusal,
   resolvesToOpenRouterDestination,
   resolveAutoTransportTimeoutMs,
   DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS,
