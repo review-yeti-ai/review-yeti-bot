@@ -22,12 +22,13 @@ export interface CancellationSweepFailure {
 }
 
 /**
- * REL-1073: only a stored spec.cancelRequested === true (or a CR that no longer
- * exists) counts as propagated. A 2xx whose object lacks the flag means the
+ * REL-1073: only a stored spec.cancelRequested === true (in the patch response,
+ * or re-read after the CRD refused a second cancel) or a CR that no longer
+ * exists counts as propagated. A 2xx whose object lacks the flag means the
  * field was pruned, and marking it propagated would stop every retry.
  */
 function cancellationLanded(result: CancellationPatchResult | undefined): boolean {
-  if (result?.status === 'not-found') return true;
+  if (result?.status === 'not-found' || result?.status === 'already-cancelled') return true;
   return result?.status === 'patched' && result.cancelRequested === true;
 }
 

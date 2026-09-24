@@ -7,7 +7,9 @@ import type { PRReviewJobProjection } from './reviewJobProjection';
  */
 export type CancellationPatchResult =
   | { status: 'not-found' }
-  | { status: 'patched'; cancelRequested: unknown };
+  | { status: 'patched'; cancelRequested: unknown }
+  /** The CRD refused the patch (422) because the stored CR is already cancelled. */
+  | { status: 'already-cancelled' };
 
 export interface ReviewJobProjector {
   /** Ensure is idempotent for metadata.name and must reject a conflicting existing resource. */

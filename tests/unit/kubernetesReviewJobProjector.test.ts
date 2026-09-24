@@ -367,6 +367,39 @@ describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)'
     expect(markCancelPropagated).not.toHaveBeenCalled();
   });
 
+  function rejectingClient(stored: unknown, getStatus?: number) {
+    return {
+      getNamespacedCustomObject: vi.fn(async () => {
+        if (getStatus) throw Object.assign(new Error('get failed'), { statusCode: getStatus });
+        return stored;
+      }),
+      createNamespacedCustomObject: vi.fn(),
+      patchNamespacedCustomObject: vi.fn(async () => {
+        throw Object.assign(new Error('spec is immutable except for a one-way cancelRequested transition'), { statusCode: 422 });
+      }),
+    };
+  }
+
+  it('converges when the CRD refuses a second cancel of an already-cancelled CR', async () => {
+    const client = rejectingClient({ spec: { cancelRequested: true, cancelReason: 'user_cancelled' } });
+    await expect(new KubernetesReviewJobProjector(client).patchCancellation(
+      projection.metadata.name, 'ct-review-system', 'superseded_by_new_head',
+    )).resolves.toEqual({ status: 'already-cancelled' });
+    expect(client.getNamespacedCustomObject).toHaveBeenCalledWith(expect.objectContaining({
+      name: projection.metadata.name, namespace: 'ct-review-system', plural: 'prreviewjobs',
+    }));
+  });
+
+  it.each([
+    ['the stored CR is not cancelled', rejectingClient({ spec: {} })],
+    ['the re-read fails', rejectingClient(undefined, 500)],
+  ])('keeps a 422 as a patch failure when %s', async (_label, client) => {
+    const caught = await new KubernetesReviewJobProjector(client)
+      .patchCancellation(projection.metadata.name, 'ct-review-system', 'superseded_by_new_head')
+      .then(() => undefined, (error: unknown) => error);
+    expect(kubernetesStatusCode(caught)).toBe(422);
+  });
+
   it('clamps an over-long cancelReason to the CRD bound', async () => {
     const seen = await withApiServer(200, async (client) => {
       await new KubernetesReviewJobProjector(client).patchCancellation(
