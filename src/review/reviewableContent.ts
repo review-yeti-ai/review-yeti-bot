@@ -36,16 +36,39 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
 }
 
 /**
+ * Structured data and configuration formats (REL-972): JSON, YAML, TOML, CSV,
+ * XML, INI-style files and similar.
+ *
+ * These are deliberately NOT documentation. Data and configuration change
+ * behaviour -- an inventory file drives automation, a YAML file configures a
+ * deploy, a JSON file seeds a build -- so a data/config file no enabled
+ * persona covers is routed to a lane (see `isFallbackRoutedFile`), never
+ * exempted. Run artifacts under `runs/`, `evidence/` and `artifacts/` stay the
+ * documentation exemption they already were (`isDocumentationOrAssetPath` is
+ * checked first by every caller).
+ */
+const DATA_OR_CONFIG_EXTENSION =
+  /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties)$/i;
+
+export function isDataOrConfigPath(filePath: string): boolean {
+  return DATA_OR_CONFIG_EXTENSION.test(filePath);
+}
+
+/**
  * A changed file the service accepts inside a no-reviewable-content completion:
- * documentation, an asset, a run artifact or data, or (REL-972) a dependency
+ * documentation, an asset, a run artifact (JSON/CSV/log data under `runs/`,
+ * `evidence/` or `artifacts/` only -- other data/config files are never
+ * accepted here, see `isDataOrConfigPath`), or (REL-972) a dependency
  * lockfile whose added lines verifiably stay on the default public registries.
  *
- * This is a per-file admission check over the raw changed files, applied after
- * the shared `resolveReviewApplicability` decision has already reported the
- * exemption. It is not the same rule: that decision judges the post-filter
- * files, so it can also exempt a diff whose other files the filter dropped
- * (generated output, `path_filters` exclusions), which this check then refuses.
- * That pre-existing gap fails closed and is outside REL-972.
+ * This is the per-file rule of the exemption itself: the shared
+ * `resolveReviewApplicability` decision exempts a zero-lane diff only when
+ * every RAW changed file passes it, and the service re-checks the admitted
+ * files with it. Judging the raw files, not the post-filter projection, is
+ * what keeps a generated file or a `path_filters` exclusion from riding along
+ * unreviewed under a documentation-only pass -- and what keeps the worker and
+ * the trusted completion side from disagreeing about such a diff (REL-972 /
+ * REL-1056).
  */
 export function isNoReviewableContentFile(
   file: { path: string; patch?: unknown; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean },
