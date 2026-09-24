@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.91.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.2...v1.91.3) (2026-09-24)
+
+
+### Bug Fixes
+
+* **review:** log why a prior is refused and judge its findings at published severity (REL-1084, REL-1085) ([#1055](https://github.com/review-yeti-ai/review-yeti-bot/issues/1055)) ([7935cf4](https://github.com/review-yeti-ai/review-yeti-bot/commit/7935cf40aa349e384c9b168de911e98d3a10bd61))
+
 ## [1.91.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.1...v1.91.2) (2026-09-24)
 
 
