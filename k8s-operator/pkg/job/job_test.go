@@ -1423,3 +1423,83 @@ func TestBuildWorkerJobRefusesDiffShrinkWithLineBreak(t *testing.T) {
 		}
 	}
 }
+
+// REL-1084: REVIEW_YETI_INCREMENTAL must reach the app-gate worker verbatim
+// when configured, stay absent when not, and never reach the receipt-only lane.
+func TestBuildWorkerJobForwardsIncrementalOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.IncrementalEnv != "REVIEW_YETI_INCREMENTAL" {
+		t.Fatalf("incremental env drifted from the worker's INCREMENTAL_FLAG: %s", job.IncrementalEnv)
+	}
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.IncrementalEnv) {
+		t.Fatalf("unset operator config must not reach the worker as %s", job.IncrementalEnv)
+	}
+
+	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	input.Publishing.Incremental = pilots
+	forwarded, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with incremental: %v", err)
+	}
+	container := forwarded.Spec.Template.Spec.Containers[0]
+	if envValue(container, job.IncrementalEnv) != pilots {
+		t.Fatalf("operator must forward the %s allowlist verbatim, got %q", job.IncrementalEnv, envValue(container, job.IncrementalEnv))
+	}
+	count := 0
+	for _, env := range container.Env {
+		if env.Name == job.IncrementalEnv {
+			count++
+			if env.ValueFrom != nil {
+				t.Fatalf("%s must be a literal value, not a reference", job.IncrementalEnv)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("%s projected %d times, want exactly once", job.IncrementalEnv, count)
+	}
+
+	for _, value := range []string{"off", "all", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+		input.Publishing.Incremental = value
+		verbatim, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build app-gate job with incremental %q: %v", value, err)
+		}
+		if got := envValue(verbatim.Spec.Template.Spec.Containers[0], job.IncrementalEnv); got != value {
+			t.Fatalf("operator must forward %q verbatim, got %q", value, got)
+		}
+	}
+
+	input.Publishing.Incremental = pilots
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.IncrementalEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.IncrementalEnv)
+	}
+}
+
+func TestBuildWorkerJobRefusesIncrementalWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 24, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+		input.Publishing.Incremental = value
+		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "incremental flag") {
+			t.Fatalf("a line break in the incremental flag must refuse the Job, got %v", err)
+		}
+	}
+}
