@@ -5,9 +5,10 @@ import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { containsExecutableOrSensitiveCode } from '../../src/panel/classifierEngine';
 import { executePersonaPanel, extractMessageContentText } from '../../src/panel/panelEngine';
+import { executeComposedReview } from '../../src/panel/composedEngine';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import {
-  describeDiffShrink,
+  attachDiffShrinkDisclosure,
   diffShrinkEnabledFor,
   isWhitespaceOnlyHunk,
   loadDiffShrinkInput,
@@ -277,6 +278,18 @@ describe('rename and move detection', () => {
     expect(out.every((file) => !file.patch!.includes('MOVED_MARKER'))).toBe(true);
   });
 
+  it('never pairs a move into or out of a security-sensitive path, and discloses both sides', () => {
+    const intoWorkflows = planDiffShrink(effective(deleted('src/a/moved.ts', BODY) + added('.github/workflows/moved.ts', BODY)), ON);
+    expect(intoWorkflows.disclosure.renames).toEqual([]);
+    expect(intoWorkflows.disclosure.keptFullDepth).toEqual([
+      { path: '.github/workflows/moved.ts', rule: 'rename' }, { path: 'src/a/moved.ts', rule: 'rename' },
+    ]);
+    expect(intoWorkflows.files.every((file) => file.patch!.includes('MOVED_MARKER'))).toBe(true);
+    const outOfEnv = planDiffShrink(effective(deleted('.env.production', BODY) + added('src/copy.txt.ts', BODY)), ON);
+    expect(outOfEnv.disclosure.renames).toEqual([]);
+    expect(outOfEnv.files.every((file) => file.patch!.includes('MOVED_MARKER'))).toBe(true);
+  });
+
   it('does not pair when the content differs, the match is ambiguous, or the mode differs', () => {
     const changed = [...BODY.slice(0, 2), '} // edited'];
     expect(planDiffShrink(effective(deleted('src/a.ts', BODY) + added('src/b.ts', changed)), ON).disclosure.renames).toEqual([]);
@@ -474,11 +487,11 @@ describe('one applicability decision (worker, engines, trusted completion)', () 
     expect(worker.diffShrink).toBeNull();
   });
 
-  it('the worker summary disclosure is the one the engines shrank with', () => {
-    const changed = files(corpus.mixed);
-    const engine = resolveShrunkReviewApplicability(roster, changed, { pathFilters: ['tests/**'], diffShrink: ON });
-    expect(describeDiffShrink(changed, { pathFilters: ['tests/**'], diffShrink: ON })).toEqual(engine.diffShrink);
-    expect(describeDiffShrink(changed, { pathFilters: [], diffShrink: undefined })).toBeNull();
+  it('attaches the disclosure to an engine result only when shrinking ran', () => {
+    const disclosure = resolveShrunkReviewApplicability(roster, files(corpus.mixed), { diffShrink: ON }).diffShrink;
+    expect(disclosure).not.toBeNull();
+    expect(attachDiffShrinkDisclosure({ headSha: 'x' }, disclosure)).toEqual({ headSha: 'x', diffShrink: disclosure });
+    expect(attachDiffShrinkDisclosure({ headSha: 'x' }, null)).toEqual({ headSha: 'x' });
   });
 });
 
@@ -568,7 +581,7 @@ describe('persona panel wiring', () => {
     });
   }
 
-  async function personaPrompts(diffShrink?: DiffShrinkInput): Promise<string> {
+  async function personaPrompts(diffShrink?: DiffShrinkInput): Promise<{ text: string; disclosure: unknown }> {
     const prompts: string[] = [];
     const client = {
       complete: vi.fn(async (req: any) => {
@@ -592,20 +605,72 @@ describe('persona panel wiring', () => {
       ...(diffShrink ? { diffShrink } : {}),
     });
     expect(result.applicablePersonaIds).toEqual(['correctness-lane']);
-    return prompts.join('\n');
+    return { text: prompts.join('\n'), disclosure: result.diffShrink };
   }
 
   it('sends every change in full without the flag (today\'s behaviour)', async () => {
-    const text = await personaPrompts();
+    const { text, disclosure } = await personaPrompts();
+    expect(text).toContain('WS_ONLY_MARKER');
+    expect(text).toContain('REAL_CHANGE_MARKER');
+    expect(disclosure).toBeUndefined();
+  });
+
+  it('sends the shrunk diff with the flag and returns the disclosure of exactly that shrink', async () => {
+    const { text, disclosure } = await personaPrompts(ON);
+    expect(text).not.toContain('WS_ONLY_MARKER');
+    expect(text).toContain('REAL_CHANGE_MARKER');
+    expect(text).toContain('src/other.ts');
+    expect(disclosure).toMatchObject({
+      whitespaceOnlyFiles: ['src/other.ts'],
+      collapsedWhitespaceHunks: [{ path: 'src/app.ts', hunks: 1 }],
+    });
+  });
+});
+
+describe('composed engine wiring', () => {
+  const COMPOSED_CONFIG = () => ctReviewConfigV3Schema.parse({
+    ...createDefaultV3Config(),
+    quorum: 1,
+    personas: [{ id: 'security', enabled: true, required: true, charter: 'builtin:security', paths: ['**/*'], providers: ['codex'] }],
+    reviewers: {
+      execution: 'personas', fallback: 'none', overall_timeout_s: 30,
+      providers: [{ id: 'codex', enabled: true, model: 'codex/model', effort: 'high', review_timeout_s: 15, arbiter_timeout_s: 15 }],
+      arbiter: { order: ['codex'] },
+    },
+    composed: { max_tasks: 1, max_turns_total: 4, max_turns_per_task: 2 },
+  });
+
+  // The first model call is the plan turn; its prompt carries the static diff prefix.
+  async function planPrompt(diffShrink?: DiffShrinkInput): Promise<string> {
+    const prompts: string[] = [];
+    const client = {
+      complete: vi.fn(async (req: any) => {
+        prompts.push(req.messages.map((message: any) => extractMessageContentText(message.content)).join('\n'));
+        throw new Error('stop after the plan prompt');
+      }),
+    };
+    await executeComposedReview({
+      config: COMPOSED_CONFIG(),
+      changedFiles: files(modified('src/app.ts', [WS_HUNK, REAL_HUNK]) + modified('src/other.ts', [WS_HUNK])),
+      repository: 'acme/app',
+      headSha: 'e'.repeat(40),
+      client: client as never,
+      ...(diffShrink ? { diffShrink } : {}),
+    }).catch(() => undefined);
+    expect(prompts.length).toBeGreaterThan(0);
+    return prompts[0];
+  }
+
+  it('sends every change in full without the flag', async () => {
+    const text = await planPrompt();
     expect(text).toContain('WS_ONLY_MARKER');
     expect(text).toContain('REAL_CHANGE_MARKER');
   });
 
-  it('sends the shrunk diff with the flag: whitespace-only content is gone, the real change is not', async () => {
-    const text = await personaPrompts(ON);
+  it('sends the shrunk diff with the flag', async () => {
+    const text = await planPrompt(ON);
     expect(text).not.toContain('WS_ONLY_MARKER');
     expect(text).toContain('REAL_CHANGE_MARKER');
-    expect(text).toContain('src/other.ts');
   });
 });
 
@@ -640,8 +705,9 @@ describe('publishing worker wiring', () => {
     };
   }
 
-  async function runWorker(env: NodeJS.ProcessEnv) {
-    const panelRunner = vi.fn(async () => ({
+  async function runWorker(env: NodeJS.ProcessEnv, options: { engineShrinks?: boolean } = {}) {
+    // Stands in for an engine: it shrinks with the input it was given and attaches that disclosure.
+    const panelRunner = vi.fn(async (runOptions: any) => attachDiffShrinkDisclosure({
       headSha: HEAD,
       applicablePersonaIds: ['sec-lane'],
       personas: [{ id: 'sec-lane', providerId: 'bifrost', model: 'm', decision: 'APPROVE', findings: [] }],
@@ -649,7 +715,9 @@ describe('publishing worker wiring', () => {
       quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
       moderator: { providerId: 'bifrost', model: 'none', decision: 'RECONCILED', findings: [], usage: null, costUSD: null, durationMs: 0 },
       arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'stub', usage: null, costUSD: null, durationMs: 0 },
-    }));
+    }, runOptions.diffShrink && options.engineShrinks !== false
+      ? planDiffShrink(buildEffectiveReviewFiles(runOptions.changedFiles).files, runOptions.diffShrink).disclosure
+      : null));
     const readFile = vi.fn(async () => '*.gen.ts linguist-generated\n');
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker(env, {
@@ -683,6 +751,14 @@ describe('publishing worker wiring', () => {
     expect(summary).toContain('Diff shrinking');
     expect(summary).toContain('Whitespace-only, content not sent (1): `src/whitespace.ts`');
     expect(summary).toContain('Excluded by .gitattributes, content not sent (1): `src/api.gen.ts` (linguist-generated)');
+  });
+
+  it('publishes only what the engine reports: no disclosure when the engine did not shrink', async () => {
+    const { panelOptions, summary } = await runWorker(
+      workerEnv({ REVIEW_YETI_DIFF_SHRINK: 'calltelemetry/ct-meta' }), { engineShrinks: false },
+    );
+    expect(panelOptions).toHaveProperty('diffShrink');
+    expect(summary).not.toContain('Diff shrinking');
   });
 
   it('stays off for a repository the per-repository flag does not name', async () => {

@@ -1,6 +1,7 @@
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
+import type { DiffShrinkDisclosure } from '../review/diffShrink';
 // Imported from the neutral `../types/workerFailure` module, not `../review/workerCompletion`
 // (REL-892 finding 3): a panel domain type must not reach into the worker-completion/HTTP
 // boundary module for a plain value type. See `../types/workerFailure` for the full rationale.
@@ -117,6 +118,12 @@ export interface PanelResult {
    * Absent means documentation/asset/data only (the original exemption).
    */
   noReviewableContentKind?: 'documentation' | 'lockfile-only';
+  /**
+   * REL-1079: what diff shrinking did to the content these lanes received. Set only when
+   * `REVIEW_YETI_DIFF_SHRINK` applied to a run with at least one lane; the check summary
+   * publishes exactly this.
+   */
+  diffShrink?: DiffShrinkDisclosure;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];

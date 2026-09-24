@@ -59,7 +59,6 @@ import {
   type EffectiveReviewFile,
   type ReviewApplicability,
   type ReviewApplicabilityInputFile,
-  buildEffectiveReviewFiles,
 } from './personaApplicability';
 import { isSecuritySensitivePath } from './securitySensitivePaths';
 
@@ -418,17 +417,15 @@ export function resolveShrunkReviewApplicability<P extends Parameters<typeof res
 }
 
 /**
- * The disclosure for the check summary, computed from the same inputs and the
- * same projection the engines shrink (`buildEffectiveReviewFiles` +
- * `planDiffShrink`). Null when shrinking is off.
+ * Attach the disclosure an engine's `resolveShrunkReviewApplicability` call
+ * returned to that engine's result, so the check summary publishes exactly
+ * what the lanes received (no second computation). Unchanged when null.
  */
-export function describeDiffShrink(
-  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
-  options: { pathFilters?: readonly string[]; diffShrink?: DiffShrinkInput },
-): DiffShrinkDisclosure | null {
-  if (!options.diffShrink?.enabled) return null;
-  const { files } = buildEffectiveReviewFiles(changedFiles, { pathFilters: options.pathFilters });
-  return planDiffShrink(files, options.diffShrink).disclosure;
+export function attachDiffShrinkDisclosure<T extends object>(
+  result: T,
+  disclosure: DiffShrinkDisclosure | null,
+): T & { diffShrink?: DiffShrinkDisclosure } {
+  return disclosure ? { ...result, diffShrink: disclosure } : result;
 }
 
 /**

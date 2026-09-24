@@ -69,7 +69,7 @@ import type { WorkerReviewCompletionAdapter } from '../review/workerReviewComple
 import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
-import { describeDiffShrink, loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
+import { loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -1155,31 +1155,14 @@ export async function runPublishingReviewWorker(
     }
 
     // REL-1079: deterministic diff shrinking, default off (`REVIEW_YETI_DIFF_SHRINK`). Both
-    // engines apply it after the shared applicability decision; the disclosure below is computed
-    // by the same function from the same inputs.
+    // engines apply it after the shared applicability decision and return what they did as
+    // `panelResult.diffShrink`, which the check summary publishes.
     const diffShrink = await loadDiffShrinkInput({
       env,
       repository: identity.repo,
       changedPaths: changedFiles.map((file) => file.path),
       repoFileProvider,
     });
-    const diffShrinkDisclosure = describeDiffShrink(changedFiles, {
-      pathFilters: (workerConfig as { path_filters?: string[] }).path_filters,
-      diffShrink,
-    });
-    if (diffShrinkDisclosure) {
-      logger.info('Diff shrinking applied before review', {
-        runId: identity.runId,
-        repository: identity.repo,
-        whitespaceOnlyFiles: diffShrinkDisclosure.whitespaceOnlyFiles.length,
-        collapsedWhitespaceHunkFiles: diffShrinkDisclosure.collapsedWhitespaceHunks.length,
-        renames: diffShrinkDisclosure.renames.length,
-        linguistExcluded: diffShrinkDisclosure.linguistExcluded.length,
-        keptFullDepth: diffShrinkDisclosure.keptFullDepth.length,
-        estimatedTokensBefore: diffShrinkDisclosure.estimatedTokensBefore,
-        estimatedTokensAfter: diffShrinkDisclosure.estimatedTokensAfter,
-      });
-    }
 
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
@@ -1337,6 +1320,20 @@ export async function runPublishingReviewWorker(
         panelDeadline.signal,
       );
       throwIfPanelAborted(panelDeadline.signal);
+      const diffShrinkDisclosure = panelResult.diffShrink ?? null;
+      if (diffShrinkDisclosure) {
+        logger.info('Diff shrinking applied before review', {
+          runId: identity.runId,
+          repository: identity.repo,
+          whitespaceOnlyFiles: diffShrinkDisclosure.whitespaceOnlyFiles.length,
+          collapsedWhitespaceHunkFiles: diffShrinkDisclosure.collapsedWhitespaceHunks.length,
+          renames: diffShrinkDisclosure.renames.length,
+          linguistExcluded: diffShrinkDisclosure.linguistExcluded.length,
+          keptFullDepth: diffShrinkDisclosure.keptFullDepth.length,
+          estimatedTokensBefore: diffShrinkDisclosure.estimatedTokensBefore,
+          estimatedTokensAfter: diffShrinkDisclosure.estimatedTokensAfter,
+        });
+      }
 
       const isFastShip = isFastShipPanelResult(panelResult);
       // Owner-declared not-applicable: when every changed path matches the
@@ -1564,8 +1561,8 @@ export async function runPublishingReviewWorker(
           ...(unreadable.length > 0
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
-          // REL-1079: only a run whose lanes actually reviewed the (shrunk) diff discloses it.
-          ...(notApplicable || (panelResult as any).zeroLaneNonEvidence ? [] : renderDiffShrinkSummary(diffShrinkDisclosure)),
+          // REL-1079: set by the engine only when its lanes received a shrunk diff.
+          ...renderDiffShrinkSummary(diffShrinkDisclosure),
           renderCoverageSummary(coverage),
           ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
           renderTransportSummary(transport.model, resolvedTransportModel),

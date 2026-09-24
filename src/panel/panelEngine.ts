@@ -38,7 +38,12 @@ import {
   scopeFilesForPersona,
   DOCUMENTATION_ONLY_RATIONALE,
 } from '../review/personaApplicability';
-import { resolveShrunkReviewApplicability, type DiffShrinkInput } from '../review/diffShrink';
+import {
+  attachDiffShrinkDisclosure,
+  resolveShrunkReviewApplicability,
+  type DiffShrinkDisclosure,
+  type DiffShrinkInput,
+} from '../review/diffShrink';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -3496,6 +3501,9 @@ export async function executePersonaPanel(options: {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
+  // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and
+  // attached to whichever result this run returns.
+  let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -3526,6 +3534,7 @@ export async function executePersonaPanel(options: {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
     });
+    diffShrinkDisclosure = applicability.diffShrink;
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
 
@@ -4510,5 +4519,5 @@ export async function executePersonaPanel(options: {
         activeRuns.delete(runKey);
       }
     }
-  }).finally(deadline.cleanup);
+  }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure)).finally(deadline.cleanup);
 }

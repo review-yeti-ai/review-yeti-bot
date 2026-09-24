@@ -39,7 +39,12 @@ import {
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
 import { DOCUMENTATION_ONLY_RATIONALE } from '../review/personaApplicability';
-import { resolveShrunkReviewApplicability, type DiffShrinkInput } from '../review/diffShrink';
+import {
+  attachDiffShrinkDisclosure,
+  resolveShrunkReviewApplicability,
+  type DiffShrinkDisclosure,
+  type DiffShrinkInput,
+} from '../review/diffShrink';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -991,6 +996,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     ? Date.now() + Math.max(0, options.config.reviewers.overall_timeout_s) * 1000
     : undefined;
   const panelStartedAt = Date.now();
+  // REL-1079: the shrink disclosure is recorded by the same call that shrinks.
+  let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -1012,6 +1019,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
     });
+    diffShrinkDisclosure = applicability.diffShrink;
     const effectiveFiles = applicability.effectiveFiles;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {
@@ -1248,5 +1256,5 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         durationMs: 0,
       },
     };
-  }).finally(deadline.cleanup);
+  }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure)).finally(deadline.cleanup);
 }
