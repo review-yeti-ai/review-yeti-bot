@@ -9,6 +9,7 @@ import {
   MAX_COMPARISON_FILES, parseComparisonFiles,
   comparisonFilePathSchema, type ComparisonFileEvidence,
 } from './comparisonFiles';
+import { mergeBaseFromComparison, verifyGitDerivedDiff, type GitDiffSource } from './gitDiffSource';
 export type { ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 
 const positive = z.number().int().positive().safe();
@@ -108,6 +109,8 @@ export class AuthoritativeReviewReader {
     baseUrl?: string;
     timeoutMs?: number;
     fetchImplementation?: typeof fetch;
+    /** REL-1080: git-derived evidence for a 406 diff. Absent keeps the compare-only path. */
+    gitDiffSource?: GitDiffSource;
   }) {
     if (!isGitHubInstallationToken(options.token)) throw new Error('Review reader requires an installation credential');
     let url: URL;
@@ -339,6 +342,32 @@ export class AuthoritativeReviewReader {
       ? reconstructed.get(index)! : { path: file.path, patch: file.patch });
   }
 
+  /**
+   * REL-1080: the git-derived three-dot diff for a 406, computed by the same
+   * module and accepted by the same rule as the worker. The merge base comes
+   * from the compare response pinned to the exact base and head; the file count
+   * must equal GitHub's `changed_files`. Any failure returns undefined so the
+   * pre-REL-1080 compare path still runs.
+   */
+  private async gitDerivedFiles(repositoryPath: string, identity: { owner: string; repo: string },
+    expected: number | undefined, baseSha: string, headSha: string, signal?: AbortSignal): Promise<ChangedFile[] | undefined> {
+    const source = this.options.gitDiffSource;
+    if (!source) return undefined;
+    try {
+      const comparisonPath = `${repositoryPath}/compare/${encodeURIComponent(baseSha)}...${encodeURIComponent(headSha)}`;
+      const raw: unknown = JSON.parse(await this.text(`${comparisonPath}?per_page=1&page=1`,
+        'application/vnd.github+json', MAX_COMPARISON_RESPONSE_BYTES, signal));
+      const comparison = comparisonResponse.parse(raw);
+      if (comparison.url !== `${this.api}${comparisonPath}`) return undefined;
+      const mergeBaseSha = mergeBaseFromComparison(comparison, baseSha);
+      const diff = await source({ owner: identity.owner, repo: identity.repo, token: this.options.token,
+        mergeBaseSha, headSha, signal });
+      return verifyGitDerivedDiff(diff, { expectedFileCount: expected, maxBytes: MAX_AUTHORITATIVE_CHANGED_FILES_BYTES });
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Fetch the PR diff (or its immutable three-dot compare evidence for GitHub's 406
    * too_large response). Both reads bind numeric repository,
    * PR, head and base; a raced/closed candidate carries no review evidence. */
@@ -356,7 +385,8 @@ export class AuthoritativeReviewReader {
       diff = await this.text(`${path}/pulls/${prNumber}`, 'application/vnd.github.v3.diff', MAX_AUTHORITATIVE_DIFF_BYTES, signal, true);
     } catch (error) {
       if (!(error instanceof OversizedPullDiff)) throw error;
-      changedFiles = await this.comparisonFiles(path, before.expectedFileCount, baseSha, headSha, signal);
+      changedFiles = await this.gitDerivedFiles(path, identity, before.expectedFileCount, baseSha, headSha, signal)
+        ?? await this.comparisonFiles(path, before.expectedFileCount, baseSha, headSha, signal);
     }
     const after = await this.pullCandidate(target, signal);
     if (!matches(after.current)) return { current: after.current, diff: '' };
