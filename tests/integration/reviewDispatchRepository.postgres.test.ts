@@ -30,6 +30,12 @@ import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recov
 import { logger } from '../../src/utils/logger';
 import { ReviewGenerationRecoveryLedgerError } from '../../src/review/reviewGenerationRecovery';
 
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
+// turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
 /** Mirrors the production caller (`actionDispatchApi.ts`'s worker-completion
  * handler): invoke the recoverable-panel-retry service only after
  * `markWorkerFailure` durably commits a 'failed' transition, against the

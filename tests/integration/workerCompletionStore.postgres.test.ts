@@ -5,6 +5,12 @@ import { PostgresWorkerCompletionStore } from '../../src/persistence/workerCompl
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { MAX_COMPLETION_BYTES } from '../../src/review/workerReviewCompletion';
 
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
+// turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const describeWithPostgres = databaseUrl ? describe : describe.skip;
 

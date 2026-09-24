@@ -1,9 +1,41 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app';
 import { createActionDispatchApp } from '../../src/dispatchServer';
 import { DispatcherLoopHealth, createDispatcherMetricsServer } from '../../src/dispatcherMetricsServer';
 import { READINESS_CONTRACTS } from '../../src/health/readinessContract';
+
+/**
+ * The five settings a READY app needs, arranged explicitly.
+ *
+ * These tests previously relied on the file-level harness (which supplies the
+ * LEGACY names `WEBHOOK_SECRET` / `OPENROUTER_API_KEY`) and on test 1's stubs
+ * leaking into test 5. That made the status-mapping test order-dependent AND
+ * meant it asserted readiness via legacy fallbacks rather than the standard it
+ * claims to cover (REL-1069 review).
+ *
+ * Arranged here rather than in a `beforeEach` on one describe, because the
+ * order-dependence crossed describes.
+ */
+const STANDARD_ENV: Record<string, string> = {
+  GITHUB_APP_ID: '4385771',
+  GITHUB_APP_PRIVATE_KEY: '-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----',
+  GITHUB_WEBHOOK_SECRET: 'test-webhook-secret',
+  OPENAI_API_KEY: 'sk-bf-standard-key',
+  OPENAI_BASE_URL: 'https://gateway.internal/v1',
+};
+
+/** Stub the standard settings, clearing the legacy spellings the harness sets. */
+function stubStandardEnv(overrides: Record<string, string> = {}): void {
+  for (const [name, value] of Object.entries(STANDARD_ENV)) vi.stubEnv(name, value);
+  // Clear legacy spellings so a pass proves the STANDARD path works, not a fallback.
+  vi.stubEnv('WEBHOOK_SECRET', '');
+  vi.stubEnv('OPENROUTER_API_KEY', '');
+  vi.stubEnv('OPENROUTER_REVIEW_FLEET_KEY', '');
+  vi.stubEnv('BIFROST_VIRTUAL_KEY', '');
+  vi.stubEnv('REVIEW_YETI_BIFROST_API_KEY', '');
+  for (const [name, value] of Object.entries(overrides)) vi.stubEnv(name, value);
+}
 
 /**
  * REL-1069 follow-up: `/ready` is served by THREE implementations on the SAME
@@ -24,12 +56,12 @@ import { READINESS_CONTRACTS } from '../../src/health/readinessContract';
  * surface to satisfy a probe.
  */
 describe('the three /ready contracts are distinguishable', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('app configuration contract self-identifies', async () => {
-    vi.stubEnv('GITHUB_APP_ID', '4385771');
-    vi.stubEnv('GITHUB_APP_PRIVATE_KEY', '-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----');
-    vi.stubEnv('GITHUB_WEBHOOK_SECRET', 'test-webhook-secret');
-    vi.stubEnv('OPENAI_API_KEY', 'sk-bf-x');
-    vi.stubEnv('OPENAI_BASE_URL', 'https://gateway.internal/v1');
+    stubStandardEnv();
 
     const response = await request(createApp()).get('/ready');
     // Status too: this diff rewrote the mapping to readinessStatus(configurationReady),
@@ -49,7 +81,6 @@ describe('the three /ready contracts are distinguishable', () => {
     });
     // Presence-pinned separately because uptimeSeconds is time-dependent.
     expect(typeof response.body.uptimeSeconds).toBe('number');
-    vi.unstubAllEnvs();
   });
 
   it('database contract self-identifies', async () => {
@@ -106,6 +137,9 @@ describe('the three /ready contracts are distinguishable', () => {
   });
 
   it('every contract maps a verdict to the same HTTP status', async () => {
+    // Arranged explicitly: this test previously depended on test 1's stubs leaking
+    // through process.env, which made it order-dependent (REL-1069 review).
+    stubStandardEnv();
     // ALL THREE, matching this test's name. It previously exercised only
     // createActionDispatchApp, so the app's mapping was pinned by nothing.
     const appReady = await request(createApp()).get('/ready');
@@ -114,6 +148,18 @@ describe('the three /ready contracts are distinguishable', () => {
     ).get('/ready');
     expect(appReady.status).toBe(200);
     expect(loopNotReady.status).toBe(503);
+
+    // The app's NOT-ready verdict too: the matrix previously covered only its 200,
+    // so a mapping that always returned 200 for the app passed (REL-1069 review).
+    stubStandardEnv({ OPENAI_BASE_URL: '' });
+    vi.stubEnv('REVIEW_YETI_GATEWAY_BASE_URL', '');
+    vi.stubEnv('BIFROST_BASE_URL', '');
+    vi.stubEnv('OPENROUTER_BASE_URL', '');
+    const appNotReady = await request(createApp()).get('/ready');
+    expect(appNotReady.status).toBe(503);
+    expect(appNotReady.body).toMatchObject({ status: 'not_ready', configurationReady: false });
+    vi.unstubAllEnvs();
+    stubStandardEnv();
 
     // The one thing the three SHOULD agree on: 200 for ready, 503 for not ready.
     const ready = await request(createActionDispatchApp({

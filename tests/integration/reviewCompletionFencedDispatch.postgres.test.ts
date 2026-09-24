@@ -11,6 +11,12 @@ import {
 import type { ReviewCIRequestPayload } from '../../src/github/reviewCIRequest';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
+// turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
 /**
  * REL-1053: the completion engine must send the CI-request repository_dispatch
  * exactly once per completion while two dispatcher replicas share the outbox.

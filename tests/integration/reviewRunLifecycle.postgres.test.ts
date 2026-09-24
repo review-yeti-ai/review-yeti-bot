@@ -9,6 +9,12 @@ import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersisten
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
 
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
+// turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
 // REL-1069 follow-up: this suite had no skip guard and a HARDCODED fallback
 // database URL, so a run without Postgres tried to reach 127.0.0.1:55493 and
 // failed instead of skipping -- unlike the ten sibling `*.postgres.test.ts`

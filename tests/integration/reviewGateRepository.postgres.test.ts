@@ -9,6 +9,12 @@ import {
   type ReviewGateCreateRequest,
   type ReviewGateUpdateRequest,
 } from '../../src/github/reviewGateClient';
+
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var
+// cannot turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
 import {
   gateAttemptId,
   PostgresReviewGateRepository,

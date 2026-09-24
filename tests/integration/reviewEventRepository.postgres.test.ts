@@ -10,6 +10,12 @@ import {
   type ReviewLifecycleEventInput,
 } from '../../src/persistence/reviewEventRepository';
 
+import { requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var
+// cannot turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
 const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const describeWithPostgres = databaseUrl ? describe : describe.skip;
 const ownedSchema = /^review_event_test_[0-9a-f]{16}$/u;
