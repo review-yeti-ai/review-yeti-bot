@@ -60,11 +60,12 @@ import {
 import { canonicalJson } from './reviewCore';
 import { MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import {
-  deriveStoredCompletionVerdict,
   parseWorkerReviewCompletion,
   parseWorkerReviewEvidence,
   workerReviewCompletionDigest,
+  storedCompletionShipComplete,
   workerReviewEvidenceDigest,
+  type StoredGateRecord,
   type WorkerReviewResult,
 } from './workerReviewCompletion';
 
@@ -149,7 +150,7 @@ export interface PriorReviewRows {
    * completion's content digest): the gate's stored evidence and decision. Absent for a
    * non-authoritative WorkerReviewEvidence record, which has no gate.
    */
-  gate?: { worker_result_digest: unknown; evidence: unknown; decision: unknown } | null;
+  gate?: StoredGateRecord | null;
   /** The current run's admission time; ages are measured from it, so a slow worker cannot age a record out. */
   currentReceivedAt: unknown;
 }
@@ -158,57 +159,6 @@ function timeOf(value: unknown): number {
   if (value instanceof Date) return value.getTime();
   if (typeof value === 'string' || typeof value === 'number') return new Date(value).getTime();
   return Number.NaN;
-}
-
-function jsonValue(value: unknown): unknown {
-  return typeof value === 'string' ? JSON.parse(value) : value;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-/**
- * REL-1084/REL-1085: whether a stored authoritative completion was a complete SHIP review.
- *
- * The verdict is derived, never read from the worker's optional `result.verdict` (the
- * authoritative worker does not set it, so reading it made every prior review
- * `prior-not-ship-complete`). Two service-side sources must both say SHIP:
- *
- * - the gate's own record of THIS completion (the attempt whose `worker_result_digest` is the
- *   stored content digest): a `clean-review` success whose evidence, computed by
- *   `deriveCanonicalWorkerReviewEvidence` from the service's trusted lane set, is SHIP with every
- *   required lane completed, coverage and quorum met and no P0/P1. A `human-accepted-risk`
- *   success is a FIX_FIRST review and never qualifies;
- * - the canonical verdict re-derived from the stored lanes with the gate's required lane count
- *   (`deriveStoredCompletionVerdict`, the same arbitration the gate ran).
- *
- * Also refused, as before: an error lane, any raw P0/P1 even if calibration later downgraded it,
- * and an audited no-reviewable-content exemption (it reviewed nothing to carry forward; the gate
- * records it with zero required lanes and an `exemption`).
- */
-function isShipCompleteCompletion(result: WorkerReviewResult, gate: PriorReviewRows['gate'], storedDigest: string): boolean {
-  if (!gate || String(gate.worker_result_digest ?? '') !== storedDigest) return false;
-  const evidence = jsonValue(gate.evidence);
-  const decision = jsonValue(gate.decision);
-  if (!isObject(evidence) || !isObject(decision)) return false;
-  if (decision.status !== 'success' || decision.reason !== 'clean-review') return false;
-  const expectedLanes = evidence.expectedLanes;
-  if (evidence.verdict !== 'SHIP' || evidence.coverageComplete !== true || evidence.quorumSatisfied !== true
-    || evidence.infrastructureFailure !== false || evidence.exemption != null
-    || evidence.p0Count !== 0 || evidence.p1Count !== 0
-    || typeof expectedLanes !== 'number' || !Number.isSafeInteger(expectedLanes) || expectedLanes <= 0
-    || evidence.completedLanes !== expectedLanes) return false;
-  if (result.quorumSatisfied !== true) return false;
-  // Stricter than the gate: a raw P0/P1 that calibration re-filed as P2 still disqualifies.
-  if (result.personas.some((persona) => persona.evidenceSource !== 'shadow'
-    && persona.findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1'))) return false;
-  // Re-derived with the gate's required lane count: quorum there needs exactly that many lanes,
-  // none failed (error lanes included) and complete coverage, so a missing, extra, duplicate or
-  // failed lane is refused here even if the stored gate record were wrong.
-  const canonical = deriveStoredCompletionVerdict(result, { expectedLanes, coverageComplete: true });
-  return canonical !== null && canonical.verdict === 'SHIP' && canonical.quorumSatisfied
-    && canonical.completedPersonas === expectedLanes;
 }
 
 /**
@@ -267,7 +217,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
       // has no service-side gate evidence: the service never learned which lanes were required,
       // so a missing lane could not be detected. It is never SHIP-complete.
       shipComplete: rows.run.status === 'succeeded' && authoritative
-        && isShipCompleteCompletion(result, rows.gate, storedDigest),
+        && storedCompletionShipComplete(result, rows.gate, storedDigest),
       findingPaths,
     });
   } catch {

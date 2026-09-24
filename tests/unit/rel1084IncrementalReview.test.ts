@@ -336,6 +336,39 @@ describe('prior review record', () => {
       worker_result_digest: workerReviewCompletionDigest(noQuorum) } })?.shipComplete).toBe(false);
   });
 
+  it('ignores a stale non-SHIP worker verdict field when the derivation says SHIP', () => {
+    const clean = rows(priorCompletion());
+    const stale = priorCompletion({ verdict: 'FIX_FIRST' });
+    expect(stale.result.verdict).toBe('FIX_FIRST');
+    expect(priorReviewRecordFromRows({ ...rows(stale, { status: 'succeeded' }), gate: { ...clean.gate!,
+      worker_result_digest: workerReviewCompletionDigest(stale) } })?.shipComplete).toBe(true);
+  });
+
+  it('refuses a stored completion that reports incomplete coverage, even over a clean gate record', () => {
+    const clean = rows(priorCompletion());
+    const partial = priorCompletion({ coverageComplete: false });
+    expect(priorReviewRecordFromRows({ ...rows(partial, { status: 'succeeded' }), gate: { ...clean.gate!,
+      worker_result_digest: workerReviewCompletionDigest(partial) } })?.shipComplete).toBe(false);
+  });
+
+  it('keeps a raw P1 on a shadow lane disqualifying, as before (shadow lanes never gate, but never excuse)', () => {
+    const lanes = [
+      { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+    ];
+    const clean = rows(priorCompletion({ personas: lanes }));
+    expect(priorReviewRecordFromRows(clean)?.shipComplete).toBe(true);
+    const shadowP1 = priorCompletion({ personas: [...lanes, { id: 'shadow_composed', decision: 'FINDINGS', status: 'COMPLETE',
+      evidenceSource: 'shadow', findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11, title: 'Unchecked input', body: 'b' }] }] });
+    expect(priorReviewRecordFromRows({ ...rows(shadowP1, { status: 'succeeded' }), gate: { ...clean.gate!,
+      worker_result_digest: workerReviewCompletionDigest(shadowP1) } })?.shipComplete).toBe(false);
+    // The same shadow lane without a finding does not change the answer.
+    const shadowClean = priorCompletion({ personas: [...lanes, { id: 'shadow_composed', decision: 'APPROVE', status: 'COMPLETE',
+      evidenceSource: 'shadow', findings: [] }] });
+    expect(priorReviewRecordFromRows({ ...rows(shadowClean, { status: 'succeeded' }), gate: { ...clean.gate!,
+      worker_result_digest: workerReviewCompletionDigest(shadowClean) } })?.shipComplete).toBe(true);
+  });
+
   it('never treats a WorkerReviewEvidence record as SHIP-complete, even beside a SHIP gate row for its digest', () => {
     const completion = priorCompletion();
     const evidence = { ...completion, version: 'WorkerReviewEvidence.v1', checkId: 99, conclusion: 'success' };

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
 import { canonicalJson, sha256, validateReviewFindings } from './reviewCore';
-import type { ReviewGateEvidence } from './reviewGatePolicy';
+import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
@@ -571,6 +571,71 @@ export function deriveStoredCompletionVerdict(
   const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
     trusted.coverageComplete === true && result.coverageComplete, undefined);
   return arbitration.valid ? arbitration.canonical : null;
+}
+
+/**
+ * REL-1084/REL-1085: the gate attempt row that recorded a stored completion
+ * (`review_gate_attempts.worker_result_digest/evidence/decision`), as selected beside it. The
+ * writer is `PostgresReviewGateRepository.recordWorkerResult`, which stores the
+ * `ReviewGateEvidence` from `deriveCanonicalWorkerReviewEvidence` and the `ReviewGateDecision`
+ * from `evaluateReviewGate`; `storedCompletionShipComplete` below is its one reader.
+ */
+export interface StoredGateRecord { worker_result_digest: unknown; evidence: unknown; decision: unknown }
+
+function jsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return undefined; }
+}
+
+// Typed against the gate's own vocabulary, so a rename there fails to compile here.
+const CLEAN_REVIEW_DECISION: Extract<ReviewGateDecision, { status: 'success' }>['reason'] = 'clean-review';
+const SHIP_VERDICT: ReviewGateEvidence['verdict'] = 'SHIP';
+
+/**
+ * REL-1084/REL-1085: whether a stored authoritative completion was a complete SHIP review.
+ *
+ * The verdict is derived, never read from the worker's optional `result.verdict` (the
+ * authoritative worker does not set it, so reading it made every prior review
+ * `prior-not-ship-complete`). Two service-side sources must both say SHIP:
+ *
+ * - the gate's own record of THIS completion (the attempt whose `worker_result_digest` is the
+ *   stored content digest): a `clean-review` success whose evidence, computed by
+ *   `deriveCanonicalWorkerReviewEvidence` from the service's trusted lane set, is SHIP with every
+ *   required lane completed, coverage and quorum met and no P0/P1. A `human-accepted-risk`
+ *   success is a FIX_FIRST review and never qualifies;
+ * - the canonical verdict re-derived from the stored lanes with the gate's required lane count
+ *   (`deriveStoredCompletionVerdict`, the same arbitration the gate ran).
+ *
+ * Also refused, as before: an error lane, any raw P0/P1 even if calibration later downgraded it,
+ * and an audited no-reviewable-content exemption (it reviewed nothing to carry forward; the gate
+ * records it with zero required lanes and an `exemption`).
+ */
+export function storedCompletionShipComplete(
+  result: WorkerReviewResult,
+  gate: StoredGateRecord | null | undefined,
+  storedDigest: string,
+): boolean {
+  if (!gate || String(gate.worker_result_digest ?? '') !== storedDigest) return false;
+  const evidence = jsonValue(gate.evidence);
+  const decision = jsonValue(gate.decision);
+  if (!isRecord(evidence) || !isRecord(decision)) return false;
+  if (decision.status !== 'success' || decision.reason !== CLEAN_REVIEW_DECISION) return false;
+  const expectedLanes = evidence.expectedLanes;
+  if (evidence.verdict !== SHIP_VERDICT || evidence.coverageComplete !== true || evidence.quorumSatisfied !== true
+    || evidence.infrastructureFailure !== false || evidence.exemption != null
+    || evidence.p0Count !== 0 || evidence.p1Count !== 0
+    || typeof expectedLanes !== 'number' || !Number.isSafeInteger(expectedLanes) || expectedLanes <= 0
+    || evidence.completedLanes !== expectedLanes) return false;
+  if (result.quorumSatisfied !== true) return false;
+  // Stricter than the gate: a raw P0/P1 that calibration re-filed as P2 still disqualifies.
+  // Any lane, shadow included, exactly as before this derivation existed.
+  if (result.personas.some((persona) => persona.findings.some((finding) => finding.severity === 'P0' || finding.severity === 'P1'))) return false;
+  // Re-derived with the gate's required lane count: quorum there needs exactly that many lanes,
+  // none failed (error lanes included) and complete coverage, so a missing, extra, duplicate or
+  // failed lane is refused here even if the stored gate record were wrong.
+  const canonical = deriveStoredCompletionVerdict(result, { expectedLanes, coverageComplete: true });
+  return canonical !== null && canonical.verdict === 'SHIP' && canonical.quorumSatisfied
+    && canonical.completedPersonas === expectedLanes;
 }
 
 /**

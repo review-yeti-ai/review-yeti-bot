@@ -93,15 +93,17 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
   }
 
   /** The gate attempt row the trusted transaction writes for this completion (`gateRecordFor`). */
-  async function insertGate(event: WorkerReviewCompletion): Promise<void> {
-    const recorded = gateRecordFor(event, { expectedPersonaIds: ['sec-lane'], changedFiles: CHANGED });
+  async function insertGate(event: WorkerReviewCompletion,
+    options: { generation?: number; recorded?: ReturnType<typeof gateRecordFor> } = {}): Promise<void> {
+    const recorded = options.recorded ?? gateRecordFor(event, { expectedPersonaIds: ['sec-lane'], changedFiles: CHANGED });
+    const generation = options.generation ?? 0;
     await pool!.query(`
       INSERT INTO review_gate_attempts (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number,
         expected_app_id, coordinates, external_id, current_attempt, desired_state, evidence, decision, worker_result_digest)
-      VALUES ($1, $2, 0, $3, $4, $5, $6, '{}'::jsonb, $7, false, $8, $9::jsonb, $10::jsonb, $11)
-    `, [`gate_${event.runId}_${event.executionAttempt}`, event.runId, event.executionAttempt, event.repositoryId, event.prNumber,
-      APP_ID, `external_${event.runId}_${event.executionAttempt}`, recorded.decision.status,
-      recorded.gate.evidence, recorded.gate.decision, recorded.gate.worker_result_digest]);
+      VALUES ($1, $2, $12, $3, $4, $5, $6, '{}'::jsonb, $7, false, $8, $9::jsonb, $10::jsonb, $11)
+    `, [`gate_${event.runId}_${event.executionAttempt}_${generation}`, event.runId, event.executionAttempt, event.repositoryId,
+      event.prNumber, APP_ID, `external_${event.runId}_${event.executionAttempt}_${generation}`, recorded.decision.status,
+      recorded.gate.evidence, recorded.gate.decision, recorded.gate.worker_result_digest, generation]);
   }
 
   beforeAll(async () => {
@@ -195,6 +197,24 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     // The gate row for this exact completion makes it SHIP-complete.
     await insertGate(completionFor(prior, PREV_HEAD, PREV_BASE, 1));
     expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: prior, shipComplete: true });
+  });
+
+  it.each([
+    ['an older failure then a newer clean SHIP', 'failed-first', true],
+    ['an older clean SHIP then a newer failure', 'ship-first', false],
+  ] as const)('decides from the latest gate attempt for the same completion: %s', async (_name, order, expected) => {
+    const current = runId(100);
+    await insertRun(current);
+    const prior = runId(1);
+    await insertRun(prior, { status: 'succeeded', headSha: PREV_HEAD, baseSha: PREV_BASE });
+    const event = completionFor(prior, PREV_HEAD, PREV_BASE, 1);
+    await insertCompletion(event, RECEIVED_AT - 3_600_000, { gate: false });
+    const ship = gateRecordFor(event, { expectedPersonaIds: ['sec-lane'], changedFiles: CHANGED });
+    const failed = gateRecordFor(event, { expectedPersonaIds: ['sec-lane'], changedFiles: CHANGED, coverageComplete: false });
+    expect([ship.decision.status, failed.decision.status]).toEqual(['success', 'failure']);
+    await insertGate(event, { generation: 0, recorded: order === 'failed-first' ? failed : ship });
+    await insertGate(event, { generation: 1, recorded: order === 'failed-first' ? ship : failed });
+    expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: prior, shipComplete: expected });
   });
 
   it('is not SHIP-complete when the gate recorded a P1 review as failed', async () => {
