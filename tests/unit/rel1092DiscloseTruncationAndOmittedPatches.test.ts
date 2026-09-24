@@ -150,6 +150,14 @@ describe('REL-1092: files the pull-files fallback has no patch for are kept and 
     expect(files.map((file) => classifyUnavailablePatch(file.patch))).toEqual([null, 'omitted', 'binary']);
   });
 
+  it('classifies both git binary shapes as binary, and a hunk-bearing patch as available', () => {
+    expect(classifyUnavailablePatch('diff --git a/x.bin b/x.bin\nindex 1..2 100644\nGIT binary patch\nliteral 4\nLcmZ?d00001\n')).toBe('binary');
+    expect(classifyUnavailablePatch('diff --git a/x.png b/x.png\nBinary files a/x.png and b/x.png differ\n')).toBe('binary');
+    expect(classifyUnavailablePatch(`diff --git a/x.ts b/x.ts\n${smallPatch}`)).toBeNull();
+    expect(classifyUnavailablePatch('diff --git a/x.ts b/x.ts\nold mode 100644\nnew mode 100755\n')).toBeNull();
+    expect(classifyUnavailablePatch(undefined)).toBeNull();
+  });
+
   it('renders a pure rename with no patch as a rename, not as an unavailable patch', async () => {
     const diff = await pullFilesFallbackDiff([
       { filename: 'src/new.ts', previous_filename: 'src/old.ts', status: 'renamed', changes: 0 },
