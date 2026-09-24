@@ -3,7 +3,7 @@ import request from 'supertest';
 import { createApp } from '../../src/app';
 import { createActionDispatchApp } from '../../src/dispatchServer';
 import { DispatcherLoopHealth, createDispatcherMetricsServer } from '../../src/dispatcherMetricsServer';
-import { READINESS_CONTRACTS } from '../../src/health/readinessContract';
+import { READINESS_CONTRACTS, readinessBody } from '../../src/health/readinessContract';
 
 /**
  * The five settings a READY app needs, arranged explicitly.
@@ -181,5 +181,26 @@ describe('the three /ready contracts are distinguishable', () => {
     expect(notReady.status).toBe(503);
     expect(ready.body.status).toBe('ready');
     expect(notReady.body.status).toBe('not_ready');
+  });
+
+  describe('readinessBody owns its canonical fields', () => {
+    // The module's purpose is that service/readinessContract are ALWAYS present
+    // and machine-checkable. Spreading `details` last let a caller override them
+    // silently, and the index signature means TypeScript cannot catch it -- so a
+    // fourth /ready implementation could break consumers unnoticed (REL-1069 review).
+    it.each(['status', 'service', 'readinessContract', 'timestamp'])(
+      'refuses details that override %s',
+      (key) => {
+        expect(() => readinessBody('svc', READINESS_CONTRACTS.database, true, { [key]: 'hijacked' }))
+          .toThrow(new RegExp(`may not override the canonical field "${key}"`));
+      },
+    );
+
+    it('still merges non-canonical details', () => {
+      const body = readinessBody('svc', READINESS_CONTRACTS.database, true, { databaseReady: true });
+      expect(body).toMatchObject({
+        service: 'svc', readinessContract: 'database', status: 'ready', databaseReady: true,
+      });
+    });
   });
 });

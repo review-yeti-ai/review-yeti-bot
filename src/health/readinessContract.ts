@@ -55,12 +55,29 @@ export interface ReadinessBody {
  * `readinessContract` are present and a consumer can branch on the contract
  * rather than guessing from whichever field happens to be set.
  */
+/** Fields this module owns; `details` may not override them. */
+const CANONICAL_KEYS = ['status', 'service', 'readinessContract', 'timestamp'] as const;
+
 export function readinessBody(
   service: string,
   contract: ReadinessContract,
   ready: boolean,
   details: Record<string, unknown> = {},
 ): ReadinessBody {
+  // Reject a collision rather than silently letting `details` win. Spreading
+  // `details` last made the canonical fields overridable, and the index
+  // signature on ReadinessBody means TypeScript cannot flag it at a call site --
+  // so the invariant this module exists to enforce would hold only by
+  // convention, at the one choke point created to make it structural
+  // (REL-1069 review).
+  for (const key of CANONICAL_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(details, key)) {
+      throw new Error(
+        `readiness details may not override the canonical field "${key}"; `
+        + 'it is owned by readinessBody so every /ready body stays machine-checkable',
+      );
+    }
+  }
   return {
     status: ready ? 'ready' : 'not_ready',
     service,
