@@ -9,6 +9,7 @@ import { buildAuthoritativeReviewIdentity, reviewPolicySourceSchema, type Curren
 import { parseChangedFiles } from './changedFiles';
 import { verifyPreparedPublishingConfig, type PreparedPublishingPolicy } from './preparedPublishingPolicy';
 import { resolveReviewApplicability } from './personaApplicability';
+import { verifyIncrementalClaim, type IncrementalVerificationInput } from './incrementalReview';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import {
@@ -37,7 +38,8 @@ export interface AuthoritativeCompletionContextOptions {
   getStoredPrepared: (policyDigest: string, signal: AbortSignal) => Promise<PreparedPublishingPolicy | null>;
   /** Mint only a repository-scoped read token. Neither credentials nor readers are cached. */
   readerFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
-    Promise<Pick<AuthoritativeReviewReader, 'currentCandidate' | 'exactCurrentDiff'>>;
+    Promise<Pick<AuthoritativeReviewReader, 'currentCandidate' | 'exactCurrentDiff'>
+      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison'>>>;
   /** Already configured with the service's trusted central policy/ref/transport. */
   publishingResolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
   /** Whole operation, including storage, token mint, policy refresh and body reads. */
@@ -92,7 +94,7 @@ function checkedPrepared(input: PreparedPublishingPolicy | null): PreparedPublis
  * evidence nor concludes a review. Canonical callback derivation must still
  * require every expected persona, validate findings, and determine the verdict. */
 export function createAuthoritativeCompletionContext(options: AuthoritativeCompletionContextOptions):
-  (gate: StoredReviewGate) => Promise<TrustedGateCompletionContext> {
+  (gate: StoredReviewGate, incremental?: IncrementalVerificationInput) => Promise<TrustedGateCompletionContext> {
   let timeoutMs: number;
   try {
     // Large exact-head diffs can require bounded pinned-file reconstruction
@@ -105,7 +107,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
   const { getStoredPrepared, readerFactory } = options;
   const resolvePublishing = options.publishingResolver.resolve.bind(options.publishingResolver);
 
-  return async (gate): Promise<TrustedGateCompletionContext> => {
+  return async (gate, incremental): Promise<TrustedGateCompletionContext> => {
     let substage: TrustedCompletionResolutionSubstage = 'stored-policy';
     const abort = new AbortController();
     const deadline = performance.now() + timeoutMs;
@@ -220,6 +222,24 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       if (applicablePersonaIds.length === 0 && !applicability.noReviewableContent) throw classified('coverage-no-persona');
       const expectedPersonaIds = applicablePersonaIds.length > 0
         ? applicablePersonaIds : [...stored.expectedPersonaIds];
+      // REL-1084: a carried-forward completion is re-decided here from the service's own
+      // prior record and exact-SHA comparisons. A read failure is transient (retry); a
+      // decision that does not permit the claim leaves it unverified, which the canonical
+      // derivation refuses.
+      let incrementalVerified: boolean | undefined;
+      if (incremental) {
+        substage = 'exact-diff';
+        const compare = reader.commitComparison?.bind(reader);
+        incrementalVerified = compare ? (await step(() => verifyIncrementalClaim({
+          claim: incremental.claim, prior: incremental.prior, maxAgeMs: incremental.maxAgeMs,
+          current: { runId: incremental.run.runId, repositoryId: requested.repositoryId, prNumber: requested.prNumber,
+            headSha: requested.headSha, baseSha: requested.baseSha, policyDigest,
+            configDigest: incremental.run.configDigest, executionAttempt: incremental.run.executionAttempt },
+          currentPaths: files.map((file) => file.path),
+          reader: { compare: (base, head, signal) => compare({ ...repository }, base, head, signal ?? abort.signal) },
+          signal: abort.signal,
+        }))).verified : false;
+      }
       checkDeadline();
       return { current: { ...final, policyDigest }, coverage: {
         expectedPersonaIds, changedFiles: files,
@@ -229,6 +249,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         // This establishes a nonempty required-lane contract, not completed
         // worker quorum. Derivation separately requires ALL these exact IDs.
         quorumSatisfied: expectedPersonaIds.length > 0,
+        ...(incrementalVerified === undefined ? {} : { incrementalVerified }),
       } };
     };
     try { return await Promise.race([resolve(), expired]); }

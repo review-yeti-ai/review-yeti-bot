@@ -70,6 +70,11 @@ import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/t
 
 import { parseChangedFiles } from '../review/changedFiles';
 import { loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
+import {
+  incrementalClaimFrom, planIncrementalReview, renderIncrementalSummary,
+  type CommitComparisonReader, type IncrementalBaseSource,
+} from '../review/incrementalReview';
+import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
@@ -834,6 +839,14 @@ export interface PublishingReviewDeps {
    * set, and it never changes the review either way.
    */
   jevTriageShadow?: { asker?: JevAsker; limits?: Partial<JevTriageShadowLimits> };
+  /**
+   * REL-1084: the service's prior review record, for incremental re-review planning
+   * (`REVIEW_YETI_INCREMENTAL`). Built by `publishingWorkerAdapters` only when the flag is on
+   * for this repository; absent means a full review.
+   */
+  incrementalBase?: IncrementalBaseSource;
+  /** REL-1084 test seam; production compares with this run's `GH_TOKEN`. */
+  incrementalCompareReader?: CommitComparisonReader;
 }
 
 /**
@@ -1258,6 +1271,37 @@ export async function runPublishingReviewWorker(
       repoFileProvider,
     });
 
+    // REL-1084: incremental re-review, default off (`REVIEW_YETI_INCREMENTAL`). Null when off;
+    // never throws. Both engines apply the scope after the shared applicability decision and
+    // return what they carried forward as `panelResult.incremental`.
+    const incrementalPlan = await planIncrementalReview({
+      env,
+      repository: identity.repo,
+      current: {
+        runId: identity.runId, repositoryId: identity.repositoryId, prNumber: identity.prNumber,
+        headSha: identity.headSha, baseSha: identity.baseSha, executionAttempt: identity.executionAttempt,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+      },
+      currentPaths: changedFiles.map((file) => file.path),
+      base: deps.incrementalBase,
+      reader: deps.incrementalCompareReader ?? (repoReadToken ? createIncrementalCompareReader({
+        token: repoReadToken, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+      }) : undefined),
+    });
+    const incrementalScope = incrementalPlan?.scope ?? undefined;
+    if (incrementalPlan) {
+      logger.info('Incremental re-review planned', {
+        runId: identity.runId,
+        repository: identity.repo,
+        mode: incrementalPlan.decision.mode,
+        ...(incrementalPlan.decision.mode === 'full'
+          ? { reason: incrementalPlan.decision.reason }
+          : { carriedForward: incrementalPlan.decision.carriedForwardPaths.length,
+            reviewed: incrementalPlan.decision.reviewPaths.length,
+            openFindingFiles: incrementalPlan.decision.openFindingPaths.length }),
+      });
+    }
+
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run. Grounding
@@ -1391,6 +1435,7 @@ export async function runPublishingReviewWorker(
               repoFileProvider,
               isCurrentHead: deps.isCurrentHead,
               ...(diffShrink ? { diffShrink } : {}),
+              ...(incrementalScope ? { incremental: incrementalScope } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
             } as Parameters<typeof executeComposedReview>[0])),
@@ -1422,6 +1467,7 @@ export async function runPublishingReviewWorker(
           isCurrentHead: deps.isCurrentHead,
           ...(authoritative ? { deterministicRoster: true } : {}),
           ...(diffShrink ? { diffShrink } : {}),
+          ...(incrementalScope ? { incremental: incrementalScope } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1441,6 +1487,23 @@ export async function runPublishingReviewWorker(
           keptFullDepth: diffShrinkDisclosure.keptFullDepth.length,
           estimatedTokensBefore: diffShrinkDisclosure.estimatedTokensBefore,
           estimatedTokensAfter: diffShrinkDisclosure.estimatedTokensAfter,
+        });
+      }
+
+      // REL-1084: set by the engine only when its lanes received carried-forward notes.
+      const incrementalDisclosure = panelResult.incremental ?? null;
+      const incrementalClaim = incrementalClaimFrom(incrementalDisclosure);
+      if (incrementalDisclosure) {
+        logger.info('Incremental re-review carried files forward', {
+          runId: identity.runId,
+          repository: identity.repo,
+          previousRunId: incrementalDisclosure.previous.runId,
+          previousHeadSha: incrementalDisclosure.previous.headSha,
+          carriedForward: incrementalDisclosure.carriedForwardPaths.length,
+          reReviewedOpenFindings: incrementalDisclosure.reReviewedOpenFindingPaths.length,
+          reviewed: incrementalDisclosure.reviewedPaths.length,
+          estimatedTokensBefore: incrementalDisclosure.estimatedTokensBefore,
+          estimatedTokensAfter: incrementalDisclosure.estimatedTokensAfter,
         });
       }
 
@@ -1665,6 +1728,7 @@ export async function runPublishingReviewWorker(
           `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
+          ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
@@ -1686,6 +1750,8 @@ export async function runPublishingReviewWorker(
             : []),
           // REL-1079: set by the engine only when its lanes received a shrunk diff.
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
+          // REL-1084: every carried-forward file, or why the review stayed full.
+          ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           renderCoverageSummary(coverage),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
@@ -1812,7 +1878,10 @@ export async function runPublishingReviewWorker(
           // across the completion boundary so downstream comparisons stop relying on a summed
           // per-lane duration that overstates wall time under fan-out. Omitted (not a fabricated
           // `0`) when the panel result predates this field, matching `telemetry` above.
-          ...(typeof panelWallClockMs === 'number' ? { panelWallClockMs } : {}) },
+          ...(typeof panelWallClockMs === 'number' ? { panelWallClockMs } : {}),
+          // REL-1084: what the lanes did not see, and the prior review it rests on. The trusted
+          // completion side verifies it before any carried-forward verdict counts.
+          ...(incrementalClaim ? { incremental: incrementalClaim } : {}) },
       }).result;
     };
     if (recoverablePanelFailure) {

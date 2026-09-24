@@ -206,7 +206,17 @@ type PublishingConfig struct {
 	// comma-separated owner/repo allowlist, or an on/off switch). Empty keeps
 	// shrinking off, byte-identical to before this field existed.
 	DiffShrink string
+	// REL-1084: incremental re-review on synchronize. Forwarded verbatim as
+	// IncrementalEnv when non-empty; the worker owns its interpretation (a
+	// comma-separated owner/repo allowlist, or an on/off switch). Empty keeps
+	// every review full, byte-identical to before this field existed.
+	Incremental string
 }
+
+// IncrementalEnv is the worker's incremental re-review flag (REL-1084,
+// src/review/incrementalReview.ts INCREMENTAL_FLAG). The operator forwards the
+// deployment value verbatim; the worker owns its interpretation.
+const IncrementalEnv = "REVIEW_YETI_INCREMENTAL"
 
 // DiffShrinkEnv is the worker's deterministic diff-shrinking flag (REL-1079,
 // src/review/diffShrink.ts DIFF_SHRINK_FLAG). The operator forwards the
@@ -459,6 +469,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.DiffShrink != "" {
 			env = append(env, corev1.EnvVar{Name: DiffShrinkEnv, Value: input.Publishing.DiffShrink})
+		}
+		if input.Publishing.Incremental != "" {
+			env = append(env, corev1.EnvVar{Name: IncrementalEnv, Value: input.Publishing.Incremental})
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -804,6 +817,10 @@ func validatePublishing(config PublishingConfig) error {
 	// no allowlist needs and a pasted value can smuggle in, is refused.
 	if strings.ContainsAny(config.DiffShrink, "\r\n") {
 		return configErr("diff shrink flag contains a line break")
+	}
+	// Same allowlist grammar as the diff shrink flag.
+	if strings.ContainsAny(config.Incremental, "\r\n") {
+		return configErr("incremental flag contains a line break")
 	}
 	return nil
 }

@@ -136,6 +136,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     vi.stubEnv('REVIEW_CI_REPOSITORY_DISPATCH_ENABLED', undefined);
     vi.stubEnv('REVIEW_CI_REPOSITORIES', undefined);
     vi.stubEnv('REVIEW_CI_TICK_MS', undefined);
+    vi.stubEnv('REVIEW_YETI_INCREMENTAL_MAX_AGE_HOURS', undefined);
   });
   afterEach(() => {
     vi.clearAllTimers();
@@ -296,6 +297,17 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('feeds REVIEW_YETI_INCREMENTAL_MAX_AGE_HOURS to both trusted verification and the planning read', async () => {
+    vi.stubEnv('REVIEW_YETI_INCREMENTAL_MAX_AGE_HOURS', '24');
+    mocks.serviceConfig.mockReturnValue(authoritativeConfig());
+    await start();
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, expect.objectContaining({
+      incrementalMaxAgeMs: 24 * 60 * 60 * 1000,
+    }));
+    expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('incrementalBase.maxAgeMs', 24 * 60 * 60 * 1000);
+  });
+
   it('composes bounded storage and prepared lookup, then passes the exact service validator into admission', async () => {
     const config = authoritativeConfig();
     mocks.serviceConfig.mockReturnValue(config);
@@ -303,7 +315,10 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, {
       lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
+      // REL-1084: the service's incremental age limit (72 h default), shared with the planning read.
+      incrementalMaxAgeMs: 72 * 60 * 60 * 1000,
     });
+    expect((mocks.createApp.mock.calls[0] as unknown[])[0]).toHaveProperty('incrementalBase.maxAgeMs', 72 * 60 * 60 * 1000);
     expect(mocks.authoritative).toHaveBeenCalledExactlyOnceWith({
       config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: '4385771',
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
@@ -413,6 +428,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
     expect(mocks.error).not.toHaveBeenCalled();
     expect(mocks.gateRepository).toHaveBeenCalledExactlyOnceWith(mocks.pool, {
       lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000, onEligibleCompletion: expect.any(Function),
+      incrementalMaxAgeMs: 72 * 60 * 60 * 1000,
     });
     const serviceOptions = mocks.authoritative.mock.calls[0][0];
     expect(serviceOptions.repository).toBe(mocks.gateStorage);
