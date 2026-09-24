@@ -286,6 +286,17 @@ describe('packLaneBudget', () => {
     for (let i = 0; i < 3; i++) expect(pack.entries.get(`src/auth/s${i}.ts`)!.depth).toBe('full');
   });
 
+  it('reserves room for every other file\'s note, so full-depth files never push the pack past the hard cap', () => {
+    const pack = packLaneBudget('lane', [
+      ...Array.from({ length: 3 }, (_, i) => candidate(`src/auth/s${i}.ts`, 52_500, `a${i}`)),
+      ...Array.from({ length: 60 }, (_, i) => candidate(`docs/p${String(i).padStart(2, '0')}.md`, 5_000, `d${i}`)),
+    ]);
+    expect(pack.entries.size).toBe(63);
+    expect(pack.disclosure.packedChars).toBeLessThanOrEqual(MAX_PACKED_DIFF_CHARS);
+    // The full-depth files that did not fit are listed, never summarized.
+    for (let i = 0; i < 3; i++) expect(['full', 'not-deeply-reviewed']).toContain(pack.entries.get(`src/auth/s${i}.ts`)!.depth);
+  });
+
   it('is deterministic: input order does not change the pack', () => {
     const input = [candidate('tests/b.test.ts', 25_000), candidate('src/a.ts', 25_000), candidate('src/c.ts', 25_000), candidate('config/x.json', 9_000)];
     const forward = packLaneBudget('lane', input);
