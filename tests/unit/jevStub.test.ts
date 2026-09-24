@@ -160,7 +160,7 @@ describe('createLlmBackedJevStub — mode 3: LLM-backed adapter, hard-gated off 
     expect(client.complete).toHaveBeenCalledTimes(1);
   });
 
-  it('asks the LLM for the LIVE score contract: index-keyed legend and probabilities, score in [0,1] (REL-1100)', async () => {
+  it('asks the LLM for the LIVE score contract: index-keyed legend and probabilities, score in [0, n-1] (REL-1100)', async () => {
     const live = JEV_LIVE_RESPONSES.score.answers.risk;
     const criteria = Object.values(live.legend) as string[];
     const client = {
@@ -171,7 +171,7 @@ describe('createLlmBackedJevStub — mode 3: LLM-backed adapter, hard-gated off 
     expect(outcome.status).toBe('ok');
 
     const schema = client.complete.mock.calls[0][0].responseFormat.json_schema.schema;
-    expect(schema.properties.score).toMatchObject({ type: 'number', minimum: 0, maximum: 1 });
+    expect(schema.properties.score).toMatchObject({ type: 'number', minimum: 0, maximum: criteria.length - 1 });
     expect(schema.properties.legend).toMatchObject({ type: 'object', required: Object.keys(live.legend), additionalProperties: false });
     expect(schema.properties.probabilities).toMatchObject({ type: 'object', required: Object.keys(live.probabilities), additionalProperties: false });
     // Negative proof: the schema no longer describes the array legend the real API never returns.

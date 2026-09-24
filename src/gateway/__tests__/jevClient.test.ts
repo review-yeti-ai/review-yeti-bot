@@ -697,6 +697,16 @@ describe('JevClient — answer shape validation for choice and score', () => {
     expect(outcome.answers.risk).toEqual(LIVE.score.answers.risk);
   });
 
+  it('pins what the live score means: the expected 0-based level index, sum(index * probability)', () => {
+    // Documents the vendor semantics the shadow's level derivation relies on NOT using: the score
+    // is a mean in [0, n-1], not a level and not a [0,1] probability. If a future model changes
+    // this, this test (not a silent log drift) is where it shows up.
+    const risk = LIVE.score.answers.risk;
+    const expected = Object.entries(risk.probabilities as Record<string, number>)
+      .reduce((sum, [index, p]) => sum + Number(index) * p, 0);
+    expect(risk.score).toBeCloseTo(expected, 2);
+  });
+
   it('negative proof: the pre-REL-1100 array-only legend check rejects the live score response', () => {
     // A literal copy of the score branch this PR replaced. It is why every shadow call on
     // 2026-09-24 logged outcome=unavailable reason=malformed. If this ever passes, the live
