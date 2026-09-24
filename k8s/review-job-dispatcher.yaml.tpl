@@ -29,10 +29,13 @@ rules:
     # REL-896: `list` lets the abandoned-run reaper read the Go operator's
     # delegated-failure signal (FailurePublication condition) directly off
     # the CR so it can claim an exact attempt before terminal_deadline
-    # instead of only after. Still no `watch`, `update`, `patch`, or `delete`
-    # -- this component only ever reads the resource and its own two
-    # existing verbs create/get it for run-secret recovery.
-    verbs: ["get", "list", "create"]
+    # instead of only after.
+    # REL-1073: `patch` lets the cancellation sweep set spec.cancelRequested on
+    # a superseded run's PRReviewJob before the operator starts its worker. The
+    # CRD's CEL rule keeps spec immutable except that one false->true flip, and
+    # status stays out of reach (no prreviewjobs/status grant). Still no
+    # `watch`, `update`, or `delete`.
+    verbs: ["get", "list", "create", "patch"]
   # REL-586: provisions one Secret per publishing run, holding tokens minted from
   # the installed GitHub App and scoped to that run's repository.
   #
