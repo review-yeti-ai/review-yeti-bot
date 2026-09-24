@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.90.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.1...v1.90.2) (2026-09-24)
+
+
+### Bug Fixes
+
+* **github:** bounded retry for transient GitHub responses (REL-1103) ([#1041](https://github.com/review-yeti-ai/review-yeti-bot/issues/1041)) ([729d35c](https://github.com/review-yeti-ai/review-yeti-bot/commit/729d35c51b204cec9416eed4715621a255ed4e00))
+* **review:** map-reduce only past what one call can hold (REL-1083) ([#1046](https://github.com/review-yeti-ai/review-yeti-bot/issues/1046)) ([0b50303](https://github.com/review-yeti-ai/review-yeti-bot/commit/0b503033eb02a58cac4f4f88725b2f9677255962))
+
 ## [1.90.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.90.0...v1.90.1) (2026-09-24)
 
 
