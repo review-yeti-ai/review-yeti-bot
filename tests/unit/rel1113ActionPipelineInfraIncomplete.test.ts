@@ -391,3 +391,106 @@ describe('REL-1113 Enforce Verdict step: INCOMPLETE fails with a distinct infras
     expect(stdout).toContain('Review verdict is BLOCK. Resolve the findings');
   });
 });
+
+/**
+ * main() end to end, in a child process (real pipeline, stubbed model endpoint): proves main()
+ * wires the re-attempt, the INCOMPLETE override, the all-lanes-failed branch, the run-report
+ * suppression and the step failure -- not just that the units compose.
+ */
+describe('REL-1113 Action pipeline: main() end to end', () => {
+  const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -0,0 +1 @@\n+export const a = 1;\n';
+  const CHILD = `
+const pipeline = require(process.env.PIPELINE);
+Math.random = () => 0;
+const mode = process.env.STUB_MODE;
+let testingCalls = 0;
+globalThis.fetch = async (url, init) => {
+  const body = JSON.parse(init.body);
+  const system = String(body.messages[0].content).slice(0, 200);
+  let findings = [];
+  if (/Testing/i.test(system)) {
+    testingCalls += 1;
+    if (mode === 'fail' || mode === 'findings' || (mode === 'recover' && testingCalls === 1)) throw new TypeError('terminated');
+  } else if (mode === 'findings') {
+    findings = [{ severity: 'P0', path: 'src/a.ts', line: 1, title: 'Exported constant leaks a secret', body: 'Breaks when the module is imported by a client bundle.' }];
+  }
+  const content = JSON.stringify({ decision: findings.length ? 'FINDINGS' : 'APPROVE', findings });
+  if (body.stream) {
+    const sse = 'data: ' + JSON.stringify({ model: 'm', choices: [{ delta: { content } }] }) + '\\n\\ndata: [DONE]\\n\\n';
+    return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }
+  return new Response(JSON.stringify({ model: 'm', choices: [{ message: { content } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode ?? 0) + ' testingCalls=' + testingCalls));
+`;
+
+  function runMain(mode: string, personas: string[], extraEnv: Record<string, string> = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rel1113-main-'));
+    fs.writeFileSync(path.join(dir, 'child.js'), CHILD);
+    const result = spawnSync(process.execPath, ['child.js'], {
+      cwd: dir,
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: process.env.HOME ?? dir,
+        PIPELINE: path.join(root, '.github/workflows/pipelines/review-pipeline.js'),
+        STUB_MODE: mode,
+        VITEST: 'true',
+        GITHUB_ACTIONS: 'false',
+        PR_DIFF: DIFF,
+        ACTIVE_PERSONAS: JSON.stringify(personas),
+        OPENROUTER_API_KEY: 'test-key',
+        OPENROUTER_BASE_URL: 'https://api.fireworks.ai/inference/v1',
+        GITHUB_OUTPUT: path.join(dir, 'output'),
+        GITHUB_STEP_SUMMARY: path.join(dir, 'summary.md'),
+        RUNNER_TEMP: dir,
+        CT_REVIEW_CONFIG_DIR: dir,
+        ...extraEnv,
+      },
+    });
+    const outputs = fs.existsSync(path.join(dir, 'output'))
+      ? Object.fromEntries(fs.readFileSync(path.join(dir, 'output'), 'utf8').trim().split('\n').map((line) => {
+        const at = line.indexOf('=');
+        return [line.slice(0, at), line.slice(at + 1)];
+      }))
+      : {};
+    const runReports = fs.readdirSync(dir).filter((name) => name.startsWith('review-yeti-run-report-'));
+    return { stdout: `${result.stdout}${result.stderr}`, outputs, runReports };
+  }
+
+  it('#1056 attempt-2 shape (no budget left): main() reports INCOMPLETE, fails the step, writes no run report', () => {
+    const { stdout, outputs, runReports } = runMain('fail', ['security', 'testing'], { REVIEW_ACTION_BUDGET_MS: '1000' });
+    expect(stdout).toContain('MAIN_DONE exitCode=1 testingCalls=1');
+    expect(stdout).toContain('::error title=Review Yeti: INCOMPLETE — infrastructure::Review Yeti: INCOMPLETE — infrastructure (lane testing failed: transport)');
+    expect(stdout).not.toMatch(/\[Verdict\] (BLOCK|FIX_FIRST)/u);
+    expect(outputs).toMatchObject({
+      verdict: 'INCOMPLETE', 'review-status': 'INCOMPLETE', 'gate-decision': 'INCOMPLETE', 'merge-eligible': 'false',
+      'incomplete-reason': 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: transport)',
+    });
+    expect(runReports).toEqual([]);
+  });
+
+  it('#1056 attempt-1 shape with budget: main() re-attempts the lost lane and publishes the real verdict', () => {
+    const { stdout, outputs, runReports } = runMain('recover', ['security', 'testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
+    expect(stdout).toContain('Re-attempting lane(s) testing (1/5)');
+    expect(stdout).toContain('MAIN_DONE exitCode=0 testingCalls=2');
+    expect(outputs).toMatchObject({ verdict: 'SHIP', 'gate-decision': 'PASS', 'incomplete-reason': '' });
+    expect(runReports).toHaveLength(1);
+  });
+
+  it('every lane lost on infrastructure: the all-failed branch reports INCOMPLETE, not BLOCK', () => {
+    const { stdout, outputs } = runMain('fail', ['testing'], { REVIEW_ACTION_BUDGET_MS: '1000' });
+    expect(stdout).toContain('MAIN_DONE exitCode=1');
+    expect(stdout).toContain('::error title=Review Yeti: INCOMPLETE — infrastructure::');
+    expect(outputs).toMatchObject({ verdict: 'INCOMPLETE', 'gate-decision': 'INCOMPLETE' });
+  });
+
+  it('a real finding alongside a lost lane keeps the findings verdict and is not re-attempted', () => {
+    const { stdout, outputs } = runMain('findings', ['security', 'testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
+    expect(stdout).not.toContain('Re-attempting');
+    expect(stdout).not.toContain('INCOMPLETE');
+    expect(outputs.verdict).toBe('BLOCK');
+    expect(outputs['incomplete-reason']).toBe('');
+  });
+});
