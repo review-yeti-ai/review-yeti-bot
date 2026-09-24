@@ -3,6 +3,7 @@ import { createWorkerCompletionVerifier, type AuthoritativeReviewAdmission,
   type AuthoritativeReviewCompletion } from './authoritativeServiceContracts';
 import { AuthoritativeReviewReader, type ReviewRepositoryIdentity } from '../github/authoritativeReviewReader';
 import { getBoundedRepositoryToken } from '../github/boundedAppToken';
+import { trustedGitDiffSource } from '../github/largeDiffSourceWiring';
 import { GitHubReviewGateClient } from '../github/reviewGateClient';
 import { AuthoritativePublishingResolver } from './authoritativePublishingResolver';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from './authoritativeCompletionContext';
@@ -44,12 +45,14 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
     appId: options.appId, privateKey: options.privateKey, baseUrl: options.baseUrl,
     owner: repository.owner, repo: repository.repo,
   });
+  // REL-1080: the same git-derived large-diff source the worker uses for a 406.
+  const gitDiffSource = trustedGitDiffSource(process.env, options.baseUrl);
   const readerFactory = async (repository: ReviewRepositoryIdentity, signal: AbortSignal) => {
     const minted = await getBoundedRepositoryToken(authFor(repository), 'read', {
       signal, fetchImplementation: options.fetchImplementation,
     });
     return new AuthoritativeReviewReader({ token: minted.token, baseUrl: options.baseUrl,
-      fetchImplementation: options.fetchImplementation });
+      fetchImplementation: options.fetchImplementation, ...(gitDiffSource ? { gitDiffSource } : {}) });
   };
   const resolver = new AuthoritativePublishingResolver({
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,
