@@ -39,6 +39,8 @@ test:
 ## generate: Regenerate the v1alpha2 CRD and deepcopy code (leaves legacy v1alpha1 untouched)
 generate:
 	$(CONTROLLER_GEN_ENV) go run $(CONTROLLER_GEN_FLAGS) sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) object crd paths="./api/v1alpha2" output:crd:artifacts:config=$(CRD_DIR)
+	# REL-1097: the Helm chart installs this exact file; tests/unit/chartCrdGenerated.test.ts pins it.
+	cp $(CRD_DIR)/review-yeti.ai_prreviewjobs.yaml ../charts/review-yeti/files/review-yeti.ai_prreviewjobs.yaml
 
 ## crd: Validate CRD manifest existence and structure
 crd:
