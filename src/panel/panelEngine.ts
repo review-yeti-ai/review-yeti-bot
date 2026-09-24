@@ -553,6 +553,7 @@ export const SEVERITY_CALIBRATION_LINES: readonly string[] = [
 
 /** Known repository-visibility states a review run can be told about. */
 import { REPOSITORY_VISIBILITY_INSTRUCTION, normalizeRepositoryVisibility, type RepositoryVisibility } from '../review/repositoryVisibility';
+import { uncoveredOnlyByUnverifiedLockfiles } from '../review/omittedLockfilePatch';
 export type { RepositoryVisibility } from '../review/repositoryVisibility';
 
 export function repositoryVisibilityPromptLines(visibility: RepositoryVisibility): string[] {
@@ -3466,7 +3467,10 @@ export function personaCoverageError(
   return new PanelConfigurationError(
     `no enabled persona applies to the changed paths for ${repository} #${headSha}: `
     + `[${pathList}] matched none of the enabled personas [${enabledIds.join(', ') || 'none'}]. `
-    + `Extend that persona's paths to cover these files, or enable a persona that does.`
+    + (uncoveredOnlyByUnverifiedLockfiles(unmatched, unverifiedLockfiles)
+      // REL-1099: no persona reads a lockfile, so extending paths cannot help.
+      ? 'Lockfiles are excluded from every lane, so persona paths cannot cover them.'
+      : `Extend that persona's paths to cover these files, or enable a persona that does.`)
     + lockfileNote
     + excludedNote,
     { failureClass: 'contract' },
