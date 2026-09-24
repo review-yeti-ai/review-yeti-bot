@@ -56,7 +56,9 @@ export function isDataOrConfigPath(filePath: string): boolean {
 
 /**
  * A changed file the service accepts inside a no-reviewable-content completion:
- * documentation, an asset, a run artifact or data, or (REL-972) a dependency
+ * documentation, an asset, a run artifact (JSON/CSV/log data under `runs/`,
+ * `evidence/` or `artifacts/` only -- other data/config files are never
+ * accepted here, see `isDataOrConfigPath`), or (REL-972) a dependency
  * lockfile whose added lines verifiably stay on the default public registries.
  *
  * This is the per-file rule of the exemption itself: the shared

@@ -135,6 +135,10 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
     expect(isDataOrConfigPath('docs/guide.md')).toBe(false);
     expect(isDataOrConfigPath('src/main.ts')).toBe(false);
     expect(isDataOrConfigPath('tools/inventory.lua')).toBe(false);
+    // Data/config is never exempt content on its own; only run artifacts are.
+    expect(isNoReviewableContentFile({ path: 'inventory/lab.toml', patch })).toBe(false);
+    expect(isNoReviewableContentFile({ path: LAB_ASSETS, patch })).toBe(false);
+    expect(isNoReviewableContentFile({ path: 'runs/1/out.json', patch })).toBe(true);
   });
 
   it('the panel engine reaches the routed lane for a data-only diff instead of the coverage error', async () => {
@@ -170,6 +174,9 @@ describe('REL-972 (2): generated and path_filters-excluded files never ride alon
     ['a generated bundle', files('docs/guide.md', 'dist/bundle.js'), {}, 'dist/bundle.js'],
     ['a minified asset', files('README.md', 'assets/app.min.js'), {}, 'assets/app.min.js'],
     ['a path_filters exclusion', files('docs/guide.md', 'vendor/client.lua'), { pathFilters: ['vendor/**'] }, 'vendor/client.lua'],
+    // A data/config file is not exempt content: excluded, it is reported by name.
+    ['an excluded data file', files('docs/guide.md', 'inventory/lab.toml'), { pathFilters: ['inventory/**'] }, 'inventory/lab.toml'],
+    ['an excluded JSON file', files('docs/guide.md', LAB_ASSETS), { pathFilters: ['plugins/**'] }, LAB_ASSETS],
   ])('does not exempt docs plus %s', (_label, changed, options, excluded) => {
     const result = resolveReviewApplicability(enabled('architecture,security'), changed, options);
 
@@ -226,6 +233,7 @@ describe('REL-972 (2): generated and path_filters-excluded files never ride alon
     ['docs + generated', files('docs/guide.md', 'dist/bundle.js'), {}],
     ['docs + minified', files('docs/guide.md', 'web/app.min.css'), {}],
     ['docs + path_filters exclusion', files('docs/guide.md', 'vendor/x.lua'), { pathFilters: ['vendor/**'] }],
+    ['docs + excluded data file', files('docs/guide.md', 'inventory/lab.toml'), { pathFilters: ['inventory/**'] }],
     ['generated only', files('dist/bundle.js'), {}],
     ['docs excluded by path_filters', files('docs/guide.md'), { pathFilters: ['docs/**'] }],
     ['run artifacts', files('runs/1/out.json', 'evidence/log.txt'), {}],
