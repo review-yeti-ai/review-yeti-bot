@@ -11,11 +11,16 @@
  * 1. Security-sensitive paths (`isSecuritySensitivePath`) and CI/IaC paths, in
  *    full, first. They are never summarized. They may exceed the soft budget,
  *    up to the per-request cap (`MAX_PACKED_DIFF_CHARS`).
- * 2. Source, then 3. tests, config and docs: every file first gets a
- *    deterministic signature summary (hunk headers and changed declaration
- *    lines, extracted from the patch in code, never written by a model). Files
+ * 2. Source, then 3. tests, config and docs: each file gets a deterministic
+ *    signature summary (hunk headers and changed declaration lines, extracted
+ *    from the patch in code, never written by a model) while it fits. Files
  *    are then upgraded to full depth in category order while the budget lasts.
  * 4. A file whose signatures do not fit is listed as "not deeply reviewed".
+ *
+ * A minimal note is reserved for every file before anything is placed, and a
+ * file is only given more when every unplaced file's reserve survives it, so
+ * the pack never passes `MAX_PACKED_DIFF_CHARS`. A lane whose minimal notes
+ * alone would not fit is not budgeted: it gets today's content, disclosed.
  *
  * A file that fits is sent whole: the 20,000-character per-file cut in
  * `hunkFilter.ts` no longer applies to it.
@@ -277,6 +282,9 @@ export function summarizePatchSignatures(patch: string): string {
   ].join('\n');
 }
 
+/** The smallest note a listed file can carry; reserved for every file before packing. */
+const MINIMAL_NOTE = `${NOTE_PREFIX} not deeply reviewed. Use get_diff.`;
+
 function notDeeplyReviewedNote(patch: string): string {
   return `${NOTE_PREFIX} not deeply reviewed (over this lane's budget; ${shapeText(patchShape(patch))}). Use get_diff.`;
 }
@@ -333,39 +341,61 @@ export function packLaneBudget(
     .sort((a, b) => budgetCategoryRank(a.category) - budgetCategoryRank(b.category)
       || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
-  const state = new Map<string, { depth: BudgetDepth; prompt: string; cost: number }>();
-  let used = 0;
-  const set = (path: string, depth: BudgetDepth, prompt: string) => {
-    const previous = state.get(path);
-    const cost = inlineCost(path, prompt);
-    used += cost - (previous?.cost ?? 0);
-    state.set(path, { depth, prompt, cost });
-  };
   const whole = (file: { effectivePatch: string; wholePatch: string | null }) => file.wholePatch ?? file.effectivePatch;
 
-  // Room every other file needs at minimum (its not-deeply-reviewed note), so
-  // the full-depth files below can never push the pack past the hard cap.
-  const summarizable = ordered.filter((entry) => !isFullDepthCategory(entry.category));
-  const noteReserve = summarizable.reduce((sum, file) => sum + inlineCost(file.path, notDeeplyReviewedNote(whole(file))), 0);
-  const fullDepthCap = hardCapChars - noteReserve;
+  // Every file needs at least a minimal note in the pack. Those notes are
+  // reserved up front and a file is only given more when the reserve of every
+  // file still unplaced survives it, so the pack never passes the hard cap.
+  // A lane whose minimal notes alone do not fit is not budgeted at all: it
+  // falls back to today's content (fail open), and the summary says so.
+  const minimalCost = (file: { path: string }) => inlineCost(file.path, MINIMAL_NOTE);
+  let pending = ordered.reduce((sum, file) => sum + minimalCost(file), 0);
+  if (pending > hardCapChars) {
+    return {
+      laneId,
+      entries: new Map(),
+      inlineTokenBudget: 0,
+      requestCapBytes,
+      disclosure: { laneId, budgetChars, packedChars: 0, files: [], fallback: { files: ordered.length } },
+    };
+  }
+
+  const state = new Map<string, { depth: BudgetDepth; prompt: string; cost: number }>();
+  let used = 0;
+  const fits = (file: { path: string }, text: string) => {
+    const previous = state.get(file.path);
+    const reserve = previous ? 0 : minimalCost(file);
+    return used - (previous?.cost ?? 0) + inlineCost(file.path, text) + (pending - reserve) <= hardCapChars;
+  };
+  const set = (file: { path: string }, depth: BudgetDepth, prompt: string) => {
+    const previous = state.get(file.path);
+    if (!previous) pending -= minimalCost(file);
+    const cost = inlineCost(file.path, prompt);
+    used += cost - (previous?.cost ?? 0);
+    state.set(file.path, { depth, prompt, cost });
+  };
+  const list = (file: { path: string }, patch: string) => {
+    const note = notDeeplyReviewedNote(patch);
+    set(file, 'not-deeply-reviewed', fits(file, note) ? note : MINIMAL_NOTE);
+  };
 
   // 1. Full-depth categories, in order, up to the hard cap. Never summarized:
   //    a file whose whole patch does not fit keeps today's cut patch, and only
   //    when even that does not fit is it listed (still readable via get_diff).
   for (const file of ordered.filter((entry) => isFullDepthCategory(entry.category))) {
     const full = whole(file);
-    if (used + inlineCost(file.path, full) <= fullDepthCap) set(file.path, 'full', full);
-    else if (file.wholePatch !== null && used + inlineCost(file.path, file.effectivePatch) <= fullDepthCap) {
-      set(file.path, 'truncated', file.effectivePatch);
-    } else set(file.path, 'not-deeply-reviewed', notDeeplyReviewedNote(full));
+    if (fits(file, full)) set(file, 'full', full);
+    else if (file.wholePatch !== null && fits(file, file.effectivePatch)) set(file, 'truncated', file.effectivePatch);
+    else list(file, full);
   }
 
-  // 2. Everything else starts as signatures. If even that exceeds the hard
-  //    cap, the lowest-priority files are listed instead, last first.
-  for (const file of summarizable) set(file.path, 'signatures', summarizePatchSignatures(whole(file)));
-  for (const file of [...summarizable].reverse()) {
-    if (used <= hardCapChars) break;
-    set(file.path, 'not-deeply-reviewed', notDeeplyReviewedNote(whole(file)));
+  // 2. Everything else, in priority order, as signatures while they fit, then
+  //    listed. Lower-priority files are the ones listed first.
+  const summarizable = ordered.filter((entry) => !isFullDepthCategory(entry.category));
+  for (const file of summarizable) {
+    const signatures = summarizePatchSignatures(whole(file));
+    if (fits(file, signatures)) set(file, 'signatures', signatures);
+    else list(file, whole(file));
   }
 
   // 3. Upgrade to full depth in priority order while the soft budget lasts.
@@ -374,7 +404,7 @@ export function packLaneBudget(
     const current = state.get(file.path)!;
     if (current.depth !== 'signatures') continue;
     const full = whole(file);
-    if (used - current.cost + inlineCost(file.path, full) <= budgetChars) set(file.path, 'full', full);
+    if (used - current.cost + inlineCost(file.path, full) <= budgetChars) set(file, 'full', full);
   }
 
   const entries = new Map<string, LaneBudgetEntry>();
@@ -440,7 +470,10 @@ export function applyLaneBudgetPack<T extends { path: string; patch?: string }>(
 
 export interface ReviewBudgetPlan {
   scope: 'per-lane' | 'whole-diff';
+  /** Packs the engines apply. A lane that fell back to today's content has none. */
   packs: Map<string, LaneBudgetPack>;
+  /** Lanes too large to budget within the hard cap: they get today's content, disclosed. */
+  fallbacks?: Map<string, ReviewBudgetLaneDisclosure>;
 }
 
 export const COMPOSED_BUDGET_LANE_ID = 'composed';
@@ -485,15 +518,20 @@ export function resolveBudgetedReviewApplicability<P extends Parameters<typeof r
   };
 
   const packs = new Map<string, LaneBudgetPack>();
+  const fallbacks = new Map<string, ReviewBudgetLaneDisclosure>();
+  const add = (pack: LaneBudgetPack) => {
+    if (pack.disclosure.fallback) fallbacks.set(pack.laneId, pack.disclosure);
+    else packs.set(pack.laneId, pack);
+  };
   if (budgetScope === 'whole-diff') {
-    packs.set(COMPOSED_BUDGET_LANE_ID, packLaneBudget(COMPOSED_BUDGET_LANE_ID, decision.effectiveFiles.map(candidateOf)));
+    add(packLaneBudget(COMPOSED_BUDGET_LANE_ID, decision.effectiveFiles.map(candidateOf)));
   } else {
     for (const persona of decision.applicable) {
       const scoped = scopeFilesForPersona(persona as Parameters<typeof scopeFilesForPersona>[0], decision.effectiveFiles);
-      packs.set(persona.id, packLaneBudget(persona.id, scoped.map(candidateOf)));
+      add(packLaneBudget(persona.id, scoped.map(candidateOf)));
     }
   }
-  return { ...decision, reviewBudget: { scope: budgetScope, packs } };
+  return { ...decision, reviewBudget: { scope: budgetScope, packs, fallbacks } };
 }
 
 /**
@@ -514,9 +552,9 @@ export function attachReviewBudgetDisclosure<T extends object>(
       .filter((persona: any) => persona && typeof persona.id === 'string' && persona.notApplicable !== true)
       .map((persona: any) => persona.id as string),
   );
-  const lanes = [...plan.packs.values()]
-    .filter((pack) => plan.scope === 'whole-diff' || ran.has(pack.laneId))
-    .map((pack) => pack.disclosure);
+  const lanes = [...plan.packs.values()].map((pack) => pack.disclosure)
+    .concat([...(plan.fallbacks?.values() ?? [])])
+    .filter((lane) => plan.scope === 'whole-diff' || ran.has(lane.laneId));
   if (lanes.length === 0) return result;
 
   const stillCut = new Set<string>();
@@ -595,6 +633,11 @@ export function renderReviewBudgetSummary(disclosure: ReviewBudgetDisclosure | n
     + 'Security-sensitive files are never summarized. Every file stays in each lane\'s file list and readable with get_diff.',
   ];
   for (const lane of disclosure.lanes) {
+    if (lane.fallback) {
+      lines.push(`- ${code(lane.laneId)}: budget not applied: its ${lane.fallback.files.toLocaleString('en-US')} files cannot all be listed `
+        + 'within the per-request cap, so this lane was sent today\'s content (map-reduce for huge diffs is W6).');
+      continue;
+    }
     const by = (depth: BudgetDepth) => lane.files.filter((file) => file.depth === depth).map((file) => file.path);
     const full = by('full');
     const pastCut = lane.files.filter((file) => file.pastPerFileCut).length;

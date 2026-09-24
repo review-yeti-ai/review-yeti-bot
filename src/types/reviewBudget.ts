@@ -46,6 +46,11 @@ export interface ReviewBudgetLaneDisclosure {
   budgetChars: number;
   packedChars: number;
   files: BudgetFileEntry[];
+  /**
+   * Set when the lane has too many files to list within the per-request cap.
+   * The lane was sent today's content (fail open) and `files` is empty.
+   */
+  fallback?: { files: number };
 }
 
 export interface ReviewBudgetDisclosure {

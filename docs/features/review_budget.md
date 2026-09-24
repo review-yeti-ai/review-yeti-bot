@@ -22,7 +22,9 @@ The budget runs after the shared applicability decision and after diff shrinking
 1. **Security-sensitive and CI/IaC files, at full depth, first.** A path is security-sensitive when `isSecuritySensitivePath` matches it (auth, crypto, secrets, CI, containers, IaC, dependency manifests, scripts, migrations and similar). CI/IaC means the W1 CI and IaC path rules. These files are never summarized. They can go past the soft budget, up to the hard cap. If a whole patch does not fit, the file keeps today's 20k-cut patch. Only a file that doesn't fit even then is listed.
 2. **Source, then tests, config and docs.** Every such file starts as a signature summary. In category order, then path order, a file is upgraded to its whole patch while the lane's soft budget lasts.
 3. **Signatures.** The summary holds the hunk headers, which carry git's enclosing-function context, and the changed lines that declare or import something, each with its line number. It is extracted in code and never written by a model. It is capped at 40 lines.
-4. **Not deeply reviewed.** If even the signatures do not fit the hard cap, the lowest-priority files become a one-line note, last file first.
+4. **Not deeply reviewed.** If even the signatures do not fit the hard cap, the lowest-priority files become a one-line note.
+
+Before anything is placed, a minimal note is reserved for every file in the lane, full-depth files included. A file gets more than its note only if every file not yet placed keeps its reserve. The packed diff therefore never passes the hard cap, however many files the lane has. If the minimal notes alone would not fit (roughly 1,000 or more files in one lane), the lane is **not budgeted**. It gets today's content, and the summary says "budget not applied" for that lane.
 
 No file is removed. Every file stays in the lane's file list and its patch stays readable with `get_diff`. Only the inline depth changes.
 
@@ -33,7 +35,7 @@ A file sent at full depth is sent whole, so the 20,000-character per-file cut in
 | Constant | Value | Why |
 | --- | --- | --- |
 | `PERSONA_BUDGET_CHARS` | 56,000 characters | The inline-diff knee W1 measured (`MAX_INLINE_DIFF_CHARS_CEILING`). Past it, turns go from 5 to 19 and median worker time from 201 s to 470 s. |
-| `MAX_PACKED_DIFF_CHARS` | 160,000 characters | Hard cap on one lane's packed inline diff. Space for every other file's note is reserved first, so full-depth files cannot push the pack past it. |
+| `MAX_PACKED_DIFF_CHARS` | 160,000 characters | Hard cap on one lane's packed inline diff. It holds for any lane the budget packs, because a minimal note is reserved for every file before any content is placed. |
 | `BIFROST_PROXY_BODY_LIMIT_BYTES` | 1 MiB | Workers reach Bifrost through the `gateway-internal-https` nginx front (ct-infrastructure `clusters/doks-nyc1/apps/llm-gateway/deploy-gateway-internal-https.yaml`). It sets no `client_max_body_size`, so nginx's 1 MiB default applies. Bifrost's own limit is 10 MB. An oversized sec-lane request hit HTTP 413 there. |
 | `MAX_BUDGETED_REQUEST_BYTES` | 640 KiB | Whole-request cap for a budgeted lane. Each tool result is clipped so that the serialized conversation plus the result stays under it, with a note telling the lane what happened. |
 
@@ -47,5 +49,5 @@ A file sent at full depth is sent whole, so the 20,000-character per-file cut in
 
 ## Known limits
 
-- The note reserve grows with the number of files. At about 400 or more summarizable files in one lane, the notes alone can pass the hard cap. That is W6 (map-reduce, REL-1083) territory.
+- A lane with about 1,000 or more files cannot list every file within the hard cap. It falls back to today's content, and the summary discloses it. Reviewing such a lane in chunks is W6 (map-reduce, REL-1083).
 - Signature extraction is line-based. It is not an AST, so a declaration split across lines keeps only its first line.

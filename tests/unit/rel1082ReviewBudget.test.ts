@@ -297,6 +297,67 @@ describe('packLaneBudget', () => {
     for (let i = 0; i < 3; i++) expect(['full', 'not-deeply-reviewed']).toContain(pack.entries.get(`src/auth/s${i}.ts`)!.depth);
   });
 
+  // Review round 4: overflow notes for full-depth files used to be unreserved, so a lane of
+  // hundreds of manifests ended far past the cap.
+  it('holds the hard cap for a lane of hundreds of full-depth files', () => {
+    const manifests = Array.from({ length: 500 }, (_, i) => candidate(`charts/app/templates/m${String(i).padStart(3, '0')}.yaml`, 5_000, `m${i}`));
+    const pack = packLaneBudget('iac-lane', manifests);
+    expect(pack.disclosure.fallback).toBeUndefined();
+    expect(pack.entries.size).toBe(500);
+    expect(pack.disclosure.packedChars).toBeLessThanOrEqual(MAX_PACKED_DIFF_CHARS);
+    const depthsSeen = new Set(Object.values(depths(pack)));
+    expect(depthsSeen).toEqual(new Set(['full', 'not-deeply-reviewed']));
+  });
+
+  it('holds the hard cap for a lane of 400 summarizable files', () => {
+    const pack = packLaneBudget('lane', Array.from({ length: 400 }, (_, i) => candidate(`src/mod${String(i).padStart(3, '0')}.ts`, 3_000, `s${i}`)));
+    expect(pack.entries.size).toBe(400);
+    expect(pack.disclosure.packedChars).toBeLessThanOrEqual(MAX_PACKED_DIFF_CHARS);
+  });
+
+  it('never passes the hard cap on any mix it budgets (deterministic sweep)', () => {
+    let seed = 1082;
+    const next = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; };
+    const kinds = ['src/auth/k', 'charts/x/t', 'src/m', 'tests/t', 'docs/d', 'config/c'];
+    const suffix = ['.ts', '.yaml', '.ts', '.test.ts', '.md', '.json'];
+    for (let run = 0; run < 12; run++) {
+      const count = 20 + Math.floor(next() * 600);
+      const input = Array.from({ length: count }, (_, i) => {
+        const kind = Math.floor(next() * kinds.length);
+        const chars = 200 + Math.floor(next() * 30_000);
+        const path = `${kinds[kind]}${run}_${i}${suffix[kind]}`;
+        return chars > MAX_FILE_PATCH_CHARS ? cutCandidate(path, chars, `r${i}`) : candidate(path, chars, `r${i}`);
+      });
+      const pack = packLaneBudget(`lane${run}`, input);
+      if (pack.disclosure.fallback) continue;
+      expect(pack.entries.size).toBe(count);
+      expect(pack.disclosure.packedChars).toBeLessThanOrEqual(MAX_PACKED_DIFF_CHARS);
+      for (const [path, entry] of pack.entries) {
+        if (classifyBudgetCategory(path) === 'security-sensitive') expect(entry.depth).not.toBe('signatures');
+      }
+    }
+  });
+
+  it('fails open to today\'s content for a lane too large to list within the cap, and says so', () => {
+    const huge = Array.from({ length: 1_500 }, (_, i) => ({ path: `src/generated_like/module_${String(i).padStart(5, '0')}.ts`, effectivePatch: '@@ -0,0 +1 @@\n+x', wholePatch: null }));
+    const pack = packLaneBudget('lane', huge);
+    expect(pack.disclosure.fallback).toEqual({ files: 1_500 });
+    expect(pack.entries.size).toBe(0);
+    // Applying an empty pack passes every file through unchanged.
+    const scoped = huge.slice(0, 3).map((file) => ({ path: file.path, patch: file.effectivePatch }));
+    const applied = applyLaneBudgetPack(scoped, pack);
+    expect(applied.promptFiles).toEqual(scoped);
+    // The shared decision keeps the lane out of the packs the engines apply, and discloses it.
+    const persona = { id: 'lane', enabled: true, required: true, charter: 'builtin:correctness', paths: ['**'], providers: ['p'] };
+    const diff = huge.map((file) => `diff --git a/${file.path} b/${file.path}\nnew file mode 100644\n--- /dev/null\n+++ b/${file.path}\n@@ -0,0 +1 @@\n+x\n`).join('');
+    const worker = resolveBudgetedReviewApplicability([persona] as never, files(diff), { reviewBudget: ON, budgetScope: 'per-lane' });
+    expect(worker.reviewBudget!.packs.has('lane')).toBe(false);
+    expect(worker.reviewBudget!.fallbacks!.get('lane')!.fallback).toEqual({ files: 1_500 });
+    const result = attachReviewBudgetDisclosure({ personas: [{ id: 'lane' }] }, worker.reviewBudget) as any;
+    expect(renderReviewBudgetSummary(result.reviewBudget).join('\n'))
+      .toContain('`lane`: budget not applied: its 1,500 files cannot all be listed within the per-request cap');
+  });
+
   it('is deterministic: input order does not change the pack', () => {
     const input = [candidate('tests/b.test.ts', 25_000), candidate('src/a.ts', 25_000), candidate('src/c.ts', 25_000), candidate('config/x.json', 9_000)];
     const forward = packLaneBudget('lane', input);
