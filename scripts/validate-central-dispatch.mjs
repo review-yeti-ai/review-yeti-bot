@@ -97,6 +97,7 @@ export function assertAdmittedRepository(repository) {
   return name;
 }
 export const REQUIRED_REVIEW_CONTEXT = 'Review Yeti';
+const REVIEW_GATE_CONTEXT = 'Review Yeti Gate';
 export const REQUIRED_REVIEW_APP_ID = 4385771;
 export const REQUIRED_REVIEW_APP_SLUG = 'ct-review-bot';
 const PUBLIC_REVIEW_APP_ID = 4552718;
@@ -120,6 +121,8 @@ const PUBLIC_DISPATCH_ALLOWED_SECRETS = Object.freeze([
 ]);
 const WORKER_EXTERNAL_ID_PATTERN = /^(run_[a-f0-9]{32}):a([1-9][0-9]*)$/u;
 const MERGE_GROUP_EXTERNAL_ID_PATTERN = /^merge-group:([a-f0-9]{40})$/u;
+const REVIEW_GATE_EXTERNAL_ID_PATTERN = /^review-yeti-gate:v1:[a-f0-9]{64}$/u;
+const INFRASTRUCTURE_GATE_SUMMARY = 'Review Yeti Gate failed: infrastructure-failure. This is not an approval.';
 const CHECK_RUN_STATUSES = new Set(['completed', 'in_progress', 'pending', 'queued', 'requested', 'waiting']);
 const CHECK_RUN_CONCLUSIONS = new Set([
   'action_required',
@@ -479,7 +482,22 @@ function validateExactHeadReviewCheck(row, expectedHeadSha, publisher) {
   throw new Error(`check-run ${row.id} external_id is not a valid worker or merge-group identity`);
 }
 
-export async function listExactHeadReviewChecks({ repository, headSha, token, fetchImpl = globalThis.fetch }) {
+function validateExactHeadGateCheck(row, expectedHeadSha, publisher) {
+  assertPlainObject(row, 'gate check-run row');
+  if (!Number.isSafeInteger(row.id) || row.id < 1
+      || row.name !== REVIEW_GATE_CONTEXT
+      || row.head_sha !== expectedHeadSha
+      || row.app?.id !== publisher.id
+      || row.app?.slug !== publisher.slug
+      || !REVIEW_GATE_EXTERNAL_ID_PATTERN.test(row.external_id ?? '')
+      || typeof row.output?.title !== 'string'
+      || typeof row.output?.summary !== 'string') {
+    throw new Error('Review Yeti Gate check is not an exact-head App-owned gate');
+  }
+  return { row, kind: 'gate' };
+}
+
+async function listExactHeadAppChecks({ repository, headSha, token, fetchImpl, checkName, validateRow }) {
   const publisher = reviewPublisherFor(repository);
   const apiBase = `https://api.github.com/repos/${repository}`;
   const rows = [];
@@ -489,7 +507,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
 
   for (let pageNumber = 1; pageNumber <= CHECK_RUN_ENDPOINT_CAP / CHECK_RUN_PAGE_SIZE; pageNumber += 1) {
     const query = new URLSearchParams({
-      check_name: REQUIRED_REVIEW_CONTEXT,
+      check_name: checkName,
       filter: 'all',
       app_id: String(publisher.id),
       per_page: String(CHECK_RUN_PAGE_SIZE),
@@ -516,7 +534,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
     }
 
     for (const row of page.check_runs) {
-      const identity = validateExactHeadReviewCheck(row, headSha, publisher);
+      const identity = validateRow(row, headSha, publisher);
       if (seenIds.has(row.id)) {
         throw new Error(`Review Yeti check inventory contains duplicate check-run id ${row.id}`);
       }
@@ -528,7 +546,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
       throw new Error(`Review Yeti check inventory returned ${rows.length} rows for total_count ${expectedTotal}`);
     }
     if (rows.length === expectedTotal) {
-      return { rows, identities, totalCount: expectedTotal };
+      return { rows, identities, totalCount: expectedTotal, headSha };
     }
     if (page.check_runs.length === 0 || page.check_runs.length < CHECK_RUN_PAGE_SIZE) {
       throw new Error(`Review Yeti check inventory is truncated at ${rows.length} of ${expectedTotal} rows`);
@@ -537,14 +555,73 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
   throw new Error(`Review Yeti check inventory is truncated at the ${CHECK_RUN_ENDPOINT_CAP}-run endpoint cap`);
 }
 
-function isRecoverableInfrastructureAttempt(identity, expectedAttempt) {
+export async function listExactHeadReviewChecks({ repository, headSha, token, fetchImpl = globalThis.fetch }) {
+  return listExactHeadAppChecks({
+    repository, headSha, token, fetchImpl,
+    checkName: REQUIRED_REVIEW_CONTEXT,
+    validateRow: validateExactHeadReviewCheck,
+  });
+}
+
+function isFailedInfrastructurePanel(identity, headSha) {
+  if (identity.kind !== 'worker' || identity.row.output.title !== 'Review Yeti: BLOCK') return false;
+  const summary = identity.row.output.summary;
+  const lines = summary.split('\n');
+  const findingsLines = lines.filter((line) => line.startsWith('Findings: '));
+  const coverageLines = lines.filter((line) => line.startsWith('Coverage: '));
+  if (lines[0] !== `Verdict \`BLOCK\` at \`${headSha}\`.`
+      || findingsLines.length !== 1
+      || findingsLines[0] !== 'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).'
+      || coverageLines.length !== 1) {
+    return false;
+  }
+  const coverage = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=([0-9]+); roster valid=true; quorum satisfied=false; full panel complete=false\.$/u.exec(coverageLines[0]);
+  if (!coverage) return false;
+  const [expected, completed, failed] = coverage.slice(1).map(Number);
+  return Number.isSafeInteger(expected) && expected > 0
+    && Number.isSafeInteger(completed) && Number.isSafeInteger(failed) && failed > 0
+    && Number.isSafeInteger(completed + failed) && completed + failed === expected;
+}
+
+function validCompletedAt(row) {
+  const value = row?.completed_at;
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)
+    ? Date.parse(value) : NaN;
+}
+
+function hasCurrentInfrastructureGate(identity, gateInventory) {
+  const gates = gateInventory?.rows;
+  if (!Array.isArray(gates) || gates.length === 0
+      || gates.some((row) => !Number.isFinite(validCompletedAt(row)))) return false;
+  // GitHub retains older Gate runs for the same head. Select the newest
+  // completed result from the full App-owned inventory, independent of API order.
+  const gate = gates.reduce((latest, row) => {
+    const completedAt = validCompletedAt(row);
+    const latestCompletedAt = validCompletedAt(latest);
+    return completedAt > latestCompletedAt
+      || (completedAt === latestCompletedAt && row.id > latest.id) ? row : latest;
+  });
+  const workerCompletedAt = validCompletedAt(identity.row);
+  const gateCompletedAt = validCompletedAt(gate);
+  return gate.status === 'completed'
+    && gate.conclusion === 'failure'
+    && gate.output.title === 'Review Yeti Gate: Failed'
+    && gate.output.summary === INFRASTRUCTURE_GATE_SUMMARY
+    && Number.isFinite(workerCompletedAt)
+    && Number.isFinite(gateCompletedAt)
+    && gateCompletedAt >= workerCompletedAt;
+}
+
+function isRecoverableInfrastructureAttempt(identity, expectedAttempt, headSha, gateInventory) {
   return identity.attempt === expectedAttempt
     && identity.row.status === 'completed'
     && RECOVERABLE_INFRASTRUCTURE_CONCLUSIONS.has(identity.row.conclusion)
-    && RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title);
+    && (RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title)
+      || (isFailedInfrastructurePanel(identity, headSha)
+        && hasCurrentInfrastructureGate(identity, gateInventory)));
 }
 
-function assertRecoverablePriorWorkers({ workers, nextGeneration, context }) {
+function assertRecoverablePriorWorkers({ workers, nextGeneration, context, headSha, gateInventory }) {
   const replacement = workers.find((identity) => identity.attempt >= nextGeneration);
   if (replacement) {
     throw new Error(`worker attempt a${replacement.attempt} already exists for this exact head`);
@@ -573,7 +650,7 @@ function assertRecoverablePriorWorkers({ workers, nextGeneration, context }) {
       );
     }
     const [worker] = matches;
-    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt)) {
+    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt, headSha, gateInventory)) {
       const prefix = context === 'refresh' ? 'refresh ' : '';
       throw new Error(`${prefix}a${expectedAttempt} worker is not a completed recoverable infrastructure failure`);
     }
@@ -582,7 +659,7 @@ function assertRecoverablePriorWorkers({ workers, nextGeneration, context }) {
   return latestWorker;
 }
 
-export function assertReviewGeneration({ callerRunAttempt, inventory, refreshRequested = false }) {
+export function assertReviewGeneration({ callerRunAttempt, inventory, gateInventory, refreshRequested = false }) {
   if (!Number.isSafeInteger(callerRunAttempt)
       || callerRunAttempt < 1
       || callerRunAttempt > MAX_REVIEW_GENERATIONS) {
@@ -613,6 +690,8 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, refreshReq
       workers,
       nextGeneration,
       context: 'refresh',
+      headSha: inventory.headSha,
+      gateInventory,
     });
     if (nextGeneration > MAX_REVIEW_GENERATIONS) {
       throw new Error(`refresh generation limit a${MAX_REVIEW_GENERATIONS} is exhausted`);
@@ -642,6 +721,8 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, refreshReq
     workers,
     nextGeneration: callerRunAttempt,
     context: `caller attempt ${callerRunAttempt}`,
+    headSha: inventory.headSha,
+    gateInventory,
   });
   return {
     review_generation: callerRunAttempt,
@@ -870,9 +951,20 @@ export async function validateCentralDispatch({
     token: targetToken,
     fetchImpl,
   });
+  const gateInventory = reviewInventory.identities.some((identity) => isFailedInfrastructurePanel(identity, request.head_sha))
+    ? await listExactHeadAppChecks({
+      repository: request.repository,
+      headSha: request.head_sha,
+      token: targetToken,
+      fetchImpl,
+      checkName: REVIEW_GATE_CONTEXT,
+      validateRow: validateExactHeadGateCheck,
+    })
+    : undefined;
   const generation = assertReviewGeneration({
     callerRunAttempt,
     inventory: reviewInventory,
+    gateInventory,
     refreshRequested: request.refresh_requested === true,
   });
 

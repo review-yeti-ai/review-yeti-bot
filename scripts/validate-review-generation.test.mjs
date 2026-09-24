@@ -45,6 +45,8 @@ function workerCheck({
   conclusion = 'failure',
   title = 'Review Yeti: review did not complete',
   externalId = `run_${'1'.repeat(32)}:a${attempt}`,
+  summary = 'generation reservation fixture',
+  completedAt = '2026-09-24T18:28:56Z',
 } = {}) {
   return {
     id,
@@ -52,10 +54,57 @@ function workerCheck({
     head_sha: headSha,
     status,
     conclusion,
+    completed_at: completedAt,
     external_id: externalId,
     app: { id: REQUIRED_REVIEW_APP_ID, slug: 'ct-review-bot' },
-    output: { title, summary: 'generation reservation fixture', text: null },
+    output: { title, summary, text: null },
   };
+}
+
+const infrastructurePanelSummary = `Verdict \`BLOCK\` at \`${headSha}\`.\n\nFindings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).\n\nCoverage: mode=panel; expected lanes=2; completed lanes=1; failed lanes=1; roster valid=true; quorum satisfied=false; full panel complete=false.\n\nTransport: bifrost \`pr-reviewer\`.`;
+
+function infrastructurePanelCheck(overrides = {}) {
+  return workerCheck({
+    id: 101,
+    attempt: 2,
+    title: 'Review Yeti: BLOCK',
+    summary: infrastructurePanelSummary,
+    ...overrides,
+  });
+}
+
+function infrastructureGateCheck(overrides = {}) {
+  return {
+    id: 102,
+    name: 'Review Yeti Gate',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    completed_at: '2026-09-24T18:28:57Z',
+    external_id: `review-yeti-gate:v1:${'2'.repeat(64)}`,
+    app: { id: REQUIRED_REVIEW_APP_ID, slug: 'ct-review-bot' },
+    output: {
+      title: 'Review Yeti Gate: Failed',
+      summary: 'Review Yeti Gate failed: infrastructure-failure. This is not an approval.',
+      text: null,
+    },
+    ...overrides,
+  };
+}
+
+function historicalGateCheck(overrides = {}) {
+  return infrastructureGateCheck({
+    id: 98,
+    conclusion: 'cancelled',
+    completed_at: '2026-09-24T18:23:39Z',
+    external_id: `review-yeti-gate:v1:${'3'.repeat(64)}`,
+    output: {
+      title: 'Review Yeti Gate: Failed',
+      summary: 'Review Yeti Gate failed: invalid-evidence. This is not an approval.',
+      text: null,
+    },
+    ...overrides,
+  });
 }
 
 function mergeGroupCheck(id = 99, externalHeadSha = headSha) {
@@ -72,7 +121,7 @@ function page(checkRuns, totalCount = checkRuns.length) {
   return { total_count: totalCount, check_runs: checkRuns };
 }
 
-function generationFetch({ attempt, checkPages, calls = [] }) {
+function generationFetch({ attempt, checkPages, gatePages = [page([])], calls = [] }) {
   const runId = 9000 + attempt;
   return async (url, init) => {
     calls.push({ url, init });
@@ -99,12 +148,14 @@ function generationFetch({ attempt, checkPages, calls = [] }) {
     }
     if (url.includes(`/commits/${headSha}/check-runs?`)) {
       const parsed = new URL(url);
-      assert.equal(parsed.searchParams.get('check_name'), REQUIRED_REVIEW_CONTEXT);
+      const checkName = parsed.searchParams.get('check_name');
+      assert.ok([REQUIRED_REVIEW_CONTEXT, 'Review Yeti Gate'].includes(checkName));
       assert.equal(parsed.searchParams.get('filter'), 'all');
       assert.equal(parsed.searchParams.get('app_id'), String(REQUIRED_REVIEW_APP_ID));
       assert.equal(parsed.searchParams.get('per_page'), '100');
       const pageNumber = Number(parsed.searchParams.get('page'));
-      return response(checkPages[pageNumber - 1] ?? page([], checkPages[0]?.total_count ?? 0));
+      const selectedPages = checkName === 'Review Yeti Gate' ? gatePages : checkPages;
+      return response(selectedPages[pageNumber - 1] ?? page([], selectedPages[0]?.total_count ?? 0));
     }
     if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
@@ -113,11 +164,11 @@ function generationFetch({ attempt, checkPages, calls = [] }) {
   };
 }
 
-async function validate({ attempt, pages, calls = [], refreshRequested = false }) {
+async function validate({ attempt, pages, gatePages, calls = [], refreshRequested = false }) {
   return validateCentralDispatch({
     payload: { ...payloadFor(attempt), ...(refreshRequested ? { refresh_requested: true } : {}) },
     token: 'central-app-token',
-    fetchImpl: generationFetch({ attempt, checkPages: pages, calls }),
+    fetchImpl: generationFetch({ attempt, checkPages: pages, gatePages, calls }),
   });
 }
 
@@ -159,6 +210,129 @@ test('explicit refresh advances the persisted retry ledger from a2 to the bounde
   assert.equal(result.worker_check_count, 2);
   assert.equal(result.latest_worker_check_id, 101);
   assert.equal(result.refresh_requested, true);
+});
+
+test('completed zero-finding panel with a failed lane and exact-head infrastructure Gate admits a3', async () => {
+  const calls = [];
+  const runs = [workerCheck({ id: 100 }), infrastructurePanelCheck()];
+  const gatePages = [page([infrastructureGateCheck()])];
+  for (const refreshRequested of [true, false]) {
+    const result = await validate({
+      attempt: refreshRequested ? 1 : 3,
+      refreshRequested,
+      pages: [page(runs)],
+      gatePages,
+      calls,
+    });
+    assert.equal(result.review_generation, 3);
+    assert.equal(result.latest_worker_check_id, 101);
+  }
+  assert.ok(calls.some(({ url }) => new URL(url).searchParams.get('check_name') === 'Review Yeti Gate'));
+});
+
+test('refresh chooses the newest exact-head App Gate from historical runs regardless of API order', async () => {
+  const runs = [workerCheck({ id: 100 }), infrastructurePanelCheck()];
+  for (const gates of [
+    [infrastructureGateCheck(), historicalGateCheck()],
+    [historicalGateCheck(), infrastructureGateCheck()],
+  ]) {
+    const result = await validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page(runs)],
+      gatePages: [page(gates)],
+    });
+    assert.equal(result.review_generation, 3);
+    assert.equal(result.latest_worker_check_id, 101);
+  }
+});
+
+test('older-only Gate and later noninfrastructure Gate cannot authorize refresh', async () => {
+  const runs = [workerCheck({ id: 100 }), infrastructurePanelCheck()];
+  const laterNoninfra = historicalGateCheck({
+    id: 103,
+    completed_at: '2026-09-24T18:29:00Z',
+  });
+  const tiedNoninfra = historicalGateCheck({
+    id: 103,
+    completed_at: '2026-09-24T18:28:57Z',
+  });
+  for (const gates of [
+    [historicalGateCheck()],
+    [infrastructureGateCheck({ id: 98, completed_at: '2026-09-24T18:23:39Z' })],
+    [infrastructureGateCheck(), laterNoninfra],
+    [laterNoninfra, infrastructureGateCheck()],
+    [infrastructureGateCheck(), tiedNoninfra],
+  ]) {
+    await assert.rejects(
+      validate({ attempt: 1, refreshRequested: true, pages: [page(runs)], gatePages: [page(gates)] }),
+      /refresh a2 worker is not a completed recoverable infrastructure failure/u,
+    );
+  }
+});
+
+test('failed panel remains nonrefreshable without current App-owned infrastructure Gate', async () => {
+  const runs = [workerCheck({ id: 100 }), infrastructurePanelCheck()];
+  const cases = [
+    [],
+    [infrastructureGateCheck({ app: { id: 1, slug: 'other' } })],
+    [infrastructureGateCheck({ head_sha: 'c'.repeat(40) })],
+    [infrastructureGateCheck({ conclusion: 'success' })],
+    [infrastructureGateCheck({ status: 'in_progress', conclusion: null })],
+    [infrastructureGateCheck({ completed_at: '2026-09-24T18:28:55Z' })],
+    [infrastructureGateCheck({ external_id: 'operator:manual' })],
+    [infrastructureGateCheck({ output: { title: 'Review Yeti Gate: Failed', summary: 'Review Yeti Gate failed: code-findings. This is not an approval.', text: null } })],
+  ];
+  for (const gates of cases) {
+    await assert.rejects(
+      validate({ attempt: 1, refreshRequested: true, pages: [page(runs)], gatePages: [page(gates)] }),
+      /refresh a2 worker is not a completed recoverable infrastructure failure|Review Yeti Gate check is not an exact-head App-owned gate/u,
+    );
+  }
+});
+
+test('code findings and other non-SHIP verdicts cannot use the infrastructure Gate to refresh', async () => {
+  const variants = [
+    infrastructurePanelCheck({ summary: infrastructurePanelSummary.replace('Findings: 0', 'Findings: 1') }),
+    infrastructurePanelCheck({ summary: infrastructurePanelSummary.replace('0 raw persona finding(s)', '1 raw persona finding(s)') }),
+    infrastructurePanelCheck({ summary: infrastructurePanelSummary.replace('failed lanes=1', 'failed lanes=0') }),
+    infrastructurePanelCheck({ summary: infrastructurePanelSummary.replace('full panel complete=false', 'full panel complete=true') }),
+    infrastructurePanelCheck({ title: 'Review Yeti: FIX_FIRST' }),
+    infrastructurePanelCheck({ conclusion: 'success' }),
+  ];
+  for (const candidate of variants) {
+    await assert.rejects(
+      validate({
+        attempt: 1,
+        refreshRequested: true,
+        pages: [page([workerCheck({ id: 100 }), candidate])],
+        gatePages: [page([infrastructureGateCheck()])],
+      }),
+      /refresh a2 worker is not a completed recoverable infrastructure failure/u,
+    );
+  }
+});
+
+test('an admitted infrastructure panel cannot allocate a duplicate a3 generation', async () => {
+  const gatePages = [page([infrastructureGateCheck()])];
+  const prior = [workerCheck({ id: 100 }), infrastructurePanelCheck()];
+  const first = await validate({
+    attempt: 1, refreshRequested: true, pages: [page(prior)], gatePages,
+  });
+  assert.equal(first.review_generation, 3);
+
+  await assert.rejects(
+    validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page([...prior, workerCheck({
+        id: 103, attempt: 3, status: 'in_progress', conclusion: null,
+        title: 'Review Yeti: in progress',
+      })])],
+      gatePages,
+    }),
+    /refresh a3 worker is not a completed recoverable infrastructure failure/u,
+  );
 });
 
 test('explicit refresh fails closed after the bounded a3 already exists', async () => {
