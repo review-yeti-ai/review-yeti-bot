@@ -5,6 +5,7 @@ import { createActionDispatchApp } from '../../src/dispatchServer';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { createMergeGroupGate, MergeGroupGateInProgressError } from '../../src/review/mergeGroupGate';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
+import { renderIncompleteInfrastructureTitle } from '../../src/review/publicationFailurePolicy';
 
 const SECRET = 'webhook-secret-with-at-least-thirty-two-bytes';
 const NOW = Date.parse('2026-09-10T12:00:00.000Z');
@@ -176,6 +177,33 @@ describe('native GitHub App webhook admission', () => {
       identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
         headSha: HEAD, baseSha: BASE }),
     }));
+  });
+
+  // REL-1113: the exhausted infrastructure-incomplete check keeps the exact-head re-run action.
+  it.each([
+    ['exhausted', renderIncompleteInfrastructureTitle([{ id: 'arch-lane', failureClass: 'provider_error', providerStatus: 502 }]), true],
+    ['retrying', renderIncompleteInfrastructureTitle([{ id: 'arch-lane', failureClass: 'transport' }], { nextAttempt: 3, maxAttempts: 3 }), true],
+    ['lookalike', 'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502); retrying soon', false],
+    ['verdict', 'Review Yeti: BLOCK', false],
+  ] as const)('re-run admission for an INCOMPLETE-family %s title', async (_label, title, admitted) => {
+    const f = fixture();
+    const original = refreshPayload();
+    const body = refreshPayload({ check_run: { ...original.check_run, output: { title, summary: 'infra' } } });
+    const auth = signed(body, `delivery-incomplete-${_label}`);
+    const response = await request(f.instance).post('/api/webhooks/github')
+      .set('Content-Type', 'application/json')
+      .set('X-GitHub-Event', 'check_run')
+      .set('X-GitHub-Delivery', auth.delivery)
+      .set('X-Hub-Signature-256', auth.signature)
+      .send(auth.raw);
+    expect(response.status).toBe(200);
+    if (admitted) {
+      expect(response.body).toMatchObject({ status: 'accepted', reason: 'refresh_requested' });
+      expect(f.admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ retryRequested: true, retryAfterExecutionAttempt: 1 }));
+    } else {
+      expect(response.body).not.toMatchObject({ reason: 'refresh_requested' });
+      expect(f.admit).not.toHaveBeenCalled();
+    }
   });
 
   it('binds a later failed check requested_action to its exact execution attempt', async () => {
