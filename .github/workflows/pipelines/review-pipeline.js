@@ -6608,7 +6608,7 @@ function postStickySummaryComment(commentBody, prContext, options = {}) {
     // every run would post a fresh summary and the comment would stop being sticky. Say so instead
     // of quietly reintroducing the comment-per-push behaviour this surface exists to prevent.
     if (!expectedPublisherLogin) {
-      return { success: false, postedViaGh: false, error: 'could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment' };
+      return { success: false, postedViaGh: false, error: `could not determine the publishing GitHub identity; refusing to adopt or patch an unverified summary comment${lastPublisherIdentityFailure ? ` (${lastPublisherIdentityFailure})` : ''}` };
     }
     if (options.expectedPublisherLogin && !isExpectedPublisherLogin(expectedPublisherLogin, options.expectedPublisherLogin)) {
       throw new Error('Action review publisher changed before sticky publication');
@@ -6981,7 +6981,7 @@ function postOrOutputComment(commentBody, prContext, publicationPlan = {}, optio
     try {
       assertCurrentPullRequest(prContext, { commandRunner });
       const expectedPublisherLogin = readAuthenticatedPublisherLogin(commandRunner);
-      if (!expectedPublisherLogin) throw new Error('could not determine the publishing GitHub identity');
+      if (!expectedPublisherLogin) throw publisherIdentityError();
       const expectedItems = expectedPublicationItems(plan);
       const existingThreads = expectedItems.length > 0
         ? readActionReviewThreads(commandRunner, prContext)
@@ -7136,8 +7136,69 @@ function cleanPublisherLoginScalar(stdout) {
   return normalizedPublisherLogin(value) ? value : null;
 }
 
+/**
+ * Transient-failure predicate for the identity probes.
+ *
+ * Each probe is a plain authenticated READ, so a 5xx or a secondary rate limit says nothing
+ * about the token -- yet a single unlucky response used to fail the whole publish attempt, and
+ * the verdict was computed but never posted. Retrying is safe precisely because these calls
+ * mutate nothing.
+ *
+ * A 4xx other than 429 is NOT retried: that is a real answer about the credential or its
+ * permissions, and retrying would only delay the diagnostic.
+ */
+function isTransientIdentityProbeFailure(status, stderr) {
+  if (status === 0) return false;
+  const text = String(stderr || '');
+  if (/\bHTTP 5\d\d\b|\b50[234]\b/u.test(text)) return true;
+  // Secondary rate limit: 403 carrying retry-after, or exhausted primary quota.
+  if (/\b429\b/u.test(text)) return true;
+  if (/\b403\b/u.test(text) && /retry-after|x-ratelimit-remaining:\s*0/iu.test(text)) return true;
+  return false;
+}
+
+/** Probe one identity endpoint, retrying only transient failures. Never logs token material. */
+function probePublisherIdentity(commandRunner, args) {
+  const attempts = 3;
+  let last;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    last = ghApi(commandRunner, args);
+    if (last && last.status === 0) return last;
+    if (!isTransientIdentityProbeFailure(last?.status, last?.stderr) || attempt === attempts) break;
+    // Bounded, jittered backoff. No sleep past a few seconds: publishing runs inside the
+    // action's own ceiling, and a stuck publish is worse than a diagnosed failure.
+    const delay = Math.min(2_000, 250 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 100);
+    try { commandRunner('sleep', [String(delay / 1_000)]); } catch (_) { /* best effort */ }
+  }
+  return last;
+}
+
+/**
+ * Why the identity could not be established, in operator-readable form.
+ *
+ * The original code discarded every probe's status and stderr and returned a bare
+ * `{ login: null, verified: false }`, so CI logged only "could not determine the publishing
+ * GitHub identity" with nothing to act on -- no way to tell a missing token from an expired one
+ * from a GitHub 5xx. This is redacted: status codes and the endpoint name only, never a token,
+ * header, or response body.
+ */
+function describePublisherIdentityFailure(probes) {
+  const parts = probes.map(({ name, status, stderr }) => {
+    const code = /\bHTTP (\d{3})\b/u.exec(String(stderr || ''))?.[1];
+    const detail = code ? `HTTP ${code}` : `exit ${status}`;
+    return `${name}=${detail}`;
+  });
+  return `identity probes failed (${parts.join(', ')})`;
+}
+
 function resolveAuthenticatedPublisher(commandRunner) {
-  const result = ghApi(commandRunner, ['api', 'user', '--jq', '.login']);
+  const probes = [];
+  const record = (name, result) => {
+    probes.push({ name, status: result?.status ?? null, stderr: result?.stderr ?? '' });
+    return result;
+  };
+
+  const result = record('user', probePublisherIdentity(commandRunner, ['api', 'user', '--jq', '.login']));
   if (result && result.status === 0) {
     const login = cleanPublisherLoginScalar(result.stdout);
     if (login) return { login, verified: true };
@@ -7145,7 +7206,9 @@ function resolveAuthenticatedPublisher(commandRunner) {
 
   // Installation tokens cannot call GET /user. Their installation metadata identifies the App
   // whose reviews must be trusted; GitHub exposes that App's comments as `<app_slug>[bot]`.
-  const installation = ghApi(commandRunner, ['api', 'installation', '--jq', '.app_slug']);
+  const installation = record('installation', probePublisherIdentity(
+    commandRunner, ['api', 'installation', '--jq', '.app_slug'],
+  ));
   if (installation && installation.status === 0) {
     const slug = cleanPublisherLoginScalar(installation.stdout);
     if (slug) return { login: slug.endsWith('[bot]') ? slug : `${slug}[bot]`, verified: true };
@@ -7154,9 +7217,9 @@ function resolveAuthenticatedPublisher(commandRunner) {
   // The same token may expose its viewer through GraphQL even when the REST
   // identity endpoints are unavailable to an installation token. This is a fixed
   // authenticated query, never an identity supplied by the environment or PR.
-  const viewer = ghApi(commandRunner, [
+  const viewer = record('viewer', probePublisherIdentity(commandRunner, [
     'api', 'graphql', '-f', 'query=query ReviewYetiPublisher { viewer { login } }',
-  ]);
+  ]));
   if (viewer && viewer.status === 0) {
     try {
       const response = JSON.parse(viewer.stdout);
@@ -7171,12 +7234,27 @@ function resolveAuthenticatedPublisher(commandRunner) {
 
   // GITHUB_ACTIONS identifies the runner, not the token's publisher. Never use
   // an assumed github-actions[bot] identity to adopt comments or start writing.
-  return { login: null, verified: false };
+  // The reason travels with the refusal so the failure is actionable in CI.
+  return { login: null, verified: false, reason: describePublisherIdentityFailure(probes) };
 }
 
 function readAuthenticatedPublisherLogin(commandRunner) {
   const publisher = resolveAuthenticatedPublisher(commandRunner);
+  // Record WHY before collapsing to null, so the throw at the call site can name the cause
+  // instead of repeating a bare "could not determine" with nothing to act on.
+  if (!publisher.verified && publisher.reason) {
+    lastPublisherIdentityFailure = publisher.reason;
+  }
   return publisher.verified ? publisher.login : null;
+}
+
+/** Most recent redacted identity-probe failure, for the next thrown diagnostic. */
+let lastPublisherIdentityFailure = '';
+
+/** The identity refusal, with the probe statuses that produced it. */
+function publisherIdentityError() {
+  const suffix = lastPublisherIdentityFailure ? `; ${lastPublisherIdentityFailure}` : '';
+  return new Error(`could not determine the publishing GitHub identity${suffix}`);
 }
 
 /**
@@ -8053,6 +8131,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  // REL-1107: exported so the identity-probe retry and its diagnostics are testable.
+  resolveAuthenticatedPublisher,
+  isTransientIdentityProbeFailure,
+  describePublisherIdentityFailure,
+  publisherIdentityError,
   resolvesToOpenRouterDestination,
   resolveAutoTransportTimeoutMs,
   DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS,
