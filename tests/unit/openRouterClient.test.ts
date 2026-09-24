@@ -253,6 +253,10 @@ describe('OpenRouterClient', () => {
       stream: true,
       streamOptions: { includeUsage: true },
     });
+    expect(buildOpenRouterSdkChatRequest({ ...base, stream: undefined })).toMatchObject({
+      stream: true,
+      streamOptions: { includeUsage: true },
+    });
     expect(buildOpenRouterSdkChatRequest({ ...base, stream: false })).not.toHaveProperty('streamOptions');
   });
 
