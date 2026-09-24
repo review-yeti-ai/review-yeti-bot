@@ -365,8 +365,9 @@ function riskIndexFromKey(answer: JevScoreAnswer, key: string): number {
 
 /**
  * Risk level 1..5 from the score answer: the argmax of `probabilities` over the legend indices,
- * plus one. `score` is deliberately NOT used: the live API returns it as a continuous value in
- * [0,1], not a level (REL-1100), so rounding it would log level 0 or 1 for every file. A tie
+ * plus one. `score` is deliberately NOT used: the live API returns it as the expected 0-based
+ * level index (a mean in [0, n-1], REL-1100), which is off by one from a level and, for a split
+ * distribution, can name a level Jev itself rates unlikely. It is logged raw as `risk_score`. A tie
  * resolves to the HIGHER level, so a shadow log never under-reports risk. Null when no
  * probability names a defined level -- a shadow log records "unknown", it never guesses.
  */

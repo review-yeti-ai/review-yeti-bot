@@ -72,14 +72,16 @@ export interface JevChoiceAnswer {
  *    "probabilities":{"0":0.81,"1":0.07,"2":0.11,"3":0.01,"4":0.0}}
  *
  * `legend` and `probabilities` are keyed by the 0-based index of the question's `criteria`
- * entry, as a string. `score` is a continuous value in [0,1], NOT a level number: the level
- * a caller wants is the most probable legend index. An ordered legend ARRAY (the shape this
+ * entry, as a string. `score` is the EXPECTED level index, sum(index * probability), a
+ * continuous value in [0, n-1] (0.32 above; production shows values like 3.98 for a
+ * near-certain level 5). It is a mean, not a level: the level a caller wants is the most
+ * probable legend index. An ordered legend ARRAY (the shape this
  * client first assumed) is still accepted and normalized to this keyed form by the client, so
  * every consumer sees exactly one shape.
  */
 export interface JevScoreAnswer {
   type: 'score';
-  /** Continuous value in [0,1]. Not a level number. */
+  /** Expected 0-based level index, sum(index * probability): continuous in [0, n-1]. Not a level. */
   score: number;
   /** Level description per 0-based criteria index ("0".."n-1"). */
   legend: Record<string, string>;

@@ -67,8 +67,8 @@ function okOutcome(request: JevAskRequest<string>, over: Partial<{ model: string
       answers[key] = { type: 'choice', choice: over.choice ?? 'source', confidence: 0.81, probabilities: { source: 0.81, test: 0.19 } };
     } else if (question.type === 'score') {
       const level = over.level ?? 4;
-      // The live contract (REL-1100): legend and probabilities keyed by criteria index, score a
-      // continuous value in [0,1] that is NOT the level.
+      // The live contract (REL-1100): legend and probabilities keyed by criteria index, score the
+      // expected 0-based level index (a mean in [0, n-1]) that is NOT the level.
       answers[key] = {
         type: 'score', score: 0.62, legend: Object.fromEntries(question.criteria.map((c, i) => [String(i), c])), confidence: 0.7,
         probabilities: Object.fromEntries(question.criteria.map((_c, i) => [String(i), i === level - 1 ? 0.7 : 0.075])),

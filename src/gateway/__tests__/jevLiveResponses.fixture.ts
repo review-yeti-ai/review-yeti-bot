@@ -3,7 +3,8 @@
  * model `jev-latest`, answered by `jev-1.13.0`) on 2026-09-24 for REL-1100. No secrets.
  *
  * The score answer's `legend` and `probabilities` are keyed by the 0-based criteria index as a
- * string, and `score` is continuous in [0,1] -- not a level number. Shared by the JevClient,
+ * string, and `score` is the expected 0-based level index, sum(index * probability), continuous
+ * in [0, n-1] -- not a level number. Shared by the JevClient,
  * shadow-triage and stub tests so every layer is pinned to the same real contract.
  */
 export interface JevLiveResponse {
