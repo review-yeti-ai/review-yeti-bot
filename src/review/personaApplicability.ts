@@ -5,6 +5,7 @@ import { isDataOrConfigPath, isDocumentationOrAssetPath, isNoReviewableContentFi
 import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { isSubmodulePatch } from './submodulePatch';
 import { omittedSourcePathsOf, unavailablePatchFilesOf, type UnavailablePatchFile } from './patchAvailability';
+import { omittedLockfilePatchReason } from './omittedLockfilePatch';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
 
@@ -377,6 +378,8 @@ function unverifiedLockfileChanges(
     .flatMap((file) => {
       if (isSubmoduleEntry(file)) return [{ path: file.path, reason: 'is a submodule gitlink' }];
       if (!isRegularFileMode(file.mode)) return [{ path: file.path, reason: 'is not a regular file' }];
+      const omitted = omittedLockfilePatchReason(file.patch);
+      if (omitted) return [{ path: file.path, reason: omitted }];
       const verified = verifyLockfileOnlyChange(file.path, file.patch);
       return verified.ok ? [] : [{ path: file.path, reason: verified.reason }];
     });
