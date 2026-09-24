@@ -438,19 +438,34 @@ describe('McpFleetManager Unit Tests', () => {
     });
 
     it('charges a short budget to the request, not to setup (timer placement)', async () => {
-      // Discriminates the timer placement ALONE, given the pre-abort guard is present.
+      // Discriminates the timer placement ALONE, deterministically.
       //
-      // The budget (50ms) is deliberately SHORTER than setup: `getHttpHeaders()` awaits a
-      // Doppler lookup measured at ~470ms, so with the pre-fix placement (timer armed before
-      // that await) the controller is already aborted by the time `fetch` would be called and
-      // the guard prevents dispatch. Arming the timer after setup lets the request go out.
+      // The earlier version of this test relied on the REAL `getHttpHeaders()` latency (~470ms
+      // of Doppler lookup) outrunning a 50ms budget, which made its power contingent on the
+      // environment: mock, cache or remove that lookup and the test silently stops
+      // discriminating (REL-1116 review). Here the slow setup is SUPPLIED, not hoped for.
       //
-      // Scope, verified rather than assumed -- this cost me two wrong claims already:
-      //   * reverting the TIMER PLACEMENT alone      -> this test FAILS (fetchCalls 0 != 1)
-      //   * reverting the timer AND the guard together -> this test PASSES, because the request
-      //     is dispatched with an aborted signal and the mock counts it. That full-revert case
-      //     is caught by the pre-abort test above, not by this one.
-      // So the two tests cover the two halves separately, and neither covers both.
+      // `resolveBifrostApiKey()` is skipped whenever an env key is present, and otherwise awaits
+      // `dopplerManager.getSecret()`. With no env key set, stubbing that method to a 300ms
+      // resolve makes setup deterministic: with the timer armed before it (pre-fix placement)
+      // the budget expires during setup and the request is never dispatched; with the timer
+      // armed at the request boundary it is.
+      const savedKey = process.env.REVIEW_YETI_BIFROST_API_KEY;
+      const savedGateway = process.env.CT_LLM_GATEWAY_API_KEY;
+      const savedBifrost = process.env.BIFROST_API_KEY;
+      const savedMcp = process.env.CT_MCP_KEY;
+      delete process.env.REVIEW_YETI_BIFROST_API_KEY;
+      delete process.env.CT_LLM_GATEWAY_API_KEY;
+      delete process.env.BIFROST_API_KEY;
+      delete process.env.CT_MCP_KEY;
+
+      const manager = mcpFleetManager as unknown as {
+        dopplerManager: { getSecret: (key: string) => Promise<string | null> };
+      };
+      const originalGetSecret = manager.dopplerManager.getSecret;
+      manager.dopplerManager.getSecret = () =>
+        new Promise<string | null>((resolve) => setTimeout(() => resolve(''), 300));
+
       let fetchCalls = 0;
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => {
         fetchCalls += 1;
@@ -472,10 +487,16 @@ describe('McpFleetManager Unit Tests', () => {
         );
         expect(result).toMatchObject({ success: false });
         expect(String(result.error)).toMatch(/timed out/iu);
-        // The request was ISSUED: the budget was charged to the request, not to setup.
+        // The request was ISSUED: the 50ms budget was charged to the request, not to the 300ms
+        // of setup that preceded it.
         expect(fetchCalls).toBe(1);
       } finally {
         fetchSpy.mockRestore();
+        manager.dopplerManager.getSecret = originalGetSecret;
+        if (savedKey !== undefined) process.env.REVIEW_YETI_BIFROST_API_KEY = savedKey;
+        if (savedGateway !== undefined) process.env.CT_LLM_GATEWAY_API_KEY = savedGateway;
+        if (savedBifrost !== undefined) process.env.BIFROST_API_KEY = savedBifrost;
+        if (savedMcp !== undefined) process.env.CT_MCP_KEY = savedMcp;
       }
     });
 
