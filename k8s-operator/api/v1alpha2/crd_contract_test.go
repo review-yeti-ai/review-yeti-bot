@@ -27,6 +27,11 @@ func loadV1Alpha2CRD(t *testing.T) *apiextensionsv1.CustomResourceDefinition {
 	return &crd
 }
 
+// REL-1073: the spec is immutable except that cancelRequested may go from
+// absent/false to true once. A companion rule pins every other field; see
+// crd_cel_test.go for the evaluated behaviour.
+const cancelTransitionRule = "self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && !(has(oldSelf.cancelRequested) && oldSelf.cancelRequested))"
+
 func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	crd := loadV1Alpha2CRD(t)
 	if crd.Name != "prreviewjobs.review-yeti.ai" || crd.Spec.Group != "review-yeti.ai" {
@@ -45,7 +50,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"workerImage", "runSecretName",
 	}
 	wantProperties := append([]string(nil), wantRequired...)
-	wantProperties = append(wantProperties, "executionAttempt", "preparedReview", "qualificationModel", "qualificationProfile", "runnerMode")
+	wantProperties = append(wantProperties, "cancelReason", "cancelRequested", "executionAttempt", "preparedReview", "qualificationModel", "qualificationProfile", "runnerMode")
 	sort.Strings(wantRequired)
 	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)
@@ -69,8 +74,8 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	for _, validation := range spec.XValidations {
 		rules[validation.Rule] = true
 	}
-	if !rules["self == oldSelf"] {
-		t.Fatal("spec immutability rule is missing")
+	if !rules[cancelTransitionRule] {
+		t.Fatal("spec immutability rule (one-way cancelRequested transition) is missing")
 	}
 	if !rules["duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')"] {
 		t.Fatal("bounded 15-to-60-minute deadline rule is missing")
@@ -143,7 +148,7 @@ func TestV1Alpha2CRDPreparedReviewIsOptionalBoundedAndImmutable(t *testing.T) {
 	for _, validation := range spec.XValidations {
 		rules[validation.Rule] = true
 	}
-	if !rules["self == oldSelf"] ||
+	if !rules[cancelTransitionRule] ||
 		!rules["!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))"] {
 		t.Fatal("preparedReview must remain immutable and restricted to the prebaked app-gate lane")
 	}

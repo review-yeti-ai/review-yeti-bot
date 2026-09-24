@@ -4,6 +4,10 @@ import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
 import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { CANCEL_REASON_MAX_LENGTH } from '../../src/k8s/kubernetesReviewJobProjector';
+
+const CANCEL_TRANSITION_RULE = 'self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && '
+  + '!(has(oldSelf.cancelRequested) && oldSelf.cancelRequested))';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const projection = buildReviewJobProjection({
@@ -43,6 +47,8 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Object.keys(projection.spec).sort()).toEqual([...spec.required, 'runnerMode'].sort());
     expect(Object.keys(spec.properties).sort()).toEqual([
       ...spec.required,
+      'cancelReason',
+      'cancelRequested',
       'executionAttempt',
       'preparedReview',
       'qualificationModel',
@@ -62,9 +68,25 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     }));
     expect(spec.properties.preparedReview).not.toHaveProperty('default');
     const rules = spec['x-kubernetes-validations'].map((validation: { rule: string }) => validation.rule);
-    expect(rules).toContain('self == oldSelf');
+    expect(rules).toContain(CANCEL_TRANSITION_RULE);
     expect(rules).toContain("!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))");
     expect(projection.spec).not.toHaveProperty('preparedReview');
+  });
+
+  // REL-1073: the dispatcher's cancel merge patch must name fields the CRD
+  // declares, or the API server prunes them and answers 200 anyway.
+  it('declares the fields the cancellation merge patch writes, with a one-way transition rule', () => {
+    const spec = crdSchema().properties.spec;
+    expect(spec.properties.cancelRequested).toEqual(expect.objectContaining({ type: 'boolean' }));
+    expect(spec.properties.cancelReason).toEqual(expect.objectContaining({
+      type: 'string', minLength: 1, maxLength: CANCEL_REASON_MAX_LENGTH,
+    }));
+    expect(spec.required).not.toContain('cancelRequested');
+    expect(spec.required).not.toContain('cancelReason');
+    const rules = spec['x-kubernetes-validations'].map((validation: { rule: string }) => validation.rule);
+    expect(rules).toContain(CANCEL_TRANSITION_RULE);
+    expect(rules).not.toContain('self == oldSelf');
+    expect(projection.spec).not.toHaveProperty('cancelRequested');
   });
 
   it('accepts the projected identities under every declared string pattern', () => {
