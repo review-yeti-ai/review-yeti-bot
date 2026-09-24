@@ -411,11 +411,13 @@ describe('changed public signatures', () => {
     ]);
   });
 
-  it('stays linear on a long minified line', () => {
-    const long = `+public ${'a '.repeat(50_000)}`;
+  it('stays fast on long lines built to make a declaration pattern backtrack', () => {
+    const lines = [`+public ${' '.repeat(50_000)}x`, `+public ${'a '.repeat(50_000)}`, `+${' '.repeat(50_000)}public static x`];
     const started = Date.now();
-    extractChangedPublicSignatures('x.java', `@@ -1,1 +1,1 @@\n${long}`);
+    for (const line of lines) extractChangedPublicSignatures('x.java', `@@ -1,1 +1,1 @@\n${line}`);
     expect(Date.now() - started).toBeLessThan(1_000);
+    expect(extractChangedPublicSignatures('x.java', '@@ -1,1 +1,1 @@\n+public static final Map<String, List<Item>> loadItems(Path root) {')
+      .map((s) => s.symbol)).toEqual(['loadItems']);
   });
 });
 

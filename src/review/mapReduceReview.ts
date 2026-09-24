@@ -642,7 +642,9 @@ const PUBLIC_DECLARATIONS: readonly RegExp[] = [
   /^\s*(?:def|defmacro)\s+([a-z]\w*[?!]?)/u,
   /^\s*defmodule\s+([A-Z][\w.]*)/u,
   // Java / Kotlin / C#: public members.
-  /^\s*public\s+(?:static\s+|final\s+|abstract\s+|override\s+|async\s+|sealed\s+|virtual\s+)*(?:[\w<>[\],.?\s]+\s+)?([A-Za-z_]\w*)\s*[({]/u,
+  // Modifiers and the return type are at most six whitespace-free tokens; tokens and
+  // separators never overlap, so a long run of spaces cannot make the match backtrack.
+  /^\s*public\s+(?:[\w<>[\],.?]+\s+){0,6}([A-Za-z_]\w*)\s*[({]/u,
   /^\s*public\s+(?:static\s+|final\s+|abstract\s+|sealed\s+)*(?:class|interface|enum|record|struct)\s+([A-Za-z_]\w*)/u,
 ];
 
