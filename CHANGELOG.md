@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.86.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.2...v1.86.3) (2026-09-24)
+
+
+### Bug Fixes
+
+* **chart:** install the controller-gen PRReviewJob CRD instead of a hand copy (REL-1097) ([#1023](https://github.com/review-yeti-ai/review-yeti-bot/issues/1023)) ([d75da9d](https://github.com/review-yeti-ai/review-yeti-bot/commit/d75da9def82c90c435a6e8fb3834a56ecd2a4c44))
+* **review:** name an omitted lockfile patch and drop wrong advice (REL-1099) ([#1024](https://github.com/review-yeti-ai/review-yeti-bot/issues/1024)) ([f301323](https://github.com/review-yeti-ai/review-yeti-bot/commit/f3013236dcc325c13b578c39ef504430faa787fe))
+
 ## [1.86.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.86.1...v1.86.2) (2026-09-24)
 
 
