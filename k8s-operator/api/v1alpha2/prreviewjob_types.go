@@ -108,7 +108,7 @@ type PRReviewJobSpec struct {
 	// less-trusted principal can write these resources. Multi-tenant installs
 	// MUST restrict PRReviewJob create/patch via RBAC and SHOULD add publisher
 	// verification or an admission-time registry policy.
-	// +kubebuilder:validation:Pattern=`^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
+	// +kubebuilder:validation:Pattern=`^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 	WorkerImage string `json:"workerImage"`
 	// RunnerMode defines whether the worker image is an immutable prebaked container
 	// or a generic runner image that executes runtime install steps. Defaults to prebaked.
@@ -178,7 +178,7 @@ type PRReviewJobSpec struct {
 // two vendor registries. Removing that was necessary for self-hosting, and it
 // moved the provenance decision from the schema to the deployment — which is
 // why it is written down here rather than left implicit.
-const WorkerImagePattern = `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
+const WorkerImagePattern = `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 
 type DispatchTimingStage string
 

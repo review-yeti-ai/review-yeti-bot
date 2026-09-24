@@ -100,7 +100,7 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		// while still permitting a mutable tag inside the vendor namespace
 		// (`ghcr.io/review-yeti-ai/<any>:<tag>`). Requiring a sha256 digest on
 		// every non-node image is strictly stronger and tenant-neutral.
-		"workerImage":   `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
+		"workerImage":   `^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`,
 		"runSecretName": `^ct-review-run-[a-f0-9]{32}(-a[1-9][0-9]*)?$`,
 	}
 	for field, want := range wants {

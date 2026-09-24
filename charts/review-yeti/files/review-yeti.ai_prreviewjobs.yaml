@@ -185,7 +185,7 @@ spec:
                   less-trusted principal can write these resources. Multi-tenant installs
                   MUST restrict PRReviewJob create/patch via RBAC and SHOULD add publisher
                   verification or an admission-time registry policy.
-                pattern: ^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$
+                pattern: ^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?/[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$
                 type: string
             required:
             - baseSha
