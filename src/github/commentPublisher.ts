@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { codeFence } from '../review/findingPublication';
 import { normalizeFindingReplacement } from '../review/reviewCore';
 import { logger } from '../utils/logger';
+import { DEFAULT_GITHUB_RETRY, withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { PanelFinding, FixOption } from '../panel/panelEngine';
 
@@ -52,6 +53,8 @@ export interface CommentPublisherOptions {
   allowUserToken?: boolean;
   /** Optional authoritative head lookup used immediately before every write. */
   currentHeadSha?: () => Promise<string>;
+  /** REL-1103: shared transient-retry policy, e.g. the worker's `deadlineAtMs`. */
+  retry?: GitHubRetryOptions;
 }
 
 export type FetchImplementation = (
@@ -297,6 +300,11 @@ export function formatInlineCommentBody(
   return body;
 }
 
+/** A synthetic 200 carrying the object a reconciled write had already created. */
+function markerResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), { status: 200, headers: { 'content-type': 'application/json' } });
+}
+
 export class CommentPublisher {
   private baseUrl: string;
   private token: string;
@@ -309,6 +317,7 @@ export class CommentPublisher {
   private readonly random: () => number;
   private readonly currentHeadSha?: () => Promise<string>;
   private publisherLogin?: string;
+  private readonly retry: GitHubRetryOptions;
 
   constructor(options: CommentPublisherOptions = {}) {
     this.baseUrl = (options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com').replace(/\/$/, '');
@@ -323,8 +332,9 @@ export class CommentPublisher {
     }
     this.token = options.githubToken || process.env.GITHUB_APP_INSTALLATION_TOKEN || process.env.GITHUB_TOKEN || 'ghs_fallback_token_dev';
     this.maxRetries = options.maxRetries ?? 3;
-    this.initialRetryDelayMs = options.initialRetryDelayMs ?? 100;
-    this.maxDelayMs = options.maxDelayMs ?? 2000;
+    this.initialRetryDelayMs = options.initialRetryDelayMs ?? options.retry?.baseDelayMs ?? DEFAULT_GITHUB_RETRY.baseDelayMs;
+    this.maxDelayMs = options.maxDelayMs ?? options.retry?.maxDelayMs ?? DEFAULT_GITHUB_RETRY.maxDelayMs;
+    this.retry = options.retry || {};
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
     this.now = options.now || Date.now;
     this.sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
@@ -333,51 +343,42 @@ export class CommentPublisher {
     this.publisherLogin = options.publisherLogin;
   }
 
-  private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
-    let delay = this.initialRetryDelayMs;
+  /**
+   * REL-1103: transient GitHub responses go through the shared bounded policy
+   * (`githubRetry.ts`). Reads and PATCHes retry 5xx, secondary rate limits and
+   * network failures; a POST retries a rate limit (rejected before processing)
+   * but a 5xx only through `reconcile`, which finds the object a lost attempt
+   * created by its idempotency marker, so a retry never duplicates a review
+   * or comment. Non-2xx outcomes that are not retried are returned unchanged.
+   */
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    reconcile?: () => Promise<Response | undefined>,
+  ): Promise<Response> {
     const headers = new Headers(init.headers || {});
     headers.set('Content-Type', 'application/json');
     headers.set('Authorization', `Bearer ${this.token}`);
     headers.set('User-Agent', 'ct-review-bot[bot]');
 
     const requestInit: RequestInit = { ...init, headers };
-
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        const response = await this.fetchImplementation(url, requestInit);
-
-        if (response.status === 429 || response.status === 403) {
-          const retryAfter = response.headers.get('retry-after');
-          const rateLimitReset = response.headers.get('x-ratelimit-reset');
-
-          let waitMs = delay;
-          if (retryAfter) {
-            waitMs = parseInt(retryAfter, 10) * 1000;
-          } else if (rateLimitReset) {
-            const resetTimeMs = parseInt(rateLimitReset, 10) * 1000;
-            waitMs = Math.max(0, resetTimeMs - this.now());
-          }
-
-          waitMs = Math.min(waitMs, this.maxDelayMs);
-          const jitter = Math.floor(this.random() * 50);
-
-          if (attempt < this.maxRetries) {
-            logger.warn(`Rate limited by GitHub API (${response.status}). Retrying in ${waitMs + jitter}ms... (attempt ${attempt + 1})`);
-            await this.sleep(waitMs + jitter);
-            delay *= 2;
-            continue;
-          }
-        }
-
-        return response;
-      } catch (err) {
-        if (String(init.method || 'GET').toUpperCase() === 'POST') throw err;
-        if (attempt === this.maxRetries) throw err;
-        await this.sleep(delay);
-        delay *= 2;
-      }
-    }
-    throw new Error('Max retries reached during GitHub API request');
+    const method = String(init.method || 'GET').toUpperCase();
+    return withGitHubRetry<Response>({
+      operation: `${method} ${url.startsWith(this.baseUrl) ? url.slice(this.baseUrl.length) : url}`,
+      method,
+      attempt: () => this.fetchImplementation(url, requestInit),
+      retryNetworkErrors: true,
+      ...(reconcile ? { reconcile } : {}),
+    }, {
+      ...this.retry,
+      maxAttempts: this.maxRetries + 1,
+      baseDelayMs: this.initialRetryDelayMs,
+      maxDelayMs: this.maxDelayMs,
+      now: this.now,
+      sleep: this.sleep,
+      random: this.random,
+      ...(init.signal ? { signal: init.signal } : {}),
+    });
   }
 
   private async findExistingReview(marker: string, owner: string, repo: string, prNumber: number): Promise<number | undefined> {
@@ -442,7 +443,12 @@ export class CommentPublisher {
       return this.fetchWithRetry(id === undefined ? endpoint : `${this.baseUrl}/repos/${req.owner}/${req.repo}/issues/comments/${id}`, {
         method: id === undefined ? 'POST' : 'PATCH',
         body: JSON.stringify({ body: `${marker}\n${req.body}` }),
-      });
+      }, id === undefined ? async () => {
+        // REL-1103: a 5xx POST may have created the overview. Retry only once
+        // the marker lookup proves it did not; otherwise use what landed.
+        const landed = await findOverview();
+        return landed === undefined ? undefined : markerResponse({ id: landed });
+      } : undefined);
     };
     const existingId = await findOverview();
     let response: Response;
@@ -545,7 +551,11 @@ export class CommentPublisher {
       await this.assertCurrentHead(req.commitSha);
       let response: Response;
       try {
-        response = await this.fetchWithRetry(endpoint, { method: 'POST', body: JSON.stringify(payload) });
+        response = await this.fetchWithRetry(endpoint, { method: 'POST', body: JSON.stringify(payload) }, async () => {
+          // REL-1103: reconcile a 5xx by this finding's marker before re-sending.
+          const landed = (await listComments()).find((c: any) => hasMarker([c]));
+          return landed === undefined ? undefined : markerResponse(landed);
+        });
       } catch (error) {
         const recovered = await listComments();
         if (!hasMarker(recovered)) throw error;
@@ -606,11 +616,19 @@ export class CommentPublisher {
         }),
       };
 
+      // REL-1103: with an idempotency marker a 5xx POST is retried only after
+      // the marker lookup proves the lost attempt published nothing. Without a
+      // marker there is no exact identity to reconcile, so it is not retried.
+      const reconcileByMarker = marker ? async () => {
+        const landed = await this.findExistingReview(marker, owner, repo, prNumber);
+        return landed === undefined ? undefined : markerResponse({ id: landed });
+      } : undefined;
+
       await this.assertCurrentHead(commitSha);
       let res = await this.fetchWithRetry(url, {
         method: 'POST',
         body: JSON.stringify(payload),
-      });
+      }, reconcileByMarker);
 
       let retriedWithoutInline = false;
       let errorText = '';
@@ -633,7 +651,7 @@ export class CommentPublisher {
               event,
               commit_id: commitSha,
             }),
-          });
+          }, reconcileByMarker);
         }
       }
 
@@ -653,7 +671,7 @@ export class CommentPublisher {
           const issueRes = await this.fetchWithRetry(issueUrl, {
             method: 'POST',
             body: JSON.stringify({ body: fallbackBody }),
-          });
+          }, reconcileByMarker);
           if (issueRes.ok) {
             const issueData: any = await issueRes.json();
             return { success: true, reviewId: issueData.id, commentsCreated: 1 };

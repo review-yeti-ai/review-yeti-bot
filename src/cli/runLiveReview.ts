@@ -25,6 +25,7 @@ import {
 } from '../qualification/findingFingerprint';
 import {
   isPublishingReviewWorker,
+  githubRetryOptionsFromEnv,
   runPublishingReviewWorker,
 } from './publishingReview';
 import { WorkerStatusPoller } from './workerStatusPoller';
@@ -1744,7 +1745,9 @@ export async function runWorker(
     if (!token.startsWith('ghs_')) {
       throw new Error('publishing review worker requires a ghs_ installation token');
     }
-    const checkClient = new GitHubInstallationClient({ token });
+    // REL-1103: transient GitHub responses on check create/update retry, but
+    // never past this worker's terminal deadline.
+    const checkClient = new GitHubInstallationClient({ token, retry: githubRetryOptionsFromEnv(workerEnv) });
 
     const rootAbortController = new AbortController();
     let terminationSignal: NodeJS.Signals | undefined;

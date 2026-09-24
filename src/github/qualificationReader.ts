@@ -5,6 +5,7 @@ import {
   type GitDiffFailureReason, type GitDiffSource,
 } from './gitDiffSource';
 import { patchUnavailableNote } from '../review/patchAvailability';
+import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 
 const PR_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}';
 const FILES_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files';
@@ -40,6 +41,11 @@ export interface SameHeadReviewSource {
  */
 export interface SameHeadReviewSourceOptions {
   gitDiffSource?: GitDiffSource;
+  /**
+   * REL-1103: transient-response retry policy for these reads (all GETs),
+   * e.g. the worker's `deadlineAtMs`. Defaults to the shared bounded policy.
+   */
+  retry?: GitHubRetryOptions;
   /** Observability only: which source served a 406 diff, and why git did not. */
   onLargeDiffSource?: (outcome: { source: 'git' | 'pull-files'; reason?: GitDiffFailureReason; files?: number }) => void;
 }
@@ -140,6 +146,19 @@ async function safeRequest(
     }
     throw new GitHubQualificationReadError('GitHub qualification read failed', githubReads);
   }
+}
+
+/**
+ * REL-1103: every qualification read is a GET, so each one retries transient
+ * GitHub responses (5xx, secondary rate limits) through the shared policy. The
+ * read counter still counts logical reads; retried attempts are logged.
+ */
+function retryingRequest(request: GitHubQualificationRequest, retry?: GitHubRetryOptions): GitHubQualificationRequest {
+  return (route, parameters) => withGitHubRetry({
+    operation: route,
+    method: route.split(' ', 1)[0],
+    attempt: () => request(route, parameters),
+  }, retry);
 }
 
 const GIT_PATH_ESCAPES: Record<string, string> = { '"': '\\"', '\\': '\\\\', '\n': '\\n', '\t': '\\t', '\r': '\\r' };
@@ -292,7 +311,9 @@ export async function loadSameHeadReviewSource(
 ): Promise<SameHeadReviewSource> {
   const { owner, repo } = validateInput(input);
   const octokit = requestFn ? undefined : new Octokit({ auth: input.token });
-  const request = requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest);
+  const request = retryingRequest(
+    requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest), options.retry,
+  );
   const parameters = { owner, repo, pull_number: input.prNumber };
 
   const initialData = (await safeRequest(request, parameters, 1)).data;
@@ -347,6 +368,7 @@ export interface PullRequestIdentityInput {
 export async function readPullRequestIdentity(
   input: PullRequestIdentityInput,
   requestFn?: GitHubQualificationRequest,
+  retry?: GitHubRetryOptions,
 ): Promise<{ baseSha: string; headSha: string }> {
   const { owner, repo } = validateInput({
     ...input,
@@ -354,6 +376,8 @@ export async function readPullRequestIdentity(
     expectedHeadSha: '0'.repeat(40),
   });
   const octokit = requestFn ? undefined : new Octokit({ auth: input.token });
-  const request = requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest);
+  const request = retryingRequest(
+    requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest), retry,
+  );
   return pullRequestIdentity((await safeRequest(request, { owner, repo, pull_number: input.prNumber }, 1)).data, 1);
 }

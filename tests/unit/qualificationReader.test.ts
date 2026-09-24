@@ -106,7 +106,7 @@ describe('same-head qualification reader', () => {
       new Error('ghs_secret_token raw provider response'),
       { status: 429 },
     ));
-    const error = await loadSameHeadReviewSource(input(), request as any)
+    const error = await loadSameHeadReviewSource(input(), request as any, { retry: { sleep: async () => undefined } })
       .catch((caught) => caught as GitHubQualificationReadError) as GitHubQualificationReadError;
     expect(error).toBeInstanceOf(GitHubQualificationReadError);
     expect(error.message).toBe('GitHub qualification read failed HTTP 429');
@@ -124,7 +124,8 @@ describe('same-head qualification reader', () => {
       // httpStatus is the single source of the status; the message text is
       // for humans only and is free to change independently.
       const request = vi.fn().mockRejectedValue(Object.assign(new Error('raw provider response'), { status }));
-      const error = await loadSameHeadReviewSource(input(), request as any)
+      // REL-1103: transient statuses retry first; a no-op sleep keeps this fast.
+      const error = await loadSameHeadReviewSource(input(), request as any, { retry: { sleep: async () => undefined } })
         .catch((caught) => caught as GitHubQualificationReadError) as GitHubQualificationReadError;
       expect(error).toBeInstanceOf(GitHubQualificationReadError);
       expect(error.httpStatus).toBe(status);
