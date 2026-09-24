@@ -1745,3 +1745,68 @@ func TestBuildWorkerJobRefusesMapReduceWithLineBreak(t *testing.T) {
 		}
 	}
 }
+
+// REL-1083: REVIEW_YETI_MAP_REDUCE_MIN_CHARS reaches the app-gate worker verbatim
+// only when configured and map-reduce itself is configured; never the
+// receipt-only lane.
+func TestBuildWorkerJobForwardsMapReduceMinCharsOnlyWithMapReduce(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.MapReduceMinCharsEnv != "REVIEW_YETI_MAP_REDUCE_MIN_CHARS" {
+		t.Fatalf("map-reduce min chars env drifted from the worker's MAP_REDUCE_MIN_CHARS_ENV: %s", job.MapReduceMinCharsEnv)
+	}
+
+	cases := []struct {
+		mapReduce, minChars string
+		want                bool
+	}{
+		{"", "", false},
+		{"", "200000", false},
+		{"all", "", false},
+		{"all", "200000", true},
+		{"review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta", "160000", true},
+	}
+	for _, c := range cases {
+		input.Publishing.MapReduce = c.mapReduce
+		input.Publishing.MapReduceMinChars = c.minChars
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build app-gate job %+v: %v", c, err)
+		}
+		container := built.Spec.Template.Spec.Containers[0]
+		if got := hasEnv(container, job.MapReduceMinCharsEnv); got != c.want {
+			t.Fatalf("%+v: min chars projected=%v, want %v", c, got, c.want)
+		}
+		if c.want && envValue(container, job.MapReduceMinCharsEnv) != c.minChars {
+			t.Fatalf("%+v: min chars must be forwarded verbatim, got %q", c, envValue(container, job.MapReduceMinCharsEnv))
+		}
+	}
+
+	input.Publishing.MapReduce = "all"
+	input.Publishing.MapReduceMinChars = "200000"
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.MapReduceMinCharsEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.MapReduceMinCharsEnv)
+	}
+}
+
+func TestBuildWorkerJobRefusesMapReduceMinCharsWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	input.Publishing.MapReduce = "all"
+	input.Publishing.MapReduceMinChars = "200000\n"
+	if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "map-reduce min chars") {
+		t.Fatalf("a line break in the map-reduce min chars must refuse the Job, got %v", err)
+	}
+}

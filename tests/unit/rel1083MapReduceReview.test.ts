@@ -22,7 +22,11 @@ import { MAX_FINDINGS_PER_PERSONA } from '../../src/review/workerReviewCompletio
 import {
   CHUNK_CALL_ESTIMATE_MS,
   DEFAULT_MAP_REDUCE_CONCURRENCY,
+  DEFAULT_MAP_REDUCE_MIN_CHARS,
   MAP_REDUCE_FLAG,
+  MAP_REDUCE_MIN_CHARS_ENV,
+  MAX_MERGED_CHUNK_CHARS,
+  MIN_CHUNK_CHARS,
   MAX_CHUNKS_PER_LANE,
   MAX_FINDINGS_PER_LANE,
   REDUCE_MERGE_LINE_WINDOW,
@@ -44,6 +48,8 @@ import {
   mapReduceDeadlineFromEnv,
   mapReduceEnabledFor,
   mapReduceKeepTruncated,
+  mapReduceMinChars,
+  laneContentChars,
   planLaneChunks,
   renderMapReduceSummary,
   renderReduceRequest,
@@ -72,6 +78,17 @@ afterEach(() => {
 });
 
 const ON: MapReduceInput = { enabled: true };
+/**
+ * The flag with its trigger lowered to one lane budget (the lowest it goes), so the
+ * chunking mechanics can be exercised on fixtures of a few budgets. The default
+ * trigger (160k) is covered by the REL-1083 threshold tests below.
+ */
+const ON_AT_BUDGET: MapReduceInput = { enabled: true, minChars: PERSONA_BUDGET_CHARS };
+
+/** `planLaneChunks` with the trigger at one lane budget (see `ON_AT_BUDGET`). */
+function planAtBudget(...[laneId, candidates, options]: Parameters<typeof planLaneChunks>) {
+  return planLaneChunks(laneId, candidates, { minChars: PERSONA_BUDGET_CHARS, ...options });
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -182,7 +199,7 @@ describe('REVIEW_YETI_MAP_REDUCE flag', () => {
   it.each(['1', 'true', 'on', 'all', 'ALL'])('is on for every repository with %s', (raw) => {
     expect(mapReduceEnabledFor({ REVIEW_YETI_MAP_REDUCE: raw }, 'acme/anything')).toBe(true);
     expect(loadMapReduceInput({ env: { REVIEW_YETI_MAP_REDUCE: raw }, repository: 'acme/anything' }))
-      .toEqual({ enabled: true, concurrency: DEFAULT_MAP_REDUCE_CONCURRENCY });
+      .toEqual({ enabled: true, concurrency: DEFAULT_MAP_REDUCE_CONCURRENCY, minChars: DEFAULT_MAP_REDUCE_MIN_CHARS });
   });
 
   it('can be enabled per repository first (comma or space list)', () => {
@@ -197,7 +214,7 @@ describe('REVIEW_YETI_MAP_REDUCE flag', () => {
     const at = '2026-09-24T12:30:00.000Z';
     expect(mapReduceDeadlineFromEnv({ REVIEW_TERMINAL_DEADLINE: at })).toBe(Date.parse(at) - WORKER_PUBLISH_RESERVE_MS);
     expect(loadMapReduceInput({ env: { REVIEW_YETI_MAP_REDUCE: 'all', REVIEW_TERMINAL_DEADLINE: at }, repository: 'a/b' }))
-      .toEqual({ enabled: true, concurrency: 3, deadlineAtMs: Date.parse(at) - WORKER_PUBLISH_RESERVE_MS });
+      .toEqual({ enabled: true, concurrency: 3, minChars: DEFAULT_MAP_REDUCE_MIN_CHARS, deadlineAtMs: Date.parse(at) - WORKER_PUBLISH_RESERVE_MS });
     expect(WORKER_PUBLISH_RESERVE_MS).toBeGreaterThanOrEqual(120_000); // 60 s Job reserve + 60 s publish
   });
 
@@ -225,13 +242,13 @@ describe('REVIEW_YETI_MAP_REDUCE flag', () => {
 
 describe('planLaneChunks', () => {
   it('does not chunk a lane that fits one budget', () => {
-    expect(planLaneChunks('sec-lane', [candidate('src/a.ts', 20_000, 'a'), candidate('src/b.ts', 20_000, 'b')])).toBeNull();
-    expect(planLaneChunks('sec-lane', [])).toBeNull();
+    expect(planAtBudget('sec-lane', [candidate('src/a.ts', 20_000, 'a'), candidate('src/b.ts', 20_000, 'b')])).toBeNull();
+    expect(planAtBudget('sec-lane', [])).toBeNull();
   });
 
   it('chunks a synthetic huge diff by directory, every chunk within one budget, covering every file once', () => {
     const lane = hugeLane(8, 5, 6_000); // 40 files, ~250k characters
-    const plan = planLaneChunks('arch-lane', lane)!;
+    const plan = planAtBudget('arch-lane', lane)!;
     expect(plan).not.toBeNull();
     expect(plan.chunks.length).toBeGreaterThanOrEqual(5);
     for (const chunk of plan.chunks) {
@@ -252,14 +269,14 @@ describe('planLaneChunks', () => {
   it('is deterministic whatever the input order', () => {
     const lane = hugeLane(4, 4, 8_000);
     const shuffled = [...lane].reverse();
-    expect(chunkPaths(planLaneChunks('l', shuffled)!)).toEqual(chunkPaths(planLaneChunks('l', lane)!));
-    expect(planLaneChunks('l', lane)!.chunks.map((chunk) => chunk.label)).toEqual(planLaneChunks('l', shuffled)!.chunks.map((chunk) => chunk.label));
+    expect(chunkPaths(planAtBudget('l', shuffled)!)).toEqual(chunkPaths(planAtBudget('l', lane)!));
+    expect(planAtBudget('l', lane)!.chunks.map((chunk) => chunk.label)).toEqual(planAtBudget('l', shuffled)!.chunks.map((chunk) => chunk.label));
   });
 
   it('splits an oversized multi-hunk file at hunk boundaries, keeping exact line numbers', () => {
     const patch = files(multiHunkFile('src/huge.ts', 6, 250, 'hg'))[0].patch!;
     expect(patch.length).toBeGreaterThan(PERSONA_BUDGET_CHARS);
-    const plan = planLaneChunks('qual-lane', [{ path: 'src/huge.ts', effectivePatch: patch, wholePatch: null }])!;
+    const plan = planAtBudget('qual-lane', [{ path: 'src/huge.ts', effectivePatch: patch, wholePatch: null }])!;
     expect(plan.chunks.length).toBeGreaterThanOrEqual(2);
     const parts = plan.chunks.flatMap((chunk) => chunk.units);
     expect(parts.every((unit) => unit.path === 'src/huge.ts' && unit.parts === parts.length)).toBe(true);
@@ -275,19 +292,19 @@ describe('planLaneChunks', () => {
 
   it('packs a single unsplittable file larger than the budget on its own, in full up to the hard cap', () => {
     const big = candidate('src/big.ts', 90_000, 'big');
-    const plan = planLaneChunks('qual-lane', [big, candidate('src/small.ts', 2_000, 'sm')])!;
+    const plan = planAtBudget('qual-lane', [big, candidate('src/small.ts', 2_000, 'sm')])!;
     const alone = plan.chunks.find((chunk) => chunk.units.some((unit) => unit.path === 'src/big.ts'))!;
     expect(alone.units).toHaveLength(1);
     expect(alone.pack!.entries.get('src/big.ts')!.depth).toBe('full');
     expect(alone.pack!.entries.get('src/big.ts')!.promptPatch).toContain('big_TAIL_MARKER');
     // A lane of just that one file has nothing to chunk.
-    expect(planLaneChunks('qual-lane', [big])).toBeNull();
+    expect(planAtBudget('qual-lane', [big])).toBeNull();
   });
 
   it('sends a file past the 20k per-file cut whole in its chunk', () => {
     const whole = candidate('src/cut.ts', 30_000, 'cut').effectivePatch;
     const cut: BudgetCandidate = { path: 'src/cut.ts', effectivePatch: `${whole.slice(0, MAX_FILE_PATCH_CHARS)}\n... [Diff truncated]`, wholePatch: whole };
-    const plan = planLaneChunks('l', [cut, candidate('src/zz/other.ts', 40_000, 'o')])!;
+    const plan = planAtBudget('l', [cut, candidate('src/zz/other.ts', 40_000, 'o')])!;
     const entry = plan.chunks.flatMap((chunk) => [...chunk.pack!.entries]).find(([path]) => path === 'src/cut.ts')![1];
     expect(entry.depth).toBe('full');
     expect(entry.promptPatch).toBe(whole);
@@ -296,7 +313,7 @@ describe('planLaneChunks', () => {
 
   it('caps a lane at MAX_CHUNKS_PER_LANE, collapsing the rest into one packed chunk that drops no file', () => {
     const lane = hugeLane(30, 2, 20_000); // 60 files, ~1.2M characters
-    const plan = planLaneChunks('arch-lane', lane)!;
+    const plan = planAtBudget('arch-lane', lane)!;
     expect(plan.plannedChunks).toBeGreaterThan(MAX_CHUNKS_PER_LANE);
     expect(plan.chunks).toHaveLength(MAX_CHUNKS_PER_LANE);
     const last = plan.chunks[plan.chunks.length - 1];
@@ -317,7 +334,7 @@ describe('deadline cap', () => {
   });
 
   it('collapses the chunks past the cap into one packed chunk, keeping every file', () => {
-    const plan = planLaneChunks('l', hugeLane(6, 3, 10_000))!;
+    const plan = planAtBudget('l', hugeLane(6, 3, 10_000))!;
     const capped = capLaneChunks(plan, 2, 'deadline');
     expect(capped.chunks).toHaveLength(2);
     expect(capped.chunks[1].disclosure.collapsed).toEqual({ reason: 'deadline', plannedChunks: plan.chunks.length - 1 });
@@ -343,7 +360,7 @@ describe('resolveMapReduceReviewApplicability', () => {
 
   it('returns exactly the shared decision, whatever the flag', () => {
     const shared = resolveReviewApplicability(personas, files(diff));
-    for (const mapReduce of [undefined, ON]) {
+    for (const mapReduce of [undefined, ON, ON_AT_BUDGET]) {
       const decision = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce });
       expect(decision.applicable.map((p: any) => p.id)).toEqual(shared.applicable.map((p: any) => p.id));
       expect(decision.effectiveFiles.map((f) => [f.path, f.patch])).toEqual(shared.effectiveFiles.map((f) => [f.path, f.patch]));
@@ -358,24 +375,24 @@ describe('resolveMapReduceReviewApplicability', () => {
 
   it('is null with the flag off, and chunks only the lane over budget', () => {
     expect(resolveMapReduceReviewApplicability(personas, files(diff)).mapReduce).toBeNull();
-    const plan = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON }).mapReduce!;
+    const plan = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON_AT_BUDGET }).mapReduce!;
     expect([...plan.lanes.keys()]).toEqual(['arch-lane']);
     expect(plan.laneScopes.get('docs-lane')).toEqual(new Set(['README.md']));
     expect(plan.concurrency).toBe(3);
   });
 
   it('replaces a chunked lane\'s W5 pack with its chunks and keeps every other lane\'s pack', () => {
-    const decision = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON, reviewBudget: { enabled: true } });
+    const decision = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON_AT_BUDGET, reviewBudget: { enabled: true } });
     expect([...decision.reviewBudget!.packs.keys()]).toEqual(['docs-lane']);
     const budgetOnly = resolveMapReduceReviewApplicability(personas, files(diff), { reviewBudget: { enabled: true } });
     expect([...budgetOnly.reviewBudget!.packs.keys()].sort()).toEqual(['arch-lane', 'docs-lane']);
   });
 
   it('never chunks the composed engine\'s single context; it discloses it when over budget', () => {
-    const plan = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON, budgetScope: 'whole-diff' }).mapReduce!;
+    const plan = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON_AT_BUDGET, budgetScope: 'whole-diff' }).mapReduce!;
     expect(plan.lanes.size).toBe(0);
     expect(plan.notApplied).toEqual([expect.objectContaining({ laneId: COMPOSED_BUDGET_LANE_ID, reason: 'composed-engine', files: 13 })]);
-    const small = resolveMapReduceReviewApplicability(personas, files(addedFile('src/a.ts', 5, 'a')), { mapReduce: ON, budgetScope: 'whole-diff' });
+    const small = resolveMapReduceReviewApplicability(personas, files(addedFile('src/a.ts', 5, 'a')), { mapReduce: ON_AT_BUDGET, budgetScope: 'whole-diff' });
     expect(small.mapReduce!.notApplied).toEqual([]);
   });
 });
@@ -431,7 +448,7 @@ function crossChunkLane() {
   const web = files(addedFile('src/web/checkout.ts', linesFor(40_000), 'web', [
     'const cartTotal = computeTotal(price, tax);',
   ]))[0].patch!;
-  const plan = planLaneChunks('arch-lane', [
+  const plan = planAtBudget('arch-lane', [
     { path: 'src/api/total.ts', effectivePatch: api, wholePatch: null },
     { path: 'src/web/checkout.ts', effectivePatch: web, wholePatch: null },
   ])!;
@@ -607,8 +624,8 @@ describe('runMapReduceLane', () => {
       inFlight -= 1;
       return laneResult('arch-lane', [finding(chunk.units[0].path, 1, `f${chunk.index}`)]);
     };
-    const planA = planLaneChunks('arch-lane', hugeLane(8, 2, 20_000))!;
-    const planB = planLaneChunks('sec-lane', hugeLane(8, 2, 20_000))!;
+    const planA = planAtBudget('arch-lane', hugeLane(8, 2, 20_000))!;
+    const planB = planAtBudget('sec-lane', hugeLane(8, 2, 20_000))!;
     expect(planA.chunks.length).toBeGreaterThanOrEqual(6);
     const common = { limiter, concurrency: 3, deadlineAtMs: FAR(), sharingLanes: 2, runChunk, reduce: reducer((r) => ({ nonce: nonceOf(r) })) };
     const [a, b] = await Promise.all([runMapReduceLane({ ...common, plan: planA }), runMapReduceLane({ ...common, plan: planB })]);
@@ -620,7 +637,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('merges chunk results into one lane result under the lane id, with usage summed and the reduce turn counted', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     const n = plan.chunks.length;
     const { result, disclosure } = await runMapReduceLane({
       plan,
@@ -645,7 +662,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('approves when no chunk found anything', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     const { result } = await runMapReduceLane({
       plan, limiter: createChunkLimiter(3), concurrency: 3, deadlineAtMs: FAR(), sharingLanes: 1,
       runChunk: async () => laneResult('arch-lane'),
@@ -656,7 +673,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('dedupes exact duplicates from two chunks before the reduce pass sees them', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     const reduce = reducer((r) => ({ nonce: nonceOf(r) }));
     const { result, disclosure } = await runMapReduceLane({
       plan, limiter: createChunkLimiter(3), concurrency: 3, deadlineAtMs: FAR(), sharingLanes: 1,
@@ -686,7 +703,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('fails open when the reduce pass throws or answers badly: every chunk finding is kept', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     for (const reduce of [
       vi.fn(async () => { throw new Error('gateway 503'); }),
       vi.fn(async () => ({ content: '{"nonce":"wrong","merge":[{"keep":"F1","duplicates":["F2"]}]}' })),
@@ -702,7 +719,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('skips the reduce pass when the deadline leaves no time for it', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     let clock = 1_000_000;
     const reduce = reducer((r) => ({ nonce: nonceOf(r) }));
     const { disclosure, result } = await runMapReduceLane({
@@ -721,7 +738,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('caps the chunk count by the time left before it starts, collapsing the rest', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(8, 2, 20_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(8, 2, 20_000))!;
     expect(plan.chunks.length).toBeGreaterThan(3);
     const ran: number[] = [];
     const { disclosure } = await runMapReduceLane({
@@ -738,7 +755,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('collapses the chunks still queued when time runs short mid-run', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(8, 2, 20_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(8, 2, 20_000))!;
     let clock = 0;
     const deadline = REDUCE_RESERVE_MS + CHUNK_CALL_ESTIMATE_MS * 20;
     const ran: MapReduceChunk[] = [];
@@ -759,7 +776,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('fails the lane closed when a chunk fails, after one retry for a retryable error', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     const boom = new Error('persona arch-lane failed closed: rate limited');
     let calls = 0;
     await expect(runMapReduceLane({
@@ -789,7 +806,7 @@ describe('runMapReduceLane', () => {
   });
 
   it('stops at an abort', async () => {
-    const plan = planLaneChunks('arch-lane', hugeLane(3, 3, 12_000))!;
+    const plan = planAtBudget('arch-lane', hugeLane(3, 3, 12_000))!;
     const controller = new AbortController();
     controller.abort(new Error('panel deadline'));
     await expect(runMapReduceLane({
@@ -867,7 +884,7 @@ describe('disclosure', () => {
   const plan = () => resolveMapReduceReviewApplicability(
     [{ id: 'arch-lane', enabled: true, required: true, charter: 'x', paths: ['src/**'], providers: ['p'] }] as never[],
     files(addedFile('src/a/x.ts', 2, 'a')),
-    { mapReduce: ON },
+    { mapReduce: ON_AT_BUDGET },
   ).mapReduce!;
 
   it('attaches only lanes that ran, and nothing for a fast-ship result', () => {
@@ -997,7 +1014,7 @@ describe('persona panel wiring', () => {
   });
 
   it('with the flag: one call per chunk, each inlining only its chunk, then a reduce pass; one lane result', async () => {
-    const { requests, reduceRequests, result } = await runPanel(ON);
+    const { requests, reduceRequests, result } = await runPanel(ON_AT_BUDGET);
     expect(requests).toHaveLength(2);
     const byChunk = Object.fromEntries(requests.map((body) => [/chunk (\d+) of 2/u.exec(body)![1], body]));
     expect(byChunk['1']).toContain('api_TAIL_MARKER');
@@ -1014,7 +1031,7 @@ describe('persona panel wiring', () => {
   });
 
   it('with the flag: the reduce pass catches the cross-chunk API change at the exact call site', async () => {
-    const { result } = await runPanel(ON, { reduceFinding: true });
+    const { result } = await runPanel(ON_AT_BUDGET, { reduceFinding: true });
     const lane = result.personas.find((p) => p.id === 'arch-lane')!;
     expect(lane.decision).toBe('FINDINGS');
     expect(lane.findings).toEqual([expect.objectContaining({ severity: 'P1', path: 'src/web/checkout.ts', line: 2, title: 'Stale call to computeTotal' })]);
@@ -1022,7 +1039,7 @@ describe('persona panel wiring', () => {
   });
 
   it('with the flag: a chunk can still read another chunk\'s file with get_diff', async () => {
-    const { requests } = await runPanel(ON, { toolDiff: 'src/web/checkout.ts' });
+    const { requests } = await runPanel(ON_AT_BUDGET, { toolDiff: 'src/web/checkout.ts' });
     const second = requests.find((body, i) => i > 0 && body.includes('chunk 1 of 2') && body.includes('[PI_TOOL_RESULT]'))!;
     expect(second).toBeDefined();
     const messages = JSON.parse(second) as Array<{ role: string; content: unknown }>;
@@ -1031,7 +1048,7 @@ describe('persona panel wiring', () => {
 
   it('with the flag: chunk calls in flight never exceed the default concurrency', async () => {
     const diff = Array.from({ length: 8 }, (_, d) => addedFile(`src/m${d}/f.ts`, linesFor(30_000), `m${d}`)).join('');
-    const { requests, peak, result } = await runPanel(ON, { diff });
+    const { requests, peak, result } = await runPanel(ON_AT_BUDGET, { diff });
     expect(requests.length).toBeGreaterThanOrEqual(4);
     expect(peak).toBeLessThanOrEqual(DEFAULT_MAP_REDUCE_CONCURRENCY);
     expect(peak).toBeGreaterThan(1);
@@ -1039,7 +1056,7 @@ describe('persona panel wiring', () => {
   });
 
   it('with the flag: a lane within one budget is one call, as today', async () => {
-    const { requests, reduceRequests, result } = await runPanel(ON, { diff: addedFile('src/small.ts', 20, 's') });
+    const { requests, reduceRequests, result } = await runPanel(ON_AT_BUDGET, { diff: addedFile('src/small.ts', 20, 's') });
     expect(requests).toHaveLength(1);
     expect(reduceRequests).toHaveLength(0);
     expect(result.mapReduce).toBeUndefined();
@@ -1049,10 +1066,37 @@ describe('persona panel wiring', () => {
     const diff = addedFile('src/api/total.ts', linesFor(30_000), 'api') + addedFile('src/web/checkout.ts', linesFor(40_000), 'web');
     const off = await runPanel(undefined, { diff });
     expect(off.result.truncatedFiles?.map((f) => f.path)).toContain('src/api/total.ts');
-    const on = await runPanel(ON, { diff });
+    const on = await runPanel(ON_AT_BUDGET, { diff });
     expect(on.requests.find((body) => body.includes('chunk 1 of 2'))).toContain('api_TAIL_MARKER');
     expect(on.result.truncatedFiles?.map((f) => f.path) ?? []).not.toContain('src/api/total.ts');
   });
+  // REL-1083 threshold: the default trigger is the W5 hard cap, not the 56k budget.
+  it('with the flag at its default trigger: a 60k lane is one call (no chunks, no reduce pass, nothing disclosed)', async () => {
+    const diff = addedFile('src/api/total.ts', linesFor(35_000), 'api') + addedFile('src/web/checkout.ts', linesFor(35_000), 'web');
+    const chars = laneContentChars(files(diff).map((f) => ({ path: f.path, effectivePatch: f.patch!, wholePatch: null })));
+    expect(chars).toBeGreaterThan(PERSONA_BUDGET_CHARS);
+    expect(chars).toBeLessThan(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    const { requests, reduceRequests, result } = await runPanel(ON, { diff });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).not.toContain('map-reduce: chunk');
+    expect(reduceRequests).toHaveLength(0);
+    expect(result.mapReduce).toBeUndefined();
+    // Negative control: the same lane is chunked once the trigger is lowered to one budget.
+    const low = await runPanel(ON_AT_BUDGET, { diff });
+    expect(low.requests.length).toBeGreaterThanOrEqual(2);
+    expect(low.reduceRequests).toHaveLength(1);
+  });
+
+  it('with the flag at its default trigger: a 200k lane is map-reduced', async () => {
+    const diff = Array.from({ length: 4 }, (_, d) => addedFile(`src/m${d}/f.ts`, linesFor(50_000), `m${d}`)).join('');
+    const { requests, reduceRequests, result } = await runPanel(ON, { diff });
+    expect(requests.length).toBeGreaterThanOrEqual(4);
+    expect(reduceRequests).toHaveLength(1);
+    expect(result.personas.map((p) => p.id)).toEqual(['arch-lane']);
+    expect(result.mapReduce!.minChars).toBe(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    expect(result.mapReduce!.lanes[0].chunks.length).toBe(requests.length);
+  });
+
 });
 
 describe('composed engine wiring', () => {
@@ -1092,7 +1136,7 @@ describe('composed engine wiring', () => {
       });
       return { calls, result };
     };
-    const on = await run(ON);
+    const on = await run(ON_AT_BUDGET);
     const off = await run();
     expect(on.calls).toBe(off.calls);
     expect(on.result.applicablePersonaIds).toEqual(off.result.applicablePersonaIds);
@@ -1170,7 +1214,7 @@ describe('publishing worker wiring', () => {
   it('passes the input with the forwarded deadline and publishes the engine\'s disclosure', async () => {
     const at = '2026-09-24T12:30:00.000Z';
     const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_YETI_MAP_REDUCE: 'calltelemetry/ct-meta', REVIEW_TERMINAL_DEADLINE: at }));
-    expect(panelOptions.mapReduce).toEqual({ enabled: true, concurrency: 3, deadlineAtMs: Date.parse(at) - WORKER_PUBLISH_RESERVE_MS });
+    expect(panelOptions.mapReduce).toEqual({ enabled: true, concurrency: 3, minChars: DEFAULT_MAP_REDUCE_MIN_CHARS, deadlineAtMs: Date.parse(at) - WORKER_PUBLISH_RESERVE_MS });
     expect(summary).toContain('Map-reduce review');
     expect(summary).toContain('Split by hunk across chunks');
   });
@@ -1210,6 +1254,152 @@ describe('publishing worker wiring', () => {
     });
     expect((panelRunner.mock.calls as unknown[][])[0][0]).toMatchObject({ mapReduce: { enabled: true } });
     expect((composedReviewRunner.mock.calls as unknown[][])[0][0]).toMatchObject({ mapReduce: { enabled: true } });
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// REL-1083 threshold: map-reduce only when one call cannot hold the lane
+// ---------------------------------------------------------------------------
+
+describe('map-reduce trigger (REVIEW_YETI_MAP_REDUCE_MIN_CHARS)', () => {
+  const personas = [
+    { id: 'arch-lane', enabled: true, required: true, charter: 'x', paths: ['src/**'], providers: ['p'] },
+  ] as never[];
+  const laneDiff = (dirs: number, charsPerDir: number) => Array.from({ length: dirs }, (_, d) =>
+    addedFile(`src/d${d}/f.ts`, linesFor(charsPerDir), `d${d}`)).join('');
+
+  it('defaults to the W5 hard cap, the most one budgeted call carries inline', () => {
+    expect(MAP_REDUCE_MIN_CHARS_ENV).toBe('REVIEW_YETI_MAP_REDUCE_MIN_CHARS');
+    expect(DEFAULT_MAP_REDUCE_MIN_CHARS).toBe(MAX_PACKED_DIFF_CHARS);
+    expect(DEFAULT_MAP_REDUCE_MIN_CHARS).toBe(160_000);
+    expect(DEFAULT_MAP_REDUCE_MIN_CHARS).toBeGreaterThan(PERSONA_BUDGET_CHARS);
+  });
+
+  it.each([
+    [undefined, DEFAULT_MAP_REDUCE_MIN_CHARS],
+    ['', DEFAULT_MAP_REDUCE_MIN_CHARS],
+    ['abc', DEFAULT_MAP_REDUCE_MIN_CHARS],
+    ['-5', DEFAULT_MAP_REDUCE_MIN_CHARS],
+    ['0', DEFAULT_MAP_REDUCE_MIN_CHARS],
+    ['1.5e5', DEFAULT_MAP_REDUCE_MIN_CHARS],
+    ['100000', 100_000],
+    [' 250_000 ', 250_000],
+    ['1000', PERSONA_BUDGET_CHARS],
+  ])('reads %s as %s', (raw, want) => {
+    expect(mapReduceMinChars(raw)).toBe(want);
+    const env: Record<string, string> = { REVIEW_YETI_MAP_REDUCE: 'all' };
+    if (raw !== undefined) env[MAP_REDUCE_MIN_CHARS_ENV] = raw;
+    expect(loadMapReduceInput({ env, repository: 'a/b' })!.minChars).toBe(want);
+  });
+
+  it('a 60k lane is single-pass at the default trigger and keeps its W5 pack', () => {
+    const diff = laneDiff(2, 35_000);
+    const lane = files(diff).map((f) => ({ path: f.path, effectivePatch: f.patch!, wholePatch: null }));
+    expect(laneContentChars(lane)).toBeGreaterThan(PERSONA_BUDGET_CHARS);
+    expect(laneContentChars(lane)).toBeLessThan(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    const decision = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON, reviewBudget: { enabled: true } });
+    expect(decision.mapReduce!.minChars).toBe(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    expect(decision.mapReduce!.lanes.size).toBe(0);
+    expect([...decision.reviewBudget!.packs.keys()]).toEqual(['arch-lane']);
+    expect(planLaneChunks('arch-lane', lane)).toBeNull();
+    // Negative control: the same lane does split once the trigger is one budget.
+    expect(planAtBudget('arch-lane', lane)!.chunks.length).toBe(2);
+  });
+
+  it('a 200k lane is map-reduced at the default trigger, and its W5 pack is replaced by the chunks', () => {
+    const diff = laneDiff(4, 50_000);
+    const decision = resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON, reviewBudget: { enabled: true } });
+    const plan = decision.mapReduce!.lanes.get('arch-lane')!;
+    expect(plan).toBeDefined();
+    expect(laneContentChars(plan.candidates)).toBeGreaterThan(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    expect(plan.chunks.length).toBeGreaterThanOrEqual(4);
+    expect(decision.reviewBudget!.packs.has('arch-lane')).toBe(false);
+  });
+
+  it('respects a configured trigger in both directions', () => {
+    const diff = laneDiff(3, 45_000);
+    const chars = laneContentChars(files(diff).map((f) => ({ path: f.path, effectivePatch: f.patch!, wholePatch: null })));
+    expect(chars).toBeGreaterThan(100_000);
+    expect(chars).toBeLessThan(130_000);
+    const at = (minChars: number) => resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: { enabled: true, minChars } }).mapReduce!;
+    expect(at(DEFAULT_MAP_REDUCE_MIN_CHARS).lanes.size).toBe(0);
+    expect(at(100_000).lanes.size).toBe(1);
+    expect(at(100_000).minChars).toBe(100_000);
+    expect(at(130_000).lanes.size).toBe(0);
+    // A trigger below one budget is raised to it: nothing within one budget is ever chunked.
+    const small = resolveMapReduceReviewApplicability(personas, files(laneDiff(2, 20_000)), { mapReduce: { enabled: true, minChars: 1 } }).mapReduce!;
+    expect(small.minChars).toBe(PERSONA_BUDGET_CHARS);
+    expect(small.lanes.size).toBe(0);
+    // The env value reaches the decision.
+    const input = loadMapReduceInput({ env: { REVIEW_YETI_MAP_REDUCE: 'all', [MAP_REDUCE_MIN_CHARS_ENV]: '100000' }, repository: 'a/b' });
+    expect(resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: input }).mapReduce!.lanes.size).toBe(1);
+  });
+
+  it('discloses a composed context as not chunked only past the trigger', () => {
+    const whole = (diff: string) => resolveMapReduceReviewApplicability(personas, files(diff), { mapReduce: ON, budgetScope: 'whole-diff' }).mapReduce!.notApplied;
+    expect(whole(laneDiff(2, 30_000))).toEqual([]);
+    expect(whole(laneDiff(4, 50_000))).toEqual([expect.objectContaining({ reason: 'composed-engine' })]);
+  });
+
+  it('renders the trigger in the check summary', () => {
+    const decision = resolveMapReduceReviewApplicability(personas, files(laneDiff(4, 50_000)), { mapReduce: ON });
+    const attached = attachMapReduceDisclosure({ personas: [{ id: 'arch-lane' }] }, decision.mapReduce, new Map([['arch-lane', laneDisclosure({ laneId: 'arch-lane' })]]));
+    expect(attached.mapReduce!.minChars).toBe(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    expect(renderMapReduceSummary(attached.mapReduce).join('\n')).toContain('~160,000 characters');
+  });
+});
+
+describe('chunk bounds', () => {
+  const chunkCost = (chunk: MapReduceChunk) => chunk.units.reduce((sum, unit) => sum + unit.cost, 0);
+
+  it('never makes a sliver chunk: a lane just past a boundary is one pass, or folds the sliver into a neighbour', () => {
+    // ~53k + ~6k: next-fit alone would make a full chunk plus a ~6k sliver.
+    const twoTiny = [candidate('src/a/x.ts', 62_000, 'ax'), candidate('src/b/y.ts', 7_000, 'by')];
+    expect(laneContentChars(twoTiny)).toBeGreaterThan(PERSONA_BUDGET_CHARS);
+    expect(planAtBudget('l', twoTiny)).toBeNull();
+    // ~53k + ~53k + ~4k: two chunks, the sliver folded into its neighbour, none past the merge cap.
+    const plan = planAtBudget('l', [candidate('src/a/x.ts', 62_000, 'ax'), candidate('src/b/y.ts', 62_000, 'by'), candidate('src/c/z.ts', 5_000, 'cz')])!;
+    expect(plan.chunks).toHaveLength(2);
+    for (const chunk of plan.chunks) {
+      expect(chunkCost(chunk)).toBeGreaterThanOrEqual(MIN_CHUNK_CHARS);
+      expect(chunkCost(chunk)).toBeLessThanOrEqual(MAX_MERGED_CHUNK_CHARS);
+    }
+    expect(plan.chunks[1].units.map((unit) => unit.path)).toEqual(['src/b/y.ts', 'src/c/z.ts']);
+  });
+
+  it('keeps every chunk of a large lane between the sliver floor and the merge cap, within the chunk limit', () => {
+    const lane = [...hugeLane(7, 3, 9_000), candidate('src/zz/tail.ts', 3_000, 'tail')];
+    const total = laneContentChars(lane);
+    expect(total).toBeGreaterThan(DEFAULT_MAP_REDUCE_MIN_CHARS);
+    const plan = planLaneChunks('l', lane)!;
+    expect(plan.chunks.length).toBeGreaterThanOrEqual(Math.ceil(total / MAX_MERGED_CHUNK_CHARS));
+    expect(plan.chunks.length).toBeLessThanOrEqual(MAX_CHUNKS_PER_LANE);
+    for (const chunk of plan.chunks) {
+      expect(chunkCost(chunk)).toBeGreaterThanOrEqual(MIN_CHUNK_CHARS);
+      expect(chunkCost(chunk)).toBeLessThanOrEqual(MAX_MERGED_CHUNK_CHARS);
+    }
+    expect(new Set(chunkPaths(plan).flat())).toEqual(new Set(lane.map((file) => file.path)));
+  });
+
+  it('never merges two parts of one split file into one chunk', () => {
+    // 11 hunks of ~10k: parts of 5, 5 and 1 hunks; the last part is a sliver whose only neighbour is the same file.
+    const patch = files(multiHunkFile('src/huge.ts', 11, 200, 'hg'))[0].patch!;
+    const plan = planAtBudget('l', [{ path: 'src/huge.ts', effectivePatch: patch, wholePatch: null }])!;
+    expect(Math.min(...plan.chunks.map(chunkCost))).toBeLessThan(MIN_CHUNK_CHARS);
+    expect(plan.chunks.flatMap((chunk) => chunk.units).every((unit) => unit.parts === plan.chunks.length)).toBe(true);
+    for (const chunk of plan.chunks) expect(new Set(chunk.units.map((unit) => unit.path)).size).toBe(chunk.units.length);
+  });
+
+  it('stays deadline-aware: a 200k lane with time for one wave is capped and collapsed, keeping every file', () => {
+    const plan = planLaneChunks('l', hugeLane(4, 1, 50_000))!;
+    expect(plan.chunks.length).toBeGreaterThanOrEqual(4);
+    const allowed = chunksAllowedByDeadline(REDUCE_RESERVE_MS + CHUNK_CALL_ESTIMATE_MS, 3, 2);
+    expect(allowed).toBe(1);
+    const capped = capLaneChunks(plan, allowed, 'deadline');
+    expect(capped.chunks).toHaveLength(1);
+    expect(capped.chunks[0].disclosure.collapsed).toEqual({ reason: 'deadline', plannedChunks: plan.chunks.length });
+    expect(new Set(capped.chunks[0].disclosure.files.map((file) => file.path))).toEqual(new Set(plan.candidates.map((c) => c.path)));
   });
 });
 

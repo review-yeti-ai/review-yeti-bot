@@ -356,6 +356,11 @@ publishing:
   # The worker reads it as off/on/all or a comma-separated owner/repo allowlist.
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   mapReduce: ""
+  # REL-1083: map-reduce trigger (worker REVIEW_YETI_MAP_REDUCE_MIN_CHARS), in characters of
+  # packed lane content. A lane is chunked only when it is larger than this; smaller lanes stay
+  # one call, packed by the W5 budget. Empty by default: nothing is forwarded and the worker uses
+  # its default, the W5 hard cap (160000). Forwarded only when mapReduce is set.
+  mapReduceMinChars: ""
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
   # which already defines that component's ServiceAccount, Role, RoleBinding and
   # Deployment. Defining them here too would give the same resources two owners.
