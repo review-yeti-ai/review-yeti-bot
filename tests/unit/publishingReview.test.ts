@@ -379,6 +379,27 @@ describe('runPublishingReviewWorker', () => {
     expect(summary).toContain('- `tools/inventory.lua` -> `sec-lane` (source no persona covers)');
   });
 
+  it('discloses routed files in the fast-ship summary too (REL-1088)', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        isFastShip: true,
+        classifierRationale: 'Config only',
+        tokensSaved: 100,
+        routedFiles: [{ path: 'config/app.toml', laneIds: ['sec-lane'], reason: 'fallback' }],
+        personas: [{ id: 'fast-ship', findings: [] }],
+        quorum: { required: 0, distinctProviders: [], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('success');
+    const summary = String(((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain('### Review Yeti: SHIP (fast-ship)');
+    expect(summary).toContain('- `config/app.toml` -> `sec-lane`');
+  });
+
   it('carries per-lane turn/tool/correction counts and the panel wall clock onto the receipt (Stage 0 telemetry)', async () => {
     // A lane's `turnUsages`/`aggregateUsage`/`toolTurns`/`correctionTurns` and the panel's own
     // `panelWallClockMs` are new, additive `PanelResult` fields -- see `src/panel/panelEngine.ts`.

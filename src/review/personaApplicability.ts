@@ -133,9 +133,11 @@ export function routePathsToRequiredLane<P extends { id: string; required?: bool
   if (personas.length === 0 || paths.length === 0) return [...personas];
   const required = personas.filter((persona) => persona.required === true);
   const owners = new Set((required.length > 0 ? required : [personas[0]]).map((persona) => persona.id));
-  return personas.map((persona) => (owners.has(persona.id)
-    ? { ...persona, routedPaths: [...(persona.routedPaths ?? []), ...paths.filter((path) => !persona.routedPaths?.includes(path))] }
-    : persona));
+  return personas.map((persona) => {
+    if (!owners.has(persona.id)) return persona;
+    const already = new Set(persona.routedPaths ?? []);
+    return { ...persona, routedPaths: [...already, ...paths.filter((path) => !already.has(path))] };
+  });
 }
 
 /** A changed file assigned to a lane by exact routing, not by the lane's own paths. */
@@ -155,16 +157,19 @@ function routedFilesOf(
   personas: ReadonlyArray<{ id: string; routedPaths?: readonly string[] }>,
   uncoveredSource: readonly string[],
 ): RoutedReviewFile[] {
+  const uncovered = new Set(uncoveredSource);
   const byPath = new Map<string, string[]>();
   for (const persona of personas) {
     for (const path of persona.routedPaths ?? []) {
-      byPath.set(path, [...(byPath.get(path) ?? []), persona.id]);
+      const laneIds = byPath.get(path);
+      if (laneIds) laneIds.push(persona.id);
+      else byPath.set(path, [persona.id]);
     }
   }
   return [...byPath].map(([path, laneIds]) => ({
     path,
     laneIds,
-    reason: uncoveredSource.includes(path) ? 'uncovered-source' as const : 'fallback' as const,
+    reason: uncovered.has(path) ? 'uncovered-source' as const : 'fallback' as const,
   }));
 }
 

@@ -43,6 +43,8 @@ function narrowRequiredRoster() {
   }));
 }
 
+const JSON_OUTPUT = { responseFormat: { type: 'json_object' as const } };
+
 const routedOf = (persona: object) => (persona as { routedPaths?: readonly string[] }).routedPaths;
 
 const unreachableClient = new Proxy({}, {
@@ -133,18 +135,83 @@ describe('REL-1088: uncovered source beside an applying lane is routed, never dr
     })).rejects.toThrow(/persona sec-lane failed closed/);
   }, 60_000);
 
-  it('the composed engine reaches its reviewer for the same diff', async () => {
+  it('the panel engine returns the routed file on a completed result, and the routed lane reads it', async () => {
     const config = { ...roster('architecture,security'), personas: narrowRequiredRoster() };
-    await expect(executeComposedReview({
+    const client = approvingPanelClient();
+    const result = await executePersonaPanel({
       config,
       changedFiles: files('src/app.py', UNCOVERED),
       repository: 'r/r',
       headSha: 'f'.repeat(40),
-      client: unreachableClient,
-      isCurrentHead: () => false,
-    })).rejects.toThrow(/stale run aborted/);
-  });
+      client,
+      requestPolicy: JSON_OUTPUT,
+      deterministicRoster: true,
+    });
+    expect(result.applicablePersonaIds).toEqual(['arch-lane', 'sec-lane']);
+    expect(result.personas.map((persona) => persona.id).sort()).toEqual(['arch-lane', 'sec-lane']);
+    expect(result.routedFiles).toEqual([{ path: UNCOVERED, laneIds: ['sec-lane'], reason: 'uncovered-source' }]);
+    expect(client.laneTexts.some((text) => text.includes(UNCOVERED))).toBe(true);
+  }, 60_000);
+
+  it('the composed engine returns the routed file on its result', async () => {
+    const config = { ...roster('architecture,security'), personas: narrowRequiredRoster() };
+    const complete = async (payload: { messages: unknown[] }) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [
+          { id: 'task-sec', dimension: 'security', paths: ['src/app.py', UNCOVERED], question: 'Is it safe?', rationale: 'changed source' },
+        ] }));
+      }
+      if (text.includes('WORK TURN')) return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+      throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
+    };
+    const result = await executeComposedReview({
+      config,
+      changedFiles: files('src/app.py', UNCOVERED),
+      repository: 'r/r',
+      headSha: 'f'.repeat(40),
+      client: { complete } as unknown as ReviewModelClient,
+    });
+    expect(result.personas.map((persona) => persona.id)).toEqual(['task-sec']);
+    expect(result.routedFiles).toEqual([{ path: UNCOVERED, laneIds: ['sec-lane'], reason: 'uncovered-source' }]);
+  }, 60_000);
 });
+
+function textOf(messages: unknown[]): string {
+  return JSON.stringify(messages);
+}
+
+function lastText(messages: unknown[]): string {
+  const last = messages[messages.length - 1] as { content?: unknown } | undefined;
+  if (typeof last?.content === 'string') return last.content;
+  if (Array.isArray(last?.content)) return last.content.map((block: { text?: string }) => block.text || '').join('\n');
+  return '';
+}
+
+function nonceFrom(text: string): string {
+  const match = text.match(/CT_REVIEW_NONCE:([^\n"\\]+)/);
+  return match ? match[1].trim() : 'nonce';
+}
+
+function fakeResponse(content: string) {
+  return { model: 'test-model', content, usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0, raw: {} };
+}
+
+/** Every lane approves; the moderator reconciles; the arbiter ships. */
+function approvingPanelClient() {
+  const laneTexts: string[] = [];
+  const complete = async (request: { messages: unknown[]; metadata?: { role?: string } }) => {
+    const text = textOf(request.messages);
+    const nonce = nonceFrom(text);
+    const role = request.metadata?.role;
+    if (role === 'moderator') return fakeResponse(JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }));
+    if (role === 'arbiter') return fakeResponse(JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'ok' }));
+    laneTexts.push(text);
+    return fakeResponse(JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }));
+  };
+  return { complete, laneTexts } as unknown as ReviewModelClient & { laneTexts: string[] };
+}
 
 describe('REL-1088: routed files are disclosed in the check summary', () => {
   it('names each routed file, its lane and whether it is uncovered source', () => {
