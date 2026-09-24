@@ -1503,3 +1503,73 @@ func TestBuildWorkerJobRefusesIncrementalWithLineBreak(t *testing.T) {
 		}
 	}
 }
+
+// REL-1082: REVIEW_YETI_BUDGET must reach the app-gate worker verbatim when
+// configured, stay absent when not, and never reach the receipt-only lane.
+func TestBuildWorkerJobForwardsReviewBudgetOnlyWhenSet(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.BudgetEnv != "REVIEW_YETI_BUDGET" {
+		t.Fatalf("review budget env drifted from the worker's REVIEW_BUDGET_FLAG: %s", job.BudgetEnv)
+	}
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.BudgetEnv) {
+		t.Fatalf("unset operator config must not reach the worker as %s", job.BudgetEnv)
+	}
+
+	for _, value := range []string{"review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta", "all", "off", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+		input.Publishing.Budget = value
+		forwarded, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build app-gate job with review budget %q: %v", value, err)
+		}
+		container := forwarded.Spec.Template.Spec.Containers[0]
+		if got := envValue(container, job.BudgetEnv); got != value {
+			t.Fatalf("operator must forward %q verbatim, got %q", value, got)
+		}
+		count := 0
+		for _, env := range container.Env {
+			if env.Name == job.BudgetEnv {
+				count++
+				if env.ValueFrom != nil {
+					t.Fatalf("%s must be a literal value, not a reference", job.BudgetEnv)
+				}
+			}
+		}
+		if count != 1 {
+			t.Fatalf("%s projected %d times, want exactly once", job.BudgetEnv, count)
+		}
+	}
+
+	input.Publishing.Budget = "all"
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.BudgetEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.BudgetEnv)
+	}
+}
+
+func TestBuildWorkerJobRefusesReviewBudgetWithLineBreak(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+		input.Publishing.Budget = value
+		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "review budget flag") {
+			t.Fatalf("a line break in the review budget flag must refuse the Job, got %v", err)
+		}
+	}
+}

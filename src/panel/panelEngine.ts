@@ -48,10 +48,18 @@ import {
 } from '../review/diffShrink';
 import {
   attachIncrementalDisclosure,
-  resolveScopedReviewApplicability,
   type IncrementalReviewDisclosure,
   type IncrementalReviewScope,
 } from '../review/incrementalReview';
+import {
+  applyLaneBudgetPack,
+  attachReviewBudgetDisclosure,
+  clipToolOutputToRequestCap,
+  resolveBudgetedReviewApplicability,
+  type LaneBudgetPack,
+  type ReviewBudgetInput,
+  type ReviewBudgetPlan,
+} from '../review/reviewBudget';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -1881,6 +1889,13 @@ async function invoke(
      * before this option existed.
      */
     compaction?: { enabled?: boolean } & MessageWindowPolicy;
+    /**
+     * REL-1082 (`REVIEW_YETI_BUDGET`): the lane's budgeted inline content. The diff section is
+     * built from `promptFiles` instead of `payload.changedFiles` (which the read-only tools keep
+     * reading), and tool results are clipped to keep each request under `requestCapBytes`.
+     * Absent is today's behaviour.
+     */
+    reviewBudget?: { promptFiles: Array<{ path: string; patch?: string; content?: string }>; inlineTokenBudget: number; requestCapBytes: number };
   }
 ): Promise<{
   response: OpenRouterResponse;
@@ -1928,12 +1943,15 @@ async function invoke(
   const prNumberStr = payload.prNumber ? `#${payload.prNumber}` : '';
   const repositoryVisibility = normalizeRepositoryVisibility(payload.repositoryVisibility);
   const domainLanes = (payload.domainLanes as Record<string, DomainLane> | undefined) || classifyDomainLanesByHeuristic(changedFiles);
-  const diffSection = buildDiffSection(changedFiles, {
+  const laneBudget = options?.reviewBudget;
+  const diffSection = buildDiffSection(laneBudget ? laneBudget.promptFiles : changedFiles, {
     baseSha: baseShaStr,
     headSha: shaStr,
     domainLanes,
     persona: personaName,
     canonicalShared: true,
+    // REL-1082: the pack already fits the lane's budget and request cap; inline all of it.
+    ...(laneBudget ? { tokenBudget: laneBudget.inlineTokenBudget } : {}),
   });
   // The compact scope above owns file context. The fenced compatibility
   // example must not re-embed raw patches and bypass size/skip boundaries.
@@ -2344,12 +2362,16 @@ async function invoke(
         throwIfPanelAborted(options?.signal);
         toolTurns++;
         turnUsage.kind = 'tool';
-        const { toolOutput, toolScope, isExhaustive } = await runReadOnlyTool(toolCall.tool, toolCall.args, {
+        const { toolOutput: rawToolOutput, toolScope, isExhaustive } = await runReadOnlyTool(toolCall.tool, toolCall.args, {
           changedFiles,
           repoFileProvider: options?.repoFileProvider,
           zoektConfig: (options as any)?.zoektConfig,
           signal: options?.signal,
         });
+        // REL-1082: a budgeted lane keeps its whole request under the gateway proxy's body limit.
+        const toolOutput = laneBudget
+          ? clipToolOutputToRequestCap(rawToolOutput, [...messages, { role: 'assistant', content: response.content }], laneBudget.requestCapBytes)
+          : rawToolOutput;
 
         toolCalls.push({
           tool: toolCall.tool,
@@ -2560,6 +2582,8 @@ async function runPersona(
   domainLanes?: Record<string, DomainLane>,
   budgetOverride?: { maxTurns?: number; effort?: 'low' | 'medium' | 'high' },
   allowDashboardOverrides = true,
+  /** REL-1082: this lane's review-budget pack; absent sends today's content. */
+  laneBudgetPack?: LaneBudgetPack,
 ) {
   return runInSpan(`review_yeti_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
@@ -2620,7 +2644,11 @@ async function runPersona(
     // already uses, so it gets the same treatment as any other diagnostic that crosses out of a
     // single request/response pair.
     let lastKnownCompletionExcerpt: string | undefined;
-    const scopedFiles = scopeFilesForPersona(persona, changedFiles);
+    const personaFiles = scopeFilesForPersona(persona, changedFiles);
+    // REL-1082: the budget changes only what is inlined (promptFiles) and restores whole patches
+    // for files sent whole (toolFiles). The file set is exactly the persona's scope either way.
+    const lanePacked = laneBudgetPack ? applyLaneBudgetPack(personaFiles, laneBudgetPack) : null;
+    const scopedFiles = lanePacked ? lanePacked.toolFiles : personaFiles;
 
     // Scope pre-check evidence to files evaluated by this persona
     let scopedPreCheckEvidence = preCheckEvidence;
@@ -2818,6 +2846,13 @@ async function runPersona(
             onFirstToken: (requestPolicy as any)?.onFirstToken,
             signal,
             compaction: { enabled: resolveTurnWindowCompactionEnabled(config as { turn_window_compaction?: boolean }) },
+            ...(lanePacked && laneBudgetPack ? {
+              reviewBudget: {
+                promptFiles: lanePacked.promptFiles,
+                inlineTokenBudget: laneBudgetPack.inlineTokenBudget,
+                requestCapBytes: laneBudgetPack.requestCapBytes,
+              },
+            } : {}),
             validateParsed: (candidate) => {
               try {
                 const findings = validateFindings((candidate as any)?.findings);
@@ -3511,6 +3546,8 @@ export async function executePersonaPanel(options: {
   diffShrink?: DiffShrinkInput;
   /** REL-1084: incremental re-review scope (`REVIEW_YETI_INCREMENTAL`); absent reviews every file in full. */
   incremental?: IncrementalReviewScope;
+  /** REL-1082: risk-ordered review budget per lane (`REVIEW_YETI_BUDGET`); absent or disabled sends today's content. */
+  reviewBudget?: ReviewBudgetInput;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -3525,6 +3562,8 @@ export async function executePersonaPanel(options: {
   let routedFiles: PanelResult['routedFiles'] = [];
   // REL-1092: truncated and unavailable patches, from the same decision.
   let depthDisclosure: ReviewDepthDisclosure | null = null;
+  // REL-1082: per-lane budget packs, from the same decision; disclosed for the lanes that ran.
+  let reviewBudgetPlan: ReviewBudgetPlan | null = null;
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -3552,13 +3591,17 @@ export async function executePersonaPanel(options: {
     // requires cannot disagree (REL-1056 / REL-1058).
     // REL-1079: diff shrinking runs after, and cannot change, that decision.
     // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
-    const applicability = resolveScopedReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1082: so does the review budget, which only packs what each lane is sent.
+    const applicability = resolveBudgetedReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
+      reviewBudget: options.reviewBudget,
+      budgetScope: 'per-lane',
     });
     diffShrinkDisclosure = applicability.diffShrink;
     incrementalDisclosure = applicability.incremental;
+    reviewBudgetPlan = applicability.reviewBudget;
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
     routedFiles = applicability.routedFiles;
@@ -4097,6 +4140,7 @@ export async function executePersonaPanel(options: {
               domainLanes,
               budgetOverride,
               !options.deterministicRoster,
+              reviewBudgetPlan?.packs.get(persona.id),
             );
             return { persona, result, error: undefined };
           } finally {
@@ -4549,5 +4593,6 @@ export async function executePersonaPanel(options: {
     .then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
+    .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .finally(deadline.cleanup);
 }

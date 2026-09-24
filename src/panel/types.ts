@@ -9,6 +9,7 @@ import { RepositoryVisibility } from '../review/repositoryVisibility';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import type { DiffShrinkDisclosure } from '../types/diffShrink';
 import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
+import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -133,6 +134,12 @@ export interface PanelResult {
    * the check summary and the completion claim are built from exactly this.
    */
   incremental?: IncrementalReviewDisclosure;
+  /**
+   * REL-1082: what the risk-ordered review budget sent each lane that ran (full, signatures,
+   * not deeply reviewed). Set only when `REVIEW_YETI_BUDGET` applied; the check summary
+   * publishes exactly this.
+   */
+  reviewBudget?: ReviewBudgetDisclosure;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];
