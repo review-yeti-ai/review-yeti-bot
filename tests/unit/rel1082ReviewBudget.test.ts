@@ -510,7 +510,9 @@ describe('one applicability decision', () => {
     for (const reviewBudget of [undefined, { enabled: false }]) {
       const worker = resolveBudgetedReviewApplicability(roster, changed, { reviewBudget });
       expect(worker.reviewBudget).toBeNull();
-      expect({ ...worker, reviewBudget: undefined }).toEqual({ ...shrunk, reviewBudget: undefined });
+      // REL-1085: the verdict cache step runs first and is a pass-through without a scope.
+      expect(worker.verdictCache).toBeNull();
+      expect({ ...worker, reviewBudget: undefined, verdictCache: undefined }).toEqual({ ...shrunk, reviewBudget: undefined, verdictCache: undefined });
     }
     const docs = resolveBudgetedReviewApplicability(roster, files(corpus['documentation only']), { reviewBudget: ON });
     expect(docs.noReviewableContent).toBe(true);

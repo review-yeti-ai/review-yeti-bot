@@ -77,3 +77,5 @@ When the flag is on, the check summary gets an **Incremental re-review** block. 
 - Finding-hunk granularity. An open-finding file is re-reviewed whole, not only the hunk that carries the finding. That is a superset of the plan's rule and costs more tokens.
 - Classifier input. On the non-deterministic roster, the pre-flight classifier sees the carry-forward notes, so a small delta on top of a SHIP-complete review can fast-ship. The authoritative roster never classifies.
 - `review_runs` has no `(repository_id, pr_number)` index. The selection query filters on it. Add one if the table grows large.
+
+See also `docs/features/verdict_cache.md` (REL-1085): a content-keyed, lane-by-lane cache that also applies after a force-push or rebase. It runs after this step and never serves a file this step carried forward.

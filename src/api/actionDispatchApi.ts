@@ -39,6 +39,8 @@ import {
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 import type { IncrementalBaseLookup } from '../persistence/incrementalPriorReview';
 import { createIncrementalBaseHandler } from './incrementalBaseRoute';
+import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
+import { createVerdictCacheBaseHandler } from './verdictCacheBaseRoute';
 
 
 export interface ActionOidcVerifier {
@@ -70,6 +72,8 @@ export interface ActionDispatchRouterOptions {
   runStatusRepository?: Pick<ReviewDispatchRepository, 'getRunStatus'>;
   /** REL-1084: the prior review record a worker's incremental re-review may plan from. */
   incrementalBase?: IncrementalBaseLookup;
+  /** REL-1085: the stored record a worker's verdict cache may plan from. */
+  verdictCacheBase?: VerdictCacheBaseLookup;
   now?: () => number;
 }
 
@@ -448,6 +452,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
 
   router.get('/runs/:runId/attempts/:attempt/status', handleRunStatus);
   if (options.incrementalBase) router.post('/incremental-base', createIncrementalBaseHandler(options.incrementalBase));
+  if (options.verdictCacheBase) router.post('/verdict-cache-base', createVerdictCacheBaseHandler(options.verdictCacheBase));
   router.get('/status', handleRunStatus);
 
   return router;

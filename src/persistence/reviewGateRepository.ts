@@ -15,6 +15,8 @@ import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 import { selectPriorReviewRecord } from './incrementalPriorReview';
 import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput } from '../review/incrementalReview';
+import { selectVerdictCacheSource } from './verdictCacheSource';
+import type { VerdictCacheVerificationInput } from '../review/verdictCache';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -29,8 +31,8 @@ export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
-type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput)
-  => Promise<TrustedGateCompletionContext>;
+type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
+  verdictCache?: VerdictCacheVerificationInput) => Promise<TrustedGateCompletionContext>;
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
@@ -75,6 +77,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     onEligibleCompletion?: (client: Queryable, gate: StoredReviewGate, now: number) => Promise<void>;
     /** REL-1084: the oldest prior review a carry-forward may rest on (service configuration). */
     incrementalMaxAgeMs?: number;
+    /** REL-1085: the oldest stored review a verdict-cache hit may rest on (service configuration). */
+    verdictCacheMaxAgeMs?: number;
   }) {
     this.lifecycleEventsEnabled = requireLifecycleEventsMode(options, 'Review gate repository');
     this.completionResolutionTimeoutMs = options.completionResolutionTimeoutMs ?? 10_000;
@@ -110,11 +114,14 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
     }
   }
 
-  private async resolveCompletion(resolve: TrustedCompletionResolver,
-    gate: StoredReviewGate, incremental?: IncrementalVerificationInput): Promise<TrustedGateCompletionContext> {
+  private async resolveCompletion(resolve: TrustedCompletionResolver, gate: StoredReviewGate,
+    incremental?: IncrementalVerificationInput, verdictCache?: VerdictCacheVerificationInput): Promise<TrustedGateCompletionContext> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await Promise.race([incremental ? resolve(gate, incremental) : resolve(gate), new Promise<never>((_, reject) => {
+      // Only the inputs a completion actually carries are passed on, so a resolver sees exactly (gate) without them.
+      const resolving = verdictCache ? resolve(gate, incremental, verdictCache)
+        : incremental ? resolve(gate, incremental) : resolve(gate);
+      return await Promise.race([resolving, new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Gate completion resolution deadline exceeded')),
           this.completionResolutionTimeoutMs);
       })]);
@@ -200,7 +207,17 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         run: { runId: coordinates.runId, executionAttempt: coordinates.executionAttempt,
           configDigest: String(row.effective_config_digest) },
       } : undefined;
-      const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate, incremental) : undefined;
+      // REL-1085: a completion that served files from the verdict cache is verified against the
+      // service's OWN selection of the source record (the same row W7 selects), under this lock.
+      const cacheClaim = event.result.verdictCache;
+      const verdictCache: VerdictCacheVerificationInput | undefined = deadlineValid && cacheClaim?.hits ? {
+        claim: cacheClaim,
+        source: await selectVerdictCacheSource(client, event.runId),
+        maxAgeMs: this.options.verdictCacheMaxAgeMs ?? DEFAULT_INCREMENTAL_MAX_AGE_MS,
+        run: { runId: coordinates.runId, executionAttempt: coordinates.executionAttempt,
+          configDigest: String(row.effective_config_digest) },
+      } : undefined;
+      const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate, incremental, verdictCache) : undefined;
       const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
       const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
         ...trusted.coverage,
