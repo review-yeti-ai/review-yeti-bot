@@ -436,6 +436,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
         PATH: process.env.PATH ?? '',
         HOME: process.env.HOME ?? dir,
         PIPELINE: path.join(root, '.github/workflows/pipelines/review-pipeline.js'),
+        NODE_ENV: 'test',
         STUB_MODE: mode,
         VITEST: 'true',
         GITHUB_ACTIONS: 'false',
