@@ -131,6 +131,10 @@ export interface MetricCounters {
   reviewReaperDelegated: Counter;
   /** REL-904: terminal lane outcomes for lane/provider attribution. */
   laneOutcomes: Counter;
+  /** REL-1113: runs that ended INCOMPLETE because reviewer lanes failed on infrastructure
+   * (transport/gateway), published as INCOMPLETE rather than a verdict. `outcome` is
+   * `retrying` (a fresh attempt is scheduled) or `exhausted` (no automatic attempt left). */
+  reviewIncompleteInfra: Counter;
   /** A lane's turn-accumulation telemetry failed `personaTelemetrySchema` validation and was
    * omitted from the published/reported result rather than failing the review. Non-zero here
    * means measurement is degraded for that lane, not that the review itself is unhealthy. */
@@ -348,6 +352,9 @@ export function initMetrics(
     }),
     laneOutcomes: meter.createCounter('review_yeti_lane_outcome_total', {
       description: 'Persona lane terminal outcomes tagged by persona, outcome, failure class, and transport (REL-904 lane/provider attribution).',
+    }),
+    reviewIncompleteInfra: meter.createCounter('review_yeti_review_incomplete_infra_total', {
+      description: 'Review runs that ended INCOMPLETE because reviewer lanes failed on infrastructure (not a verdict)',
     }),
     personaTelemetryDropped: meter.createCounter('review_yeti_persona_telemetry_dropped_total', {
       description: 'Per-persona turn-usage telemetry that failed schema validation and was omitted from the result rather than failing the review.',

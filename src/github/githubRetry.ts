@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger';
+import { WORKER_TERMINAL_DEADLINE_RESERVE_MS, workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
 
 /**
  * REL-1103: one bounded retry policy for transient GitHub responses, shared by
@@ -130,11 +131,9 @@ export function computeGitHubRetryDelay(
 export function githubRetryDeadlineFromEnv(
   env: Readonly<Record<string, string | undefined>>,
 ): number | undefined {
-  const raw = String(env.REVIEW_TERMINAL_DEADLINE ?? '').trim();
-  if (!raw) return undefined;
-  const at = Date.parse(raw);
+  const at = workerTerminalDeadlineAtMs(env);
   // The operator deletes the worker Job 60 s before the terminal deadline.
-  return Number.isFinite(at) ? at - 60_000 : undefined;
+  return at === undefined ? undefined : at - WORKER_TERMINAL_DEADLINE_RESERVE_MS;
 }
 
 /** An HTTP outcome an attempt produced: a returned Response or a thrown error carrying a status. */

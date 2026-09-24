@@ -87,8 +87,8 @@ import {
   validateFindings,
   isRetryablePanelError,
   isEmptyCompletionError,
-  classifyPersonaAttemptFailure,
   transportRetryDelayMs,
+  isTransientLaneTransportError,
   panelDelay,
   EMPTY_COMPLETION_MAX_ATTEMPTS,
   EMPTY_COMPLETION_RETRY_DELAY_MS,
@@ -375,7 +375,7 @@ async function callTurn(params: {
       const backoffMs = transportRetryDelayMs(transportAttempts + 1);
       if (transportAttempts < TRANSPORT_MAX_RETRIES
           && backoffMs < budgetLeftMs
-          && classifyPersonaAttemptFailure(error) === 'transport') {
+          && isTransientLaneTransportError(error)) {
         transportAttempts += 1;
         logger.warn(`[composed] transport failure reaching '${params.providerId}'; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_RETRIES}.`);
         await panelDelay(backoffMs, params.signal);

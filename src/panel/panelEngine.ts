@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
+import { workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, isSameFile, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import {
   executeSymbolResolutionAppendix,
@@ -1387,45 +1388,110 @@ export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
  * clean verdict. A 1s pause cannot outlast an outage of that shape, so the
  * retry was structurally guaranteed to be useless for the one failure class
  * it most needed to cover. */
-export const TRANSPORT_MAX_RETRIES = 3;
-/** Base of the exponential transport backoff: 1s -> 4s -> 16s -> 64s before
- * jitter. The FIRST retry stays as fast as the generic branch it replaces,
- * because a single dropped connection recovers immediately and every lane
- * would otherwise pay the worst-case latency for the common case. The
- * escalation is what covers an outage that needs wall-clock time to clear. */
-export const TRANSPORT_RETRY_BASE_DELAY_MS = 1_000;
+export const TRANSPORT_MAX_RETRIES = 5;
+/** Base of the full-jitter transport backoff: the ceiling for retry n is
+ * `min(TRANSPORT_RETRY_MAX_DELAY_MS, BASE * FACTOR^(n-1))` = 5s, 10s, 20s, 40s,
+ * 60s, and the actual sleep is uniform in [0, ceiling). REL-1113: the gateway
+ * outage that failed ct-meta#3446's arch lane (an optimizer pod replacement
+ * behind gateway-internal: "terminated", then nginx HTTP 502) lasted about a
+ * minute; the previous 1s/4s/16s schedule with three retries gave up in ~25s. */
+export const TRANSPORT_RETRY_BASE_DELAY_MS = 5_000;
 /** Growth factor per transport retry. */
-export const TRANSPORT_RETRY_FACTOR = 4;
+export const TRANSPORT_RETRY_FACTOR = 2;
 /** Ceiling for any single transport backoff, so the schedule stays bounded. */
-export const TRANSPORT_RETRY_MAX_DELAY_MS = 120_000;
+export const TRANSPORT_RETRY_MAX_DELAY_MS = 60_000;
+/** REL-1113: total wall-clock window a lane may spend riding out one transport
+ * outage, measured from its FIRST transport failure. A backoff that would end
+ * past this window is not taken; the lane fails with its accurate reason and
+ * the run is re-attempted as an infrastructure failure instead. */
+export const TRANSPORT_RETRY_WINDOW_MS = 180_000;
+/** REL-1113: never start a transport backoff that would end inside this margin
+ * of the worker's terminal deadline: the worker still has to record and
+ * publish the outcome after the lane gives up. */
+export const TRANSPORT_RETRY_TERMINAL_MARGIN_MS = 60_000;
 
 /**
- * Exponential backoff with jitter for transport retries.
+ * Full-jitter exponential backoff for transport retries.
  *
  * Exponential because the failure is an upstream outage that needs wall-clock
  * time to clear, not a re-roll of provider routing (contrast the flat
  * `EMPTY_COMPLETION_RETRY_DELAY_MS`, where an immediate retry genuinely can
  * land on a different backend).
  *
- * Jittered because every persona lane runs concurrently against the SAME
- * gateway: without jitter they fail together, sleep in lockstep, and retry in
- * one synchronised burst against an upstream that is still recovering. The
- * +/-20% spread breaks that thundering herd.
+ * Full jitter (uniform in [0, ceiling)) because every persona lane runs
+ * concurrently against the SAME gateway: without jitter they fail together,
+ * sleep in lockstep, and retry in one synchronised burst against an upstream
+ * that is still recovering.
  *
- * Worst case is ~25s of added delay across three retries. That deliberately
- * covers a SHORT blip -- a gateway restart or a dropped connection -- and not
- * a multi-minute outage: past that point the cost is paid by every lane on
- * every genuinely-down gateway (including the fail-closed path), for a
- * shrinking chance of recovery. A longer outage is the operator re-review
- * path's job, not this loop's.
+ * Worst case is 135s of sleep across five retries, and the caller additionally
+ * bounds it by `TRANSPORT_RETRY_WINDOW_MS`, the persona/panel budgets and the
+ * worker's terminal deadline. A longer outage is the infrastructure re-attempt
+ * path's job (REL-1113), not this loop's.
  */
 export function transportRetryDelayMs(attempt: number, random: () => number = Math.random): number {
-  const exponential = Math.min(
+  const ceiling = Math.min(
     TRANSPORT_RETRY_BASE_DELAY_MS * Math.pow(TRANSPORT_RETRY_FACTOR, Math.max(0, attempt - 1)),
     TRANSPORT_RETRY_MAX_DELAY_MS,
   );
-  const jitter = 0.8 + random() * 0.4;
-  return Math.round(exponential * jitter);
+  const unit = Math.min(Math.max(random(), 0), 1);
+  return Math.floor(unit * ceiling);
+}
+
+/** Gateway/proxy statuses that describe the path to the model, not an answer
+ * from it: a restarting upstream behind nginx (502/504), an overloaded or
+ * draining one (503), or an explicit "slow down" (429). */
+const TRANSIENT_GATEWAY_STATUSES: ReadonlySet<number> = new Set([429, 502, 503, 504]);
+const TRANSIENT_GATEWAY_MESSAGE = /\bHTTP (?:429|502|503|504)\b|\bBad Gateway\b|\bService Unavailable\b|\bGateway Time-?out\b/iu;
+const NON_RETRYABLE_CLIENT_STATUS_MESSAGE = /\bHTTP 4(?!29)\d\d\b/u;
+
+/**
+ * REL-1113: whether one persona attempt failed on the PATH to the model -- a
+ * dropped/refused/reset connection, an interrupted stream ("terminated"), or a
+ * gateway/proxy 429/502/503/504 -- rather than on anything the model said.
+ *
+ * Not a second classification ladder: the connection half IS
+ * `classifyPersonaAttemptFailure(error) === 'transport'` (the same shared
+ * classifier that assigns the lane's published `failureClass`); this only adds
+ * the gateway statuses, which that classifier publishes as `provider_error` /
+ * `rate_limit`. Every error this accepts therefore publishes a class inside
+ * `INFRASTRUCTURE_LANE_FAILURE_CLASSES` (pinned by a test).
+ *
+ * Retrying such an attempt from scratch is safe: a persona lane is an
+ * idempotent read of the model. Its tools are read-only (`runReadOnlyTool`),
+ * nothing is published or persisted until the whole panel returns, and a
+ * partially streamed answer is discarded with the failed attempt, so a retry
+ * duplicates no side effect -- it only re-spends tokens.
+ *
+ * Deliberately NOT transient: a 4xx other than 429 (auth, contract, payload
+ * size -- the same request fails the same way), a request deadline or caller
+ * cancellation (`OpenRouterTimeoutError`), an explicit upstream capacity
+ * rejection error (fast failover owns it), the empty-completion signature (its
+ * own budget), and any structured-output/contract error.
+ */
+export function isTransientLaneTransportError(error: unknown): boolean {
+  if (error instanceof OpenRouterTimeoutError) return false;
+  if (error instanceof UpstreamCapacityRejectionError) return false;
+  if (error instanceof PanelConfigurationError) return false;
+  if (error instanceof OpenRouterResponseError) {
+    if (isEmptyCompletionError(error)) return false;
+    return error.status !== undefined && TRANSIENT_GATEWAY_STATUSES.has(error.status);
+  }
+  const message = panelErrorMessage(error);
+  if (NON_RETRYABLE_CLIENT_STATUS_MESSAGE.test(message)) return false;
+  return classifyPersonaAttemptFailure(error) === 'transport' || TRANSIENT_GATEWAY_MESSAGE.test(message);
+}
+
+/** REL-1113: milliseconds left before a transport backoff would crowd the
+ * worker's terminal deadline, or Infinity when this process was given none. The
+ * env contract (name, format) is owned by `config/terminalDeadline`; absence is
+ * not unbounded -- the panel deadline (`remainingPanelTimeoutMs`) still bounds
+ * every backoff. */
+export function remainingTerminalDeadlineMs(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  now: number = Date.now(),
+): number {
+  const at = workerTerminalDeadlineAtMs(env);
+  return at === undefined ? Infinity : at - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now;
 }
 
 /** Default token budget for inlined diffs in Turn 1 */
@@ -2833,6 +2899,9 @@ async function runPersona(
       // the same reason as `emptyCompletionAttempts` -- so the generic
       // `maxAttempts` cap cannot retire a lane while the gateway is simply down.
       let transportAttempts = 0;
+      // REL-1113: when this lane first saw a transport failure; bounds the whole
+      // backoff sequence by TRANSPORT_RETRY_WINDOW_MS.
+      let firstTransportFailureAt: number | undefined;
 
       for (;;) {
         throwIfPanelAborted(signal);
@@ -3153,6 +3222,61 @@ async function runPersona(
             if (attempts < maxAttempts) continue;
             break;
           }
+          // REL-940 / REL-1113: a transport failure is the PATH to the model
+          // failing (connection reset/refused, an interrupted stream, a gateway
+          // 429/502/503/504), not an answer about the diff. It is checked BEFORE
+          // the large-prompt 5xx circuit breaker and the generic branch below so
+          // neither can retire the lane while a short gateway outage is still
+          // clearing -- ct-meta#3446 lost its arch lane to exactly that ("terminated",
+          // then nginx HTTP 502 during an optimizer pod replacement). Retrying the
+          // SAME provider with full-jitter backoff is not the fallback fan-out the
+          // circuit breaker guards against; once this budget is spent the breaker
+          // and the generic branch still apply unchanged.
+          // The backoff must also FIT: inside the lane's transport window, the
+          // persona/panel budgets and the worker's terminal deadline. Sleeping past
+          // any of them converts a precise transport failure into a generic
+          // timeout, which is strictly worse to operate on. When there is no room,
+          // fall through and fail with the accurate reason now.
+          // An explicit capacity rejection (429/503 wording) keeps its fast failover while another
+          // provider identity remains; only on the last (or only) one -- a single-alias router
+          // deployment, where failover means "fail the lane" -- does it ride the transport budget.
+          const fastFailoverAvailable = isExplicitUpstreamRejection(error)
+            && providersToTry.indexOf(providerId) < providersToTry.length - 1;
+          if (isTransientLaneTransportError(error) && !fastFailoverAvailable) {
+            const nowMs = Date.now();
+            if (firstTransportFailureAt === undefined) firstTransportFailureAt = nowMs;
+            const transportBackoffMs = transportRetryDelayMs(transportAttempts + 1);
+            const remainingBudgetMs = Math.min(
+              MAX_PERSONA_BUDGET_MS - (nowMs - personaStartedAt),
+              remainingPanelTimeoutMs?.() ?? Infinity,
+              TRANSPORT_RETRY_WINDOW_MS - (nowMs - firstTransportFailureAt),
+              remainingTerminalDeadlineMs(process.env, nowMs),
+            );
+            if (transportAttempts < TRANSPORT_MAX_RETRIES && transportBackoffMs < remainingBudgetMs) {
+              transportAttempts++;
+              const backoffMs = transportBackoffMs;
+              logger.warn(`Transport failure reaching provider '${providerId}' for persona ${persona.id}; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_RETRIES}`, {
+                persona: persona.id,
+                provider: providerId,
+                transportAttempt: transportAttempts,
+                transportMaxRetries: TRANSPORT_MAX_RETRIES,
+                backoffMs,
+                ...(error instanceof OpenRouterResponseError && error.status !== undefined ? { providerStatus: error.status } : {}),
+                // Bounded/redacted, same contract as the generic branch below.
+                error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+              });
+              await panelDelay(backoffMs, signal);
+              continue;
+            }
+            logger.warn(`Transport retry budget for provider '${providerId}' exhausted for persona ${persona.id} after ${transportAttempts} retr${transportAttempts === 1 ? 'y' : 'ies'}`, {
+              persona: persona.id,
+              provider: providerId,
+              transportAttempts,
+              transportMaxRetries: TRANSPORT_MAX_RETRIES,
+              ...(error instanceof OpenRouterResponseError && error.status !== undefined ? { providerStatus: error.status } : {}),
+              error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+            });
+          }
           const promptTokens = (error as any)?.estimatedPromptTokens ?? 0;
           if (isProvider5xxError(error) && promptTokens > 15_000) {
             logger.warn(`[Persona: ${persona.id}] Provider '${providerId}' returned 5xx on large prompt (${promptTokens} tokens); circuit-breaking to prevent fallback fan-out storm`, {
@@ -3207,44 +3331,6 @@ async function runPersona(
               },
             });
             break;
-          }
-          // REL-940: a transport failure is the gateway being unreachable, not
-          // an answer about the diff. It is checked BEFORE the generic branch
-          // below so the flat 1s/`maxAttempts` path cannot retire the lane
-          // while an outage is still clearing. Classification reuses
-          // `classifyPersonaAttemptFailure` -- the single shared classifier
-          // this file already trusts for the published failure class -- rather
-          // than a second message ladder that could drift from it.
-          // The backoff must also FIT in what is left of the persona/panel budget.
-          // Sleeping past the overall deadline converts a precise
-          // "required persona failure: ... transport" into a generic
-          // "panel exceeded overall timeout", which is strictly worse to
-          // operate on -- and a repo with a short `overall_timeout_s` would
-          // hit that every time. When there is no room, fall through and fail
-          // with the accurate reason now.
-          const transportBackoffMs = transportRetryDelayMs(transportAttempts + 1);
-          const remainingBudgetMs = Math.min(
-            MAX_PERSONA_BUDGET_MS - (Date.now() - personaStartedAt),
-            remainingPanelTimeoutMs?.() ?? Infinity,
-          );
-          if (
-            transportAttempts < TRANSPORT_MAX_RETRIES &&
-            transportBackoffMs < remainingBudgetMs &&
-            classifyPersonaAttemptFailure(error) === 'transport'
-          ) {
-            transportAttempts++;
-            const backoffMs = transportBackoffMs;
-            logger.warn(`Transport failure reaching provider '${providerId}' for persona ${persona.id}; backing off ${backoffMs}ms before retry ${transportAttempts}/${TRANSPORT_MAX_RETRIES}`, {
-              persona: persona.id,
-              provider: providerId,
-              transportAttempt: transportAttempts,
-              transportMaxRetries: TRANSPORT_MAX_RETRIES,
-              backoffMs,
-              // Bounded/redacted, same contract as the generic branch below.
-              error: redactWorkerFailureLogTail(panelErrorMessage(error)),
-            });
-            await panelDelay(backoffMs, signal);
-            continue;
           }
           if (attempts < maxAttempts && isRetryablePanelError(error)) {
             logger.warn(`Retrying transient error for provider ${providerId} in persona ${persona.id} (attempt ${attempts}/${maxAttempts})`, {

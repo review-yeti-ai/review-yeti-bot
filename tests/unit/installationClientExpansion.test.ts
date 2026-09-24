@@ -61,6 +61,10 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     await client.completeCheck({ owner: 'owner', repo: 'repo', checkId: 1, conclusion: 'failure',
       title: 'Review Yeti: BLOCK', summary: 'policy finding' });
     expect(capturedBody.actions).toBeUndefined();
+    // REL-1113: the infrastructure-incomplete family keeps the re-run action.
+    await client.completeCheck({ owner: 'owner', repo: 'repo', checkId: 1, conclusion: 'failure',
+      title: 'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502)', summary: 'infra' });
+    expect(capturedBody.actions).toEqual([REVIEW_REFRESH_ACTION]);
   });
 
   it.each([

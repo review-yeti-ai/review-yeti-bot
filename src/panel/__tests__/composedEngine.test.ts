@@ -4,7 +4,7 @@ import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
-import { OpenRouterResponseError } from '../../gateway/openRouterClient';
+import { OpenRouterConnectionError, OpenRouterResponseError } from '../../gateway/openRouterClient';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 
 const mockYaml = `
@@ -430,6 +430,55 @@ describe('executeComposedReview', () => {
     expect(result.personas[0].id).toBe('task-sec');
   });
 
+
+  // REL-1113: the composed engine shares the lane transport predicate. A gateway 502 and an
+  // interrupted stream ("terminated") are the path to the model, not an answer: the plan turn
+  // rides them out on the transport budget and the review completes. A 413 fails the same way
+  // every time and is never retried.
+  it('rides out a gateway 502 and a terminated stream on the transport budget', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      let planCalls = 0;
+      const complete = vi.fn(async (payload: any) => {
+        const text = lastText(payload.messages);
+        const issued = nonceFrom(text);
+        if (text.includes('PLAN TURN')) {
+          planCalls += 1;
+          if (planCalls === 1) throw new OpenRouterResponseError('bifrost: gateway-internal HTTP 502: Bad Gateway (nginx)', 502);
+          if (planCalls === 2) throw new OpenRouterConnectionError('OpenRouter SDK connection failure for model pr-reviewer: terminated');
+          return fakeResponse(JSON.stringify({ nonce: issued, tasks: [
+            { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q', rationale: 'r' },
+          ] }));
+        }
+        return fakeResponse(JSON.stringify({ nonce: issued, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+      });
+      const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete } });
+      expect(planCalls).toBe(3);
+      expect(result.personas.map((persona) => persona.id)).toEqual(['task-sec']);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('never retries a gateway 413 on the transport budget', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    try {
+      let planCalls = 0;
+      const complete = vi.fn(async (payload: any) => {
+        if (lastText(payload.messages).includes('PLAN TURN')) {
+          planCalls += 1;
+          throw new OpenRouterResponseError('bifrost: gateway-internal HTTP 413: Request Entity Too Large', 413);
+        }
+        return fakeResponse('{}');
+      });
+      await expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete } })).rejects.toThrow();
+      expect(planCalls).toBe(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
 
   // The retry ladders check their backoff against the run's remaining budget. That check compared
   // against Infinity until the deadline was actually threaded from the orchestrator into

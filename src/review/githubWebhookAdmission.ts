@@ -14,7 +14,7 @@ import {
 } from '../auth/githubWebhookIdentity';
 import { MergeGroupGateInProgressError } from './mergeGroupGate';
 import {
-  RECOVERABLE_FAILURE_TITLES,
+  isRecoverableFailureTitle,
   REVIEW_REFRESH_ACTION,
 } from './reviewRecoveryPolicy';
 import { isTriggerActionAllowed } from '../config/configLoader';
@@ -119,7 +119,7 @@ const recoverableCheckRun = z.object({
     slug: z.literal(AUTHORITATIVE_REVIEW_APP_SLUG),
   }).passthrough(),
   output: z.object({
-    title: z.string().refine((value) => RECOVERABLE_FAILURE_TITLES.has(value)),
+    title: z.string().refine((value) => isRecoverableFailureTitle(value)),
   }).passthrough(),
   // GitHub leaves this array empty for fork pushes. Refuse to guess the PR
   // coordinates in that case: refresh is only valid for a single exact head.

@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, INCOMPLETE_REVIEW_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, transportRetryDelayMs } from '../../src/panel/panelEngine';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, INCOMPLETE_REVIEW_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, TRANSPORT_RETRY_WINDOW_MS, transportRetryDelayMs, isTransientLaneTransportError, remainingTerminalDeadlineMs, classifyPersonaAttemptFailure } from '../../src/panel/panelEngine';
+import { INFRASTRUCTURE_LANE_FAILURE_CLASSES } from '../../src/review/publicationFailurePolicy';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
-import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
+import { OpenRouterConnectionError, OpenRouterResponseError, OpenRouterTimeoutError } from '../../src/gateway/openRouterClient';
 
 // Parsed through the real schema (rather than hand-typed as CtReviewConfigV3) so
 // all the `.default(...)`-backed top-level sections (reviews, chat, etc.) are
@@ -105,6 +106,10 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     mockClient = {
       complete: vi.fn(),
     };
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('matches glob paths correctly (src/security/**)', async () => {
@@ -729,7 +734,11 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
   // message must stay on the generic 2-attempt transient budget and never
   // borrow the larger empty-completion budget -- pinning that the two retry
   // paths cannot be silently merged by loosening the predicate.
-  it('keeps a non-empty-completion OpenRouterResponseError on the generic 2-attempt budget', async () => {
+  it('keeps a non-empty-completion gateway 502 off the empty-completion budget (it rides the transport budget)', async () => {
+    // REL-1113: a gateway 502 is a transport failure (the path to the model), so it gets the
+    // transport budget with backoff; the point of this test is unchanged -- the malformed-payload
+    // message never borrows EMPTY_COMPLETION_MAX_ATTEMPTS. Zero jitter keeps the backoff instant.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     const config = buildSingleAliasDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     mockClient.complete.mockImplementation(async (opts: any) => {
@@ -763,9 +772,43 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       request.metadata?.role === 'persona'
       && request.metadata?.persona === 'sec-lane'
       && request.model === 'bifrost/pr-reviewer');
-    // Exactly the generic maxAttempts (2), not EMPTY_COMPLETION_MAX_ATTEMPTS (4) --
-    // proves the malformed-payload message never borrows the larger budget.
-    expect(bifrostCalls).toHaveLength(2);
+    // Exactly the transport budget, not EMPTY_COMPLETION_MAX_ATTEMPTS --
+    // proves the malformed-payload message never borrows the empty-completion budget.
+    expect(bifrostCalls).toHaveLength(TRANSPORT_MAX_RETRIES + 1);
+    expect(TRANSPORT_MAX_RETRIES + 1).not.toBe(EMPTY_COMPLETION_MAX_ATTEMPTS);
+  });
+
+  it('keeps a gateway 4xx (not 429) non-retryable on the transport budget', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (opts.model === 'bifrost/pr-reviewer') {
+        throw new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 413: Request Entity Too Large (nginx)', 413);
+      }
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'n/a' }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-gateway-413',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toThrow(/persona sec-lane failed closed/iu);
+
+    const bifrostCalls = mockClient.complete.mock.calls.filter(([request]: any[]) =>
+      request.metadata?.role === 'persona' && request.metadata?.persona === 'sec-lane'
+      && request.model === 'bifrost/pr-reviewer');
+    // A 413 fails the same way every time: one call, no transport backoff, no generic retry.
+    expect(bifrostCalls).toHaveLength(1);
   });
 
   it('retries once then fails over to fallback provider when persona output is unparseable or empty', async () => {
@@ -1412,6 +1455,8 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
   });
 
   it('handles 6-persona panel with transient 503 errors and retries under concurrency bounds without starving lanes', async () => {
+    // REL-1113: the 503s ride the full-jitter transport budget; zero jitter keeps the retries instant.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     let activeCalls = 0;
     let maxConcurrentObserved = 0;
     const personaAttempts: Record<string, number> = {};
@@ -1925,6 +1970,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
   // while a retry minutes later returned a clean verdict. This proves the lane
   // now survives across its own larger, backed-off budget.
   it('retries a transport failure past the generic 2-attempt cap instead of failing closed', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     const config = buildSingleAliasDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     // Two transport failures then success: attempt 3 is already strictly beyond
@@ -1972,30 +2018,234 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(bifrostAttempts).toBeGreaterThan(2);
   }, 120_000);
 
-  it('bounds the transport backoff: exponential, jittered, and capped', () => {
-    // Deterministic bounds rather than exact values, because the jitter is the
-    // point: concurrent lanes must not retry a recovering gateway in lockstep.
-    for (const [attempt, base] of [[1, 1_000], [2, 4_000], [3, 16_000]] as const) {
-      const low = transportRetryDelayMs(attempt, () => 0);
-      const high = transportRetryDelayMs(attempt, () => 0.999);
-      expect(low).toBe(Math.round(base * 0.8));
-      expect(high).toBeLessThanOrEqual(Math.round(base * 1.2));
-      expect(high).toBeGreaterThan(low);
+  // REL-1113: the ct-meta#3446 lane saw an interrupted stream ("terminated") and then nginx
+  // HTTP 502 while the optimizer pod behind gateway-internal was replaced. Both are the PATH to
+  // the model failing; the lane must ride them out on the transport budget and complete.
+  it('rides out a gateway 502 and a terminated stream, then completes on the 200', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    const config = buildSingleAliasDeepConfig();
+    const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
+    const failures = [
+      new OpenRouterConnectionError('OpenRouter SDK connection failure for model bifrost/pr-reviewer: terminated'),
+      new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 502: <html>502 Bad Gateway nginx</html>', 502),
+      new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 504: Gateway Time-out', 504),
+      new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 503: Service Unavailable', 503),
+    ];
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'Lane recovered' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        if (bifrostAttempts <= failures.length) throw failures[bifrostAttempts - 1];
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles,
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-gateway-502-then-200',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    expect(result.personas.find((persona) => persona.id === 'sec-lane')?.decision).toBe('APPROVE');
+    expect(result.optionalFailures).toEqual([]);
+    expect(bifrostAttempts).toBe(failures.length + 1);
+  });
+
+  it('classifies only path-to-model failures as transient lane transport errors', () => {
+    expect(isTransientLaneTransportError(new OpenRouterConnectionError('OpenRouter SDK connection failure: terminated'))).toBe(true);
+    for (const status of [429, 502, 503, 504]) {
+      expect(isTransientLaneTransportError(new OpenRouterResponseError(`HTTP ${status}`, status))).toBe(true);
     }
-    // Capped: a high attempt number never exceeds the ceiling plus jitter.
-    expect(transportRetryDelayMs(9, () => 0.999)).toBeLessThanOrEqual(Math.round(TRANSPORT_RETRY_MAX_DELAY_MS * 1.2));
-    // The FIRST retry stays as fast as the generic branch it replaces, so a
-    // momentary blip does not cost every lane the worst-case latency.
-    expect(transportRetryDelayMs(1, () => 0.5)).toBe(1_000);
-    // Worst-case total stays far inside the 30-minute terminal deadline.
-    const worstCaseTotalMs = [1, 2, 3].reduce((sum, n) => sum + transportRetryDelayMs(n, () => 0.999), 0);
-    expect(worstCaseTotalMs).toBeLessThan(40_000);
+    for (const message of ['fetch failed', 'read ECONNRESET', 'connect ECONNREFUSED 10.0.0.1:443', 'terminated', 'socket hang up',
+      'bifrost: gateway-internal.calltelemetry.com HTTP 502: nginx']) {
+      expect(isTransientLaneTransportError(new Error(message))).toBe(true);
+    }
+    // 4xx other than 429 fail the same way every time.
+    for (const status of [400, 401, 403, 404, 413, 422]) {
+      expect(isTransientLaneTransportError(new OpenRouterResponseError(`HTTP ${status}`, status))).toBe(false);
+    }
+    expect(isTransientLaneTransportError(new Error('bifrost HTTP 413: Request Entity Too Large (after ECONNRESET)'))).toBe(false);
+    expect(isTransientLaneTransportError(new OpenRouterResponseError('HTTP 500', 500))).toBe(false);
+    expect(isTransientLaneTransportError(new OpenRouterResponseError('OpenRouter returned empty completion content', 502))).toBe(false);
+    expect(isTransientLaneTransportError(new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request'))).toBe(false);
+    expect(isTransientLaneTransportError(new PanelConfigurationError('invalid findings contract'))).toBe(false);
+  });
+
+  it('refuses a transport backoff once the lane has spent TRANSPORT_RETRY_WINDOW_MS on one outage', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+    // A fake clock: every failing gateway call "takes" 70s, so the window (180s from the FIRST
+    // transport failure) -- not the retry cap, persona budget or panel budget -- is what stops it.
+    let clock = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const base = buildSingleAliasDeepConfig();
+    const config = ctReviewConfigV3Schema.parse({
+      ...base,
+      reviewers: { ...base.reviewers, overall_timeout_s: 3_600 },
+    }) as unknown as CtReviewConfigV3;
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        clock += 70_000;
+        throw new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 502: Bad Gateway', 502);
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', verdict: 'SHIP', rationale: 'x', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-transport-window',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    })).rejects.toThrow(/persona sec-lane failed closed: .*HTTP 502/iu);
+
+    // First failure at +70s opens the window; retries follow at +140s and +210s (window elapsed
+    // 70s, 140s); the failure at +280s is 210s into the window, so no fourth backoff is taken --
+    // fewer calls than the TRANSPORT_MAX_RETRIES cap alone would allow.
+    expect(TRANSPORT_RETRY_WINDOW_MS).toBe(180_000);
+    expect(bifrostAttempts).toBe(4);
+    expect(bifrostAttempts).toBeLessThan(TRANSPORT_MAX_RETRIES + 1);
+  });
+
+  it('keeps fast failover for an explicit capacity rejection while another provider remains', async () => {
+    // Maximum jitter: had the transport backoff been taken, it would sleep ~5s per retry.
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
+    const config = buildDeepConfig();
+    let primaryCalls = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
+      if (role === 'persona' && opts.metadata?.persona === 'sec-lane' && opts.model === 'claude-5-sonnet') {
+        primaryCalls++;
+        throw new OpenRouterResponseError('claude: gateway HTTP 503: Service Unavailable', 503);
+      }
+      if (role === 'arbiter') {
+        return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'ok' }), usage: null, costUSD: null, raw: {} };
+      }
+      if (role === 'moderator') {
+        return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+
+    const startedAt = performance.now();
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-fast-failover',
+      client: mockClient as unknown as OmniRouteClient,
+      requestPolicy: { responseFormat: { type: 'json_schema' } },
+    });
+
+    // One call to the rejecting provider, then straight to the next identity -- no backoff.
+    expect(primaryCalls).toBe(1);
+    expect(result.personas.find((persona) => persona.id === 'sec-lane')?.decision).toBe('APPROVE');
+    expect(performance.now() - startedAt).toBeLessThan(4_000);
+  });
+
+  it('every error the lane retries as transport publishes an infrastructure failure class', () => {
+    const retried = [
+      new OpenRouterConnectionError('OpenRouter SDK connection failure: terminated'),
+      new OpenRouterResponseError('HTTP 429', 429),
+      new OpenRouterResponseError('HTTP 502', 502),
+      new OpenRouterResponseError('HTTP 503', 503),
+      new OpenRouterResponseError('HTTP 504', 504),
+      new Error('fetch failed'),
+      new Error('read ECONNRESET'),
+      new Error('connect ECONNREFUSED 10.0.0.1:443'),
+      new Error('terminated'),
+      new Error('socket hang up'),
+      new Error('bifrost: gateway-internal.calltelemetry.com HTTP 502: nginx'),
+    ];
+    for (const error of retried) {
+      expect(isTransientLaneTransportError(error)).toBe(true);
+      // The retry predicate and the published class never disagree about "infrastructure".
+      expect(INFRASTRUCTURE_LANE_FAILURE_CLASSES).toContain(classifyPersonaAttemptFailure(error));
+    }
+  });
+
+  it('never starts a transport backoff that would crowd the worker terminal deadline', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const previous = process.env.REVIEW_TERMINAL_DEADLINE;
+    // Only 61s left: inside the 60s publication margin, every backoff (>= 2.5s) is refused.
+    process.env.REVIEW_TERMINAL_DEADLINE = new Date(Date.now() + 61_000).toISOString();
+    expect(remainingTerminalDeadlineMs()).toBeLessThan(1_001);
+    const config = buildSingleAliasDeepConfig();
+    let bifrostAttempts = 0;
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1]?.content || '');
+      const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
+      if (opts.model === 'bifrost/pr-reviewer') {
+        bifrostAttempts++;
+        throw new OpenRouterResponseError('HTTP 502: Bad Gateway', 502);
+      }
+      return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', verdict: 'SHIP', rationale: 'x', findings: [] }), usage: null, costUSD: null, raw: {} };
+    });
+    try {
+      await expect(executePersonaPanel({
+        config,
+        changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
+        repository: 'calltelemetry/repo',
+        headSha: 'head-sha-terminal-deadline',
+        client: mockClient as unknown as OmniRouteClient,
+        requestPolicy: { responseFormat: { type: 'json_schema' } },
+      })).rejects.toThrow(/persona sec-lane failed closed/iu);
+    } finally {
+      if (previous === undefined) delete process.env.REVIEW_TERMINAL_DEADLINE;
+      else process.env.REVIEW_TERMINAL_DEADLINE = previous;
+    }
+    // Only the generic single retry, never the transport budget.
+    expect(bifrostAttempts).toBeLessThanOrEqual(2);
+  }, 30_000);
+
+  it('bounds the transport backoff: exponential, full-jitter, and capped', () => {
+    // Full jitter: uniform in [0, ceiling), so concurrent lanes never retry a
+    // recovering gateway in lockstep, and the ceiling grows exponentially.
+    for (const [attempt, ceiling] of [[1, 5_000], [2, 10_000], [3, 20_000], [4, 40_000], [5, 60_000]] as const) {
+      expect(transportRetryDelayMs(attempt, () => 0)).toBe(0);
+      expect(transportRetryDelayMs(attempt, () => 0.5)).toBe(ceiling / 2);
+      expect(transportRetryDelayMs(attempt, () => 0.999)).toBeLessThan(ceiling);
+      expect(transportRetryDelayMs(attempt, () => 0.999)).toBeGreaterThan(ceiling * 0.99);
+    }
+    expect(TRANSPORT_RETRY_BASE_DELAY_MS).toBe(5_000);
+    // Capped: a high attempt number never exceeds the ceiling.
+    expect(transportRetryDelayMs(9, () => 0.999)).toBeLessThan(TRANSPORT_RETRY_MAX_DELAY_MS);
+    // A misbehaving random source cannot produce a negative or oversize sleep.
+    expect(transportRetryDelayMs(3, () => -1)).toBe(0);
+    expect(transportRetryDelayMs(3, () => 7)).toBe(20_000);
+    // Worst-case total sleep across the whole budget rides out a ~1-2 minute
+    // gateway replacement yet stays inside the transport window and far
+    // inside the 30-minute terminal deadline.
+    const worstCaseTotalMs = Array.from({ length: TRANSPORT_MAX_RETRIES }, (_, index) => index + 1)
+      .reduce((sum, n) => sum + transportRetryDelayMs(n, () => 0.999), 0);
+    expect(TRANSPORT_MAX_RETRIES).toBe(5);
+    expect(worstCaseTotalMs).toBeGreaterThan(120_000);
+    expect(worstCaseTotalMs).toBeLessThan(TRANSPORT_RETRY_WINDOW_MS);
   });
 
   // Review feedback (P2): the budget-exhaustion boundary was untested. After
   // TRANSPORT_MAX_RETRIES the lane must fail closed -- the retry must not be
   // able to loop a required lane indefinitely against a dead gateway.
   it('fails closed once the transport budget is exhausted, never approving', async () => {
+    vi.spyOn(Math, 'random').mockReturnValue(0);
     const config = buildSingleAliasDeepConfig();
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     let bifrostAttempts = 0;
@@ -2037,6 +2287,8 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
   // branch must fall through immediately rather than sleep past the deadline
   // and convert a precise transport failure into a generic timeout.
   it('skips the transport backoff when it does not fit the remaining panel budget', async () => {
+    // Maximum jitter: every proposed backoff is ~its full ceiling (>= ~5s), so none fits.
+    vi.spyOn(Math, 'random').mockReturnValue(0.999);
     const base = buildSingleAliasDeepConfig();
     // A panel deadline far shorter than even the first 1s backoff.
     const config = ctReviewConfigV3Schema.parse({
