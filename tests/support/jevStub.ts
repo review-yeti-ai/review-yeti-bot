@@ -247,15 +247,15 @@ function jevAnswerJsonSchema(question: JevQuestion): Record<string, unknown> {
     };
   }
   // The live score contract (REL-1100, captured from jev-1.13.0): `legend` and `probabilities`
-  // are objects keyed by the 0-based criteria index as a string, and `score` is continuous in
-  // [0,1] -- not a level number.
+  // are objects keyed by the 0-based criteria index as a string, and `score` is the expected
+  // 0-based level index, sum(index * probability), continuous in [0, n-1] -- not a level number.
   const q = question as JevScoreQuestion;
   const indexKeys = q.criteria.map((_criterion, index) => String(index));
   return {
     type: 'object',
     properties: {
       type: { const: 'score' },
-      score: { type: 'number', minimum: 0, maximum: 1 },
+      score: { type: 'number', minimum: 0, maximum: q.criteria.length - 1 },
       legend: {
         type: 'object',
         properties: Object.fromEntries(q.criteria.map((criterion, index) => [String(index), { const: criterion }])),

@@ -36,7 +36,7 @@ The live API (`jev-1.13.0`) returns a score answer like this:
 ```
 
 - `legend` and `probabilities` are objects keyed by the 0-based index of the criteria entry, as a string.
-- `score` is a continuous value in [0,1]. It is not a level number.
+- `score` is the expected 0-based level index, sum(index × probability). It is continuous in [0, n-1]: 0.32 in the example, and values like 3.98 in production for a near-certain level 5. It is a mean, not a level number.
 - `risk_level` is the index with the highest probability, plus 1. A tie goes to the higher level. In the example, the level is 1.
 - `risk_score` (the raw `score`) and `risk_confidence` are logged as returned.
 
