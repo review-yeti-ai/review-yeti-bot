@@ -69,6 +69,7 @@ import type { WorkerReviewCompletionAdapter } from '../review/workerReviewComple
 import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
 
 import { parseChangedFiles } from '../review/changedFiles';
+import { describeDiffShrink, loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -1153,6 +1154,33 @@ export async function runPublishingReviewWorker(
       });
     }
 
+    // REL-1079: deterministic diff shrinking, default off (`REVIEW_YETI_DIFF_SHRINK`). Both
+    // engines apply it after the shared applicability decision; the disclosure below is computed
+    // by the same function from the same inputs.
+    const diffShrink = await loadDiffShrinkInput({
+      env,
+      repository: identity.repo,
+      changedPaths: changedFiles.map((file) => file.path),
+      repoFileProvider,
+    });
+    const diffShrinkDisclosure = describeDiffShrink(changedFiles, {
+      pathFilters: (workerConfig as { path_filters?: string[] }).path_filters,
+      diffShrink,
+    });
+    if (diffShrinkDisclosure) {
+      logger.info('Diff shrinking applied before review', {
+        runId: identity.runId,
+        repository: identity.repo,
+        whitespaceOnlyFiles: diffShrinkDisclosure.whitespaceOnlyFiles.length,
+        collapsedWhitespaceHunkFiles: diffShrinkDisclosure.collapsedWhitespaceHunks.length,
+        renames: diffShrinkDisclosure.renames.length,
+        linguistExcluded: diffShrinkDisclosure.linguistExcluded.length,
+        keptFullDepth: diffShrinkDisclosure.keptFullDepth.length,
+        estimatedTokensBefore: diffShrinkDisclosure.estimatedTokensBefore,
+        estimatedTokensAfter: diffShrinkDisclosure.estimatedTokensAfter,
+      });
+    }
+
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run. Grounding
@@ -1270,6 +1298,7 @@ export async function runPublishingReviewWorker(
               signal: activeShadowDeadline.signal,
               repoFileProvider,
               isCurrentHead: deps.isCurrentHead,
+              ...(diffShrink ? { diffShrink } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
             } as Parameters<typeof executeComposedReview>[0])),
@@ -1300,6 +1329,7 @@ export async function runPublishingReviewWorker(
           repoFileProvider,
           isCurrentHead: deps.isCurrentHead,
           ...(authoritative ? { deterministicRoster: true } : {}),
+          ...(diffShrink ? { diffShrink } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1516,6 +1546,7 @@ export async function runPublishingReviewWorker(
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
           `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
           `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
+          ...renderDiffShrinkSummary(diffShrinkDisclosure),
           renderCoverageSummary(coverage),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
@@ -1533,6 +1564,8 @@ export async function runPublishingReviewWorker(
           ...(unreadable.length > 0
             ? [`Reviewed ${changedFiles.length} file(s); ${unreadable.length} diff header(s) could not be read, so those files were NOT reviewed:\n${unreadable.map((header) => `- \`${header}\``).join('\n')}`]
             : []),
+          // REL-1079: only a run whose lanes actually reviewed the (shrunk) diff discloses it.
+          ...(notApplicable || (panelResult as any).zeroLaneNonEvidence ? [] : renderDiffShrinkSummary(diffShrinkDisclosure)),
           renderCoverageSummary(coverage),
           ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
           renderTransportSummary(transport.model, resolvedTransportModel),

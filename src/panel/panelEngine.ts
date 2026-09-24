@@ -36,9 +36,9 @@ import {
   isArchitecturePersona,
   personaCoversFile,
   scopeFilesForPersona,
-  resolveReviewApplicability,
   DOCUMENTATION_ONLY_RATIONALE,
 } from '../review/personaApplicability';
+import { resolveShrunkReviewApplicability, type DiffShrinkInput } from '../review/diffShrink';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -3490,6 +3490,8 @@ export async function executePersonaPanel(options: {
    * path applicability; mutable dashboard overrides and model pruning cannot
    * alter the evidence roster after admission. */
   deterministicRoster?: boolean;
+  /** REL-1079: deterministic diff shrinking (`REVIEW_YETI_DIFF_SHRINK`); absent or disabled sends every change in full. */
+  diffShrink?: DiffShrinkInput;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -3519,8 +3521,10 @@ export async function executePersonaPanel(options: {
     // path_filters, same gitlink policy -- the service's trusted completion
     // context derives, so the lanes this worker runs and the lanes the service
     // requires cannot disagree (REL-1056 / REL-1058).
-    const applicability = resolveReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1079: diff shrinking runs after, and cannot change, that decision.
+    const applicability = resolveShrunkReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
+      diffShrink: options.diffShrink,
     });
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;

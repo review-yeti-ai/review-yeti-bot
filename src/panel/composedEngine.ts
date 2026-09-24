@@ -38,7 +38,8 @@ import {
   ReviewModelClient,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
-import { DOCUMENTATION_ONLY_RATIONALE, resolveReviewApplicability } from '../review/personaApplicability';
+import { DOCUMENTATION_ONLY_RATIONALE } from '../review/personaApplicability';
+import { resolveShrunkReviewApplicability, type DiffShrinkInput } from '../review/diffShrink';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
 import {
   buildDiffSection,
@@ -100,6 +101,8 @@ export interface ComposedReviewOptions {
   repositoryVisibility?: RepositoryVisibility;
   signal?: AbortSignal;
   workspaceRoot?: string;
+  /** REL-1079: deterministic diff shrinking (`REVIEW_YETI_DIFF_SHRINK`); absent or disabled sends every change in full. */
+  diffShrink?: DiffShrinkInput;
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,8 +1007,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     // reviewed, exempted, or a coverage failure is decided identically, so a
     // composed completion is never one the service cannot acknowledge.
     const enabledPersonas = config.personas.filter((persona) => persona.enabled);
-    const applicability = resolveReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1079: diff shrinking runs after, and cannot change, that decision.
+    const applicability = resolveShrunkReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
+      diffShrink: options.diffShrink,
     });
     const effectiveFiles = applicability.effectiveFiles;
     if (applicability.applicable.length === 0) {
