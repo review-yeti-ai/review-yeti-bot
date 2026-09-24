@@ -844,12 +844,14 @@ export class McpFleetManager {
         const timeoutMs = options.timeoutMs ?? 15000;
         const controller = new AbortController();
         // The timer is armed immediately before the request, NOT before the work that
-        // precedes it. `getHttpHeaders()` awaits a Doppler secret lookup (measured ~470ms),
-        // and with a short budget the signal was already aborted by the time `fetch()` was
-        // called -- `addEventListener('abort')` then never fired because the event had
-        // already passed, and the awaiting promise hung FOREVER rather than rejecting. That
-        // is a hang on a timeout path, which is the one outcome a timeout must never have
-        // (REL-1107 follow-up).
+        // precedes it, so the caller's budget is charged to the request it bounds rather than
+        // to setup. This is a correctness improvement, not the hang fix: the hang came from a
+        // signal that was already aborted at `fetch`, which the guard below now fails fast.
+        //
+        // Stated that precisely because it was measured: with BOTH halves reverted the request
+        // IS still dispatched (the pre-abort guard is what prevents it, not the placement), and
+        // no test in this suite discriminates the placement alone -- it was attempted, shown
+        // non-discriminating, and removed rather than left as an inert assertion.
         let timer: ReturnType<typeof setTimeout> | undefined;
 
         const effectiveSignal = options.signal
@@ -884,7 +886,11 @@ export class McpFleetManager {
           // event has fired, and the awaiting promise NEVER settles. Verified: signal.aborted
           // was true at fetch time and the call hung past 3s under a 50ms budget.
           //
-          // This guard deliberately does NOT translate the reason into an operator message. The
+          // This guard is also what prevents dispatch in the pre-abort case: verified by a full
+          // revert of the timer placement AND this guard, after which `fetch` is still called
+          // with an aborted signal -- the original hang condition.
+          //
+          // It deliberately does NOT translate the reason into an operator message. The
           // abort-vs-timeout taxonomy lives in ONE place -- the catch below, which already
           // classifies `wasAbortedByCaller` -- and an inline copy here had already drifted from
           // it within this change, mislabelling a custom caller reason as a timeout
