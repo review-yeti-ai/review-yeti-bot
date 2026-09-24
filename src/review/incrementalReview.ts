@@ -65,6 +65,7 @@ import {
   workerReviewCompletionDigest,
   STORED_PRIOR_REFUSALS,
   storedCompletionShipCompleteReason,
+  storedEvidenceShipCompleteReason,
   workerReviewEvidenceDigest,
   type StoredPriorRefusal,
   type StoredGateRecord,
@@ -147,7 +148,9 @@ export type PriorReviewRecord = z.infer<typeof priorReviewRecordSchema>;
 
 /** Rows read by `selectPriorReviewRecord` (persistence). */
 export interface PriorReviewRows {
-  run: { run_id: unknown; repository_id: unknown; pr_number: unknown; head_sha: unknown; base_sha: unknown; status: unknown };
+  run: { run_id: unknown; repository_id: unknown; pr_number: unknown; head_sha: unknown; base_sha: unknown; status: unknown;
+    /** The prior run's authoritative gate App; null for a non-authoritative run. */
+    authoritative_gate_app_id?: unknown };
   completion: { execution_attempt: unknown; content_digest: unknown; payload: unknown; created_at: unknown };
   /**
    * The gate attempt that recorded this exact completion (its `worker_result_digest` is the
@@ -157,6 +160,12 @@ export interface PriorReviewRows {
   gate?: StoredGateRecord | null;
   /** The current run's admission time; ages are measured from it, so a slow worker cannot age a record out. */
   currentReceivedAt: unknown;
+  /**
+   * REL-1084: whether the CURRENT run is decided by the authoritative gate. Only an explicit
+   * `false` lets it rest on a non-authoritative WorkerReviewEvidence prior; an authoritative-gate
+   * run keeps requiring the gate's own record.
+   */
+  currentAuthoritative?: boolean;
 }
 
 function timeOf(value: unknown): number {
@@ -176,6 +185,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
     const version = (raw as { version?: unknown } | null)?.version;
     let result: WorkerReviewResult;
     let authoritative = false;
+    let conclusion: 'success' | 'failure' = 'failure';
     let coordinates: { runId: string; repositoryId: number; prNumber: number; headSha: string; baseSha: string;
       policyDigest: string; configDigest: string; executionAttempt: number };
     let recomputed: string;
@@ -188,6 +198,7 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
     } else if (version === 'WorkerReviewEvidence.v1') {
       const evidence = parseWorkerReviewEvidence(raw);
       result = evidence.result;
+      conclusion = evidence.conclusion;
       coordinates = evidence;
       recomputed = workerReviewEvidenceDigest(evidence);
     } else {
@@ -205,12 +216,14 @@ export function priorReviewRecordFromRows(rows: PriorReviewRows): PriorReviewRec
     const recordedAt = timeOf(rows.completion.created_at);
     const receivedAt = timeOf(rows.currentReceivedAt);
     if (!Number.isFinite(recordedAt) || !Number.isFinite(receivedAt)) return null;
-    // A WorkerReviewEvidence record (the worker published its own check, no authoritative gate)
-    // has no service-side gate evidence: the service never learned which lanes were required,
-    // so a missing lane could not be detected. It is never SHIP-complete.
+    // An authoritative completion qualifies only through the gate's own record of it. A
+    // non-authoritative WorkerReviewEvidence record (the worker published its own check) qualifies
+    // only for a non-authoritative current run, from its own stored conclusion, roster and lanes.
     const shipIncompleteReason: StoredPriorRefusal | null = rows.run.status !== 'succeeded' ? 'run-not-succeeded'
-      : !authoritative ? 'no-gate-evidence-record'
-      : storedCompletionShipCompleteReason(result, rows.gate, storedDigest);
+      : authoritative ? storedCompletionShipCompleteReason(result, rows.gate, storedDigest)
+      : rows.currentAuthoritative !== false ? 'no-gate-evidence-record'
+      : rows.run.authoritative_gate_app_id != null ? 'evidence-prior-run-authoritative'
+      : storedEvidenceShipCompleteReason(result, conclusion);
     const findingPaths = [...new Set(result.personas.flatMap((persona) => persona.findings.map((finding) => finding.path)))].sort();
     return priorReviewRecordSchema.parse({
       runId: coordinates.runId,
@@ -655,7 +668,12 @@ const FALLBACK_TEXT: Record<IncrementalFallbackReason, string> = {
 
 const PRIOR_REFUSAL_TEXT: Record<StoredPriorRefusal, string> = {
   'run-not-succeeded': 'its run did not succeed',
-  'no-gate-evidence-record': 'it was published without the authoritative gate',
+  'no-gate-evidence-record': 'it was published without the authoritative gate, which this run requires',
+  'evidence-prior-run-authoritative': 'its run was bound to the authoritative gate but stored no gate completion',
+  'evidence-conclusion-not-success': 'its published check did not succeed',
+  'evidence-roster-unknown': 'its record does not list the required lane roster',
+  'evidence-roster-mismatch': 'a stored lane is not in its roster or appears twice',
+  'evidence-exemption': 'it was a no-reviewable-content exemption',
   'gate-row-missing': 'the gate has no record of that completion',
   'gate-row-mismatch': 'the gate record is for a different completion',
   'gate-record-unreadable': 'the gate record could not be read',
