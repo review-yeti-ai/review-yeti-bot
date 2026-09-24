@@ -73,6 +73,8 @@ import { loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShri
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
+import { startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
+import type { JevAsker } from '../gateway/jevClient';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -762,6 +764,12 @@ export interface PublishingReviewDeps {
    * once, never a reason the review fails.
    */
   repoFileProviderFactory?: (input: { token: string; owner: string; repo: string; headSha: string }) => RepoFileProvider;
+  /**
+   * REL-1081: test seam for the shadow-only Jev triage (`../review/jevTriageShadow`). Production
+   * leaves it unset; the triage then runs only when `REVIEW_YETI_JEV_SHADOW` and `TYPESAFE_*` are
+   * set, and it never changes the review either way.
+   */
+  jevTriageShadow?: { asker?: JevAsker; limits?: Partial<JevTriageShadowLimits> };
 }
 
 /**
@@ -1211,6 +1219,21 @@ export async function runPublishingReviewWorker(
     // `try` is not visible inside `finally`.
     let shadowDeadline: ReturnType<typeof createPanelDeadlineSignal> | undefined;
     let shadowOutcomePromise: Promise<ShadowOutcome> = Promise.resolve({ status: 'skipped' });
+    // REL-1081: shadow-only Jev triage. Total (never throws), inert unless REVIEW_YETI_JEV_SHADOW
+    // and TYPESAFE_* are set, runs concurrently with the panel, and receives snapshots only --
+    // nothing it produces flows back into this run. Joined after every outcome-visible action.
+    const jevShadow = startJevTriageShadow({
+      env,
+      repository: identity.repo,
+      runId: identity.runId,
+      prNumber: identity.prNumber,
+      headSha: identity.headSha,
+      changedFiles,
+      personas: workerConfig.personas.filter((persona) => persona.enabled)
+        .map((persona) => ({ id: persona.id, charter: persona.charter })),
+      ...(deps.jevTriageShadow?.asker ? { asker: deps.jevTriageShadow.asker } : {}),
+      ...(deps.jevTriageShadow?.limits ? { limits: deps.jevTriageShadow.limits } : {}),
+    });
     try {
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
@@ -1846,6 +1869,17 @@ export async function runPublishingReviewWorker(
         throw error;
       }
     }
+    // REL-1081: log the shadow triage joined with this run's actual findings. Deliberately the
+    // last await before returning: the check, evidence, and completion callbacks above are
+    // already published, and `join` is bounded by the triage's hard deadline and never throws.
+    await jevShadow.join({
+      findings,
+      personas: Array.isArray(panelResult.personas) ? panelResult.personas : [],
+      applicablePersonaIds: Array.isArray(panelResult.applicablePersonaIds) ? panelResult.applicablePersonaIds : [],
+      mode: coverage.mode,
+      verdict,
+      conclusion,
+    });
     return {
       version: 'ReviewYetiPublishingReview.v1',
       runId: identity.runId,
@@ -1877,6 +1911,7 @@ export async function runPublishingReviewWorker(
       },
     };
     } finally {
+      jevShadow.abort();
       panelDeadline.cleanup();
       // Bounded by the shadow run's own deadline (already elapsed on every path that reached
       // evidence-building above, where it is awaited explicitly -- this is a no-op there). On an

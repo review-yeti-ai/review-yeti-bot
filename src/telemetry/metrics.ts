@@ -108,6 +108,10 @@ export interface MetricCounters {
   jevDuration: Histogram;
   /** A real "calibrated thresholds are stale" condition, not an outage -- see jevClient.ts. */
   jevModelPinMismatch: Counter;
+  /** REL-1081: shadow-mode Jev triage decisions per file (outcome, category, risk level). Never affects a review. */
+  jevTriageShadowFiles: Counter;
+  /** REL-1081: shadow-mode triage joined with the panel's actual findings per file (risk level x finding class). */
+  jevTriageShadowJoin: Counter;
   /**
    * REL-677 / ADR 0329: wall-clock time to materialize the read-only worktree and build the
    * throwaway Zoekt index for one review run (`src/mcp/zoektGrounding.js`), *not* the query
@@ -334,6 +338,12 @@ export function initMetrics(
     }),
     jevModelPinMismatch: meter.createCounter('review_yeti_jev_model_pin_mismatch_total', {
       description: 'Successful Jev responses whose versioned model differed from TYPESAFE_MODEL_PIN -- calibrated thresholds are stale, not an outage.',
+    }),
+    jevTriageShadowFiles: meter.createCounter('review_yeti_jev_triage_shadow_files_total', {
+      description: 'REL-1081: shadow-mode Jev triage decisions per changed file, tagged by outcome, category, and risk_level. Shadow only; never affects a review.',
+    }),
+    jevTriageShadowJoin: meter.createCounter('review_yeti_jev_triage_shadow_join_total', {
+      description: 'REL-1081: shadow-mode Jev triage joined with the panel\'s actual findings per file, tagged by risk_level and finding_class (none, advisory, blocking).',
     }),
     zoektIndexBuildDuration: meter.createHistogram('review_yeti_zoekt_index_build_duration_seconds', {
       description: 'REL-677: time to materialize the review worktree and build the throwaway Zoekt index for one run, excluding query time.',
