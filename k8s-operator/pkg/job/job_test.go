@@ -512,14 +512,20 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 		t.Fatalf("full-panel qualification env missing: %#v", container.Env)
 	}
 	var apiKey *corev1.EnvVar
+	// REL-1069: the admitted transport is the OpenAI-compatible gateway, so the
+	// qualification worker receives the standard OPENAI_API_KEY name. It is
+	// OPTIONAL: no per-run secret carries a gateway key, and a non-optional
+	// secretRef would fail the pod at admission instead of letting the worker
+	// name the missing variable itself.
 	for index := range container.Env {
-		if container.Env[index].Name == "OPENROUTER_API_KEY" {
+		if container.Env[index].Name == "OPENAI_API_KEY" {
 			apiKey = &container.Env[index]
 			break
 		}
 	}
 	if apiKey == nil || apiKey.ValueFrom == nil || apiKey.ValueFrom.SecretKeyRef == nil ||
-		apiKey.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || apiKey.ValueFrom.SecretKeyRef.Key != "OPENROUTER_API_KEY" {
+		apiKey.ValueFrom.SecretKeyRef.Name != review.Spec.RunSecretName || apiKey.ValueFrom.SecretKeyRef.Key != "OPENAI_API_KEY" ||
+		apiKey.ValueFrom.SecretKeyRef.Optional == nil || !*apiKey.ValueFrom.SecretKeyRef.Optional {
 		t.Fatalf("full-panel qualification secret reference = %#v", apiKey)
 	}
 	if hasEnv(container, "GH_TOKEN") {
@@ -581,9 +587,11 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
 		t.Fatalf("same-head qualification env mismatch: %#v", container.Env)
 	}
+	// REL-1069: standard names only; the legacy OPENROUTER_* spelling is gone
+	// from this path because nothing provisions it.
 	wantSecretKeys := map[string]string{
-		"OPENROUTER_API_KEY": "OPENROUTER_API_KEY",
-		"GH_TOKEN":           "GITHUB_READ_TOKEN",
+		"OPENAI_API_KEY": "OPENAI_API_KEY",
+		"GH_TOKEN":       "GITHUB_READ_TOKEN",
 	}
 	for envName, secretKey := range wantSecretKeys {
 		var found *corev1.EnvVar
