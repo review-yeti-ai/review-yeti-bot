@@ -1,4 +1,4 @@
-import { RECOVERABLE_FAILURE_TITLES } from './reviewCheckIdentity';
+import { isRecoverableFailureTitle } from './reviewCheckIdentity';
 
 export const MAX_RECOVERABLE_REVIEW_GENERATION = 3;
 export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
@@ -68,7 +68,7 @@ export function validateReviewGenerationRecoveryEvidence(
       || !Number.isSafeInteger(entry.checkId) || entry.checkId <= 0
       || entry.externalId !== `${request.runId}:a${generation}`
       || !RECOVERABLE_WORKER_CONCLUSIONS.has(entry.conclusion)
-      || !RECOVERABLE_FAILURE_TITLES.has(entry.title)) refuse();
+      || !isRecoverableFailureTitle(entry.title)) refuse();
   }
   return evidence;
 }
@@ -101,7 +101,7 @@ export function evaluateReviewGenerationRecoveryLedger(
       || row.status !== 'completed'
       || !RECOVERABLE_WORKER_CONCLUSIONS.has(String(row.conclusion))
       || typeof output?.title !== 'string'
-      || !RECOVERABLE_FAILURE_TITLES.has(output.title)) refuse();
+      || !isRecoverableFailureTitle(output.title)) refuse();
     evidence.push({
       generation,
       checkId: checkId as number,

@@ -7,6 +7,8 @@ import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type 
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { computeArbitration } from '../../src/review/reviewCore';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
+import { isInfrastructureIncompleteResult } from '../../src/review/publicationFailurePolicy';
+import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
@@ -523,13 +525,130 @@ describe('authoritative prepared publishing worker', () => {
     const expected = cleanResult();
     expected.quorumSatisfied = false;
     expected.personas[1] = { id: 'qual-lane', decision: 'ERROR', status: 'ERROR', findings: [], errorClass: 'rate_limit' };
+    // REL-1113: a rate-limited lane with no finding anywhere is infrastructure, not a verdict: the
+    // same lanes are reported, now marked for the shared infrastructure-incomplete decision.
+    expected.failureDiagnostics = { reason: 'lane_infrastructure_incomplete', logTail: 'lanes did not complete: qual-lane=rate_limit',
+      recoverableIncompletePanel: true };
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
-    expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'BLOCK', failureClass: null });
+    expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'INCOMPLETE', failureClass: 'rate_limit' });
     expect(f.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      conclusion: 'failure', title: 'Review Yeti: BLOCK',
+      conclusion: 'failure', title: 'Review Yeti: INCOMPLETE — infrastructure (lane qual-lane failed: rate_limit); retrying as attempt 3 of 3',
     }));
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
+    expect(JSON.stringify(f.checkClient.completeCheck.mock.calls)).not.toContain(PRIVATE_DETAIL);
+    expect(JSON.stringify(f.checkClient.completeCheck.mock.calls)).not.toContain(TOKEN);
+  });
+
+  describe('REL-1113: infrastructure lane failures are never published as a verdict', () => {
+    // The exact ct-meta#3446 lane error: the optimizer pod behind gateway-internal was replaced
+    // mid-review, the stream was "terminated", then nginx answered 502.
+    const GATEWAY_502 = 'persona arch-lane failed closed: bifrost: gateway-internal.calltelemetry.com HTTP 502: <html><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></html>';
+
+    function incompleteFixture(executionAttempt: string) {
+      const f = fixture();
+      f.env.REVIEW_EXECUTION_ATTEMPT = executionAttempt;
+      // #3446 shape: panel mode, 2 expected lanes, 1 completed clean, 1 failed on the gateway.
+      f.panel.personas = [f.panel.personas[0]];
+      f.panel.optionalFailures = [{ id: 'qual-lane', error: GATEWAY_502, failureClass: 'provider_error' }];
+      f.panel.quorum.satisfied = false;
+      return f;
+    }
+
+    function trustedDecision(f: ReturnType<typeof fixture>, completion: WorkerReviewCompletion) {
+      const { version: _version, result: _result, ...expectedCoordinates } = completion;
+      const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+        expectedCoordinates,
+        expectedPersonaIds: f.prepared.expectedPersonaIds,
+        changedFiles: parseChangedFiles(DIFF).files,
+        coverageComplete: true,
+        quorumSatisfied: true,
+      });
+      const candidate = { repositoryId: 123, prNumber: 42, headSha: HEAD, baseSha: BASE,
+        policyDigest: f.prepared.policy.effectivePolicyDigest };
+      return { derived, decision: derived.valid ? evaluateReviewGate({ candidate,
+        current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }) : undefined };
+    }
+
+    it('#3446 shape (1 of 2 lanes lost to a gateway 502, 0 findings) is INCOMPLETE with a re-attempt, not BLOCK', async () => {
+      const f = incompleteFixture('1');
+      const receipt = await runPublishingReviewWorker(f.env, f.deps);
+
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      // Negative proof: before REL-1113 this exact run published "Review Yeti: BLOCK".
+      expect(check?.title).not.toBe('Review Yeti: BLOCK');
+      expect(check?.title).not.toMatch(/BLOCK|FIX_FIRST|SHIP/u);
+      expect(check).toMatchObject({ conclusion: 'failure',
+        title: 'Review Yeti: INCOMPLETE — infrastructure (lane qual-lane failed: 502); retrying as attempt 2 of 3' });
+      // Visible: the summary names the lane that did not complete and why.
+      expect(check?.summary).toContain('not a review verdict');
+      expect(check?.summary).toContain('- `qual-lane`: provider_error (provider HTTP 502)');
+      expect(check?.summary).toContain('A fresh attempt (2 of 3) is scheduled automatically');
+      expect(check?.summary).not.toContain('nginx');
+      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass: 'provider_error' });
+
+      // The trusted completion side reaches the same decision from the same payload: it records an
+      // infrastructure failure (not blocking-findings), and the shared predicate accepts it, which
+      // is what re-admits attempt 2.
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      expect(completion.executionAttempt).toBe(1);
+      expect(completion.result.failureDiagnostics).toMatchObject({ reason: 'lane_infrastructure_incomplete',
+        providerStatus: 502, recoverableIncompletePanel: true });
+      expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
+      const { derived, decision } = trustedDecision(f, completion);
+      expect(derived).toMatchObject({ valid: true, evidence: { infrastructureFailure: true, p0Count: 0, p1Count: 0,
+        expectedLanes: 2, completedLanes: 1 } });
+      expect(decision).toEqual({ status: 'failure', eligible: false, reason: 'infrastructure-failure' });
+    });
+
+    it('attempts exhausted: publishes the INCOMPLETE title with no retry, still never BLOCK', async () => {
+      const f = incompleteFixture('3');
+      await runPublishingReviewWorker(f.env, f.deps);
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check).toMatchObject({ conclusion: 'failure',
+        title: 'Review Yeti: INCOMPLETE — infrastructure (lane qual-lane failed: 502)' });
+      expect(check?.summary).toContain('was the last automatic attempt (3 of 3)');
+      expect(isRecoverableFailureTitle(check?.title)).toBe(true);
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      // The payload is still marked (the service keeps the reason class); the attempt cap alone
+      // stops the re-admission.
+      expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
+      expect(completion.executionAttempt).toBe(3);
+    });
+
+    it('a findings BLOCK stays BLOCK even when another lane was lost to the gateway', async () => {
+      const f = incompleteFixture('1');
+      f.panel.personas[0].decision = 'FINDINGS';
+      f.panel.personas[0].findings = [{ severity: 'P0', path: 'src/a.ts', line: 1, title: 'Remote code execution',
+        body: 'User input reaches eval.', confidence: 95 } as never];
+      await runPublishingReviewWorker(f.env, f.deps);
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check).toMatchObject({ conclusion: 'failure', title: 'Review Yeti: BLOCK' });
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      expect(completion.result.failureDiagnostics).toBeUndefined();
+      expect(isInfrastructureIncompleteResult(completion.result)).toBe(false);
+    });
+
+    it('a complete panel with a P0 finding stays a verdict (never INCOMPLETE)', async () => {
+      const f = fixture();
+      f.env.REVIEW_EXECUTION_ATTEMPT = '1';
+      f.panel.personas[0].decision = 'FINDINGS';
+      f.panel.personas[0].findings = [{ severity: 'P0', path: 'src/a.ts', line: 1, title: 'Secret logged',
+        body: 'The token is written to the log.', confidence: 95 } as never];
+      await runPublishingReviewWorker(f.env, f.deps);
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check?.title).toBe('Review Yeti: BLOCK');
+      expect(check?.title).not.toMatch(/INCOMPLETE/u);
+    });
+
+    it('a lane that failed on malformed output is not relabelled as infrastructure', async () => {
+      const f = incompleteFixture('1');
+      f.panel.optionalFailures = [{ id: 'qual-lane', error: 'invalid findings contract', failureClass: 'malformed_output' }];
+      await runPublishingReviewWorker(f.env, f.deps);
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      expect(completion.result.failureDiagnostics).toBeUndefined();
+      expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title).not.toMatch(/INCOMPLETE/u);
+    });
   });
 
   it('forwards findings through the strict typed boundary while omitting operational metadata', async () => {

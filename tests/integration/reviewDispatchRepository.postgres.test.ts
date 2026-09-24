@@ -26,7 +26,7 @@ import type { WorkerReviewCompletion } from '../../src/review/workerReviewComple
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../../src/review/publicationFailurePolicy';
-import { requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
+import { AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT, requeueAuthoritativeInfrastructureIncomplete, requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
 import { logger } from '../../src/utils/logger';
 import { ReviewGenerationRecoveryLedgerError } from '../../src/review/reviewGenerationRecovery';
 
@@ -1804,6 +1804,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       repositoryId: appGateInput.repositoryId,
       installationId: appGateInput.installationId,
       identity: appGateInput.identity,
+      // REL-1113: the durable status (and error text, once set) the authoritative retry reads.
+      runStatus: 'queued',
     });
 
     const disabledInput = { ...sameHeadAdmission('retry-context-disabled', 1_000, { prNumber: 43 }), publicationMode: 'disabled' as const };
@@ -2698,6 +2700,69 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       await expect(repository.admit({ ...sameHeadAdmission('stale', 3_000), publicationMode })).rejects.toThrow('identity conflict');
       expect((await dispatchState(client, next.run.runId)).run.status).toBe('queued');
       expect((await client.query('SELECT * FROM review_gate_attempts')).rows).toEqual([]);
+    });
+
+    // REL-1113: the real-SQL proof of the ct-meta#3446 fix. An authoritative execution whose lane
+    // was lost to a gateway 502 (0 findings) is recorded by the trusted completion as an
+    // infrastructure failure, and the shared decision re-admits the exact head as execution 2
+    // through the same recovery path the re-run action uses -- never a published BLOCK verdict.
+    it('re-admits an infrastructure-incomplete authoritative execution as the next attempt', async () => {
+      const { repository, client, gateRepository } = await createRepository();
+      const input = authoritativeAdmission('rel1113-a1', 1_000);
+      const first = await repository.admit(input);
+      await bindPendingGate(gateRepository);
+      const claim = (await repository.claimNext('dispatcher', 1_003, 30_000))!;
+      const proof = { workerTokenDigest: 'a'.repeat(64) };
+      expect(await repository.markProjected(claim.runId, claim.leaseOwner, claim.claimAttempt, 'worker-a1', 1_004,
+        proof.workerTokenDigest)).toBe(true);
+      const [present, lost] = input.authoritativeGate.prepared.expectedPersonaIds;
+      const event: WorkerReviewCompletion = {
+        version: 'WorkerReviewCompletion.v1', runId: first.run.runId, repositoryId: input.repositoryId,
+        owner: input.identity.owner, repo: input.identity.repo, prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha, baseSha: input.identity.baseSha, policyDigest: input.effectivePolicyDigest,
+        configDigest: input.identity.configDigest, executionAttempt: claim.executionAttempt,
+        result: { version: 'WorkerReviewResult.v1', completedAt: new Date(1_900).toISOString(),
+          personas: [
+            { id: present, decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+            { id: lost, decision: 'ERROR', status: 'ERROR', findings: [], errorClass: 'provider_error' },
+          ],
+          coverageComplete: true, quorumSatisfied: false,
+          failureDiagnostics: { reason: 'lane_infrastructure_incomplete', providerStatus: 502,
+            logTail: `lanes did not complete: ${lost}=provider_error/502`, recoverableIncompletePanel: true } },
+      };
+      expect(await gateRepository.recordWorkerResult(event, proof, async () => ({
+        current: { ...event, open: true, draft: true },
+        coverage: { expectedPersonaIds: input.authoritativeGate.prepared.expectedPersonaIds,
+          changedFiles: [{ path: 'src/a.ts', patch: '@@ -1 +1 @@\n-old\n+new\n' }],
+          coverageComplete: true, quorumSatisfied: true },
+      }), 2_000)).toBe('recorded');
+      const recorded = await dispatchState(client, first.run.runId);
+      // The service's own decision: an infrastructure failure, never blocking findings.
+      expect(recorded.run).toMatchObject({ status: 'failed', error_text: AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT });
+      expect(await repository.readRunRetryContext(first.run.runId)).toMatchObject({
+        runStatus: 'failed', errorText: AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT, authoritativeGateAppId: 4385771,
+      });
+
+      const resolve = vi.fn(async () => ({ identity: input.identity, prepared: input.authoritativeGate.prepared }));
+      await expect(requeueAuthoritativeInfrastructureIncomplete({ event, now: 2_001, repository, logger,
+        authoritative: { expectedAppId: 4385771, repositoryIds: [input.repositoryId], resolver: { resolve } as never },
+      })).resolves.toBe('requeued');
+
+      const retried = await dispatchState(client, first.run.runId);
+      expect(retried.run).toMatchObject({ status: 'queued', attempt: 1, error_text: null });
+      expect(retried.outbox).toMatchObject({ status: 'pending', execution_attempt: 1, worker_token_digest: null });
+      // The failed attempt's gate is retired and a fresh current gate is reserved for execution 2.
+      const gates = (await client.query(`SELECT execution_attempt, current_attempt, desired_state
+        FROM review_gate_attempts ORDER BY execution_attempt`)).rows;
+      expect(gates).toEqual([
+        { execution_attempt: 1, current_attempt: false, desired_state: 'cancelled' },
+        { execution_attempt: 2, current_attempt: true, desired_state: 'queued' },
+      ]);
+      // A duplicate delivery of the same completion never re-admits twice.
+      await expect(requeueAuthoritativeInfrastructureIncomplete({ event, now: 2_002, repository, logger,
+        authoritative: { expectedAppId: 4385771, repositoryIds: [input.repositoryId], resolver: { resolve } as never },
+      })).resolves.toBe('run-not-infrastructure-failure');
+      expect((await dispatchState(client, first.run.runId)).outbox.execution_attempt).toBe(1);
     });
 
     it('preserves supersession and historical rejection within authoritative admissions', async () => {

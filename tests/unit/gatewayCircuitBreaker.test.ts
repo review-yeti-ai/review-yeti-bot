@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   isProvider5xxError,
   executePersonaPanel,
+  TRANSPORT_MAX_RETRIES,
 } from '../../src/panel/panelEngine';
 import { OpenRouterResponseError } from '../../src/gateway/openRouterClient';
 import { DispatchCircuitBreaker } from '../../src/k8s/dispatchCircuitBreaker';
@@ -247,8 +248,12 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
   });
 
   describe('5xx Outage Failover Suppression on Large Prompts', () => {
-    it('aborts provider loop immediately on 502/503 with promptTokens > 15,000 without trying secondary pool', async () => {
+    it('aborts provider loop on 502/503 with promptTokens > 15,000 without trying secondary pool', async () => {
       process.env.INLINE_DIFF_TOKEN_BUDGET = '25000';
+      // REL-1113: the SAME provider first rides out the gateway 502 on the transport budget
+      // (zero jitter here); only once that is spent does the breaker stop the lane -- still
+      // without fanning out to the secondary pool.
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0);
 
       const capturedModels: string[] = [];
       const mockClient = {
@@ -312,6 +317,8 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
       // Only primary-model should have been attempted; secondary-model must NOT be hammered during 5xx outage
       expect(capturedModels).toContain('primary-model');
       expect(capturedModels).not.toContain('secondary-model');
+      expect(capturedModels.filter((model) => model === 'primary-model')).toHaveLength(TRANSPORT_MAX_RETRIES + 1);
+      random.mockRestore();
     });
   });
 

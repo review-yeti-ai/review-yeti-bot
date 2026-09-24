@@ -21,7 +21,7 @@ import {
 } from '../review/actionDispatch';
 import { sha256 } from '../review/reviewCore';
 import { isCentralRefreshAuthorized } from '../review/reviewRecoveryPolicy';
-import { requeueRecoverableIncompletePanelFailure } from '../review/recoverablePanelRetry';
+import { requeueAuthoritativeInfrastructureIncomplete, requeueRecoverableIncompletePanelFailure } from '../review/recoverablePanelRetry';
 import { TERMINAL_DEADLINE_MS } from '../config/terminalDeadline';
 import { logger } from '../utils/logger';
 import {
@@ -261,10 +261,23 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
       try { proof = await completion.verifier.verify(token, event); }
       catch { return response.status(403).json({ error: 'Worker completion is not authorized' }); }
       try {
-        const status = await completion.repository.recordWorkerResult(event, proof, completion.resolve, now());
+        const recordedAt = now();
+        const status = await completion.repository.recordWorkerResult(event, proof, completion.resolve, recordedAt);
         if (status === 'unauthorized') return response.status(403).json({ error: 'Worker completion is not authorized' });
         if (status === 'conflict') return response.status(409).json({ error: 'Worker completion conflicts with recorded evidence' });
-        return response.status(200).json({ version: 'WorkerReviewCompletionAccepted.v1', runId: event.runId, status });
+        response.status(200).json({ version: 'WorkerReviewCompletionAccepted.v1', runId: event.runId, status });
+        // REL-1113: a lane lost to infrastructure (gateway 502, reset connection) with no finding
+        // anywhere is not a verdict. Re-admit a fresh exact-head attempt through the same bounded
+        // recovery the re-run action uses. Only after this handler durably recorded the result
+        // itself (never on a duplicate), and only AFTER acknowledging it: the resolver reads
+        // GitHub, and that latency must never push the worker's bounded completion POST past its
+        // deadline. The requeue swallows and logs its own failures.
+        if (status === 'recorded' && authoritative && options.workerCompletion?.repository) {
+          await requeueAuthoritativeInfrastructureIncomplete({
+            event, now: recordedAt, repository: options.workerCompletion.repository, authoritative, logger,
+          });
+        }
+        return response;
       } catch (error) {
         const persistenceError = isWorkerCompletionPersistenceError(error) ? error : undefined;
         const reason = persistenceError?.reason;

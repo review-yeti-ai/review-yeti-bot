@@ -508,10 +508,12 @@ describe('runPublishingReviewWorker', () => {
 
     const receipt = await runPublishingReviewWorker(env({ REVIEW_EXECUTION_ATTEMPT: '2' }), d as never);
 
-    expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure', failureClass: 'provider_error' });
+    // REL-1113: lanes lost to the gateway are not a verdict: INCOMPLETE, never BLOCK.
+    expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass: 'provider_error' });
     expect(order).toEqual(['check', 'callback']);
     expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      checkId: 4242, conclusion: 'failure', title: 'Review Yeti: review did not complete',
+      checkId: 4242, conclusion: 'failure',
+      title: 'Review Yeti: INCOMPLETE — infrastructure (lanes arch-lane 502, test-lane 502 failed); retrying as attempt 3 of 3',
       summary: expect.stringContaining('expected lanes=3; completed lanes=1; failed lanes=2'),
     }));
     expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -737,7 +739,7 @@ describe('runPublishingReviewWorker', () => {
 
     const receipt = await runPublishingReviewWorker(env(), d as never);
 
-    expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'BLOCK', failureClass: 'provider_error' });
+    expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'INCOMPLETE', failureClass: 'provider_error' });
     expect(cc.completeCheck).toHaveBeenCalledOnce();
     expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
     expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();

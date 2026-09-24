@@ -54,7 +54,19 @@ import {
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
 import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
-import { isRecoverableIncompletePanel, isRecoverablePanelRetryEligible, RECOVERABLE_PANEL_AUTO_RETRY_CAP } from '../review/publicationFailurePolicy';
+import {
+  INCOMPLETE_INFRASTRUCTURE_REASON,
+  INFRASTRUCTURE_LANE_FAILURE_CLASSES,
+  isInfrastructureIncompleteResult,
+  isRecoverableIncompletePanel,
+  isRecoverablePanelRetryEligible,
+  laneProviderStatus,
+  RECOVERABLE_PANEL_AUTO_RETRY_CAP,
+  renderIncompleteInfrastructureSummary,
+  renderIncompleteInfrastructureTitle,
+  type IncompleteLaneDescription,
+} from '../review/publicationFailurePolicy';
+import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import {
   buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint, WorkerCompletionHttpError,
@@ -1031,6 +1043,9 @@ export async function runPublishingReviewWorker(
         resolvedModel?: string;
         telemetry: { totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number; panelWallClockMs?: number };
         failedLanes: PublishingReviewFailedLane[];
+        /** REL-1113: present only when every failed lane failed on infrastructure; the check is
+         * then titled INCOMPLETE and names these lanes. */
+        incompleteLanes?: IncompleteLaneDescription[];
       };
     },
   ): Promise<void> => {
@@ -1105,13 +1120,22 @@ export async function runPublishingReviewWorker(
             });
           }
         } else {
+          const incompleteLanes = panelFailure?.panelEvidence?.incompleteLanes;
+          const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
+            ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
+            : undefined;
           await deps.checkClient.completeCheck({
             owner: identity.owner,
             repo: identity.repoName,
             checkId: failedCheckId,
             conclusion: 'failure',
-            title: 'Review Yeti: review did not complete',
+            title: incompleteLanes && incompleteLanes.length > 0
+              ? renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry)
+              : 'Review Yeti: review did not complete',
             summary: [
+              ...(incompleteLanes && incompleteLanes.length > 0
+                ? [renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt)]
+                : []),
               renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
               ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
               ...(panelFailure?.panelEvidence
@@ -1767,8 +1791,7 @@ export async function runPublishingReviewWorker(
       // leaving the durable run queued. Never relabel findings, malformed
       // rosters, missing diff coverage, or authoritative service results.
       const firstFailedLane = panelResult.optionalFailures?.[0];
-      const recoverablePanelFailure = isRecoverableIncompletePanel({
-        authoritative,
+      const recoverablePanelEvidence = {
         // A file no lane could read is a deterministic property of this diff; a
         // fresh attempt reads the same diff, so it is never the retryable shape.
         unreadableDiffCount: unreadable.length + omittedSourcePaths.length,
@@ -1780,7 +1803,8 @@ export async function runPublishingReviewWorker(
         canonicalFindingCount: findings.length,
         missingConfiguredLaneCount: rawRoster.missingConfiguredLaneCount,
         malformedReturnedLaneCount: rawRoster.malformedReturnedLaneCount,
-      })
+      };
+      const recoverablePanelFailure = isRecoverableIncompletePanel({ authoritative, ...recoverablePanelEvidence })
         // `runPersona` assigns a coded `failureClass` at the exact point it observed the lane's
         // terminal error (REL-892 finding 2); prefer that over re-deriving one from the free-form
         // `error` string here. `classifyFailure` remains the fallback for a lane that failed
@@ -1793,6 +1817,15 @@ export async function runPublishingReviewWorker(
         : undefined;
       const silentlyMissingLanes = recoverablePanelFailure !== undefined
         && rawRoster.failedLaneCount === 0 && rawRoster.missingConfiguredLaneCount > 0;
+      // REL-1113: the same "a lane died on the way to the model and nothing found anything"
+      // shape on the AUTHORITATIVE path. `isRecoverableIncompletePanel` refuses authoritative
+      // results (the service owns that verdict), so ct-meta#3446 -- one of two lanes lost to a
+      // gateway 502, zero findings -- was published as "Review Yeti: BLOCK" and never re-run.
+      // Here it is only a candidate: the shared `isInfrastructureIncompleteResult` decision
+      // below, evaluated on the exact payload the service will re-evaluate, is the authority.
+      const authoritativeInfrastructureCandidate = authoritative
+        && rawRoster.failedLaneCount > 0
+        && isRecoverableIncompletePanel({ authoritative: false, ...recoverablePanelEvidence });
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
@@ -1846,6 +1879,16 @@ export async function runPublishingReviewWorker(
       ...(failure.lastKnownUsage ? { usage: failure.lastKnownUsage } : {}),
       ...(failure.lastKnownModel ? { model: failure.lastKnownModel } : {}),
     }));
+    // REL-1113: which lanes did not complete and why -- coded class plus the provider HTTP status
+    // when one was observed (the nginx 502), never the lane's free-form error text.
+    const incompleteLanes: IncompleteLaneDescription[] = (panelResult.optionalFailures || []).map((failure) => {
+      const providerStatus = laneProviderStatus(failure.error);
+      return {
+        id: failure.id,
+        failureClass: failure.failureClass ?? classifyFailure(failure.error),
+        ...(providerStatus === undefined ? {} : { providerStatus }),
+      };
+    });
 
     // A count with nothing attached is not reviewable. Until now the check
     // published only a title and a summary, so a run could report four blocking
@@ -2056,6 +2099,60 @@ export async function runPublishingReviewWorker(
           ...(verdictCacheRecord ? { verdictCache: verdictCacheRecord } : {}) },
       }).result;
     };
+    // REL-1113: an automatic fresh attempt is still available for this execution (the same bound
+    // the dispatcher and the trusted completion service apply), or this is the last one.
+    const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
+      ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
+      : undefined;
+    // REL-1113: on the authoritative path, the exact result reported to the service, marked as
+    // infrastructure-incomplete, when -- and only when -- the shared decision accepts it. The
+    // service evaluates the same function on the same payload to re-admit a fresh attempt, so
+    // the worker's INCOMPLETE check and the service's retry can never disagree.
+    let authoritativeInfrastructureResult: WorkerReviewResult | undefined;
+    if (authoritativeInfrastructureCandidate) {
+      const primary = incompleteLanes.find((lane) => lane.providerStatus !== undefined) ?? incompleteLanes[0];
+      const candidate: WorkerReviewResult = {
+        ...buildReviewResult(),
+        failureDiagnostics: {
+          reason: INCOMPLETE_INFRASTRUCTURE_REASON,
+          ...(primary?.providerStatus === undefined ? {} : { providerStatus: primary.providerStatus }),
+          logTail: redactWorkerFailureLogTail(`lanes did not complete: ${incompleteLanes
+            .map((lane) => `${lane.id}=${lane.failureClass}${lane.providerStatus === undefined ? '' : `/${lane.providerStatus}`}`)
+            .join(', ')}`),
+          recoverableIncompletePanel: true,
+        },
+      };
+      if (isInfrastructureIncompleteResult(candidate)) authoritativeInfrastructureResult = candidate;
+    }
+    const infrastructureIncomplete = authoritativeInfrastructureResult !== undefined
+      || (recoverablePanelFailure !== undefined && !silentlyMissingLanes && incompleteLanes.length > 0
+        && incompleteLanes.every((lane) => (INFRASTRUCTURE_LANE_FAILURE_CLASSES as readonly string[]).includes(lane.failureClass)));
+    if (infrastructureIncomplete) {
+      // A countable reason class for runs that ended incomplete on infrastructure: a structured
+      // log line (VictoriaLogs) and a worker counter (pushed at exit, REL-1104). Never a verdict.
+      logger.warn('Review incomplete: reviewer lane(s) failed on infrastructure; not a review verdict', {
+        reasonClass: 'incomplete_infra',
+        runId: identity.runId,
+        repository: identity.repo,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        executionAttempt: identity.executionAttempt,
+        authoritative,
+        retryScheduled: infrastructureRetry !== undefined,
+        expectedLanes: coverage.expectedLaneCount,
+        completedLanes: coverage.completedLaneCount,
+        failedLanes: incompleteLanes,
+      });
+      try {
+        getMetrics().reviewIncompleteInfra.add(1, {
+          outcome: infrastructureRetry ? 'retrying' : 'exhausted',
+          failure_class: incompleteLanes[0]?.failureClass ?? 'unknown',
+          authoritative: String(authoritative),
+        });
+      } catch {
+        // Telemetry never changes a review outcome.
+      }
+    }
     if (recoverablePanelFailure) {
       // Failed-lane error strings may contain provider payloads. Keep their
       // classification and bounded counts, not their free-form text. Everything else here --
@@ -2071,7 +2168,29 @@ export async function runPublishingReviewWorker(
           resolvedModel: resolvedTransportModel,
           telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs },
           failedLanes,
+          ...(infrastructureIncomplete ? { incompleteLanes } : {}),
         },
+      });
+    } else if (authoritativeInfrastructureResult) {
+      // REL-1113: same publication order as a verdict (durable service record first), but the
+      // check is INCOMPLETE -- never "BLOCK" -- and names the lanes that did not complete. The
+      // service records `infrastructure-failure` for this result and, while attempts remain,
+      // re-admits a fresh execution attempt from the same shared decision.
+      await reportReviewResult(authoritativeInfrastructureResult);
+      await deps.checkClient.completeCheck({
+        owner: identity.owner,
+        repo: identity.repoName,
+        checkId,
+        conclusion: 'failure',
+        title: renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry),
+        summary: [
+          renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt),
+          renderCoverageSummary(coverage),
+          renderTransportSummary(transport.model, resolvedTransportModel),
+          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs }),
+          renderFailedLanesSummary(failedLanes),
+          ...(workerLogLocator ? [workerLogLocator] : []),
+        ].join('\n\n'),
       });
     } else {
       // Publication-order invariant: the authoritative completion is durably
@@ -2210,11 +2329,14 @@ export async function runPublishingReviewWorker(
       publicationMode: PUBLICATION_MODE_APP_GATE,
       transport: 'bifrost',
       model: transport.model,
-      verdict,
-      conclusion,
+      // REL-1113: an infrastructure-incomplete run has no verdict; never report its canonical
+      // BLOCK (derived only from the missing lane) as one.
+      verdict: infrastructureIncomplete ? 'INCOMPLETE' : verdict,
+      conclusion: authoritativeInfrastructureResult ? 'failure' : conclusion,
       findingCount: findings.length,
       blockingFindingCount: blocking.length,
-      failureClass: recoverablePanelFailure ?? null,
+      failureClass: recoverablePanelFailure
+        ?? (authoritativeInfrastructureResult ? (incompleteLanes[0]?.failureClass as WorkerTerminalFailure['failureClass'] | undefined) ?? 'transport' : null),
       startedAt,
       completedAt,
       coverage,

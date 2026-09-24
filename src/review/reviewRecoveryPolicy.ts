@@ -15,6 +15,7 @@ export {
   CENTRAL_REVIEW_WORKFLOW_REF,
   RECOVERABLE_FAILURE_TITLES,
   REVIEW_REFRESH_ACTION,
+  isRecoverableFailureTitle,
 } from './reviewCheckIdentity';
 
 /** The signed check action currently replaces only the first worker execution. */

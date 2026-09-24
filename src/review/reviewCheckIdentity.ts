@@ -40,6 +40,24 @@ export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([
   'Review Yeti: NO VERDICT (no panel result for this head)',
 ]);
 
+/** REL-1113: every infrastructure-incomplete worker check title starts with this. */
+export const INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX = 'Review Yeti: INCOMPLETE — infrastructure (';
+
+const INCOMPLETE_INFRASTRUCTURE_TITLE = /^Review Yeti: INCOMPLETE — infrastructure \([^\u0000-\u001f\u007f]{1,120}\)(?:; retrying as attempt \d{1,2} of \d{1,2})?$/u;
+
+/**
+ * Failure titles for which the exact-head recovery action is offered/admitted:
+ * the fixed titles above, plus REL-1113's infrastructure-incomplete family,
+ * whose title names the failed lanes (`Review Yeti: INCOMPLETE — infrastructure
+ * (lane arch-lane failed: 502)`). An infrastructure-incomplete run is exactly
+ * the case a fresh exact-head attempt exists for.
+ */
+export function isRecoverableFailureTitle(title: unknown): boolean {
+  if (typeof title !== 'string') return false;
+  return RECOVERABLE_FAILURE_TITLES.has(title)
+    || (title.length <= MAX_CHECK_RUN_TITLE_CHARACTERS && INCOMPLETE_INFRASTRUCTURE_TITLE.test(title));
+}
+
 /** Minimal domain-owned shape used when checking a trusted workflow ref. */
 export interface WorkflowRefAllowlist {
   workflowRefs: ReadonlySet<string>;
