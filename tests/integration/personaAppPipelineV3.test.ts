@@ -265,6 +265,9 @@ describe('GitHub App configurable persona pipeline', () => {
   it('fails closed with a failed check and infrastructure comment during provider outage', async () => {
     const mock = route({ omniOutage: true });
     vi.stubGlobal('fetch', mock.fetchMock);
+    // REL-1113: a sustained gateway 503 first rides the lane transport budget; zero jitter keeps
+    // that instant. The outage outlasts it, so the lane still fails closed.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
 
     await expect(runReviewPipeline(payload(9103))).rejects.toThrow(/required persona failure/i);
     expect(mock.requests.filter((request) => request.url.endsWith('/reviews'))).toHaveLength(0);
