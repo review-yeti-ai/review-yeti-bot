@@ -1,4 +1,4 @@
-// REL-1074 proof (c): vitest config touch; do not merge.
+// REL-1074 proof (c): vitest config touch (rerun on the Node fix); do not merge.
 import { defineConfig } from 'vitest/config';
 import path from 'path';
 
