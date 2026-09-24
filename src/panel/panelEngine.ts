@@ -3524,6 +3524,8 @@ export async function executePersonaPanel(options: {
     });
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
+    // REL-1088: files reviewed only by routing are disclosed on every result.
+    const routedFilesResult = applicability.routedFiles.length > 0 ? { routedFiles: applicability.routedFiles } : {};
 
     const budget = evaluateEffortAndBudget(effectiveFiles, config);
     span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
@@ -3657,6 +3659,7 @@ export async function executePersonaPanel(options: {
         return {
           ...fastShipResult,
           applicablePersonaIds: applicable.map((persona) => persona.id),
+        ...routedFilesResult,
           panelWallClockMs: Date.now() - panelStartedAt,
         };
       }
@@ -4185,6 +4188,7 @@ export async function executePersonaPanel(options: {
         headSha,
         repositoryVisibility,
         applicablePersonaIds: applicable.map((persona) => persona.id),
+        ...routedFilesResult,
         personas,
         optionalFailures: [],
         // Fourth PanelResult return site. Like the zero-lane and fast-ship short-circuits, this
@@ -4484,6 +4488,7 @@ export async function executePersonaPanel(options: {
         headSha,
         repositoryVisibility,
         applicablePersonaIds: applicable.map((persona) => persona.id),
+        ...routedFilesResult,
         panelWallClockMs: Date.now() - panelStartedAt,
         personas,
         optionalFailures,

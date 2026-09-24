@@ -87,8 +87,9 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  *   can change behaviour, so it is reviewed rather than exempted. Run artifacts
  *   (`runs/`, `evidence/`, `artifacts/`) keep their documentation exemption.
  *
- * Uncovered SOURCE is not in this list: it still fails closed as a persona
- * coverage gap.
+ * Uncovered SOURCE is not in this list: alone, or beside only routed files, it
+ * still fails closed as a persona coverage gap. Beside a file a configured lane
+ * covers, it is routed to the same owner (REL-1088, `resolveReviewApplicability`).
  */
 export function isFallbackRoutedFile(file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }): boolean {
   return isSubmoduleEntry(file)
@@ -112,16 +113,59 @@ export function routeOrphanedReviewFiles<P extends { id: string; required?: bool
   personas: readonly P[],
   files: ReadonlyArray<{ path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }>,
 ): P[] {
-  if (personas.length === 0) return [...personas];
   const orphans = files
     .filter((file) => isFallbackRoutedFile(file) && !personas.some((persona) => personaCoversFile(persona, file)))
     .map((file) => file.path);
-  if (orphans.length === 0) return [...personas];
+  return routePathsToRequiredLane(personas, orphans);
+}
+
+/**
+ * Assign exact paths to the roster's routing owner: every required persona,
+ * or the first enabled persona when none is required. The one owner rule
+ * shared by fallback routing (gitlinks, `.mdx`, data/config) and by uncovered
+ * source routing beside an applying lane (REL-1088). Personas are returned
+ * unchanged when there is nothing to route.
+ */
+export function routePathsToRequiredLane<P extends { id: string; required?: boolean; routedPaths?: readonly string[] }>(
+  personas: readonly P[],
+  paths: readonly string[],
+): P[] {
+  if (personas.length === 0 || paths.length === 0) return [...personas];
   const required = personas.filter((persona) => persona.required === true);
   const owners = new Set((required.length > 0 ? required : [personas[0]]).map((persona) => persona.id));
   return personas.map((persona) => (owners.has(persona.id)
-    ? { ...persona, routedPaths: [...(persona.routedPaths ?? []), ...orphans] }
+    ? { ...persona, routedPaths: [...(persona.routedPaths ?? []), ...paths.filter((path) => !persona.routedPaths?.includes(path))] }
     : persona));
+}
+
+/** A changed file assigned to a lane by exact routing, not by the lane's own paths. */
+export interface RoutedReviewFile {
+  path: string;
+  /** Lanes the file was routed to. */
+  laneIds: string[];
+  /**
+   * `fallback`: a gitlink, `.mdx`/`.mdoc` page or data/config file no persona
+   * covers. `uncovered-source`: an analyzable file no persona covers, in a
+   * diff where a configured lane already applies (REL-1088).
+   */
+  reason: 'fallback' | 'uncovered-source';
+}
+
+function routedFilesOf(
+  personas: ReadonlyArray<{ id: string; routedPaths?: readonly string[] }>,
+  uncoveredSource: readonly string[],
+): RoutedReviewFile[] {
+  const byPath = new Map<string, string[]>();
+  for (const persona of personas) {
+    for (const path of persona.routedPaths ?? []) {
+      byPath.set(path, [...(byPath.get(path) ?? []), persona.id]);
+    }
+  }
+  return [...byPath].map(([path, laneIds]) => ({
+    path,
+    laneIds,
+    reason: uncoveredSource.includes(path) ? 'uncovered-source' as const : 'fallback' as const,
+  }));
 }
 
 /**
@@ -251,7 +295,10 @@ export interface ReviewApplicability<P> {
   noReviewableContentKind: NoReviewableContentKind | null;
   /** One-line published rationale for the exemption; null unless `noReviewableContent`. */
   noReviewableContentRationale: string | null;
-  /** Analyzable paths no enabled persona covers (empty unless zero lanes apply). */
+  /**
+   * Analyzable paths no enabled persona covers (empty unless zero lanes apply;
+   * when a configured lane applies they are routed instead, see `routedFiles`).
+   */
   unmatchedPaths: string[];
   /**
    * Lockfiles that kept an otherwise exempt diff from the exemption because
@@ -265,6 +312,13 @@ export interface ReviewApplicability<P> {
    * lockfile (also listed in `unmatchedPaths`).
    */
   excludedPaths: string[];
+  /**
+   * Files reviewed by a lane only because they were routed to it, with the
+   * lane(s) and why (empty when zero lanes apply). Published in the check
+   * summary so a routed file is never reviewed silently outside a lane's
+   * declared paths.
+   */
+  routedFiles: RoutedReviewFile[];
 }
 
 export const DOCUMENTATION_ONLY_RATIONALE =
@@ -325,17 +379,41 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
     unverifiedLockfiles: [],
   } as const;
   if (applicable.length > 0) {
+    // Nothing analyzable may ride along unreviewed: every effective file that
+    // is not documentation must be covered by some lane.
+    const uncovered = computeUnmatchedPaths(effectiveFiles, roster);
+    if (uncovered.length === 0) {
+      return { effectiveFiles, hunkResult, applicable, ...reviewed, excludedPaths: [], unmatchedPaths: [], routedFiles: routedFilesOf(applicable, []) };
+    }
     // Routing may only add a lane for the routed files themselves. When no
     // configured persona applied before routing, any other uncovered analyzable
     // path is still the coverage failure it always was -- routing an .mdx, a
     // gitlink or a data file must not turn that failure into a silently
-    // under-scoped review.
+    // under-scoped review. The roster covers nothing analyzable in this diff,
+    // so the fix is to extend its paths.
     const routedOnly = deriveApplicablePersonas(enabledPersonas, effectiveFiles).length === 0;
-    const uncovered = routedOnly ? computeUnmatchedPaths(effectiveFiles, roster) : [];
-    if (uncovered.length > 0) {
-      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, excludedPaths: [], unmatchedPaths: uncovered };
+    if (routedOnly) {
+      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, excludedPaths: [], unmatchedPaths: uncovered, routedFiles: [] };
     }
-    return { effectiveFiles, hunkResult, applicable, ...reviewed, excludedPaths: [], unmatchedPaths: [] };
+    // REL-1088: a configured lane already reviews this diff on its own paths,
+    // so a different uncovered source file used to be neither reviewed nor
+    // reported. It is routed to the required lane (or the first enabled
+    // persona), the same owner as fallback routing, and disclosed. Lanes are
+    // already running, so this reviews the file instead of blocking the PR on
+    // a partial roster gap. Worker, both engines and the trusted completion
+    // context all reach this through this one decision, so they derive the
+    // same lanes.
+    const widened = routePathsToRequiredLane(roster, uncovered);
+    const widenedApplicable = deriveApplicablePersonas(widened, effectiveFiles) as P[];
+    return {
+      effectiveFiles,
+      hunkResult,
+      applicable: widenedApplicable,
+      ...reviewed,
+      excludedPaths: [],
+      unmatchedPaths: [],
+      routedFiles: routedFilesOf(widenedApplicable, uncovered),
+    };
   }
   // Zero lanes apply. The exemption is judged over the RAW changed files, not
   // the post-filter projection: every changed file must itself be
@@ -360,6 +438,7 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
         unverifiedLockfiles,
         excludedPaths: [],
         unmatchedPaths: unverifiedLockfiles.map((file) => file.path),
+        routedFiles: [],
       };
     }
     // Identical, by construction, to the per-file rule the service applies to
@@ -376,6 +455,7 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
         noReviewableContentRationale: lockfileOnly ? lockfileOnlyRationale(changedFiles) : DOCUMENTATION_ONLY_RATIONALE,
         excludedPaths: [],
         unmatchedPaths: [],
+        routedFiles: [],
       };
     }
   }
@@ -392,5 +472,6 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
     ...reviewed,
     excludedPaths,
     unmatchedPaths: [...unmatched, ...excludedPaths.filter((path) => !unmatched.includes(path))],
+    routedFiles: [],
   };
 }

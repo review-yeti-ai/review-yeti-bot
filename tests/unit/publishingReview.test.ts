@@ -359,6 +359,26 @@ describe('runPublishingReviewWorker', () => {
     );
   });
 
+  it('discloses files a lane reviewed only by routing in the check summary (REL-1088)', async () => {
+    const d = deps({
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        routedFiles: [{ path: 'tools/inventory.lua', laneIds: ['sec-lane'], reason: 'uncovered-source' }],
+        personas: [{ id: 'sec-lane', findings: [], turnsCount: 1, promptTokens: 1, completionTokens: 1, totalTokens: 2, durationMs: 1 }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+
+    expect(receipt.conclusion).toBe('success');
+    const summary = String(((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
+    expect(summary).toContain("Routed files (no persona's paths cover them; reviewed by the routed lane):");
+    expect(summary).toContain('- `tools/inventory.lua` -> `sec-lane` (source no persona covers)');
+  });
+
   it('carries per-lane turn/tool/correction counts and the panel wall clock onto the receipt (Stage 0 telemetry)', async () => {
     // A lane's `turnUsages`/`aggregateUsage`/`toolTurns`/`correctionTurns` and the panel's own
     // `panelWallClockMs` are new, additive `PanelResult` fields -- see `src/panel/panelEngine.ts`.
