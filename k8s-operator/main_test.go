@@ -151,3 +151,15 @@ func TestPublishingConfigFromEnvReadsJev(t *testing.T) {
 		t.Fatalf("Jev config not read: %+v", config)
 	}
 }
+
+// REL-1079: diff shrinking has no default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsDiffShrink(t *testing.T) {
+	t.Setenv("REVIEW_YETI_DIFF_SHRINK", "")
+	if config := publishingConfigFromEnv(); config.DiffShrink != "" {
+		t.Fatalf("unset diff shrink must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_DIFF_SHRINK", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
+	if config := publishingConfigFromEnv(); config.DiffShrink != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+		t.Fatalf("diff shrink not read: %+v", config)
+	}
+}

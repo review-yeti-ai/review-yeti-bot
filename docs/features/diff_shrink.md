@@ -12,7 +12,7 @@ Code: `src/review/diffShrink.ts`, `src/review/gitattributesLinguist.ts`, `src/re
 | `1`, `true`, `on`, `all` | On for every repository. |
 | `owner/repo,owner/other` | On only for the listed repositories (case-insensitive). |
 
-The worker reads the variable from its own environment. The operator does not forward it yet (see "Follow-ups").
+The worker reads the variable from its own environment. In Kubernetes, set `REVIEW_YETI_DIFF_SHRINK` on the operator Deployment (Helm: `publishing.diffShrink`, empty by default). The operator forwards a non-empty value verbatim to app-gate worker Jobs only; receipt-only and qualification Jobs never get it. A value containing a line break refuses app-gate Jobs. To revert, remove the variable or set it to empty and let the operator roll.
 
 ## What gets shrunk
 
@@ -71,7 +71,6 @@ Each list is capped at 15 entries plus a "+N more" count. The worker also logs t
 
 ## Follow-ups
 
-- Operator projection. Forward `REVIEW_YETI_DIFF_SHRINK` from the operator to worker Jobs, in the same allowlist pattern as `ZOEKT_GROUNDING_ENABLED` and the Jev projection (#1000).
 - Formatter-only detection (plan W2, fourth bullet) is not implemented. It needs the repository's formatter to run on both sides of the change, and formatter config and plugins are repository code. It stays open until the worker can run a formatter without running repository code (plan section 7, open question 2).
 - Non-exact move pairing. A delete/add pair with less than 100% similarity is not paired, because the worker has no clone to run `git diff -M -C` on. The W3 git-based diff source should run `git diff -M -C` so its rename and copy headers reach this module.
 - Replay corpus. The plan accepts W2 only once a replay corpus of recent PRs shows the same verdicts and findings with fewer tokens. Run that before enabling the flag beyond review-yeti-bot and ct-meta.
