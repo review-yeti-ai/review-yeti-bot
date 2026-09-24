@@ -381,7 +381,8 @@ describe('authoritative prepared publishing worker', () => {
     // REL-1080: the loader also receives the git-derived large-diff source for a 406.
     expect(f.sourceLoader).toHaveBeenCalledExactlyOnceWith({ repo: 'example/project', prNumber: 42,
       expectedBaseSha: BASE, expectedHeadSha: HEAD, token: TOKEN }, undefined,
-    { gitDiffSource: expect.any(Function), onLargeDiffSource: expect.any(Function) });
+    // REL-1103: plus the deadline-bounded GitHub retry policy (empty: no terminal deadline forwarded).
+    { gitDiffSource: expect.any(Function), onLargeDiffSource: expect.any(Function), retry: {} });
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, cleanResult()));
     expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0])).toEqual(expectedEvent(f, cleanResult()));
     expect(receipt).toMatchObject({ conclusion: 'success', verdict: 'SHIP', transport: 'bifrost', model: transport.model });
