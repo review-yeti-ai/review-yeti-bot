@@ -350,6 +350,33 @@ describe('service-owned authoritative completion context', () => {
     expect((error as TrustedCompletionResolutionError).reason).toBe('coverage-no-persona');
   });
 
+  // REL-972 / REL-1056: the worker used to pass these as documentation-only
+  // (it judged the post-filter files) while this side refused the result, so a
+  // finished review could not be acknowledged. Both sides now reach the same
+  // deterministic coverage failure: a generated or path_filters-excluded file is
+  // read by no lane and cannot ride along under a docs-only pass.
+  it.each([
+    ['docs + a generated bundle', [{ path: 'docs/guide.md' }, { path: 'dist/bundle.js' }], prepared()],
+    ['docs + a minified asset', [{ path: 'README.md' }, { path: 'web/app.min.js' }], prepared()],
+  ])('fails %s closed as deterministic coverage, never a documentation-only pass', async (_label, paths, stored) => {
+    const f = fixture({}, stored);
+    const changedFiles = paths.map(({ path }) => ({ path, patch: '@@ -1 +1 @@\n-old\n+new' }));
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: changedFiles.length });
+
+    const error = await rejected(f.context(f.gate));
+    expect((error as TrustedCompletionResolutionError).reason).toBe('coverage-no-persona');
+    expect(isDeterministicCompletionFailure((error as TrustedCompletionResolutionError).reason)).toBe(true);
+  });
+
+  it('requires the routed lane for an uncovered data/config file instead of failing closed', async () => {
+    const f = fixture();
+    const changedFiles = [{ path: 'inventory/lab.toml', patch: '@@ -1 +1 @@\n-old\n+new' }];
+    f.exactCurrentDiff.mockResolvedValue({ current: { ...current }, diff: '', changedFiles, expectedFileCount: 1 });
+
+    const context = await f.context(f.gate);
+    expect(context.coverage).toMatchObject({ expectedPersonaIds: ['sec-lane'], coverageComplete: true, quorumSatisfied: true });
+  });
+
   it('refuses a documentation-only completion over an unverifiable lockfile', () => {
     // Defense in depth behind the shared decision: the completion check itself
     // re-verifies each admitted lockfile change.

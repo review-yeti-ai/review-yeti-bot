@@ -216,7 +216,16 @@ describe('REL-1058: one applicability decision for worker and service', () => {
 
     const filtered = resolveReviewApplicability(enabled('architecture,security'), files, { pathFilters: ['vendor/**'] });
     expect(filtered.effectiveFiles.map((file) => file.path)).toEqual(['docs/readme.md']);
-    expect(filtered.noReviewableContent).toBe(true);
+    // REL-972 (changed deliberately): this used to be the documentation-only
+    // exemption, because only the post-filter files were judged. The service
+    // refused that pass at completion (vendor/generated/client.lua is not
+    // documentation), and on security grounds it was wrong: a path_filters
+    // exclusion is read by no lane, so it must not ride along unreviewed under
+    // a docs-only pass. The filter is still applied -- the .lua file is now
+    // reported as excluded, not as uncovered source.
+    expect(filtered.noReviewableContent).toBe(false);
+    expect(filtered.excludedPaths).toEqual(['vendor/generated/client.lua']);
+    expect(unfiltered.excludedPaths).toEqual([]);
   });
 
   it('the composed engine narrows by the same repository path_filters', async () => {
@@ -239,10 +248,13 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     // panel engine and the service report -- one decision, one outcome.
     await expect(run(base)).rejects.toThrow(/no enabled persona applies.*vendor\/generated\/client\.lua/);
 
-    // Filtered out, only documentation remains: the deterministic exemption.
-    const filtered = await run({ ...base, path_filters: ['vendor/**'] });
-    expect(filtered.arbiter.verdict).toBe('SHIP');
-    expect((filtered as { documentationOnly?: boolean }).documentationOnly).toBe(true);
+    // Filtered out, the .lua file is excluded rather than uncovered. REL-972
+    // (changed deliberately): this was a documentation-only SHIP the service
+    // then refused at completion; docs plus a path_filters exclusion is not
+    // documentation-only, so every side now fails it closed, naming the
+    // exclusion.
+    await expect(run({ ...base, path_filters: ['vendor/**'] }))
+      .rejects.toThrow(/Excluded from review by the generated-file filter or path_filters.*vendor\/generated\/client\.lua/);
   });
 
   it('the composed engine proceeds exactly when the shared decision applies a lane', async () => {
@@ -303,9 +315,11 @@ describe('REL-1058: one applicability decision for worker and service', () => {
 
     await expect(run(base)).rejects.toThrow(/no enabled persona applies.*vendor\/generated\/client\.lua/);
 
-    const filtered = await run({ ...base, path_filters: ['vendor/**'] });
-    expect(filtered.arbiter.verdict).toBe('SHIP');
-    expect((filtered as { documentationOnly?: boolean }).documentationOnly).toBe(true);
+    // REL-972 (changed deliberately, as for the composed engine above): the
+    // filter still applies, and the exclusion now fails closed instead of
+    // passing as documentation-only.
+    await expect(run({ ...base, path_filters: ['vendor/**'] }))
+      .rejects.toThrow(/Excluded from review by the generated-file filter or path_filters.*vendor\/generated\/client\.lua/);
   });
 
   it('routes an orphan to every required persona', () => {

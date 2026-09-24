@@ -510,8 +510,9 @@ export function deriveCanonicalWorkerReviewEvidence(
   if (isDocumentationOnlyCompletion(completion.result)) {
     // REL-972: the exemption also covers registry-verified lockfile changes.
     // The trusted completion context has already required the shared
-    // resolveReviewApplicability decision to report no reviewable content;
-    // this re-checks the admitted files against the same classifications.
+    // resolveReviewApplicability decision to report no reviewable content,
+    // and that decision applies this same per-file rule to the raw changed
+    // files, so a worker exemption is never one this check refuses.
     if (!changedFiles.every((file) => isNoReviewableContentFile(file))) {
       return invalidEvidence('documentation-only completion contains analyzable source paths');
     }

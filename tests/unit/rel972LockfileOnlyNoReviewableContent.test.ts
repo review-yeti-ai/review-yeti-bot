@@ -339,9 +339,12 @@ describe('REL-972: shared decision for lockfile-only diffs', () => {
 
   it.each([
     ['uncovered source beside a lockfile', [lock('src/main.lua', patch), lock('yarn.lock', YARN_BUMP)], ['src/main.lua']],
-    ['a generated artifact (content no lane reads)', [lock('assets/app.min.js', patch)], []],
-    ['a generated artifact beside a lockfile', [lock('proto/review.pb.go', patch), lock('yarn.lock', YARN_BUMP)], []],
-    ['a file only located under a build output directory', [lock('dist/bundle.js', patch)], []],
+    // The filtered-out file is now named in unmatchedPaths (and excludedPaths)
+    // rather than failing closed with an empty path list, so the coverage error
+    // says which file blocked the diff.
+    ['a generated artifact (content no lane reads)', [lock('assets/app.min.js', patch)], ['assets/app.min.js']],
+    ['a generated artifact beside a lockfile', [lock('proto/review.pb.go', patch), lock('yarn.lock', YARN_BUMP)], ['proto/review.pb.go']],
+    ['a file only located under a build output directory', [lock('dist/bundle.js', patch)], ['dist/bundle.js']],
   ])('fails %s closed', (_label, changed, unmatched) => {
     const result = resolveReviewApplicability(enabled(), changed);
 
@@ -429,17 +432,27 @@ describe('REL-972: every engine takes the same outcome', () => {
     expect(result.arbiter.rationale).toContain('Excluded: mix.lock.');
   });
 
-  it('both engines still fail a manifest-bearing diff they cannot cover closed', async () => {
+  it('both engines review a manifest-bearing diff no persona covers -- never the lockfile exemption', async () => {
+    // Before the data/config routing in this change, an uncovered package.json
+    // failed closed as a coverage gap. package.json is JSON configuration, so
+    // it is now routed to a lane like any uncovered data/config file: still
+    // reviewed, still never exempted beside its lockfile.
     const config = roster('testing');
     const changedFiles = [lock('package.json', patch), lock('package-lock.json', NPM_BUMP)];
-    expect(resolveReviewApplicability(config.personas.filter((p) => p.enabled), changedFiles).applicable).toEqual([]);
+    const decision = resolveReviewApplicability(config.personas.filter((p) => p.enabled), changedFiles);
+    expect(decision.noReviewableContent).toBe(false);
+    expect(decision.applicable.map((persona) => [persona.id, persona.routedPaths])).toEqual([['qual-lane', ['package.json']]]);
 
-    await expect(executePersonaPanel({
+    // The panel reaches the routed lane, which fails on the unreachable client
+    // (so the run misses quorum) -- not the deterministic coverage error.
+    const panel = executePersonaPanel({
       config, changedFiles, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient, deterministicRoster: true,
-    })).rejects.toThrow(/no enabled persona applies.*package\.json/);
+    });
+    await expect(panel).rejects.toThrow(/quorum failed/);
+    await expect(panel).rejects.not.toThrow(/no enabled persona applies/);
     await expect(executeComposedReview({
-      config, changedFiles, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient,
-    })).rejects.toThrow(/no enabled persona applies.*package\.json/);
+      config, changedFiles, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient, isCurrentHead: () => false,
+    })).rejects.toThrow(/stale run aborted/);
   });
 
   it('both engines fail an unverifiable lockfile bump closed, naming the reason', async () => {
