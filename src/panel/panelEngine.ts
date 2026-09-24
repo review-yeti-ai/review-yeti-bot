@@ -37,6 +37,9 @@ import {
   personaCoversFile,
   scopeFilesForPersona,
   DOCUMENTATION_ONLY_RATIONALE,
+  attachReviewDepthDisclosure,
+  reviewDepthDisclosureOf,
+  type ReviewDepthDisclosure,
 } from '../review/personaApplicability';
 import {
   attachDiffShrinkDisclosure,
@@ -3507,6 +3510,8 @@ export async function executePersonaPanel(options: {
   // REL-1088: files a lane reviews only because the shared decision routed
   // them there. Attached once, below, to whichever result the panel returns.
   let routedFiles: PanelResult['routedFiles'] = [];
+  // REL-1092: truncated and unavailable patches, from the same decision.
+  let depthDisclosure: ReviewDepthDisclosure | null = null;
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -3541,6 +3546,7 @@ export async function executePersonaPanel(options: {
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
     routedFiles = applicability.routedFiles;
+    depthDisclosure = reviewDepthDisclosureOf(applicability);
 
     const budget = evaluateEffortAndBudget(effectiveFiles, config);
     span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
@@ -4525,5 +4531,6 @@ export async function executePersonaPanel(options: {
     }
   }).then((result) => (routedFiles && routedFiles.length > 0 ? { ...result, routedFiles } : result))
     .then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
+    .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .finally(deadline.cleanup);
 }

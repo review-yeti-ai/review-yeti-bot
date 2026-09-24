@@ -38,7 +38,9 @@ import {
   ReviewModelClient,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
-import { DOCUMENTATION_ONLY_RATIONALE } from '../review/personaApplicability';
+import {
+  DOCUMENTATION_ONLY_RATIONALE, attachReviewDepthDisclosure, reviewDepthDisclosureOf, type ReviewDepthDisclosure,
+} from '../review/personaApplicability';
 import {
   attachDiffShrinkDisclosure,
   resolveShrunkReviewApplicability,
@@ -998,6 +1000,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   const panelStartedAt = Date.now();
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks.
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
+  // REL-1092: truncated and unavailable patches, from the same decision.
+  let depthDisclosure: ReviewDepthDisclosure | null = null;
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -1020,6 +1024,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       diffShrink: options.diffShrink,
     });
     diffShrinkDisclosure = applicability.diffShrink;
+    depthDisclosure = reviewDepthDisclosureOf(applicability);
     const effectiveFiles = applicability.effectiveFiles;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {
@@ -1259,5 +1264,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         durationMs: 0,
       },
     };
-  }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure)).finally(deadline.cleanup);
+  }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
+    .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
+    .finally(deadline.cleanup);
 }
