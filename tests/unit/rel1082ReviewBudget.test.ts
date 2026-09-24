@@ -394,6 +394,37 @@ describe('one applicability decision', () => {
     expect(entry.promptPatch).toBe(changed.find((file) => file.path === 'src/auth/token.ts')!.patch);
   });
 
+  // With REVIEW_YETI_DIFF_SHRINK also on, a file shrinking rewrote keeps the shrunk patch: the
+  // budget restores a whole patch only when nothing after the per-file cut changed it.
+  it('never restores the pre-shrink original of a file diff shrinking rewrote', () => {
+    const changed = files(addedFile('src/gen/big.ts', 900, 'gen') + addedFile('src/core.ts', 900, 'core'));
+    const diffShrink = { enabled: true, linguist: { status: 'applied' as const, content: 'src/gen/** linguist-generated\n' } };
+    const worker = resolveBudgetedReviewApplicability(roster, changed, { diffShrink, reviewBudget: ON, budgetScope: 'whole-diff' });
+    expect(worker.diffShrink?.linguistExcluded.map((entry) => entry.path)).toEqual(['src/gen/big.ts']);
+    expect(worker.truncatedFiles.map((file) => file.path)).toEqual(expect.arrayContaining(['src/gen/big.ts', 'src/core.ts']));
+    const pack = worker.reviewBudget!.packs.get(COMPOSED_BUDGET_LANE_ID)!;
+    const shrunk = worker.effectiveFiles.find((file) => file.path === 'src/gen/big.ts')!.patch;
+    const gen = pack.entries.get('src/gen/big.ts')!;
+    expect(gen.promptPatch).toBe(shrunk);
+    expect(gen.promptPatch).not.toContain('gen_TAIL_MARKER');
+    expect(pack.disclosure.files.find((file) => file.path === 'src/gen/big.ts')!.pastPerFileCut).toBe(false);
+    // A cut file shrinking left alone is still restored in the same run.
+    expect(pack.entries.get('src/core.ts')!.promptPatch).toContain('core_TAIL_MARKER');
+    expect(pack.disclosure.files.find((file) => file.path === 'src/core.ts')!.pastPerFileCut).toBe(true);
+  });
+
+  it('builds each lane\'s pack from exactly the files that lane is scoped to', () => {
+    const personas = [
+      { id: 'src-lane', enabled: true, required: true, charter: 'builtin:correctness', paths: ['src/**'], providers: ['p'] },
+      { id: 'test-lane', enabled: true, required: false, charter: 'builtin:testing', paths: ['tests/**'], providers: ['p'] },
+    ] as unknown as typeof roster;
+    const changed = files(addedFile('src/a.ts', 10, 'a') + addedFile('src/b.ts', 10, 'b') + addedFile('tests/a.test.ts', 10, 't'));
+    const worker = resolveBudgetedReviewApplicability(personas, changed, { reviewBudget: ON, budgetScope: 'per-lane' });
+    expect(worker.applicable.map((persona) => persona.id)).toEqual(['src-lane', 'test-lane']);
+    expect([...worker.reviewBudget!.packs.get('src-lane')!.entries.keys()]).toEqual(['src/a.ts', 'src/b.ts']);
+    expect([...worker.reviewBudget!.packs.get('test-lane')!.entries.keys()]).toEqual(['tests/a.test.ts']);
+  });
+
   it('is exactly the shrunk decision, with no budget, when the flag is off or no lane applies', () => {
     const changed = files(corpus['large mixed']);
     const shrunk = resolveShrunkReviewApplicability(roster, changed, {});
