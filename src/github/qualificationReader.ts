@@ -142,6 +142,22 @@ async function safeRequest(
   }
 }
 
+const GIT_PATH_ESCAPES: Record<string, string> = { '"': '\\"', '\\': '\\\\', '\n': '\\n', '\t': '\\t', '\r': '\\r' };
+
+/**
+ * Git's C-style path quoting: a path with a quote, backslash or control
+ * character is written in double quotes with escapes (other control bytes as
+ * octal); any other path is written as is. Round-trips through
+ * `parseChangedFiles`.
+ */
+export function quoteGitPath(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (!/["\\\u0000-\u001f\u007f]/u.test(value)) return value;
+  // eslint-disable-next-line no-control-regex
+  return `"${value.replace(/["\\\u0000-\u001f\u007f]/gu, (char) => GIT_PATH_ESCAPES[char]
+    ?? `\\${char.charCodeAt(0).toString(8).padStart(3, '0')}`)}"`;
+}
+
 type PullFileEntry = {
   filename?: unknown;
   previous_filename?: unknown;
@@ -176,20 +192,25 @@ export function renderFilePatch(file: PullFileEntry): string {
     file.status === 'renamed' && typeof file.previous_filename === 'string'
       ? file.previous_filename
       : filename;
-  const header = `diff --git a/${previous} b/${filename}\n`;
+  // Paths are chosen by the pull request author. Quote them the way git does, so
+  // a newline in a filename cannot forge a hunk header or a patch-unavailable
+  // note in this chunk; `parseChangedFiles` unquotes them back to the exact path.
+  const a = quoteGitPath(`a/${previous}`);
+  const b = quoteGitPath(`b/${filename}`);
+  const header = `diff --git ${a} ${b}\n`;
   const patch = typeof file.patch === 'string' ? file.patch : '';
   if (patch) return `${header}${patch}\n`;
   const changes = lineCount(file.changes)
     ?? (lineCount(file.additions) !== undefined && lineCount(file.deletions) !== undefined
       ? lineCount(file.additions)! + lineCount(file.deletions)! : undefined);
   if (file.status === 'renamed' && changes === 0) {
-    return `${header}similarity index 100%\nrename from ${previous}\nrename to ${filename}\n`;
+    return `${header}similarity index 100%\nrename from ${quoteGitPath(previous)}\nrename to ${quoteGitPath(filename)}\n`;
   }
   // No changed lines: binary (or an empty file). Unknown or nonzero: GitHub
   // omitted a text patch -- never assume the safer-looking binary case.
   const note = changes === 0 ? patchUnavailableNote('binary') : patchUnavailableNote('omitted', changes);
-  const before = file.status === 'added' ? '/dev/null' : `a/${previous}`;
-  const after = file.status === 'removed' ? '/dev/null' : `b/${filename}`;
+  const before = file.status === 'added' ? '/dev/null' : a;
+  const after = file.status === 'removed' ? '/dev/null' : b;
   return `${header}--- ${before}\n+++ ${after}\n${note}\n`;
 }
 
