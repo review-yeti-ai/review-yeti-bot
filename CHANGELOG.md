@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.90.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.89.0...v1.90.0) (2026-09-24)
+
+
+### Features
+
+* **review:** map-reduce review for huge diffs behind REVIEW_YETI_MAP_REDUCE (REL-1083) ([#1038](https://github.com/review-yeti-ai/review-yeti-bot/issues/1038)) ([1808c5d](https://github.com/review-yeti-ai/review-yeti-bot/commit/1808c5d9eae7e1e97d36662b2855f6a126eb853c))
+
 ## [1.89.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.88.0...v1.89.0) (2026-09-24)
 
 
