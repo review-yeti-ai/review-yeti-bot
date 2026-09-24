@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.85.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.12...v1.85.0) (2026-09-24)
+
+
+### Features
+
+* **review:** Jev triage in shadow mode behind REVIEW_YETI_JEV_SHADOW (REL-1081) ([#1007](https://github.com/review-yeti-ai/review-yeti-bot/issues/1007)) ([1ca61fb](https://github.com/review-yeti-ai/review-yeti-bot/commit/1ca61fb19e987833e01382fed397a3a9ec2a340b))
+
 ## [1.84.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.11...v1.84.12) (2026-09-24)
 
 
