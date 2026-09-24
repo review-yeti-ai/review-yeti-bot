@@ -20,7 +20,7 @@ The rules run on the files that remain after the existing filters (`path_filters
 
 | Rule | Condition | What is sent |
 | --- | --- | --- |
-| Whitespace-only file | Every hunk's removed and added lines are equal once leading and trailing ASCII whitespace and blank lines are ignored | The diff header and one `\ Review Yeti:` note |
+| Whitespace-only file | In every hunk, each run of changed lines between context lines differs from what it replaced only in indentation, a CRLF line ending or blank lines | The diff header and one `\ Review Yeti:` note |
 | Whitespace-only hunk | The same test for one hunk of a file that also has real changes | Real hunks unchanged; the whitespace hunk becomes one note line |
 | Rename or copy | A `rename from` or `copy from` header (git `-M -C`; GitHub's diff already detects renames) | Pure rename: only the header. Modified rename: only the changed hunks. |
 | Unpaired move | A deleted file and an added file with byte-identical content and the same mode, when the pair is unique in the diff | One note line on each side |
@@ -30,7 +30,10 @@ The rules run on the files that remain after the existing filters (`path_filters
 
 - Security-sensitive paths (`isSecuritySensitivePath`): auth, crypto, secrets, CI, containers, IaC, dependency manifests, scripts, migrations and similar. A rule that would have applied is listed as "kept at full depth".
 - Whitespace-significant formats: Python, YAML, Makefiles, Markdown, templates and others (`isWhitespaceSignificantPath`).
-- Whitespace inside a line. `"a b"` to `"ab"` is a real change. This check is stricter than `git diff -w`.
+- Whitespace inside a line, and trailing whitespace. `"a b"` to `"ab"` is a real change, and trailing spaces can be part of a multi-line literal. This check is stricter than `git diff -w`.
+- Moved lines. Each run of changed lines is compared in place, so a line removed above a context line and added below it is a real change.
+- Hunks that show a multi-line string or here-document delimiter (a backtick, `"""`, `'''`, `<<EOF`, `R"(`).
+- Residual risk: an indentation change inside a multi-line literal whose delimiters are outside the hunk's context is still collapsed. The summary lists the file, and the persona can still read the file at head.
 - Submodule gitlinks, symlinks, binary files, and files whose mode changes.
 
 ## When `.gitattributes` rules apply
@@ -40,6 +43,8 @@ The worker reads the root `.gitattributes` at the reviewed head. It uses the rul
 - The pull request does not change any `.gitattributes` file. The head copy is then the same as the base copy, so a PR cannot mark its own code as generated.
 - The repository has no nested `.gitattributes` files. Those can override the root rules, and the worker does not read them.
 - The tree listing is not truncated, and every read finishes within one 10-second deadline.
+
+Patterns are matched without regular expressions, in time linear in pattern and path size, because they are repository content.
 
 If any condition fails, no linguist exclusions apply, and the check summary says why.
 

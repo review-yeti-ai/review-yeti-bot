@@ -6,12 +6,17 @@
  * Before any model sees the diff, three deterministic rules reduce what is SENT
  * for a file. None of them removes a file from review:
  *
- * 1. Whitespace. A hunk whose removed and added lines are equal once leading and
- *    trailing ASCII whitespace and blank lines are ignored is collapsed to a
- *    one-line note. A file whose every hunk is whitespace-only is listed, not
- *    sent. Whitespace-significant formats (Python, YAML, Makefiles, ...) are
- *    never collapsed, and whitespace inside a line is never ignored, because
- *    either can change behaviour.
+ * 1. Whitespace. A hunk in which every run of changed lines differs from what
+ *    it replaced only in indentation, a CRLF line ending or blank lines is
+ *    collapsed to a one-line note. A file whose every hunk is whitespace-only
+ *    is listed, not sent. Runs are compared in place, so a moved line is a
+ *    real change. Trailing whitespace and whitespace inside a line are never
+ *    ignored, a hunk showing a multi-line string or here-document delimiter is
+ *    never collapsed, and whitespace-significant formats (Python, YAML,
+ *    Makefiles, ...) are never collapsed, because each can change behaviour.
+ *    Residual risk: an indentation change inside a multi-line literal whose
+ *    delimiters lie outside the hunk's context is collapsed; the summary lists
+ *    the file, and the persona can still read the file at head.
  * 2. Renames and copies. A `rename from`/`copy from` diff header (git `-M -C`,
  *    which GitHub's diff already applies for renames) is disclosed as
  *    `old -> new (similarity N%)`; a pure rename sends only that header and a
@@ -46,7 +51,6 @@
  * and plugins are repository code. It stays a documented follow-up until the
  * worker has a formatter it can run without executing repository code.
  */
-import type { RepoFileProvider } from '../panel/panelEngine';
 import { linguistExclusionFor, parseLinguistAttributes, type LinguistAttribute } from './gitattributesLinguist';
 import { isRegularFileMode } from './lockfileChangeVerification';
 import {
@@ -140,22 +144,44 @@ function joinPatch(header: readonly string[], body: readonly string[]): string {
   return `${[...head, ...body].join('\n')}\n`;
 }
 
-const EDGE_ASCII_WHITESPACE = /^[ \t\r\f\v]+|[ \t\r\f\v]+$/gu;
+/**
+ * Delimiters of multi-line string literals and here-documents. Whitespace
+ * inside such a literal is part of its value, so a hunk that shows one is
+ * never treated as whitespace-only.
+ */
+const MULTILINE_LITERAL = /`|"""|'''|<<[-~]?\s*['"]?[A-Za-z_]|\bR"[^(\s]*\(|%[qQwW]?[{([<]/u;
 
-function normalizedChangedLines(lines: readonly string[], sign: '+' | '-'): string[] {
-  return lines
-    .filter((line) => line.startsWith(sign))
-    .map((line) => line.slice(1).replace(EDGE_ASCII_WHITESPACE, ''))
-    .filter((line) => line.length > 0);
+/** Indentation (leading spaces and tabs) and a CR line ending are ignored; nothing else is. */
+function normalizeChangedLine(line: string): string {
+  return line.slice(1).replace(/\r$/u, '').replace(/^[ \t]+/u, '');
 }
 
-/** True when a hunk changes nothing but edge whitespace and blank lines. */
+/**
+ * True when a hunk changes nothing but indentation, CRLF line endings and
+ * blank lines. Each run of changed lines between two context lines is compared
+ * on its own, so a line removed in one place and added in another (a reorder)
+ * is a real change. Trailing whitespace is never ignored, and a hunk that shows
+ * a multi-line string delimiter is never whitespace-only.
+ */
 export function isWhitespaceOnlyHunk(lines: readonly string[]): boolean {
-  const changed = lines.some((line) => line.startsWith('+') || line.startsWith('-'));
-  if (!changed) return false;
-  const removed = normalizedChangedLines(lines, '-');
-  const added = normalizedChangedLines(lines, '+');
-  return removed.length === added.length && removed.every((line, index) => line === added[index]);
+  if (!lines.some((line) => line.startsWith('+') || line.startsWith('-'))) return false;
+  if (lines.some((line) => MULTILINE_LITERAL.test(line.slice(1)))) return false;
+  let removed: string[] = [];
+  let added: string[] = [];
+  const runMatches = (): boolean => {
+    const before = removed.filter((line) => line.length > 0);
+    const after = added.filter((line) => line.length > 0);
+    removed = [];
+    added = [];
+    return before.length === after.length && before.every((line, index) => line === after[index]);
+  };
+  for (const line of lines) {
+    if (line.startsWith('-')) removed.push(normalizeChangedLine(line));
+    else if (line.startsWith('+')) added.push(normalizeChangedLine(line));
+    else if (line.startsWith('\\')) continue; // "\ No newline at end of file"
+    else if (!runMatches()) return false; // a context line ends the run
+  }
+  return runMatches();
 }
 
 function hunkRange(header: string): string {
@@ -421,6 +447,17 @@ export function diffShrinkEnabledFor(env: Readonly<Record<string, string | undef
 
 const GITATTRIBUTES_READ_TIMEOUT_MS = 10_000;
 
+/**
+ * What `loadDiffShrinkInput` needs to read repository files at the reviewed
+ * head. Declared here so this review-layer module does not depend on a panel
+ * type; the panel's `RepoFileProvider` satisfies it structurally.
+ */
+export interface RepositoryFileReader {
+  readFile(path: string): Promise<string | null>;
+  findFiles(query: string): Promise<string[]>;
+  treeTruncated?(): Promise<boolean>;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
@@ -444,7 +481,7 @@ export async function loadDiffShrinkInput(options: {
   env: Readonly<Record<string, string | undefined>>;
   repository: string;
   changedPaths: readonly string[];
-  repoFileProvider?: Pick<RepoFileProvider, 'readFile' | 'findFiles' | 'treeTruncated'>;
+  repoFileProvider?: RepositoryFileReader;
   timeoutMs?: number;
 }): Promise<DiffShrinkInput | undefined> {
   if (!diffShrinkEnabledFor(options.env, options.repository)) return undefined;
