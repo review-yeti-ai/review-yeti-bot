@@ -44,6 +44,7 @@ const token = 'ghs_large-pr.header.signature';
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env: {
     PATH: process.env.PATH ?? '', HOME: root, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'gc.auto', GIT_CONFIG_VALUE_0: '0',
     GIT_AUTHOR_NAME: 'fixture', GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_AUTHOR_DATE: '2026-09-23T00:00:00Z',
     GIT_COMMITTER_NAME: 'fixture', GIT_COMMITTER_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_DATE: '2026-09-23T00:00:00Z',
   } as Record<string, string> as NodeJS.ProcessEnv, maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -76,7 +77,9 @@ beforeAll(() => {
   write('release/base-only.ts', fileLines('base', 4));
   git(work, 'add', '-A'); git(work, 'commit', '-q', '-m', 'base advanced independently');
   baseTipSha = git(work, 'rev-parse', 'HEAD');
-  git(root, 'clone', '-q', '--bare', work, remote);
+  // --no-local: transfer a pack instead of copying/hardlinking object files, which
+  // raced on the shared CI runner's /tmp.
+  git(root, '-c', 'gc.auto=0', 'clone', '-q', '--bare', '--no-local', work, remote);
   git(remote, 'config', 'uploadpack.allowFilter', 'true');
   git(remote, 'config', 'uploadpack.allowAnySHA1InWant', 'true');
 }, 120_000);
