@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
 import { Octokit } from '@octokit/core';
+import {
+  GitDiffSourceError, mergeBaseFromComparison, verifyGitDerivedDiff,
+  type GitDiffFailureReason, type GitDiffSource,
+} from './gitDiffSource';
 
 const PR_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}';
 const FILES_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}/files';
+const COMPARE_ROUTE = 'GET /repos/{owner}/{repo}/compare/{basehead}';
 const DIFF_ACCEPT = 'application/vnd.github.v3.diff';
 // Raised from 2 MB to 8 MB so a single review can admit diffs up to roughly
 // 80k changed lines. Diffs above GitHub's diff-render contract (~20k lines)
@@ -26,6 +31,16 @@ export interface SameHeadReviewSource {
   diff: string;
   diffDigest: string;
   githubReads: number;
+}
+
+/**
+ * REL-1080: optional git-derived source for diffs GitHub will not render (406).
+ * Absent means the pre-REL-1080 behaviour exactly.
+ */
+export interface SameHeadReviewSourceOptions {
+  gitDiffSource?: GitDiffSource;
+  /** Observability only: which source served a 406 diff, and why git did not. */
+  onLargeDiffSource?: (outcome: { source: 'git' | 'pull-files'; reason?: GitDiffFailureReason; files?: number }) => void;
 }
 
 type PullRequestResponse = {
@@ -104,6 +119,11 @@ function pullRequestIdentity(data: unknown, githubReads: number): { baseSha: str
   return { baseSha, headSha };
 }
 
+function changedFileCount(data: unknown): number | undefined {
+  const count = (data as { changed_files?: unknown } | null)?.changed_files;
+  return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+}
+
 async function safeRequest(
   request: GitHubQualificationRequest,
   parameters: Record<string, unknown>,
@@ -149,7 +169,9 @@ async function readQualificationDiff(
   request: GitHubQualificationRequest,
   parameters: Record<string, unknown>,
   githubReads: number,
-): Promise<{ diff: string; githubReads: number }> {
+  git?: { options: SameHeadReviewSourceOptions; token: string; owner: string; repo: string;
+    baseSha: string; headSha: string; expectedFileCount: number | undefined },
+): Promise<{ diff: string; githubReads: number; gitDerived?: boolean }> {
   try {
     const diffResponse = await safeRequest(request, {
       ...parameters,
@@ -164,6 +186,27 @@ async function readQualificationDiff(
   }
 
   let reads = githubReads + 1;
+  if (git?.options.gitDiffSource) {
+    // REL-1080: the same git-derived three-dot diff the trusted completion side
+    // computes for a 406, from the exact merge base GitHub reports for the
+    // admitted base/head. Any failure keeps the pre-REL-1080 pull-files path.
+    try {
+      reads += 1;
+      const comparison = await safeRequest(request, {
+        owner: git.owner, repo: git.repo, basehead: `${git.baseSha}...${git.headSha}`, per_page: 1, page: 1,
+      }, reads, COMPARE_ROUTE);
+      const mergeBaseSha = mergeBaseFromComparison(comparison.data, git.baseSha);
+      const diff = await git.options.gitDiffSource({
+        owner: git.owner, repo: git.repo, token: git.token, mergeBaseSha, headSha: git.headSha,
+      });
+      const files = verifyGitDerivedDiff(diff, { expectedFileCount: git.expectedFileCount });
+      git.options.onLargeDiffSource?.({ source: 'git', files: files.length });
+      return { diff, githubReads: reads, gitDerived: true };
+    } catch (error) {
+      const reason = error instanceof GitDiffSourceError ? error.reason : 'unavailable';
+      git.options.onLargeDiffSource?.({ source: 'pull-files', reason });
+    }
+  }
   const parts: string[] = [];
   for (let page = 1; page <= MAX_FILES_PAGES; page += 1) {
     const response = await safeRequest(request, {
@@ -189,28 +232,40 @@ async function readQualificationDiff(
 export async function loadSameHeadReviewSource(
   input: SameHeadQualificationInput,
   requestFn?: GitHubQualificationRequest,
+  options: SameHeadReviewSourceOptions = {},
 ): Promise<SameHeadReviewSource> {
   const { owner, repo } = validateInput(input);
   const octokit = requestFn ? undefined : new Octokit({ auth: input.token });
   const request = requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest);
   const parameters = { owner, repo, pull_number: input.prNumber };
 
-  const initial = pullRequestIdentity((await safeRequest(request, parameters, 1)).data, 1);
+  const initialData = (await safeRequest(request, parameters, 1)).data;
+  const initial = pullRequestIdentity(initialData, 1);
   if (initial.baseSha !== input.expectedBaseSha || initial.headSha !== input.expectedHeadSha) {
     throw new GitHubPullRequestIdentityMovedError('GitHub projected pull request identity mismatch', 1,
       input.expectedHeadSha, initial.headSha, initial.baseSha);
   }
 
-  const { diff, githubReads } = await readQualificationDiff(request, parameters, 1);
+  const expectedFileCount = changedFileCount(initialData);
+  const { diff, githubReads, gitDerived } = await readQualificationDiff(request, parameters, 1, options.gitDiffSource ? {
+    options, token: input.token, owner, repo, baseSha: initial.baseSha, headSha: initial.headSha, expectedFileCount,
+  } : undefined);
   const diffBytes = Buffer.byteLength(diff, 'utf8');
   if (diffBytes < 1 || diffBytes > MAX_QUALIFICATION_DIFF_BYTES) {
     throw new GitHubQualificationReadError('GitHub qualification diff size is outside qualification bounds', githubReads);
   }
 
-  const final = pullRequestIdentity((await safeRequest(request, parameters, githubReads + 1)).data, githubReads + 1);
+  const finalData = (await safeRequest(request, parameters, githubReads + 1)).data;
+  const final = pullRequestIdentity(finalData, githubReads + 1);
   if (final.baseSha !== input.expectedBaseSha || final.headSha !== input.expectedHeadSha) {
     throw new GitHubPullRequestIdentityMovedError('GitHub pull request moved during qualification read', githubReads + 1,
       input.expectedHeadSha, final.headSha, final.baseSha);
+  }
+  // REL-1080: a git-derived diff was accepted against GitHub's file count; that
+  // count must not have changed across the bracketing reads.
+  if (gitDerived && changedFileCount(finalData) !== expectedFileCount) {
+    throw new GitHubQualificationReadError('GitHub pull request file count changed during qualification read',
+      githubReads + 1);
   }
 
   return {

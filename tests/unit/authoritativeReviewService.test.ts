@@ -281,9 +281,22 @@ describe('createAuthoritativeReviewService wiring', () => {
     expect(mocks.mint).toHaveBeenCalledExactlyOnceWith({ appId: f.options.appId,
       privateKey: f.options.privateKey, baseUrl: f.options.baseUrl, owner: selected.owner, repo: selected.repo },
     'read', { signal, fetchImplementation: f.options.fetchImplementation });
+    // REL-1080: the repository-scoped reader also carries the git-derived large-diff source.
+    expect(mocks.readerConstructor).toHaveBeenCalledExactlyOnceWith({ token: 'ghs_fake_scoped_token',
+      baseUrl: f.options.baseUrl, fetchImplementation: f.options.fetchImplementation,
+      gitDiffSource: expect.any(Function) });
+    expect(mocks.currentCandidate).not.toHaveBeenCalled();
+  });
+
+  it('REL-1080: the kill switch removes the git-derived large-diff source from the trusted reader', async () => {
+    vi.stubEnv('REVIEW_YETI_GIT_DIFF_FALLBACK', 'off');
+    const f = fixture();
+    createAuthoritativeReviewService(f.options);
+    await completionOptions().readerFactory({ repositoryId: candidate.repositoryId, owner: candidate.owner,
+      repo: candidate.repo }, new AbortController().signal);
     expect(mocks.readerConstructor).toHaveBeenCalledExactlyOnceWith({ token: 'ghs_fake_scoped_token',
       baseUrl: f.options.baseUrl, fetchImplementation: f.options.fetchImplementation });
-    expect(mocks.currentCandidate).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
   });
 
   it('does not create a reader when the bounded mint rejects', async () => {

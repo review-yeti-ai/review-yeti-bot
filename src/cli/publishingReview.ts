@@ -71,6 +71,7 @@ import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/t
 import { parseChangedFiles } from '../review/changedFiles';
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
+import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -1117,7 +1118,9 @@ export async function runPublishingReviewWorker(
         expectedBaseSha: identity.baseSha,
         expectedHeadSha: identity.headSha,
         token: value(env, 'GH_TOKEN'),
-      });
+      }, undefined, workerLargeDiffSourceOptions(env, (message, fields) => logger.info(message, {
+        runId: identity.runId, repository: identity.repo, ...fields,
+      })));
     } catch (error) {
       // REL-1057: a push between admission and this read means a newer head
       // supersedes this run. Only a moved head qualifies: a base-only move
