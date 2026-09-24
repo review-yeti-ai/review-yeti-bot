@@ -700,8 +700,10 @@ export async function planVerdictCache(options: {
     const contentIndex = contentIndexOf(current.repositoryId,
       (await options.reader!.content(current.baseSha, current.headSha, abort.signal)).files);
     if (!contentIndex) return { scope: null, decision: fullCache('comparison-incomplete'), contentIndex: null };
-    const recordOnly = (reason: VerdictCacheFallbackReason, sourceLaneKeys: Record<string, string> = {}): VerdictCachePlan => ({
-      scope: { source: null, permitted: [], laneKeys: options.laneKeys, sourceLaneKeys }, decision: fullCache(reason), contentIndex,
+    const recordOnly = (reason: VerdictCacheFallbackReason | Extract<VerdictCacheDecision, { mode: 'full' }>,
+      sourceLaneKeys: Record<string, string> = {}): VerdictCachePlan => ({
+      scope: { source: null, permitted: [], laneKeys: options.laneKeys, sourceLaneKeys },
+      decision: typeof reason === 'string' ? fullCache(reason) : reason, contentIndex,
     });
     let base: { source: VerdictCacheSource | null; maxAgeMs: number };
     try {
@@ -711,7 +713,8 @@ export async function planVerdictCache(options: {
       return recordOnly('error');
     }
     const early = verdictCachePrecheck({ source: base.source, maxAgeMs: base.maxAgeMs, current });
-    if (early) return recordOnly(early.mode === 'full' ? early.reason : 'error');
+    // The whole fallback, so a refused prior's `priorRefusal` reaches the log and the disclosure.
+    if (early) return recordOnly(early.mode === 'full' ? early : 'error');
     const source = base.source!;
     const sourceContent = contentIndexOf(current.repositoryId,
       (await options.reader!.content(source.prior.baseSha, source.prior.headSha, abort.signal)).files);

@@ -29,6 +29,7 @@ import {
   type PriorReviewRows,
 } from '../../src/review/incrementalReview';
 import { gateRecordFor } from '../support/priorGateRecord';
+import { logger } from '../../src/utils/logger';
 import { computeArbitration } from '../../src/review/reviewCore';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
 import {
@@ -265,8 +266,9 @@ describe('prior review record', () => {
     const good = rows(completion);
     expect(priorReviewRecordFromRows(good)?.shipComplete).toBe(true);
     // No gate row, or one that recorded a different completion.
-    expect(priorReviewRecordFromRows({ ...good, gate: null })?.shipComplete).toBe(false);
-    expect(priorReviewRecordFromRows({ ...good, gate: { ...good.gate!, worker_result_digest: 'f'.repeat(64) } })?.shipComplete).toBe(false);
+    expect(priorReviewRecordFromRows({ ...good, gate: null })).toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-row-missing' });
+    expect(priorReviewRecordFromRows({ ...good, gate: { ...good.gate!, worker_result_digest: 'f'.repeat(64) } }))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-row-mismatch' });
     // A gate that failed the review (incomplete coverage) even though the run row says succeeded.
     const incomplete = gateRecordFor(completion, { expectedPersonaIds: PRIOR_LANES, changedFiles: files(DIFF), coverageComplete: false });
     expect(incomplete.status).toBe('failed');
@@ -853,7 +855,7 @@ describe('publishing worker wiring', () => {
     };
   }
 
-  async function runWorker(env: NodeJS.ProcessEnv, comparisons = world()) {
+  async function runWorker(env: NodeJS.ProcessEnv, comparisons = world(), priorRecord: PriorReviewRecord = prior()) {
     // Stands in for an engine: it applies the scope it was given and attaches that disclosure.
     const panelRunner = vi.fn(async (runOptions: any) => attachIncrementalDisclosure({
       headSha: HEAD,
@@ -866,7 +868,7 @@ describe('publishing worker wiring', () => {
     }, applyIncrementalScope(buildEffectiveReviewFiles(runOptions.changedFiles).files, runOptions.incremental).disclosure));
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     const reportReviewEvidence = vi.fn(async () => {});
-    const incrementalBase = { read: vi.fn(async () => ({ prior: prior(), maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) };
+    const incrementalBase = { read: vi.fn(async () => ({ prior: priorRecord, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) };
     await runPublishingReviewWorker(env, {
       checkClient,
       completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
@@ -904,6 +906,20 @@ describe('publishing worker wiring', () => {
       previousHeadSha: PREV_HEAD, previousBaseSha: PREV_BASE, previousCompletionDigest: 'e'.repeat(64),
       carriedForwardPaths: ['src/unchanged.ts'],
     });
+  });
+
+  it('names the refusing check in the plan log and the check summary, and only for a refused prior', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const refused = prior({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
+    const { summary } = await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }), world(), refused);
+    expect(info).toHaveBeenCalledWith('Incremental re-review planned', expect.objectContaining({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'gate-not-clean' }));
+    expect(summary).toContain('(`gate-not-clean`: the gate did not pass it as a clean review)');
+    info.mockClear();
+    await runWorker(workerEnv({ REVIEW_YETI_INCREMENTAL: 'acme/app' }), world({ [`${PREV_HEAD}...${HEAD}`]: comparison('diverged', []) }));
+    const planned = info.mock.calls.find((call) => call[0] === 'Incremental re-review planned');
+    expect(planned?.[1]).toMatchObject({ reason: 'not-ancestor' });
+    expect(planned?.[1]).not.toHaveProperty('priorRefusal');
   });
 
   it('runs a full review after a force-push and says why in the check summary', async () => {

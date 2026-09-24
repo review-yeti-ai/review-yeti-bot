@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { gateRecordFor } from '../support/priorGateRecord';
+import { logger } from '../../src/utils/logger';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
@@ -851,7 +852,7 @@ describe('publishing worker wiring', () => {
     };
   }
 
-  async function runWorker(env: NodeJS.ProcessEnv) {
+  async function runWorker(env: NodeJS.ProcessEnv, baseSource: VerdictCacheSource | null = null) {
     let seenScope: VerdictCacheScope | undefined;
     // Stands in for an engine: it applies the scope it was given, with one lane covering every file.
     const panelRunner = vi.fn(async (runOptions: any) => {
@@ -871,7 +872,7 @@ describe('publishing worker wiring', () => {
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     const reportReviewEvidence = vi.fn(async () => {});
     const verdictCacheBase = {
-      read: vi.fn(async () => ({ source: null as VerdictCacheSource | null, maxAgeMs: MAX_AGE })),
+      read: vi.fn(async () => ({ source: baseSource, maxAgeMs: MAX_AGE })),
     };
     await runPublishingReviewWorker(env, {
       checkClient,
@@ -896,6 +897,20 @@ describe('publishing worker wiring', () => {
     expect(summary).not.toContain('Verdict cache');
     expect(evidence?.result).not.toHaveProperty('verdictCache');
     expect(verdictCacheBase.read).not.toHaveBeenCalled();
+  });
+
+  it('names the refusing check in the plan log and the check summary, and only for a refused source', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const refused = source({ prior: { shipComplete: false, shipIncompleteReason: 'blocking-finding' } });
+    const { summary } = await runWorker(workerEnv({ REVIEW_YETI_VERDICT_CACHE: 'acme/app' }), refused);
+    expect(info).toHaveBeenCalledWith('Verdict cache planned', expect.objectContaining({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'blocking-finding' }));
+    expect(summary).toContain('(`blocking-finding`: it has a P0/P1 finding at published severity)');
+    info.mockClear();
+    await runWorker(workerEnv({ REVIEW_YETI_VERDICT_CACHE: 'acme/app' }));
+    const planned = info.mock.calls.find((call) => call[0] === 'Verdict cache planned');
+    expect(planned?.[1]).toMatchObject({ reason: 'no-prior-review' });
+    expect(planned?.[1]).not.toHaveProperty('priorRefusal');
   });
 
   it('records clean files for later runs on a first review and says why nothing was served', async () => {
