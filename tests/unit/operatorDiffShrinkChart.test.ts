@@ -42,12 +42,10 @@ function helmAvailable(): boolean {
 }
 
 describe('operator diff shrink source contract', () => {
-  it('uses the worker flag name on both sides of the operator', () => {
+  // The Go side is pinned behaviourally (TestPublishingConfigFromEnvReadsDiffShrink,
+  // TestBuildWorkerJobForwardsDiffShrinkOnlyWhenSet); this pins the worker's name for the chart.
+  it('renders the chart under the worker flag name', () => {
     expect(DIFF_SHRINK_FLAG).toBe('REVIEW_YETI_DIFF_SHRINK');
-    expect(readFileSync(path.join(root, 'k8s-operator/main.go'), 'utf8'))
-      .toContain(`os.Getenv("${DIFF_SHRINK_FLAG}")`);
-    expect(readFileSync(path.join(root, 'k8s-operator/pkg/job/job.go'), 'utf8'))
-      .toContain(`DiffShrinkEnv = "${DIFF_SHRINK_FLAG}"`);
   });
 
   it('ships diff shrinking off in Helm values', () => {
