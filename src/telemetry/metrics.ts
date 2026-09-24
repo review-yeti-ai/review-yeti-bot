@@ -8,7 +8,8 @@ import {
   View,
   InstrumentType,
 } from '@opentelemetry/sdk-metrics';
-import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { OTLPMetricExporter, AggregationTemporalityPreference } from '@opentelemetry/exporter-metrics-otlp-http';
+import { OTLPMetricExporter as OTLPProtoMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
 import { Resource } from '@opentelemetry/resources';
 import { ATTR_SERVICE_INSTANCE_ID, ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
@@ -16,6 +17,7 @@ import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
 let metricsInstance: MetricCounters | null = null;
 let metricReader: PeriodicExportingMetricReader | null = null;
 let otlpReader: PeriodicExportingMetricReader | null = null;
+let workerPushReader: PeriodicExportingMetricReader | null = null;
 let meterProvider: MeterProvider | null = null;
 
 /**
@@ -31,6 +33,52 @@ export function resolveOtlpMetricsEndpoint(env: NodeJS.ProcessEnv = process.env)
   return value.length > 0 ? value : null;
 }
 
+/**
+ * REL-1104: the worker's metrics push target, projected by the operator from its
+ * own REVIEW_YETI_WORKER_METRICS_ENDPOINT (k8s-operator/pkg/job WorkerMetricsEndpointEnv).
+ */
+export const WORKER_METRICS_ENDPOINT_ENV = 'REVIEW_YETI_WORKER_METRICS_ENDPOINT';
+/** The only identity worker pushes carry: bounded, never per run, pod or sha. */
+export const WORKER_METRICS_JOB = 'review-yeti-worker';
+/** Per-request bound on one push. Telemetry must never hold a worker's exit. */
+export const WORKER_METRICS_EXPORT_TIMEOUT_MS = 3000;
+const WORKER_METRICS_EXPORT_INTERVAL_MS = 15000;
+
+/**
+ * REL-1104: resolve the worker's push endpoint, or null. Fail-open: anything that
+ * is not an absolute http(s) URL without userinfo is ignored, never thrown.
+ *
+ * Worker metrics previously never reached VictoriaMetrics: nothing scrapes a
+ * 2-10 minute Job pod, and the operator never projected an endpoint. The push
+ * goes to VictoriaMetrics' native OTLP endpoint (`/opentelemetry/v1/metrics`)
+ * as protobuf with DELTA temporality. Deltas are what make concurrent workers
+ * safe without a per-pod label: VictoriaMetrics stores each export as a raw
+ * sample, so `sum_over_time` over the series is the exact total across every
+ * worker, where cumulative pushes from several pods would overwrite one another.
+ */
+export function resolveWorkerMetricsEndpoint(env: NodeJS.ProcessEnv = process.env): string | null {
+  const value = String(env[WORKER_METRICS_ENDPOINT_ENV] || '').trim();
+  if (!value || /\s/.test(value)) return null;
+  try {
+    const parsed = new URL(value);
+    if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || !parsed.hostname) return null;
+    if (parsed.username || parsed.password || parsed.hash) return null;
+    return value;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * REL-1104: the resource a worker push carries. VictoriaMetrics promotes every
+ * resource attribute to a label, so this is deliberately just the job name
+ * (MeterProvider merges in only the fixed telemetry.sdk.* keys): nothing per
+ * run, pod, PR or sha.
+ */
+export function workerMetricsResource(): Resource {
+  return new Resource({ [ATTR_SERVICE_NAME]: WORKER_METRICS_JOB, job: WORKER_METRICS_JOB });
+}
+
 /** Best-effort one-shot export of accumulated metrics before a worker pod exits. */
 export async function flushMetrics(
   timeoutMs = 5000,
@@ -41,7 +89,7 @@ export async function flushMetrics(
   // is a no-op with nothing to export. `readersOverride` lets tests inject spy
   // readers to exercise the with-readers branch without a collector.
   const readers: Array<{ forceFlush: () => Promise<void> }> = readersOverride ??
-    [otlpReader, metricReader].filter((reader): reader is PeriodicExportingMetricReader => reader !== null);
+    [workerPushReader, otlpReader, metricReader].filter((reader): reader is PeriodicExportingMetricReader => reader !== null);
   if (readers.length === 0) return;
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<void>((resolve) => {
@@ -180,6 +228,22 @@ export function initMetrics(
     readers.push(otlpReader);
   }
 
+  // REL-1104: the worker push. A separate reader so it can use delta temporality
+  // and a short timeout without changing the dispatcher's cumulative OTLP path.
+  const workerEndpoint = identity ? null : resolveWorkerMetricsEndpoint(env);
+  if (workerEndpoint) {
+    workerPushReader = new PeriodicExportingMetricReader({
+      exporter: new OTLPProtoMetricExporter({
+        url: workerEndpoint,
+        temporalityPreference: AggregationTemporalityPreference.DELTA,
+        timeoutMillis: WORKER_METRICS_EXPORT_TIMEOUT_MS,
+      }),
+      exportIntervalMillis: WORKER_METRICS_EXPORT_INTERVAL_MS,
+      exportTimeoutMillis: WORKER_METRICS_EXPORT_TIMEOUT_MS,
+    });
+    readers.push(workerPushReader);
+  }
+
   meterProvider = new MeterProvider({
     views: [
       new View({
@@ -219,7 +283,7 @@ export function initMetrics(
       }),
     ],
     readers,
-    resource: metricsResourceFor(identity),
+    resource: workerEndpoint ? workerMetricsResource() : metricsResourceFor(identity),
   });
 
   const meter = meterProvider.getMeter('review-yeti-bot');

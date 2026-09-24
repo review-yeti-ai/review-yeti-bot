@@ -96,6 +96,18 @@ Metrics:
 - `review_yeti_jev_triage_shadow_files_total{outcome,category,risk_level}`
 - `review_yeti_jev_triage_shadow_join_total{risk_level,finding_class}`
 
+### Where worker metrics land (REL-1104)
+
+Workers are short-lived Jobs, so nothing scrapes them. At exit, and every 15 s while running, each worker pushes its metrics as OTLP/protobuf with delta temporality to `REVIEW_YETI_WORKER_METRICS_ENDPOINT`. The operator forwards this variable from its own env. In production it points at VictoriaMetrics' native `/opentelemetry/v1/metrics`. The push is fail-open: each request has a 3 s bound and the exit flush has a 5 s bound, and errors are swallowed.
+
+Every worker series carries `job="review-yeti-worker"` and no run, pod, or sha label. Each sample is one worker's increment since its last push, not a running counter, so:
+
+- Total over a window: `sum(sum_over_time(review_yeti_jev_triage_shadow_files_total{job="review-yeti-worker"}[1h]))`.
+- Rate of successful Jev calls per second: `sum(sum_over_time(review_yeti_jev_requests_total{job="review-yeti-worker",seam="triage_shadow",outcome="ok"}[15m])) / 900`.
+- p50 Jev latency: `histogram_quantile(0.5, sum by (le) (sum_over_time(review_yeti_jev_duration_seconds_bucket{job="review-yeti-worker",seam="triage_shadow"}[1h])))`.
+
+Do not use `rate()` or `increase()` on these series. Queries that do must exclude `job="review-yeti-worker"`.
+
 Every structured log line carries `runId`, `repository`, `prNumber` and `headSha`. The `event` field identifies the line:
 
 | `event` | When | Key fields |

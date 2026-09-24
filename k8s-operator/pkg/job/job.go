@@ -234,6 +234,32 @@ type PublishingConfig struct {
 	// lane budget; anything else is its default, the W5 hard cap). Empty
 	// forwards nothing.
 	MapReduceMinChars string
+	// REL-1104: where the worker pushes its metrics at exit (OTLP/protobuf,
+	// delta temporality -- VictoriaMetrics' /opentelemetry/v1/metrics). Worker
+	// pods are too short-lived to scrape, so this push is the only way their
+	// counters reach VictoriaMetrics. Telemetry is fail-open: a value that is
+	// not an absolute http(s) URL is dropped (see WorkerMetricsEndpoint), never
+	// a reason to refuse the Job. Empty projects nothing.
+	WorkerMetricsEndpoint string
+}
+
+// WorkerMetricsEndpointEnv is the worker's metrics push endpoint (REL-1104,
+// src/telemetry/metrics.ts WORKER_METRICS_ENDPOINT_ENV).
+const WorkerMetricsEndpointEnv = "REVIEW_YETI_WORKER_METRICS_ENDPOINT"
+
+// WorkerMetricsEndpoint returns raw when it is safe to hand a worker as its
+// metrics push target -- an absolute http(s) URL with a host and no userinfo,
+// fragment or whitespace -- and "" otherwise. Unlike the transport fields this
+// never refuses the Job: losing metrics must not cost a review.
+func WorkerMetricsEndpoint(raw string) string {
+	if raw == "" || strings.ContainsAny(raw, "\r\n\t ") {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return ""
+	}
+	return raw
 }
 
 // VerdictCacheEnv is the worker's per-file verdict cache flag (REL-1085,
@@ -527,6 +553,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.VerdictCache != "" {
 			env = append(env, corev1.EnvVar{Name: VerdictCacheEnv, Value: input.Publishing.VerdictCache})
+		}
+		if endpoint := WorkerMetricsEndpoint(input.Publishing.WorkerMetricsEndpoint); endpoint != "" {
+			env = append(env, corev1.EnvVar{Name: WorkerMetricsEndpointEnv, Value: endpoint})
 		}
 		if input.Publishing.MapReduce != "" {
 			env = append(env,

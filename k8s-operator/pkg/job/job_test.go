@@ -1810,3 +1810,66 @@ func TestBuildWorkerJobRefusesMapReduceMinCharsWithLineBreak(t *testing.T) {
 		t.Fatalf("a line break in the map-reduce min chars must refuse the Job, got %v", err)
 	}
 }
+
+// REL-1104: worker metrics never reached VictoriaMetrics because the operator
+// never projected a push endpoint. It must reach the app-gate worker when set,
+// stay absent when not, and -- telemetry being fail-open -- a malformed value
+// must be DROPPED, never refuse the Job.
+func TestBuildWorkerJobProjectsWorkerMetricsEndpointFailOpen(t *testing.T) {
+	now := time.Date(2026, 9, 24, 17, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+
+	if job.WorkerMetricsEndpointEnv != "REVIEW_YETI_WORKER_METRICS_ENDPOINT" {
+		t.Fatalf("worker metrics env drifted from the worker's WORKER_METRICS_ENDPOINT_ENV: %s", job.WorkerMetricsEndpointEnv)
+	}
+
+	baseline, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build baseline app-gate job: %v", err)
+	}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.WorkerMetricsEndpointEnv) {
+		t.Fatalf("unset operator config must not reach the worker as %s", job.WorkerMetricsEndpointEnv)
+	}
+
+	endpoint := "http://victoria-metrics-server.observability.svc.cluster.local:8428/opentelemetry/v1/metrics"
+	input.Publishing.WorkerMetricsEndpoint = endpoint
+	forwarded, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build app-gate job with metrics endpoint: %v", err)
+	}
+	if got := envValue(forwarded.Spec.Template.Spec.Containers[0], job.WorkerMetricsEndpointEnv); got != endpoint {
+		t.Fatalf("operator must forward %s verbatim, got %q", job.WorkerMetricsEndpointEnv, got)
+	}
+
+	for _, bad := range []string{
+		"ftp://vm:8428/opentelemetry/v1/metrics",
+		"http://user:pass@vm:8428/opentelemetry/v1/metrics",
+		"http://vm:8428/opentelemetry/v1/metrics#frag",
+		"http://vm:8428/opentelemetry/v1/metrics\n",
+		"vm:8428",
+		"/opentelemetry/v1/metrics",
+		"http://",
+	} {
+		input.Publishing.WorkerMetricsEndpoint = bad
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("malformed metrics endpoint %q must not refuse the Job (fail-open), got %v", bad, err)
+		}
+		if hasEnv(built.Spec.Template.Spec.Containers[0], job.WorkerMetricsEndpointEnv) {
+			t.Fatalf("malformed metrics endpoint %q must be dropped, not projected", bad)
+		}
+	}
+
+	input.Publishing.WorkerMetricsEndpoint = endpoint
+	input.Review.Spec.PublicationMode = "disabled"
+	receipt, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatalf("build receipt-only job: %v", err)
+	}
+	if hasEnv(receipt.Spec.Template.Spec.Containers[0], job.WorkerMetricsEndpointEnv) {
+		t.Fatalf("disabled lane must not receive %s", job.WorkerMetricsEndpointEnv)
+	}
+}
