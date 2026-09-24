@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.91.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.3...v1.91.4) (2026-09-24)
+
+
+### Bug Fixes
+
+* **gateway:** opt Review Yeti out of gateway-injected MCP tools (REL-1115) ([#1058](https://github.com/review-yeti-ai/review-yeti-bot/issues/1058)) ([f723356](https://github.com/review-yeti-ai/review-yeti-bot/commit/f723356809d7cd28ed06c9706279c25634e0b16c))
+
 ## [1.91.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.2...v1.91.3) (2026-09-24)
 
 
