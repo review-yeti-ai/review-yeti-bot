@@ -15,7 +15,7 @@ import {
   type RunRetryContext,
 } from '../../src/review/recoverablePanelRetry';
 import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/reviewAdmission';
-import { isRecoverableFailureTitle, MAX_CHECK_RUN_TITLE_CHARACTERS } from '../../src/review/reviewCheckIdentity';
+import { formatIncompleteInfrastructureTitle, isRecoverableFailureTitle, MAX_CHECK_RUN_TITLE_CHARACTERS } from '../../src/review/reviewCheckIdentity';
 import type { WorkerReviewCompletion, WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import { logger } from '../../src/utils/logger';
 
@@ -117,6 +117,18 @@ describe('REL-1113 shared infrastructure-incomplete decision', () => {
     expect(isRecoverableFailureTitle('Review Yeti: BLOCK')).toBe(false);
   });
 
+  it('round-trips every formatted title through the recoverable-title validator (one owner)', () => {
+    for (const detail of ['x', 'lane arch-lane failed: 502', 'y'.repeat(500)]) {
+      for (const retry of [undefined, { nextAttempt: 2, maxAttempts: 3 }, { nextAttempt: 3, maxAttempts: 3 }]) {
+        const title = formatIncompleteInfrastructureTitle(detail, retry);
+        expect(title.length).toBeLessThanOrEqual(MAX_CHECK_RUN_TITLE_CHARACTERS);
+        expect(isRecoverableFailureTitle(title)).toBe(true);
+      }
+    }
+    expect(isRecoverableFailureTitle('Review Yeti: INCOMPLETE — infrastructure (lane x failed: 502); retrying soon')).toBe(false);
+    expect(isRecoverableFailureTitle('Review Yeti: INCOMPLETE — infrastructure ()')).toBe(false);
+  });
+
   it('grows the re-attempt delay per attempt, capped', () => {
     expect(infrastructureRetryDelayMs(1)).toBe(30_000);
     expect(infrastructureRetryDelayMs(2)).toBe(60_000);
@@ -164,6 +176,20 @@ describe('REL-1113 authoritative infrastructure re-attempt', () => {
   ])('refuses when %s', async (_label, context) => {
     const h = harness(context);
     await expect(h.run(completion())).resolves.toBe('run-not-infrastructure-failure');
+    expect(h.admit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['authoritative admission is paused', { acceptNewRequests: false, repositoryIds: [123] }],
+    ['the repository is no longer enrolled', { repositoryIds: [999] }],
+  ])('does not re-admit when %s', async (_label, overrides) => {
+    const h = harness();
+    await expect(requeueAuthoritativeInfrastructureIncomplete({
+      event: completion(), now: NOW, repository: { admit: h.admit, readRunRetryContext: h.readRunRetryContext },
+      authoritative: { expectedAppId: EXPECTED_APP_ID, resolver: { resolve: h.resolve } as never, ...overrides } as never,
+      logger: h.logs,
+    })).resolves.toBe('admission-paused');
+    expect(h.resolve).not.toHaveBeenCalled();
     expect(h.admit).not.toHaveBeenCalled();
   });
 

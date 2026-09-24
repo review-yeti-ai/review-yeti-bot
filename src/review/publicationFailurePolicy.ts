@@ -1,4 +1,4 @@
-import { INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX, MAX_CHECK_RUN_TITLE_CHARACTERS } from './reviewCheckIdentity';
+import { formatIncompleteInfrastructureTitle } from './reviewCheckIdentity';
 
 export interface IncompletePanelEvidence {
   authoritative: boolean;
@@ -196,15 +196,12 @@ export function renderIncompleteInfrastructureTitle(
   retry?: { nextAttempt: number; maxAttempts: number },
 ): string {
   const shown = lanes.slice(0, 3);
-  let detail = shown.length === 0
+  const detail = shown.length === 0
     ? 'lane failed'
     : shown.length === 1
       ? `lane ${shown[0].id} failed: ${laneReason(shown[0])}`
       : `lanes ${shown.map((lane) => `${lane.id} ${laneReason(lane)}`).join(', ')}${lanes.length > shown.length ? ', …' : ''} failed`;
-  const suffix = retry ? `; retrying as attempt ${retry.nextAttempt} of ${retry.maxAttempts}` : '';
-  const room = MAX_CHECK_RUN_TITLE_CHARACTERS - INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.length - 1 - suffix.length;
-  if (detail.length > room) detail = `${detail.slice(0, Math.max(1, room - 1))}…`;
-  return `${INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX}${detail})${suffix}`;
+  return formatIncompleteInfrastructureTitle(detail, retry);
 }
 
 /** REL-1113: the check-summary block naming every lane that did not complete and why. */

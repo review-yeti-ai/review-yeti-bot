@@ -42,8 +42,30 @@ export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([
 
 /** REL-1113: every infrastructure-incomplete worker check title starts with this. */
 export const INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX = 'Review Yeti: INCOMPLETE — infrastructure (';
+/** REL-1113: the longest lane detail an infrastructure-incomplete title may carry. */
+export const MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS = 120;
 
-const INCOMPLETE_INFRASTRUCTURE_TITLE = /^Review Yeti: INCOMPLETE — infrastructure \([^\u0000-\u001f\u007f]{1,120}\)(?:; retrying as attempt \d{1,2} of \d{1,2})?$/u;
+/**
+ * REL-1113: the ONE owner of the infrastructure-incomplete title format. The renderer
+ * (`renderIncompleteInfrastructureTitle`) supplies only the lane detail; this function frames it,
+ * and `isRecoverableFailureTitle` below recognizes exactly what it produces -- both from the
+ * constants here, pinned by a round-trip test.
+ */
+export function formatIncompleteInfrastructureTitle(
+  detail: string,
+  retry?: { nextAttempt: number; maxAttempts: number },
+): string {
+  const suffix = retry ? `; retrying as attempt ${retry.nextAttempt} of ${retry.maxAttempts}` : '';
+  const room = Math.min(MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS,
+    MAX_CHECK_RUN_TITLE_CHARACTERS - INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.length - 1 - suffix.length);
+  const bounded = detail.length > room ? `${detail.slice(0, Math.max(1, room - 1))}…` : detail;
+  return `${INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX}${bounded})${suffix}`;
+}
+
+const INCOMPLETE_INFRASTRUCTURE_TITLE = new RegExp(
+  `^${INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`
+  + `[^\\u0000-\\u001f\\u007f]{1,${MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS}}\\)`
+  + '(?:; retrying as attempt \\d{1,2} of \\d{1,2})?$', 'u');
 
 /**
  * Failure titles for which the exact-head recovery action is offered/admitted:
