@@ -166,4 +166,35 @@ describe('review bot readiness', () => {
     const response = await request(createApp()).get('/ready');
     expect(response.status).toBe(200);
   });
+
+  describe('a missing webhook secret must not crash the probe', () => {
+    // The regression this guards (REL-1069 review, P1): the gate called the
+    // THROWING resolveWebhookSecret() inside an async Express handler. Express 4
+    // does not catch rejected promises, so with no secret configured the probe
+    // HUNG and minted an unhandled rejection instead of returning 503 -- and on
+    // modern Node that can terminate a process without a rejection listener.
+    it('returns 503 when nothing configures the webhook secret', async () => {
+      stubBifrostEnv({ GITHUB_WEBHOOK_SECRET: '', WEBHOOK_SECRET: '' });
+      vi.stubEnv('WEBHOOK_SECRET', '');
+      const store = await import('../../src/persistence/dashboardStore');
+      vi.spyOn(store.dashboardStore, 'getGitHubAppConfig').mockReturnValue(
+        { webhookSecret: '', webhookSecretRaw: '' } as never,
+      );
+
+      const response = await request(createApp()).get('/ready');
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ status: 'not_ready', configurationReady: false });
+    });
+
+    it('hasWebhookSecret is false rather than throwing when unconfigured', async () => {
+      const store = await import('../../src/persistence/dashboardStore');
+      vi.spyOn(store.dashboardStore, 'getGitHubAppConfig').mockReturnValue(
+        { webhookSecret: '', webhookSecretRaw: '' } as never,
+      );
+      vi.stubEnv('WEBHOOK_SECRET', '');
+      vi.stubEnv('GITHUB_WEBHOOK_SECRET', '');
+      const { hasWebhookSecret } = await import('../../src/github/webhookServer');
+      expect(hasWebhookSecret()).toBe(false);
+    });
+  });
 });
