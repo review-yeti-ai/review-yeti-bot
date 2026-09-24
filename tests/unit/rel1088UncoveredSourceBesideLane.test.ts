@@ -98,6 +98,13 @@ describe('REL-1088: uncovered source beside an applying lane is routed, never dr
     expect(result.routedFiles).toEqual([{ path: UNCOVERED, laneIds: ['sec-lane', 'perf-lane'], reason: 'uncovered-source' }]);
   });
 
+  it('discloses a fallback-routed file beside covered source when nothing else is uncovered', () => {
+    const result = resolveReviewApplicability(sourceOnlyRoster(), files('src/auth/login.ts', 'config/app.toml'));
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane', 'sec-lane']);
+    expect(result.unmatchedPaths).toEqual([]);
+    expect(result.routedFiles).toEqual([{ path: 'config/app.toml', laneIds: ['sec-lane'], reason: 'fallback' }]);
+  });
+
   it('labels fallback-routed and uncovered-source files separately on the same lane', () => {
     const result = resolveReviewApplicability(sourceOnlyRoster(), files('src/auth/login.ts', 'config/app.toml', UNCOVERED));
     expect(result.routedFiles).toEqual([

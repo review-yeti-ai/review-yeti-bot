@@ -1,3 +1,4 @@
+import type { RoutedReviewFile } from '../review/personaApplicability';
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
@@ -156,7 +157,7 @@ export interface PanelResult {
    * them to it (REL-1088): no persona's paths cover them. Disclosed in the check
    * summary. Absent when nothing was routed.
    */
-  routedFiles?: Array<{ path: string; laneIds: string[]; reason: 'fallback' | 'uncovered-source' }>;
+  routedFiles?: RoutedReviewFile[];
   zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {
