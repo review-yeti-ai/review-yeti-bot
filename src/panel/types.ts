@@ -11,6 +11,7 @@ import type { DiffShrinkDisclosure } from '../types/diffShrink';
 import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
 import type { VerdictCacheDisclosure } from '../types/verdictCache';
+import type { MapReduceDisclosure } from '../types/mapReduceReview';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -147,6 +148,12 @@ export interface PanelResult {
    * the check summary, the served-file claim and the recorded entries are built from exactly this.
    */
   verdictCache?: VerdictCacheDisclosure;
+  /**
+   * REL-1083: lanes reviewed in chunks with a reduce pass (`REVIEW_YETI_MAP_REDUCE`), and
+   * contexts the flag could not chunk. Set only when map-reduce applied; the check summary
+   * publishes exactly this.
+   */
+  mapReduce?: MapReduceDisclosure;
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   personas: PersonaLaneResult[];

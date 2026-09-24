@@ -55,7 +55,6 @@ import {
   applyLaneBudgetPack,
   attachReviewBudgetDisclosure,
   clipToolOutputToRequestCap,
-  resolveBudgetedReviewApplicability,
   type LaneBudgetPack,
   type ReviewBudgetInput,
   type ReviewBudgetPlan,
@@ -65,6 +64,17 @@ import {
   type VerdictCacheDisclosure,
   type VerdictCacheScope,
 } from '../review/verdictCache';
+import {
+  attachMapReduceDisclosure,
+  createChunkLimiter,
+  createModelReducer,
+  mapReduceKeepTruncated,
+  resolveMapReduceReviewApplicability,
+  runMapReduceLane,
+  type MapReduceInput,
+  type MapReduceLaneDisclosure,
+  type MapReducePlan,
+} from '../review/mapReduceReview';
 import { piWorkflowRegistry } from '../mcp/piWorkflowRegistry';
 import { matchOne } from '../pipeline/domainIndex';
 import {
@@ -1900,7 +1910,13 @@ async function invoke(
      * reading), and tool results are clipped to keep each request under `requestCapBytes`.
      * Absent is today's behaviour.
      */
-    reviewBudget?: { promptFiles: Array<{ path: string; patch?: string; content?: string }>; inlineTokenBudget: number; requestCapBytes: number };
+    reviewBudget?: {
+      promptFiles: Array<{ path: string; patch?: string; content?: string }>;
+      inlineTokenBudget: number;
+      requestCapBytes: number;
+      /** REL-1083: a map-reduce chunk's scope, placed just before the diff section. */
+      scopeNote?: string;
+    };
   }
 ): Promise<{
   response: OpenRouterResponse;
@@ -2012,6 +2028,7 @@ async function invoke(
     rulesText,
     ``,
     `=== PR CHANGED FILES & DIFF SCOPE ===`,
+    ...(laneBudget?.scopeNote ? [laneBudget.scopeNote, ``] : []),
     diffSection,
     ...(zoektPreCheckPromptText ? [
       ``,
@@ -2878,6 +2895,7 @@ async function runPersona(
                 promptFiles: lanePacked.promptFiles,
                 inlineTokenBudget: laneBudgetPack.inlineTokenBudget,
                 requestCapBytes: laneBudgetPack.requestCapBytes,
+                ...(laneBudgetPack.scopeNote ? { scopeNote: laneBudgetPack.scopeNote } : {}),
               },
             } : {}),
             validateParsed: (candidate) => {
@@ -3577,6 +3595,8 @@ export async function executePersonaPanel(options: {
   reviewBudget?: ReviewBudgetInput;
   /** REL-1085: per-file verdict cache scope (`REVIEW_YETI_VERDICT_CACHE`); absent serves nothing from cache. */
   verdictCache?: VerdictCacheScope;
+  /** REL-1083: map-reduce review of a lane larger than one budget (`REVIEW_YETI_MAP_REDUCE`); absent reviews every lane in one call. */
+  mapReduce?: MapReduceInput;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -3595,6 +3615,9 @@ export async function executePersonaPanel(options: {
   let depthDisclosure: ReviewDepthDisclosure | null = null;
   // REL-1082: per-lane budget packs, from the same decision; disclosed for the lanes that ran.
   let reviewBudgetPlan: ReviewBudgetPlan | null = null;
+  // REL-1083: chunk plans for lanes larger than one budget, and what each chunked lane that ran did.
+  let mapReducePlan: MapReducePlan | null = null;
+  const mapReduceLanes = new Map<string, MapReduceLaneDisclosure>();
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -3624,18 +3647,22 @@ export async function executePersonaPanel(options: {
     // REL-1084: the incremental scope, like shrinking, only replaces patch text afterwards.
     // REL-1082: so does the review budget, which only packs what each lane is sent.
     // REL-1085: the verdict cache runs before the budget and, like the others, only replaces patch text.
-    const applicability = resolveBudgetedReviewApplicability(enabledPersonas, changedFiles as any, {
+    // REL-1083: and map-reduce, which only chunks a lane larger than one budget.
+    const applicability = resolveMapReduceReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
       verdictCache: options.verdictCache,
       reviewBudget: options.reviewBudget,
       budgetScope: 'per-lane',
+      mapReduce: options.mapReduce,
     });
     diffShrinkDisclosure = applicability.diffShrink;
     incrementalDisclosure = applicability.incremental;
     verdictCacheDisclosure = applicability.verdictCache;
     reviewBudgetPlan = applicability.reviewBudget;
+    mapReducePlan = applicability.mapReduce;
+    const chunkLimiter = mapReducePlan && mapReducePlan.lanes.size > 0 ? createChunkLimiter(mapReducePlan.concurrency) : null;
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
     routedFiles = applicability.routedFiles;
@@ -4144,7 +4171,7 @@ export async function executePersonaPanel(options: {
               ? { maxTurns: 2, effort: 'low' as const }
               : undefined;
 
-            const result = await runPersona(
+            const runLane = (lanePack: LaneBudgetPack | undefined) => runPersona(
               config,
               client,
               persona,
@@ -4174,8 +4201,39 @@ export async function executePersonaPanel(options: {
               domainLanes,
               budgetOverride,
               !options.deterministicRoster,
-              reviewBudgetPlan?.packs.get(persona.id),
+              lanePack,
             );
+            // REL-1083: a lane larger than one budget runs as chunks plus a reduce pass and
+            // returns one result under its own id; every other lane is one call, as today.
+            const chunkPlan = mapReducePlan?.lanes.get(persona.id);
+            if (chunkPlan && mapReducePlan && chunkLimiter) {
+              const reduceProvider = persona.providers[0] ? provider(config, persona.providers[0]) : undefined;
+              const mapped = await runMapReduceLane({
+                plan: chunkPlan,
+                limiter: chunkLimiter,
+                concurrency: mapReducePlan.concurrency,
+                deadlineAtMs: Math.min(Date.now() + remainingPanelTimeoutMs(), mapReducePlan.deadlineAtMs ?? Infinity),
+                sharingLanes: mapReducePlan.lanes.size,
+                signal,
+                runChunk: async (chunk) => (await runLane(chunk.pack)) as PersonaLaneResult,
+                ...(reduceProvider ? {
+                  reduce: createModelReducer({
+                    client,
+                    model: persona.model || reduceProvider.model,
+                    requestPolicy,
+                    jobId: effectiveJobId,
+                    persona: persona.id,
+                    providerId: reduceProvider.id,
+                    signal,
+                  }),
+                } : {}),
+                isRetryableChunkError: (error) => error instanceof PanelConfigurationError
+                  && (error.failureClass === 'rate_limit' || error.failureClass === 'transport'),
+              });
+              mapReduceLanes.set(persona.id, mapped.disclosure);
+              return { persona, result: mapped.result, error: undefined };
+            }
+            const result = await runLane(reviewBudgetPlan?.packs.get(persona.id));
             return { persona, result, error: undefined };
           } finally {
             activeInFlightPersonas--;
@@ -4628,6 +4686,7 @@ export async function executePersonaPanel(options: {
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))
     .then((result) => attachVerdictCacheDisclosure(result, verdictCacheDisclosure))
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
-    .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
+    .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan, mapReduceKeepTruncated(mapReduceLanes)))
+    .then((result) => attachMapReduceDisclosure(result, mapReducePlan, mapReduceLanes, reviewBudgetPlan))
     .finally(deadline.cleanup);
 }

@@ -49,5 +49,5 @@ A file sent at full depth is sent whole, so the 20,000-character per-file cut in
 
 ## Known limits
 
-- A lane with about 1,000 or more files cannot list every file within the hard cap. It falls back to today's content, and the summary discloses it. Reviewing such a lane in chunks is W6 (map-reduce, REL-1083).
+- A lane with about 1,000 or more files cannot list every file within the hard cap. It falls back to today's content, and the summary discloses it. With `REVIEW_YETI_MAP_REDUCE` (W6, REL-1083, `docs/features/map_reduce_review.md`) a lane over budget is reviewed in chunks instead, and its W5 pack is replaced by the chunk packs.
 - Signature extraction is line-based. It is not an AST, so a declaration split across lines keeps only its first line.

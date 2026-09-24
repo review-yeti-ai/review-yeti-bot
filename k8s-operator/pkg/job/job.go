@@ -221,12 +221,30 @@ type PublishingConfig struct {
 	// owner/repo allowlist, or an on/off switch). Empty keeps the cache off,
 	// byte-identical to before this field existed.
 	VerdictCache string
+	// REL-1083: map-reduce review for huge diffs. Forwarded verbatim as
+	// MapReduceEnv when non-empty, together with the review's terminal
+	// deadline (TerminalDeadlineEnv) so the worker can cap its chunk calls by
+	// the time left. The worker owns its interpretation (a comma- or
+	// space-separated owner/repo allowlist, or an on/off switch). Empty keeps
+	// map-reduce off, byte-identical to before this field existed.
+	MapReduce string
 }
 
 // VerdictCacheEnv is the worker's per-file verdict cache flag (REL-1085,
 // src/review/verdictCache.ts VERDICT_CACHE_FLAG). The operator forwards the
 // deployment value verbatim; the worker owns its interpretation.
 const VerdictCacheEnv = "REVIEW_YETI_VERDICT_CACHE"
+
+// MapReduceEnv is the worker's map-reduce review flag (REL-1083,
+// src/review/mapReduceReview.ts MAP_REDUCE_FLAG). The operator forwards the
+// deployment value verbatim; the worker owns its interpretation.
+const MapReduceEnv = "REVIEW_YETI_MAP_REDUCE"
+
+// TerminalDeadlineEnv carries the review's terminal deadline (RFC 3339, UTC)
+// to an app-gate worker when map-reduce is configured (REL-1083,
+// src/review/mapReduceReview.ts TERMINAL_DEADLINE_ENV). The Job itself is
+// killed DeadlineReserveSeconds before it.
+const TerminalDeadlineEnv = "REVIEW_TERMINAL_DEADLINE"
 
 // BudgetEnv is the worker's risk-ordered review-budget flag (REL-1082,
 // src/review/reviewBudget.ts REVIEW_BUDGET_FLAG). The operator forwards the
@@ -498,6 +516,12 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.VerdictCache != "" {
 			env = append(env, corev1.EnvVar{Name: VerdictCacheEnv, Value: input.Publishing.VerdictCache})
+		}
+		if input.Publishing.MapReduce != "" {
+			env = append(env,
+				corev1.EnvVar{Name: MapReduceEnv, Value: input.Publishing.MapReduce},
+				corev1.EnvVar{Name: TerminalDeadlineEnv, Value: spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)},
+			)
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -856,6 +880,9 @@ func validatePublishing(config PublishingConfig) error {
 	// Same allowlist grammar as the diff shrink flag.
 	if strings.ContainsAny(config.VerdictCache, "\r\n") {
 		return configErr("verdict cache flag contains a line break")
+	}
+	if strings.ContainsAny(config.MapReduce, "\r\n") {
+		return configErr("map-reduce flag contains a line break")
 	}
 	return nil
 }

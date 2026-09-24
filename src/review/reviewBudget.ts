@@ -319,11 +319,22 @@ export interface LaneBudgetPack {
   inlineTokenBudget: number;
   requestCapBytes: number;
   disclosure: ReviewBudgetLaneDisclosure;
+  /**
+   * REL-1083 (map-reduce chunks): `entries` inlines only the files this pack
+   * names; every other scoped file stays readable through the lane's tools but
+   * is not inlined. Absent (a W5 lane pack) inlines every scoped file.
+   */
+  promptScope?: 'entries';
+  /** REL-1083: text placed just before the lane's diff section (the chunk's scope). */
+  scopeNote?: string;
 }
 
 function inlineCost(path: string, text: string): number {
   return text.length + path.length * 2 + ENVELOPE_OVERHEAD_CHARS;
 }
+
+/** Characters one file costs in a lane's diff section; shared with map-reduce (REL-1083) so chunks are sized the same way. */
+export const budgetInlineCost = inlineCost;
 
 /**
  * Pack one lane's files. Pure and deterministic: files are ordered by
@@ -455,7 +466,8 @@ export function applyLaneBudgetPack<T extends { path: string; patch?: string }>(
     // is, so the pack never invents an empty patch where there was none.
     const untouched = entry && typeof file.patch !== 'string' && entry.depth === 'full';
     if (!entry || untouched) {
-      promptFiles.push(file);
+      // REL-1083: a chunk pack inlines only its own files; the rest stay tool-readable.
+      if (entry || pack.promptScope !== 'entries') promptFiles.push(file);
       toolFiles.push(file);
       continue;
     }
@@ -478,6 +490,29 @@ export interface ReviewBudgetPlan {
 }
 
 export const COMPOSED_BUDGET_LANE_ID = 'composed';
+
+/**
+ * The packer's view of each effective file: the patch the shared decision
+ * sends today, plus the whole patch of a file the per-file cut shortened when
+ * nothing after the cut (diff shrinking, the incremental scope) rewrote it.
+ * Otherwise the file keeps its patch. Shared with map-reduce (REL-1083) so
+ * both see exactly the same content.
+ */
+export function budgetCandidateResolver(
+  decision: Pick<ReviewApplicability<never>, 'hunkResult' | 'truncatedFiles'>,
+  changedFiles: ReadonlyArray<{ path: string; patch?: string }>,
+): (file: EffectiveReviewFile) => BudgetCandidate {
+  const inputPatch = new Map(changedFiles.map((file) => [file.path, file.patch]));
+  const cutPatch = new Map(decision.hunkResult.files.map((file) => [file.path, file.patch]));
+  const truncated = new Set(decision.truncatedFiles.map((file) => file.path));
+  return (file) => {
+    const effectivePatch = typeof file.patch === 'string' ? file.patch : (file.content ?? '');
+    const original = inputPatch.get(file.path);
+    const restorable = truncated.has(file.path) && file.patch === cutPatch.get(file.path)
+      && typeof original === 'string' && original.length > MAX_FILE_PATCH_CHARS;
+    return { path: file.path, effectivePatch, wholePatch: restorable ? original! : null };
+  };
+}
 
 type ScopedOptions = NonNullable<Parameters<typeof resolveCachedReviewApplicability>[2]>;
 
@@ -508,18 +543,7 @@ export function resolveBudgetedReviewApplicability<P extends Parameters<typeof r
   const decision = resolveCachedReviewApplicability(enabledPersonas, changedFiles, scopedOptions);
   if (!reviewBudget?.enabled || decision.applicable.length === 0) return { ...decision, reviewBudget: null };
 
-  // The whole patch of a file the per-file cut shortened, when nothing after
-  // the cut (diff shrinking) rewrote it. Otherwise the file keeps its patch.
-  const inputPatch = new Map(changedFiles.map((file) => [file.path, file.patch]));
-  const cutPatch = new Map(decision.hunkResult.files.map((file) => [file.path, file.patch]));
-  const truncated = new Set(decision.truncatedFiles.map((file) => file.path));
-  const candidateOf = (file: EffectiveReviewFile): BudgetCandidate => {
-    const effectivePatch = typeof file.patch === 'string' ? file.patch : (file.content ?? '');
-    const original = inputPatch.get(file.path);
-    const restorable = truncated.has(file.path) && file.patch === cutPatch.get(file.path)
-      && typeof original === 'string' && original.length > MAX_FILE_PATCH_CHARS;
-    return { path: file.path, effectivePatch, wholePatch: restorable ? original! : null };
-  };
+  const candidateOf = budgetCandidateResolver(decision, changedFiles);
 
   const packs = new Map<string, LaneBudgetPack>();
   const fallbacks = new Map<string, ReviewBudgetLaneDisclosure>();
@@ -548,6 +572,11 @@ export function resolveBudgetedReviewApplicability<P extends Parameters<typeof r
 export function attachReviewBudgetDisclosure<T extends object>(
   result: T,
   plan: ReviewBudgetPlan | null,
+  /**
+   * REL-1083: files a lane outside this plan (a map-reduce chunked lane) still
+   * received only as the per-file cut. They stay in the truncation list.
+   */
+  keepTruncated?: ReadonlySet<string>,
 ): T & { reviewBudget?: ReviewBudgetDisclosure } {
   if (!plan || (result as { isFastShip?: unknown }).isFastShip === true) return result;
   const personas = (result as { personas?: unknown }).personas;
@@ -572,7 +601,8 @@ export function attachReviewBudgetDisclosure<T extends object>(
   const disclosure: ReviewBudgetDisclosure = { ordering: 'deterministic-category', requestCapBytes: MAX_BUDGETED_REQUEST_BYTES, lanes };
   const next: any = { ...result, reviewBudget: disclosure };
   if (Array.isArray(next.truncatedFiles)) {
-    const kept = next.truncatedFiles.filter((file: { path: string }) => stillCut.has(file.path) || !budgeted.has(file.path));
+    const kept = next.truncatedFiles.filter((file: { path: string }) => stillCut.has(file.path) || !budgeted.has(file.path)
+      || keepTruncated?.has(file.path) === true);
     if (kept.length > 0) next.truncatedFiles = kept;
     else delete next.truncatedFiles;
   }

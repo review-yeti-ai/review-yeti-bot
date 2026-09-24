@@ -349,6 +349,13 @@ publishing:
   # service config (REVIEW_YETI_VERDICT_CACHE_MAX_AGE_HOURS on the dispatch service, default 72).
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   verdictCache: ""
+  # REL-1083: map-reduce review for huge diffs (worker flag REVIEW_YETI_MAP_REDUCE). Empty by
+  # default, so nothing is forwarded and every lane is reviewed in one call. The operator forwards
+  # a non-empty value verbatim to app-gate workers only, together with the review's terminal
+  # deadline (REVIEW_TERMINAL_DEADLINE) so the worker caps its chunk calls by the time left.
+  # The worker reads it as off/on/all or a comma-separated owner/repo allowlist.
+  # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
+  mapReduce: ""
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
   # which already defines that component's ServiceAccount, Role, RoleBinding and
   # Deployment. Defining them here too would give the same resources two owners.
