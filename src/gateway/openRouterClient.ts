@@ -1556,6 +1556,25 @@ function normalizeSdkResponse(response: any, rawUsage?: any): any {
   };
 }
 
+/**
+ * REL-1115: Review Yeti takes no MCP tools from the gateway.
+ *
+ * Bifrost injects every MCP tool the calling virtual key is granted into each
+ * completion. Through the litellm optimizer, Review Yeti's calls briefly ran
+ * under a shared key with 880 tools: a median of ~208k prompt tokens per call,
+ * against 16k before. The review-yeti key itself holds four MCP grants, and in
+ * 1,202 pre-optimizer calls no MCP tool was ever called. An EMPTY
+ * `x-bf-mcp-include-tools` narrows the key's grant to no tool (Bifrost
+ * governance can only narrow a grant, never widen it). On the live gateway the
+ * same tiny prompt cost 37 prompt tokens with it and ~197k without. The review
+ * lane's own function tools travel in the request body and are unaffected.
+ *
+ * It is set after caller metadata, so metadata cannot re-open injection. Other
+ * gateways ignore an unknown x- header.
+ */
+export const GATEWAY_MCP_INCLUDE_TOOLS_HEADER = 'x-bf-mcp-include-tools';
+export const GATEWAY_MCP_INCLUDE_TOOLS_NONE = '';
+
 async function createOpenRouterSdkClient(options: {
   baseUrl: string;
   apiKey: string;
@@ -1566,9 +1585,11 @@ async function createOpenRouterSdkClient(options: {
   const httpClient = new HTTPClient({
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
+      const headers = new Headers(sdkRequest.headers);
+      headers.set(GATEWAY_MCP_INCLUDE_TOOLS_HEADER, GATEWAY_MCP_INCLUDE_TOOLS_NONE);
       let response = await options.fetchImplementation(sdkRequest.url, {
         method: sdkRequest.method,
-        headers: sdkRequest.headers,
+        headers,
         ...(body !== undefined ? { body } : {}),
         signal: sdkRequest.signal,
       });
@@ -1911,6 +1932,10 @@ export class OpenRouterClient implements ReviewModelClient {
             if (typeof v === 'string') headers[k] = v;
           }
         }
+        for (const name of Object.keys(headers)) {
+          if (name.toLowerCase() === GATEWAY_MCP_INCLUDE_TOOLS_HEADER) delete headers[name];
+        }
+        headers[GATEWAY_MCP_INCLUDE_TOOLS_HEADER] = GATEWAY_MCP_INCLUDE_TOOLS_NONE;
         const body = JSON.stringify(buildOpenRouterChatRequest({ ...request, stream: true }));
         let response = await raceWithAbort(
           this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
