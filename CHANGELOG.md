@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.86.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.85.0...v1.86.0) (2026-09-24)
+
+
+### Features
+
+* **operator:** forward REVIEW_YETI_DIFF_SHRINK to app-gate worker Jobs (REL-1079) ([#1017](https://github.com/review-yeti-ai/review-yeti-bot/issues/1017)) ([3338625](https://github.com/review-yeti-ai/review-yeti-bot/commit/33386254666f8d82933ee534db83907fa978da50))
+
 ## [1.85.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.12...v1.85.0) (2026-09-24)
 
 
