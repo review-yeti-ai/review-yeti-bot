@@ -48,6 +48,12 @@ export interface CommentPublisherOptions {
   random?: () => number;
   maxRetries?: number;
   initialRetryDelayMs?: number;
+  /**
+   * Cap on the jittered backoff only. Since REL-1103 a server-directed
+   * `Retry-After` / `x-ratelimit-reset` wait is honored in full (retrying
+   * earlier just earns another rate limit), bounded instead by
+   * `retry.maxServerWaitMs` (default 60 s) and `retry.deadlineAtMs`.
+   */
   maxDelayMs?: number;
   userAgent?: string;
   allowUserToken?: boolean;
@@ -367,6 +373,11 @@ export class CommentPublisher {
       operation: `${method} ${url.startsWith(this.baseUrl) ? url.slice(this.baseUrl.length) : url}`,
       method,
       attempt: () => this.fetchImplementation(url, requestInit),
+      // Preserves this publisher's pre-REL-1103 behaviour (network failures on
+      // reads/PATCHes were already retried here). Other transports keep their
+      // existing single-attempt network semantics: the bounded JSON client's
+      // per-attempt timeout would multiply, and failAbandonedCheck relies on a
+      // thrown non-HTTP error to enter its own lookup-only recovery.
       retryNetworkErrors: true,
       ...(reconcile ? { reconcile } : {}),
     }, {

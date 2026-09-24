@@ -152,6 +152,42 @@ describe('network errors (no HTTP status)', () => {
   });
 });
 
+describe('abort signal', () => {
+  it('an already-aborted signal returns the transient outcome without waiting', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('worker shutting down'));
+    const attempt = vi.fn().mockResolvedValue(unavailable(503));
+    const sleep = vi.fn(async () => undefined);
+    const result = await withGitHubRetry<Response>({ operation: 'GET /x', method: 'GET', attempt },
+      { sleep, signal: controller.signal });
+    expect(result.status).toBe(503);
+    expect(attempt).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it('an abort during the backoff stops before the next attempt with the abort reason', async () => {
+    const controller = new AbortController();
+    const attempt = vi.fn().mockResolvedValue(unavailable(503));
+    const sleep = vi.fn(async () => { controller.abort(new Error('worker shutting down')); });
+    await expect(withGitHubRetry<Response>({ operation: 'GET /x', method: 'GET', attempt },
+      { sleep, signal: controller.signal })).rejects.toThrow('worker shutting down');
+    expect(attempt).toHaveBeenCalledTimes(1);
+  });
+
+  it('the installation client forwards the request signal into the retry policy', async () => {
+    const controller = new AbortController();
+    const fetchImplementation = vi.fn(async () => unavailable(503));
+    const sleep = vi.fn(async () => { controller.abort(new Error('cancelled')); });
+    const instance = new GitHubInstallationClient({ token, fetchImplementation, sleep, random: () => 0 });
+    const recovery = instance.failAbandonedCheck({
+      runId: `run_${'d'.repeat(32)}`, owner: 'o', repo: 'r', prNumber: 1, headSha: HEAD, executionAttempt: 1,
+      receivedAt: NOW, terminalDeadline: NOW + 30 * 60_000,
+    } as any, 1, controller.signal);
+    await expect(recovery).rejects.toThrow();
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('GitHubInstallationClient transient retry', () => {
   it('a 503-then-200 check-run update succeeds, and the retry log carries no response body', async () => {
     const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger);
@@ -375,6 +411,31 @@ describe('CommentPublisher transient retry', () => {
     expect(result).toMatchObject({ success: true, reviewId: 77 });
     expect(issuePosts).toBe(1);
     expect(issueComments).toHaveLength(1);
+  });
+
+  it('reconciles a 503 sticky-overview POST by its marker instead of creating a second overview', async () => {
+    const login = 'ct-review-bot[bot]';
+    const comments: any[] = [];
+    let posts = 0;
+    const fetchImplementation = vi.fn(async (input: any, init: RequestInit = {}) => {
+      const url = new URL(String(input));
+      if (init.method === 'POST' && url.pathname === '/repos/o/r/issues/9/comments') {
+        posts += 1;
+        comments.push({ id: 91, user: { type: 'Bot', login }, body: JSON.parse(String(init.body)).body });
+        return unavailable(503);
+      }
+      if (url.pathname === '/repos/o/r/issues/9/comments') return json(comments);
+      if (url.pathname === '/repos/o/r/issues/comments/91') return json(comments[0]);
+      return json({ message: 'Not Found' }, 404);
+    });
+
+    const result = await new CommentPublisher({
+      githubToken: token, publisherLogin: login, fetchImplementation, sleep: async () => undefined, random: () => 0,
+    }).publishReview({ ...request, stickyOverview: true });
+
+    expect(result).toMatchObject({ success: true, summaryCommentId: 91 });
+    expect(posts).toBe(1);
+    expect(comments).toHaveLength(1);
   });
 
   it('does not retry a 5xx review POST that has no idempotency marker', async () => {
