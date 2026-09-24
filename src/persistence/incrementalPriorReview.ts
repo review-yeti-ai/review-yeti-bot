@@ -27,12 +27,13 @@ const RUN_ID = /^run_[a-f0-9]{32}$/u;
 export async function selectPriorReviewRows(queryable: Queryable, currentRunId: string): Promise<PriorReviewRows | null> {
   if (!RUN_ID.test(currentRunId)) return null;
   const current = (await queryable.query(
-    'SELECT repository_id, pr_number, received_at FROM review_runs WHERE run_id = $1',
+    'SELECT repository_id, pr_number, received_at, authoritative_gate_app_id FROM review_runs WHERE run_id = $1',
     [currentRunId],
   )).rows[0];
   if (!current || current.repository_id == null || current.received_at == null) return null;
   const row = (await queryable.query(
     `SELECT runs.run_id, runs.repository_id, runs.pr_number, runs.head_sha, runs.base_sha, runs.status,
+            runs.authoritative_gate_app_id,
             completions.execution_attempt, completions.content_digest, completions.payload, completions.created_at,
             gate.worker_result_digest AS gate_worker_result_digest, gate.evidence AS gate_evidence,
             gate.decision AS gate_decision
@@ -57,7 +58,8 @@ export async function selectPriorReviewRows(queryable: Queryable, currentRunId: 
   // verdict is derived (`priorReviewRecordFromRows`). Null for a record no gate decided.
   const gate = row.gate_worker_result_digest == null ? null
     : { worker_result_digest: row.gate_worker_result_digest, evidence: row.gate_evidence, decision: row.gate_decision };
-  return { run: row, completion: row, gate, currentReceivedAt: current.received_at };
+  return { run: row, completion: row, gate, currentReceivedAt: current.received_at,
+    currentAuthoritativeGateAppId: current.authoritative_gate_app_id ?? null };
 }
 
 export async function selectPriorReviewRecord(queryable: Queryable, currentRunId: string): Promise<PriorReviewRecord | null> {

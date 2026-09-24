@@ -18,6 +18,7 @@ import { sha256 } from '../../src/review/reviewCore';
 import { gateRecordFor } from '../support/priorGateRecord';
 import {
   workerReviewCompletionDigest,
+  workerReviewEvidenceDigest,
   type WorkerReviewCompletion,
 } from '../../src/review/workerReviewCompletion';
 
@@ -71,7 +72,7 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
   let schemaName: string | undefined;
 
   async function insertRun(id: string, options: { status?: string; headSha?: string; baseSha?: string; prNumber?: number;
-    receivedAt?: number; generation?: number; executionAttempt?: number } = {}): Promise<void> {
+    receivedAt?: number; generation?: number; executionAttempt?: number; appId?: number | null } = {}): Promise<void> {
     const receivedAt = options.receivedAt ?? RECEIVED_AT;
     await pool!.query(`
       INSERT INTO review_runs (
@@ -81,7 +82,7 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
       ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4, $5, 'app-gate', $6, $7, 3210, $8,
         to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
     `, [id, options.prNumber ?? 42, options.headSha ?? HEAD, options.baseSha ?? BASE, POLICY, options.status ?? 'queued',
-      options.generation ?? 0, CONFIG, receivedAt, APP_ID]);
+      options.generation ?? 0, CONFIG, receivedAt, options.appId === undefined ? APP_ID : options.appId]);
     await pool!.query(`
       INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt, worker_token_digest)
       VALUES ($1, 'pending', $2, $3)
@@ -232,6 +233,26 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     const gate = (await pool!.query('SELECT decision FROM review_gate_attempts WHERE run_id = $1', [prior])).rows[0];
     expect(gate.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
     expect(await selectPriorReviewRecord(pool!, current)).toMatchObject({ runId: prior, shipComplete: false });
+  });
+
+  it('lets only a non-authoritative run rest on a non-authoritative WorkerReviewEvidence prior (REL-1084)', async () => {
+    const prior = runId(1);
+    await insertRun(prior, { status: 'succeeded', headSha: PREV_HEAD, baseSha: PREV_BASE, appId: null });
+    const base = completionFor(prior, PREV_HEAD, PREV_BASE, 1);
+    const evidence = { ...base, version: 'WorkerReviewEvidence.v1' as const, checkId: 99, conclusion: 'success' as const,
+      result: { ...base.result, roster: ['sec-lane'] } };
+    const json = JSON.stringify(evidence);
+    await pool!.query(`
+      INSERT INTO review_worker_completions (run_id, execution_attempt, content_digest, payload, byte_length, created_at)
+      VALUES ($1, 1, $2, $3::jsonb, $4, to_timestamp($5/1000.0))
+    `, [prior, workerReviewEvidenceDigest(evidence), json, Buffer.byteLength(json, 'utf8'), RECEIVED_AT - 3_600_000]);
+    const nonAuthoritative = runId(100);
+    await insertRun(nonAuthoritative, { appId: null });
+    expect(await selectPriorReviewRecord(pool!, nonAuthoritative)).toMatchObject({ runId: prior, shipComplete: true });
+    const authoritative = runId(101);
+    await insertRun(authoritative);
+    expect(await selectPriorReviewRecord(pool!, authoritative)).toMatchObject({
+      runId: prior, shipComplete: false, shipIncompleteReason: 'no-gate-evidence-record' });
   });
 
   it('returns null when there is no prior record or the current run is unknown', async () => {

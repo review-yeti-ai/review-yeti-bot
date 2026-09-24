@@ -1951,7 +1951,7 @@ export async function runPublishingReviewWorker(
     // the service's completion contract accepts. Built once and reported on
     // both paths: the authoritative gate re-arbitrates from it; the legacy
     // terminal success carries it as evidence so the service can keep it.
-    const buildReviewResult = (options: { includeShadow?: boolean } = {}) => {
+    const buildReviewResult = (options: { includeShadow?: boolean; includeRoster?: boolean } = {}) => {
       const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
       // Additive, OPTIONAL per-persona telemetry: the accumulated per-turn usage this lane's
@@ -2055,7 +2055,13 @@ export async function runPublishingReviewWorker(
           ...(incrementalClaim ? { incremental: incrementalClaim } : {}),
           // REL-1085: the files served from cache (verified by the trusted completion side before
           // they count) and this run's clean per-file results for later runs.
-          ...(verdictCacheRecord ? { verdictCache: verdictCacheRecord } : {}) },
+          ...(verdictCacheRecord ? { verdictCache: verdictCacheRecord } : {}),
+          // REL-1084: the lane roster this verdict required, so a later non-authoritative run can
+          // prove no lane was missing. Evidence path only (the authoritative gate owns its roster),
+          // and only for a valid panel roster: a fast-ship, exemption or invalid roster omits it,
+          // which makes the record ineligible as a prior.
+          ...(options.includeRoster && rawRoster.mode === 'panel' && rawRoster.rosterValid
+            ? { roster: [...panelResult.applicablePersonaIds] } : {}) },
       }).result;
     };
     if (recoverablePanelFailure) {
@@ -2145,7 +2151,7 @@ export async function runPublishingReviewWorker(
           prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
           policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
           executionAttempt: identity.executionAttempt,
-          checkId, conclusion: conclusion as 'success' | 'failure', result: buildReviewResult({ includeShadow: true }),
+          checkId, conclusion: conclusion as 'success' | 'failure', result: buildReviewResult({ includeShadow: true, includeRoster: true }),
         });
       } catch (error) {
         logger.warn('Review evidence was not reported', {
