@@ -108,6 +108,12 @@ type PRReviewJobSpec struct {
 	// less-trusted principal can write these resources. Multi-tenant installs
 	// MUST restrict PRReviewJob create/patch via RBAC and SHOULD add publisher
 	// verification or an admission-time registry policy.
+	// Bounded like its siblings: the pattern's host group and its optional path
+	// group both match '/' and '-', so a long adversarial reference makes the
+	// matcher backtrack quadratically (measured: 25 KB -> ~240 ms, and the
+	// operator validates on every reconcile). A real image reference is far below
+	// this, so the bound costs nothing legitimate and removes the blowup.
+	// +kubebuilder:validation:MaxLength=512
 	// +kubebuilder:validation:Pattern=`^(?:[a-z0-9](?:[a-z0-9._/-]*[a-z0-9])?(?::[0-9]{1,5})?(?:/[a-zA-Z0-9._/-]+)?@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+@sha256:[a-f0-9]{64}|node:[a-zA-Z0-9_.-]+)$`
 	WorkerImage string `json:"workerImage"`
 	// RunnerMode defines whether the worker image is an immutable prebaked container

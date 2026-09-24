@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { reviewJobDispatcherConfigFromEnv } from '../../src/k8s/reviewJobDispatcherRuntime';
 import {
   GENERIC_RUNNER_IMAGE_PATTERN,
   PINNED_WORKER_IMAGE_PATTERN,
@@ -141,24 +142,36 @@ describe('worker image contract parity across artifacts', () => {
     // neither can widen without this failing.
     const crd = new RegExp(patternFromCrd(generatedCrd), 'u');
     const bare = 'node:24-bookworm-slim';
-    const dispatcherSrc = readFileSync(
-      path.join(root, 'src/k8s/reviewJobDispatcherRuntime.ts'), 'utf8');
     expect(crd.test(bare), 'the CRD must permit the bare node tag for generic-runner mode').toBe(true);
     expect(PINNED_WORKER_IMAGE_PATTERN.test(bare),
       'the projection must reject a bare node tag as a worker image').toBe(false);
-    // Assert on USE, not on the import: `includes('PINNED_WORKER_IMAGE_PATTERN')`
-    // was satisfied by the import line alone, so a private literal in the
-    // enforcement branch passed it — a vacuous guard of exactly the kind this
-    // test exists to prevent.
+
+    // Behaviour, not source text: run the REAL config resolver in prebaked mode
+    // and assert it refuses a bare node tag. The earlier version grepped the
+    // dispatcher's source, which failed on a rename or reformat and could be
+    // satisfied by a private copy sitting beside the import — incidental detail
+    // rather than the property. Calling the function tests the property.
+    expect(() =>
+      reviewJobDispatcherConfigFromEnv({
+        REVIEW_JOB_DISPATCH_ENABLED: 'true',
+        REVIEW_JOB_NAMESPACE: 'ct-review-system',
+        REVIEW_JOB_WORKER_IMAGE: bare,
+        HOSTNAME: 'dispatcher-pod-0',
+      }),
+      'prebaked mode must reject a bare node tag',
+    ).toThrow(/digest-pinned worker image/u);
+
+    // ...and generic mode is where that same tag IS legitimate.
     expect(
-      /\.test\(workerImage\)/.test(dispatcherSrc) &&
-        /PINNED_WORKER_IMAGE_PATTERN\.test\(workerImage\)/u.test(dispatcherSrc),
-      'the dispatcher must CALL the shared strict pattern, not merely import it',
-    ).toBe(true);
-    expect(
-      /const PURE_DIGEST_PATTERN = \//u.test(dispatcherSrc),
-      'the dispatcher must not declare a private regex literal for the strict pattern',
-    ).toBe(false);
+      reviewJobDispatcherConfigFromEnv({
+        REVIEW_JOB_DISPATCH_ENABLED: 'true',
+        REVIEW_JOB_NAMESPACE: 'ct-review-system',
+        REVIEW_JOB_RUNNER_MODE: 'generic',
+        REVIEW_JOB_WORKER_IMAGE: bare,
+        HOSTNAME: 'dispatcher-pod-0',
+      }).workerImage,
+      'generic mode must accept the bare node tag',
+    ).toBe(bare);
   });
 
   it('every fixture is actually exercised by more than one pattern', () => {
