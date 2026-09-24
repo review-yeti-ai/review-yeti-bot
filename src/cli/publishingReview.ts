@@ -1382,7 +1382,8 @@ export async function runPublishingReviewWorker(
         repository: identity.repo,
         mode: verdictCachePlan.decision.mode,
         ...(verdictCachePlan.decision.mode === 'full'
-          ? { reason: verdictCachePlan.decision.reason }
+          ? { reason: verdictCachePlan.decision.reason,
+            ...(verdictCachePlan.decision.priorRefusal ? { priorRefusal: verdictCachePlan.decision.priorRefusal } : {}) }
           : { permitted: verdictCachePlan.decision.permitted.length, sourceRunId: verdictCachePlan.decision.source.runId }),
         recording: verdictCacheScope !== undefined,
       });
@@ -1393,7 +1394,8 @@ export async function runPublishingReviewWorker(
         repository: identity.repo,
         mode: incrementalPlan.decision.mode,
         ...(incrementalPlan.decision.mode === 'full'
-          ? { reason: incrementalPlan.decision.reason }
+          ? { reason: incrementalPlan.decision.reason,
+            ...(incrementalPlan.decision.priorRefusal ? { priorRefusal: incrementalPlan.decision.priorRefusal } : {}) }
           : { carriedForward: incrementalPlan.decision.carriedForwardPaths.length,
             reviewed: incrementalPlan.decision.reviewPaths.length,
             openFindingFiles: incrementalPlan.decision.openFindingPaths.length }),
