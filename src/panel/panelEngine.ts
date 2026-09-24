@@ -3494,6 +3494,9 @@ export async function executePersonaPanel(options: {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
+  // REL-1088: files a lane reviews only because the shared decision routed
+  // them there. Attached once, below, to whichever result the panel returns.
+  let routedFiles: PanelResult['routedFiles'] = [];
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
@@ -3524,6 +3527,7 @@ export async function executePersonaPanel(options: {
     });
     const hunkResult = applicability.hunkResult;
     const effectiveFiles = applicability.effectiveFiles;
+    routedFiles = applicability.routedFiles;
 
     const budget = evaluateEffortAndBudget(effectiveFiles, config);
     span.setAttribute('review_yeti.token_budget.effort_tier', budget.effortTier);
@@ -4506,5 +4510,6 @@ export async function executePersonaPanel(options: {
         activeRuns.delete(runKey);
       }
     }
-  }).finally(deadline.cleanup);
+  }).then((result) => (routedFiles && routedFiles.length > 0 ? { ...result, routedFiles } : result))
+    .finally(deadline.cleanup);
 }

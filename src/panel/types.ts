@@ -1,3 +1,4 @@
+import type { RoutedReviewFile } from '../review/personaApplicability';
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
 import { RepositoryVisibility } from '../review/repositoryVisibility';
@@ -151,6 +152,12 @@ export interface PanelResult {
   }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
   applicablePersonaIds: string[];
+  /**
+   * Files a lane reviewed only because the shared applicability decision routed
+   * them to it (REL-1088): no persona's paths cover them. Disclosed in the check
+   * summary. Absent when nothing was routed.
+   */
+  routedFiles?: RoutedReviewFile[];
   zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {
