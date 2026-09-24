@@ -55,8 +55,12 @@ describe('review job dispatcher metrics server', () => {
 
     it('is not ready until this pod completes a dispatch cycle', async () => {
       const server = createDispatcherMetricsServer({ loopHealth: new DispatcherLoopHealth(workerId) });
-      await request(server).get('/ready').expect(503, {
+      const notReady = await request(server).get('/ready').expect(503);
+      expect(notReady.body).toMatchObject({
         service: 'review-yeti-job-dispatcher', ready: false, reason: 'starting', workerId,
+        // REL-1069 follow-up: the body now names its contract, so a 503 on this
+        // shared path says WHICH question was answered.
+        readinessContract: 'loop', status: 'not_ready',
       });
       // Liveness is unaffected: a pod that has not cycled yet must not be restarted.
       await request(server).get('/health').expect(200);
@@ -68,12 +72,16 @@ describe('review job dispatcher metrics server', () => {
       const server = createDispatcherMetricsServer({ loopHealth: health });
       health.markCycle();
       now += 60_000;
-      await request(server).get('/ready').expect(200, {
+      const ready = await request(server).get('/ready').expect(200);
+      expect(ready.body).toMatchObject({
         service: 'review-yeti-job-dispatcher', ready: true, reason: 'ok', workerId, lastCycleAgeMs: 60_000,
+        readinessContract: 'loop', status: 'ready',
       });
       now += 1;
-      await request(server).get('/ready').expect(503, {
+      const stalled = await request(server).get('/ready').expect(503);
+      expect(stalled.body).toMatchObject({
         service: 'review-yeti-job-dispatcher', ready: false, reason: 'stalled', workerId, lastCycleAgeMs: 60_001,
+        readinessContract: 'loop', status: 'not_ready',
       });
       health.markCycle();
       await request(server).get('/ready').expect(200);
@@ -86,8 +94,10 @@ describe('review job dispatcher metrics server', () => {
       await request(server).get('/ready').expect(200);
       health.markStopping();
       health.markCycle();
-      await request(server).get('/ready').expect(503, {
+      const stopping = await request(server).get('/ready').expect(503);
+      expect(stopping.body).toMatchObject({
         service: 'review-yeti-job-dispatcher', ready: false, reason: 'stopping', workerId,
+        readinessContract: 'loop', status: 'not_ready',
       });
     });
 

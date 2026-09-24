@@ -9,8 +9,19 @@ import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersisten
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
 
-const databaseUrl = (process.env.REVIEW_YETI_TEST_DATABASE_URL ||
-  'postgresql://review_test@127.0.0.1:55493/review_test').trim();
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
+// turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
+// REL-1069 follow-up: this suite had no skip guard and a HARDCODED fallback
+// database URL, so a run without Postgres tried to reach 127.0.0.1:55493 and
+// failed instead of skipping -- unlike the ten sibling `*.postgres.test.ts`
+// suites, which skip cleanly. CI always provides the URL, so guarding loses no
+// coverage there and makes a local/DB-less run honest.
+const databaseUrl = postgresDatabaseUrl();
+const describeWithPostgres = describeWithPostgresShared;
 const LIFECYCLE_OPTIONS = { lifecycleEvents: 'enabled' as const };
 // `reapExpiredLeases` serializes per-PR work with `pg_try_advisory_xact_lock(
 // hashtextextended('review-dispatch:<repositoryId>:<prNumber>', 0))`. That
@@ -124,7 +135,7 @@ async function advanceToPublish(
   await repository.recordArtifact(runId, 'publish', 'f'.repeat(64), workerId, now);
 }
 
-describe('PostgresReviewRunRepository legacy lifecycle events', () => {
+describeWithPostgres('PostgresReviewRunRepository legacy lifecycle events', () => {
   beforeAll(async () => {
     schema = `review_run_lifecycle_test_${randomBytes(8).toString('hex')}`;
     if (!/^review_run_lifecycle_test_[a-f0-9]{16}$/u.test(schema)) {
@@ -534,7 +545,7 @@ describe('PostgresReviewRunRepository legacy lifecycle events', () => {
   });
 });
 
-describe('disabled legacy lifecycle compatibility without event tables', () => {
+describeWithPostgres('disabled legacy lifecycle compatibility without event tables', () => {
   let legacyPool: Pool;
   let legacySchema: string;
   let repository: PostgresReviewRunRepository;

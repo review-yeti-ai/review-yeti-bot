@@ -4,11 +4,13 @@ import yaml from 'js-yaml';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import {
+  POSTGRES_MARKERS,
   REAPER_ACCEPTANCE,
   changedFiles,
   fullSuiteTrigger,
   literalText,
   parseNameStatus,
+  isPostgresFile,
   textReferenceClosure,
 } from '../../scripts/ci/select-vitest-tests.mjs';
 import { planOutputs, shardCount } from '../../scripts/ci/plan-outputs.mjs';
@@ -251,6 +253,83 @@ describe('CI incremental test selection (REL-1074)', () => {
     it('keeps the worker-helper tests and the build as gates of `test`', () => {
       expect(jobs['worker-helper'].steps.some((step: any) => step.run === 'npm run test:worker-helper')).toBe(true);
       expect(jobs.build.steps.some((step: any) => step.run === 'npm run build')).toBe(true);
+    });
+  });
+
+  describe('Postgres classification (REL-1069)', () => {
+    // The detector decides which JOB owns a suite. A refactor once silently emptied
+    // it: thirteen suites stopped spelling the env var literally, all were routed
+    // into the plain shards (which have no database), and CI went red. These pin
+    // both directions -- recognition must survive the helper, and must not widen.
+    const matches = (source: string) => POSTGRES_MARKERS.some((marker: RegExp) => marker.test(source));
+
+    it('recognises the legacy literal spelling', () => {
+      expect(matches("const url = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();")).toBe(true);
+    });
+
+    it('recognises the shared helper, so consolidating cannot declassify a suite', () => {
+      expect(matches('const databaseUrl = postgresDatabaseUrl();')).toBe(true);
+    });
+
+    it('recognises the CI tripwire call', () => {
+      // The CALL, not the import: importing the module without invoking the guard
+      // is not evidence a suite is Postgres-backed, and matching the import would
+      // classify any file that merely references it.
+      expect(matches('requireDatabaseUrlInCi();')).toBe(true);
+    });
+
+    it('does not classify an ordinary unit test', () => {
+      // Over-matching is the silent failure: real unit tests would be routed to a
+      // job with a database and a narrower file set.
+      expect(matches("import { describe, it } from 'vitest';\nit('adds', () => {});")).toBe(false);
+      expect(matches('const databaseUrl = process.env.SOME_OTHER_DATABASE;')).toBe(false);
+    });
+
+    it('classifies by NAME, so a unit test mentioning the helper is not swept in', () => {
+      // The concrete regression: this PR's OWN unit tests call the helper
+      // (`mod.requireDatabaseUrlInCi()`) or quote it as a literal, so content
+      // matching put them in postgresExcludes and dropped them from the unit
+      // shards. The module under test is not Postgres-backed because its name
+      // contains the word.
+      expect(isPostgresFile('tests/unit/postgresSuiteTripwire.test.ts', 'mod.requireDatabaseUrlInCi();'))
+        .toBe(false);
+      expect(isPostgresFile('tests/unit/ciIncrementalTests.test.ts', "expect(matches('requireDatabaseUrlInCi();')).toBe(true);"))
+        .toBe(false);
+      // ...while a genuinely named suite is always classified.
+      expect(isPostgresFile('tests/integration/reviewRunLifecycle.postgres.test.ts', '')).toBe(true);
+      expect(isPostgresFile('tests/integration/x.postgres.test.ts', 'const u = postgresDatabaseUrl();')).toBe(true);
+    });
+
+    it('classifies an INTEGRATION suite by content, for the legacy spelling', () => {
+      // The content-marker branch was retained but never driven: every other call
+      // passes a tests/unit path (returns false at the integration guard) or a
+      // *.postgres.test.ts name (returns true at the name check), so both returned
+      // before consulting the markers. Replacing the final marker check with
+      // `return false` would have left this file fully green while legacy-spelled
+      // integration suites were silently routed into the shards with no database
+      // (REL-1069 review).
+      const integration = 'tests/integration/legacySpelling.test.ts';
+      expect(isPostgresFile(integration, 'const url = process.env.REVIEW_YETI_TEST_DATABASE_URL;')).toBe(true);
+      expect(isPostgresFile(integration, 'const url = postgresDatabaseUrl();')).toBe(true);
+      expect(isPostgresFile(integration, 'requireDatabaseUrlInCi();')).toBe(true);
+      // ...and an integration suite with no marker at all is still not Postgres.
+      expect(isPostgresFile(integration, "import { describe, it } from 'vitest';")).toBe(false);
+    });
+
+    it('every postgres suite in the tree is CLASSIFIED (by name, not content)', () => {
+      // Asserted through isPostgresFile, the classifier CI actually uses, rather
+      // than through content matching. The previous form demanded marker presence,
+      // which classification does not require: a suite delegating connection setup
+      // to a shared fixture still routes correctly by name yet would have failed
+      // here. It also overstated its own name -- a broken name regex passed it while
+      // being caught only by the sibling test (REL-1069 review).
+      const dir = path.join(root, 'tests/integration');
+      const suites = fs.readdirSync(dir).filter((name: string) => name.endsWith('.postgres.test.ts'));
+      expect(suites.length).toBeGreaterThan(0);
+      const unclassified = suites.filter(
+        (name: string) => !isPostgresFile(`tests/integration/${name}`),
+      );
+      expect(unclassified).toEqual([]);
     });
   });
 });

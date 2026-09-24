@@ -10,8 +10,14 @@ import {
   type ReviewCiExecution, type ReviewCiValidationBinding, type StoredReviewCiRequest,
 } from '../../src/review/reviewCi';
 
-const databaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
-const describePg = databaseUrl ? describe : describe.skip;
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var
+// cannot turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
+const databaseUrl = postgresDatabaseUrl();
+const describePg = describeWithPostgresShared;
 const OWNED_SCHEMA = /^review_ci_check_test_[a-f0-9]{16}$/u;
 const NOW = Date.parse('2026-09-09T12:00:00.000Z');
 const APP = 4385771;

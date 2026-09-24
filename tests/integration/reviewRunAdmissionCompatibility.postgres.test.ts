@@ -13,8 +13,17 @@ import {
 } from '../../src/persistence/reviewRunRepository';
 import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
 
-const configuredDatabaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL;
+import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
+
+// REL-1069: fail loudly in CI if the DB URL is missing, so a lost env var cannot
+// turn these suites into a silent green skip.
+requireDatabaseUrlInCi();
+
+const configuredDatabaseUrl = process.env.REVIEW_YETI_TEST_DATABASE_URL?.trim();
 const databaseUrl = configuredDatabaseUrl || '';
+// REL-1069 follow-up: skip cleanly without Postgres, like the ten sibling
+// suites. Previously an absent URL reached a thrown error instead of a skip.
+const describeWithPostgres = describeWithPostgresShared;
 
 const repositoryId = 123;
 const owner = 'calltelemetry';
@@ -420,10 +429,12 @@ const fixtureCleanup: FixtureCleanupResources = {
 };
 let nextUniquePrNumber = 700;
 
+// REL-1069 follow-up: this hook is registered at module scope, so an
+// unconditional throw failed the SUITE even when every test skipped. Guarded so
+// a DB-less run is a clean skip; CI always supplies the URL, so coverage is
+// unchanged there.
 beforeAll(async () => {
-  if (!databaseUrl) {
-    throw new Error('REVIEW_YETI_TEST_DATABASE_URL is required for this compatibility suite');
-  }
+  if (!databaseUrl) return;
   const bootstrapPool = new Pool({ connectionString: databaseUrl, max: 2 });
   fixtureCleanup.bootstrapPool = bootstrapPool;
   fixtureCleanup.schema = `review_run_admission_${randomBytes(8).toString('hex')}`;
@@ -454,7 +465,7 @@ afterAll(async () => {
   await cleanupOwnedFixture(fixtureCleanup);
 });
 
-describe('owned fixture cleanup boundary', () => {
+describeWithPostgres('owned fixture cleanup boundary', () => {
   it('preserves the setup error and performs owned cleanup exactly once', async () => {
     const testEnvironment = snapshotEnv(['DATABASE_URL', 'POSTGRES_URL']);
     process.env.DATABASE_URL = 'synthetic-mutated-database';
@@ -524,7 +535,7 @@ describe('owned fixture cleanup boundary', () => {
   });
 });
 
-describe('enabled run admission compatibility boundary', () => {
+describeWithPostgres('enabled run admission compatibility boundary', () => {
   it('holds the canonical PR lock before the first run-row lookup', async () => {
     if (!pool) throw new Error('test pool was not initialized');
     const runIdentity = identity({ prNumber: 639 });
@@ -759,7 +770,7 @@ describe('enabled run admission compatibility boundary', () => {
   });
 });
 
-describe('enabled versus disabled status compatibility', () => {
+describeWithPostgres('enabled versus disabled status compatibility', () => {
   const statuses = ['queued', 'running', 'publishing', 'succeeded', 'failed', 'cancelled', 'superseded'];
 
   it.each(statuses)('enabled exact duplicate preserves %s without new events', async (status) => {
