@@ -32,6 +32,9 @@ describe('the three /ready contracts are distinguishable', () => {
     vi.stubEnv('OPENAI_BASE_URL', 'https://gateway.internal/v1');
 
     const response = await request(createApp()).get('/ready');
+    // Status too: this diff rewrote the mapping to readinessStatus(configurationReady),
+    // and asserting only the body let `res.status(200)` pass (REL-1069 review).
+    expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       service: 'ct-review-bot',
       readinessContract: READINESS_CONTRACTS.configuration,
@@ -103,6 +106,15 @@ describe('the three /ready contracts are distinguishable', () => {
   });
 
   it('every contract maps a verdict to the same HTTP status', async () => {
+    // ALL THREE, matching this test's name. It previously exercised only
+    // createActionDispatchApp, so the app's mapping was pinned by nothing.
+    const appReady = await request(createApp()).get('/ready');
+    const loopNotReady = await request(
+      createDispatcherMetricsServer({ loopHealth: new DispatcherLoopHealth('worker-1') }),
+    ).get('/ready');
+    expect(appReady.status).toBe(200);
+    expect(loopNotReady.status).toBe(503);
+
     // The one thing the three SHOULD agree on: 200 for ready, 503 for not ready.
     const ready = await request(createActionDispatchApp({
       verifier: { verify: vi.fn() } as never,
