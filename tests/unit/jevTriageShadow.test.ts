@@ -341,6 +341,29 @@ describe('startJevTriageShadow -- bounded time', () => {
     expect(seen?.aborted).toBe(true);
   });
 
+  it.each([
+    ['resolves', 'abort'],
+    ['rejects', 'abort'],
+    ['resolves', 'deadline'],
+  ] as const)('drops a late answer that %s after the %s: no decision line, file stays not_started', async (settle, stop) => {
+    const info = vi.spyOn(logger, 'info');
+    const releases: Array<() => void> = [];
+    const asker: JevAsker = {
+      ask: vi.fn((request: JevAskRequest<string>) => new Promise<JevOutcome<string>>((resolve, reject) => {
+        releases.push(() => (settle === 'resolves' ? resolve(okOutcome(request)) : reject(new Error('late failure'))));
+      })) as never,
+    };
+    const handle = startJevTriageShadow(input({ asker, limits: { hardTimeoutMs: stop === 'deadline' ? 20 : 60_000 } }));
+    if (stop === 'abort') handle.abort();
+    const summary = await handle.settled;
+    // Now let every in-flight call settle, after the summary is final.
+    for (const release of releases) release();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(releases.length).toBeGreaterThan(0);
+    expect(summary.decisions.every((d) => d.outcome === 'not_started')).toBe(true);
+    expect(logsOf(info, JEV_TRIAGE_LOG.decision)).toHaveLength(0);
+  });
+
   it('never runs more than `concurrency` calls at once and stops at `maxFiles`', async () => {
     let inFlight = 0;
     let peak = 0;
