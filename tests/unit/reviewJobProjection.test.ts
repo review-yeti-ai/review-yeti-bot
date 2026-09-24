@@ -246,10 +246,27 @@ describe('buildReviewJobProjection', () => {
       .toThrow(/digest-pinned worker image/i);
   });
 
-  it('rejects a digest-pinned image from an untrusted repository', () => {
-    const workerImage = `attacker.example/review-yeti-worker@sha256:${'e'.repeat(64)}`;
-    expect(() => buildReviewJobProjection({ ...input, workerImage }, receivedAt + 60_000))
-      .toThrow(/trusted worker image repository/i);
+  it('ACCEPTS a digest-pinned image from a non-vendor repository (self-host)', () => {
+    // The contract pins DIGEST, not registry (ADR 0675). This asserted the
+    // opposite — that a non-vendor repository is rejected — which made
+    // self-hosting impossible. Verified the acceptance end-to-end here rather
+    // than only against the regexp, since a surviving allowlist in the
+    // projection path was exactly how the previous layer mismatch hid.
+    const workerImage = `registry.partner.example/rev/worker@sha256:${'e'.repeat(64)}`;
+    expect(buildReviewJobProjection({ ...input, workerImage }, receivedAt + 60_000).spec.workerImage)
+      .toBe(workerImage);
+  });
+
+  it('still rejects an UNPINNED image, from any repository', () => {
+    // The control that remains: mutability. Whatever the registry, an
+    // unpinned reference cannot be executed reproducibly.
+    for (const workerImage of [
+      'registry.partner.example/rev/worker:latest',
+      'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
+    ]) {
+      expect(() => buildReviewJobProjection({ ...input, workerImage }, receivedAt + 60_000))
+        .toThrow(/digest-pinned worker image/i);
+    }
   });
 
   it('rejects malformed immutable review identity', () => {

@@ -33,7 +33,7 @@ function canonicalProgram(runtime: string, projection: string): string {
   const selected = [
     ...['TRUSTED_WORKER_IMAGE_REPOSITORIES', 'DEFAULT_GENERIC_RUNNER_IMAGE', 'GENERIC_RUNNER_IMAGE_PATTERN']
       .map((name) => declaration(projectionAst, name)),
-    ...['workerImagePattern', 'hostnamePattern'].map((name) => declaration(runtimeAst, name)),
+    ...['workerImagePattern', 'PURE_DIGEST_PATTERN', 'hostnamePattern'].map((name) => declaration(runtimeAst, name)),
     functions[0].getText(runtimeAst).replace(/^export\s+/u, ''),
   ].join('\n');
   const { outputText, diagnostics } = ts.transpileModule(selected, {

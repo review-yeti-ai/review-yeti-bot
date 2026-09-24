@@ -9,7 +9,7 @@ const runSecretNamePattern = /^ct-review-run-([a-f0-9]{32})(?:-a([1-9][0-9]*))?$
 const maxExecutionAttempt = 2_147_483_647;
 const repositoryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/u;
 const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
-const digestOnlyImagePattern = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+@sha256:[a-f0-9]{64}$/u;
+const digestOnlyImagePattern = /^(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[a-f0-9]{64})$/u;
 
 export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
   'ghcr.io/review-yeti-ai/review-yeti-worker',
@@ -139,13 +139,12 @@ export function buildReviewJobProjection(
       );
     }
   } else {
+      // Digest pinning, not a registry allowlist. Restricting the REGISTRY made
+      // self-hosting impossible (ADR 0675): a partner's own digest-pinned image
+      // was rejected here even after the CRD accepted it. The control that
+      // remains — and the one that matters — is immutability of the reference.
     if (!digestOnlyImagePattern.test(input.workerImage)) {
       throw new Error('a strict digest-pinned worker image is required');
-    }
-    if (!isTrustedWorkerImage(input.workerImage)) {
-      throw new Error(
-        `worker image must use a trusted worker image repository (${TRUSTED_WORKER_IMAGE_REPOSITORIES.join(', ')})`,
-      );
     }
   }
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
