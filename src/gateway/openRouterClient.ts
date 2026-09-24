@@ -221,11 +221,16 @@ export function flattenMessageContent(messages: OpenRouterMessage[]): OpenRouter
 }
 
 export function buildOpenRouterChatRequest(request: OpenRouterRequest): Record<string, unknown> {
+  const stream = request.stream ?? true;
   return {
     model: normalizeOpenRouterModel(request.model),
     ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
     messages: request.flattenContentBlocks ? flattenMessageContent(request.messages) : request.messages,
-    stream: request.stream ?? true,
+    stream,
+    // REL-1105: OpenAI-spec gateways (the LiteLLM optimizer in front of Bifrost) put `usage` on a
+    // streamed completion only when the client asks for it. Without this every review reports 0
+    // tokens. Never sent on non-streaming requests, where OpenAI rejects it.
+    ...(stream ? { stream_options: { include_usage: true } } : {}),
     ...(request.maxTokens !== undefined ? { max_tokens: request.maxTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
     ...(request.reasoning ? { reasoning: request.reasoning } : {}),
@@ -312,11 +317,14 @@ function toSdkResponseFormat(responseFormat?: Record<string, unknown>): Record<s
 
 /** Convert the repository's wire-shaped request into the SDK's typed camelCase request model. */
 export function buildOpenRouterSdkChatRequest(request: OpenRouterRequest): Record<string, unknown> {
+  const stream = request.stream ?? true;
   return {
     model: normalizeOpenRouterModel(request.model),
     ...(request.models !== undefined ? { models: request.models.map(normalizeOpenRouterModel) } : {}),
     messages: request.flattenContentBlocks ? flattenMessageContent(request.messages) : request.messages,
-    stream: request.stream ?? true,
+    stream,
+    // REL-1105: see buildOpenRouterChatRequest -- streamed usage must be requested explicitly.
+    ...(stream ? { streamOptions: { includeUsage: true } } : {}),
     ...(request.maxTokens !== undefined ? { maxTokens: request.maxTokens } : {}),
     ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
     ...(request.reasoning ? { reasoning: mapSdkKeys(request.reasoning, { effort: 'effort' }) } : {}),

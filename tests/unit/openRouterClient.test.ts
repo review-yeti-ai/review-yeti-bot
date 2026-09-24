@@ -203,6 +203,63 @@ describe('OpenRouterClient', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({ model: request.model, stream: false });
   });
 
+  // REL-1105: the review gateway front now proxies through a LiteLLM optimizer. LiteLLM follows
+  // the OpenAI spec: a streamed completion carries `usage` ONLY when the client asked for it with
+  // `stream_options.include_usage`. Bifrost used to emit usage unconditionally, so the worker never
+  // asked -- and every review summary silently reported 0 tokens once LiteLLM sat in front. The
+  // frames below are the shape captured from the live gateway on 2026-09-24 (ids trimmed).
+  function liteLlmGatewayFetch() {
+    return vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      const frames = [
+        'data: {"id":"chatcmpl-gw","created":1790271722,"model":"pr-reviewer","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n',
+        'data: {"id":"chatcmpl-gw","created":1790271722,"model":"pr-reviewer","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"SHIP"}}]}\n\n',
+        'data: {"id":"chatcmpl-gw","created":1790271722,"model":"pr-reviewer","object":"chat.completion.chunk","choices":[{"finish_reason":"stop","index":0,"delta":{}}]}\n\n',
+      ];
+      if (body.stream_options?.include_usage === true) {
+        frames.push('data: {"id":"chatcmpl-gw","created":1790271722,"model":"pr-reviewer","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":3,"prompt_tokens":4908,"total_tokens":4911,"prompt_tokens_details":{"cached_tokens":4864}}}\n\n');
+      }
+      frames.push('data: [DONE]\n\n');
+      return new Response(frames.join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+  }
+
+  it('asks an OpenAI-compatible gateway for streamed usage so token accounting is not zero (REL-1105)', async () => {
+    const fetchImplementation = liteLlmGatewayFetch();
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
+
+    const result = await client.complete({ ...request, model: 'pr-reviewer', stream: true });
+
+    expect(result.content).toBe('SHIP');
+    expect(result.usage).toEqual({ prompt: 4908, completion: 3, total: 4911, cached: 4864 });
+    const sent = JSON.parse(String((fetchImplementation.mock.calls[0][1] as RequestInit).body));
+    expect(sent.stream).toBe(true);
+    expect(sent.stream_options).toEqual({ include_usage: true });
+  });
+
+  it('requests streamed usage only on streaming requests (REL-1105)', () => {
+    const base = { ...request, model: 'pr-reviewer' } as any;
+    expect(buildOpenRouterChatRequest({ ...base, stream: true })).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    expect(buildOpenRouterChatRequest({ ...base, stream: undefined })).toMatchObject({
+      stream: true,
+      stream_options: { include_usage: true },
+    });
+    // OpenAI rejects stream_options on a non-streaming request.
+    expect(buildOpenRouterChatRequest({ ...base, stream: false })).not.toHaveProperty('stream_options');
+    expect(buildOpenRouterSdkChatRequest({ ...base, stream: true })).toMatchObject({
+      stream: true,
+      streamOptions: { includeUsage: true },
+    });
+    expect(buildOpenRouterSdkChatRequest({ ...base, stream: undefined })).toMatchObject({
+      stream: true,
+      streamOptions: { includeUsage: true },
+    });
+    expect(buildOpenRouterSdkChatRequest({ ...base, stream: false })).not.toHaveProperty('streamOptions');
+  });
+
   it('replays a streaming OpenRouter response deterministically', async () => {
     const stream = [
       ': OPENROUTER PROCESSING\n',
