@@ -45,7 +45,7 @@ function policyFixture() {
       stall_ms: '20000',
       budget: { lane_deadline_ms: '960000', lane_overhead_ms: '60000', max_investigation_turns: '2' },
       transports: [
-        { name: 'bifrost', enabled: true, base_url: 'https://gateway-internal.netguysolutions.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 32768 },
+        { name: 'bifrost', enabled: true, base_url: 'https://gateway-internal.example.com/v1', api_key_env: 'BIFROST_PR_REVIEW_API_KEY', model: 'ollama/glm-5.3-flash', compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 90000, stream: true, reasoning_effort: 'medium', max_tokens: 32768 },
         {
           name: 'openrouter-primary',
           enabled: false, // ADR 0652: declared-but-disabled; shape retained for contract assertions
@@ -177,7 +177,7 @@ test('Example API resolves the single Bifrost lane and a 90s Bifrost connect dea
   });
 
   assert.deepEqual(calls, [
-    'https://gateway-internal.netguysolutions.com/v1/chat/completions',
+    'https://gateway-internal.example.com/v1/chat/completions',
   ]);
   assert.deepEqual(result.healthy, ['bifrost']);
 });
@@ -457,7 +457,7 @@ test('the smoke suite probes every enabled transport without logging credentials
   const result = await runSmoke({ policy: policyFixture(), env, fetchImpl, log: (line) => logs.push(line) });
 
   assert.deepEqual(calls.map((call) => call.url), [
-    'https://gateway-internal.netguysolutions.com/v1/chat/completions',
+    'https://gateway-internal.example.com/v1/chat/completions',
   ], 'ADR 0652: only the enabled Bifrost lane is probed');
   assert.deepEqual(result.healthy, EXPECTED_TRANSPORT_ORDER);
   assert.equal(logs.some((line) => line.includes('secret')), false);

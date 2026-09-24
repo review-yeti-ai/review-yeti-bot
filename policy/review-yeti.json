@@ -43,7 +43,7 @@
       {
         "name": "bifrost",
         "enabled": true,
-        "base_url": "https://gateway-internal.netguysolutions.com/v1",
+        "base_url": "https://gateway-internal.example.com/v1",
         "api_key_env": "BIFROST_PR_REVIEW_API_KEY",
         "model": "pr-reviewer",
         "compat": "openai",
