@@ -228,6 +228,12 @@ type PublishingConfig struct {
 	// space-separated owner/repo allowlist, or an on/off switch). Empty keeps
 	// map-reduce off, byte-identical to before this field existed.
 	MapReduce string
+	// REL-1083: the map-reduce trigger, in characters of packed lane content.
+	// Forwarded verbatim as MapReduceMinCharsEnv when non-empty and MapReduce is
+	// set; the worker owns its interpretation (a positive integer, raised to one
+	// lane budget; anything else is its default, the W5 hard cap). Empty
+	// forwards nothing.
+	MapReduceMinChars string
 }
 
 // VerdictCacheEnv is the worker's per-file verdict cache flag (REL-1085,
@@ -239,6 +245,11 @@ const VerdictCacheEnv = "REVIEW_YETI_VERDICT_CACHE"
 // src/review/mapReduceReview.ts MAP_REDUCE_FLAG). The operator forwards the
 // deployment value verbatim; the worker owns its interpretation.
 const MapReduceEnv = "REVIEW_YETI_MAP_REDUCE"
+
+// MapReduceMinCharsEnv is the worker's map-reduce trigger (REL-1083,
+// src/review/mapReduceReview.ts MAP_REDUCE_MIN_CHARS_ENV). The operator
+// forwards the deployment value verbatim; the worker owns its interpretation.
+const MapReduceMinCharsEnv = "REVIEW_YETI_MAP_REDUCE_MIN_CHARS"
 
 // TerminalDeadlineEnv carries the review's terminal deadline (RFC 3339, UTC)
 // to an app-gate worker when map-reduce is configured (REL-1083,
@@ -522,6 +533,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				corev1.EnvVar{Name: MapReduceEnv, Value: input.Publishing.MapReduce},
 				corev1.EnvVar{Name: TerminalDeadlineEnv, Value: spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)},
 			)
+			if input.Publishing.MapReduceMinChars != "" {
+				env = append(env, corev1.EnvVar{Name: MapReduceMinCharsEnv, Value: input.Publishing.MapReduceMinChars})
+			}
 		}
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
@@ -883,6 +897,9 @@ func validatePublishing(config PublishingConfig) error {
 	}
 	if strings.ContainsAny(config.MapReduce, "\r\n") {
 		return configErr("map-reduce flag contains a line break")
+	}
+	if strings.ContainsAny(config.MapReduceMinChars, "\r\n") {
+		return configErr("map-reduce min chars contains a line break")
 	}
 	return nil
 }

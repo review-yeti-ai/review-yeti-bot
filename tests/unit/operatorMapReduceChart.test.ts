@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import { describe, expect, it } from 'vitest';
-import { MAP_REDUCE_FLAG } from '../../src/review/mapReduceReview';
+import { MAP_REDUCE_FLAG, MAP_REDUCE_MIN_CHARS_ENV } from '../../src/review/mapReduceReview';
 
 /**
  * REL-1083: `REVIEW_YETI_MAP_REDUCE` only reaches a worker if the operator Deployment carries it
@@ -54,6 +54,14 @@ describe('operator map-reduce source contract', () => {
     };
     expect(values.publishing.mapReduce).toBe('');
   });
+
+  it('ships the map-reduce trigger unset in Helm values (the worker default applies)', () => {
+    const values = yaml.load(readFileSync(path.join(root, 'charts/review-yeti/values.yaml'), 'utf8')) as {
+      publishing: { mapReduceMinChars?: string };
+    };
+    expect(values.publishing.mapReduceMinChars).toBe('');
+    expect(MAP_REDUCE_MIN_CHARS_ENV).toBe('REVIEW_YETI_MAP_REDUCE_MIN_CHARS');
+  });
 });
 
 describe.skipIf(!helmAvailable())('rendered operator map-reduce contract', () => {
@@ -68,6 +76,20 @@ describe.skipIf(!helmAvailable())('rendered operator map-reduce contract', () =>
     const env = operatorEnv(after);
     expect(env.filter((entry) => entry.name === MAP_REDUCE_FLAG)).toEqual([{ name: MAP_REDUCE_FLAG, value: pilots }]);
     env.splice(env.findIndex((entry) => entry.name === MAP_REDUCE_FLAG), 1);
+    expect(after).toEqual(before);
+  });
+
+  it.each([undefined, '', null])('omits the trigger when the value is %s', (mapReduceMinChars) => {
+    const env = operatorEnv(render(mapReduceMinChars === undefined ? { mapReduce: pilots } : { mapReduce: pilots, mapReduceMinChars }));
+    expect(env.some((entry) => entry.name === MAP_REDUCE_MIN_CHARS_ENV)).toBe(false);
+  });
+
+  it('adds only the configured trigger env entry, verbatim, preserving every other rendered resource', () => {
+    const before = render({ mapReduce: pilots });
+    const after = render({ mapReduce: pilots, mapReduceMinChars: '200000' });
+    const env = operatorEnv(after);
+    expect(env.filter((entry) => entry.name === MAP_REDUCE_MIN_CHARS_ENV)).toEqual([{ name: MAP_REDUCE_MIN_CHARS_ENV, value: '200000' }]);
+    env.splice(env.findIndex((entry) => entry.name === MAP_REDUCE_MIN_CHARS_ENV), 1);
     expect(after).toEqual(before);
   });
 }, 60_000);

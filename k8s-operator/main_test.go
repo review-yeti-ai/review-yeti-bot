@@ -211,3 +211,15 @@ func TestPublishingConfigFromEnvReadsMapReduce(t *testing.T) {
 		t.Fatalf("map-reduce not read: %+v", config)
 	}
 }
+
+// REL-1083: the map-reduce trigger has no operator default -- unset forwards nothing.
+func TestPublishingConfigFromEnvReadsMapReduceMinChars(t *testing.T) {
+	t.Setenv("REVIEW_YETI_MAP_REDUCE_MIN_CHARS", "")
+	if config := publishingConfigFromEnv(); config.MapReduceMinChars != "" {
+		t.Fatalf("unset map-reduce min chars must stay empty: %+v", config)
+	}
+	t.Setenv("REVIEW_YETI_MAP_REDUCE_MIN_CHARS", " 200000 ")
+	if config := publishingConfigFromEnv(); config.MapReduceMinChars != "200000" {
+		t.Fatalf("map-reduce min chars not read: %+v", config)
+	}
+}
