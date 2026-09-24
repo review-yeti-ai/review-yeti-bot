@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import yaml from 'js-yaml';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -599,9 +600,17 @@ describe('Dispatch path: workflow is runnable on stock GitHub infrastructure', (
     expect(workflow).toContain('${{ steps.review.outputs.provider-telemetry-path }}');
   });
 
-  it('bounds the required CI test job to the fifteen-minute review contract', () => {
-    const ciWorkflow = fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8');
-    expect(ciWorkflow).toMatch(/jobs:\n  test:[\s\S]*?timeout-minutes: 15/u);
+  it('bounds the required CI test job and every job it aggregates', () => {
+    // REL-1074: `test` aggregates the plan, the Vitest shards, the Postgres job, the worker-helper
+    // tests and the build. Each is bounded, so the required check cannot become an unbounded wait.
+    const ciWorkflow = yaml.load(fs.readFileSync(path.join(rootRepoDir, '.github/workflows/ci-cd.yaml'), 'utf-8')) as any;
+    const test = ciWorkflow.jobs.test;
+    expect(test['timeout-minutes']).toBeLessThanOrEqual(15);
+    for (const name of test.needs as string[]) {
+      const timeout = ciWorkflow.jobs[name]['timeout-minutes'];
+      expect(typeof timeout, name).toBe('number');
+      expect(timeout, name).toBeLessThanOrEqual(25);
+    }
   });
 });
 describe('resolvesToOpenRouterDestination', () => {

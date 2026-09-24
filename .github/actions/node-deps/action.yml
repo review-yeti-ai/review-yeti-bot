@@ -1,0 +1,59 @@
+name: Node dependencies (Blacksmith sticky disk)
+description: >-
+  REL-1074. Node 24 plus a lockfile-keyed node_modules on a Blacksmith sticky disk. A warm disk
+  skips `npm ci` entirely; a cold one installs from a warm npm cache disk. Pull requests mount
+  the disks read-only (never commit), so only trusted runs on main can write what later runs
+  reuse. Requires a Blacksmith runner.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      with:
+        node-version: "24"
+
+    # The root package's own version is rewritten by every release-please PR but changes nothing
+    # that is installed, so it is dropped from the key; every dependency entry still counts.
+    - id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        deps="$(jq -S 'del(.version, .packages[""].version)' package-lock.json | sha256sum | cut -c1-24)"
+        node_major="$(node -p 'process.versions.node.split(".")[0]')"
+        echo "deps=${deps}" >> "$GITHUB_OUTPUT"
+        echo "node=${node_major}" >> "$GITHUB_OUTPUT"
+        if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+          echo "commit=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "commit=on-change" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Mount npm cache
+      uses: useblacksmith/stickydisk@94697d49e77d0dd78b77deb85ad3de63a28b4b8a # v1.7.1
+      with:
+        key: ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}
+        path: ~/.npm
+        commit: ${{ steps.key.outputs.commit }}
+
+    - name: Mount node_modules
+      uses: useblacksmith/stickydisk@94697d49e77d0dd78b77deb85ad3de63a28b4b8a # v1.7.1
+      with:
+        key: ${{ github.repository }}-node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.key.outputs.node }}-${{ steps.key.outputs.deps }}
+        path: ./node_modules
+        commit: ${{ steps.key.outputs.commit }}
+
+    # The marker is written only after a successful `npm ci`, so an interrupted install is never
+    # trusted. `npm ci` clears node_modules' contents itself, which works on a mount point.
+    - name: Install dependencies unless the disk already holds this lockfile
+      shell: bash
+      env:
+        DEPS_KEY: node${{ steps.key.outputs.node }}-${{ steps.key.outputs.deps }}
+      run: |
+        set -euo pipefail
+        marker=node_modules/.review-yeti-deps-key
+        if [ -f "$marker" ] && [ "$(cat "$marker")" = "$DEPS_KEY" ] && [ -f node_modules/.package-lock.json ]; then
+          echo "node_modules is warm for ${DEPS_KEY}; skipping npm ci"
+        else
+          npm ci --prefer-offline --no-audit --no-fund
+          printf '%s' "$DEPS_KEY" > "$marker"
+        fi

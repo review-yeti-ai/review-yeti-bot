@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import yaml from 'js-yaml';
 
 const root = process.cwd();
 const workflowPath = path.join(root, '.github/workflows/release-please.yml');
@@ -66,13 +67,15 @@ describe('Release Please configuration', () => {
     // A release-please PR bumps package.json/package-lock.json, which misses the npm and vitest
     // cache keys; at timeout-minutes: 15 those runs were killed mid-build and reported
     // `cancelled`, which blocks the merge above forever.
-    const ciWorkflow = fs.readFileSync(path.join(root, '.github/workflows/ci-cd.yaml'), 'utf8');
-    const testJob = ciWorkflow.slice(ciWorkflow.indexOf('\n  test:'), ciWorkflow.indexOf('\n  legacy-runtime:'));
-    const timeout = /timeout-minutes:\s*(\d+)/u.exec(testJob);
-    expect(timeout).not.toBeNull();
-    expect(Number(timeout![1])).toBeGreaterThanOrEqual(25);
-    // Still bounded: an unbounded or absurd cap would defeat the stall detector entirely.
-    expect(Number(timeout![1])).toBeLessThanOrEqual(45);
+    // REL-1074: `test` is now an aggregator; the suite itself runs in the jobs it needs.
+    const ciWorkflow = yaml.load(fs.readFileSync(path.join(root, '.github/workflows/ci-cd.yaml'), 'utf8')) as any;
+    for (const name of ['vitest', 'vitest-postgres']) {
+      const timeout = ciWorkflow.jobs[name]?.['timeout-minutes'];
+      expect(typeof timeout, name).toBe('number');
+      expect(timeout, name).toBeGreaterThanOrEqual(25);
+      // Still bounded: an unbounded or absurd cap would defeat the stall detector entirely.
+      expect(timeout, name).toBeLessThanOrEqual(45);
+    }
   });
 
   it('uses the Node strategy and records the last released semver baseline', () => {
