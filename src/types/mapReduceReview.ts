@@ -9,6 +9,12 @@ import type { BudgetDepth } from './reviewBudget';
 /** Worker input for `REVIEW_YETI_MAP_REDUCE`. Absent or `enabled: false` reviews every lane in one call, as today. */
 export interface MapReduceInput {
   enabled: boolean;
+  /**
+   * Chunk a lane only when its packed content is larger than this many characters
+   * (`REVIEW_YETI_MAP_REDUCE_MIN_CHARS`). Defaults to `DEFAULT_MAP_REDUCE_MIN_CHARS`
+   * (the W5 hard cap, 160,000); never below one lane budget.
+   */
+  minChars?: number;
   /** Chunk calls in flight at once across the whole panel run. Defaults to `DEFAULT_MAP_REDUCE_CONCURRENCY` (3). */
   concurrency?: number;
   /**
@@ -77,9 +83,11 @@ export interface MapReduceDisclosure {
   flag: 'REVIEW_YETI_MAP_REDUCE';
   concurrency: number;
   budgetChars: number;
+  /** The trigger: a lane was chunked only when its content was larger than this. */
+  minChars?: number;
   lanes: MapReduceLaneDisclosure[];
   /**
-   * Contexts the flag was on for and that exceeded one budget, but that this
+   * Contexts the flag was on for and that exceeded the trigger, but that this
    * engine does not chunk (the composed engine plans one context). They keep
    * today's content, or the W5 budget when that flag is on.
    */

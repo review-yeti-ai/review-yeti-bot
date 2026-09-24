@@ -3,8 +3,13 @@
  * `docs/superpowers/specs/2026-09-23-review-content-shrinking-and-jev-triage.md`,
  * section 4 W6). Behind `REVIEW_YETI_MAP_REDUCE`, default off.
  *
- * When one lane's diff is larger than one lane budget (`PERSONA_BUDGET_CHARS`,
- * the 56 KB inline knee W1 measured), the lane is reviewed in chunks:
+ * When one lane's packed diff is larger than what one call can hold
+ * (`REVIEW_YETI_MAP_REDUCE_MIN_CHARS`, default `DEFAULT_MAP_REDUCE_MIN_CHARS`
+ * = the W5 hard cap, 160,000 characters), the lane is reviewed in chunks of
+ * one lane budget each (`PERSONA_BUDGET_CHARS`, the 56 KB inline knee W1
+ * measured). A lane between the budget and that threshold stays one call and
+ * is packed by the W5 budget (full + signatures + disclosure), as without
+ * this flag:
  *
  * 1. Map. The lane's files are partitioned by directory into chunks that each
  *    fit the budget. A file larger than the budget is split at hunk
@@ -32,7 +37,7 @@
  *   routing, omitted patches and coverage inputs unchanged. Chunks are
  *   internal to one lane: the lane's id, roster and result shape are what the
  *   trusted completion side already expects.
- * - Fail open. Flag off, a lane within budget, or the composed engine: today's
+ * - Fail open. Flag off, a lane at or below the threshold, or the composed engine: today's
  *   single call. A reduce pass that fails, times out or answers badly keeps
  *   every chunk finding (only exact duplicates are merged). A chunk that fails
  *   fails the lane closed, exactly like today's single call failing.
@@ -97,6 +102,37 @@ export const DEFAULT_MAP_REDUCE_CONCURRENCY = 3;
 
 /** Largest number of chunks one lane is split into; the rest is collapsed into the last chunk. */
 export const MAX_CHUNKS_PER_LANE = 12;
+
+/**
+ * Worker variable overriding the map-reduce trigger, in characters of packed
+ * lane content (forwarded by the operator, Helm `publishing.mapReduceMinChars`).
+ */
+export const MAP_REDUCE_MIN_CHARS_ENV = 'REVIEW_YETI_MAP_REDUCE_MIN_CHARS';
+
+/**
+ * Default map-reduce trigger: a lane is chunked only when its packed content is
+ * larger than this. Equal to the W5 hard cap (`MAX_PACKED_DIFF_CHARS`), the most
+ * one budgeted call carries inline. Below it W5 packs the lane in one call.
+ *
+ * Why not the 56 KB budget: W1 (2026-09-23 measurements, section 2.3) shows a
+ * single pass past the knee costs 8 turns / 295 s median at 56-128 KB and
+ * 13 turns / 470 s at 128-256 KB, while every chunk adds a lane-sized call and
+ * the reduce pass. The REL-1077 pilot measured it: review-yeti-bot#1033
+ * (~13.8k tokens, just over the budget) took 471 s and 36 turns chunked
+ * (4 lanes -> 8 chunks + 4 reduce passes) against 285 s and 8 turns in one
+ * pass, and W5 alone packed ct-meta#3414 (~66k chars per lane) in one pass.
+ */
+export const DEFAULT_MAP_REDUCE_MIN_CHARS = MAX_PACKED_DIFF_CHARS;
+
+/**
+ * A planned chunk smaller than this (a quarter of one budget) is merged into a
+ * neighbour, so a lane just past a boundary is not reviewed as a full chunk plus
+ * a sliver that costs a whole lane call.
+ */
+export const MIN_CHUNK_CHARS = Math.floor(PERSONA_BUDGET_CHARS / 4);
+
+/** A merge of a small chunk into a neighbour may take the neighbour at most this far past one budget. */
+export const MAX_MERGED_CHUNK_CHARS = PERSONA_BUDGET_CHARS + MIN_CHUNK_CHARS;
 
 /**
  * Wall time budgeted for one chunk call when capping chunks by the deadline.
@@ -168,6 +204,20 @@ export function mapReduceDeadlineFromEnv(env: Readonly<Record<string, string | u
   return Number.isFinite(at) ? at - WORKER_PUBLISH_RESERVE_MS : undefined;
 }
 
+/**
+ * The map-reduce trigger in characters. A positive integer from the input (or
+ * `REVIEW_YETI_MAP_REDUCE_MIN_CHARS`), raised to at least one lane budget, since
+ * a lane within one budget is never chunked. Absent or unreadable is the
+ * default, `DEFAULT_MAP_REDUCE_MIN_CHARS`.
+ */
+export function mapReduceMinChars(raw: unknown): number {
+  const text = typeof raw === 'number' ? String(raw) : String(raw ?? '').trim().replace(/_/gu, '');
+  if (!/^\d+$/u.test(text)) return DEFAULT_MAP_REDUCE_MIN_CHARS;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value <= 0) return DEFAULT_MAP_REDUCE_MIN_CHARS;
+  return Math.max(PERSONA_BUDGET_CHARS, value);
+}
+
 /** Worker-side input for the engines, or undefined when the flag is off for this repository. */
 export function loadMapReduceInput(options: {
   env: Readonly<Record<string, string | undefined>>;
@@ -178,6 +228,7 @@ export function loadMapReduceInput(options: {
   return {
     enabled: true,
     concurrency: DEFAULT_MAP_REDUCE_CONCURRENCY,
+    minChars: mapReduceMinChars(options.env[MAP_REDUCE_MIN_CHARS_ENV]),
     ...(deadlineAtMs !== undefined ? { deadlineAtMs } : {}),
   };
 }
@@ -284,6 +335,35 @@ function binGroups(groups: readonly ChunkUnit[][], budgetChars: number): ChunkUn
   return bins;
 }
 
+/**
+ * Merge every bin smaller than `MIN_CHUNK_CHARS` into its smaller neighbour
+ * (the previous one on a tie), while the merge stays within
+ * `MAX_MERGED_CHUNK_CHARS` and the two bins share no file (a split file's
+ * parts stay in separate chunks). Deterministic; order is kept.
+ */
+function mergeSmallBins(bins: readonly ChunkUnit[][]): ChunkUnit[][] {
+  const out = bins.map((bin) => [...bin]);
+  const paths = (bin: readonly ChunkUnit[]) => new Set(bin.map((unit) => unit.path));
+  const canMerge = (a: readonly ChunkUnit[], b: readonly ChunkUnit[]) => {
+    if (costOf(a) + costOf(b) > MAX_MERGED_CHUNK_CHARS) return false;
+    const seen = paths(a);
+    return b.every((unit) => !seen.has(unit.path));
+  };
+  let i = 0;
+  while (out.length > 1 && i < out.length) {
+    if (costOf(out[i]) >= MIN_CHUNK_CHARS) { i += 1; continue; }
+    const neighbours = [i - 1, i + 1]
+      .filter((j) => j >= 0 && j < out.length && canMerge(out[Math.min(i, j)], out[Math.max(i, j)]))
+      .sort((a, b) => costOf(out[a]) - costOf(out[b]) || a - b);
+    if (neighbours.length === 0) { i += 1; continue; }
+    const j = neighbours[0];
+    const lo = Math.min(i, j);
+    out.splice(lo, 2, [...out[lo], ...out[lo + 1]]);
+    i = Math.max(0, lo - 1);
+  }
+  return out;
+}
+
 function chunkLabel(units: readonly ChunkUnit[]): string {
   const dirs: string[] = [];
   for (const unit of units) {
@@ -299,7 +379,7 @@ function chunkScopeNote(laneId: string, index: number, total: number, units: rea
   const split = units.filter((unit) => unit.parts !== undefined);
   return [
     `[Review Yeti map-reduce: chunk ${index} of ${total} for lane ${laneId}]`,
-    'This lane\'s diff is larger than one review budget, so it is reviewed in chunks by directory. '
+    'This lane\'s diff is larger than one review call can hold, so it is reviewed in chunks by directory. '
       + `This chunk inlines ${units.length} of the lane's changed file entries (${chunkLabel(units)}). Review them. `
       + 'The lane\'s other changed files are reviewed by the other chunks; read any of them with get_diff when you need '
       + 'context, for example the callers of an API changed here. Report each finding at its exact path and new-side line.',
@@ -429,23 +509,32 @@ function assembleChunks(
   })];
 }
 
+/** Characters a lane's files cost inline, counted the way the W5 budget counts them. */
+export function laneContentChars(candidates: readonly BudgetCandidate[]): number {
+  return candidates.reduce((sum, candidate) => sum + budgetInlineCost(candidate.path, wholeOf(candidate)), 0);
+}
+
 /**
- * Partition one lane's files into chunks, or null when the lane fits one
- * budget (or has a single file that cannot be split): such a lane is reviewed
- * in one call, as today. Pure and deterministic.
+ * Partition one lane's files into chunks of one budget each, or null when the
+ * lane's content is at or below `minChars` (default
+ * `DEFAULT_MAP_REDUCE_MIN_CHARS`, never below one budget), or it would not make
+ * at least two chunks (a single file that cannot be split): such a lane is
+ * reviewed in one call, packed by the W5 budget when that flag is on. A chunk
+ * smaller than `MIN_CHUNK_CHARS` is merged into a neighbour. Pure and
+ * deterministic.
  */
 export function planLaneChunks(
   laneId: string,
   candidates: readonly BudgetCandidate[],
-  options: { budgetChars?: number; maxChunks?: number } = {},
+  options: { budgetChars?: number; maxChunks?: number; minChars?: number } = {},
 ): MapReduceLanePlan | null {
   const budgetChars = options.budgetChars ?? PERSONA_BUDGET_CHARS;
+  const minChars = Math.max(budgetChars, options.minChars ?? DEFAULT_MAP_REDUCE_MIN_CHARS);
   const maxChunks = Math.max(1, options.maxChunks ?? MAX_CHUNKS_PER_LANE);
   const sorted = [...candidates].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const total = sorted.reduce((sum, candidate) => sum + budgetInlineCost(candidate.path, wholeOf(candidate)), 0);
-  if (sorted.length === 0 || total <= budgetChars) return null;
+  if (sorted.length === 0 || laneContentChars(sorted) <= minChars) return null;
   const units = sorted.flatMap((candidate) => unitsOf(candidate, budgetChars));
-  const bins = binGroups(groupByDirectory(units, budgetChars), budgetChars);
+  const bins = mergeSmallBins(binGroups(groupByDirectory(units, budgetChars), budgetChars));
   if (bins.length < 2) return null;
   return {
     laneId,
@@ -486,6 +575,8 @@ export interface MapReducePlan {
   concurrency: number;
   deadlineAtMs?: number;
   budgetChars: number;
+  /** A lane is chunked only when its content is larger than this. */
+  minChars: number;
   /** Chunked lanes. A lane within budget is absent and runs as today. */
   lanes: Map<string, MapReduceLanePlan>;
   /** Paths each applicable lane is scoped to (for the truncation disclosure). */
@@ -515,6 +606,7 @@ export function resolveMapReduceReviewApplicability<P extends Parameters<typeof 
     concurrency: mapReduceConcurrency(mapReduce),
     ...(mapReduce.deadlineAtMs !== undefined ? { deadlineAtMs: mapReduce.deadlineAtMs } : {}),
     budgetChars: PERSONA_BUDGET_CHARS,
+    minChars: mapReduceMinChars(mapReduce.minChars),
   };
   if ((budgetedOptions.budgetScope ?? 'per-lane') === 'whole-diff') {
     const candidates = decision.effectiveFiles.map(candidateOf);
@@ -526,7 +618,7 @@ export function resolveMapReduceReviewApplicability<P extends Parameters<typeof 
         scope: 'whole-diff',
         lanes: new Map(),
         laneScopes: new Map(),
-        notApplied: chars > PERSONA_BUDGET_CHARS
+        notApplied: chars > base.minChars
           ? [{ laneId: COMPOSED_BUDGET_LANE_ID, reason: 'composed-engine', files: candidates.length, chars }]
           : [],
       },
@@ -538,7 +630,7 @@ export function resolveMapReduceReviewApplicability<P extends Parameters<typeof 
   for (const persona of decision.applicable) {
     const scoped = scopeFilesForPersona(persona as Parameters<typeof scopeFilesForPersona>[0], decision.effectiveFiles);
     laneScopes.set(persona.id, new Set(scoped.map((file) => file.path)));
-    const plan = planLaneChunks(persona.id, scoped.map(candidateOf));
+    const plan = planLaneChunks(persona.id, scoped.map(candidateOf), { minChars: base.minChars });
     if (plan) lanes.set(persona.id, plan);
   }
   let reviewBudget: ReviewBudgetPlan | null = decision.reviewBudget;
@@ -1326,6 +1418,7 @@ export function attachMapReduceDisclosure<T extends object>(
     flag: MAP_REDUCE_FLAG,
     concurrency: plan.concurrency,
     budgetChars: plan.budgetChars,
+    minChars: plan.minChars,
     lanes,
     ...(plan.notApplied.length > 0 ? { notApplied: plan.notApplied } : {}),
   };
@@ -1376,8 +1469,9 @@ export function renderMapReduceSummary(disclosure: MapReduceDisclosure | null | 
   const notApplied = disclosure.notApplied ?? [];
   if (disclosure.lanes.length === 0 && notApplied.length === 0) return [];
   const lines = [
-    `**Map-reduce review** (\`${MAP_REDUCE_FLAG}\`): a lane whose diff is larger than one lane budget `
-    + `(~${disclosure.budgetChars.toLocaleString('en-US')} characters) was reviewed in chunks by directory, at most `
+    `**Map-reduce review** (\`${MAP_REDUCE_FLAG}\`): a lane whose diff is larger than one call can hold `
+    + `(~${(disclosure.minChars ?? disclosure.budgetChars).toLocaleString('en-US')} characters) was reviewed in chunks of up to one lane budget `
+    + `(~${disclosure.budgetChars.toLocaleString('en-US')} characters) by directory, at most `
     + `${disclosure.concurrency} chunk call${disclosure.concurrency === 1 ? '' : 's'} at a time, then a reduce pass merged duplicate findings `
     + 'and checked changed public signatures against their uses in other chunks. Every chunk could read every file of its lane with get_diff.',
   ];

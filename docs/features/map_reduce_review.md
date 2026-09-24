@@ -16,13 +16,23 @@ Code: `src/review/mapReduceReview.ts`, `src/types/mapReduceReview.ts`. There are
 
 The worker reads the variable from its own environment. In Kubernetes, set `REVIEW_YETI_MAP_REDUCE` on the operator Deployment (Helm: `publishing.mapReduce`, empty by default). The operator forwards a non-empty value verbatim to app-gate worker Jobs only, together with `REVIEW_TERMINAL_DEADLINE`, the review's terminal deadline in RFC 3339. Receipt-only Jobs get neither. A value containing a line break refuses app-gate Jobs. To revert, remove the variable or set it to empty and let the operator roll.
 
-The flag is independent of `REVIEW_YETI_BUDGET`. With both on, a lane over budget is chunked, and every other lane keeps its W5 pack.
+The trigger is `REVIEW_YETI_MAP_REDUCE_MIN_CHARS` (Helm: `publishing.mapReduceMinChars`, empty by default). The operator forwards a non-empty value verbatim to app-gate workers, only when `REVIEW_YETI_MAP_REDUCE` is also set. The worker reads a positive integer number of characters (underscores allowed). A value below one lane budget is raised to 56,000. Anything else uses the default, 160,000.
+
+The flag is independent of `REVIEW_YETI_BUDGET`. With both on, a lane over the trigger is chunked, and every other lane keeps its W5 pack.
 
 ## When a lane is chunked
 
-A lane is chunked when its files together cost more than one lane budget (`PERSONA_BUDGET_CHARS`, 56,000 characters, the W1 inline knee), counted the way the W5 budget counts them. A lane within budget, or a lane made of one file that cannot be split, is one call, as today.
+A lane is chunked only when its files together cost more than the trigger (`DEFAULT_MAP_REDUCE_MIN_CHARS`, 160,000 characters by default), counted the way the W5 budget counts them. Chunks are still sized at one lane budget (`PERSONA_BUDGET_CHARS`, 56,000 characters, the W1 inline knee). A lane between the budget and the trigger is one call. With `REVIEW_YETI_BUDGET` on, W5 packs it (security and CI files in full, then signatures, with the reductions disclosed). A lane made of one file that cannot be split, or one that would not make two chunks, is also one call.
 
-Only the persona panel chunks. Production app-gate reviews always run the panel (`authoritative` forces it). The composed engine plans one context, so it does not chunk. It makes the same shared decision and, when its context is over budget, the check summary says it was not chunked.
+Why the default is the W5 hard cap (`MAX_PACKED_DIFF_CHARS`, 160,000 characters) and not the budget:
+
+- 160,000 characters is the most one budgeted call carries inline. Below it, one W5 pass holds the whole lane at some depth. Past it, even full-depth security and CI files start to be listed instead of sent.
+- W1 (`2026-09-23-review-content-measurements.md`, section 2.3): one pass past the 56 KB knee costs a median 8 turns and 295 s at 56 to 128 KB, and 13 turns and 470 s at 128 to 256 KB. Every chunk is a full lane call (about 240 s in W1 terms), and the reduce pass is another call on top.
+- REL-1077 pilot: review-yeti-bot#1033, just over the budget at about 13.8k estimated tokens, split 4 lanes into 8 chunks and 4 reduce passes. It took 471 s and 36 turns. The previous head, about the same size, took 285 s and 8 turns in one pass. On the same pilot, W5 alone packed ct-meta#3414 (about 66k characters per lane) in one pass and found a real P1.
+
+**Chunk bounds.** A lane over the trigger always makes at least two chunks. A planned chunk under a quarter of a budget (`MIN_CHUNK_CHARS`, 14,000) is merged into its smaller neighbour, as long as the merged chunk stays within 70,000 characters (`MAX_MERGED_CHUNK_CHARS`, one budget plus the floor). The two parts of a split file are never merged. So a lane just past a boundary is not reviewed as a full chunk plus a sliver that costs a whole lane call. If merging leaves one chunk, the lane is one call.
+
+Only the persona panel chunks. Production app-gate reviews always run the panel (`authoritative` forces it). The composed engine plans one context, so it does not chunk. It makes the same shared decision and, when its context is over the trigger, the check summary says it was not chunked.
 
 ## Map
 
@@ -59,7 +69,7 @@ The worker knows its terminal deadline when the operator forwards `REVIEW_TERMIN
 - **Deterministic only.** Chunks come from paths and sizes. File content selects signature lines for the reduce pass, but it never changes a file's chunk, order or depth.
 - **Nothing removed.** Every file of a chunked lane is in some chunk's inline diff, and every chunk can read every file of the lane. A collapsed chunk summarizes or lists, and it discloses that.
 - **One decision.** `resolveMapReduceReviewApplicability` wraps `resolveBudgetedReviewApplicability` and returns its lanes, exemption, unmatched paths, routed files, omitted patches and effective files unchanged. A chunked lane returns one result under its own id, so the roster and coverage are what the trusted completion side already expects. A chunked lane's W5 pack is replaced by its chunk packs. Other lanes keep theirs.
-- **Fail open.** Flag off, a lane within budget, or the composed engine: one call, as today. A reduce pass that fails, times out or answers badly keeps every chunk finding. Only exact duplicates are merged, and the summary says so. A chunk that fails, after at most one retry, fails the lane closed, exactly like today's single call failing.
+- **Fail open.** Flag off, a lane at or below the trigger, or the composed engine: one call, as today. A reduce pass that fails, times out or answers badly keeps every chunk finding. Only exact duplicates are merged, and the summary says so. A chunk that fails, after at most one retry, fails the lane closed, exactly like today's single call failing.
 - **Disclosure.** The check summary lists, for every chunked lane that ran: its chunks and their directories, files split by hunk, collapsed chunks and why, files a collapsed chunk only summarized or listed, the finding counts (from chunks, exact duplicates, merged by the reduce pass, cross-chunk, rejected, capped), and what the reduce pass did. It also lists a composed context that was not chunked. The REL-1092 "Truncated patches" list drops a file only when every lane that ran and is scoped to it got it whole or at a disclosed depth.
 - **Jev.** Not used.
 

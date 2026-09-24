@@ -155,6 +155,9 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1083: map-reduce review for huge diffs, off unless the
 		// deployment sets it (a comma-separated owner/repo allowlist for pilots).
 		MapReduce: strings.TrimSpace(os.Getenv("REVIEW_YETI_MAP_REDUCE")),
+		// REL-1083: the map-reduce trigger in characters, empty unless the
+		// deployment sets it (the worker defaults to the W5 hard cap).
+		MapReduceMinChars: strings.TrimSpace(os.Getenv("REVIEW_YETI_MAP_REDUCE_MIN_CHARS")),
 	}
 }
 
