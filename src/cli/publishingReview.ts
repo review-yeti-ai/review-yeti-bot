@@ -23,9 +23,11 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
 import { executeComposedReview } from '../panel/composedEngine';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
+import type { FetchImplementation } from '../github/commentPublisher';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
 import { isValidTaskId } from '../panel/reviewTask';
@@ -953,6 +955,24 @@ export function resolveReviewEngine(config: { review_engine?: unknown }): Review
   return 'panel';
 }
 
+/** REL-1103: GitHub retry policy bounded by the worker's terminal deadline, when forwarded. */
+export function githubRetryOptionsFromEnv(env: Readonly<Record<string, string | undefined>>): GitHubRetryOptions {
+  const deadlineAtMs = githubRetryDeadlineFromEnv(env);
+  return deadlineAtMs === undefined ? {} : { deadlineAtMs };
+}
+
+/**
+ * REL-1103: the publishing worker's check client. Check create/update retry
+ * transient GitHub responses, never past the worker's terminal deadline.
+ */
+export function createPublishingCheckClient(
+  token: string,
+  env: Readonly<Record<string, string | undefined>>,
+  options: { fetchImplementation?: FetchImplementation; sleep?: (milliseconds: number) => Promise<void> } = {},
+): GitHubInstallationClient {
+  return new GitHubInstallationClient({ token, ...options, retry: githubRetryOptionsFromEnv(env) });
+}
+
 export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
@@ -1223,9 +1243,14 @@ export async function runPublishingReviewWorker(
         expectedBaseSha: identity.baseSha,
         expectedHeadSha: identity.headSha,
         token: value(env, 'GH_TOKEN'),
-      }, undefined, workerLargeDiffSourceOptions(env, (message, fields) => logger.info(message, {
-        runId: identity.runId, repository: identity.repo, ...fields,
-      })));
+      }, undefined, {
+        ...workerLargeDiffSourceOptions(env, (message, fields) => logger.info(message, {
+          runId: identity.runId, repository: identity.repo, ...fields,
+        })),
+        // REL-1103: transient GitHub failures on these reads retry, bounded by
+        // the worker's terminal deadline when the operator forwarded it.
+        retry: githubRetryOptionsFromEnv(env),
+      });
     } catch (error) {
       // REL-1057: a push between admission and this read means a newer head
       // supersedes this run. Only a moved head qualifies: a base-only move

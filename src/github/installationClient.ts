@@ -14,6 +14,7 @@ import type {
 } from '../persistence/reviewDispatchRepository';
 import type { DelegatedFailureReason } from '../review/workerCompletion';
 import { createBoundedGitHubJsonClient } from './boundedGitHubJson';
+import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 import {
   evaluateReviewGenerationRecoveryLedger,
   REVIEW_WORKER_CHECK_NAME,
@@ -254,6 +255,7 @@ export class GitHubInstallationClient {
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly fetchImplementation: FetchImplementation;
   private readonly repositoryVisibilityCache = new Map<string, Promise<RepositoryVisibility>>();
+  private readonly retry: GitHubRetryOptions;
 
   constructor(options: {
     token: string;
@@ -266,6 +268,11 @@ export class GitHubInstallationClient {
     sleep?: (milliseconds: number) => Promise<void>;
     random?: () => number;
     currentHeadSha?: () => Promise<string>;
+    /**
+     * REL-1103: transient-response retry policy (see `githubRetry.ts`). Pass
+     * the worker's `deadlineAtMs` so no backoff outlives the review deadline.
+     */
+    retry?: GitHubRetryOptions;
   }) {
     if (!options.token.startsWith('ghs_')) {
       throw new Error('GitHubInstallationClient requires a ghs_ installation token');
@@ -275,6 +282,12 @@ export class GitHubInstallationClient {
     this.now = options.now || Date.now;
     this.sleep = options.sleep || ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.fetchImplementation = options.fetchImplementation || options.fetchImpl || ((input, init) => globalThis.fetch(input, init));
+    this.retry = {
+      now: this.now,
+      sleep: this.sleep,
+      ...(options.random ? { random: options.random } : {}),
+      ...options.retry,
+    };
     this.publisher = new CommentPublisher({
       githubToken: options.token,
       publisherLogin: options.publisherLogin,
@@ -284,17 +297,40 @@ export class GitHubInstallationClient {
       sleep: options.sleep,
       random: options.random,
       currentHeadSha: options.currentHeadSha,
+      retry: options.retry,
     });
   }
 
-  private async request(path: string, init: RequestInit = {}): Promise<any> {
+  /**
+   * Every call retries transient GitHub responses through the shared policy
+   * (REL-1103). Idempotent methods retry directly; a POST retries a 5xx only
+   * when the caller supplies `reconcile`, an exact-identity read that returns
+   * the object a lost attempt created, so a retry can never duplicate it.
+   */
+  private async request(
+    path: string,
+    init: RequestInit = {},
+    options: { reconcile?: () => Promise<unknown | undefined> } = {},
+  ): Promise<any> {
     const headers = new Headers(init.headers);
     headers.set('Accept', 'application/vnd.github+json');
     headers.set('Authorization', `Bearer ${this.token}`);
     headers.set('User-Agent', 'ct-review-bot[bot]');
     headers.set('X-GitHub-Api-Version', '2022-11-28');
     if (init.body) headers.set('Content-Type', 'application/json');
-    const response = await this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers });
+    const method = String(init.method || 'GET').toUpperCase();
+    const reconcile = options.reconcile;
+    const response = await withGitHubRetry<Response>({
+      operation: `${method} ${path}`,
+      method,
+      attempt: () => this.fetchImplementation(`${this.baseUrl}${path}`, { ...init, headers }),
+      ...(reconcile ? {
+        reconcile: async () => {
+          const landed = await reconcile();
+          return landed === undefined ? undefined : new Response(JSON.stringify(landed), { status: 200 });
+        },
+      } : {}),
+    }, { ...this.retry, ...(init.signal ? { signal: init.signal } : {}) });
     const text = await response.text();
     if (!response.ok) throw new GitHubApiResponseError(response.status, path, text);
     const data = text ? JSON.parse(text) : {};
@@ -315,6 +351,7 @@ export class GitHubInstallationClient {
       token: this.token,
       baseUrl: this.baseUrl,
       fetchImplementation: this.fetchImplementation,
+      retry: this.retry,
     });
     const rows: unknown[] = [];
     const seenIds = new Set<number>();
@@ -467,7 +504,37 @@ export class GitHubInstallationClient {
     return this.publisher.publishReview(request);
   }
 
+  /**
+   * REL-1103: the only safe way to retry a lost check-run POST. Returns the
+   * Review Yeti check on this exact head carrying this exact attempt-bound
+   * external id, `undefined` when none exists, and throws when the identity is
+   * ambiguous (a second create would then make it worse).
+   */
+  private async findCheckByExternalId(owner: string, repo: string, headSha: string, externalId: string): Promise<any | undefined> {
+    const matches: any[] = [];
+    for (let page = 1; page <= 5; page += 1) {
+      const query = new URLSearchParams({
+        check_name: CHECK_CONTEXT_RAW_REVIEW, filter: 'all', per_page: '100', page: String(page),
+      });
+      const result = await this.request(`/repos/${owner}/${repo}/commits/${encodeURIComponent(headSha)}/check-runs?${query}`);
+      if (!Array.isArray(result?.check_runs)) throw new Error('check-run lookup response is not a list');
+      matches.push(...result.check_runs.filter((check: any) => check?.name === CHECK_CONTEXT_RAW_REVIEW
+        && check.head_sha === headSha && check.external_id === externalId));
+      if (result.check_runs.length < 100) break;
+      if (page === 5) throw new Error('check-run lookup exceeded bounded pagination');
+    }
+    if (matches.length > 1) throw new Error('check-run external id is ambiguous');
+    const found = matches[0];
+    if (found !== undefined && (!Number.isSafeInteger(found.id) || found.id <= 0)) {
+      throw new Error('check-run lookup returned an invalid id');
+    }
+    return found;
+  }
+
   async createCheck(owner: string, repo: string, headSha: string, externalId?: string): Promise<number> {
+    // With an attempt-bound external id a 5xx is retried only after proving the
+    // lost POST did not create the check; without one it is never retried.
+    const reconcile = externalId ? () => this.findCheckByExternalId(owner, repo, headSha, externalId) : undefined;
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -486,7 +553,7 @@ export class GitHubInstallationClient {
           summary: 'Loading base-SHA policy and executing enabled persona lanes.',
         },
       }),
-    });
+    }, reconcile ? { reconcile } : {});
     return Number(data.id);
   }
 
