@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.0...v1.92.1) (2026-09-24)
+
+
+### Bug Fixes
+
+* **REL-1116:** an aborted signal hung the MCP transport instead of failing it ([#1059](https://github.com/review-yeti-ai/review-yeti-bot/issues/1059)) ([60c3fb8](https://github.com/review-yeti-ai/review-yeti-bot/commit/60c3fb8c047d37a49aa46e2b705ac4eea08cdbdf))
+
 ## [1.92.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.91.4...v1.92.0) (2026-09-24)
 
 
