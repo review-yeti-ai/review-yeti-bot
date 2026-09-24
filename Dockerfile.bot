@@ -2,6 +2,13 @@ FROM node:24-bookworm-slim AS runner
 
 WORKDIR /app
 
+# REL-1080: the trusted completion side computes the git-derived diff for pull
+# requests GitHub refuses to render (HTTP 406). Same Debian release line as the
+# worker image (bookworm git 2.39), so both sides produce the same diff.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git \
+ && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 ENV UV_THREADPOOL_SIZE=16
 ENV NODE_OPTIONS="--enable-source-maps --max-old-space-size=512"
