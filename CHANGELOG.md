@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.84.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.8...v1.84.9) (2026-09-24)
+
+
+### Bug Fixes
+
+* **dispatcher:** actually cancel superseded PRReviewJobs (REL-1073) ([#996](https://github.com/review-yeti-ai/review-yeti-bot/issues/996)) ([a5babbb](https://github.com/review-yeti-ai/review-yeti-bot/commit/a5babbb454b8ae2b5eba2ee79eb80481626d5f30))
+
 ## [1.84.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.84.7...v1.84.8) (2026-09-24)
 
 
