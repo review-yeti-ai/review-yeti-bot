@@ -35,6 +35,7 @@ import {
   type JevQuestion,
   type JevScoreAnswer,
 } from '../gateway/jevClient';
+import { jevCharterFocus } from './jevCharterFocus';
 import { jevTransport } from './jevTransport';
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
 import { classifyLockfileOrGeneratedPath } from '../pipeline/hunkFilter';
@@ -105,17 +106,6 @@ export const JEV_RISK_CRITERIA: readonly string[] = [
   'Level 5, critical: touches authentication, authorization, cryptography, secrets, CI/CD, infrastructure, or dependency manifests, or a mistake could cause data loss or a security exposure.',
 ];
 
-const CHARTER_FOCUS: Record<string, string> = {
-  'builtin:security': 'security vulnerabilities, unsafe input handling, secrets, authentication and authorization',
-  'builtin:performance': 'performance, resource usage, algorithmic complexity, and latency',
-  'builtin:architecture': 'architecture, module boundaries, coupling, and design consistency',
-  'builtin:consistency': 'test quality, test coverage, and consistency with existing conventions',
-  'builtin:dependency-health': 'dependency changes, versions, supply chain, and license health',
-  'builtin:contract': 'API and data contracts, compatibility, and interface changes',
-  'builtin:policy-compliance': 'licensing and policy compliance',
-  'builtin:correctness': 'logic errors and correctness bugs',
-};
-
 export interface TriagePersona {
   id: string;
   charter?: string;
@@ -141,7 +131,7 @@ export function buildJevTriageQuestions(personas: readonly TriagePersona[]): Rec
     },
   };
   for (const persona of personas) {
-    const focus = CHARTER_FOCUS[String(persona.charter || '')] || `the "${persona.id}" review charter`;
+    const focus = jevCharterFocus(persona);
     questions[laneQuestionKey(persona.id)] = {
       type: 'noul',
       instructions: `Should the reviewer focused on ${focus} review this file?`,
