@@ -135,6 +135,10 @@ const SHAPES = [
   ['a moderator gateway 502', moderatorGateway502, 'provider_error', 'lane moderator failed: 502'],
   ['a raw connection error `fetch failed`', rawConnectionError, 'transport', 'lane panel failed: transport'],
   ['a raw `terminated` stream', () => new Error(`terminated ${PRIVATE_DETAIL}`), 'transport', 'lane panel failed: transport'],
+  ['a raw typed gateway 503', () => new OpenRouterResponseError(`bifrost HTTP 503 ${PRIVATE_DETAIL}`, 503), 'provider_error', 'lane panel failed: 503'],
+  ['a raw typed gateway 429', () => new OpenRouterResponseError(`bifrost HTTP 429 ${PRIVATE_DETAIL}`, 429), 'rate_limit', 'lane panel failed: 429'],
+  ['a raw provider_5xx (authoritative)', () => Object.assign(new Error(`bifrost HTTP 502 Bad Gateway ${PRIVATE_DETAIL}`), { failureReason: 'provider_5xx' }),
+    'provider_error', 'lane panel failed: 502'],
 ] as const;
 
 function trustedSide(f: ReturnType<typeof fixture>, completion: WorkerReviewCompletion) {
@@ -389,6 +393,15 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     await expect(serviceRequeue(completion)).resolves.toMatchObject({ outcome: 'requeued' });
   });
 
+  it('keeps the original failure (and exit) when the legacy durable record could not be written', async () => {
+    const f = legacyFixture('1');
+    const original = requiredSecLaneFetchFailed();
+    f.panelRunner.mockRejectedValue(original);
+    f.reportTerminalFailure.mockRejectedValue(new Error('completion endpoint unreachable'));
+    await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(original);
+    expect(f.reportTerminalFailure).toHaveBeenCalledOnce();
+  });
+
   it('negative proof: a non-infrastructure thrown panel is not marked recoverable', async () => {
     const f = legacyFixture('1');
     const original = new Error('provider exploded');
@@ -446,7 +459,7 @@ function panelConfig(): CtReviewConfigV3 {
 
 type Fail = { role: 'persona:sec-lane' | 'moderator' | 'arbiter'; error?: () => Error; content?: string };
 
-async function runRealPanel(fail: Fail, options: { qualFinding?: boolean } = {}) {
+async function runRealPanel(fail: Fail, options: { qualFinding?: boolean; qualContent?: string } = {}) {
   vi.spyOn(Math, 'random').mockReturnValue(0);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   vi.spyOn(logger, 'info').mockImplementation(() => undefined);
@@ -464,6 +477,7 @@ async function runRealPanel(fail: Fail, options: { qualFinding?: boolean } = {})
     }
     if (role === 'arbiter') return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'ok' }), usage: null, costUSD: null, raw: {} };
     if (role === 'moderator') return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+    if (options.qualContent !== undefined && persona === 'qual-lane') return { model: opts.model, content: options.qualContent, usage: null, costUSD: null, raw: {} };
     const findings = options.qualFinding && (persona === 'qual-lane' || /correctness/iu.test(system))
       ? [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Off by one', body: 'The loop skips the last element.', confidence: 90 }]
       : [];
@@ -494,6 +508,15 @@ describe('REL-1124: executePersonaPanel throws text-free infrastructure evidence
     expect(panelFailureEvidenceOf(caught)).toEqual({ stage: 'lanes',
       lanes: [{ id: 'sec-lane', failureClass: 'transport' }], findingsObserved: false });
     expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toMatchObject({ stage: 'lanes', failureClass: 'transport' });
+  }, 120_000);
+
+  it('a required lane on transport next to an optional lane with non-infrastructure output is not infrastructure', async () => {
+    const caught = await runRealPanel({ role: 'persona:sec-lane',
+      error: () => new OpenRouterConnectionError('OpenRouter SDK connection failure: fetch failed') }, { qualContent: 'not the review contract' });
+    expect(caught).toBeInstanceOf(PanelConfigurationError);
+    expect(caught).not.toBeInstanceOf(PanelInfrastructureError);
+    expect(panelFailureEvidenceOf(caught)?.lanes.map((lane) => lane.id).sort()).toEqual(['qual-lane', 'sec-lane']);
+    expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toBeUndefined();
   }, 120_000);
 
   it('records that a completed lane found something, so the run is not re-rolled', async () => {
