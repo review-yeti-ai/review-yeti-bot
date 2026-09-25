@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { receiptTokenLogFields } from '../telemetry/tokenLedger';
 import { createHash } from 'node:crypto';
 import { dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -1815,12 +1816,7 @@ export async function runWorker(
         transport: receipt.transport,
         blockingFindingCount: receipt.blockingFindingCount,
         // REL-1132: every provider call of the run, not only each lane's terminal turn.
-        ...(receipt.metrics ? {
-          tokensTotal: receipt.metrics.totalTokens,
-          tokensPrompt: receipt.metrics.totalPromptTokens,
-          tokensCompletion: receipt.metrics.totalCompletionTokens,
-          ...(receipt.metrics.tokenAccounting ? { providerCalls: receipt.metrics.tokenAccounting.total.calls } : {}),
-        } : {}),
+        ...receiptTokenLogFields(receipt.metrics),
       });
     } finally {
       process.removeListener('SIGTERM', onSigterm);
