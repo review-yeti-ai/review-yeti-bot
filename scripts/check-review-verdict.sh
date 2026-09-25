@@ -54,13 +54,19 @@ fi
 }
 
 if [[ "$REVIEW_STATUS" == "DISPATCHED" && "$GATE_DECISION" == "PENDING" ]]; then
-  echo "::notice::Review Yeti dispatched asynchronously to DOKS queue. Verdict enforcement will be reported via Review Yeti GitHub App gate."
+  backend_name="DOKS"
+  metric_backend="kubernetes"
+  if [[ "$execution_backend" == "mars" ]]; then
+    backend_name="MARS"
+    metric_backend="do-mars"
+  fi
+  echo "::notice::Review Yeti dispatched asynchronously to ${backend_name} queue. Verdict enforcement will be reported via Review Yeti GitHub App gate."
   if [[ -f "$(dirname "${BASH_SOURCE[0]}")/otel-metrics.mjs" ]]; then
     node "$(dirname "${BASH_SOURCE[0]}")/otel-metrics.mjs" emit-dispatch \
       --repo "$REVIEW_REPOSITORY" \
       --pr "$REVIEW_PR_NUMBER" \
       --status "success" \
-      --backend "kubernetes" >/dev/null 2>&1 || true
+      --backend "${metric_backend}" >/dev/null 2>&1 || true
   fi
   exit 0
 fi
@@ -69,13 +75,17 @@ fi
 # publish skipped checks, while DOKS publishes no check and leaves protected
 # merge blocked on the unsatisfied raw App check.
 if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" && ( "$REVIEW_STATUS" == "SKIPPED" || "$REVIEW_STATUS" == "NO_REVIEW" ) ]]; then
-  if [[ "$execution_backend" == "doks" ]]; then
+  if [[ "$execution_backend" == "doks" || "$execution_backend" == "mars" ]]; then
+    backend_upper="DOKS"
+    if [[ "$execution_backend" == "mars" ]]; then
+      backend_upper="MARS"
+    fi
     summary_line="No Review Yeti check is published. The protected raw App check remains unsatisfied, so merge remains blocked."
-    echo "Review Yeti DOKS PASSTHROUGH handling completed for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
+    echo "Review Yeti ${backend_upper} PASSTHROUGH handling completed for ${REVIEW_REPOSITORY}#${REVIEW_PR_NUMBER} at exact head ${EXPECTED_HEAD_SHA}."
     echo "Verdict is SKIPPED (not SHIP). No panel ran. ${summary_line}"
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
       {
-        echo "### Review Yeti: SKIPPED (DOKS passthrough; no check published)"
+        echo "### Review Yeti: SKIPPED (${backend_upper} passthrough; no check published)"
         echo "No panel ran. ${summary_line}"
       } >> "$GITHUB_STEP_SUMMARY"
     fi

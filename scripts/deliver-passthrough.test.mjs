@@ -95,6 +95,19 @@ test('DOKS passthrough reports no check, blocked protection, and is not merge-el
   assert.doesNotMatch(outputs, /^merge-eligible=true$/mu);
 });
 
+test('MARS passthrough reports no check, blocked protection, and is not merge-eligible', () => {
+  const { stdout, outputs, summary } = run({ REVIEW_YETI_EXECUTION_BACKEND: 'mars' });
+  for (const output of [stdout, summary]) {
+    assert.match(output, /No Review Yeti check is published/u);
+    assert.match(output, /protected raw App check remains unsatisfied/u);
+    assert.match(output, /merge remains blocked/u);
+    assert.doesNotMatch(output, /Gate check is (?:\*\*)?skipped/iu);
+    assert.doesNotMatch(output, /merge queue can continue/iu);
+  }
+  assert.match(outputs, /^merge-eligible=false$/mu);
+  assert.doesNotMatch(outputs, /^merge-eligible=true$/mu);
+});
+
 test('legacy local passthrough retains skipped-check merge-queue wording', () => {
   const { outputs, summary } = run({ REVIEW_YETI_EXECUTION_BACKEND: 'local' });
   assert.match(summary, /Gate check is (?:\*\*)?skipped/iu);

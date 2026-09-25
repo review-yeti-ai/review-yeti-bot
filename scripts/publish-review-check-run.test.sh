@@ -89,6 +89,41 @@ run_doks_case missing-verdict "" "" ""
 run_doks_case success SHIP "" ""
 run_doks_case passthrough SKIPPED "true" ""
 
+run_mars_case() {
+  local label="$1"
+  local status="$2"
+  local passthrough="$3"
+  local check_id="$4"
+  local summary="$TMP/${label}-mars.summary"
+
+  rm -f "$TMP/curl_calls.log" "$summary"
+  env -i PATH="$TMP:$ORIG_PATH" \
+    GH_TOKEN="test-token" \
+    TARGET_REPO="exampleorg/ct-test" \
+    HEAD_SHA="abc1234" \
+    REVIEW_YETI_EXECUTION_BACKEND="mars" \
+    REVIEW_STATUS="$status" \
+    REVIEW_YETI_PASSTHROUGH="$passthrough" \
+    CHECK_ID="$check_id" \
+    CENTRAL_RUN_URL="https://example.com/run/1" \
+    GITHUB_STEP_SUMMARY="$summary" \
+    "$SCRIPT" >/dev/null
+
+  [[ ! -f "$TMP/curl_calls.log" ]]
+  grep -qF "MARS backend returned" "$summary"
+  grep -qF "Central Checks API writes: 0" "$summary"
+  if grep -Eq '(^|[^A-Za-z])(PATCH|POST)([^A-Za-z]|$)' "$summary"; then
+    echo "$label receipt must not describe a check API write" >&2
+    exit 1
+  fi
+}
+
+run_mars_case dispatched DISPATCHED "" 45678
+run_mars_case error ERROR "" ""
+run_mars_case missing-verdict "" "" ""
+run_mars_case success SHIP "" ""
+run_mars_case passthrough SKIPPED "true" ""
+
 # Legacy local passthrough POSTs skipped (not SHIP/success) for the raw check and
 # its compatibility alias. Governed DOKS protection must not depend on the alias.
 rm -f "$TMP/curl_calls.log"

@@ -48,18 +48,22 @@ publish_passthrough_check() {
 # DOKS is an asynchronous handoff. The worker owns the only raw `Review Yeti`
 # check-run publication for this backend; the central action must not create a
 # placeholder or try to reuse a check ID that does not exist in this workflow.
-if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]]; then
+if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "doks" ]] || [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "mars" ]]; then
   doks_status="${REVIEW_STATUS:-MISSING_VERDICT}"
+  backend_label="DOKS"
+  if [[ "${REVIEW_YETI_EXECUTION_BACKEND}" == "mars" ]]; then
+    backend_label="MARS"
+  fi
   if [[ "${REVIEW_YETI_PASSTHROUGH:-}" == "true" ]]; then
     doks_publication="passthrough does not dispatch a worker, so this central action publishes no target check and the protected raw check remains unsatisfied"
   else
-    doks_publication="the DOKS worker is the only publisher and publishes only the raw 'Review Yeti' check"
+    doks_publication="the ${backend_label} worker is the only publisher and publishes only the raw 'Review Yeti' check"
   fi
-  doks_receipt="Review Yeti DOKS backend returned ${doks_status} for ${TARGET_REPO}@${HEAD_SHA}; central check-run publication was skipped because ${doks_publication}."
+  doks_receipt="Review Yeti ${backend_label} backend returned ${doks_status} for ${TARGET_REPO}@${HEAD_SHA}; central check-run publication was skipped because ${doks_publication}."
   echo "::notice::${doks_receipt}"
   if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
-      echo "### Review Yeti: DOKS dispatch/publication receipt"
+      echo "### Review Yeti: ${backend_label} dispatch/publication receipt"
       echo
       echo "${doks_receipt}"
       echo "- Central Checks API writes: 0"

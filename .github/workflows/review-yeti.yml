@@ -49,7 +49,7 @@ on:
         default: false
         type: boolean
       execution_backend:
-        description: Review execution backend (local or doks).
+        description: Review execution backend (local, doks, or mars).
         required: false
         default: ''
         type: string
@@ -147,7 +147,7 @@ jobs:
       # qualified central inputs; consumer override admission remains separately guarded.
       # Central admissions always cross the DOKS App-gate boundary. A repository
       # variable or reusable-workflow input cannot downgrade them to local mode.
-      TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'doks' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
+      TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'mars' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
       # Resolve only the existing exampleorg owner admission or the one
       # exact public repository boundary. The trusted reusable workflow performs
@@ -397,7 +397,7 @@ jobs:
       # still hard-fails before this step.
       - name: Initialize Review Yeti check run
         id: init_check
-        if: inputs.central_execution && (steps.target_token_exampleorg.outputs.token != '' || steps.target_token_public.outputs.token != '') && env.TRUSTED_EXECUTION_BACKEND != 'doks'
+        if: inputs.central_execution && (steps.target_token_exampleorg.outputs.token != '' || steps.target_token_public.outputs.token != '') && env.TRUSTED_EXECUTION_BACKEND != 'doks' && env.TRUSTED_EXECUTION_BACKEND != 'mars'
         env:
           GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           TARGET_REPO: ${{ inputs.repository }}
@@ -467,7 +467,7 @@ jobs:
           MEMORY_PROVIDER: 'composite'
           MCP_CONFIG_JSON: ${{ steps.policy.outputs.mcp_config_json }}
         with:
-          check-id: ${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && steps.init_check.outputs.check_id || '' }}
+          check-id: ${{ env.TRUSTED_EXECUTION_BACKEND != 'doks' && env.TRUSTED_EXECUTION_BACKEND != 'mars' && steps.init_check.outputs.check_id || '' }}
           github-token: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
           repo: ${{ inputs.central_execution && inputs.repository || github.repository }}
           pr-number: ${{ inputs.central_execution && inputs.pr_number || github.event.pull_request.number }}

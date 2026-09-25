@@ -247,5 +247,5 @@ jobs:
       refresh_execution_attempt: ${{ fromJSON(needs.validate.outputs.refresh_execution_attempt) }}
       expected_generation: ${{ fromJSON(needs.validate.outputs.review_generation) }}
       passthrough: ${{ vars.REVIEW_YETI_PASSTHROUGH == 'true' }}
-      execution_backend: doks
+      execution_backend: mars
     secrets: inherit

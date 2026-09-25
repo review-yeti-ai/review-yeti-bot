@@ -945,6 +945,31 @@ grep -A1 '^doks_publish_mode<<' "$tmp_dir/backend-doks-publishing.output" | grep
 echo "[backend-doks-with-publish-allowed] passed"
 write_incremental_policy allowlist-match
 
+# 2e. MARS backend rejects incremental review (incremental is local-only) and requires app-gate
+write_incremental_policy allowlist-match
+set +e
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=mars REVIEW_YETI_DOKS_PUBLISH_MODE=app-gate GITHUB_OUTPUT="$tmp_dir/backend-mars-blocked.output" node emit-policy.mjs) >"$tmp_dir/backend-mars-blocked.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+grep -q 'review_yeti.incremental is enabled for exampleorg/example-api' "$tmp_dir/backend-mars-blocked.log"
+grep -q 'resolved execution-backend for this run is "mars", not "local"' "$tmp_dir/backend-mars-blocked.log"
+echo "[incremental-backend-mars-blocked] passed"
+
+write_incremental_policy missing
+set +e
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=mars REVIEW_YETI_DOKS_PUBLISH_MODE=disabled GITHUB_OUTPUT="$tmp_dir/backend-mars-nopublish.output" node emit-policy.mjs) >"$tmp_dir/backend-mars-nopublish.log" 2>&1
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]]
+grep -q 'publish mode is "disabled", not "app-gate"' "$tmp_dir/backend-mars-nopublish.log"
+echo "[backend-mars-without-publish-blocked] passed"
+
+(cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=mars REVIEW_YETI_DOKS_PUBLISH_MODE=app-gate GITHUB_OUTPUT="$tmp_dir/backend-mars-publishing.output" node emit-policy.mjs >/dev/null)
+grep -A1 '^doks_publish_mode<<' "$tmp_dir/backend-mars-publishing.output" | grep -qx 'app-gate'
+echo "[backend-mars-with-publish-allowed] passed"
+write_incremental_policy allowlist-match
+
 # 3. The identical repository allowlist must pass once the resolved backend is local -- the only
 #    backend that implements incremental review.
 (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api REVIEW_YETI_RESOLVED_BACKEND=local GITHUB_OUTPUT="$tmp_dir/backend-local-allowed.output" node emit-policy.mjs >/dev/null)

@@ -15,8 +15,12 @@ fi
 # Passthrough never claims SHIP. Legacy hosted/local execution publishes
 # skipped checks, while DOKS suppresses worker dispatch and therefore publishes
 # no check at all; its protected raw App check remains unsatisfied.
-if [[ "$execution_backend" == "doks" ]]; then
-  passthrough_impact="DOKS passthrough suppresses worker dispatch. No Review Yeti check is published. The protected raw App check remains unsatisfied, so merge remains blocked."
+if [[ "$execution_backend" == "doks" || "$execution_backend" == "mars" ]]; then
+  backend_label="DOKS"
+  if [[ "$execution_backend" == "mars" ]]; then
+    backend_label="MARS"
+  fi
+  passthrough_impact="${backend_label} passthrough suppresses worker dispatch. No Review Yeti check is published. The protected raw App check remains unsatisfied, so merge remains blocked."
   merge_eligible="false"
 else
   passthrough_impact="This is not a SHIP. The Gate check is **skipped** so the merge queue can continue without pretending a panel ran."

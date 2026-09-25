@@ -5,7 +5,7 @@
     "action_channel": "v1",
     "action_channel_pattern": "^v[0-9]+(\\.[0-9]+){0,2}$",
     "personas": "architecture,security,documentation",
-    "review_engine": "composed",
+    "review_engine": "dsh",
     "dispatch_mode": "ordered",
     "mcp_servers": [
       {

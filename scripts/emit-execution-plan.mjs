@@ -122,8 +122,8 @@ export function validateExecutionPlanPolicy(policy, repository = '') {
   rejectUnknownKeys(policy, ALLOWED_POLICY_KEYS, 'policy');
   rejectUnknownKeys(policy.review_yeti, ALLOWED_REVIEW_KEYS, 'policy.review_yeti');
   if (policy.review_yeti.review_engine !== undefined
-      && !['panel', 'composed', 'shadow'].includes(policy.review_yeti.review_engine)) {
-    throw new Error('policy.review_yeti.review_engine must be panel, composed, or shadow');
+      && !['panel', 'composed', 'shadow', 'deepseek-harness', 'dsh', 'shadow-dsh'].includes(policy.review_yeti.review_engine)) {
+    throw new Error('policy.review_yeti.review_engine must be panel, composed, shadow, deepseek-harness, dsh, or shadow-dsh');
   }
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
   if (!['ordered', 'striped'].includes(policy.review_yeti.dispatch_mode)) {

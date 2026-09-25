@@ -273,10 +273,11 @@ if (incrementalEnabled && resolvedExecutionBackend !== 'local') {
 // then hard-fails at dispatch on a value the action cannot accept.
 const DOKS_PUBLISH_MODE_APP_GATE = 'app-gate';
 const resolvedDoksPublishMode = (process.env.REVIEW_YETI_DOKS_PUBLISH_MODE || 'app-gate').trim();
-if (resolvedExecutionBackend === 'doks' && resolvedDoksPublishMode !== DOKS_PUBLISH_MODE_APP_GATE) {
+if ((resolvedExecutionBackend === 'doks' || resolvedExecutionBackend === 'mars') && resolvedDoksPublishMode !== DOKS_PUBLISH_MODE_APP_GATE) {
+  const backendUpper = resolvedExecutionBackend.toUpperCase();
   throw new Error(
-    `The resolved execution-backend for this run is "doks" but its publish mode is `
-    + `"${resolvedDoksPublishMode}", not "${DOKS_PUBLISH_MODE_APP_GATE}". A dispatched DOKS `
+    `The resolved execution-backend for this run is "${resolvedExecutionBackend}" but its publish mode is `
+    + `"${resolvedDoksPublishMode}", not "${DOKS_PUBLISH_MODE_APP_GATE}". A dispatched ${backendUpper} `
     + 'review that cannot publish never reports a verdict for the head, so the check would '
     + 'stay at the DISPATCHED placeholder and no persona would ever judge this commit -- an '
     + 'absent review that presents as a completed one. Either set the '

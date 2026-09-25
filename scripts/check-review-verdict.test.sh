@@ -276,6 +276,19 @@ grep -Fq "dispatched asynchronously to DOKS queue" <<<"$output" || {
 }
 echo "[doks-dispatched] passed (asynchronous dispatch accepted cleanly)"
 
+REVIEW_YETI_EXECUTION_BACKEND=mars REVIEW_STATUS=DISPATCHED GATE_DECISION=PENDING run_script "$(pr_json "$base_sha" "$head_sha")"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[mars-dispatched] expected zero exit on successful asynchronous MARS dispatch, got $rc" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "dispatched asynchronously to MARS queue" <<<"$output" || {
+  echo "[mars-dispatched] expected MARS dispatch notice" >&2
+  echo "$output" >&2
+  exit 1
+}
+echo "[mars-dispatched] passed (asynchronous MARS dispatch accepted cleanly)"
+
 # 1. Head changed while the run was in flight, verdict otherwise a clean SHIP/PASS: must
 #    self-cancel rather than mint (or fail-loudly-paint) a verdict for a SHA that no longer
 #    matches the PR, and must never exit 0.
@@ -470,6 +483,36 @@ if grep -Eq "Gate check is skipped|merge queue can continue|PASSTHROUGH accepted
   exit 1
 fi
 echo "[doks-passthrough-skipped] passed (no check published, protected merge remains blocked)"
+
+REVIEW_YETI_EXECUTION_BACKEND="mars" REVIEW_YETI_PASSTHROUGH="true" REVIEW_STATUS="SKIPPED" GATE_DECISION="SKIPPED" MERGE_ELIGIBLE="false" \
+  DISPATCH_REFLECTION_STATUS="" PROVIDER_RECEIPT_DIGEST="" \
+  run_script "$(pr_json "$base_sha" "$head_sha")" '' "$zero_lane_report"
+if [[ "$rc" -ne 0 ]]; then
+  echo "[mars-passthrough-skipped] expected the MARS passthrough handler to complete cleanly, got $rc" >&2
+  echo "$output" >&2
+  exit 1
+fi
+grep -Fq "No Review Yeti check is published" <<<"$output" || {
+  echo "[mars-passthrough-skipped] expected explicit no-check wording" >&2
+  echo "$output" >&2
+  exit 1
+}
+grep -Fq "protected raw App check remains unsatisfied" <<<"$output" || {
+  echo "[mars-passthrough-skipped] expected unsatisfied-protection wording" >&2
+  echo "$output" >&2
+  exit 1
+}
+grep -Fq "merge remains blocked" <<<"$output" || {
+  echo "[mars-passthrough-skipped] expected blocked-merge wording" >&2
+  echo "$output" >&2
+  exit 1
+}
+if grep -Eq "Gate check is skipped|merge queue can continue|PASSTHROUGH accepted" <<<"$output"; then
+  echo "[mars-passthrough-skipped] MARS must not claim a skipped Gate or accepted merge" >&2
+  echo "$output" >&2
+  exit 1
+fi
+echo "[mars-passthrough-skipped] passed (no check published, protected merge remains blocked)"
 unset REVIEW_YETI_EXECUTION_BACKEND REVIEW_YETI_PASSTHROUGH REVIEW_STATUS GATE_DECISION MERGE_ELIGIBLE
 
 # 3c-3. Direct execution of deliver-passthrough.sh:
