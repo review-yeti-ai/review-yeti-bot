@@ -217,6 +217,21 @@ describe('fast-ship guard', () => {
     return String(JSON.parse((result.content[0] as { text: string }).text).blast_radius_summary).includes('Eligible for fast-ship');
   }
 
+  // Risk tiering (not fast-ship): the predicate OR the coarse screen. `src/monkey.ts` is
+  // screen-only, `bun.lock` / `.tool-versions` predicate-only; `src/app.ts` is neither.
+  it.each([
+    ['src/monkey.ts', true],
+    ['bun.lock', true],
+    ['.tool-versions', true],
+    ['src/app.ts', false],
+  ] as const)('preflight rates %s CRITICAL: %s', async (path, critical) => {
+    const diff = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,2 @@\n+x\n`;
+    const result = await createPreflightDiffReviewTool().execute({ diff, repo: 'o/r' });
+    const summary = String(JSON.parse((result.content[0] as { text: string }).text).blast_radius_summary);
+    expect(summary.startsWith('Blast radius: CRITICAL.')).toBe(critical);
+    expect(summary.includes('Touches critical infrastructure or security components.')).toBe(critical);
+  });
+
   it.each(['docs/login.md', 'docs/guide.md', 'docs/secrets.md', '.tool-versions', 'bun.lock', 'Chart.yaml', 'package.json'])(
     'the panel guard and the preflight tool agree on %s', async (path) => {
       const panelEligible = !containsExecutableOrSensitiveCode([{ path, patch: '@@ -1 +1 @@\n-a\n+b\n' }]);
