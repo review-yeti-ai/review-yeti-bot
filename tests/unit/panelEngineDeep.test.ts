@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, INCOMPLETE_REVIEW_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, TRANSPORT_RETRY_WINDOW_MS, transportRetryDelayMs, isTransientLaneTransportError, remainingTerminalDeadlineMs, classifyPersonaAttemptFailure } from '../../src/panel/panelEngine';
+import { QUEUED_LANE_MIN_WAIT_MS } from '../../src/panel/panelPhaseTiming';
 import { INFRASTRUCTURE_LANE_FAILURE_CLASSES } from '../../src/review/publicationFailurePolicy';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -1467,7 +1468,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(timing.maxConcurrentLanes).toBe(8);
     expect(timing.laneCount).toBe(6);
     expect(timing.lanesQueued).toBe(0);
-    expect(timing.maxLaneQueueWaitMs).toBe(0);
+    expect(timing.maxLaneQueueWaitMs).toBeLessThan(QUEUED_LANE_MIN_WAIT_MS);
     expect(timing.lanes.map((lane: any) => lane.id).sort()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
     expect(timing.lanes.every((lane: any) => lane.turns === 1 && lane.turnKinds[0] === 'final')).toBe(true);
     expect(timing.lanes.every((lane: any) => lane.turnDurationsMs[0] >= 20)).toBe(true);
@@ -1479,6 +1480,74 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     // The log line carries timing and ids only, never prompt or response text.
     expect(JSON.stringify(timing)).not.toContain('CT_REVIEW');
     infoSpy.mockRestore();
+  });
+
+  it('records the real queue wait, keyed by lane id, for lanes past the cap (REL-1133)', async () => {
+    const loggerModule = await import('../../src/utils/logger');
+    const infoSpy = vi.spyOn(loggerModule.logger, 'info');
+    const ids = Array.from({ length: 10 }, (_, i) => `q${i + 1}`);
+    const charters = ['builtin:security', 'builtin:correctness', 'builtin:performance', 'builtin:contract', 'builtin:consistency', 'builtin:database'];
+    const config = ctReviewConfigV3Schema.parse({
+      version: 3,
+      profile: 'assertive',
+      quorum: 1,
+      personas: ids.map((id, i) => ({ id, enabled: true, required: i === 0, charter: charters[i % charters.length], paths: ['**'], providers: ['claude'] })),
+      reviewers: {
+        execution: 'personas',
+        fallback: 'none',
+        overall_timeout_s: 120,
+        providers: [
+          { id: 'claude', enabled: true, model: 'claude-5-sonnet', effort: 'low', review_timeout_s: 30, arbiter_timeout_s: 30 },
+        ],
+        arbiter: { order: ['claude'] },
+      },
+      path_instructions: [],
+      rules: [],
+    });
+    const startOrder: string[] = [];
+    mockClient.complete.mockImplementation(async (opts: any) => {
+      const prompt = extractMessageContentText(opts.messages[1].content);
+      const nonceMatch = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/);
+      const nonce = nonceMatch ? nonceMatch[1].trim() : 'test-nonce';
+      if (prompt.includes('Role: ARBITER') || opts.persona === 'arbiter') {
+        return { model: opts.model, content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ verdict: 'SHIP', rationale: 'ok' })}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null };
+      }
+      if (prompt.includes('Role: MODERATOR') || opts.persona === 'moderator') {
+        return { model: opts.model, content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'RECONCILED', findings: [] })}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null };
+      }
+      if (ids.includes(opts.persona)) startOrder.push(opts.persona);
+      await new Promise((resolve) => setTimeout(resolve, 2 * QUEUED_LANE_MIN_WAIT_MS));
+      return { model: opts.model, content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'APPROVE', findings: [] })}\nCT_REVIEW_END:${nonce}`, usage: null, costUSD: null };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
+      repository: 'calltelemetry/repo',
+      headSha: 'head-sha-queue-wait-test',
+      client: mockClient as unknown as OmniRouteClient,
+    });
+    expect(result.personas).toHaveLength(10);
+
+    const timing = infoSpy.mock.calls.filter(([m]) => m === 'Panel phase timing').map(([, meta]) => meta as any)
+      .find((t) => t.headSha === 'head-sha-queue-wait-test');
+    infoSpy.mockRestore();
+    expect(timing).toBeDefined();
+    expect(timing.maxConcurrentLanes).toBe(MAX_CONCURRENT_PERSONAS);
+    // The last two lanes to start waited for a slot; the first eight did not.
+    const queued = startOrder.slice(MAX_CONCURRENT_PERSONAS);
+    expect(queued).toHaveLength(2);
+    expect(timing.lanesQueued).toBe(2);
+    const byId = new Map(timing.lanes.map((lane: any) => [lane.id, lane]));
+    expect(byId.size).toBe(10);
+    for (const id of queued) {
+      // A lane cannot get a slot until one of the first eight lanes (400ms each) finishes.
+      expect((byId.get(id) as any).queueWaitMs).toBeGreaterThanOrEqual(2 * QUEUED_LANE_MIN_WAIT_MS - 20);
+    }
+    for (const id of startOrder.slice(0, MAX_CONCURRENT_PERSONAS)) {
+      expect((byId.get(id) as any).queueWaitMs).toBeLessThan(QUEUED_LANE_MIN_WAIT_MS);
+    }
+    expect(timing.maxLaneQueueWaitMs).toBeGreaterThanOrEqual(2 * QUEUED_LANE_MIN_WAIT_MS - 20);
   });
 
   it('handles 6-persona panel with transient 503 errors and retries under concurrency bounds without starving lanes', async () => {
