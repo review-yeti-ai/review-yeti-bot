@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.1...v1.92.2) (2026-09-25)
+
+
+### Bug Fixes
+
+* **action:** infra lane failures in the Action pipeline are INCOMPLETE and re-attempted, never BLOCK (REL-1113) ([#1064](https://github.com/review-yeti-ai/review-yeti-bot/issues/1064)) ([9a78c76](https://github.com/review-yeti-ai/review-yeti-bot/commit/9a78c768a0d9e5f1e6b07d0a6d7999b687269e51))
+
 ## [1.92.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.0...v1.92.1) (2026-09-24)
 
 
