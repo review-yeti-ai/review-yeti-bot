@@ -572,6 +572,13 @@ describe('REL-1124: executePersonaPanel throws text-free infrastructure evidence
     expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toBeUndefined();
   }, 120_000);
 
+  it('an arbiter lost to the gateway after a LANE reported a finding is not re-rolled', async () => {
+    const caught = await runRealPanel({ role: 'arbiter',
+      error: () => new OpenRouterConnectionError('OpenRouter SDK connection failure: terminated') }, { qualFinding: true });
+    expect(panelFailureEvidenceOf(caught)).toMatchObject({ stage: 'arbiter', findingsObserved: true });
+    expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toBeUndefined();
+  }, 120_000);
+
   it('a moderator lost to the gateway after a LANE reported a finding is not re-rolled', async () => {
     const caught = await runRealPanel({ role: 'moderator',
       error: () => new OpenRouterResponseError('bifrost HTTP 502', 502) }, { qualFinding: true });
