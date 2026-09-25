@@ -45,6 +45,14 @@ function panelWithTestingLost(error: string) {
   ];
 }
 
+/** A clock for deadline-cut tests: the budget check (first read each attempt) sees room for a
+ * full backoff ceiling plus a lane; the abort timer (second read) sees only `cutAfterMs` left. */
+function cutClock(deadlineMs: number, cutAfterMs: number) {
+  let reads = 0;
+  const cutAt = deadlineMs - 60_000 - cutAfterMs;
+  return () => (reads++ % 2 === 0 ? cutAt - 120_000 : cutAt);
+}
+
 const FINDING = { severity: 'P1', path: 'src/a.ts', line: 3, title: 'Real defect', body: 'Breaks when x is null.' };
 
 function readOutputs(arbitration: any, coverage: any = { reviewed: ['src/a.ts'], omitted: [] }) {
@@ -231,12 +239,14 @@ describe('REL-1113 Action pipeline: in-budget lane re-attempts', () => {
     }));
     const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, {
       coverageComplete: true,
-      deadlineMs: Date.now() + shared.TRANSPORT_RETRY_TERMINAL_MARGIN_MS + 50,
+      deadlineMs: 1_000_000,
+      now: cutClock(1_000_000, 50),
       laneTimeoutMs: 1,
       sleep: async () => {},
       random: () => 0,
       log: quiet,
     });
+    expect(rerun).toHaveBeenCalledTimes(1);
     expect(stopReason).toBe('budget');
     expect(results[3].error).toBe(TERMINATED);
     expect(pipeline.resolveInfrastructureIncomplete(results, { coverageComplete: true })?.lanes)
@@ -282,12 +292,14 @@ describe('REL-1113 Action pipeline: in-budget lane re-attempts', () => {
       })));
     const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
       coverageComplete: true,
-      deadlineMs: Date.now() + shared.TRANSPORT_RETRY_TERMINAL_MARGIN_MS + 50,
+      deadlineMs: 1_000_000,
+      now: cutClock(1_000_000, 50),
       laneTimeoutMs: 1,
       sleep: async () => {},
       random: () => 0,
       log: quiet,
     });
+    expect(rerun).toHaveBeenCalledTimes(2);
     expect(stopReason).toBe('budget');
     expect(results[1]).toMatchObject({ personaId: 'performance', decision: 'APPROVE' });
     expect(results[2]).toMatchObject({ personaId: 'testing', decision: 'ERROR', error: STREAM_DEADLINE });
@@ -589,11 +601,60 @@ describe('REL-1113 Action pipeline: remaining branches', () => {
       signal.addEventListener('abort', () => resolve(lane('testing', { decision: 'ERROR', error: 'review_cancelled' })), { once: true });
     }));
     const { stopReason, retries } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, {
-      ...base, now: () => fixed, deadlineMs: fixed + shared.TRANSPORT_RETRY_TERMINAL_MARGIN_MS + 30,
+      ...base, now: cutClock(fixed, 30), deadlineMs: fixed,
     });
     expect(rerun).toHaveBeenCalledTimes(1);
     expect(retries).toBe(1);
     expect(stopReason).toBe('budget');
+  });
+
+  it('re-attempts run at most `concurrency` lanes at once, each after its own jitter draw', async () => {
+    const lanes = [lane('security'), ...['a', 'b', 'c', 'd', 'e'].map((id) => lane(id, { decision: 'ERROR', error: TERMINATED }))];
+    let inFlight = 0;
+    let peak = 0;
+    const rerun = vi.fn(async (index: number) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return lane(lanes[index].personaId);
+    });
+    const draws = [0.1, 0.3, 0.5, 0.7, 0.9];
+    let draw = 0;
+    const sleep = vi.fn(async (_ms: number) => {});
+    const { stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+      ...base, concurrency: 2, random: () => draws[draw++ % draws.length], sleep,
+    });
+    expect(stopReason).toBe('resolved');
+    expect(rerun).toHaveBeenCalledTimes(5);
+    expect(peak).toBe(2);
+    // One independent full-jitter draw per lane (attempt 1 ceiling 5s), never one shared delay.
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([500, 1500, 2500, 3500, 4500]);
+  });
+
+  it('the budget check reserves the full jitter ceiling, not a lucky low draw', async () => {
+    const rerun = vi.fn();
+    const start = 0;
+    // usable = 4_000ms: enough for a lane (1ms) plus a 0ms draw, not for the 5_000ms ceiling.
+    const { stopReason } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, {
+      ...base, now: () => start, deadlineMs: start + shared.TRANSPORT_RETRY_TERMINAL_MARGIN_MS + 4_000, random: () => 0,
+    });
+    expect(stopReason).toBe('budget');
+    expect(rerun).not.toHaveBeenCalled();
+  });
+
+  it('a lane still queued behind the concurrency bound when the deadline fires is not started', async () => {
+    const lanes = [lane('security'), lane('a', { decision: 'ERROR', error: TERMINATED }), lane('b', { decision: 'ERROR', error: STREAM_DEADLINE })];
+    const rerun = vi.fn((_index: number, signal: AbortSignal) => new Promise((resolve) => {
+      signal.addEventListener('abort', () => resolve(lane('a', { decision: 'ERROR', error: 'review_cancelled' })), { once: true });
+    }));
+    const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+      ...base, concurrency: 1, deadlineMs: 1_000_000, now: cutClock(1_000_000, 30),
+    });
+    expect(rerun).toHaveBeenCalledTimes(1);
+    expect(stopReason).toBe('budget');
+    expect(results[1].error).toBe(TERMINATED);
+    expect(results[2].error).toBe(STREAM_DEADLINE);
   });
 
   it('a re-attempt that returns nothing keeps the previous failure', async () => {

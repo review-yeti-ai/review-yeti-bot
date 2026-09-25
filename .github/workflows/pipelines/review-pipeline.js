@@ -5949,6 +5949,9 @@ async function retryInfrastructureFailedLanes(laneResults, rerunLane, options = 
     sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     random = Math.random,
     log = console,
+    // Same bound as the initial dispatch (`mapWithConcurrency(..., personaConcurrency, ...)`): a
+    // re-attempt never puts more lanes in flight against a recovering provider than the first pass.
+    concurrency = resolvePersonaConcurrency(),
   } = options;
   let results = Array.isArray(laneResults) ? [...laneResults] : [];
   let retries = 0;
@@ -5962,23 +5965,31 @@ async function retryInfrastructureFailedLanes(laneResults, rerunLane, options = 
         && !isNonRetryableClientStatus(String(lane.error || '')))
       .map(({ index }) => index);
     if (retryable.length === 0) return { results, retries, stopReason: 'not_retryable' };
-    const backoffMs = transportRetryDelayMs(attempt, random);
+    // Each lane draws its own full-jitter delay (below), so lanes never retry in one lockstep
+    // burst; the budget check reserves the schedule's ceiling for this attempt.
+    const backoffCeilingMs = transportRetryDelayMs(attempt, () => 1);
     const usableMs = deadlineMs - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now();
-    if (usableMs < backoffMs + laneTimeoutMs) {
+    if (usableMs < backoffCeilingMs + laneTimeoutMs) {
       log.warn(`[Infrastructure] ${incomplete.title}. Not re-attempting: ${Math.max(0, Math.floor(usableMs / 1000))}s of the Action budget remain, a lane needs up to ${Math.ceil(laneTimeoutMs / 1000)}s.`);
       return { results, retries, stopReason: 'budget' };
     }
     const ids = retryable.map((index) => String(results[index]?.personaId || index)).join(', ');
-    log.warn(`[Infrastructure] ${incomplete.title}. Re-attempting lane(s) ${ids} (${attempt}/${TRANSPORT_MAX_RETRIES}) after ${backoffMs}ms; not a review verdict.`);
-    await sleep(backoffMs);
+    log.warn(`[Infrastructure] ${incomplete.title}. Re-attempting lane(s) ${ids} (${attempt}/${TRANSPORT_MAX_RETRIES}) with per-lane jitter up to ${backoffCeilingMs}ms and concurrency ${concurrency}; not a review verdict.`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(0, deadlineMs - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - now()));
     if (timer?.unref) timer.unref();
     let rerun;
     try {
-      rerun = await Promise.all(retryable.map((index) => Promise.resolve()
-        .then(() => rerunLane(index, controller.signal))
-        .catch((error) => ({ ...results[index], decision: 'ERROR', findings: [], error: error?.message || String(error) }))));
+      rerun = await mapWithConcurrency(retryable, concurrency, async (index) => {
+        try {
+          await sleep(transportRetryDelayMs(attempt, random));
+          // A lane still queued when the deadline fires is not started.
+          if (controller.signal.aborted) return undefined;
+          return await rerunLane(index, controller.signal);
+        } catch (error) {
+          return { ...results[index], decision: 'ERROR', findings: [], error: error?.message || String(error) };
+        }
+      });
     } finally {
       clearTimeout(timer);
     }
@@ -8140,7 +8151,7 @@ async function main() {
         const { results: reviewResults } = await retryInfrastructureFailedLanes(
           initialReviewResults,
           (jobIndex, signal) => runPartitionJob(reviewJobs[jobIndex], jobIndex, signal),
-          { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs },
+          { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs, concurrency: personaConcurrency },
         );
         const partitionRuns = partitionPlan.partitions.map((_, partitionIndex) =>
           reviewPersonas.map((_, personaIndex) =>
@@ -8231,7 +8242,7 @@ async function main() {
         ({ results: personaResults } = await retryInfrastructureFailedLanes(
           initialPersonaResults,
           (personaIndex, signal) => runPersonaLane(reviewPersonas[personaIndex], personaIndex, signal),
-          { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs },
+          { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs, concurrency: personaConcurrency },
         ));
       }
 
