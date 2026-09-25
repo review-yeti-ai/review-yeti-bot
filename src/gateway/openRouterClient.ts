@@ -1575,44 +1575,6 @@ function normalizeSdkResponse(response: any, rawUsage?: any): any {
 export const GATEWAY_MCP_INCLUDE_TOOLS_HEADER = 'x-bf-mcp-include-tools';
 export const GATEWAY_MCP_INCLUDE_TOOLS_NONE = '';
 
-/**
- * REL-1134: Review Yeti bypasses the gateway response cache.
- *
- * Bifrost's semantic cache runs with a global default cache key and a 15m
- * TTL, so every request is looked up and stored. A re-review of the same
- * prompt could get a stale completion back instead of a fresh verdict. The
- * cache plugin has no per-key config, but it honors two documented
- * per-request headers:
- * - `x-bf-cache-no-store: true` means this response is never written.
- * - `x-bf-cache-key` moves the lookup into its own bucket. Review Yeti is the
- *   only writer to this bucket, and it never writes, so a lookup can never hit.
- *
- * Headroom and Laya prompt rewriting are turned off for the `review-yeti`
- * virtual key in the gateway config (`skip_virtual_keys`), not here.
- *
- * These are set after caller metadata, so metadata cannot opt back into the
- * cache. Other gateways ignore unknown x- headers.
- */
-export const GATEWAY_CACHE_KEY_HEADER = 'x-bf-cache-key';
-export const GATEWAY_CACHE_KEY_UNCACHED = 'review-yeti-uncached';
-export const GATEWAY_CACHE_NO_STORE_HEADER = 'x-bf-cache-no-store';
-
-/** Gateway request-policy headers Review Yeti pins on every model call. */
-export const GATEWAY_POLICY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
-  [GATEWAY_MCP_INCLUDE_TOOLS_HEADER]: GATEWAY_MCP_INCLUDE_TOOLS_NONE,
-  [GATEWAY_CACHE_KEY_HEADER]: GATEWAY_CACHE_KEY_UNCACHED,
-  [GATEWAY_CACHE_NO_STORE_HEADER]: 'true',
-});
-
-/** Pin the policy headers on a plain header record, first removing any case variant set by the caller. */
-function applyGatewayPolicyHeaders(headers: Record<string, string>): void {
-  const policy = new Set(Object.keys(GATEWAY_POLICY_HEADERS));
-  for (const name of Object.keys(headers)) {
-    if (policy.has(name.toLowerCase())) delete headers[name];
-  }
-  Object.assign(headers, GATEWAY_POLICY_HEADERS);
-}
-
 async function createOpenRouterSdkClient(options: {
   baseUrl: string;
   apiKey: string;
@@ -1624,7 +1586,7 @@ async function createOpenRouterSdkClient(options: {
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
       const headers = new Headers(sdkRequest.headers);
-      for (const [name, value] of Object.entries(GATEWAY_POLICY_HEADERS)) headers.set(name, value);
+      headers.set(GATEWAY_MCP_INCLUDE_TOOLS_HEADER, GATEWAY_MCP_INCLUDE_TOOLS_NONE);
       let response = await options.fetchImplementation(sdkRequest.url, {
         method: sdkRequest.method,
         headers,
@@ -1970,7 +1932,10 @@ export class OpenRouterClient implements ReviewModelClient {
             if (typeof v === 'string') headers[k] = v;
           }
         }
-        applyGatewayPolicyHeaders(headers);
+        for (const name of Object.keys(headers)) {
+          if (name.toLowerCase() === GATEWAY_MCP_INCLUDE_TOOLS_HEADER) delete headers[name];
+        }
+        headers[GATEWAY_MCP_INCLUDE_TOOLS_HEADER] = GATEWAY_MCP_INCLUDE_TOOLS_NONE;
         const body = JSON.stringify(buildOpenRouterChatRequest({ ...request, stream: true }));
         let response = await raceWithAbort(
           this.fetchImplementation(`${this.baseUrl}/chat/completions`, {
