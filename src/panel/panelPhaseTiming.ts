@@ -14,30 +14,6 @@
  */
 import type { PersonaLaneResult } from './types';
 
-/** Largest lane roster any live config runs today (review-yeti-bot: 7), rounded up. */
-export const DEFAULT_MAX_CONCURRENT_LANES = 8;
-export const MAX_CONCURRENT_LANES_CEILING = 16;
-export const MAX_CONCURRENT_LANES_ENV = 'REVIEW_YETI_MAX_CONCURRENT_LANES';
-
-/**
- * Per-process lane concurrency cap. Each worker pod runs one review, so this cap only decides
- * whether a run's own lanes run side by side or queue behind each other. It does not change
- * org-wide provider concurrency.
- *
- * The old cap of 4 made every 5+ lane run (review-yeti-bot, some ct-meta runs) wait a whole
- * extra lane duration. An operator override is honoured when it is a whole number from 1 to
- * `MAX_CONCURRENT_LANES_CEILING`. Anything else falls back to the default, never to an
- * unbounded value.
- */
-export function resolveMaxConcurrentLanes(env: Record<string, string | undefined> = process.env): number {
-  const raw = env[MAX_CONCURRENT_LANES_ENV];
-  if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_CONCURRENT_LANES;
-  if (!/^\d+$/.test(raw.trim())) return DEFAULT_MAX_CONCURRENT_LANES;
-  const value = Number(raw.trim());
-  if (!Number.isSafeInteger(value) || value < 1) return DEFAULT_MAX_CONCURRENT_LANES;
-  return Math.min(value, MAX_CONCURRENT_LANES_CEILING);
-}
-
 export interface PanelPhaseTimingInput {
   repository: string;
   headSha: string;
@@ -52,7 +28,10 @@ export interface PanelPhaseTimingInput {
   arbiterMs?: number;
   maxConcurrentLanes: number;
   lanes: PersonaLaneResult[];
-  /** Milliseconds each lane waited for a concurrency slot, keyed by lane id. */
+  /**
+   * Milliseconds from the start of the lane fan-out until each lane held a concurrency slot,
+   * keyed by lane id. This covers both waits: for a free fan-out worker and for the limiter.
+   */
   laneQueueWaitMs: ReadonlyMap<string, number>;
   failedLaneIds?: string[];
 }
@@ -97,6 +76,13 @@ export interface PanelPhaseTiming {
   failedLaneIds: string[];
   lanes: PanelPhaseTimingLane[];
 }
+
+/**
+ * A lane counts as queued when it started this long after the fan-out began. First-wave lanes
+ * start within milliseconds (scheduling noise only). A lane that waited behind another lane
+ * waits for a whole provider call, which in production is tens of seconds.
+ */
+export const QUEUED_LANE_MIN_WAIT_MS = 200;
 
 const nonNegative = (value: unknown): number => {
   const n = typeof value === 'number' && Number.isFinite(value) ? value : 0;
@@ -147,7 +133,7 @@ export function buildPanelPhaseTiming(input: PanelPhaseTimingInput): PanelPhaseT
     otherMs: Math.max(0, panelWallClockMs - preChecksMs - laneFanoutMs - (moderatorMs ?? 0) - (arbiterMs ?? 0)),
     maxConcurrentLanes: input.maxConcurrentLanes,
     laneCount: lanes.length,
-    lanesQueued: lanes.filter((lane) => lane.queueWaitMs > 0).length,
+    lanesQueued: lanes.filter((lane) => lane.queueWaitMs >= QUEUED_LANE_MIN_WAIT_MS).length,
     maxLaneQueueWaitMs: lanes.reduce((acc, lane) => Math.max(acc, lane.queueWaitMs), 0),
     ...(slowest ? { slowestLaneId: slowest.id } : {}),
     slowestLaneMs: slowest ? slowest.durationMs : 0,
@@ -158,14 +144,18 @@ export function buildPanelPhaseTiming(input: PanelPhaseTimingInput): PanelPhaseT
   };
 }
 
-/** Wall-clock milliseconds a lane waits for a slot. A slot acquired at once records 0. */
+/**
+ * Acquires a lane's concurrency slot, then records how long after the fan-out started the lane
+ * got it. Measuring from the fan-out start instead of from this call covers both waits: for a
+ * free fan-out worker (the cap bounds the workers too) and for the limiter itself.
+ */
 export async function timeLaneSlotAcquire<T>(
   acquire: () => Promise<T>,
   record: (waitMs: number) => void,
+  fanoutStartedAt: number,
   now: () => number = Date.now,
 ): Promise<T> {
-  const started = now();
   const release = await acquire();
-  record(Math.max(0, now() - started));
+  record(Math.max(0, now() - fanoutStartedAt));
   return release;
 }

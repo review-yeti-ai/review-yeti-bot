@@ -100,7 +100,8 @@ import {
   SENSITIVE_PATH_PATTERNS,
 } from './classifierEngine';
 import { buildFastShipPanelResult, buildDocumentationOnlyPanelResult } from './fastShipResult';
-import { buildPanelPhaseTiming, resolveMaxConcurrentLanes, timeLaneSlotAcquire } from './panelPhaseTiming';
+import { buildPanelPhaseTiming, timeLaneSlotAcquire } from './panelPhaseTiming';
+import { resolveMaxConcurrentLanes } from './laneConcurrency';
 import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { TASK_DIMENSIONS } from './reviewTask';
@@ -4224,6 +4225,7 @@ export async function executePersonaPanel(options: {
           const release = await timeLaneSlotAcquire(
             () => processPersonaLimiter.acquire(signal),
             (waitMs) => laneQueueWaitMs.set(persona.id, waitMs),
+            laneFanoutStartedAt,
           );
           activeInFlightPersonas++;
           try {
