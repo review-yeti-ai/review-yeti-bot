@@ -1,13 +1,18 @@
 import { createHash } from 'node:crypto';
 import { REVIEW_CI_CHECK_NAME } from './reviewCi';
 import type { ReviewGateCoordinates } from './reviewGateContracts';
+import {
+  INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX,
+  MAX_CHECK_RUN_TITLE_CHARACTERS,
+  MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS,
+} from './laneInfrastructure';
 
 export { REVIEW_CI_CHECK_NAME } from './reviewCi';
 export type { ReviewGateCoordinates } from './reviewGateContracts';
 export const REVIEW_GATE_CHECK_NAME = 'Review Yeti Gate';
 
-/** GitHub's hard maximum for the output.title field on a Check Run. */
-export const MAX_CHECK_RUN_TITLE_CHARACTERS = 140;
+/** GitHub's hard maximum for the output.title field on a Check Run (owned by `./laneInfrastructure`). */
+export { MAX_CHECK_RUN_TITLE_CHARACTERS } from './laneInfrastructure';
 
 /** GitHub Check Run action used for a persisted same-head recovery request. */
 export const REVIEW_REFRESH_ACTION = Object.freeze({
@@ -40,27 +45,17 @@ export const RECOVERABLE_FAILURE_TITLES: ReadonlySet<string> = new Set([
   'Review Yeti: NO VERDICT (no panel result for this head)',
 ]);
 
-/** REL-1113: every infrastructure-incomplete worker check title starts with this. */
-export const INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX = 'Review Yeti: INCOMPLETE — infrastructure (';
-/** REL-1113: the longest lane detail an infrastructure-incomplete title may carry. */
-export const MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS = 120;
-
 /**
- * REL-1113: the ONE owner of the infrastructure-incomplete title format. The renderer
- * (`renderIncompleteInfrastructureTitle`) supplies only the lane detail; this function frames it,
- * and `isRecoverableFailureTitle` below recognizes exactly what it produces -- both from the
- * constants here, pinned by a round-trip test.
+ * REL-1113: the infrastructure-incomplete title format has ONE owner,
+ * `formatIncompleteInfrastructureTitle` in `./laneInfrastructure` (shared with the GitHub Action
+ * pipeline); `isRecoverableFailureTitle` below recognizes exactly what it produces -- both from the
+ * same constants, pinned by a round-trip test.
  */
-export function formatIncompleteInfrastructureTitle(
-  detail: string,
-  retry?: { nextAttempt: number; maxAttempts: number },
-): string {
-  const suffix = retry ? `; retrying as attempt ${retry.nextAttempt} of ${retry.maxAttempts}` : '';
-  const room = Math.min(MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS,
-    MAX_CHECK_RUN_TITLE_CHARACTERS - INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.length - 1 - suffix.length);
-  const bounded = detail.length > room ? `${detail.slice(0, Math.max(1, room - 1))}…` : detail;
-  return `${INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX}${bounded})${suffix}`;
-}
+export {
+  formatIncompleteInfrastructureTitle,
+  INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX,
+  MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS,
+} from './laneInfrastructure';
 
 const INCOMPLETE_INFRASTRUCTURE_TITLE = new RegExp(
   `^${INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`
