@@ -171,22 +171,9 @@ export const GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION =
  * free of a dependency on gateway transport types (the same boundary `buildWorkerFailureDiagnostics`
  * above already keeps with GitHub transport types).
  */
-export function classifyWorkerFailureMessage(error: unknown): WorkerFailureClass {
-  const message = error instanceof Error ? error.message : String(error);
-  if (/turn budget exhausted|budget exhausted|exceeded total retry\/execution budget/iu.test(message)) return 'budget_exhausted';
-  if (/timeout|timed out|ETIMEDOUT|exceeded (?:the )?(?:total )?deadline/iu.test(message)) return 'timeout';
-  if (/401|403|unauthor|virtual key/iu.test(message)) return 'auth';
-  if (/429|rate limit/iu.test(message)) return 'rate_limit';
-  // REL-1113: the path to the model failing -- refused/reset/unreachable connections, an
-  // interrupted stream ("terminated") -- is transport. This is the single source the lane
-  // retry predicate (`isTransientLaneTransportError`) and the published class both read.
-  if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CLOSED|fetch failed|socket hang up|other side closed|\bterminated\b/iu.test(message)) return 'transport';
-  if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output|reported INCOMPLETE without a completed review|optional reviewer did not complete/iu.test(message)) {
-    return 'malformed_output';
-  }
-  if (/provider|gateway|model/iu.test(message)) return 'provider_error';
-  return 'internal_error';
-}
+// REL-1113: the ladder itself lives in `./laneInfrastructure` (plain CommonJS) so the GitHub
+// Action pipeline classifies its lanes with the same code; this path stays its public name.
+export { classifyWorkerFailureMessage } from './laneInfrastructure';
 
 export function workerFailureReason(failureClass: WorkerTerminalFailure['failureClass']): string {
   return {
