@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.6...v1.92.7) (2026-09-25)
+
+
+### Bug Fixes
+
+* **persistence:** skip already-applied schema DDL so rollouts stop deadlocking live traffic (REL-1127) ([#1073](https://github.com/review-yeti-ai/review-yeti-bot/issues/1073)) ([3d2c87a](https://github.com/review-yeti-ai/review-yeti-bot/commit/3d2c87acc95f13463e8677cc41f2d0db23129166))
+
 ## [1.92.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.5...v1.92.6) (2026-09-25)
 
 
