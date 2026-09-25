@@ -1576,32 +1576,20 @@ export const GATEWAY_MCP_INCLUDE_TOOLS_HEADER = 'x-bf-mcp-include-tools';
 export const GATEWAY_MCP_INCLUDE_TOOLS_NONE = '';
 
 /**
- * REL-1134: Review Yeti bypasses the gateway response cache.
+ * Gateway request-policy headers Review Yeti pins on every model call, on both
+ * the SDK and streaming paths. This table is the single source of truth.
  *
- * Bifrost's semantic cache runs with a global default cache key and a 15m
- * TTL, so every request is looked up and stored. A re-review of the same
- * prompt could get a stale completion back instead of a fresh verdict. The
- * cache plugin has no per-key config, but it honors two documented
- * per-request headers:
- * - `x-bf-cache-no-store: true` means this response is never written.
- * - `x-bf-cache-key` moves the lookup into its own bucket. Review Yeti is the
- *   only writer to this bucket, and it never writes, so a lookup can never hit.
- *
- * Headroom and Laya prompt rewriting are turned off for the `review-yeti`
- * virtual key in the gateway config (`skip_virtual_keys`), not here.
- *
- * These are set after caller metadata, so metadata cannot opt back into the
- * cache. Other gateways ignore unknown x- headers.
+ * REL-1134 (operator decision 2026-09-25, final): Review Yeti does not opt out
+ * of Bifrost's response cache, so no x-bf-cache-* header belongs here. It goes
+ * through the cache and Headroom/Laya compaction like every other caller. The
+ * gateway cache runs in direct-only mode (dimension 1, no embedding provider).
+ * A hit needs an exact hash match on provider, model, cache key, the full
+ * request (system prompt included) and its params. It is not a similarity
+ * match, so a hit only replays a completion for a byte-identical request. The
+ * gateway side is calltelemetry/ct-infrastructure#868.
  */
-export const GATEWAY_CACHE_KEY_HEADER = 'x-bf-cache-key';
-export const GATEWAY_CACHE_KEY_UNCACHED = 'review-yeti-uncached';
-export const GATEWAY_CACHE_NO_STORE_HEADER = 'x-bf-cache-no-store';
-
-/** Gateway request-policy headers Review Yeti pins on every model call. */
 export const GATEWAY_POLICY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   [GATEWAY_MCP_INCLUDE_TOOLS_HEADER]: GATEWAY_MCP_INCLUDE_TOOLS_NONE,
-  [GATEWAY_CACHE_KEY_HEADER]: GATEWAY_CACHE_KEY_UNCACHED,
-  [GATEWAY_CACHE_NO_STORE_HEADER]: 'true',
 });
 
 /** Pin the policy headers on a plain header record, first removing any case variant set by the caller. */
