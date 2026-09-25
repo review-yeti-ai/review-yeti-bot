@@ -17,6 +17,7 @@ import { logger } from '../utils/logger';
 import { classifyWorkerFailureMessage } from '../review/workerCompletion';
 import {
   classifyProviderResponseStatus,
+  INFRASTRUCTURE_LANE_FAILURE_CLASSES,
   isNonRetryableClientStatus,
   isTransientGatewayMessage,
   TRANSIENT_GATEWAY_STATUSES,
@@ -25,6 +26,7 @@ import {
   TRANSPORT_RETRY_WINDOW_MS,
   transportRetryDelayMs,
 } from '../review/laneInfrastructure';
+import { attachPanelFailureEvidence, thrownPanelLane, type ThrownPanelLane } from '../review/thrownPanelInfrastructure';
 // From the neutral `../types/workerFailure` module, not `../review/workerCompletion`: this file
 // is otherwise the panel-domain side of the same boundary `../panel/types` was fixed for
 // (REL-892 finding 3), so it uses the same neutral import for the type.
@@ -461,6 +463,24 @@ export class PanelCancellationError extends PanelConfigurationError {
     super(message);
     this.name = 'PanelCancellationError';
   }
+}
+
+/**
+ * REL-1124: a lane, a required-lane panel, or the arbiter failed closed on the path to the model
+ * (transport, gateway 5xx, rate limit, provider timeout), not on anything the model said. A
+ * subclass so every `instanceof PanelConfigurationError` fail-closed check is unchanged; its own
+ * name so logs and triage stop reporting a gateway outage as a configuration error.
+ */
+export class PanelInfrastructureError extends PanelConfigurationError {
+  constructor(message: string, lane?: { lastKnownUsage?: LaneTokenUsage; lastKnownModel?: string; failureClass?: WorkerFailureClass; failureReason?: string }) {
+    super(message, lane);
+    this.name = 'PanelInfrastructureError';
+  }
+}
+
+/** True for the coded lane failure classes that describe the path to the model (REL-1113). */
+function isInfrastructureFailureClass(failureClass: WorkerFailureClass | undefined): boolean {
+  return failureClass !== undefined && (INFRASTRUCTURE_LANE_FAILURE_CLASSES as readonly string[]).includes(failureClass);
 }
 
 /** The configured panel deadline elapsed; this is distinct from a provider request timeout. */
@@ -3354,7 +3374,8 @@ async function runPersona(
         completionExcerpt: redactWorkerFailureLogTail(lastKnownCompletionExcerpt),
       });
     }
-    throw new PanelConfigurationError(`persona ${persona.id} failed closed: ${errors.join('; ')}`, { lastKnownUsage, lastKnownModel, failureClass: lastFailureClass, failureReason: lastFailureReason });
+    const LaneFailure = isInfrastructureFailureClass(lastFailureClass) ? PanelInfrastructureError : PanelConfigurationError;
+    throw new LaneFailure(`persona ${persona.id} failed closed: ${errors.join('; ')}`, { lastKnownUsage, lastKnownModel, failureClass: lastFailureClass, failureReason: lastFailureReason });
   });
 }
 
@@ -4376,7 +4397,14 @@ export async function executePersonaPanel(options: {
     });
     const requiredFailures = settled.filter((entry) => entry.persona.required && !entry.result);
     if (requiredFailures.length > 0) {
-      throw new PanelConfigurationError(
+      // REL-1124: a required lane lost to the gateway is infrastructure, not configuration. The
+      // evidence (every failed lane's coded class, and whether any completed lane found anything)
+      // lets the publishing worker reach the same INCOMPLETE + re-attempt decision REL-1113 applies
+      // to a returned panel, instead of ending "Failed live" with no re-attempt.
+      const failedEntries = settled.filter((entry) => !entry.result);
+      const RequiredFailure = requiredFailures.every((entry) => isInfrastructureFailureClass(entry.failureClass))
+        ? PanelInfrastructureError : PanelConfigurationError;
+      throw attachPanelFailureEvidence(new RequiredFailure(
         `required persona failure: ${requiredFailures.map((entry) => entry.error).join(' | ')}`,
         {
           failureClass: requiredFailures[0].failureClass,
@@ -4384,7 +4412,11 @@ export async function executePersonaPanel(options: {
           lastKnownUsage: requiredFailures[0].lastKnownUsage,
           lastKnownModel: requiredFailures[0].lastKnownModel,
         },
-      );
+      ), {
+        stage: 'lanes',
+        lanes: failedEntries.map((entry) => thrownPanelLane(entry.persona.id, entry.failureClass, entry.error)),
+        findingsObserved: settled.some((entry) => Array.isArray(entry.result?.findings) && entry.result.findings.length > 0),
+      });
     }
     throwIfPanelAborted(signal);
     const personas = settled.flatMap((entry) => entry.result ? [entry.result] : []);
@@ -4483,6 +4515,8 @@ export async function executePersonaPanel(options: {
     const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
 
     const moderatorStartedAt = Date.now();
+    // REL-1124: whether any lane found anything, for the evidence a moderator/arbiter throw carries.
+    const laneFindingsObserved = personas.some((lane) => Array.isArray(lane.findings) && lane.findings.length > 0);
     const [moderatorRun, mermaidDiagram, prSummary] = await Promise.all([
       runInSpan('review_yeti_moderator', async (modSpan) => {
         const moderatorInactivityTimeoutMs = configuredProviderTimeoutMs(
@@ -4536,6 +4570,12 @@ export async function executePersonaPanel(options: {
         modSpan.setAttribute('review_yeti.cost_usd', modCost);
 
         return { run, modFindings };
+      }).catch((error: unknown) => {
+        throw attachPanelFailureEvidence(error, {
+          stage: 'moderator',
+          lanes: [thrownPanelLane('moderator', classifyPersonaAttemptFailure(error), error)],
+          findingsObserved: laneFindingsObserved,
+        });
       }),
 
       Promise.resolve().then(() => {
@@ -4580,6 +4620,7 @@ export async function executePersonaPanel(options: {
 
     let arbiterResult: PanelResult['arbiter'] | null = null;
     const arbiterErrors: string[] = [];
+    const arbiterFailures: ThrownPanelLane[] = [];
     for (const providerId of config.reviewers.arbiter.order) {
       throwIfPanelAborted(signal);
       const spec = provider(config, providerId);
@@ -4656,10 +4697,22 @@ export async function executePersonaPanel(options: {
       } catch (error: any) {
         throwIfPanelAborted(signal);
         arbiterErrors.push(`${providerId}: ${error?.message || String(error)}`);
+        arbiterFailures.push(thrownPanelLane('arbiter', classifyPersonaAttemptFailure(error), error));
         if (config.reviewers.fallback === 'none') break;
       }
     }
-    if (!arbiterResult) throw new PanelConfigurationError(`arbiter failed closed: ${arbiterErrors.join('; ')}`);
+    if (!arbiterResult) {
+      // REL-1124: an arbiter lost to the gateway on every attempt is infrastructure; the evidence
+      // routes it through the shared INCOMPLETE + re-attempt decision (never when a lane or the
+      // moderator reported a finding).
+      const ArbiterFailure = arbiterFailures.length > 0 && arbiterFailures.every((failure) => isInfrastructureFailureClass(failure.failureClass))
+        ? PanelInfrastructureError : PanelConfigurationError;
+      throw attachPanelFailureEvidence(new ArbiterFailure(`arbiter failed closed: ${arbiterErrors.join('; ')}`), {
+        stage: 'arbiter',
+        lanes: arbiterFailures,
+        findingsObserved: laneFindingsObserved || moderatedFindings.length > 0,
+      });
+    }
     const arbiterPhaseMs = Date.now() - arbiterStartedAt;
 
     throwIfPanelAborted(signal);

@@ -163,10 +163,12 @@ describe('REL-892: persona execution failure log redaction', () => {
     // Persona identity: an operator must still be able to tell which lane failed.
     expect(meta.persona).toBe('opt-lane');
     // Bounded, non-secret classification: the constructor name of the rejection.
-    // `runPersona` fails the lane closed by throwing `PanelConfigurationError` once
-    // every provider/attempt for this persona is exhausted, so that -- not the plain
-    // `Error` that triggered it -- is what `executePersonaPanel` observes here.
-    expect(meta.errorType).toBe('PanelConfigurationError');
+    // `runPersona` fails the lane closed once every provider/attempt for this persona is
+    // exhausted, so that -- not the plain `Error` that triggered it -- is what
+    // `executePersonaPanel` observes here. REL-1124: this lane failed on a 429 (the path to the
+    // model), so it is tagged `PanelInfrastructureError` (a `PanelConfigurationError` subclass),
+    // never reported as a configuration error.
+    expect(meta.errorType).toBe('PanelInfrastructureError');
     // The redacted free-form remainder still carries the operationally useful part
     // of the message (what failed and why), just not the credential.
     expect(String(meta.error)).toContain('429');
