@@ -34,6 +34,7 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 // `../gateway/omniRouteClient` and `../gateway/openRouterClient` were fixed for (REL-892 finding 1).
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { runInSpan, getMetrics } from '../telemetry';
+import { recordProviderCallTokenMetrics } from '../telemetry/tokenLedger';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
@@ -2359,6 +2360,13 @@ async function invoke(
       durationMs: Date.now() - turnStartedAt,
     };
     turnUsages.push(turnUsage);
+    // REL-1132: the worker token counters are fed here, once per real provider call, so they sum
+    // every turn and every attempt of every lane, the moderator and the arbiter. They used to be
+    // fed from each role's terminal turn only (about 2.7x under Bifrost's per-request count).
+    recordProviderCallTokenMetrics(
+      { persona: requestPersona, provider: options?.providerId || 'unknown', model: response.model },
+      response,
+    );
     // Native tool calls are complete JSON objects. Parse them before attempting final-result
     // parsing, but only while an investigation turn remains; the reserved final turn is terminal.
     const nativeToolCall = nativeJsonMode && !nativeFinalTurn
@@ -3063,10 +3071,6 @@ async function runPersona(
 
           try {
             const metrics = getMetrics();
-            metrics.tokensPrompt.add(promptTokens, { persona: persona.id, provider: providerId, model: result.response.model });
-            metrics.tokensCompletion.add(completionTokens, { persona: persona.id, provider: providerId, model: result.response.model });
-            metrics.tokensTotal.add(totalTokens, { persona: persona.id, provider: providerId, model: result.response.model });
-            metrics.modelCostUsd.add(costUSD, { persona: persona.id, provider: providerId, model: result.response.model });
             metrics.personaDuration.record(result.durationMs / 1000, { persona: persona.id, provider: providerId, model: result.response.model, decision });
             // REL-904 lane/provider attribution: a completed lane is one observable
             // outcome; transport is the provider boundary id (e.g. bifrost), so a
@@ -4514,14 +4518,6 @@ export async function executePersonaPanel(options: {
         modSpan.setAttribute('review_yeti.tokens.cache_hit_percentage', modHitPercentage);
         modSpan.setAttribute('review_yeti.cost_usd', modCost);
 
-        try {
-          const metrics = getMetrics();
-          metrics.tokensPrompt.add(modPrompt, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-          metrics.tokensCompletion.add(modComp, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-          metrics.tokensTotal.add(modTotal, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-          metrics.modelCostUsd.add(modCost, { persona: 'moderator', provider: moderatorId, model: run.response.model });
-        } catch (_) {}
-
         return { run, modFindings };
       }),
 
@@ -4624,10 +4620,6 @@ export async function executePersonaPanel(options: {
 
           try {
             const metrics = getMetrics();
-            metrics.tokensPrompt.add(arbPrompt, { persona: 'arbiter', provider: providerId, model: run.response.model });
-            metrics.tokensCompletion.add(arbComp, { persona: 'arbiter', provider: providerId, model: run.response.model });
-            metrics.tokensTotal.add(arbTotal, { persona: 'arbiter', provider: providerId, model: run.response.model });
-            metrics.modelCostUsd.add(arbCost, { persona: 'arbiter', provider: providerId, model: run.response.model });
             metrics.arbiterVerdicts.add(1, { verdict: run.parsed.verdict, provider: providerId, model: run.response.model });
           } catch (_) {}
 

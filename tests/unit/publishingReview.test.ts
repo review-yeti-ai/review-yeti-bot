@@ -71,6 +71,30 @@ function checkClient() {
 
 const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
 
+/** REL-1132: a fake panel runner that makes one call per `[role, persona, ...]` entry through the
+ * (metered) client it is handed, then returns its fixture result. `usageClient` answers those calls
+ * in order with the entry's prompt/completion usage. */
+function replayingRunner(calls: Array<[string, string, number, number]>, result: Record<string, unknown>) {
+  return vi.fn(async (input: { client: { complete: (request: unknown) => Promise<unknown> } }) => {
+    for (const [role, persona] of calls) {
+      await input.client.complete({
+        model: 'ollama/glm-5.3-flash', messages: [], timeoutMs: 1, persona, metadata: { role, persona },
+      });
+    }
+    return result;
+  });
+}
+
+function usageClient(calls: Array<[string, string, number, number]>) {
+  let index = 0;
+  return {
+    complete: vi.fn(async () => {
+      const [, , prompt, completion] = calls[index++];
+      return { model: 'ollama/glm-5.3-flash', content: '{}', usage: { prompt, completion, total: prompt + completion }, costUSD: null, raw: {} };
+    }),
+  };
+}
+
 function deps(over: Record<string, unknown> = {}) {
   return {
     checkClient: checkClient(),
@@ -405,8 +429,14 @@ describe('runPublishingReviewWorker', () => {
     // `panelWallClockMs` are new, additive `PanelResult` fields -- see `src/panel/panelEngine.ts`.
     // This proves they reach the published receipt rather than being silently dropped by the
     // `personaMetrics` mapping or the receipt's `metrics` block.
+    // REL-1132: the lane's three real turns go through the metered client (450+75=525 tokens);
+    // its terminal turn alone is 230, which is what the telemetry line used to report.
+    const calls: Array<[string, string, number, number]> = [
+      ['persona', 'sec-lane', 100, 20], ['persona', 'sec-lane', 150, 25], ['persona', 'sec-lane', 200, 30],
+    ];
     const d = deps({
-      panelRunner: vi.fn(async () => ({
+      client: usageClient(calls) as never,
+      panelRunner: replayingRunner(calls, {
         applicablePersonaIds: ['sec-lane'],
         personas: [{
           id: 'sec-lane', findings: [], turnsCount: 3, toolTurns: 1, correctionTurns: 1,
@@ -419,7 +449,7 @@ describe('runPublishingReviewWorker', () => {
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
         panelWallClockMs: 180,
-      })) as never,
+      }) as never,
     });
 
     const receipt = await runPublishingReviewWorker(env(), d as never);
@@ -435,7 +465,8 @@ describe('runPublishingReviewWorker', () => {
     expect(receipt.metrics?.panelWallClockMs).toBe(180);
 
     const summary = String(((d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary);
-    expect(summary).toContain('Telemetry: 3 turns, 1 tool calls, 230 tokens across 1 lanes (300ms).');
+    expect(summary).toContain('Telemetry: 3 turns, 1 tool calls, 525 tokens across 1 lanes (300ms).');
+    expect(summary).not.toContain('230 tokens');
     expect(summary).toContain('Panel wall clock: 180ms');
   });
 
@@ -550,9 +581,12 @@ describe('runPublishingReviewWorker', () => {
     // report the same string cannot tell that preference apart from the fallback. See the
     // sibling test below for the fallback itself (no completed lane reports a model at all).
     const cc = checkClient();
+    // REL-1132: the completed lane's two real turns (5 + 10 = 15 tokens) go through the metered client.
+    const calls: Array<[string, string, number, number]> = [['persona', 'sec-lane', 4, 1], ['persona', 'sec-lane', 6, 4]];
     const d = deps({
       checkClient: cc,
-      panelRunner: vi.fn(async () => ({
+      client: usageClient(calls) as never,
+      panelRunner: replayingRunner(calls, {
         applicablePersonaIds: ['sec-lane', 'arch-lane'],
         personas: [{
           id: 'sec-lane', findings: [], turnsCount: 2, toolCalls: [{ tool: 'grep_search' }],
@@ -567,7 +601,7 @@ describe('runPublishingReviewWorker', () => {
         }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
         arbiter: { verdict: 'SHIP' },
-      })),
+      }),
     });
 
     const receipt = await runPublishingReviewWorker(env(), d as never);
@@ -1875,8 +1909,14 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
   });
 
   it('persists per-lane metrics and totals in receipt', async () => {
+    // REL-1132: sec-lane makes two real calls (1200+300), perf-lane one (800+200); the receipt
+    // totals are the metered calls, with the per-lane breakdown alongside.
+    const calls: Array<[string, string, number, number]> = [
+      ['persona', 'sec-lane', 700, 200], ['persona', 'sec-lane', 500, 100], ['persona', 'perf-lane', 800, 200],
+    ];
     const d = deps({
-      panelRunner: vi.fn(async () => ({
+      client: usageClient(calls) as never,
+      panelRunner: replayingRunner(calls, {
         applicablePersonaIds: ['sec-lane', 'perf-lane'],
         personas: [
           {
@@ -1905,7 +1945,7 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
-      })) as never,
+      }) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
@@ -1917,13 +1957,17 @@ describe('resolveWorkerConfig policy projection & telemetry persistence', () => 
     expect(receipt.personas?.[0].id).toBe('sec-lane');
     expect(receipt.personas?.[0].turnsCount).toBe(2);
     expect(receipt.personas?.[0].toolCallsCount).toBe(1);
-    expect(receipt.metrics).toEqual({
+    expect(receipt.metrics).toMatchObject({
       totalPromptTokens: 2000,
       totalCompletionTokens: 500,
       totalTokens: 2500,
       totalTurns: 3,
       totalToolCalls: 1,
       totalDurationMs: 6500,
+    });
+    expect(receipt.metrics?.tokenAccounting?.byLane).toEqual({
+      'sec-lane': { calls: 2, promptTokens: 1200, completionTokens: 300, totalTokens: 1500, cachedTokens: 0, costUSD: 0 },
+      'perf-lane': { calls: 1, promptTokens: 800, completionTokens: 200, totalTokens: 1000, cachedTokens: 0, costUSD: 0 },
     });
   });
 });
