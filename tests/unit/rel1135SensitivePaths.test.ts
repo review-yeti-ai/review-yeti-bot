@@ -396,6 +396,19 @@ describe('Jev join line: sensitive_any, path_class and per-lane outcome', () => 
     expect(byPath['src/app.ts']).toMatchObject({ sensitive_any: false, path_class: 'other' });
   });
 
+  it('an answer outside the closed category set is never trusted into sensitive_any', async () => {
+    // `category_valid` is false exactly when the choice is not a key of JEV_TRIAGE_CATEGORIES, so
+    // the literal 'security_sensitive' is always valid; the reachable invalid case is a near-miss.
+    const info = vi.spyOn(logger, 'info');
+    const handle = startJevTriageShadow(input(['src/worker/disk.ts', 'src/worker/net.ts'], (path) => (
+      path === 'src/worker/disk.ts' ? 'SECURITY_SENSITIVE' : 'security-sensitive')));
+    await handle.join({ findings: [], mode: 'panel', verdict: 'SHIP', conclusion: 'success', personas: [] });
+    for (const line of joins(info)) {
+      expect(line).toMatchObject({ category_valid: false, security_sensitive: false, sensitive_any: false, sensitive_path_class: null });
+    }
+    expect(joins(info)).toHaveLength(2);
+  });
+
   it('marks a failed lane `failed` (not an empty approval) and a completed one by its decision', async () => {
     const info = vi.spyOn(logger, 'info');
     const handle = startJevTriageShadow(input(['src/app.ts'], () => 'source'));
