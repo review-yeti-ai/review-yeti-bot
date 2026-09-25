@@ -358,7 +358,9 @@ describe('Empirical Stress Test: R1 Managed PostgreSQL Adapter & Dual-Store Arch
 
       const mockClient = {
         query: vi.fn(async (text: string) => {
-          if (text.startsWith('INSERT INTO')) {
+          // REL-1127: the schema gate records its fingerprint with an INSERT;
+          // that is schema bookkeeping, not dashboard seeding.
+          if (text.startsWith('INSERT INTO') && !text.startsWith('INSERT INTO review_yeti_schema_migrations')) {
             insertedQueries.push(text);
           }
           if (text.includes('COUNT(*)')) {
