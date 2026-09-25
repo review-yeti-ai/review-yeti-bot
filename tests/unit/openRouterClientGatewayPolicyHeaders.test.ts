@@ -2,24 +2,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import {
-  GATEWAY_CACHE_KEY_HEADER,
-  GATEWAY_CACHE_KEY_UNCACHED,
-  GATEWAY_CACHE_NO_STORE_HEADER,
   GATEWAY_MCP_INCLUDE_TOOLS_HEADER,
   GATEWAY_POLICY_HEADERS,
   OpenRouterClient,
 } from '../../src/gateway/openRouterClient';
 
-// REL-1134: Review Yeti bypasses Bifrost's semantic response cache. The cache runs with a
-// global default key, so without these headers a re-review could be answered from a cached
-// completion. no-store means nothing is written. A dedicated bucket that is never written
-// means a lookup can never hit.
+// Gateway request-policy headers pinned on every model call.
+// - x-bf-mcp-include-tools: '' is pinned on both paths and caller metadata cannot override it.
+// - REL-1134 (operator decision 2026-09-25, final): Review Yeti does NOT opt out of Bifrost's
+//   response cache. No x-bf-cache-* header is sent. #1076 added that opt-out and was reverted.
 
 const base = {
   model: 'pr-reviewer',
   messages: [{ role: 'user' as const, content: 'review this diff' }],
   timeoutMs: 5_000,
 };
+
+const CACHE_OPT_OUT_HEADERS = ['x-bf-cache-key', 'x-bf-cache-no-store'];
 
 function sse() {
   return new Response(
@@ -50,43 +49,39 @@ function values(init: RequestInit | undefined, name: string): string[] {
     .map(([, v]) => v);
 }
 
-const expected: Array<[string, string]> = [
-  [GATEWAY_CACHE_KEY_HEADER, GATEWAY_CACHE_KEY_UNCACHED],
-  [GATEWAY_CACHE_NO_STORE_HEADER, 'true'],
-  [GATEWAY_MCP_INCLUDE_TOOLS_HEADER, ''],
-];
-
-describe('Review Yeti bypasses the gateway response cache (REL-1134)', () => {
-  it('uses the documented Bifrost cache headers and a dedicated never-written bucket', () => {
-    expect(GATEWAY_CACHE_KEY_HEADER).toBe('x-bf-cache-key');
-    expect(GATEWAY_CACHE_NO_STORE_HEADER).toBe('x-bf-cache-no-store');
-    // Must not be the gateway's default_cache_key ("default"), or lookups would hit shared entries.
-    expect(GATEWAY_CACHE_KEY_UNCACHED).toBe('review-yeti-uncached');
-    expect(GATEWAY_CACHE_KEY_UNCACHED).not.toBe('default');
+describe('gateway policy headers (REL-1134)', () => {
+  it('pins only the MCP include-tools header, with no cache opt-out', () => {
     expect(Object.isFrozen(GATEWAY_POLICY_HEADERS)).toBe(true);
-    expect(Object.entries(GATEWAY_POLICY_HEADERS).sort()).toEqual([...expected].sort());
+    expect(GATEWAY_POLICY_HEADERS).toEqual({ [GATEWAY_MCP_INCLUDE_TOOLS_HEADER]: '' });
+    for (const name of Object.keys(GATEWAY_POLICY_HEADERS)) {
+      expect(name.toLowerCase().startsWith('x-bf-cache')).toBe(false);
+    }
   });
 
-  it.each([true, false])('sends the opt-out on every completion (stream=%s)', async (stream) => {
+  it.each([true, false])('sends x-bf-mcp-include-tools exactly once and no cache opt-out (stream=%s)', async (stream) => {
     const fetchImplementation = vi.fn(async () => (stream ? sse() : chatJson()));
     const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: 'https://gw.test/v1', fetchImplementation });
     await expect(client.complete({ ...base, stream })).resolves.toMatchObject({ content: 'SHIP' });
     const init = (fetchImplementation.mock.calls[0] as unknown[])[1] as RequestInit;
-    for (const [name, value] of expected) expect(values(init, name)).toEqual([value]);
+    expect(values(init, GATEWAY_MCP_INCLUDE_TOOLS_HEADER)).toEqual(['']);
+    for (const name of CACHE_OPT_OUT_HEADERS) expect(values(init, name)).toEqual([]);
   });
 
-  it.each([true, false])('caller metadata cannot opt back into the cache (stream=%s)', async (stream) => {
+  it.each([true, false])('caller metadata cannot override the MCP pin (stream=%s)', async (stream) => {
     const fetchImplementation = vi.fn(async () => (stream ? sse() : chatJson()));
     const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: 'https://gw.test/v1', fetchImplementation });
     await client.complete({
       ...base,
       stream,
-      metadata: { 'X-BF-Cache-Key': 'default', 'X-Bf-Cache-No-Store': 'false', 'x-ct-test': 'kept' },
+      metadata: { 'X-Bf-Mcp-Include-Tools': 'all', 'x-ct-test': 'kept' },
     } as any);
     const init = (fetchImplementation.mock.calls[0] as unknown[])[1] as RequestInit;
-    expect(values(init, GATEWAY_CACHE_KEY_HEADER)).toEqual([GATEWAY_CACHE_KEY_UNCACHED]);
-    expect(values(init, GATEWAY_CACHE_NO_STORE_HEADER)).toEqual(['true']);
-    if (stream) expect((init.headers as Record<string, string>)['x-ct-test']).toBe('kept');
+    expect(values(init, GATEWAY_MCP_INCLUDE_TOOLS_HEADER)).toEqual(['']);
+    if (stream) {
+      const record = init.headers as Record<string, string>;
+      expect(record['X-Bf-Mcp-Include-Tools']).toBeUndefined();
+      expect(record['x-ct-test']).toBe('kept');
+    }
   });
 
   describe('on the wire', () => {
@@ -96,7 +91,7 @@ describe('Review Yeti bypasses the gateway response cache (REL-1134)', () => {
       server = undefined;
     });
 
-    it.each([true, false])('real fetch transmits the cache opt-out (stream=%s)', async (stream) => {
+    it.each([true, false])('real fetch transmits the MCP pin and no cache opt-out (stream=%s)', async (stream) => {
       const seen: Array<Record<string, string[]>> = [];
       server = http.createServer((req, res) => {
         const got: Record<string, string[]> = {};
@@ -117,7 +112,8 @@ describe('Review Yeti bypasses the gateway response cache (REL-1134)', () => {
       const client = new OpenRouterClient({ apiKey: 'test-key', baseUrl: `http://127.0.0.1:${port}/v1` });
       await expect(client.complete({ ...base, stream })).resolves.toMatchObject({ content: 'SHIP' });
       expect(seen).toHaveLength(1);
-      for (const [name, value] of expected) expect(seen[0][name]).toEqual([value]);
+      expect(seen[0][GATEWAY_MCP_INCLUDE_TOOLS_HEADER]).toEqual(['']);
+      for (const name of CACHE_OPT_OUT_HEADERS) expect(seen[0][name]).toBeUndefined();
     });
   });
 });
