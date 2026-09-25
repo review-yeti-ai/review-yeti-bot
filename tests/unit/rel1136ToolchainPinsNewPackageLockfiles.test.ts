@@ -12,9 +12,9 @@ import { preparePublishingPolicy } from '../../src/review/preparedPublishingPoli
 import { sha256 } from '../../src/review/reviewCore';
 import { TrustedCompletionResolutionError } from '../../src/review/workerCompletionPersistenceError';
 import { resolveReviewApplicability, scopeFilesForPersona } from '../../src/review/personaApplicability';
-import { verifyLockfileOnlyChange } from '../../src/review/lockfileChangeVerification';
+import { NEW_PACKAGE_ENTRY_REFUSAL, verifyLockfileOnlyChange } from '../../src/review/lockfileChangeVerification';
 import { isDocumentationOrAssetPath, isNoReviewableContentFile } from '../../src/review/reviewableContent';
-import { isNewPackageLockfileChange } from '../../src/review/newPackageLockfileReview';
+import { isDependencyPersona, isNewPackageLockfileChange, routeNewPackageLockfiles } from '../../src/review/newPackageLockfileReview';
 import { isToolchainPinOrDependencyManifestPath } from '../../src/review/toolchainPinPaths';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { OMITTED_LOCKFILE_PATCH_REASON } from '../../src/review/omittedLockfilePatch';
@@ -220,7 +220,8 @@ describe('REL-1136: calltelemetry/cisco-cdr#4625 (.tool-versions)', () => {
 
 describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)', () => {
   it('is refused by the strict check only for the new entry', () => {
-    expect(verifyLockfileOnlyChange('yarn.lock', CT_QUASAR_847_YARN_LOCK)).toEqual({ ok: false, reason: 'adds a new package entry' });
+    expect(NEW_PACKAGE_ENTRY_REFUSAL).toBe('adds a new package entry');
+    expect(verifyLockfileOnlyChange('yarn.lock', CT_QUASAR_847_YARN_LOCK)).toEqual({ ok: false, reason: NEW_PACKAGE_ENTRY_REFUSAL });
     expect(verifyLockfileOnlyChange('yarn.lock', CT_QUASAR_847_YARN_LOCK, { allowNewEntries: true })).toEqual({ ok: true });
     expect(isNewPackageLockfileChange(lock(CT_QUASAR_847_YARN_LOCK))).toBe(true);
   });
@@ -247,6 +248,32 @@ describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)',
     for (const persona of result.applicable) {
       expect(scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.path)).toEqual(['yarn.lock']);
     }
+  });
+
+  it('routes it to a dependency-chartered persona whatever its id', () => {
+    const base = enabled('architecture,documentation');
+    const custom = [...base, { ...base[0], id: 'supply-chain', charter: 'builtin:dependency-health', paths: ['nothing/**'], required: false }];
+    expect(isDependencyPersona({ id: 'supply-chain', charter: 'builtin:dependency-health' })).toBe(true);
+    expect(isDependencyPersona({ id: 'arch-lane', charter: 'builtin:architecture' })).toBe(false);
+    const result = resolveReviewApplicability(custom, [lock(CT_QUASAR_847_YARN_LOCK)]);
+    // Without the charter match this falls back to the first persona (arch-lane).
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['supply-chain']);
+    expect(routeNewPackageLockfiles(custom, ['yarn.lock']).find((persona) => persona.id === 'supply-chain')?.routedPaths)
+      .toEqual(['yarn.lock']);
+  });
+
+  it('labels the lockfile new-package-lockfile beside uncovered source a configured lane widens to', () => {
+    // sec-lane's own paths name yarn.lock, so a configured lane applies and
+    // REL-1088 routes the uncovered source to it too; both reasons are kept apart.
+    const result = resolveReviewApplicability(enabled(), [
+      lock(CT_QUASAR_847_YARN_LOCK),
+      { path: 'tools/load.lua', patch: '@@ -1 +1 @@\n-a\n+b\n' },
+    ]);
+    expect(result.unmatchedPaths).toEqual([]);
+    expect(result.routedFiles.map((file) => [file.path, file.reason]).sort()).toEqual([
+      ['tools/load.lua', 'uncovered-source'],
+      ['yarn.lock', 'new-package-lockfile'],
+    ]);
   });
 
   it('routes it to the first enabled persona when the roster has no required or dependency lane', () => {

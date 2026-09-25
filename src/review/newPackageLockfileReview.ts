@@ -5,7 +5,7 @@ import {
   type HunkFilterResult,
 } from '../pipeline/hunkFilter';
 import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './personaApplicability';
-import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
+import { isRegularFileMode, NEW_PACKAGE_ENTRY_REFUSAL, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { omittedLockfilePatchReason } from './omittedLockfilePatch';
 import { isSubmodulePatch } from './submodulePatch';
 
@@ -39,8 +39,6 @@ import { isSubmodulePatch } from './submodulePatch';
  * asks for a human review.
  */
 
-const NEW_PACKAGE_REFUSAL = 'adds a new package entry';
-
 export function isNewPackageLockfileChange(file: ReviewApplicabilityInputFile): boolean {
   if (!file || typeof file.path !== 'string') return false;
   if (classifyLockfileOrGeneratedPath(file.path) !== 'lockfile') return false;
@@ -49,7 +47,7 @@ export function isNewPackageLockfileChange(file: ReviewApplicabilityInputFile): 
   if (typeof patch !== 'string' || patch.length === 0 || patch.length > MAX_FILE_PATCH_CHARS) return false;
   if (isSubmodulePatch(patch) || omittedLockfilePatchReason(patch)) return false;
   const strict = verifyLockfileOnlyChange(file.path, patch);
-  if (strict.ok || strict.reason !== NEW_PACKAGE_REFUSAL) return false;
+  if (strict.ok || strict.reason !== NEW_PACKAGE_ENTRY_REFUSAL) return false;
   return verifyLockfileOnlyChange(file.path, patch, { allowNewEntries: true }).ok;
 }
 

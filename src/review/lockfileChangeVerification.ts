@@ -99,6 +99,9 @@ const LINE_SHAPES: Record<string, readonly RegExp[]> = {
 };
 
 const refuse = (reason: string): LockfileVerification => ({ ok: false, reason });
+
+/** The refusal for an added entry header that replaces no removed one (REL-1136 routes on it). */
+export const NEW_PACKAGE_ENTRY_REFUSAL = 'adds a new package entry';
 const OK: LockfileVerification = { ok: true };
 
 /** The package named by a descriptor or locator: `@s/b@...` -> `@s/b`, `b@...` -> `b`. */
@@ -317,7 +320,7 @@ export function verifyLockfileOnlyChange(
         const identity = entryIdentity(header, format);
         const remaining = removedHeaders.get(identity) ?? 0;
         if (remaining === 0) {
-          if (options.allowNewEntries !== true) return refuse('adds a new package entry');
+          if (options.allowNewEntries !== true) return refuse(NEW_PACKAGE_ENTRY_REFUSAL);
         } else {
           removedHeaders.set(identity, remaining - 1);
         }
