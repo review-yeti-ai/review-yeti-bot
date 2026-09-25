@@ -922,7 +922,6 @@ export class McpFleetManager {
           // not by the tests I had written).
 
           if (!res.ok) {
-            clearTimeout(timer);
             if (res.status === 401 || res.status === 403) {
               return {
                 success: false,
@@ -941,7 +940,6 @@ export class McpFleetManager {
 
           // Bound the BODY read as well: the abort must still be able to fire while we wait.
           const data: any = await res.json();
-          clearTimeout(timer);
 
           if (data.error) {
             return {
@@ -993,7 +991,6 @@ export class McpFleetManager {
             durationMs: Date.now() - start,
           };
         } catch (httpErr: any) {
-          clearTimeout(timer);
           const durationMs = Date.now() - start;
           const wasAbortedByCaller = Boolean(options.signal?.aborted);
           const isTimeout =
@@ -1012,6 +1009,13 @@ export class McpFleetManager {
               : httpErr.message || 'HTTP tool execution failed',
             durationMs,
           };
+        } finally {
+          // Single clear for the whole HTTP path, matching `dopplerSecretManager.fetchFromApi`.
+          // The rule "the abort budget covers the body read" was previously enforced at
+          // individual return points in one file and in a `finally` in the other -- and REL-1116
+          // was precisely this rule fixed in one place and missed in another. One structure per
+          // rule, so the next change to budget semantics has one edit site.
+          clearTimeout(timer);
         }
       }
 
