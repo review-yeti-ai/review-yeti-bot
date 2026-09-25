@@ -18,6 +18,7 @@ import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
 import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
+import { applySchemaOnce, withSchemaLockRetry } from './schemaMigrationGate';
 
 export const ADVISORY_LOCK_ID = 1029384;
 
@@ -84,6 +85,23 @@ export class PostgresStore {
       return;
     }
 
+    try {
+      await withSchemaLockRetry(() => this.initializeOnce(fallbackSeedData), {
+        onRetry: ({ attempt, code, delayMs }) => logger.warn(
+          '[PostgresStore] Schema initialization lock conflict; retrying',
+          { code: 'postgres_initialization_lock_conflict', sqlState: code, attempt, delayMs },
+        ),
+      });
+    } catch (err) {
+      logger.error(
+        '[PostgresStore] PostgreSQL database schema initialization failed',
+        { code: 'postgres_initialization_failed' },
+      );
+      throw err;
+    }
+  }
+
+  private async initializeOnce(fallbackSeedData?: DashboardData): Promise<void> {
     const pool = this.getPool();
     let client: PoolClient | null = null;
 
@@ -94,8 +112,8 @@ export class PostgresStore {
       // Acquire multi-pod advisory lock for schema migration and initialization
       await client.query('SELECT pg_advisory_xact_lock($1)', [ADVISORY_LOCK_ID]);
 
-      // 1. Initialize Tables
-      await client.query(`
+      // 1. Initialize Tables (applied once per distinct schema; see schemaMigrationGate)
+      const coreSchemaSql = `
         CREATE TABLE IF NOT EXISTS dashboard_settings (
           key VARCHAR(255) PRIMARY KEY,
           data JSONB NOT NULL,
@@ -385,16 +403,19 @@ export class PostgresStore {
           created_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ
         );
-      `);
+      `;
+      const schemaOutcome = await applySchemaOnce(client, [
+        coreSchemaSql,
+        REVIEW_GATE_SCHEMA_SQL,
+        REVIEW_GENERATION_RECOVERY_SCHEMA_SQL,
+        PREPARED_REVIEW_SCHEMA_SQL,
+        REVIEW_CI_SCHEMA_SQL,
+        REVIEW_CI_CHECK_SCHEMA_SQL,
+        REVIEW_EVENT_SCHEMA_SQL,
+        REVIEW_EVENT_V2_SCHEMA_SQL,
+      ]);
 
       // 2. Check if database tables are empty and seed if initial startup
-      await client.query(REVIEW_GATE_SCHEMA_SQL);
-      await client.query(REVIEW_GENERATION_RECOVERY_SCHEMA_SQL);
-      await client.query(PREPARED_REVIEW_SCHEMA_SQL);
-      await client.query(REVIEW_CI_SCHEMA_SQL);
-      await client.query(REVIEW_CI_CHECK_SCHEMA_SQL);
-      await client.query(REVIEW_EVENT_SCHEMA_SQL);
-      await client.query(REVIEW_EVENT_V2_SCHEMA_SQL);
       const checkRes = await client.query('SELECT COUNT(*)::int as count FROM dashboard_settings');
       const count = checkRes.rows[0]?.count || 0;
 
@@ -489,15 +510,11 @@ export class PostgresStore {
 
       await client.query('COMMIT');
       this.initialized = true;
-      logger.info('[PostgresStore] PostgreSQL storage adapter initialized successfully with advisory lock.');
+      logger.info('[PostgresStore] PostgreSQL storage adapter initialized successfully with advisory lock.', { schema: schemaOutcome });
     } catch (err) {
       if (client) {
         await client.query('ROLLBACK').catch(() => {});
       }
-      logger.error(
-        '[PostgresStore] PostgreSQL database schema initialization failed',
-        { code: 'postgres_initialization_failed' },
-      );
       throw err;
     } finally {
       if (client) {
