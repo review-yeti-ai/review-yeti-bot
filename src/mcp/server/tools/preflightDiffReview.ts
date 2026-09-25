@@ -11,7 +11,7 @@ import {
   type PreflightFinding,
 } from './schemas';
 import { compareClaims } from '../../../review/claimSimilarity';
-import { blocksFastShipByPath } from '../../../review/securitySensitivePaths';
+import { blocksFastShipByPath, isSecuritySensitivePath } from '../../../review/securitySensitivePaths';
 import type { ReviewModelClient } from '../../../gateway/openRouterClient';
 
 export const preflightDiffReviewDefinition: ToolDefinition = {
@@ -408,7 +408,8 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
         totalDeleted += file.deletedLines.length;
         allModifiedExports.push(...file.modifiedExports);
 
-        if (blocksFastShipByPath(file.path)) {
+        // Risk tier (not fast-ship): the shared predicate OR the coarse screen.
+        if (isSecuritySensitivePath(file.path) || blocksFastShipByPath(file.path)) {
           riskTier = 'CRITICAL';
         } else if (file.modifiedExports.length > 0 && riskTier !== 'CRITICAL') {
           riskTier = 'HIGH';
@@ -421,7 +422,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
       if (allModifiedExports.length > 0) {
         blastRadiusSummary += ` ${allModifiedExports.length} exported symbol(s) modified (${allModifiedExports.slice(0, 3).join(', ')}${allModifiedExports.length > 3 ? '...' : ''}).`;
       }
-      if (touchedPaths.some((p) => blocksFastShipByPath(p))) {
+      if (touchedPaths.some((p) => isSecuritySensitivePath(p) || blocksFastShipByPath(p))) {
         blastRadiusSummary += ` Touches critical infrastructure or security components.`;
       }
 

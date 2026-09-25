@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { containsExecutableOrSensitiveCode } from '../../src/panel/classifierEngine';
 import { evaluatePersonaGating } from '../../src/panel/panelEngine';
+import { createPreflightDiffReviewTool } from '../../src/mcp/server/tools/preflightDiffReview';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { planDiffShrink, type DiffShrinkInput } from '../../src/review/diffShrink';
 import {
@@ -81,6 +82,10 @@ describe('one security-sensitive predicate', () => {
     ['package.json', 'dependency_manifest'],
     ['Dockerfile', 'container'],
     ['infra/main.tf', 'iac'],
+    ['CODEOWNERS', 'repo_control'],
+    ['.github/CODEOWNERS', 'ci'],
+    ['.gitattributes', 'repo_control'],
+    ['.gitmodules', 'repo_control'],
   ])('%s is sensitive (%s)', (path, pathClass) => {
     expect(sensitive.isSecuritySensitivePath(path)).toBe(true);
     expect(sensitive.securitySensitivePathClass(path)).toBe(pathClass);
@@ -96,14 +101,12 @@ describe('one security-sensitive predicate', () => {
     expect(sensitive.securitySensitivePathClass(path)).toBeNull();
   });
 
-  it('the fast-ship screen is a superset of the predicate', () => {
-    for (const path of [...LOCKFILES, ...TOOLCHAIN_PINS, 'src/auth/x.ts', 'Chart.yaml']) {
-      expect(sensitive.blocksFastShipByPath(path)).toBe(true);
-    }
-    // The coarse substring arm still blocks what it always did.
+  it('the fast-ship substring screen keeps blocking what it always did', () => {
     expect(sensitive.blocksFastShipByPath('src/monkey.ts')).toBe(true);
+    expect(sensitive.blocksFastShipByPath('.github/ISSUE_TEMPLATE/bug.md')).toBe(true);
     expect(sensitive.blocksFastShipByPath('docs/guide.md')).toBe(false);
   });
+
 });
 
 // ---------------------------------------------------------------------------
@@ -206,6 +209,20 @@ describe('fast-ship guard', () => {
   it('prose on a sensitive-sounding path stays fast-ship eligible (it is not an executable surface)', () => {
     expect(containsExecutableOrSensitiveCode([{ path: 'docs/login.md', patch: '@@ -1 +1 @@\n-a\n+b\n' }])).toBe(false);
   });
+  // The panel guard and the preflight MCP tool are the two fast-ship surfaces; they must agree.
+  async function preflightEligible(path: string): Promise<boolean> {
+    const diff = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,1 +1,2 @@\n+x\n`;
+    const result = await createPreflightDiffReviewTool().execute({ diff, repo: 'o/r' });
+    // The short-circuit (fast-ship) answer, not the later heuristic `eligible_to_ship`.
+    return String(JSON.parse((result.content[0] as { text: string }).text).blast_radius_summary).includes('Eligible for fast-ship');
+  }
+
+  it.each(['docs/login.md', 'docs/guide.md', 'docs/secrets.md', '.tool-versions', 'bun.lock', 'Chart.yaml', 'package.json'])(
+    'the panel guard and the preflight tool agree on %s', async (path) => {
+      const panelEligible = !containsExecutableOrSensitiveCode([{ path, patch: '@@ -1 +1 @@\n-a\n+b\n' }]);
+      expect(await preflightEligible(path)).toBe(panelEligible);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

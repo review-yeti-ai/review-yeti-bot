@@ -283,8 +283,17 @@ export function isSecuritySensitivePath(filePath: unknown): boolean {
  * coarser than `isSecuritySensitivePath`: it only decides whether a change may
  * skip the panel entirely, so an over-match (`monkey.ts` contains `key`) costs a
  * review, never coverage. It is NOT a depth rule; depth uses the predicate
- * above, and every fast-ship check also applies that predicate, so the screen
- * is always a superset of it.
+ * above.
+ *
+ * How fast-ship composes (both surfaces, the panel's
+ * `containsExecutableOrSensitiveCode` and the preflight MCP tool, follow it):
+ * only a prose/asset file (safe extension) or a safe standalone file can be
+ * fast-ship eligible at all, and such a file is then refused only by this
+ * substring screen (`blocksFastShipByPath`). Every other file -- which covers
+ * every non-prose path the predicate flags: lockfiles, pins, manifests, CI,
+ * IaC, source -- is never eligible. The one deliberate exception to "the
+ * predicate blocks fast-ship" is prose on a sensitive-sounding path
+ * (`docs/login.md`): it is not an executable surface.
  */
 export const FAST_SHIP_BLOCKED_PATH_SUBSTRINGS: readonly string[] = [
   // CI/CD pipelines and automation
@@ -302,9 +311,8 @@ export const FAST_SHIP_BLOCKED_PATH_SUBSTRINGS: readonly string[] = [
   'makefile', 'rakefile', 'procfile',
 ];
 
-/** The fast-ship screen: the canonical predicate OR any coarse substring token. */
+/** The fast-ship substring screen for otherwise-eligible (prose/asset/safe standalone) files. */
 export function blocksFastShipByPath(filePath: string): boolean {
-  if (isSecuritySensitivePath(filePath)) return true;
   const lower = String(filePath).toLowerCase();
   return FAST_SHIP_BLOCKED_PATH_SUBSTRINGS.some((token) => lower.includes(token));
 }

@@ -313,10 +313,10 @@ export function containsExecutableOrSensitiveCode(
     }
 
     // 6. Sensitive pattern check: any path matching a sensitive token is immediately barred.
-    // Every path the shared full-depth predicate flags is already barred by step 2 or 3 or
-    // here, except prose/assets on a sensitive-sounding path (`docs/login.md`) and the safe
-    // standalone files above, which are not an executable surface and stay fast-ship eligible
-    // (pinned in rel1135SensitivePaths.test.ts).
+    // Composition shared with the preflight tool and documented next to
+    // FAST_SHIP_BLOCKED_PATH_SUBSTRINGS in review/securitySensitivePaths.ts: every non-prose
+    // path the shared predicate flags was already barred above; prose/assets on a
+    // sensitive-sounding path (`docs/login.md`) stay eligible (rel1135SensitivePaths.test.ts).
     for (const pattern of SENSITIVE_PATH_PATTERNS) {
       if (p.includes(pattern)) {
         return true;
