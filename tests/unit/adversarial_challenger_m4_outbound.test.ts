@@ -580,7 +580,7 @@ describe('Milestone 4 Challenger 2 — Outbound Fleet & Concurrency Stress Suite
     });
 
     it('TC-CHAL2-CON-03: Semaphore limiter enforces MAX_CONCURRENT_PERSONAS ceiling under heavy burst', async () => {
-      expect(MAX_CONCURRENT_PERSONAS).toBe(4);
+      expect(MAX_CONCURRENT_PERSONAS).toBe(8);
       let concurrentActive = 0;
       let maxActiveObserved = 0;
 

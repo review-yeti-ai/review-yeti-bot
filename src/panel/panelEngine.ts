@@ -102,6 +102,7 @@ import {
   SENSITIVE_PATH_PATTERNS,
 } from './classifierEngine';
 import { buildFastShipPanelResult, buildDocumentationOnlyPanelResult } from './fastShipResult';
+import { buildPanelPhaseTiming, resolveMaxConcurrentLanes, timeLaneSlotAcquire } from './panelPhaseTiming';
 import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { TASK_DIMENSIONS } from './reviewTask';
@@ -2534,7 +2535,8 @@ async function invoke(
   };
 }
 
-export const MAX_CONCURRENT_PERSONAS = 4;
+// REL-1133: was 4, which queued the 5th+ lane of a run behind a whole extra lane duration.
+export const MAX_CONCURRENT_PERSONAS = resolveMaxConcurrentLanes();
 let activeInFlightPersonas = 0;
 
 export function getActivePersonaCallCount(): number {
@@ -4180,6 +4182,8 @@ export async function executePersonaPanel(options: {
       }
     }
 
+    const laneQueueWaitMs = new Map<string, number>();
+    const laneFanoutStartedAt = Date.now();
     const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
       await mapConcurrentSettled(
         applicable,
@@ -4224,7 +4228,10 @@ export async function executePersonaPanel(options: {
             };
           }
 
-          const release = await processPersonaLimiter.acquire(signal);
+          const release = await timeLaneSlotAcquire(
+            () => processPersonaLimiter.acquire(signal),
+            (waitMs) => laneQueueWaitMs.set(persona.id, waitMs),
+          );
           activeInFlightPersonas++;
           try {
             const currentHeadNow = isCurrentHead ? isCurrentHead() : true;
@@ -4307,6 +4314,7 @@ export async function executePersonaPanel(options: {
           }
         }
       );
+    const laneFanoutMs = Date.now() - laneFanoutStartedAt;
 
     throwIfPanelAborted(signal);
 
@@ -4466,6 +4474,7 @@ export async function executePersonaPanel(options: {
     const isFlowchartPersonaActive = applicable.some((p) => p.id === 'review_flowchart');
     const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
 
+    const moderatorStartedAt = Date.now();
     const [moderatorRun, mermaidDiagram, prSummary] = await Promise.all([
       runInSpan('review_yeti_moderator', async (modSpan) => {
         const moderatorInactivityTimeoutMs = configuredProviderTimeoutMs(
@@ -4558,6 +4567,8 @@ export async function executePersonaPanel(options: {
     throwIfPanelAborted(signal);
 
     const moderatedFindings = moderatorRun.modFindings;
+    const moderatorPhaseMs = Date.now() - moderatorStartedAt;
+    const arbiterStartedAt = Date.now();
 
     let arbiterResult: PanelResult['arbiter'] | null = null;
     const arbiterErrors: string[] = [];
@@ -4641,6 +4652,7 @@ export async function executePersonaPanel(options: {
       }
     }
     if (!arbiterResult) throw new PanelConfigurationError(`arbiter failed closed: ${arbiterErrors.join('; ')}`);
+    const arbiterPhaseMs = Date.now() - arbiterStartedAt;
 
     throwIfPanelAborted(signal);
 
@@ -4709,11 +4721,29 @@ export async function executePersonaPanel(options: {
 
     throwIfPanelAborted(signal);
 
+    const finalPanelWallClockMs = Date.now() - panelStartedAt;
+    try {
+      logger.info('Panel phase timing', { ...buildPanelPhaseTiming({
+        repository,
+        headSha,
+        jobId: effectiveJobId,
+        panelWallClockMs: finalPanelWallClockMs,
+        preChecksMs: preChecksTotalDurationMs,
+        laneFanoutMs,
+        moderatorMs: moderatorPhaseMs,
+        arbiterMs: arbiterPhaseMs,
+        maxConcurrentLanes: MAX_CONCURRENT_PERSONAS,
+        lanes: personas,
+        laneQueueWaitMs,
+        failedLaneIds: optionalFailures.map((failure) => failure.id),
+      }) });
+    } catch (_) {}
+
     return {
         headSha,
         repositoryVisibility,
         applicablePersonaIds: applicable.map((persona) => persona.id),
-        panelWallClockMs: Date.now() - panelStartedAt,
+        panelWallClockMs: finalPanelWallClockMs,
         personas,
         optionalFailures,
         quorum: { required: config.quorum, distinctProviders, satisfied: true },
