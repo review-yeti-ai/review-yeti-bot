@@ -107,6 +107,7 @@ import { startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevT
 import {
   markThrownByPanel,
   thrownInfrastructureDiagnostics,
+  thrownInfrastructureLaneCoverage,
   thrownPanelInfrastructureFailure,
   type ThrownPanelInfrastructureFailure,
 } from '../review/thrownPanelInfrastructure';
@@ -2537,6 +2538,7 @@ export async function runPublishingReviewWorker(
     }
     const thrownInfrastructure = await reportTerminalFailure(outcome, checkId);
     if (thrownInfrastructure) {
+      const thrownExpectedLanes = preparedPersonaIds.length > 0 ? preparedPersonaIds.length : null;
       // REL-1124: the INCOMPLETE result is durably recorded and the check published; like the
       // returned-panel INCOMPLETE path, this run ends with its receipt, not "Failed live".
       return {
@@ -2557,8 +2559,8 @@ export async function runPublishingReviewWorker(
         failureClass: thrownInfrastructure.failureClass,
         startedAt,
         completedAt: new Date(now()).toISOString(),
-        coverage: { mode: 'panel', expectedLaneCount: preparedPersonaIds.length > 0 ? preparedPersonaIds.length : null,
-          completedLaneCount: 0, failedLaneCount: thrownInfrastructure.incompleteLanes.length,
+        coverage: { mode: 'panel', expectedLaneCount: thrownExpectedLanes,
+          ...thrownInfrastructureLaneCoverage(thrownInfrastructure, thrownExpectedLanes),
           rosterValid: true, quorumSatisfied: false, fullPanelComplete: false },
       };
     }

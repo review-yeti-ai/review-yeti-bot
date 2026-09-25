@@ -217,3 +217,22 @@ export function thrownInfrastructureDiagnostics(
     recoverableIncompletePanel: true,
   };
 }
+
+/**
+ * REL-1124: the lane coverage a thrown infrastructure failure honestly supports, for the worker's
+ * receipt. Only a lane-stage throw names reviewer lanes that failed; a moderator or arbiter throw
+ * happened after every reviewer lane had completed; a raw panel throw carries no lane count at all.
+ */
+export function thrownInfrastructureLaneCoverage(
+  failure: ThrownPanelInfrastructureFailure,
+  expectedLaneCount: number | null,
+): { completedLaneCount: number; failedLaneCount: number } {
+  if (failure.stage === 'lanes') {
+    const failedLaneCount = failure.incompleteLanes.length;
+    return { failedLaneCount, completedLaneCount: expectedLaneCount === null ? 0 : Math.max(0, expectedLaneCount - failedLaneCount) };
+  }
+  if (failure.stage === 'moderator' || failure.stage === 'arbiter') {
+    return { failedLaneCount: 0, completedLaneCount: expectedLaneCount ?? 0 };
+  }
+  return { failedLaneCount: 0, completedLaneCount: 0 };
+}

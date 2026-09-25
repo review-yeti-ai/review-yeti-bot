@@ -179,6 +179,11 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
     // Negative proof: before REL-1124 this rejected, and the run ended "Failed live".
     const receipt = await runPublishingReviewWorker(f.env, f.deps);
     expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass, findingCount: 0 });
+    // The receipt counts only what the thrown evidence supports (2 expected lanes here).
+    expect(receipt.coverage).toMatchObject({ expectedLaneCount: 2, quorumSatisfied: false, fullPanelComplete: false,
+      ...(detail.includes('sec-lane') ? { completedLaneCount: 1, failedLaneCount: 1 }
+        : /arbiter|moderator/u.test(detail) ? { completedLaneCount: 2, failedLaneCount: 0 }
+          : { completedLaneCount: 0, failedLaneCount: 0 }) });
 
     const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
     expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
@@ -431,6 +436,28 @@ describe('REL-1124: the decision itself', () => {
     expect(thrownPanelInfrastructureFailure(noStatus)).not.toHaveProperty('providerStatus');
   });
 
+  it.each([
+    ['PanelDeadlineExceededError'], ['AbortError'], ['ReviewSupersededError'], ['PanelCancellationError'],
+  ])('never routes a %s, whatever its message says', (name) => {
+    const error = Object.assign(new Error('fetch failed terminated'), { name });
+    expect(thrownPanelInfrastructureFailure(markThrownByPanel(error))).toBeUndefined();
+  });
+
+  it('a frozen rejection value cannot be marked, so it keeps its original failure', () => {
+    const frozen = Object.freeze(new Error('fetch failed'));
+    expect(() => markThrownByPanel(frozen)).not.toThrow();
+    expect(thrownPanelInfrastructureFailure(frozen)).toBeUndefined();
+  });
+
+  it('lists an arbiter tried on two providers once per distinct failure', () => {
+    const error = markThrownByPanel(attachPanelFailureEvidence(new Error('arbiter failed closed'), {
+      stage: 'arbiter', findingsObserved: false,
+      lanes: [{ id: 'arbiter', failureClass: 'transport' }, { id: 'arbiter', failureClass: 'transport' },
+        { id: 'arbiter', failureClass: 'provider_error', providerStatus: 503 }] }));
+    expect(thrownPanelInfrastructureFailure(error)?.incompleteLanes).toEqual([
+      { id: 'arbiter', failureClass: 'transport' }, { id: 'arbiter', failureClass: 'provider_error', providerStatus: 503 }]);
+  });
+
   it('keeps evidence off the serialized error', () => {
     const error = requiredSecLaneFetchFailed();
     expect(Object.keys(error)).not.toContain('stage');
@@ -459,7 +486,7 @@ function panelConfig(): CtReviewConfigV3 {
 
 type Fail = { role: 'persona:sec-lane' | 'moderator' | 'arbiter'; error?: () => Error; content?: string };
 
-async function runRealPanel(fail: Fail, options: { qualFinding?: boolean; qualContent?: string } = {}) {
+async function runRealPanel(fail: Fail, options: { qualFinding?: boolean; qualContent?: string; moderatorFinding?: boolean } = {}) {
   vi.spyOn(Math, 'random').mockReturnValue(0);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   vi.spyOn(logger, 'info').mockImplementation(() => undefined);
@@ -476,7 +503,10 @@ async function runRealPanel(fail: Fail, options: { qualFinding?: boolean; qualCo
       throw fail.error!();
     }
     if (role === 'arbiter') return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'ok' }), usage: null, costUSD: null, raw: {} };
-    if (role === 'moderator') return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
+    if (role === 'moderator') return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED',
+      findings: options.moderatorFinding
+        ? [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Unchecked input', body: 'The value is used unvalidated.', confidence: 90 }]
+        : [] }), usage: null, costUSD: null, raw: {} };
     if (options.qualContent !== undefined && persona === 'qual-lane') return { model: opts.model, content: options.qualContent, usage: null, costUSD: null, raw: {} };
     const findings = options.qualFinding && (persona === 'qual-lane' || /correctness/iu.test(system))
       ? [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Off by one', body: 'The loop skips the last element.', confidence: 90 }]
@@ -533,6 +563,20 @@ describe('REL-1124: executePersonaPanel throws text-free infrastructure evidence
     expect((caught as Error).message).toMatch(/^arbiter failed closed/u);
     expect(panelFailureEvidenceOf(caught)).toMatchObject({ stage: 'arbiter', findingsObserved: false });
     expect(panelFailureEvidenceOf(caught)?.lanes.every((lane) => lane.id === 'arbiter' && lane.failureClass === 'transport')).toBe(true);
+  }, 120_000);
+
+  it('an arbiter lost to the gateway after the MODERATOR reported a finding is not re-rolled', async () => {
+    const caught = await runRealPanel({ role: 'arbiter',
+      error: () => new OpenRouterConnectionError('OpenRouter SDK connection failure: terminated') }, { moderatorFinding: true });
+    expect(panelFailureEvidenceOf(caught)).toMatchObject({ stage: 'arbiter', findingsObserved: true });
+    expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toBeUndefined();
+  }, 120_000);
+
+  it('a moderator lost to the gateway after a LANE reported a finding is not re-rolled', async () => {
+    const caught = await runRealPanel({ role: 'moderator',
+      error: () => new OpenRouterResponseError('bifrost HTTP 502', 502) }, { qualFinding: true });
+    expect(panelFailureEvidenceOf(caught)).toMatchObject({ stage: 'moderator', findingsObserved: true });
+    expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toBeUndefined();
   }, 120_000);
 
   it('a moderator gateway 502 escapes with moderator evidence and its provider status', async () => {
