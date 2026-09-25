@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.5...v1.92.6) (2026-09-25)
+
+
+### Bug Fixes
+
+* **review:** close the Gate at once on a no-persona coverage failure instead of rejecting the completion with 422 (REL-1122) ([#1074](https://github.com/review-yeti-ai/review-yeti-bot/issues/1074)) ([2269793](https://github.com/review-yeti-ai/review-yeti-bot/commit/2269793718dc818de9867b9d42f05e79a78acedf))
+
 ## [1.92.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.4...v1.92.5) (2026-09-25)
 
 
