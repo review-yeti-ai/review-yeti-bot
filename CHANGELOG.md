@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.3...v1.92.4) (2026-09-25)
+
+
+### Bug Fixes
+
+* **review:** route uncovered HTML pages and accept re-keyed lockfile entries instead of failing with no persona (REL-1118) ([#1068](https://github.com/review-yeti-ai/review-yeti-bot/issues/1068)) ([24313e6](https://github.com/review-yeti-ai/review-yeti-bot/commit/24313e693c492f23375561cf5536ef2ac4566170))
+
 ## [1.92.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.2...v1.92.3) (2026-09-25)
 
 
