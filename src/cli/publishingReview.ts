@@ -105,6 +105,7 @@ import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
 import { startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
 import type { JevAsker } from '../gateway/jevClient';
+import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -243,9 +244,14 @@ export interface PublishingReviewReceipt {
   coverage: PublishingCoverageProjection;
   personas?: PublishingReviewPersonaMetrics[];
   metrics?: {
+    /** REL-1132: every provider call of the run (all turns and attempts of every lane, the
+     * moderator, the arbiter and any other caller such as the classifier) -- never only a
+     * terminal turn. See `tokenAccounting` for the per-role and per-lane breakdown. */
     totalPromptTokens: number;
     totalCompletionTokens: number;
     totalTokens: number;
+    /** REL-1132: the breakdown behind the three totals above. */
+    tokenAccounting?: TokenAccounting;
     totalTurns: number;
     totalToolCalls: number;
     /** SUM of every lane's individual duration -- overstates wall time under concurrent fan-out.
@@ -642,15 +648,21 @@ function renderTelemetrySummary(telemetry: {
    * Zoekt index, separate from the lane time above. Absent when grounding was not attempted
    * (disabled) so a run without zoekt renders byte-identical to before this field existed. */
   zoektIndexBuildMs?: number;
+  /** REL-1132: every provider call of the run, by role and lane. Rendered after the base line when
+   * any call returned a response. */
+  tokenAccounting?: TokenAccounting;
 }): string {
+  const tokenNote = telemetry.tokenAccounting && telemetry.tokenAccounting.total.calls > 0
+    ? `\n\n${renderTokenAccountingSummary(telemetry.tokenAccounting)}`
+    : '';
   const zoektNote = telemetry.zoektIndexBuildMs !== undefined
     ? ` Zoekt index build: ${telemetry.zoektIndexBuildMs}ms.`
     : '';
   const base = `Telemetry: ${telemetry.totalTurns} turns, ${telemetry.totalToolCalls} tool calls, `
     + `${telemetry.totalTokens} tokens across ${telemetry.laneCount} lanes (${telemetry.totalDurationMs}ms).${zoektNote}`;
-  return typeof telemetry.panelWallClockMs === 'number'
+  return (typeof telemetry.panelWallClockMs === 'number'
     ? `${base} Panel wall clock: ${telemetry.panelWallClockMs}ms (the figure above sums lane durations, not wall time).`
-    : base;
+    : base) + tokenNote;
 }
 
 /**
@@ -1005,6 +1017,23 @@ export async function runPublishingReviewWorker(
   });
   const now = deps.now || Date.now;
   const startedAt = new Date(now()).toISOString();
+  // REL-1132: every provider call this run makes goes through `client` below, which records it here.
+  const tokenLedger = new TokenLedger();
+  const logTokenAccounting = (): void => {
+    if (tokenLedger.calls === 0) return;
+    try {
+      logger.info('Review token accounting', {
+        runId: identity.runId,
+        repository: identity.repo,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        executionAttempt: identity.executionAttempt,
+        ...tokenAccountingLogFields(tokenLedger.snapshot()),
+      });
+    } catch {
+      // Telemetry never changes a review outcome.
+    }
+  };
   // REL-1038: where this worker's full log lives once its Pod is collected.
   const workerLogLocator = renderWorkerLogLocator(env);
   const sourceLoader = deps.sourceLoader || loadSameHeadReviewSource;
@@ -1041,7 +1070,7 @@ export async function runPublishingReviewWorker(
       panelEvidence?: {
         requestedModel: string;
         resolvedModel?: string;
-        telemetry: { totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number; panelWallClockMs?: number };
+        telemetry: { totalTurns: number; totalToolCalls: number; totalTokens: number; laneCount: number; totalDurationMs: number; panelWallClockMs?: number; tokenAccounting?: TokenAccounting };
         failedLanes: PublishingReviewFailedLane[];
         /** REL-1113: present only when every failed lane failed on infrastructure; the check is
          * then titled INCOMPLETE and names these lanes. */
@@ -1146,7 +1175,8 @@ export async function runPublishingReviewWorker(
                       ? [renderFailedLanesSummary(panelFailure.panelEvidence.failedLanes)]
                       : []),
                   ]
-                : []),
+                // REL-1132: a panel that threw still spent tokens; show what it spent.
+                : tokenLedger.calls > 0 ? [renderTokenAccountingSummary(tokenLedger.snapshot())] : []),
               ...(workerLogLocator ? [workerLogLocator] : []),
             ].join('\n\n'),
           });
@@ -1289,7 +1319,11 @@ export async function runPublishingReviewWorker(
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
-    const client = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
+    const modelClient = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
+    // REL-1132: every call the engines make is metered into this run's ledger. The composed shadow
+    // engine gets its own label so its cost never reads as panel cost.
+    const client = meterModelClient(modelClient, tokenLedger);
+    const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });
 
     // Full-repository grounding for persona find_files/read_file tools (see
     // `createRepoFileProvider`'s doc comment for the defect this fixes: a diff-scoped miss on a
@@ -1553,7 +1587,7 @@ export async function runPublishingReviewWorker(
               baseSha: identity.baseSha,
               prNumber: identity.prNumber,
               repositoryVisibility,
-              client,
+              client: shadowClient,
               jobId: identity.runId,
               signal: activeShadowDeadline.signal,
               repoFileProvider,
@@ -1852,9 +1886,14 @@ export async function runPublishingReviewWorker(
       };
     });
 
-    const totalPromptTokens = personaMetrics.reduce((sum, p) => sum + p.promptTokens, 0);
-    const totalCompletionTokens = personaMetrics.reduce((sum, p) => sum + p.completionTokens, 0);
-    const totalTokens = personaMetrics.reduce((sum, p) => sum + p.totalTokens, 0);
+    // REL-1132: the run's token figures come from the metered client, which saw every provider
+    // call, not from `personaMetrics` (whose per-lane `*Tokens` fields are each lane's terminal
+    // turn only). `totalTokens` below feeds the "N tokens across M lanes" line, so it is the lanes'
+    // share; the receipt's grand totals and the role/lane breakdown come from `tokenAccounting`.
+    const tokenAccounting = tokenLedger.snapshot();
+    const totalPromptTokens = tokenAccounting.total.promptTokens;
+    const totalCompletionTokens = tokenAccounting.total.completionTokens;
+    const totalTokens = tokenAccounting.byRole.lanes.totalTokens;
     const totalTurns = personaMetrics.reduce((sum, p) => sum + p.turnsCount, 0);
     const totalToolCalls = personaMetrics.reduce((sum, p) => sum + p.toolCallsCount, 0);
     const totalDurationMs = personaMetrics.reduce((sum, p) => sum + p.durationMs, 0);
@@ -1974,7 +2013,7 @@ export async function runPublishingReviewWorker(
           `Repository visibility: ${repositoryVisibility}.`,
           renderTelemetrySummary({
             totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs,
-            panelWallClockMs,
+            panelWallClockMs, tokenAccounting,
             ...(zoektGroundingEnabled ? { zoektIndexBuildMs } : {}),
           }),
         ];
@@ -2174,7 +2213,7 @@ export async function runPublishingReviewWorker(
         panelEvidence: {
           requestedModel: transport.model,
           resolvedModel: resolvedTransportModel,
-          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs },
+          telemetry: { totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs, tokenAccounting },
           failedLanes,
           ...(infrastructureIncomplete ? { incompleteLanes } : {}),
         },
@@ -2195,7 +2234,7 @@ export async function runPublishingReviewWorker(
           renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt),
           renderCoverageSummary(coverage),
           renderTransportSummary(transport.model, resolvedTransportModel),
-          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs }),
+          renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs, tokenAccounting }),
           renderFailedLanesSummary(failedLanes),
           ...(workerLogLocator ? [workerLogLocator] : []),
         ].join('\n\n'),
@@ -2352,7 +2391,8 @@ export async function runPublishingReviewWorker(
       metrics: {
         totalPromptTokens,
         totalCompletionTokens,
-        totalTokens,
+        totalTokens: tokenAccounting.total.totalTokens,
+        tokenAccounting,
         totalTurns,
         totalToolCalls,
         totalDurationMs,
@@ -2372,6 +2412,9 @@ export async function runPublishingReviewWorker(
         await shadowOutcomePromise.catch(() => undefined);
         shadowDeadline.cleanup();
       }
+      // REL-1132: one structured line per run with every provider call it made, after the shadow
+      // engine (if any) has settled so its calls are included.
+      logTokenAccounting();
       // One shared deletion contract (async, fail-soft) — the worker must not
       // hand-roll its own rm for the scratch tree.
       await removeScratchTree(zoektScratchRoot.scratchDir);
