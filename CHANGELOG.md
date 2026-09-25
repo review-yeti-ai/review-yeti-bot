@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.8...v1.92.9) (2026-09-25)
+
+
+### Bug Fixes
+
+* **review:** one security-sensitive path predicate with lockfiles and toolchain pins (REL-1135) ([#1081](https://github.com/review-yeti-ai/review-yeti-bot/issues/1081)) ([d589ef6](https://github.com/review-yeti-ai/review-yeti-bot/commit/d589ef65ab779a10d8734b6074e12698aab6cb81))
+
 ## [1.92.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.7...v1.92.8) (2026-09-25)
 
 
