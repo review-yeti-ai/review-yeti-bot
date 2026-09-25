@@ -283,6 +283,28 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(joins[0]).toMatchObject({ path: 'src/auth/token.ts', sensitive_any: true, path_class: 'sensitive' });
   });
 
+  it('REL-1135: a lane reported only in unreportedLanes reaches the join as `failed`', async () => {
+    const info = vi.spyOn(logger, 'info');
+    const unreported = () => {
+      const result = panelResult('clean') as ReturnType<typeof panelResult> & { unreportedLanes?: unknown[] };
+      result.personas = result.personas.filter((lane) => lane.id !== 'perf-lane');
+      result.unreportedLanes = [{ id: 'perf-lane', error: 'no verdict', failureClass: 'contract' }];
+      return result;
+    };
+    try {
+      await run(SHADOW_ON, 'clean', { jevTriageShadow: { asker: persuasiveAsker().asker }, panelRunner: vi.fn(async () => unreported()) });
+    } catch {
+      // An unreported lane may fail the run; the join line is what this test pins.
+    }
+    const joins = info.mock.calls
+      .map((call) => call[1] as Record<string, any> | undefined)
+      .filter((meta): meta is Record<string, any> => meta?.event === JEV_TRIAGE_LOG.join);
+    expect(joins.length).toBeGreaterThan(0);
+    for (const join of joins) {
+      expect(join.lanes['perf-lane']).toMatchObject({ outcome: 'failed', completed: false });
+    }
+  });
+
   it('flag off: the Jev asker is never called even when TYPESAFE_* is fully configured', async () => {
     const persuasive = persuasiveAsker();
     await run(TYPESAFE_ENV, 'advisory', { jevTriageShadow: { asker: persuasive.asker } });
