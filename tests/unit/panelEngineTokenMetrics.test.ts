@@ -3,6 +3,7 @@ import { executePersonaPanel, extractMessageContentText } from '../../src/panel/
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
 import { getMetrics } from '../../src/telemetry';
+import { TokenLedger, meterModelClient } from '../../src/telemetry/tokenLedger';
 
 /**
  * REL-1132: `review_yeti_tokens_*_total` must sum every real provider call -- every turn of every
@@ -86,12 +87,15 @@ describe('panelEngine.ts -- worker token counters count every provider call (REL
       }),
     };
 
+    // The publishing worker's metering wrapper, around the same client: the ledger must attribute
+    // the panel's real request labels (`metadata.role`) to the right roles.
+    const ledger = new TokenLedger();
     const result = await executePersonaPanel({
       config: buildTelemetryConfig(3),
       changedFiles: CHANGED_FILES,
       repository: 'calltelemetry/repo',
       headSha: 'head-sha-token-metrics',
-      client: mockClient as unknown as OmniRouteClient,
+      client: meterModelClient(mockClient as never, ledger) as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
     });
     expect(result.personas.find((lane) => lane.id === 'telemetry-lane')?.turnsCount).toBe(3);
@@ -110,5 +114,12 @@ describe('panelEngine.ts -- worker token counters count every provider call (REL
     expect(totalAdd.mock.calls.filter(([, labels]) => ['telemetry-lane', 'moderator', 'arbiter']
       .includes((labels as Record<string, string>)?.persona))).toHaveLength(5);
     expect(totalAdd.mock.calls.every(([, labels]) => (labels as Record<string, string>)?.provider === 'claude')).toBe(true);
+
+    const accounting = ledger.snapshot();
+    expect(accounting.byLane).toEqual({ 'telemetry-lane': expect.objectContaining({ calls: 3, totalTokens: 525 }) });
+    expect(accounting.byRole.moderator).toMatchObject({ calls: 1, totalTokens: 50 });
+    expect(accounting.byRole.arbiter).toMatchObject({ calls: 1, totalTokens: 35 });
+    expect(accounting.byRole.other.calls).toBe(0);
+    expect(accounting.total.totalTokens).toBe(610);
   });
 });

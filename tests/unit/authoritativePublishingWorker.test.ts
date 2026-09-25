@@ -392,6 +392,14 @@ describe('authoritative prepared publishing worker', () => {
     expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0])).toEqual(expectedEvent(f, cleanResult()));
     expect(receipt).toMatchObject({ conclusion: 'success', verdict: 'SHIP', transport: 'bifrost', model: transport.model });
     expect(f.fetch).not.toHaveBeenCalled();
+    // REL-1132: the metered client the engine received is a pass-through to the admitted client:
+    // the exact request object reaches `f.client.complete` unchanged and its outcome propagates.
+    expect(f.client.complete).not.toHaveBeenCalled();
+    const probe = { model: transport.model, messages: [] } as unknown as Parameters<typeof f.client.complete>[0];
+    await expect(f.panelRunner.mock.calls[0][0].client.complete(probe))
+      .rejects.toThrow('A test must never invoke a provider');
+    expect(f.client.complete).toHaveBeenCalledExactlyOnceWith(probe);
+    expect(f.client.complete.mock.calls[0][0]).toBe(probe);
   });
 
   it('creates and completes exactly one raw Review Yeti check, never the service-owned gate', async () => {
