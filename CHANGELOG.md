@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.7...v1.92.8) (2026-09-25)
+
+
+### Reverts
+
+* **gateway:** stop bypassing the Bifrost response cache (REL-1134) ([#1082](https://github.com/review-yeti-ai/review-yeti-bot/issues/1082)) ([9977271](https://github.com/review-yeti-ai/review-yeti-bot/commit/9977271a0783bede3655444ff61cfcb7702b5fce))
+
 ## [1.92.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.6...v1.92.7) (2026-09-25)
 
 
