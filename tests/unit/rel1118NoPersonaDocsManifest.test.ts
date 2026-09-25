@@ -233,6 +233,18 @@ describe('REL-1118: re-keyed lockfile entries, and what stays refused', () => {
     expect(verifyLockfileOnlyChange(path, body)).toEqual({ ok: false, reason });
   });
 
+  it.each(['site/index.htm', 'reports/run.xhtml', 'docs/REPORT.HTML'])('routes an uncovered %s like .html', (path) => {
+    const result = resolveReviewApplicability(enabled(), [{ path, patch: HTML_PATCH }]);
+    expect(result.unmatchedPaths).toEqual([]);
+    expect(result.routedFiles.map((file) => [file.path, file.reason])).toEqual([[path, 'fallback']]);
+  });
+
+  it.each(['docs/page.hta', 'docs/page.shtml', 'docs/page.htmlx'])('does not route %s as an HTML page', (path) => {
+    const result = resolveReviewApplicability(enabled(), [{ path, patch: HTML_PATCH }]);
+    expect(result.routedFiles).toEqual([]);
+    expect(result.unmatchedPaths).toEqual([path]);
+  });
+
   it('keeps an uncovered HTML page beside uncovered source a coverage failure', () => {
     const result = resolveReviewApplicability(enabled(), [
       { path: CT_UAT_1512, patch: HTML_PATCH },
