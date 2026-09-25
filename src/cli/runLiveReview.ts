@@ -1814,6 +1814,13 @@ export async function runWorker(
         conclusion: receipt.conclusion,
         transport: receipt.transport,
         blockingFindingCount: receipt.blockingFindingCount,
+        // REL-1132: every provider call of the run, not only each lane's terminal turn.
+        ...(receipt.metrics ? {
+          tokensTotal: receipt.metrics.totalTokens,
+          tokensPrompt: receipt.metrics.totalPromptTokens,
+          tokensCompletion: receipt.metrics.totalCompletionTokens,
+          ...(receipt.metrics.tokenAccounting ? { providerCalls: receipt.metrics.tokenAccounting.total.calls } : {}),
+        } : {}),
       });
     } finally {
       process.removeListener('SIGTERM', onSigterm);
