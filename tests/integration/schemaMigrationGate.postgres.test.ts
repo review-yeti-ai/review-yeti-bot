@@ -1,8 +1,9 @@
-import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 import { PostgresStore } from '../../src/persistence/postgresStore';
 import { SCHEMA_MIGRATIONS_TABLE } from '../../src/persistence/schemaMigrationGate';
+import { logger } from '../../src/utils/logger';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 // REL-1069: fail loudly in CI if the DB URL is missing.
@@ -116,7 +117,7 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
     await pool.query(`DELETE FROM ${SCHEMA_MIGRATIONS_TABLE}`);
     live = await openLiveTransactionOnReviewRuns();
 
-    const started = Date.now();
+    const warnLog = vi.spyOn(logger, 'warn');
     const initialization = initializeFresh();
     // Keep the live transaction for longer than one lock_timeout so the first
     // attempt fails with 55P03 and must be retried rather than crash the pod.
@@ -126,7 +127,13 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
     live = undefined;
 
     await withDeadline(initialization, 20_000, 'initialize() after live transaction ended');
-    expect(Date.now() - started).toBeGreaterThanOrEqual(5_000);
+    // The first attempt must have given up on lock_timeout (55P03) and retried,
+    // rather than blocking behind the live transaction until it committed.
+    expect(warnLog).toHaveBeenCalledWith(
+      '[PostgresStore] Schema initialization lock conflict; retrying',
+      expect.objectContaining({ code: 'postgres_initialization_lock_conflict', sqlState: '55P03', attempt: 1 }),
+    );
+    warnLog.mockRestore();
     const recorded = await pool.query(`SELECT COUNT(*)::int AS count FROM ${SCHEMA_MIGRATIONS_TABLE}`);
     expect(recorded.rows[0].count).toBe(1);
   }, 40_000);

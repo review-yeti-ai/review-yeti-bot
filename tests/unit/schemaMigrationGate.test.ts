@@ -200,4 +200,26 @@ describe('PostgresStore.initialize schema gate wiring', () => {
       await store.close();
     }
   });
+
+  it('logs postgres_initialization_failed and rejects with the original error when initialization cannot complete', async () => {
+    const warnLog = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const failure = pgError('42P01', 'relation does not exist');
+    const { store, statements, release, attempts } = storeWithScript((statement) => (
+      statement.includes('ALTER TABLE review_runs') ? failure : undefined));
+    try {
+      await expect(store.initialize()).rejects.toBe(failure);
+      expect(attempts()).toBe(1);
+      expect(statements).toContain('ROLLBACK');
+      expect(statements).not.toContain('COMMIT');
+      expect(release).toHaveBeenCalledTimes(1);
+      expect(warnLog).not.toHaveBeenCalled();
+      expect(errorLog).toHaveBeenCalledWith(
+        '[PostgresStore] PostgreSQL database schema initialization failed',
+        expect.objectContaining({ code: 'postgres_initialization_failed' }),
+      );
+    } finally {
+      await store.close();
+    }
+  });
 });
