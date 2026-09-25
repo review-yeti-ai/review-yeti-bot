@@ -303,6 +303,23 @@ describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)',
     }
   });
 
+  it('adds the lockfile to an owner lane that already has fallback-routed files, keeping them', () => {
+    // .tool-versions is fallback-routed to sec-lane first; the lockfile routing must append, not replace.
+    const result = resolveReviewApplicability(enabled('architecture,documentation,security'), [
+      { path: '.tool-versions', patch: CISCO_CDR_4625_TOOL_VERSIONS },
+      lock(CT_QUASAR_847_YARN_LOCK),
+    ]);
+    expect(result.unmatchedPaths).toEqual([]);
+    expect(result.routedFiles.map((file) => [file.path, file.laneIds, file.reason])).toEqual([
+      ['.tool-versions', ['sec-lane'], 'fallback'],
+      ['yarn.lock', ['sec-lane'], 'new-package-lockfile'],
+    ]);
+    const sec = result.applicable.find((persona) => persona.id === 'sec-lane')!;
+    expect(sec.routedPaths).toEqual(['.tool-versions', 'yarn.lock']);
+    expect(routeNewPackageLockfiles([{ ...sec, routedPaths: ['a.html'] }], ['yarn.lock'])[0].routedPaths)
+      .toEqual(['a.html', 'yarn.lock']);
+  });
+
   it('routes it to the first enabled persona when the roster has no required or dependency lane', () => {
     const result = resolveReviewApplicability(enabled('architecture,documentation'), [lock(CT_QUASAR_847_YARN_LOCK)]);
     expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane']);
