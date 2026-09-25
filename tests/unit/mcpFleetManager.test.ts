@@ -347,13 +347,17 @@ describe('McpFleetManager Unit Tests', () => {
     });
 
     it('fails immediately when the signal is already aborted at fetch time', async () => {
-      // REL-1116: the timeout path used to HANG rather than fail.
+      // REL-1116: a pre-aborted signal must fail fast, not be handed to `fetch`.
       //
-      // `executeTool` armed the timeout timer and computed the effective signal BEFORE
-      // `await getHttpHeaders()` (~470ms of Doppler lookup), so with a short budget the signal
-      // was already aborted by the time `fetch()` was called. The request was still issued, its
-      // `abort` listener registered AFTER the event had fired, and the awaiting promise never
-      // settled. A timeout that hangs is the one outcome a timeout must never have.
+      // CORRECTION to an earlier version of this comment, which called this a production hang:
+      // real `fetch` rejects an already-aborted signal immediately (measured 15ms on Node 24).
+      // The hang was confined to TEST MOCKS that add an `abort` listener without checking
+      // `signal.aborted` first -- which is why `Test timed out in 5000ms` appeared locally and
+      // not in CI (an env key short-circuits the 470ms Doppler lookup that consumed the budget).
+      //
+      // The mock below is deliberately written to model the REAL contract (reject on a
+      // pre-aborted signal), not the buggy mock, so this test pins the guard without relying on
+      // a mock artefact.
       //
       // Counterfactual the review named: deleting the early-throw recreates exactly that hang,
       // so this asserts settlement, not merely a rejection shape.
@@ -361,9 +365,13 @@ describe('McpFleetManager Unit Tests', () => {
       controller.abort(); // aborted BEFORE entry — the pre-abort case
 
       let fetchCalls = 0;
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => {
         fetchCalls += 1;
-        return new Promise(() => { /* never settles, like the real pre-aborted request */ });
+        // Model the real fetch contract: an already-aborted signal rejects immediately.
+        if (init?.signal?.aborted) {
+          throw Object.assign(new Error('already aborted'), { name: 'AbortError' });
+        }
+        return new Promise(() => { /* unreachable for this test */ });
       });
 
       try {
@@ -497,6 +505,41 @@ describe('McpFleetManager Unit Tests', () => {
         if (savedGateway !== undefined) process.env.CT_LLM_GATEWAY_API_KEY = savedGateway;
         if (savedBifrost !== undefined) process.env.BIFROST_API_KEY = savedBifrost;
         if (savedMcp !== undefined) process.env.CT_MCP_KEY = savedMcp;
+      }
+    });
+
+    it('bounds the BODY read, not just the response headers', async () => {
+      // REL-1116 follow-up, found by an external review rather than by any test I had written.
+      //
+      // `clearTimeout(timer)` used to run immediately after `fetch()` resolved, leaving
+      // `await res.json()` unbounded. A server that returns headers and then stalls the body
+      // hung FOREVER under any budget, and with no caller signal nothing else bounded it.
+      // Verified before the fix: a Response whose `json()` never resolves hung past 2.5s under
+      // `timeoutMs: 50`.
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_u: any, init: any) => ({
+        ok: true,
+        status: 200,
+        // Header phase completes; body phase rejects only when the abort fires, which is the
+        // real fetch contract.
+        json: () => new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          });
+        }),
+        text: () => new Promise(() => {}),
+      }) as any);
+
+      try {
+        const settled = await Promise.race([
+          mcpFleetManager.executeTool('ct_impact', { target: 'body-stall' }, { timeoutMs: 50 }),
+          new Promise((resolve) => setTimeout(() => resolve('HUNG'), 2500)),
+        ]);
+        // The whole point: it must NOT hang.
+        expect(settled).not.toBe('HUNG');
+        expect(settled).toMatchObject({ success: false });
+        expect(String((settled as { error?: string }).error)).toMatch(/timed out/iu);
+      } finally {
+        fetchSpy.mockRestore();
       }
     });
 
