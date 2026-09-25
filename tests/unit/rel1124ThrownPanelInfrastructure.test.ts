@@ -350,17 +350,32 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     expect(admit).toHaveBeenCalledWith(expect.objectContaining({ retryRequested: true, retryAfterExecutionAttempt: 1 }));
   });
 
-  it('keeps the provider_5xx backoff reason for a thrown gateway 5xx, and still titles it INCOMPLETE (not "requeuing")', async () => {
+  it('leaves the pre-existing legacy provider_5xx requeue (REL-620) unchanged: in_progress "requeuing", rethrown', async () => {
     const f = legacyFixture('1');
     const error = attachPanelFailureEvidence(new PanelInfrastructureError('required persona failure: HTTP 502 provider_5xx',
       { failureClass: 'provider_error', failureReason: 'provider_5xx' }), {
       stage: 'lanes', lanes: [{ id: 'sec-lane', failureClass: 'provider_error', providerStatus: 502 }], findingsObserved: false });
     f.panelRunner.mockRejectedValue(error);
-    await runPublishingReviewWorker(f.env, f.deps);
-    expect(f.reportTerminalFailure.mock.calls[0]?.[0]?.diagnostics).toMatchObject({ reason: 'provider_5xx', recoverableIncompletePanel: true, providerStatus: 502 });
-    expect(f.checkClient.updateCheck).not.toHaveBeenCalled();
+    await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(error);
+    expect(f.reportTerminalFailure.mock.calls[0]?.[0]?.diagnostics).toMatchObject({ reason: 'provider_5xx', recoverableIncompletePanel: true });
+    expect(f.checkClient.updateCheck).toHaveBeenCalledWith(expect.objectContaining({ status: 'in_progress',
+      title: 'Review Yeti: gateway capacity unavailable (requeuing)' }));
+    expect(f.checkClient.completeCheck).not.toHaveBeenCalled();
+  });
+
+  it('an AUTHORITATIVE thrown provider_5xx (no re-attempt before) is INCOMPLETE and re-admitted', async () => {
+    const f = fixture('1');
+    const error = attachPanelFailureEvidence(new PanelInfrastructureError('required persona failure: HTTP 502 provider_5xx',
+      { failureClass: 'provider_error', failureReason: 'provider_5xx' }), {
+      stage: 'lanes', lanes: [{ id: 'sec-lane', failureClass: 'provider_error', providerStatus: 502 }], findingsObserved: false });
+    f.panelRunner.mockRejectedValue(error);
+    await expect(runPublishingReviewWorker(f.env, f.deps)).resolves.toMatchObject({ verdict: 'INCOMPLETE' });
+    const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
+    expect(completion.result.failureDiagnostics).toMatchObject({ providerStatus: 502 });
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title)
       .toBe('Review Yeti: INCOMPLETE — infrastructure (lane sec-lane failed: 502); retrying as attempt 2 of 3');
+    await expect(serviceRequeue(completion)).resolves.toMatchObject({ outcome: 'requeued' });
   });
 
   it('negative proof: a non-infrastructure thrown panel is not marked recoverable', async () => {

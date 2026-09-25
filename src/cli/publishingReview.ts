@@ -1101,7 +1101,11 @@ export async function runPublishingReviewWorker(
     // REL-1124: a panel that THREW on infrastructure (a required lane, the moderator or the arbiter
     // lost to the gateway, a raw `fetch failed`/`terminated`) with no finding anywhere reaches the
     // same shared decision as a returned panel (REL-1113): INCOMPLETE and re-attempted.
+    // A legacy (non-authoritative) provider_5xx already had its own bounded re-attempt (REL-620:
+    // the check stays in_progress "requeuing" and the dispatcher re-admits with 5xx backoff), so
+    // it keeps that path unchanged. The authoritative path had no re-attempt for it.
     let thrownInfrastructure = panelFailure === undefined && prePanelCoverageComplete === true
+      && !(isProvider5xx && !authoritative)
       ? thrownPanelInfrastructureFailure(error, { aborted: deps.signal?.aborted === true })
       : undefined;
     let authoritativeInfrastructureBody: WorkerReviewResult | undefined;
