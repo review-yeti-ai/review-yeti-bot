@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { containsExecutableOrSensitiveCode } from '../../src/panel/classifierEngine';
+import { evaluatePersonaGating } from '../../src/panel/panelEngine';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { planDiffShrink, type DiffShrinkInput } from '../../src/review/diffShrink';
 import {
@@ -7,6 +8,7 @@ import {
   computeTriageFileFacts,
   startJevTriageShadow,
   triageLaneOutcome,
+  triagePathClass,
   type StartJevTriageShadowInput,
 } from '../../src/review/jevTriageShadow';
 import { buildEffectiveReviewFiles } from '../../src/review/personaApplicability';
@@ -207,6 +209,42 @@ describe('fast-ship guard', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Consumers: security-lane gate (panelEngine evaluatePersonaGating)
+// ---------------------------------------------------------------------------
+
+describe('security-lane gate', () => {
+  it.each(['.tool-versions', 'rust-toolchain.toml', 'bun.lock', 'ct-meta.lock', 'package.json', 'Dockerfile'])(
+    'runs sec-lane at full depth (not weakMatch) on a change to %s alone', (path) => {
+      const result = evaluatePersonaGating({
+        persona: { id: 'sec-lane', charter: 'Security review', paths: ['**/*'] },
+        changedFiles: [{ path, patch: '@@ -1 +1 @@\n-a 1\n+a 2\n' }],
+        domainLanes: { [path]: 'system_runtime' },
+      });
+      expect(result.skipped).toBe(false);
+      expect(result.weakMatch).toBeFalsy();
+    },
+  );
+
+  it('a change with no sensitive path gets the reduced weakMatch budget (the gate is live)', () => {
+    const result = evaluatePersonaGating({
+      persona: { id: 'sec-lane', charter: 'Security review', paths: ['**/*'] },
+      changedFiles: [{ path: 'src/app.ts', patch: '@@ -1 +1 @@\n-a 1\n+a 2\n' }],
+      domainLanes: { 'src/app.ts': 'system_runtime' },
+    });
+    expect(result).toMatchObject({ skipped: false, weakMatch: true });
+  });
+
+  it('a coarse substring-only match (src/monkey.ts) keeps the weakMatch budget: only the predicate forces full depth', () => {
+    const result = evaluatePersonaGating({
+      persona: { id: 'sec-lane', charter: 'Security review', paths: ['**/*'] },
+      changedFiles: [{ path: 'src/monkey.ts', patch: '@@ -1 +1 @@\n-a 1\n+a 2\n' }],
+      domainLanes: { 'src/monkey.ts': 'system_runtime' },
+    });
+    expect(result).toMatchObject({ skipped: false, weakMatch: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Consumers: Jev triage shadow facts and join line
 // ---------------------------------------------------------------------------
 
@@ -216,6 +254,19 @@ describe('Jev shadow reads the shared predicate', () => {
       expect(computeTriageFileFacts({ path, patch: '@@ -1 +1 @@\n-a\n+b\n' }, 1000).facts.security_sensitive).toBe(true);
     },
   );
+});
+
+describe('triagePathClass: sensitive first, then test, docs, generated, other', () => {
+  const facts = (path: string) => computeTriageFileFacts({ path, patch: '@@ -1 +1 @@\n-a\n+b\n' }, 1000).facts;
+  it.each([
+    ['tests/auth/login.test.ts', 'sensitive'],
+    ['tests/app.test.ts', 'test'],
+    ['docs/guide.md', 'docs'],
+    ['dist/app.min.js', 'generated'],
+    ['src/app.ts', 'other'],
+  ])('%s is %s', (path, pathClass) => {
+    expect(triagePathClass(facts(path))).toBe(pathClass);
+  });
 });
 
 describe('triageLaneOutcome: a failed lane is never an empty approval', () => {

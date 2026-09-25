@@ -3473,7 +3473,11 @@ export function evaluatePersonaGating(options: {
       return { skipped: false, weakMatch: true };
     }
 
-    const isWeakMatch = !hasSecDomain && !hasSecurityHypotheses && !hasHighRiskPatch && totalAddedLines < 50;
+    // REL-1135 / ADR 0685: never reduce sec-lane depth on a run with a security-sensitive file
+    // (the shared predicate: lockfiles, toolchain pins, CI, IaC, manifests, auth/crypto/secrets).
+    const hasCanonicalSensitivePath = changedFiles.some((f) => isSecuritySensitivePath(f.path));
+    const isWeakMatch = !hasSecDomain && !hasSecurityHypotheses && !hasHighRiskPatch && !hasCanonicalSensitivePath
+      && totalAddedLines < 50;
     return { skipped: false, weakMatch: isWeakMatch };
   }
 
