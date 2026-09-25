@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.4...v1.92.5) (2026-09-25)
+
+
+### Bug Fixes
+
+* **jev:** give every builtin charter a lane focus in the triage shadow (REL-1126) ([#1070](https://github.com/review-yeti-ai/review-yeti-bot/issues/1070)) ([99e560f](https://github.com/review-yeti-ai/review-yeti-bot/commit/99e560f25bc1dd74f60d391b7dd9507e85d4d39b))
+
 ## [1.92.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.3...v1.92.4) (2026-09-25)
 
 
