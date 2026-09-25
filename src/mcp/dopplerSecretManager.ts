@@ -151,10 +151,11 @@ export class DopplerSecretManager {
   private async fetchFromApi(keyName: string): Promise<string | null> {
     if (!this.dopplerToken) return null;
 
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const url = `https://api.doppler.com/v3/configs/config/secret?project=${encodeURIComponent(this.project)}&config=${encodeURIComponent(this.configName)}&name=${encodeURIComponent(keyName)}`;
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+      timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
       const res = await fetch(url, {
         headers: {
@@ -164,15 +165,19 @@ export class DopplerSecretManager {
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
-
       if (!res.ok) return null;
 
+      // Same defect class as the MCP transport (REL-1116): clearing the timer before reading
+      // the body leaves the read unbounded, so a server that sends headers and stalls the body
+      // hangs this lookup for the caller's whole budget or forever. The timer is cleared in
+      // `finally` so a rejecting body read cannot leak it either.
       const data: any = await res.json();
       return data?.value?.raw || data?.value?.computed || null;
     } catch (err: any) {
       logger.debug('Doppler API request failed', { error: err.message });
       return null;
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
   }
 }
