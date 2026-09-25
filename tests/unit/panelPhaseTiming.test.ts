@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { QUEUED_LANE_MIN_WAIT_MS, buildPanelPhaseTiming, timeLaneSlotAcquire } from '../../src/panel/panelPhaseTiming';
 import {
   DEFAULT_MAX_CONCURRENT_LANES,
   MAX_CONCURRENT_LANES_CEILING,
   MAX_CONCURRENT_LANES_ENV,
-  buildPanelPhaseTiming,
   resolveMaxConcurrentLanes,
-  timeLaneSlotAcquire,
-} from '../../src/panel/panelPhaseTiming';
+} from '../../src/panel/laneConcurrency';
 import type { PersonaLaneResult } from '../../src/panel/types';
 
 const lane = (id: string, durationMs: number, turns: Array<{ kind: 'tool' | 'correction' | 'final'; durationMs: number }>, extra: Partial<PersonaLaneResult> = {}): PersonaLaneResult => ({
@@ -53,16 +52,17 @@ describe('resolveMaxConcurrentLanes (REL-1133)', () => {
 });
 
 describe('timeLaneSlotAcquire', () => {
-  it('records the wait for a slot and returns the release handle', async () => {
+  it('records the time from the fan-out start until the slot is held', async () => {
     let clock = 1_000;
     let recorded = -1;
     const release = await timeLaneSlotAcquire(
       async () => { clock += 750; return 'release-handle'; },
       (ms) => { recorded = ms; },
+      400,
       () => clock,
     );
     expect(release).toBe('release-handle');
-    expect(recorded).toBe(750);
+    expect(recorded).toBe(1_750 - 400);
   });
 
   it('records nothing when the acquire is aborted', async () => {
@@ -70,6 +70,7 @@ describe('timeLaneSlotAcquire', () => {
     await expect(timeLaneSlotAcquire(
       async () => { throw new Error('aborted'); },
       () => { recorded = true; },
+      0,
     )).rejects.toThrow('aborted');
     expect(recorded).toBe(false);
   });
@@ -92,7 +93,7 @@ describe('buildPanelPhaseTiming', () => {
         lane('sec-lane', 30_000, [{ kind: 'final', durationMs: 29_500 }]),
         lane('perf-lane', 0, [], { notApplicable: true }),
       ],
-      laneQueueWaitMs: new Map([['sec-lane', 2_000]]),
+      laneQueueWaitMs: new Map([['sec-lane', 2_000], ['arch-lane', QUEUED_LANE_MIN_WAIT_MS - 1]]),
       failedLaneIds: ['documentation'],
     });
 
@@ -112,7 +113,8 @@ describe('buildPanelPhaseTiming', () => {
     expect(arch.nonModelMs).toBe(4_000);
     expect(arch.toolTurns).toBe(2);
     expect(arch.turnKinds).toEqual(['tool', 'tool', 'final']);
-    expect(arch.queueWaitMs).toBe(0);
+    // Start-up noise below the threshold is reported but does not count as queued.
+    expect(arch.queueWaitMs).toBe(QUEUED_LANE_MIN_WAIT_MS - 1);
 
     const perf = timing.lanes.find((l) => l.id === 'perf-lane')!;
     expect(perf.notApplicable).toBe(true);
