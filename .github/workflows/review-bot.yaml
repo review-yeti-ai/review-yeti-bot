@@ -110,6 +110,9 @@ jobs:
           # message form natively, so flattening them would destroy the prompt-cache breakpoint.
           transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
           lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
+          # REL-1113: lane re-attempts after an infrastructure failure must finish inside this job's
+          # 15-minute `timeout-minutes`, leaving room for setup and publication: 13 minutes.
+          action-budget-ms: '780000'
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}
@@ -161,6 +164,13 @@ jobs:
       # sanitizeFindings maps any unrecognised severity to P2, so malformed model output could
       # block a merge outright. Leaving P2 enforcement solely to arbitration keeps one place that
       # owns the threshold and can actually act on it.
+      #
+      # REL-1113: INCOMPLETE is not a verdict. Reviewer lanes failed on transport, provider or
+      # deadline, no lane reported a finding, and the pipeline's in-budget lane re-attempts did not
+      # recover them (review-yeti-bot#1056 twice published BLOCK with 0 findings from a 'terminated'
+      # lane and a 420s streaming deadline). It still fails the check -- nothing was reviewed -- but
+      # with a distinct infrastructure message naming the lanes, so re-running the job is the
+      # obvious action instead of hunting for findings that do not exist.
       - name: Enforce Verdict
         if: always()
         env:
@@ -169,6 +179,7 @@ jobs:
           GATE_DECISION: ${{ steps.review.outputs.gate-decision }}
           MERGE_ELIGIBLE: ${{ steps.review.outputs.merge-eligible }}
           FILES_OMITTED: ${{ steps.review.outputs.files-omitted }}
+          INCOMPLETE_REASON: ${{ steps.review.outputs.incomplete-reason }}
         run: |
           set -euo pipefail
 
@@ -198,6 +209,10 @@ jobs:
               ;;
             FIX_FIRST|BLOCK)
               echo "::error::Review verdict is ${VERDICT}. Resolve the findings in the review comment and push a fix."
+              exit 1
+              ;;
+            INCOMPLETE)
+              echo "::error title=Review Yeti: INCOMPLETE — infrastructure::${INCOMPLETE_REASON:-Review Yeti: INCOMPLETE — infrastructure (lane failed)}. Not a review verdict: reviewer lane(s) could not reach the model and no lane reported a finding. Re-run this job."
               exit 1
               ;;
             NO_VERDICT|"")
