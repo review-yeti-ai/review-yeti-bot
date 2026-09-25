@@ -135,6 +135,9 @@ const SHAPES = [
   ['a moderator gateway 502', moderatorGateway502, 'provider_error', 'lane moderator failed: 502'],
   ['a raw connection error `fetch failed`', rawConnectionError, 'transport', 'lane panel failed: transport'],
   ['a raw `terminated` stream', () => new Error(`terminated ${PRIVATE_DETAIL}`), 'transport', 'lane panel failed: transport'],
+  // The row removed from authoritativePublishingWorker's fail-closed table lives here now.
+  ['a raw refused connection (ECONNREFUSED)', () => new Error(`connect ECONNREFUSED 10.0.0.1:443 ${PRIVATE_DETAIL}`), 'transport', 'lane panel failed: transport'],
+  ['a raw reset connection (ECONNRESET)', () => new Error(`read ECONNRESET ${PRIVATE_DETAIL}`), 'transport', 'lane panel failed: transport'],
   ['a raw typed gateway 503', () => new OpenRouterResponseError(`bifrost HTTP 503 ${PRIVATE_DETAIL}`, 503), 'provider_error', 'lane panel failed: 503'],
   ['a raw typed gateway 429', () => new OpenRouterResponseError(`bifrost HTTP 429 ${PRIVATE_DETAIL}`, 429), 'rate_limit', 'lane panel failed: 429'],
   ['a raw provider_5xx (authoritative)', () => Object.assign(new Error(`bifrost HTTP 502 Bad Gateway ${PRIVATE_DETAIL}`), { failureReason: 'provider_5xx' }),
