@@ -41,6 +41,9 @@ export interface HunkFilterResult {
   };
 }
 
+/** The `ignoreReason` of a lockfile the filter hid (not a `path_filters` exclusion). */
+export const LOCKFILE_IGNORE_REASON = 'Lockfile noise excluded from review context';
+
 const IGNORED_LOCKFILES = [
   'package-lock.json',
   'yarn.lock',
@@ -142,7 +145,7 @@ export function filterDiffHunks(
       return {
         path: file.path,
         status: 'ignored',
-        ignoreReason: 'Lockfile noise excluded from review context',
+        ignoreReason: LOCKFILE_IGNORE_REASON,
         originalPatchLength: rawText.length,
         filteredPatchLength: 0,
       };
