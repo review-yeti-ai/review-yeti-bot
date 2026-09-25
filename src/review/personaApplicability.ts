@@ -8,6 +8,7 @@ import { omittedSourcePathsOf, unavailablePatchFilesOf, type UnavailablePatchFil
 import { omittedLockfilePatchReason } from './omittedLockfilePatch';
 import { isToolchainPinOrDependencyManifestPath } from './toolchainPinPaths';
 import { routeNewPackageLockfiles, withNewPackageLockfiles } from './newPackageLockfileReview';
+import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './reviewFileShapes';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
 
@@ -235,28 +236,7 @@ export function computeUnmatchedPaths(
     .filter((p) => !isDocumentationOrAssetPath(p));
 }
 
-export interface ReviewApplicabilityInputFile {
-  path: string;
-  patch?: string;
-  content?: string;
-  mode?: string;
-  isSubmodule?: boolean;
-  submoduleCandidate?: boolean;
-  size?: number;
-  byteSize?: number;
-}
-
-export interface EffectiveReviewFile {
-  path: string;
-  patch?: string;
-  content?: string;
-  mode?: string;
-  isSubmodule?: boolean;
-  submoduleCandidate?: boolean;
-  size?: number;
-  byteSize?: number;
-  originalPatchLength: number;
-}
+export type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './reviewFileShapes';
 
 /**
  * The single reviewable-file projection shared by every engine and by the

@@ -277,6 +277,32 @@ describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)',
     ]);
   });
 
+  it('restores and routes every new-package lockfile in one diff, and leaves a verified re-key hidden', () => {
+    const npmNewPackage = [
+      '@@ -10,0 +10,5 @@',
+      '+    "node_modules/left-pad": {',
+      '+      "version": "1.3.0",',
+      '+      "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",',
+      '+      "integrity": "sha512-abc"',
+      '+    },',
+    ].join('\n');
+    const files = [
+      lock(CT_QUASAR_847_YARN_LOCK),
+      { path: 'apps/web/yarn.lock', patch: CT_QUASAR_887_YARN_LOCK, mode: '100644' },
+      { path: 'apps/api/package-lock.json', patch: npmNewPackage, mode: '100644' },
+    ];
+    expect(isNewPackageLockfileChange(files[2])).toBe(true);
+    const result = resolveReviewApplicability(enabled('architecture,security,dependencies'), files);
+    expect(result.effectiveFiles.map((file) => file.path)).toEqual(['yarn.lock', 'apps/api/package-lock.json']);
+    expect(result.routedFiles.filter((file) => file.reason === 'new-package-lockfile').map((file) => [file.path, [...file.laneIds].sort()]))
+      .toEqual([['yarn.lock', ['dep-lane', 'sec-lane']], ['apps/api/package-lock.json', ['dep-lane', 'sec-lane']]]);
+    for (const id of ['dep-lane', 'sec-lane']) {
+      const persona = result.applicable.find((candidate) => candidate.id === id)!;
+      expect(scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.patch))
+        .toEqual([CT_QUASAR_847_YARN_LOCK, npmNewPackage]);
+    }
+  });
+
   it('routes it to the first enabled persona when the roster has no required or dependency lane', () => {
     const result = resolveReviewApplicability(enabled('architecture,documentation'), [lock(CT_QUASAR_847_YARN_LOCK)]);
     expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane']);
