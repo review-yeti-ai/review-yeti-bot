@@ -1374,7 +1374,9 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(panelResult.arbiter.rationale).toContain('Critical security violation');
   });
 
-  it('bounds active persona concurrency to MAX_CONCURRENT_PERSONAS (<= 4)', async () => {
+  it('runs every lane of a 6-lane roster side by side, bounded by MAX_CONCURRENT_PERSONAS (REL-1133)', async () => {
+    const loggerModule = await import('../../src/utils/logger');
+    const infoSpy = vi.spyOn(loggerModule.logger, 'info');
     let activeCalls = 0;
     let maxConcurrentObserved = 0;
 
@@ -1450,8 +1452,33 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     });
 
     expect(result.personas).toHaveLength(6);
-    expect(maxConcurrentObserved).toBeLessThanOrEqual(4);
-    expect(maxConcurrentObserved).toBeGreaterThan(1);
+    expect(MAX_CONCURRENT_PERSONAS).toBe(8);
+    expect(maxConcurrentObserved).toBeLessThanOrEqual(MAX_CONCURRENT_PERSONAS);
+    // REL-1133 negative proof: under the old cap of 4, lanes 5 and 6 waited for a free slot
+    // and this peak was 4. Every lane now runs at once.
+    expect(maxConcurrentObserved).toBe(6);
+
+    // One phase-timing line per run, with every lane, no queue wait, and the post-lane phases.
+    const timingCalls = infoSpy.mock.calls.filter(([message]) => message === 'Panel phase timing');
+    expect(timingCalls).toHaveLength(1);
+    const timing = timingCalls[0][1] as any;
+    expect(timing.event).toBe('panel_phase_timing');
+    expect(timing.headSha).toBe('head-sha-concurrency-test');
+    expect(timing.maxConcurrentLanes).toBe(8);
+    expect(timing.laneCount).toBe(6);
+    expect(timing.lanesQueued).toBe(0);
+    expect(timing.maxLaneQueueWaitMs).toBe(0);
+    expect(timing.lanes.map((lane: any) => lane.id).sort()).toEqual(['p1', 'p2', 'p3', 'p4', 'p5', 'p6']);
+    expect(timing.lanes.every((lane: any) => lane.turns === 1 && lane.turnKinds[0] === 'final')).toBe(true);
+    expect(timing.lanes.every((lane: any) => lane.turnDurationsMs[0] >= 20)).toBe(true);
+    expect(typeof timing.moderatorMs).toBe('number');
+    expect(typeof timing.arbiterMs).toBe('number');
+    expect(timing.laneFanoutMs).toBeGreaterThanOrEqual(20);
+    // 6 lanes of about 25ms each would take at least about 50ms if they had queued in two waves.
+    expect(timing.laneFanoutMs).toBeLessThan(timing.lanes.reduce((acc: number, lane: any) => acc + lane.durationMs, 0));
+    // The log line carries timing and ids only, never prompt or response text.
+    expect(JSON.stringify(timing)).not.toContain('CT_REVIEW');
+    infoSpy.mockRestore();
   });
 
   it('handles 6-persona panel with transient 503 errors and retries under concurrency bounds without starving lanes', async () => {
@@ -1543,7 +1570,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(result.personas).toHaveLength(6);
     expect(personaAttempts['p1']).toBe(2);
     expect(personaAttempts['p2']).toBe(2);
-    expect(maxConcurrentObserved).toBeLessThanOrEqual(4);
+    expect(maxConcurrentObserved).toBeLessThanOrEqual(MAX_CONCURRENT_PERSONAS);
     expect(result.arbiter.verdict).toBe('SHIP');
   });
 
@@ -1879,6 +1906,11 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
         { id: 'p4', enabled: true, required: false, charter: 'builtin:contract', paths: ['**'], providers: ['claude'] },
         { id: 'p5', enabled: true, required: false, charter: 'builtin:consistency', paths: ['**'], providers: ['claude'] },
         { id: 'p6', enabled: true, required: false, charter: 'builtin:database', paths: ['**'], providers: ['claude'] },
+        // REL-1133: the cap is 8, so the roster needs more lanes than that for any to queue.
+        { id: 'p7', enabled: true, required: false, charter: 'builtin:correctness', paths: ['**'], providers: ['claude'] },
+        { id: 'p8', enabled: true, required: false, charter: 'builtin:performance', paths: ['**'], providers: ['claude'] },
+        { id: 'p9', enabled: true, required: false, charter: 'builtin:contract', paths: ['**'], providers: ['claude'] },
+        { id: 'p10', enabled: true, required: false, charter: 'builtin:consistency', paths: ['**'], providers: ['claude'] },
       ],
       reviewers: {
         execution: 'personas',
@@ -1903,7 +1935,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
           model: opts.model,
           content: JSON.stringify({
             fastShip: false,
-            selectedPersonas: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+            selectedPersonas: ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7', 'p8', 'p9', 'p10'],
             effortTier: 'low',
             rationale: 'Full panel required',
           }),
@@ -1954,12 +1986,14 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     });
 
     const result = await panelPromise;
-    // The first 4 personas (p1..p4) ran concurrently and completed
-    // While p5 and p6 were queued, headIsCurrent became false
-    // When p5 and p6 acquired the semaphore slot, the post-acquire check detected stale head and aborted
-    // Therefore, p5 and p6 were NEVER invoked against the model client
-    expect(invokedPersonas).not.toContain('p5');
-    expect(invokedPersonas).not.toContain('p6');
+    // The first MAX_CONCURRENT_PERSONAS (8) personas ran concurrently and completed.
+    // While p9 and p10 were queued, headIsCurrent became false.
+    // When p9 and p10 acquired a slot, the post-acquire check detected the stale head and aborted,
+    // so p9 and p10 were NEVER invoked against the model client.
+    expect(MAX_CONCURRENT_PERSONAS).toBe(8);
+    expect(invokedPersonas).toHaveLength(8);
+    expect(invokedPersonas).not.toContain('p9');
+    expect(invokedPersonas).not.toContain('p10');
     expect(result.optionalFailures.some((f) => f.error?.includes('stale run aborted'))).toBe(true);
   });
   // REL-940: a transport failure (gateway unreachable — `fetch failed`) is not
