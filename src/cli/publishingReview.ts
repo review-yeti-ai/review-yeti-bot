@@ -1129,8 +1129,8 @@ export async function runPublishingReviewWorker(
     // panel (REL-1124), never inferred from `failureClass` alone.
     const diagnostics = authoritativeInfrastructureBody?.failureDiagnostics
       ?? (thrownInfrastructure
-        ? thrownInfrastructureDiagnostics(thrownInfrastructure,
-          isProvider5xx ? 'provider_5xx' : INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail)
+        // A legacy provider_5xx never reaches here (it keeps the REL-620 path above).
+        ? thrownInfrastructureDiagnostics(thrownInfrastructure, INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail)
         : buildWorkerFailureDiagnostics(error, failureClass, {
           githubDiffNotRenderable,
           recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,

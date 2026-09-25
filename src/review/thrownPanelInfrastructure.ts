@@ -53,7 +53,8 @@ export interface PanelFailureEvidence {
 /** The thrown failure, as the INCOMPLETE title/summary and the shared decision consume it. */
 export interface ThrownPanelInfrastructureFailure {
   stage: ThrownPanelStage | 'panel';
-  /** Coded class published for every lane of the result (the first failed lane's). */
+  /** Coded class published for every lane of the result: the primary lane's (the first failed lane
+   * with a provider status, else the first failed lane), paired with that same lane's status. */
   failureClass: WorkerFailureClass;
   incompleteLanes: IncompleteLaneDescription[];
   providerStatus?: number;

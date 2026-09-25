@@ -4395,10 +4395,12 @@ export async function executePersonaPanel(options: {
       // evidence (every failed lane's coded class, and whether any completed lane found anything)
       // lets the publishing worker reach the same INCOMPLETE + re-attempt decision REL-1113 applies
       // to a returned panel, instead of ending "Failed live" with no re-attempt.
-      // The error type and the evidence read the SAME lane set (every failed lane, required or
-      // optional), so a PanelInfrastructureError is exactly a throw the INCOMPLETE decision routes.
-      const failedEntries = settled.filter((entry) => !entry.result);
-      const RequiredFailure = failedEntries.every((entry) => isInfrastructureFailureClass(entry.failureClass))
+      // The error type and the evidence read the SAME resolved lanes (every failed lane, required or
+      // optional, with the same class fallback), so a PanelInfrastructureError is exactly a throw the
+      // INCOMPLETE decision routes.
+      const failedLanes = settled.filter((entry) => !entry.result)
+        .map((entry) => thrownPanelLane(entry.persona.id, entry.failureClass, entry.error));
+      const RequiredFailure = failedLanes.every((lane) => isInfrastructureFailureClass(lane.failureClass))
         ? PanelInfrastructureError : PanelConfigurationError;
       throw attachPanelFailureEvidence(new RequiredFailure(
         `required persona failure: ${requiredFailures.map((entry) => entry.error).join(' | ')}`,
@@ -4410,7 +4412,7 @@ export async function executePersonaPanel(options: {
         },
       ), {
         stage: 'lanes',
-        lanes: failedEntries.map((entry) => thrownPanelLane(entry.persona.id, entry.failureClass, entry.error)),
+        lanes: failedLanes,
         findingsObserved: settled.some((entry) => Array.isArray(entry.result?.findings) && entry.result.findings.length > 0),
       });
     }

@@ -35,6 +35,7 @@ import type { WorkerReviewCompletionAdapter } from '../../src/review/workerRevie
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { PATCH_UNAVAILABLE_MARKER } from '../../src/review/patchAvailability';
 import { logger } from '../../src/utils/logger';
+import { getMetrics } from '../../src/telemetry';
 
 /*
  * REL-1124 (REL-1113 follow-up): a panel that THROWS on the path to the model -- a required
@@ -177,6 +178,7 @@ async function serviceRequeue(completion: WorkerReviewCompletion) {
 describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-attempted (authoritative)', () => {
   it.each(SHAPES)('%s on attempt 1: INCOMPLETE, re-attempt 2 of 3, never a verdict', async (_label, make, failureClass, detail) => {
     const f = fixture('1');
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
     f.panelRunner.mockRejectedValue(make());
 
     // Negative proof: before REL-1124 this rejected, and the run ended "Failed live".
@@ -218,19 +220,22 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
     // Countable reason class, and nothing private leaves the process.
     expect(f.warn).toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
       expect.objectContaining({ reasonClass: 'incomplete_infra', retryScheduled: true }));
+    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'retrying', failure_class: failureClass, authoritative: 'true' });
     for (const published of [f.reportReviewResult.mock.calls, f.checkClient.completeCheck.mock.calls]) {
       expect(JSON.stringify(published)).not.toContain(PRIVATE_DETAIL);
       expect(JSON.stringify(published)).not.toContain(TOKEN);
     }
   });
 
-  it.each(SHAPES)('%s on attempt 3 (cap): INCOMPLETE with no further re-attempt', async (_label, make, _failureClass, detail) => {
+  it.each(SHAPES)('%s on attempt 3 (cap): INCOMPLETE with no further re-attempt', async (_label, make, failureClass, detail) => {
     const f = fixture('3');
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
     f.panelRunner.mockRejectedValue(make());
     await expect(runPublishingReviewWorker(f.env, f.deps)).resolves.toMatchObject({ verdict: 'INCOMPLETE' });
     const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
     expect(check?.title).toBe(`Review Yeti: INCOMPLETE — infrastructure (${detail})`);
     expect(check?.summary).toContain('was the last automatic attempt (3 of 3)');
+    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'exhausted', failure_class: failureClass, authoritative: 'true' });
     const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
     expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
     const { outcome, admit } = await serviceRequeue(completion);
@@ -249,7 +254,9 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
 
 describe('REL-1124 negative proof: everything else keeps the pre-existing terminal failure', () => {
   async function expectUnchangedFailure(f: ReturnType<typeof fixture>, original: unknown) {
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(original);
+    expect(metric).not.toHaveBeenCalled();
     const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
     expect(completion.result.coverageComplete).toBe(false);
     expect(completion.result.failureDiagnostics?.reason).not.toBe('lane_infrastructure_incomplete');
