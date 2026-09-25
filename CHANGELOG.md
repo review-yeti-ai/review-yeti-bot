@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.92.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.2...v1.92.3) (2026-09-25)
+
+
+### Bug Fixes
+
+* **REL-1116:** bound the BODY read, and correct two false claims in [#1059](https://github.com/review-yeti-ai/review-yeti-bot/issues/1059) ([#1066](https://github.com/review-yeti-ai/review-yeti-bot/issues/1066)) ([5192c41](https://github.com/review-yeti-ai/review-yeti-bot/commit/5192c411b1b5fb517dacbf587da3dedb0f7c4052))
+
 ## [1.92.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.1...v1.92.2) (2026-09-25)
 
 
