@@ -579,7 +579,8 @@ export function renderRoutedFiles(panelResult: Pick<PanelResult, 'routedFiles'>)
   const safe = (text: string) => text.replace(/[`<>\r\n]/gu, ' ').slice(0, 300);
   const lines = routed.slice(0, MAX_LISTED_ROUTED_FILES).map((file) => `- \`${safe(file.path)}\` -> `
     + `${file.laneIds.map((id) => `\`${safe(id)}\``).join(', ')}`
-    + (file.reason === 'uncovered-source' ? ' (source no persona covers)' : ''));
+    + (file.reason === 'uncovered-source' ? ' (source no persona covers)'
+      : file.reason === 'new-package-lockfile' ? ' (lockfile adds a new package)' : ''));
   const overflow = routed.length - MAX_LISTED_ROUTED_FILES;
   return `Routed files (no persona's paths cover them; reviewed by the routed lane):\n${lines.join('\n')}`
     + (overflow > 0 ? `\n- +${overflow} more` : '');
