@@ -264,7 +264,17 @@ function entryIdentity(header: string, format: LockfileFormat): string {
   return `pkg:${[...new Set(names)].sort().join('\n')}`;
 }
 
-export function verifyLockfileOnlyChange(path: string, patch: unknown): LockfileVerification {
+/**
+ * REL-1136: `allowNewEntries` runs every check except the new-package-entry
+ * one. It never makes a change exempt: `newPackageLockfileReview` uses it only
+ * to tell a registry-only lockfile that adds a package (routed to a lane,
+ * reviewed) from one that fails any other check (still a human review).
+ */
+export function verifyLockfileOnlyChange(
+  path: string,
+  patch: unknown,
+  options: { allowNewEntries?: boolean } = {},
+): LockfileVerification {
   if (classifyLockfileOrGeneratedPath(path) !== 'lockfile') return refuse('not a lockfile');
   if (typeof patch !== 'string' || patch.length === 0) return refuse('no patch to verify');
   if (isSubmodulePatch(patch)) return refuse('is a submodule gitlink');
@@ -306,8 +316,11 @@ export function verifyLockfileOnlyChange(path: string, patch: unknown): Lockfile
       if (header !== null) {
         const identity = entryIdentity(header, format);
         const remaining = removedHeaders.get(identity) ?? 0;
-        if (remaining === 0) return refuse('adds a new package entry');
-        removedHeaders.set(identity, remaining - 1);
+        if (remaining === 0) {
+          if (options.allowNewEntries !== true) return refuse('adds a new package entry');
+        } else {
+          removedHeaders.set(identity, remaining - 1);
+        }
       }
     }
     const verdict = verifyLine(line.slice(1), added, state);

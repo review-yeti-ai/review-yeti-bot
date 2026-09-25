@@ -6,6 +6,8 @@ import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVer
 import { isSubmodulePatch } from './submodulePatch';
 import { omittedSourcePathsOf, unavailablePatchFilesOf, type UnavailablePatchFile } from './patchAvailability';
 import { omittedLockfilePatchReason } from './omittedLockfilePatch';
+import { isToolchainPinOrDependencyManifestPath } from './toolchainPinPaths';
+import { routeNewPackageLockfiles, withNewPackageLockfiles } from './newPackageLockfileReview';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
 
@@ -93,6 +95,10 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  *   every review with "no enabled persona applies"; it is not source, but it
  *   can change behaviour, so it is reviewed rather than exempted. Run artifacts
  *   (`runs/`, `evidence/`, `artifacts/`) keep their documentation exemption.
+ * - Toolchain pins and extension-less dependency manifests (REL-1136):
+ *   `.tool-versions`, `.nvmrc`, `go.mod`, `Gemfile`, `requirements.txt` and
+ *   the like (`isToolchainPinOrDependencyManifestPath`). They pick what a build
+ *   runs, so they are reviewed, never exempted.
  *
  * Uncovered SOURCE is not in this list: alone, or beside only routed files, it
  * still fails closed as a persona coverage gap. Beside a file a configured lane
@@ -101,6 +107,7 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
 export function isFallbackRoutedFile(file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }): boolean {
   return isSubmoduleEntry(file)
     || /\.(mdx|mdoc|html?|xhtml)$/iu.test(file.path)
+    || isToolchainPinOrDependencyManifestPath(file.path)
     || (isDataOrConfigPath(file.path) && !isDocumentationOrAssetPath(file.path));
 }
 
@@ -156,15 +163,19 @@ export interface RoutedReviewFile {
    * `fallback`: a gitlink, `.mdx`/`.mdoc`/HTML page or data/config file no persona
    * covers. `uncovered-source`: an analyzable file no persona covers, in a
    * diff where a configured lane already applies (REL-1088).
+   * `new-package-lockfile`: a lockfile whose only unverified change is a new
+   * registry package, routed to the dependency and required lanes (REL-1136).
    */
-  reason: 'fallback' | 'uncovered-source';
+  reason: 'fallback' | 'uncovered-source' | 'new-package-lockfile';
 }
 
 function routedFilesOf(
   personas: ReadonlyArray<{ id: string; routedPaths?: readonly string[] }>,
   uncoveredSource: readonly string[],
+  newPackageLockfiles: readonly string[] = [],
 ): RoutedReviewFile[] {
   const uncovered = new Set(uncoveredSource);
+  const lockfiles = new Set(newPackageLockfiles);
   const byPath = new Map<string, string[]>();
   for (const persona of personas) {
     for (const path of persona.routedPaths ?? []) {
@@ -176,7 +187,8 @@ function routedFilesOf(
   return [...byPath].map(([path, laneIds]) => ({
     path,
     laneIds,
-    reason: uncovered.has(path) ? 'uncovered-source' as const : 'fallback' as const,
+    reason: lockfiles.has(path) ? 'new-package-lockfile' as const
+      : uncovered.has(path) ? 'uncovered-source' as const : 'fallback' as const,
   }));
 }
 
@@ -431,8 +443,16 @@ function decideReviewApplicability<P extends ReviewPersona>(
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
   options: { pathFilters?: readonly string[] },
 ): Omit<ReviewApplicability<P>, ReviewDepthDisclosureKeys> {
-  const { files: effectiveFiles, hunkResult } = buildEffectiveReviewFiles(changedFiles, options);
-  const roster = routeOrphanedReviewFiles(enabledPersonas, effectiveFiles);
+  const filtered = buildEffectiveReviewFiles(changedFiles, options);
+  const hunkResult = filtered.hunkResult;
+  // REL-1136: a lockfile whose only unverified change is a new registry package
+  // is put back for the lanes and routed to the dependency + required lanes.
+  const newPackageLockfiles = withNewPackageLockfiles(changedFiles, filtered.files, hunkResult);
+  const effectiveFiles = newPackageLockfiles.files;
+  const roster = routeNewPackageLockfiles(
+    routeOrphanedReviewFiles(enabledPersonas, effectiveFiles),
+    newPackageLockfiles.paths,
+  );
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
   const reviewed = {
     noReviewableContent: false,
@@ -445,7 +465,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
     // is not documentation must be covered by some lane.
     const uncovered = computeUnmatchedPaths(effectiveFiles, roster);
     if (uncovered.length === 0) {
-      return { effectiveFiles, hunkResult, applicable, ...reviewed, excludedPaths: [], unmatchedPaths: [], routedFiles: routedFilesOf(applicable, []) };
+      return { effectiveFiles, hunkResult, applicable, ...reviewed, excludedPaths: [], unmatchedPaths: [], routedFiles: routedFilesOf(applicable, [], newPackageLockfiles.paths) };
     }
     // Routing may only add a lane for the routed files themselves. When no
     // configured persona applied before routing, any other uncovered analyzable
@@ -474,7 +494,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
       ...reviewed,
       excludedPaths: [],
       unmatchedPaths: [],
-      routedFiles: routedFilesOf(widenedApplicable, uncovered),
+      routedFiles: routedFilesOf(widenedApplicable, uncovered, newPackageLockfiles.paths),
     };
   }
   // Zero lanes apply. The exemption is judged over the RAW changed files, not
