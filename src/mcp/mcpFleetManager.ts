@@ -848,10 +848,9 @@ export class McpFleetManager {
         // to setup. This is a correctness improvement, not the hang fix: the hang came from a
         // signal that was already aborted at `fetch`, which the guard below now fails fast.
         //
-        // Stated that precisely because it was measured: with BOTH halves reverted the request
-        // IS still dispatched (the pre-abort guard is what prevents it, not the placement), and
-        // no test in this suite discriminates the placement alone -- it was attempted, shown
-        // non-discriminating, and removed rather than left as an inert assertion.
+        // Measured: reverting the placement alone fails the placement test; reverting the
+        // placement AND the guard together makes the request dispatch anyway, which that test
+        // then cannot see (the pre-abort test catches that case instead).
         let timer: ReturnType<typeof setTimeout> | undefined;
 
         const effectiveSignal = options.signal
@@ -879,16 +878,18 @@ export class McpFleetManager {
           timer = setTimeout(() => {
             controller.abort(new Error(`HTTP request timed out after ${timeoutMs}ms`));
           }, timeoutMs);
-          // An ALREADY-ABORTED signal must fail now, not hang. Setup above awaits a Doppler
-          // lookup (measured ~470ms), so a caller that aborts during it -- or a caller whose
-          // signal was aborted before entry -- otherwise reaches `fetch` with the signal already
-          // aborted. The request is still issued, its `abort` listener is registered after the
-          // event has fired, and the awaiting promise NEVER settles. Verified: signal.aborted
-          // was true at fetch time and the call hung past 3s under a 50ms budget.
+          // An ALREADY-ABORTED signal fails fast here rather than being handed to `fetch`.
           //
-          // This guard is also what prevents dispatch in the pre-abort case: verified by a full
-          // revert of the timer placement AND this guard, after which `fetch` is still called
-          // with an aborted signal -- the original hang condition.
+          // CORRECTION to an earlier version of this comment, which claimed a production hang:
+          // that was WRONG. Real `fetch` rejects an already-aborted signal immediately (measured
+          // 15ms on Node 24), so production never hung. The observed hang was confined to test
+          // mocks that register an `abort` listener without checking `signal.aborted` first, and
+          // the `Test timed out in 5000ms` failures were the 470ms Doppler lookup consuming the
+          // tests' 50ms budget before those mocks were reached.
+          //
+          // The guard is still right, for two modest reasons: it matches what `fetch` does
+          // anyway, and it skips serializing a request body nobody will send. Claiming more than
+          // that -- as this comment previously did -- is what an external review caught.
           //
           // It deliberately does NOT translate the reason into an operator message. The
           // abort-vs-timeout taxonomy lives in ONE place -- the catch below, which already
@@ -913,9 +914,15 @@ export class McpFleetManager {
             }),
             signal: effectiveSignal,
           });
-          clearTimeout(timer);
+          // The timer deliberately still runs here. Clearing it at this point left the body
+          // read unbounded: a server that returns headers and then stalls the body made
+          // `await res.json()` hang FOREVER under any budget, and with no caller signal there
+          // was nothing else to bound it. Verified: a Response whose `json()` never resolves
+          // hung past 2.5s under `timeoutMs: 50` (REL-1116 review -- found by Claude Fable,
+          // not by the tests I had written).
 
           if (!res.ok) {
+            clearTimeout(timer);
             if (res.status === 401 || res.status === 403) {
               return {
                 success: false,
@@ -932,7 +939,9 @@ export class McpFleetManager {
             };
           }
 
+          // Bound the BODY read as well: the abort must still be able to fire while we wait.
           const data: any = await res.json();
+          clearTimeout(timer);
 
           if (data.error) {
             return {
