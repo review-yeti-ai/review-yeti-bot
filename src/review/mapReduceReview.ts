@@ -60,7 +60,7 @@ import type {
 } from '../types/mapReduceReview';
 import type { BudgetDepth } from '../types/reviewBudget';
 import { splitOversizedFileHunks } from '../pipeline/shaPartitionManager';
-import { recordProviderCallTokenMetrics } from '../telemetry/tokenLedger';
+import { MAP_REDUCE_REDUCE_ROLE, recordProviderCallTokenMetrics } from '../telemetry/tokenLedger';
 import {
   COMPOSED_BUDGET_LANE_ID,
   MAX_BUDGETED_REQUEST_BYTES,
@@ -1108,7 +1108,7 @@ export function createModelReducer(params: {
       ...(params.jobId ? { jobId: params.jobId } : {}),
       persona: params.persona,
       ...(params.providerId ? { providerId: params.providerId } : {}),
-      metadata: { ...(params.requestPolicy?.metadata || {}), role: 'map-reduce-reduce', persona: params.persona },
+      metadata: { ...(params.requestPolicy?.metadata || {}), role: MAP_REDUCE_REDUCE_ROLE, persona: params.persona },
       ...(params.signal ? { signal: params.signal } : {}),
     });
     // REL-1132: the reduce pass is a real provider call of this lane; count it with the lane's turns.

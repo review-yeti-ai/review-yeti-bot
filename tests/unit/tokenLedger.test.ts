@@ -3,12 +3,14 @@ import {
   TokenLedger,
   attributeRequest,
   meterModelClient,
+  receiptTokenLogFields,
   recordProviderCallTokenMetrics,
   renderTokenAccountingSummary,
   tokenAccountingLogFields,
   usageOfResponse,
 } from '../../src/telemetry/tokenLedger';
 import { getMetrics } from '../../src/telemetry';
+import { createModelReducer } from '../../src/review/mapReduceReview';
 
 /**
  * REL-1132: the run's token accounting counts every provider call, not each role's terminal turn.
@@ -142,5 +144,40 @@ describe('recordProviderCallTokenMetrics', () => {
     expect(prompt).toHaveBeenCalledWith(100, labels);
     total.mockRestore();
     prompt.mockRestore();
+  });
+});
+
+describe('receiptTokenLogFields', () => {
+  it('copies the receipt totals and the call count onto the completion log line', () => {
+    const ledger = new TokenLedger();
+    ledger.record(request('persona', 'arch-lane'), response(100, 20));
+    ledger.record(request('arbiter', 'arbiter'), response(30, 5));
+    const tokenAccounting = ledger.snapshot();
+    expect(receiptTokenLogFields({ totalTokens: 155, totalPromptTokens: 130, totalCompletionTokens: 25, tokenAccounting }))
+      .toEqual({ tokensTotal: 155, tokensPrompt: 130, tokensCompletion: 25, providerCalls: 2 });
+    // A receipt that predates the breakdown still logs its totals, without a fabricated call count.
+    expect(receiptTokenLogFields({ totalTokens: 7, totalPromptTokens: 5, totalCompletionTokens: 2 }))
+      .toEqual({ tokensTotal: 7, tokensPrompt: 5, tokensCompletion: 2 });
+    expect(receiptTokenLogFields(undefined)).toEqual({});
+  });
+});
+
+describe('map-reduce reduce pass', () => {
+  it('feeds the worker counters and is attributed to its lane in the ledger', async () => {
+    const metrics = getMetrics();
+    const total = vi.spyOn(metrics.tokensTotal, 'add');
+    const ledger = new TokenLedger();
+    const inner = { complete: vi.fn().mockResolvedValue(response(300, 40)) };
+    const reduce = createModelReducer({
+      client: meterModelClient(inner as never, ledger), model: 'm', persona: 'arch-lane', providerId: 'bifrost',
+    });
+
+    await reduce({ messages: [], timeoutMs: 1_000 });
+
+    expect(total).toHaveBeenCalledWith(340, { persona: 'arch-lane', provider: 'bifrost', model: 'm' });
+    // The reducer's real `metadata.role` lands on the lane, not in `other`.
+    expect(ledger.snapshot().byLane['arch-lane']).toMatchObject({ calls: 1, totalTokens: 340 });
+    expect(ledger.snapshot().byRole.other.calls).toBe(0);
+    total.mockRestore();
   });
 });
