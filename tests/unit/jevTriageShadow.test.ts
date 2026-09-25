@@ -265,12 +265,16 @@ describe('isSecuritySensitivePath / isTestPath', () => {
   });
 
   // REL-1135: `src/tokenizer.ts` is now flagged -- the shared predicate's `token` stem is
-  // deliberately broad (a false positive only costs tokens).
+  // deliberately broad (a false positive only costs tokens). Asserted below.
   it.each(['src/review/summary.ts', 'docs/guide.md', 'src/monkey.ts', 'README.md'])(
     'does not flag %s', (path) => {
       expect(isSecuritySensitivePath(path)).toBe(false);
     },
   );
+
+  it('flags src/tokenizer.ts through the shared predicate\'s token stem (REL-1135)', () => {
+    expect(isSecuritySensitivePath('src/tokenizer.ts')).toBe(true);
+  });
 
   it('recognizes common test layouts', () => {
     for (const path of ['tests/a.ts', 'src/__tests__/b.ts', 'x.spec.js', 'pkg/y_test.go', 'app/test_z.py', 'FooTest.java']) {

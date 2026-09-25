@@ -79,6 +79,10 @@ describe('one security-sensitive predicate', () => {
     ['scripts/release.sh', 'build_script'],
     ['db/migrations/001.sql', 'migration'],
     ['src/auth/session.ts', 'auth_crypto_secrets'],
+    // Stem-only and camelCase-only matches (no whole segment): deliberately broad.
+    ['src/tokenizer.ts', 'auth_crypto_secrets'],
+    ['src/userAuthService.ts', 'auth_crypto_secrets'],
+    ['lib/authorize.ts', 'auth_crypto_secrets'],
     ['package.json', 'dependency_manifest'],
     ['Dockerfile', 'container'],
     ['infra/main.tf', 'iac'],
@@ -315,6 +319,10 @@ describe('triageLaneOutcome: a failed lane is never an empty approval', () => {
   it('approve and findings are told apart', () => {
     expect(triageLaneOutcome({ decision: 'APPROVE', findings: [] }, false)).toBe('completed-approve');
     expect(triageLaneOutcome({ decision: 'FINDINGS', findings: [{}] }, false)).toBe('completed-findings');
+    // Findings without a recognizable decision still completed with findings.
+    expect(triageLaneOutcome({ findings: [{}] }, false)).toBe('completed-findings');
+    // FINDINGS with an (inconsistent) empty list is still findings, never an approval.
+    expect(triageLaneOutcome({ decision: 'FINDINGS', findings: [] }, false)).toBe('completed-findings');
   });
   it('a lane result with no decision is not read as an approval', () => {
     expect(triageLaneOutcome({ findings: [] }, false)).toBe('failed');
