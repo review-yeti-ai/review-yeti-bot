@@ -212,6 +212,7 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       // metadata and routing. Deriving it separately here -- without the repo
       // options, and after dropping each file's gitlink mode -- is how the two
       // sides came to disagree about which lanes a diff requires (REL-1056).
+      substage = 'applicability';
       const applicability = resolveReviewApplicability(
         stored.config.personas.filter((persona) => persona.enabled),
         files,

@@ -42,6 +42,7 @@ import { generateMermaidDiagram } from '../review/mermaidEngine';
 import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { isDocumentationOrAssetPath } from '../review/reviewableContent';
+import { PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
 import {
   isSubmoduleEntry,
   isArchitecturePersona,
@@ -3617,7 +3618,9 @@ export function personaCoverageError(
       : `Extend that persona's paths to cover these files, or enable a persona that does.`)
     + lockfileNote
     + excludedNote,
-    { failureClass: 'contract' },
+    // REL-1122: a finite, service-matching reason on the terminal ERROR completion, so the
+    // durable diagnostics name the coverage gap instead of a generic contract failure.
+    { failureClass: 'contract', failureReason: PERSONA_COVERAGE_FAILURE_REASON },
   );
 }
 

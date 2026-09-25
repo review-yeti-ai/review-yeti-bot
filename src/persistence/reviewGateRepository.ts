@@ -16,6 +16,7 @@ import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 import { selectPriorReviewRecord } from './incrementalPriorReview';
 import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput } from '../review/incrementalReview';
 import { selectVerdictCacheSource } from './verdictCacheSource';
+import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
 import type { VerdictCacheVerificationInput } from '../review/verdictCache';
 import {
   appendLifecycleEventForRun,
@@ -60,6 +61,7 @@ function fromRow(row: any): StoredReviewGate {
     desiredVersion: Number(row.desired_version), publishedVersion: Number(row.published_version),
     current: row.current_attempt === true,
     ...(typeof decision?.reason === 'string' ? { decisionReason: decision.reason } : {}),
+    ...(coverageContractGateDetailOf(decision) ? { decisionDetail: coverageContractGateDetailOf(decision) } : {}),
     ...(laneCount(evidence?.expectedLanes) !== undefined ? { expectedLanes: laneCount(evidence?.expectedLanes) } : {}),
     ...(laneCount(evidence?.completedLanes) !== undefined ? { completedLanes: laneCount(evidence?.completedLanes) } : {}),
   };
@@ -217,7 +219,19 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         run: { runId: coordinates.runId, executionAttempt: coordinates.executionAttempt,
           configDigest: String(row.effective_config_digest) },
       } : undefined;
-      const trusted = deadlineValid ? await this.resolveCompletion(resolve, gate, incremental, verdictCache) : undefined;
+      // REL-1122: a coverage-contract verdict from the trusted context (the shared applicability
+      // decision found a changed file no lane covers) is a terminal gate outcome, not a refusal of
+      // the completion: rejecting it left the Gate pending until the deadline reaper. The decision
+      // comes from the service's own derivation; every other resolver failure still rolls back.
+      let coverageFailure: ReturnType<typeof coverageContractGateDecision>;
+      let trusted: TrustedGateCompletionContext | undefined;
+      if (deadlineValid) {
+        try { trusted = await this.resolveCompletion(resolve, gate, incremental, verdictCache); }
+        catch (error) {
+          coverageFailure = coverageContractGateDecision(error);
+          if (!coverageFailure) throw error;
+        }
+      }
       const currentDecision = trusted ? evaluateReviewGate({ candidate: coordinates, current: trusted.current }) : undefined;
       const derived = trusted && currentDecision?.status === 'pending' ? deriveCanonicalWorkerReviewEvidence(event, {
         ...trusted.coverage,
@@ -238,6 +252,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         ? { ...derived.evidence, completedAt: new Date(now).toISOString() } : undefined;
       const decision: ReviewGateDecision = !deadlineValid
         ? { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' }
+        : coverageFailure ? coverageFailure
         : currentDecision && currentDecision.status !== 'pending' ? currentDecision
         : evidence && trusted
         ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, evidence })
@@ -248,13 +263,19 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       // callback's persona error class is the only worker-supplied category we
       // trust; free-form provider context is redacted again at this boundary.
       const errorPersona = event.result.personas.find((persona) => persona.errorClass !== undefined);
-      const failureClass = errorPersona?.errorClass
+      const failureClass = coverageFailure ? 'contract' : errorPersona?.errorClass
         || (decision.status === 'timed_out' ? 'timeout' : 'internal_error');
       const failureDiagnostics = decision.status === 'success' || decision.status === 'cancelled'
         || (decision.status === 'failure' && decision.reason === 'blocking-findings')
         ? null
         : JSON.stringify(buildDurableWorkerFailureDiagnostics(
-          failureClass, event.result.failureDiagnostics, event.executionAttempt,
+          failureClass,
+          // REL-1122: the service's own class, and never an automatic-retry marker: re-running
+          // cannot change a coverage gap, whatever the worker reported.
+          coverageFailure
+            ? { ...event.result.failureDiagnostics, reason: PERSONA_COVERAGE_FAILURE_REASON, recoverableIncompletePanel: false }
+            : event.result.failureDiagnostics,
+          event.executionAttempt,
         ));
 
       stage = 'gate-update';
