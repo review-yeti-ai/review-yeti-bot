@@ -44,8 +44,12 @@ export interface TokenAccounting {
   byOther: Record<string, TokenUsageTotals>;
 }
 
-/** `metadata.role` values `invoke()` and the map-reduce reducer set on lane work. */
-const LANE_ROLES = new Set(['persona', 'map-reduce-reduce']);
+/** `metadata.role` of the map-reduce reduce pass; `createModelReducer` sets exactly this value. */
+export const MAP_REDUCE_REDUCE_ROLE = 'map-reduce-reduce';
+/** `metadata.role` values that are lane work: `invoke()`'s `'persona'` role and the reduce pass.
+ * `panelEngineTokenMetrics.test.ts` runs the real producers through the ledger, so a renamed role
+ * fails there instead of silently moving lane tokens to `other`. */
+const LANE_ROLES = new Set(['persona', MAP_REDUCE_REDUCE_ROLE]);
 const UNATTRIBUTED = 'unattributed';
 /** Bounds the breakdown maps against an unexpected caller that labels every call uniquely. */
 const MAX_BREAKDOWN_KEYS = 64;
@@ -238,4 +242,23 @@ export function recordProviderCallTokenMetrics(
   } catch {
     // Telemetry never changes a review outcome.
   }
+}
+
+/**
+ * The token fields of the worker's `Publishing review worker completed` log line, read from the
+ * receipt's metrics (every provider call of the run). Empty when the receipt carries no metrics.
+ */
+export function receiptTokenLogFields(metrics: {
+  totalTokens: number;
+  totalPromptTokens: number;
+  totalCompletionTokens: number;
+  tokenAccounting?: TokenAccounting;
+} | undefined): Record<string, number> {
+  if (!metrics) return {};
+  return {
+    tokensTotal: metrics.totalTokens,
+    tokensPrompt: metrics.totalPromptTokens,
+    tokensCompletion: metrics.totalCompletionTokens,
+    ...(metrics.tokenAccounting ? { providerCalls: metrics.tokenAccounting.total.calls } : {}),
+  };
 }
