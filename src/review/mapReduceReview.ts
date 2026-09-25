@@ -60,6 +60,7 @@ import type {
 } from '../types/mapReduceReview';
 import type { BudgetDepth } from '../types/reviewBudget';
 import { splitOversizedFileHunks } from '../pipeline/shaPartitionManager';
+import { recordProviderCallTokenMetrics } from '../telemetry/tokenLedger';
 import {
   COMPOSED_BUDGET_LANE_ID,
   MAX_BUDGETED_REQUEST_BYTES,
@@ -1110,6 +1111,8 @@ export function createModelReducer(params: {
       metadata: { ...(params.requestPolicy?.metadata || {}), role: 'map-reduce-reduce', persona: params.persona },
       ...(params.signal ? { signal: params.signal } : {}),
     });
+    // REL-1132: the reduce pass is a real provider call of this lane; count it with the lane's turns.
+    recordProviderCallTokenMetrics({ persona: params.persona, provider: params.providerId || 'unknown', model: response.model }, response);
     return { content: response.content, model: response.model, usage: response.usage, costUSD: response.costUSD };
   };
 }

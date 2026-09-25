@@ -364,7 +364,10 @@ describe('authoritative prepared publishing worker', () => {
     const receipt = await runPublishingReviewWorker(f.env, f.deps);
     expect(f.panelRunner).toHaveBeenCalledExactlyOnceWith({
       config: f.prepared.config, changedFiles: [{ path: 'src/a.ts', patch: DIFF }],
-      repository: 'example/project', headSha: HEAD, repositoryVisibility: 'PRIVATE', client: f.client,
+      repository: 'example/project', headSha: HEAD, repositoryVisibility: 'PRIVATE',
+      // REL-1132: the engine gets a metering wrapper around `f.client` (every call is recorded in
+      // the run's token ledger, then delegated), not the injected client object itself.
+      client: { complete: expect.any(Function) },
       jobId: f.env.REVIEW_RUN_ID, baseSha: BASE, prNumber: 42,
       signal: expect.any(AbortSignal),
       // This fixture's GH_TOKEN is a real `ghs_`-shaped read token and no
