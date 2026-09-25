@@ -4,7 +4,6 @@ import {
   MAX_FILE_PATCH_CHARS,
   type HunkFilterResult,
 } from '../pipeline/hunkFilter';
-import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './personaApplicability';
 import { isRegularFileMode, NEW_PACKAGE_ENTRY_REFUSAL, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { omittedLockfilePatchReason } from './omittedLockfilePatch';
 import { isSubmodulePatch } from './submodulePatch';
@@ -39,7 +38,27 @@ import { isSubmodulePatch } from './submodulePatch';
  * asks for a human review.
  */
 
-export function isNewPackageLockfileChange(file: ReviewApplicabilityInputFile): boolean {
+/**
+ * The changed-file and effective-file shapes this module reads and writes.
+ * Declared here (structurally identical to `ReviewApplicabilityInputFile` and
+ * `EffectiveReviewFile`) so this module does not depend on
+ * `personaApplicability`, which depends on it.
+ */
+export interface LockfileChangeInput {
+  path: string;
+  patch?: string;
+  mode?: string;
+  isSubmodule?: boolean;
+  submoduleCandidate?: boolean;
+  size?: number;
+  byteSize?: number;
+}
+
+export interface RestoredLockfile extends LockfileChangeInput {
+  originalPatchLength: number;
+}
+
+export function isNewPackageLockfileChange(file: LockfileChangeInput): boolean {
   if (!file || typeof file.path !== 'string') return false;
   if (classifyLockfileOrGeneratedPath(file.path) !== 'lockfile') return false;
   if (file.isSubmodule === true || file.submoduleCandidate === true || !isRegularFileMode(file.mode)) return false;
@@ -57,17 +76,17 @@ export function isNewPackageLockfileChange(file: ReviewApplicabilityInputFile): 
  * `path_filters` pattern excluded stays excluded: only the filter's own
  * lockfile rule is undone.
  */
-export function withNewPackageLockfiles(
-  changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
-  effectiveFiles: readonly EffectiveReviewFile[],
+export function withNewPackageLockfiles<E extends { path: string }>(
+  changedFiles: ReadonlyArray<LockfileChangeInput>,
+  effectiveFiles: readonly E[],
   hunkResult: Pick<HunkFilterResult, 'files'>,
-): { files: EffectiveReviewFile[]; paths: string[] } {
+): { files: Array<E | RestoredLockfile>; paths: string[] } {
   const hiddenLockfiles = new Set(hunkResult.files
     .filter((file) => file.status === 'ignored' && file.ignoreReason === LOCKFILE_IGNORE_REASON)
     .map((file) => file.path));
   if (hiddenLockfiles.size === 0) return { files: [...effectiveFiles], paths: [] };
   const effective = new Map(effectiveFiles.map((file) => [file.path, file]));
-  const restored = new Map<string, EffectiveReviewFile>();
+  const restored = new Map<string, RestoredLockfile>();
   for (const file of changedFiles) {
     if (!file || effective.has(file.path) || restored.has(file.path) || !hiddenLockfiles.has(file.path)) continue;
     if (!isNewPackageLockfileChange(file)) continue;
@@ -83,7 +102,7 @@ export function withNewPackageLockfiles(
     });
   }
   if (restored.size === 0) return { files: [...effectiveFiles], paths: [] };
-  const files: EffectiveReviewFile[] = [];
+  const files: Array<E | RestoredLockfile> = [];
   const emitted = new Set<string>();
   for (const file of changedFiles) {
     const next = effective.get(file?.path) ?? restored.get(file?.path);

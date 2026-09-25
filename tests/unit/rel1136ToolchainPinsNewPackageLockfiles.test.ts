@@ -18,6 +18,7 @@ import { isDependencyPersona, isNewPackageLockfileChange, routeNewPackageLockfil
 import { isToolchainPinOrDependencyManifestPath } from '../../src/review/toolchainPinPaths';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { OMITTED_LOCKFILE_PATCH_REASON } from '../../src/review/omittedLockfilePatch';
+import { PATCH_UNAVAILABLE_MARKER } from '../../src/review/patchAvailability';
 
 /**
  * REL-1136 (operator report 2026-09-25, section 6 #2): the last two
@@ -309,8 +310,12 @@ describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)',
         () => executePersonaPanel({ config: roster(), changedFiles, repository: 'calltelemetry/ct-quasar', headSha, client: unreachableClient, deterministicRoster: true }),
         () => executeComposedReview({ config: roster(), changedFiles, repository: 'calltelemetry/ct-quasar', headSha, client: unreachableClient }),
       ]) {
+        // Reaching a lane means consulting the (unreachable) model client; the
+        // old outcome was the coverage error, before any lane ran.
         const outcome = await run().then(() => null, (error: unknown) => error);
-        if (outcome) expect((outcome as Error).message).not.toMatch(/no enabled persona applies/);
+        expect(outcome).toBeInstanceOf(Error);
+        expect((outcome as Error).message).toMatch(/the model client must not be consulted/);
+        expect((outcome as Error).message).not.toMatch(/no enabled persona applies/);
       }
     }
   });
@@ -369,12 +374,22 @@ describe('REL-1136: what a new-package lockfile may NOT hide (still fails closed
     expect(result.unmatchedPaths).toEqual(['yarn.lock']);
   });
 
-  it('a lockfile whose patch GitHub omitted', () => {
+  it('a lockfile with an empty patch', () => {
     expect(isNewPackageLockfileChange(lock(''))).toBe(false);
     const result = resolveReviewApplicability(enabled(), [lock('')]);
     expect(result.applicable).toEqual([]);
-    expect(result.unverifiedLockfiles.map((file) => file.reason).join(' ')).not.toBe('');
-    expect(OMITTED_LOCKFILE_PATCH_REASON.length).toBeGreaterThan(0);
+    expect(result.unverifiedLockfiles.map((file) => file.path)).toEqual(['yarn.lock']);
+  });
+
+  it('a lockfile whose patch GitHub omitted, even when the rest reads as a new registry package', () => {
+    // The omission marker is not an added line, so the registry check alone
+    // would pass this with new entries allowed; the omitted-patch guard refuses it.
+    const omitted = `${PATCH_UNAVAILABLE_MARKER} (omitted)\n${NEW_PACKAGE}`;
+    expect(verifyLockfileOnlyChange('yarn.lock', omitted, { allowNewEntries: true })).toEqual({ ok: true });
+    expect(isNewPackageLockfileChange(lock(omitted))).toBe(false);
+    const result = resolveReviewApplicability(enabled(), [lock(omitted)]);
+    expect(result.applicable).toEqual([]);
+    expect(result.unverifiedLockfiles).toEqual([{ path: 'yarn.lock', reason: OMITTED_LOCKFILE_PATCH_REASON }]);
   });
 
   it('a new-package lockfile a path_filters pattern excluded stays excluded', () => {
