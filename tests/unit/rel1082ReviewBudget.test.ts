@@ -152,8 +152,14 @@ describe('deterministic category order', () => {
     ['.github/workflows/ci.yml', 'security-sensitive'],
     ['Dockerfile', 'security-sensitive'],
     ['package.json', 'security-sensitive'],
-    ['clusters/doks/app/values.yaml', 'ci-iac'],
-    ['Chart.yaml', 'ci-iac'],
+    // REL-1135: the shared predicate is the union of every sensitive list, so the CI/IaC paths
+    // this module used to list on its own are now security-sensitive (still rank 0, full depth).
+    ['clusters/doks/app/values.yaml', 'security-sensitive'],
+    ['Chart.yaml', 'security-sensitive'],
+    ['package-lock.json', 'security-sensitive'],
+    ['bun.lock', 'security-sensitive'],
+    ['.tool-versions', 'security-sensitive'],
+    ['.nvmrc', 'security-sensitive'],
     ['src/review/panel.ts', 'source'],
     ['tests/unit/panel.test.ts', 'test'],
     ['src/app.spec.ts', 'test'],

@@ -11,6 +11,7 @@ import {
   type PreflightFinding,
 } from './schemas';
 import { compareClaims } from '../../../review/claimSimilarity';
+import { blocksFastShipByPath, isSecuritySensitivePath } from '../../../review/securitySensitivePaths';
 import type { ReviewModelClient } from '../../../gateway/openRouterClient';
 
 export const preflightDiffReviewDefinition: ToolDefinition = {
@@ -42,22 +43,6 @@ const SAFE_FILENAMES = new Set([
   '.gitignore', '.gitattributes', '.prettierignore', '.eslintignore', '.editorconfig',
 ]);
 
-const SENSITIVE_PATH_PATTERNS = [
-  /\.github\//i,
-  /workflow/i,
-  /pipeline/i,
-  /\.env/i,
-  /secret/i,
-  /credential/i,
-  /token/i,
-  /password/i,
-  /key/i,
-  /cert/i,
-  /auth/i,
-  /security/i,
-  /migration/i,
-  /schema/i,
-];
 
 export interface ParsedDiffFile {
   path: string;
@@ -398,7 +383,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
           const baseName = lowerPath.split('/').pop() || '';
           const hasSafeName = SAFE_FILENAMES.has(baseName);
           const hasSafeExt = Array.from(SAFE_EXTENSIONS).some((ext) => lowerPath.endsWith(ext));
-          const hasSensitivePattern = SENSITIVE_PATH_PATTERNS.some((p) => p.test(file.path));
+          const hasSensitivePattern = blocksFastShipByPath(file.path);
           return (hasSafeName || hasSafeExt) && !hasSensitivePattern;
         });
 
@@ -423,7 +408,8 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
         totalDeleted += file.deletedLines.length;
         allModifiedExports.push(...file.modifiedExports);
 
-        if (SENSITIVE_PATH_PATTERNS.some((p) => p.test(file.path))) {
+        // Risk tier (not fast-ship): the shared predicate OR the coarse screen.
+        if (isSecuritySensitivePath(file.path) || blocksFastShipByPath(file.path)) {
           riskTier = 'CRITICAL';
         } else if (file.modifiedExports.length > 0 && riskTier !== 'CRITICAL') {
           riskTier = 'HIGH';
@@ -436,7 +422,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
       if (allModifiedExports.length > 0) {
         blastRadiusSummary += ` ${allModifiedExports.length} exported symbol(s) modified (${allModifiedExports.slice(0, 3).join(', ')}${allModifiedExports.length > 3 ? '...' : ''}).`;
       }
-      if (touchedPaths.some((p) => SENSITIVE_PATH_PATTERNS.some((regex) => regex.test(p)))) {
+      if (touchedPaths.some((p) => isSecuritySensitivePath(p) || blocksFastShipByPath(p))) {
         blastRadiusSummary += ` Touches critical infrastructure or security components.`;
       }
 

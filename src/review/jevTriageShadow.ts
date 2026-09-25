@@ -40,6 +40,7 @@ import { jevTransport } from './jevTransport';
 import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
 import { classifyLockfileOrGeneratedPath } from '../pipeline/hunkFilter';
 import { isDocumentationOrAssetPath } from './reviewableContent';
+import { isSecuritySensitivePath, securitySensitivePathClass } from './securitySensitivePaths';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 import type { ChangedFile } from './changedFiles';
@@ -148,32 +149,10 @@ export function buildJevTriageQuestions(personas: readonly TriagePersona[]): Rec
 // Deterministic facts (computed in code; never asked)
 // ---------------------------------------------------------------------------
 
-const SECURITY_SENSITIVE_PATTERNS: readonly RegExp[] = [
-  // Authentication, authorization, crypto, secrets.
-  /(^|[/._-])(auth|authn|authz|oauth|oidc|saml|sso|jwt|login|session|permissions?|rbac|acl|crypto|cipher|encrypt|decrypt|signing|signature|secrets?|credentials?|passwords?|tokens?|keys?)([/._-]|$)/iu,
-  /\.(pem|key|crt|p12|pfx|jks|keystore)$/iu,
-  // CI/CD.
-  /(^|\/)\.github\/(workflows|actions)\//iu,
-  /(^|\/)\.gitlab-ci\.ya?ml$/iu,
-  /(^|\/)\.circleci\//iu,
-  /(^|\/)jenkinsfile$/iu,
-  /(^|\/)azure-pipelines[^/]*\.ya?ml$/iu,
-  /(^|\/)action\.ya?ml$/iu,
-  // Containers and infrastructure as code.
-  /(^|\/)(dockerfile|containerfile)([^/]*)$/iu,
-  /(^|\/)[^/]*\.dockerfile$/iu,
-  /(^|\/)(docker-)?compose[^/]*\.ya?ml$/iu,
-  /\.(tf|tfvars|hcl)$/iu,
-  /(^|\/)(charts|helm|k8s|kubernetes|kustomize|terraform|infra|infrastructure|deploy|deployment)\//iu,
-  /(^|\/)kustomization\.ya?ml$/iu,
-  // Dependency manifests and lockfiles.
-  /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|requirements[^/]*\.txt|pipfile(\.lock)?|pyproject\.toml|poetry\.lock|go\.mod|go\.sum|cargo\.toml|cargo\.lock|gemfile(\.lock)?|pom\.xml|build\.gradle(\.kts)?|mix\.exs|mix\.lock|composer\.(json|lock)|[^/]*\.csproj|packages\.config)$/iu,
-];
-
-export function isSecuritySensitivePath(filePath: string): boolean {
-  const normalized = String(filePath || '').replace(/\\/gu, '/');
-  return SECURITY_SENSITIVE_PATTERNS.some((pattern) => pattern.test(normalized));
-}
+// The security-sensitive fact is THE shared predicate (REL-1135), so calibration measures
+// exactly what diff shrink, budget packing and the fast-ship guard enforce. Re-exported for
+// callers and tests that already import it from here.
+export { isSecuritySensitivePath };
 
 const TEST_PATTERNS: readonly RegExp[] = [
   /(^|\/)(test|tests|__tests__|__mocks__|spec|specs|testdata|fixtures)\//iu,
@@ -390,15 +369,62 @@ export interface TriageJoinInput {
   /** Canonical (published) findings. */
   findings: readonly TriageJoinFinding[];
   /** Raw per-lane results, for per-persona attribution. */
-  personas: ReadonlyArray<{ id?: unknown; findings?: readonly TriageJoinFinding[] }>;
+  personas: ReadonlyArray<{
+    id?: unknown;
+    findings?: readonly TriageJoinFinding[];
+    decision?: unknown;
+    notApplicable?: unknown;
+    skipReason?: unknown;
+  }>;
   /** Persona ids the panel considered applicable, when it reports them. */
   applicablePersonaIds?: readonly unknown[];
+  /**
+   * Lanes that did not complete (the panel's `optionalFailures` and `unreportedLanes`). Their
+   * empty findings are a failure, never an approval (ADR 0687).
+   */
+  failedPersonaIds?: readonly unknown[];
   mode: string;
   verdict: string;
   conclusion: string;
 }
 
 const BLOCKING = new Set(['P0', 'P1']);
+
+/**
+ * How one lane ended, on the join line (ADR 0687). `failed` wins over anything the lane may also
+ * have reported, and a lane that is neither completed nor failed is `skipped` -- so an empty
+ * findings list is `completed-approve` only when the lane actually completed and approved.
+ */
+export type TriageLaneOutcome = 'completed-approve' | 'completed-findings' | 'failed' | 'skipped';
+
+export function triageLaneOutcome(
+  lane: { decision?: unknown; notApplicable?: unknown; skipReason?: unknown; findings?: readonly unknown[] } | undefined,
+  failed: boolean,
+): TriageLaneOutcome {
+  if (failed) return 'failed';
+  if (!lane || lane.notApplicable === true || (typeof lane.skipReason === 'string' && lane.skipReason.length > 0)) {
+    return 'skipped';
+  }
+  if (lane.decision === 'FINDINGS' || (Array.isArray(lane.findings) && lane.findings.length > 0)) return 'completed-findings';
+  if (lane.decision === 'APPROVE') return 'completed-approve';
+  // A lane result with no recognizable decision is not evidence of an approval.
+  return 'failed';
+}
+
+/**
+ * Coarse path class for calibration (ADR 0688): `sensitive` first, with no category precedence,
+ * so a test or doc on a sensitive path is still `sensitive`; then `test`, `docs`, `generated`,
+ * else `other`.
+ */
+export type TriagePathClass = 'sensitive' | 'test' | 'docs' | 'generated' | 'other';
+
+export function triagePathClass(facts: TriageFileFacts): TriagePathClass {
+  if (facts.security_sensitive) return 'sensitive';
+  if (facts.is_test) return 'test';
+  if (facts.is_docs_or_asset) return 'docs';
+  if (facts.lockfile_or_generated === 'generated') return 'generated';
+  return 'other';
+}
 
 function severityOf(finding: TriageJoinFinding): string {
   return String(finding?.severity || 'P2').toUpperCase();
@@ -715,10 +741,13 @@ function logJoin(
 
   const lanePath = new Map<string, Map<string, { findings: number; blocking: number }>>();
   const ranLanes = new Set<string>();
+  const laneResults = new Map<string, (typeof joinInput.personas)[number]>();
+  const failedLanes = new Set((joinInput.failedPersonaIds || []).map((id) => String(id)).filter(Boolean));
   for (const persona of joinInput.personas || []) {
     const id = String(persona?.id || '');
     if (!id) continue;
     ranLanes.add(id);
+    laneResults.set(id, persona);
     for (const finding of persona.findings || []) {
       const path = String(finding?.path || '');
       const perPath = lanePath.get(path) || new Map<string, { findings: number; blocking: number }>();
@@ -751,10 +780,13 @@ function logJoin(
     const lanes: Record<string, Record<string, unknown>> = {};
     for (const [id, lane] of Object.entries(decision.lanes || {})) {
       const found = perLane.get(id) || { findings: 0, blocking: 0 };
+      const laneOutcome = triageLaneOutcome(laneResults.get(id), failedLanes.has(id));
       lanes[id] = {
         noul: lane.noul,
         said_yes: lane.noul === null ? null : lane.noul >= 0.5,
         ran: ranLanes.has(id),
+        outcome: laneOutcome,
+        completed: laneOutcome === 'completed-approve' || laneOutcome === 'completed-findings',
         applicable: applicable.size > 0 ? applicable.has(id) : null,
         findings: found.findings,
         blocking: found.blocking,
@@ -777,6 +809,12 @@ function logJoin(
       model_pin: modelPin,
       model_pin_match: decision.model_pin_match ?? null,
       security_sensitive: decision.facts.security_sensitive,
+      // ADR 0685: the union the enforcement would use -- the shared path rule OR Jev's own
+      // (valid) security_sensitive category, each standing alone.
+      sensitive_any: decision.facts.security_sensitive
+        || (decision.category_valid === true && decision.category === 'security_sensitive'),
+      sensitive_path_class: securitySensitivePathClass(decision.path),
+      path_class: triagePathClass(decision.facts),
       is_test: decision.facts.is_test,
       added_lines: decision.facts.added_lines,
       removed_lines: decision.facts.removed_lines,
