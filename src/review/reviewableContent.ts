@@ -1,4 +1,5 @@
 import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
+import { isToolchainPinOrDependencyManifestPath } from './toolchainPinPaths';
 
 /**
  * Prose documentation formats and static image/diagram assets.
@@ -22,6 +23,8 @@ const DOCUMENTATION_OR_ASSET_EXTENSION =
  * artifact directories remains analyzable, as do manifests and dependency files.
  */
 export function isDocumentationOrAssetPath(filePath: string): boolean {
+  // REL-1136: a dependency manifest such as requirements.txt is never prose.
+  if (isToolchainPinOrDependencyManifestPath(filePath)) return false;
   const normalized = filePath.replace(/\\/g, '/').toLowerCase();
   return (
     (
