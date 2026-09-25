@@ -123,19 +123,49 @@ Every structured log line carries `runId`, `repository`, `prNumber` and `headSha
 
 These are the calibration questions from plan W4, to run after about 7 days of traffic.
 
-How often do files that Jev scored risk 1 or 2 get P0 or P1 findings? The answer bounds how much depth reduction is safe:
+### Security-sensitive files are never skip candidates
+
+A file is security-sensitive when the path rule says so (`security_sensitive:true`, which also covers dependency manifests and lockfiles) **or** Jev classes it as `category:"security_sensitive"`. No skipping or depth-reduction rule may ever apply to such a file, whatever its risk level or noul. Every query that sizes a skip or depth candidate must therefore exclude these files, or, for a whole-run rule, exclude every run that contains one. Check this on its own terms: do not rely on the category precedence (a test file or lockfile on a sensitive path is still sensitive). Any rule these queries support still needs its own ct-meta ADR before an enforcement flag ships.
+
+How often do files that Jev scored risk 1 or 2 get P0 or P1 findings? The answer bounds how much depth reduction is safe. Security-sensitive files are excluded because they never get reduced depth:
 
 ```text
-event:"jev_triage_shadow_join" outcome:"ok" panel_mode:"panel" risk_level:in(1,2)
+event:"jev_triage_shadow_join" outcome:"ok" panel_mode:"panel" model_pin_match:true risk_level:in(1,2)
+  -security_sensitive:true -category:"security_sensitive"
 | stats by (risk_level) count() files, count() if (finding_class:"blocking") blocking_files
 ```
 
-For each persona, how often does a file Jev said "no" to still get findings from that persona? The answer bounds lane skipping. Replace `sec-lane` with each persona in turn:
+For each persona, how often does a file Jev said "no" to still get findings from that persona? The answer bounds per-file lane skipping. Replace `sec-lane` with each persona in turn:
 
 ```text
-event:"jev_triage_shadow_join" outcome:"ok" panel_mode:"panel" lanes.sec-lane.ran:true lanes.sec-lane.said_yes:false
-| stats count() said_no, count() if (lanes.sec-lane.findings:>0) missed
+event:"jev_triage_shadow_join" outcome:"ok" panel_mode:"panel" model_pin_match:true lanes.sec-lane.ran:true lanes.sec-lane.said_yes:false
+  -security_sensitive:true -category:"security_sensitive"
+| stats count() said_no, count() if (lanes.sec-lane.findings:>0) missed, count() if (lanes.sec-lane.blocking:>0) missed_blocking
 ```
+
+Sec-lane whole-run skip. The candidate is "every file in the run has sec noul < 0.3 **and** the run contains no security-sensitive file". The query counts the runs that contain a sensitive file, and how many of the all-below runs that removes, so the saving is not overstated:
+
+```text
+event:"jev_triage_shadow_join" outcome:"ok" panel_mode:"panel" model_pin_match:true lanes.sec-lane.ran:true
+| stats by (runId) count() files,
+    max(lanes.sec-lane.noul) max_sec_noul,
+    count() if (security_sensitive:true or category:"security_sensitive") sensitive_files,
+    sum(lanes.sec-lane.findings) sec_findings,
+    sum(lanes.sec-lane.blocking) sec_blocking
+| stats count() runs,
+    count() if (sensitive_files:>0) runs_with_sensitive_files,
+    count() if (max_sec_noul:<0.3) runs_all_below,
+    count() if (max_sec_noul:<0.3 and sensitive_files:>0) runs_all_below_excluded_sensitive,
+    count() if (max_sec_noul:<0.3 and sensitive_files:0) runs_eligible,
+    count() if (max_sec_noul:<0.3 and sensitive_files:0 and sec_findings:>0) eligible_runs_with_sec_findings,
+    count() if (max_sec_noul:<0.3 and sensitive_files:0 and sec_blocking:>0) eligible_runs_with_sec_blocking
+```
+
+`runs_eligible` is the only number that sizes the rule. On 2026-09-25 over 24 h it returned 311 runs, 218 of them with a sensitive file; 64 runs were all below 0.3, but 33 of those contained a sensitive file, leaving 31 eligible runs with 0 sec-lane findings. The same shape works for other lanes and thresholds: change the lane and the `0.3`.
+
+### Documentation lane: re-baseline after REL-1126
+
+Until REL-1126, the lane question for the `builtin:docs` and `builtin:docs-compliance` charters (the `documentation` persona), and for `builtin:database`, `builtin:devops`, `builtin:finops`, `builtin:red-team`, `builtin:skeptic`, `builtin:review-flowchart` and `builtin:constitutional-goals`, fell back to the generic text `the "<persona id>" review charter`. Jev's documentation-lane answers from that period ran the wrong way. Calibrate those lanes only on join lines logged after the worker image containing REL-1126 rolled out (add `_time:>=<rollout time>`). The focus text lives in `src/review/jevCharterFocus.ts`, and `tests/unit/jevCharterFocus.test.ts` fails when a `builtin:*` charter used anywhere in `src/` has no focus.
 
 Confidence against correctness, used to set thresholds:
 
