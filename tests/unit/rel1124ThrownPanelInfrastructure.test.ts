@@ -24,6 +24,7 @@ import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity'
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import {
   attachPanelFailureEvidence,
+  isInfrastructureFailureClass,
   markThrownByPanel,
   panelFailureEvidenceOf,
   thrownPanelInfrastructureFailure,
@@ -32,6 +33,7 @@ import type { WorkerCompletionAdapter, WorkerTerminalFailure } from '../../src/r
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { parseChangedFiles } from '../../src/review/changedFiles';
+import { PATCH_UNAVAILABLE_MARKER } from '../../src/review/patchAvailability';
 import { logger } from '../../src/utils/logger';
 
 /*
@@ -312,6 +314,15 @@ describe('REL-1124 negative proof: everything else keeps the pre-existing termin
     await expectUnchangedFailure(f, original);
   });
 
+  it('a source file whose patch GitHub omitted (deterministic coverage gap) is never re-attempted', async () => {
+    const f = fixture('1');
+    f.source.diff = `${DIFF}diff --git a/src/b.ts b/src/b.ts\n--- a/src/b.ts\n+++ b/src/b.ts\n${PATCH_UNAVAILABLE_MARKER} (omitted by GitHub; 900 changed lines)\n`;
+    expect(parseChangedFiles(f.source.diff).unreadable).toEqual([]);
+    const original = requiredSecLaneFetchFailed();
+    f.panelRunner.mockRejectedValue(original);
+    await expectUnchangedFailure(f, original);
+  });
+
   it('a cancelled panel is never infrastructure', async () => {
     const f = fixture('1');
     const original = new PanelCancellationError();
@@ -395,6 +406,18 @@ describe('REL-1124: the decision itself', () => {
     expect(thrownPanelInfrastructureFailure(markThrownByPanel('fetch failed'))).toBeUndefined();
   });
 
+  it('publishes the class and provider status of the SAME lane, never a mix of two', () => {
+    const error = markThrownByPanel(attachPanelFailureEvidence(new Error('required persona failure'), {
+      stage: 'lanes', findingsObserved: false,
+      lanes: [{ id: 'sec-lane', failureClass: 'transport' }, { id: 'qual-lane', failureClass: 'provider_error', providerStatus: 502 }] }));
+    expect(thrownPanelInfrastructureFailure(error)).toEqual({ stage: 'lanes', failureClass: 'provider_error', providerStatus: 502,
+      incompleteLanes: [{ id: 'sec-lane', failureClass: 'transport' }, { id: 'qual-lane', failureClass: 'provider_error', providerStatus: 502 }] });
+    const noStatus = markThrownByPanel(attachPanelFailureEvidence(new Error('x'), {
+      stage: 'lanes', findingsObserved: false, lanes: [{ id: 'sec-lane', failureClass: 'timeout' }, { id: 'qual-lane', failureClass: 'transport' }] }));
+    expect(thrownPanelInfrastructureFailure(noStatus)).toMatchObject({ failureClass: 'timeout' });
+    expect(thrownPanelInfrastructureFailure(noStatus)).not.toHaveProperty('providerStatus');
+  });
+
   it('keeps evidence off the serialized error', () => {
     const error = requiredSecLaneFetchFailed();
     expect(Object.keys(error)).not.toContain('stage');
@@ -421,7 +444,7 @@ function panelConfig(): CtReviewConfigV3 {
   });
 }
 
-type Fail = { role: 'persona:sec-lane' | 'moderator' | 'arbiter'; error: () => Error };
+type Fail = { role: 'persona:sec-lane' | 'moderator' | 'arbiter'; error?: () => Error; content?: string };
 
 async function runRealPanel(fail: Fail, options: { qualFinding?: boolean } = {}) {
   vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -435,7 +458,10 @@ async function runRealPanel(fail: Fail, options: { qualFinding?: boolean } = {})
     const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
     const persona = opts.metadata?.persona;
     const key = role === 'persona' ? `persona:${persona}` : role;
-    if (key === fail.role) throw fail.error();
+    if (key === fail.role) {
+      if (fail.content !== undefined) return { model: opts.model, content: fail.content, usage: null, costUSD: null, raw: {} };
+      throw fail.error!();
+    }
     if (role === 'arbiter') return { model: opts.model, content: JSON.stringify({ nonce, verdict: 'SHIP', rationale: 'ok' }), usage: null, costUSD: null, raw: {} };
     if (role === 'moderator') return { model: opts.model, content: JSON.stringify({ nonce, decision: 'RECONCILED', findings: [] }), usage: null, costUSD: null, raw: {} };
     const findings = options.qualFinding && (persona === 'qual-lane' || /correctness/iu.test(system))
@@ -491,6 +517,21 @@ describe('REL-1124: executePersonaPanel throws text-free infrastructure evidence
       error: () => new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 502: nginx', 502) });
     expect(panelFailureEvidenceOf(caught)).toEqual({ stage: 'moderator',
       lanes: [{ id: 'moderator', failureClass: 'provider_error', providerStatus: 502 }], findingsObserved: false });
+  }, 120_000);
+
+  it('negative proof: a required lane that answered with malformed output stays a PanelConfigurationError with a non-infrastructure class', async () => {
+    const caught = await runRealPanel({ role: 'persona:sec-lane', content: 'this is not the review contract' });
+    expect((caught as Error).message).toMatch(/^required persona failure/u);
+    expect(caught).toBeInstanceOf(PanelConfigurationError);
+    expect(caught).not.toBeInstanceOf(PanelInfrastructureError);
+    const evidence = panelFailureEvidenceOf(caught);
+    expect(evidence?.stage).toBe('lanes');
+    // The lane exhausts its correction turns on output that never meets the contract: a coded
+    // non-infrastructure class (budget_exhausted / malformed_output), never transport.
+    expect(evidence?.lanes.map((lane) => lane.id)).toEqual(['sec-lane']);
+    expect(['budget_exhausted', 'malformed_output']).toContain(evidence?.lanes[0]?.failureClass);
+    expect(isInfrastructureFailureClass(evidence?.lanes[0]?.failureClass)).toBe(false);
+    expect(thrownPanelInfrastructureFailure(markThrownByPanel(caught))).toBeUndefined();
   }, 120_000);
 
   it('negative proof: an arbiter that answered with no verdict stays a PanelConfigurationError, not infrastructure', async () => {

@@ -17,7 +17,6 @@ import { logger } from '../utils/logger';
 import { classifyWorkerFailureMessage } from '../review/workerCompletion';
 import {
   classifyProviderResponseStatus,
-  INFRASTRUCTURE_LANE_FAILURE_CLASSES,
   isNonRetryableClientStatus,
   isTransientGatewayMessage,
   TRANSIENT_GATEWAY_STATUSES,
@@ -26,7 +25,7 @@ import {
   TRANSPORT_RETRY_WINDOW_MS,
   transportRetryDelayMs,
 } from '../review/laneInfrastructure';
-import { attachPanelFailureEvidence, thrownPanelLane, type ThrownPanelLane } from '../review/thrownPanelInfrastructure';
+import { attachPanelFailureEvidence, isInfrastructureFailureClass, thrownPanelLane, type ThrownPanelLane } from '../review/thrownPanelInfrastructure';
 // From the neutral `../types/workerFailure` module, not `../review/workerCompletion`: this file
 // is otherwise the panel-domain side of the same boundary `../panel/types` was fixed for
 // (REL-892 finding 3), so it uses the same neutral import for the type.
@@ -476,11 +475,6 @@ export class PanelInfrastructureError extends PanelConfigurationError {
     super(message, lane);
     this.name = 'PanelInfrastructureError';
   }
-}
-
-/** True for the coded lane failure classes that describe the path to the model (REL-1113). */
-function isInfrastructureFailureClass(failureClass: WorkerFailureClass | undefined): boolean {
-  return failureClass !== undefined && (INFRASTRUCTURE_LANE_FAILURE_CLASSES as readonly string[]).includes(failureClass);
 }
 
 /** The configured panel deadline elapsed; this is distinct from a provider request timeout. */

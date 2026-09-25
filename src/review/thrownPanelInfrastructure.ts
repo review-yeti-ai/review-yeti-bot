@@ -96,7 +96,12 @@ export function isThrownByPanel(error: unknown): boolean {
   return isObject(error) && (error as Record<symbol, unknown>)[THROWN_BY_PANEL] === true;
 }
 
-function isInfrastructureClass(value: unknown): value is WorkerFailureClass {
+/**
+ * The ONE predicate for "this coded lane failure class is the path to the model". The panel uses
+ * it to decide whether to throw `PanelInfrastructureError`, and the decision below uses it to route
+ * that same throw to INCOMPLETE, so the two can never disagree.
+ */
+export function isInfrastructureFailureClass(value: unknown): value is WorkerFailureClass {
   return (INFRASTRUCTURE_LANE_FAILURE_CLASSES as readonly string[]).includes(String(value));
 }
 
@@ -156,12 +161,14 @@ export function thrownPanelInfrastructureFailure(
   const evidence = panelFailureEvidenceOf(error);
   if (evidence) {
     if (evidence.findingsObserved) return undefined;
-    if (evidence.lanes.length === 0 || !evidence.lanes.every((lane) => isInfrastructureClass(lane.failureClass))) return undefined;
+    if (evidence.lanes.length === 0 || !evidence.lanes.every((lane) => isInfrastructureFailureClass(lane.failureClass))) return undefined;
     const incompleteLanes = dedupe(evidence.lanes);
+    // One lane describes the run: the first that carries a provider status (the most specific
+    // evidence), else the first. Its class and its status are published together, never mixed.
     const primary = incompleteLanes.find((lane) => lane.providerStatus !== undefined) ?? incompleteLanes[0];
     return {
       stage: evidence.stage,
-      failureClass: incompleteLanes[0].failureClass as WorkerFailureClass,
+      failureClass: primary.failureClass as WorkerFailureClass,
       incompleteLanes,
       ...(primary.providerStatus === undefined ? {} : { providerStatus: primary.providerStatus }),
     };
