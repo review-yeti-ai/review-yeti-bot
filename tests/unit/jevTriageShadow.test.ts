@@ -264,7 +264,9 @@ describe('isSecuritySensitivePath / isTestPath', () => {
     expect(isSecuritySensitivePath(path)).toBe(true);
   });
 
-  it.each(['src/review/summary.ts', 'docs/guide.md', 'src/monkey.ts', 'src/tokenizer.ts', 'README.md'])(
+  // REL-1135: `src/tokenizer.ts` is now flagged -- the shared predicate's `token` stem is
+  // deliberately broad (a false positive only costs tokens).
+  it.each(['src/review/summary.ts', 'docs/guide.md', 'src/monkey.ts', 'README.md'])(
     'does not flag %s', (path) => {
       expect(isSecuritySensitivePath(path)).toBe(false);
     },

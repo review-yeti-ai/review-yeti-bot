@@ -2361,6 +2361,11 @@ export async function runPublishingReviewWorker(
       findings,
       personas: Array.isArray(panelResult.personas) ? panelResult.personas : [],
       applicablePersonaIds: Array.isArray(panelResult.applicablePersonaIds) ? panelResult.applicablePersonaIds : [],
+      // REL-1135 / ADR 0687: a failed lane's empty findings must never read as an approval.
+      failedPersonaIds: [
+        ...(Array.isArray(panelResult.optionalFailures) ? panelResult.optionalFailures : []),
+        ...(Array.isArray(panelResult.unreportedLanes) ? panelResult.unreportedLanes : []),
+      ].map((lane) => lane.id),
       mode: coverage.mode,
       verdict,
       conclusion,

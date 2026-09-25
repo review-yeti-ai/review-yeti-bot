@@ -44,6 +44,7 @@ import { generatePRSummary } from '../review/summaryEngine';
 import { validateReviewFindings } from '../review/reviewCore';
 import { isDocumentationOrAssetPath } from '../review/reviewableContent';
 import { PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
+import { isSecuritySensitivePath } from '../review/securitySensitivePaths';
 import {
   isSubmoduleEntry,
   isArchitecturePersona,
@@ -3405,6 +3406,7 @@ export function evaluatePersonaGating(options: {
     const hasSensitivePath = changedFiles.some((f) => {
       const p = f.path.toLowerCase();
       const base = p.split('/').pop() || p;
+      if (isSecuritySensitivePath(f.path)) return true;
       if (SENSITIVE_PATH_PATTERNS.some((pat) => p.includes(pat))) return true;
       if (BLOCKED_BUILD_OR_DEP_FILENAMES.has(base)) return true;
       if (/^(?:package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|mix\.exs|mix\.lock|cargo\.toml|cargo\.lock|go\.mod|go\.sum|gemfile|gemfile\.lock|pom\.xml|build\.gradle|requirements\.txt|\.env.*)$/i.test(base)) {

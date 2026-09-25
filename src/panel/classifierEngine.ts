@@ -4,6 +4,7 @@ import { ReviewModelClient, TokensUsed } from '../gateway/openRouterClient';
 import { PanelRequestPolicy } from './types';
 import { logger } from '../utils/logger';
 import { getMetrics } from '../telemetry';
+import { FAST_SHIP_BLOCKED_PATH_SUBSTRINGS } from '../review/securitySensitivePaths';
 
 export type DomainLane =
   | 'security_auth'
@@ -138,24 +139,12 @@ export const BLOCKED_BUILD_OR_DEP_FILENAMES = new Set([
 ]);
 
 /**
- * Sensitive substrings and filename patterns. If a path contains any of these,
- * fast-ship is strictly prohibited, regardless of file extension.
+ * Sensitive substrings. If a path contains any of these, fast-ship is strictly
+ * prohibited, regardless of file extension. Owned by the shared
+ * `securitySensitivePaths` module (REL-1135) so there is one place for every
+ * path-sensitivity rule; kept exported here under its old name for callers.
  */
-export const SENSITIVE_PATH_PATTERNS = [
-  // CI/CD pipelines and automation
-  '.github', '.gitlab', '.circleci', 'jenkinsfile', 'cloudbuild', 'buildkite',
-  'workflow', 'pipeline',
-  // Credentials, secrets, environment variables
-  '.env', 'secret', 'credential', 'token', 'password', 'key', 'cert', 'pem',
-  'id_rsa', 'id_ed25519', '.npmrc', '.pypirc',
-  // Authentication, security, migrations, database schemas
-  'auth', 'security', 'migration', 'schema',
-  // Containers and infrastructure orchestration
-  'dockerfile', 'docker-compose', 'k8s', 'kubernetes', 'helm',
-  // Scripts and build systems
-  'bin/', 'scripts/', 'script/', 'tools/',
-  'makefile', 'rakefile', 'procfile',
-];
+export const SENSITIVE_PATH_PATTERNS = FAST_SHIP_BLOCKED_PATH_SUBSTRINGS;
 
 /**
  * Defense-in-depth safety guard:
@@ -323,7 +312,11 @@ export function containsExecutableOrSensitiveCode(
       return true;
     }
 
-    // 6. Sensitive pattern check: any path matching a sensitive token is immediately barred
+    // 6. Sensitive pattern check: any path matching a sensitive token is immediately barred.
+    // Every path the shared full-depth predicate flags is already barred by step 2 or 3 or
+    // here, except prose/assets on a sensitive-sounding path (`docs/login.md`) and the safe
+    // standalone files above, which are not an executable surface and stay fast-ship eligible
+    // (pinned in rel1135SensitivePaths.test.ts).
     for (const pattern of SENSITIVE_PATH_PATTERNS) {
       if (p.includes(pattern)) {
         return true;
