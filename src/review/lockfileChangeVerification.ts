@@ -28,8 +28,12 @@ import { isSubmodulePatch } from './submodulePatch';
  *   are the default registry index URLs themselves (those formats record
  *   per-package artifact URLs only for non-default sources);
  * - no change may add a new package entry: every added entry header must
- *   replace an identical removed one, so a bump can move an existing package
- *   to a new registry version but cannot introduce a package;
+ *   replace a removed one, so a bump can move an existing package to a new
+ *   registry version but cannot introduce a package. For npm and Yarn a header
+ *   replaces a removed header binding exactly the same package names (REL-1118:
+ *   an exact pin such as `"unplugin-dts@npm:1.1.0":` is re-keyed to
+ *   `"unplugin-dts@npm:1.1.1":` by a plain bump); any other header, or one
+ *   whose package name cannot be read, must match a removed header verbatim;
  * - the change must add something (a pure deletion is not a version bump),
  *   and no added line may carry an escape sequence, since the lockfile's parser
  *   would decode what these text checks would miss;
@@ -239,6 +243,27 @@ function entryHeader(body: string, format: LockfileFormat): string | null {
   return mix ? mix[1] : null;
 }
 
+/**
+ * The identity an added entry header must share with a removed one. npm and
+ * Yarn headers are identified by the set of package names they bind, so a
+ * bump that re-keys an existing package's entry (a new exact-pin descriptor, a
+ * hoisted `node_modules/` path) is still a replacement, never a new package.
+ * A header whose names cannot all be read keeps verbatim identity, so a
+ * malformed or unnamed header can only replace itself.
+ */
+function entryIdentity(header: string, format: LockfileFormat): string {
+  if (format !== 'npm' && format !== 'yarn') return `raw:${header}`;
+  let names: string[];
+  if (format === 'yarn') {
+    names = yarnEntryNames(header);
+  } else {
+    const key = NPM_ENTRY_HEADER.exec(header);
+    names = key ? npmEntryNames(key[1]) : [];
+  }
+  if (names.length === 0 || names.some((name) => name.length === 0)) return `raw:${header}`;
+  return `pkg:${[...new Set(names)].sort().join('\n')}`;
+}
+
 export function verifyLockfileOnlyChange(path: string, patch: unknown): LockfileVerification {
   if (classifyLockfileOrGeneratedPath(path) !== 'lockfile') return refuse('not a lockfile');
   if (typeof patch !== 'string' || patch.length === 0) return refuse('no patch to verify');
@@ -259,7 +284,9 @@ export function verifyLockfileOnlyChange(path: string, patch: unknown): Lockfile
   for (const line of lines) {
     if (!line.startsWith('-') || line.startsWith('---')) continue;
     const header = entryHeader(line.slice(1), format);
-    if (header !== null) removedHeaders.set(header, (removedHeaders.get(header) ?? 0) + 1);
+    if (header === null) continue;
+    const identity = entryIdentity(header, format);
+    removedHeaders.set(identity, (removedHeaders.get(identity) ?? 0) + 1);
   }
 
   // One forward pass over the post-image (context and added lines), tracking the
@@ -277,9 +304,10 @@ export function verifyLockfileOnlyChange(path: string, patch: unknown): Lockfile
       if (NON_REGISTRY_PROTOCOL.test(line)) return refuse('adds a non-registry dependency source');
       const header = entryHeader(line.slice(1), format);
       if (header !== null) {
-        const remaining = removedHeaders.get(header) ?? 0;
+        const identity = entryIdentity(header, format);
+        const remaining = removedHeaders.get(identity) ?? 0;
         if (remaining === 0) return refuse('adds a new package entry');
-        removedHeaders.set(header, remaining - 1);
+        removedHeaders.set(identity, remaining - 1);
       }
     }
     const verdict = verifyLine(line.slice(1), added, state);

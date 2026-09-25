@@ -83,6 +83,11 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  * - `.mdx` / `.mdoc` pages. They are documentation, but compile to component
  *   modules (imports, exports, expressions run in the docs build), so they are
  *   never exempted as inert prose. A documentation persona covers them.
+ * - HTML pages (`.html`, `.htm`, `.xhtml`; REL-1118). A published report or
+ *   docs page is usually prose, but HTML can carry script, so it is never
+ *   exempted as documentation either. A benchmark report under `docs/` that no
+ *   persona's paths name used to fail every review with "no enabled persona
+ *   applies"; it is now reviewed by the routing owner.
  * - Data and configuration files (REL-972): JSON, YAML, TOML, CSV, XML and the
  *   like. A one-line inventory JSON change no persona's paths name used to fail
  *   every review with "no enabled persona applies"; it is not source, but it
@@ -95,7 +100,7 @@ export function scopeFilesForPersona<T extends { path: string; mode?: string; is
  */
 export function isFallbackRoutedFile(file: { path: string; mode?: string; isSubmodule?: boolean; submoduleCandidate?: boolean; patch?: string }): boolean {
   return isSubmoduleEntry(file)
-    || /\.(mdx|mdoc)$/iu.test(file.path)
+    || /\.(mdx|mdoc|html?|xhtml)$/iu.test(file.path)
     || (isDataOrConfigPath(file.path) && !isDocumentationOrAssetPath(file.path));
 }
 
@@ -148,7 +153,7 @@ export interface RoutedReviewFile {
   /** Lanes the file was routed to. */
   laneIds: string[];
   /**
-   * `fallback`: a gitlink, `.mdx`/`.mdoc` page or data/config file no persona
+   * `fallback`: a gitlink, `.mdx`/`.mdoc`/HTML page or data/config file no persona
    * covers. `uncovered-source`: an analyzable file no persona covers, in a
    * diff where a configured lane already applies (REL-1088).
    */
