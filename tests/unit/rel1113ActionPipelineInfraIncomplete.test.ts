@@ -657,6 +657,31 @@ describe('REL-1113 Action pipeline: remaining branches', () => {
     expect(results[2].error).toBe(STREAM_DEADLINE);
   });
 
+  it('attempt N+1 re-runs only the lanes still failing and keeps attempt N completions', async () => {
+    const lanes = [lane('security'), lane('a', { decision: 'ERROR', error: TERMINATED }), lane('b', { decision: 'ERROR', error: STREAM_DEADLINE })];
+    const calls: number[][] = [];
+    let round = 0;
+    const rerun = vi.fn(async (index: number) => {
+      (calls[round] ??= []).push(index);
+      // Attempt 1: lane a recovers, lane b still fails. Attempt 2: lane b recovers.
+      // Any re-roll of lane a after attempt 1 would flip it back to ERROR.
+      if (index === 1) return round === 0 ? lane('a') : lane('a', { decision: 'ERROR', error: TERMINATED });
+      return round === 0 ? lane('b', { decision: 'ERROR', error: STREAM_DEADLINE }) : lane('b');
+    });
+    const sleep = vi.fn(async () => {});
+    const { results, retries, stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+      ...base,
+      concurrency: 1,
+      sleep,
+      // The loop logs once at the start of each attempt: advance the round there.
+      log: { warn: () => { round = calls.length; }, error: () => {} },
+    });
+    expect(calls).toEqual([[1, 2], [2]]);
+    expect(retries).toBe(2);
+    expect(stopReason).toBe('resolved');
+    expect(results.map((entry: any) => entry.decision)).toEqual(['APPROVE', 'APPROVE', 'APPROVE']);
+  });
+
   it('a re-attempt that returns nothing keeps the previous failure', async () => {
     const rerun = vi.fn(async () => undefined);
     const { results, stopReason } = await pipeline.retryInfrastructureFailedLanes(panelWithTestingLost(TERMINATED), rerun, base);
