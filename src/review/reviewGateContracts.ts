@@ -28,6 +28,9 @@ export interface StoredReviewGate {
    * instead of the generic "policy eligibility gate failed". Optional because a
    * progress state has no decision yet. */
   decisionReason?: string;
+  /** REL-1122: finite service-owned refinement of `decisionReason` (for example
+   * `coverage-no-persona` under `incomplete-review`), when one was recorded. */
+  decisionDetail?: string;
   /** Lane counts from the recorded evidence, used only to explain a skew. */
   expectedLanes?: number;
   completedLanes?: number;
