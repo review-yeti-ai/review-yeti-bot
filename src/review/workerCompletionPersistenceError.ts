@@ -23,6 +23,10 @@ export const unknownWorkerCompletionPersistenceStage = 'unknown' as const;
 
 export const trustedCompletionResolutionSubstages = [
   'stored-policy', 'token', 'current-candidate', 'policy-refresh', 'exact-diff',
+  // REL-1122: the shared applicability decision over the exact-head diff. It
+  // used to be reported under the preceding 'exact-diff' read, so a
+  // `coverage-no-persona` looked like a diff-read failure in the logs.
+  'applicability',
 ] as const;
 export type TrustedCompletionResolutionSubstage = typeof trustedCompletionResolutionSubstages[number];
 

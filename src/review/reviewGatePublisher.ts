@@ -1,5 +1,6 @@
 import type { GitHubReviewGateClient } from '../github/reviewGateClient';
 import { isGateProgressState, type ReviewGateRepository, type StoredReviewGate } from './reviewGateContracts';
+import { coverageContractGateDetailOf, coverageContractGateMetadata } from './coverageContractGate';
 
 export interface ReviewGatePublisherOptions {
   repository: ReviewGateRepository;
@@ -104,6 +105,9 @@ function gateFailureMetadata(gate: StoredReviewGate): { title?: string; summary?
   const isNonApprovalTerminal = gate.desiredState === 'failure' || gate.desiredState === 'timed_out';
   if (!isNonApprovalTerminal || gate.decisionReason === undefined) return {};
   const reason = gate.decisionReason;
+  // REL-1122: a coverage-contract failure names its cause, never the generic reason.
+  const coverageDetail = coverageContractGateDetailOf({ detail: gate.decisionDetail });
+  if (reason === 'incomplete-review' && coverageDetail) return coverageContractGateMetadata(coverageDetail);
   const skew = reason === 'incomplete-review'
     && gate.expectedLanes !== undefined && gate.completedLanes !== undefined;
   if (skew) {

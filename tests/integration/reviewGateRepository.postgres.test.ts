@@ -27,6 +27,7 @@ import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { enqueueReviewCiCompletionInTransaction } from '../../src/persistence/reviewCiRepository';
 import { ReviewGatePublisher, type ReviewGatePublisherOptions } from '../../src/review/reviewGatePublisher';
+import { TrustedCompletionResolutionError } from '../../src/review/workerCompletionPersistenceError';
 import {
   workerReviewCompletionDigest,
   type WorkerReviewCompletion,
@@ -1480,6 +1481,83 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         .resolves.toBe('unauthorized');
       expect(resolve).toHaveBeenCalledTimes(1);
       expect(await snapshot(id)).toEqual(recorded);
+    });
+
+    // REL-1122: the trusted context's no-persona verdict used to be thrown out of this
+    // transaction (HTTP 422), so the failure report was refused and the Gate hung until
+    // the 30-minute reaper. It is now a terminal failure recorded at once.
+    describe('coverage-contract failure (REL-1122)', () => {
+      const noPersona = () => { throw new TrustedCompletionResolutionError('applicability', 'coverage-no-persona'); };
+      function workerNoPersonaFailure(event: WorkerReviewCompletion): WorkerReviewCompletion {
+        return { ...event, result: { ...event.result,
+          personas: event.result.personas.map((persona) => ({ id: persona.id, decision: 'ERROR' as const,
+            status: 'ERROR' as const, errorClass: 'contract' as const, findings: [] })),
+          coverageComplete: false, quorumSatisfied: false,
+          failureDiagnostics: { reason: 'coverage_no_persona', logTail: 'no enabled persona applies' } } };
+      }
+
+      it('records the worker failure body and closes the gate as failure/incomplete-review', async () => {
+        const { id, repository, event: base } = await completionFixture();
+        const event = workerNoPersonaFailure(base);
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, noPersona, COMPLETED_AT)).resolves.toBe('recorded');
+        const state = await snapshot(id);
+        expectTerminalState(state, event, 'failure', 'incomplete-review');
+        expect(state.gates[0].decision).toEqual({ status: 'failure', eligible: false,
+          reason: 'incomplete-review', detail: 'coverage-no-persona' });
+        expect(state.gates[0].evidence).toBeNull();
+        expect(state.run.failure_diagnostics).toMatchObject({ failureClass: 'contract', reason: 'coverage_no_persona' });
+        expect(state.run.failure_diagnostics.recoverableIncompletePanel).toBeUndefined();
+        // Not REL-1113's infrastructure text, so the automatic re-attempt never re-admits it.
+        expect(state.run.error_text).not.toBe('review gate: infrastructure-failure');
+        const stored = await pool!.query('SELECT content_digest FROM review_worker_completions WHERE run_id = $1', [id]);
+        expect(stored.rows).toEqual([{ content_digest: workerReviewCompletionDigest(event) }]);
+        // A worker retry of the same body is an idempotent duplicate, not a second refusal.
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, noPersona, COMPLETED_AT + 1)).resolves.toBe('duplicate');
+
+        // The publication claim carries the detail through to the published Gate.
+        const claim = (await repository.claimPublication('terminal-publisher', COMPLETED_AT, 5_000))!;
+        expect(claim).toMatchObject({ desiredState: 'failure', decisionReason: 'incomplete-review',
+          decisionDetail: 'coverage-no-persona', checkId: 8080 });
+      });
+
+      it('fails the gate from the service derivation even when the worker claims a clean panel', async () => {
+        const { id, repository, event } = await completionFixture();
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, noPersona, COMPLETED_AT)).resolves.toBe('recorded');
+        const state = await snapshot(id);
+        expect(state.gates[0]).toMatchObject({ desired_state: 'failure',
+          decision: { status: 'failure', eligible: false, reason: 'incomplete-review', detail: 'coverage-no-persona' } });
+        expect(state.run).toMatchObject({ status: 'failed', error_text: 'review gate: incomplete-review' });
+        expect(state.run.failure_diagnostics).toMatchObject({ failureClass: 'contract', reason: 'coverage_no_persona' });
+      });
+
+      it('drops a worker-supplied automatic-retry marker for a coverage gap', async () => {
+        const { id, repository, event: base } = await completionFixture();
+        const event = workerNoPersonaFailure(base);
+        event.result.failureDiagnostics = { ...event.result.failureDiagnostics!, recoverableIncompletePanel: true };
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, noPersona, COMPLETED_AT)).resolves.toBe('recorded');
+        expect((await snapshot(id)).run.failure_diagnostics.recoverableIncompletePanel).toBeUndefined();
+      });
+
+      // Negative proof: every other deterministic class keeps the REL-1056 rollback.
+      it.each(['bounds', 'no-patch-file', 'identity-mismatch', 'policy-mismatch', 'unknown'] as const)(
+        'still rolls back a %s resolution failure with no terminal mutation', async (reason) => {
+          const { id, repository, event: base } = await completionFixture();
+          const event = workerNoPersonaFailure(base);
+          const before = await snapshot(id);
+          await expect(repository.recordWorkerResult(event, WORKER_PROOF, () => {
+            throw new TrustedCompletionResolutionError('exact-diff', reason);
+          }, COMPLETED_AT)).rejects.toMatchObject({ stage: 'trusted-completion-resolution', reason });
+          expect(await snapshot(id)).toEqual(before);
+        });
+
+      it('does not pre-empt the deadline: a late completion is still timed_out, never resolved', async () => {
+        const { id, repository, event: base } = await completionFixture();
+        const event = workerNoPersonaFailure(base);
+        const resolve = vi.fn(noPersona);
+        await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, RECEIVED_AT + 900_000)).resolves.toBe('recorded');
+        expect(resolve).not.toHaveBeenCalled();
+        expect((await snapshot(id)).gates[0].decision).toEqual({ status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' });
+      });
     });
 
     it('bounds an unresponsive completion resolver and leaves no terminal mutation behind', async () => {

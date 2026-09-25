@@ -99,6 +99,23 @@ describe('REL-1056 trusted-completion failure classification', () => {
     expect(isDeterministicCompletionFailure(reason as never)).toBe(true);
   });
 
+  // REL-1122: the no-persona failure comes from the shared applicability decision,
+  // not from reading the diff; the old 'exact-diff' label sent triage to the wrong place.
+  it('labels a no-persona failure at the applicability substage, and a diff defect still at exact-diff', async () => {
+    const unmatched = 'diff --git a/odd/thing.unknownext b/odd/thing.unknownext\n--- a/odd/thing.unknownext\n+++ b/odd/thing.unknownext\n@@ -1 +1 @@\n-a\n+b\n';
+    const coverage = fixture();
+    coverage.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, diff: '',
+      changedFiles: [{ path: 'odd/thing.unknownext', patch: unmatched }] });
+    const coverageError = await rejected(coverage.context(coverage.gate)) as TrustedCompletionResolutionError;
+    expect(coverageError).toMatchObject({ substage: 'applicability', reason: 'coverage-no-persona' });
+
+    const patchless = fixture();
+    patchless.exactCurrentDiff.mockResolvedValue({ current, expectedFileCount: 1, diff: '',
+      changedFiles: [{ path: 'src/generated.json', patch: '' }] });
+    const diffError = await rejected(patchless.context(patchless.gate)) as TrustedCompletionResolutionError;
+    expect(diffError).toMatchObject({ substage: 'exact-diff', reason: 'no-patch-file' });
+  });
+
   it('classifies a patch-less file entry as deterministic, not transient', async () => {
     // GitHub returns no patch for an empty added file or a large generated file.
     const f = fixture();
