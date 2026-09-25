@@ -569,7 +569,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
   // ===========================================================================
   describe('Group 3: Panel Engine Concurrency & Semaphore Stress (panelEngine.ts)', () => {
     it('TC-T5-PAN-01: Semaphore enforces MAX_CONCURRENT_PERSONAS ceiling under burst', async () => {
-      expect(MAX_CONCURRENT_PERSONAS).toBe(4);
+      expect(MAX_CONCURRENT_PERSONAS).toBe(8);
 
       let activeCount = 0;
       let peakCount = 0;
@@ -604,7 +604,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       for (let i = 0; i < MAX_CONCURRENT_PERSONAS; i++) {
         releases.push(await processPersonaLimiter.acquire());
       }
-      expect(processPersonaLimiter.active).toBe(4);
+      expect(processPersonaLimiter.active).toBe(MAX_CONCURRENT_PERSONAS);
 
       const controller = new AbortController();
       let abortedCaught = false;
