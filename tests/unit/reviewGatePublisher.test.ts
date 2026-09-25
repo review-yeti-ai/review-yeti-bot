@@ -315,6 +315,35 @@ describe('durable service gate publisher', () => {
     );
   });
 
+  // REL-1122: a coverage-contract failure closes the Gate with its own cause.
+  it('names a no-persona coverage failure as INCOMPLETE coverage, not a generic failure', async () => {
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure',
+      decisionReason: 'incomplete-review', decisionDetail: 'coverage-no-persona',
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update.conclusion).toBe('failure');
+    expect(update.title).toBe('Review Yeti Gate: INCOMPLETE — coverage (no review lane covers a changed file)');
+    expect(String(update.summary)).toContain('no enabled review lane covers');
+    expect(String(update.summary)).toContain('re-running will not change it');
+  });
+
+  it.each([
+    ['a detail on a non-incomplete reason', { decisionReason: 'blocking-findings', decisionDetail: 'coverage-no-persona' }],
+    ['an unknown detail', { decisionReason: 'incomplete-review', decisionDetail: 'bounds' }],
+  ])('negative: does not claim a coverage gap for %s', async (_label, overrides) => {
+    const f = fixture({
+      mayCreate: false, checkId: 1234, creationState: 'bound', desiredState: 'failure', ...overrides,
+    });
+    await expect(f.publisher.runOnce()).resolves.toMatchObject({ status: 'published' });
+
+    const update = publishedUpdate(f.client);
+    expect(update.title).toBe('Review Yeti Gate: Failed');
+    expect(String(update.summary)).not.toContain('coverage');
+  });
+
   it('withholds failure metadata from a success even when a reason was recorded', async () => {
     // Pins the desiredState disjunct: without it, a success row carrying a
     // reason would publish "Review Yeti Gate: Failed" on a passing gate.
