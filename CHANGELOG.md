@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.93.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.9...v1.93.0) (2026-09-26)
+
+
+### Features
+
+* **panel:** optional moderator skip on empty, fully covered runs; shadow eligibility on every run (REL-1139) ([#1088](https://github.com/review-yeti-ai/review-yeti-bot/issues/1088)) ([ec1e2e0](https://github.com/review-yeti-ai/review-yeti-bot/commit/ec1e2e0ff15808c20386198e81c74b7d118dd759))
+
+
+### Bug Fixes
+
+* **review:** never silently filter a changed lockfile; summarize an oversized one (REL-1141) ([#1089](https://github.com/review-yeti-ai/review-yeti-bot/issues/1089)) ([b5d5d51](https://github.com/review-yeti-ai/review-yeti-bot/commit/b5d5d5151106376fee05ece317284f629869a4f6))
+* **review:** thrown panel infrastructure failures are INCOMPLETE and re-attempted, never "Failed live" (REL-1124) ([#1078](https://github.com/review-yeti-ai/review-yeti-bot/issues/1078)) ([d01b521](https://github.com/review-yeti-ai/review-yeti-bot/commit/d01b5214e7eeb65f44c15e319ccd555bad795e39))
+* **telemetry:** sanitized error.cause on transport failures, W5 charsSaved per lane, reconciled Jev cost (REL-1138) ([#1087](https://github.com/review-yeti-ai/review-yeti-bot/issues/1087)) ([dbd1b0d](https://github.com/review-yeti-ai/review-yeti-bot/commit/dbd1b0dc89f4690df19bcf56c95391ffa5937762))
+
 ## [1.92.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.8...v1.92.9) (2026-09-25)
 
 
