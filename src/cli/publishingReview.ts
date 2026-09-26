@@ -2508,7 +2508,11 @@ export async function runPublishingReviewWorker(
       },
     };
     } finally {
-      jevShadow.abort();
+      // REL-1138: abort, and when `join` never ran (an early throw or a recoverable-failure
+      // return) still log the in-flight calls' decision lines and a `joined: false` summary, so
+      // decision lines, summary lines and the Jev cost metric count the same calls. Bounded by
+      // FINISH_FLUSH_MS and total (never throws).
+      await jevShadow.finish();
       panelDeadline.cleanup();
       // Bounded by the shadow run's own deadline (already elapsed on every path that reached
       // evidence-building above, where it is awaited explicitly -- this is a no-op there). On an

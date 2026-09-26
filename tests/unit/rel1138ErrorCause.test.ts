@@ -79,6 +79,15 @@ describe('REL-1138 describeErrorChain', () => {
     for (const entry of chain) expect((entry.message ?? '').length).toBeLessThanOrEqual(MAX_ERROR_CAUSE_MESSAGE_CHARS);
   });
 
+  it('drops URL credentials, query strings and fragments from cause messages', () => {
+    const error = new TypeError('fetch failed', {
+      cause: new Error('connect to https://svc-user:hunter2pass@gateway.internal:8443/v1/chat?api_key=abc123secret&x=1#frag failed'),
+    });
+    const [entry] = describeErrorCause(error);
+    expect(entry.message).toContain('https://gateway.internal:8443/v1/chat');
+    expect(entry.message).not.toMatch(/hunter2pass|svc-user|abc123secret|api_key|#frag/u);
+  });
+
   it('rejects a code or name that is not a plain token', () => {
     const cause = Object.assign(new Error('x'), { name: 'Evil name with spaces', code: 'CODE\nINJECT' });
     const [, entry] = describeErrorChain(new Error('top', { cause }));

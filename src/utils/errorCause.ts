@@ -39,6 +39,18 @@ export const MAX_ERROR_CAUSE_MESSAGE_CHARS = 200;
 const TOKEN_FIELD = /^[A-Za-z0-9_.:-]{1,64}$/u;
 const ADDRESS_FIELD = /^[A-Za-z0-9_.:%[\]-]{1,128}$/u;
 
+/**
+ * URLs in a cause message keep scheme, host and path only: userinfo (`user:pass@`), the query
+ * string and the fragment -- where signed URLs and API keys travel -- are dropped before the
+ * generic redactor runs.
+ */
+const URL_IN_TEXT = /\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/@?#]*@)?([^\s/?#]*)([^\s?#]*)(?:\?[^\s#]*)?(?:#\S*)?/giu;
+
+function sanitizeCauseMessage(message: string): string {
+  const withoutUrlSecrets = message.replace(URL_IN_TEXT, (_match, scheme: string, host: string, path: string) => `${scheme}${host}${path}`);
+  return redactWorkerFailureLogTail(withoutUrlSecrets).slice(0, MAX_ERROR_CAUSE_MESSAGE_CHARS);
+}
+
 function tokenField(value: unknown): string | undefined {
   return typeof value === 'string' && TOKEN_FIELD.test(value) ? value : undefined;
 }
@@ -47,7 +59,7 @@ function describeOne(value: unknown, depth: number): SanitizedErrorCause {
   const entry: SanitizedErrorCause = { depth };
   if (value === null || typeof value !== 'object') {
     // A thrown primitive: keep a redacted rendering only.
-    const message = redactWorkerFailureLogTail(String(value)).slice(0, MAX_ERROR_CAUSE_MESSAGE_CHARS);
+    const message = sanitizeCauseMessage(String(value));
     if (message) entry.message = message;
     return entry;
   }
@@ -68,7 +80,7 @@ function describeOne(value: unknown, depth: number): SanitizedErrorCause {
     entry.port = source.port;
   }
   if (typeof source.message === 'string') {
-    const message = redactWorkerFailureLogTail(source.message).slice(0, MAX_ERROR_CAUSE_MESSAGE_CHARS);
+    const message = sanitizeCauseMessage(source.message);
     if (message) entry.message = message;
   }
   return entry;

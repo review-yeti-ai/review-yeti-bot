@@ -22,7 +22,7 @@ import {
   type JevAsker,
   type JevOutcome,
 } from '../../src/gateway/jevClient';
-import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../src/types/jevContract';
+import { JEV_INPUT_TOKEN_USD_PER_MILLION, jevCostUsd } from '../../src/types/jevContract';
 import { JEV_LIVE_RESPONSES } from '../../src/gateway/__tests__/jevLiveResponses.fixture';
 import { createFailingJevStub } from '../support/jevStub';
 import { logger } from '../../src/utils/logger';
@@ -531,7 +531,8 @@ describe('startJevTriageShadow -- bounded time', () => {
     const summary = await handle.settled;
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(summary.status).toBe('timeout');
-    expect(summary.decisions.every((d) => d.outcome === 'not_started' && d.reason === 'timeout')).toBe(true);
+    // REL-1138: a call that was asked and did not answer in time is a timeout, not "not started".
+    expect(summary.decisions.every((d) => d.outcome === 'unavailable' && d.reason === 'timeout')).toBe(true);
   });
 
   it('abort() resolves settled immediately and passes an aborted signal to in-flight calls', async () => {
@@ -549,10 +550,10 @@ describe('startJevTriageShadow -- bounded time', () => {
   });
 
   it.each([
-    ['resolves', 'abort'],
-    ['rejects', 'abort'],
-    ['resolves', 'deadline'],
-  ] as const)('drops a late answer that %s after the %s: no decision line, file stays not_started', async (settle, stop) => {
+    ['resolves', 'abort', 'aborted'],
+    ['rejects', 'abort', 'aborted'],
+    ['resolves', 'deadline', 'timeout'],
+  ] as const)('a late answer that %s after the %s is one unavailable/%s decision line, never a counted decision (REL-1138)', async (settle, stop, reason) => {
     const info = vi.spyOn(logger, 'info');
     const releases: Array<() => void> = [];
     const asker: JevAsker = {
@@ -563,12 +564,22 @@ describe('startJevTriageShadow -- bounded time', () => {
     const handle = startJevTriageShadow(input({ asker, limits: { hardTimeoutMs: stop === 'deadline' ? 20 : 60_000 } }));
     if (stop === 'abort') handle.abort();
     const summary = await handle.settled;
+    // The settled summary is final: asked-but-unanswered files are unavailable, none is ok.
+    expect(summary.decisions.every((d) => d.outcome === 'unavailable' && d.reason === reason)).toBe(true);
+    expect(logsOf(info, JEV_TRIAGE_LOG.decision)).toHaveLength(0);
     // Now let every in-flight call settle, after the summary is final.
     for (const release of releases) release();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(releases.length).toBeGreaterThan(0);
-    expect(summary.decisions.every((d) => d.outcome === 'not_started')).toBe(true);
-    expect(logsOf(info, JEV_TRIAGE_LOG.decision)).toHaveLength(0);
+    const lines = logsOf(info, JEV_TRIAGE_LOG.decision);
+    // One line per call, however it ended -- never zero (the pre-REL-1138 behavior).
+    expect(lines).toHaveLength(releases.length);
+    for (const line of lines) {
+      expect(line).toMatchObject({ outcome: 'unavailable', reason, late: true });
+      // What Jev billed for a late answer is kept, priced by the one shared function.
+      if (settle === 'resolves') expect(line).toMatchObject({ input_tokens: 1000, cost_usd: jevCostUsd(1000) });
+      else expect(line.cost_usd).toBeUndefined();
+    }
   });
 
   it('never runs more than `concurrency` calls at once and stops at `maxFiles`', async () => {
@@ -728,11 +739,17 @@ describe('join -- one structured log line per file, joined with actual findings'
     await handle.join(JOIN);
     const joins = logsOf(info, JEV_TRIAGE_LOG.join);
     expect(joins.map((j) => [j.path, j.outcome, j.reason])).toEqual([
-      ['src/auth/session.ts', 'not_started', 'timeout'],
+      // REL-1138: it was asked and timed out; it did not fail to start.
+      ['src/auth/session.ts', 'unavailable', 'timeout'],
       ['docs/readme.md', 'file_cap', undefined],
     ]);
     expect(joins[0]).toMatchObject({ findings_total: 3, category: null, risk_level: null, model: null, lanes: {} });
-    expect(logsOf(info, JEV_TRIAGE_LOG.summary)[0]).toMatchObject({ status: 'timeout', asked: 0, ok: 0, outcomes: { not_started: 1, file_cap: 1 } });
+    // REL-1138: the timed-out call has its own decision line even though it never returned.
+    expect(logsOf(info, JEV_TRIAGE_LOG.decision).map((d) => [d.path, d.outcome, d.reason])).toEqual([
+      ['docs/readme.md', 'file_cap', undefined],
+      ['src/auth/session.ts', 'unavailable', 'timeout'],
+    ]);
+    expect(logsOf(info, JEV_TRIAGE_LOG.summary)[0]).toMatchObject({ status: 'timeout', asked: 1, ok: 0, outcomes: { unavailable: 1, file_cap: 1 } });
   });
 
   it('logs unavailable files with their reason so availability is measurable', async () => {

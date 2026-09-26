@@ -1,7 +1,7 @@
 import { runInSpan, getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
-import { JEV_INPUT_TOKEN_USD_PER_MILLION, HTTPS_REQUIRED_REASON, isHttpsBaseUrl } from '../types/jevContract';
+import { HTTPS_REQUIRED_REASON, isHttpsBaseUrl, jevCostUsd } from '../types/jevContract';
 
 /**
  * Client for TypeSafe AI's "System One" model (Jev).
@@ -480,7 +480,7 @@ export class JevClient implements JevAsker {
 
     if (outcome.status === 'ok') {
       metrics.jevInputTokens.add(outcome.usage.input_tokens, { seam, model: outcome.model });
-      const costUsd = (outcome.usage.input_tokens * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000;
+      const costUsd = jevCostUsd(outcome.usage.input_tokens);
       metrics.jevCostUsd.add(costUsd, { seam, model: outcome.model });
 
       if (this.modelPin && outcome.model !== this.modelPin) {
