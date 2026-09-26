@@ -590,7 +590,9 @@ export function renderRoutedFiles(panelResult: Pick<PanelResult, 'routedFiles'>)
   const lines = routed.slice(0, MAX_LISTED_ROUTED_FILES).map((file) => `- \`${safe(file.path)}\` -> `
     + `${file.laneIds.map((id) => `\`${safe(id)}\``).join(', ')}`
     + (file.reason === 'uncovered-source' ? ' (source no persona covers)'
-      : file.reason === 'new-package-lockfile' ? ' (lockfile adds a new package)' : ''));
+      : file.reason === 'new-package-lockfile' ? ' (lockfile adds a new package)'
+        : file.reason === 'changed-lockfile' ? ' (lockfile change, sent in full)'
+          : file.reason === 'summarized-lockfile' ? ' (summarized: oversized lockfile)' : ''));
   const overflow = routed.length - MAX_LISTED_ROUTED_FILES;
   return `Routed files (no persona's paths cover them; reviewed by the routed lane):\n${lines.join('\n')}`
     + (overflow > 0 ? `\n- +${overflow} more` : '');
@@ -605,7 +607,8 @@ const MAX_LISTED_DEPTH_FILES = 20;
  * engine attached to its result, sanitized and capped like `renderRoutedFiles`.
  */
 export function renderReviewDepthDisclosure(
-  panelResult: Pick<PanelResult, 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'>,
+  panelResult: Pick<PanelResult, 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'
+    | 'summarizedLockfiles' | 'unreviewableLockfiles'>,
 ): string[] {
   const safe = (text: string) => String(text).replace(/[`<>\r\n]/gu, ' ').slice(0, 300);
   const count = (value: unknown) => (Number.isSafeInteger(value) ? (value as number).toLocaleString('en-US') : '?');
@@ -625,6 +628,19 @@ export function renderReviewDepthDisclosure(
     parts.push('Not reviewed: patch unavailable (binary/omitted):\n'
       + capped(unavailable, (file) => `- \`${safe(file.path)}\` (${file.kind === 'binary' ? 'binary' : 'omitted by GitHub'})`
         + (omitted.has(file.path) ? ' -- source, so coverage is incomplete' : '')));
+  }
+  // REL-1141: an oversized lockfile is summarized, never dropped silently.
+  const summarized = Array.isArray(panelResult.summarizedLockfiles) ? panelResult.summarizedLockfiles : [];
+  if (summarized.length > 0) {
+    parts.push('Summarized: oversized lockfile (lanes received a complete, deterministic list of every package added, '
+      + 'removed or re-versioned, not the raw patch):\n'
+      + capped(summarized, (file) => `- \`${safe(file.path)}\`: ${count(file.originalChars)}-character patch -> `
+        + `summary of ${count(file.packageChanges)} package change(s)`));
+  }
+  const unreviewable = Array.isArray(panelResult.unreviewableLockfiles) ? panelResult.unreviewableLockfiles : [];
+  if (unreviewable.length > 0) {
+    parts.push('Not reviewed: changed lockfile no lane could read in full or as a summary (coverage is incomplete):\n'
+      + capped(unreviewable, (file) => `- \`${safe(file.path)}\`: ${safe(file.reason)}`));
   }
   return parts;
 }
@@ -1878,10 +1894,16 @@ export async function runPublishingReviewWorker(
       // coverage is incomplete here, and the service ANDs this into its own coverage, so
       // the canonical derivation reaches the same verdict.
       const omittedSourcePaths = Array.isArray(panelResult.omittedSourcePaths) ? panelResult.omittedSourcePaths : [];
+      // REL-1141: changed lockfiles no lane could read are in omittedSourcePaths too.
+      const unreviewableLockfilePaths = new Set((Array.isArray(panelResult.unreviewableLockfiles)
+        ? panelResult.unreviewableLockfiles : []).map((file) => file.path));
+      const omittedSourceCount = omittedSourcePaths.filter((path) => !unreviewableLockfilePaths.has(path)).length;
       const coverageGaps = [
         ...(unreadable.length > 0 ? ['unreadable diff header(s)'] : []),
-        ...(omittedSourcePaths.length > 0
-          ? [`${omittedSourcePaths.length} source file(s) whose patch GitHub omitted were not reviewed`] : []),
+        ...(omittedSourceCount > 0
+          ? [`${omittedSourceCount} source file(s) whose patch GitHub omitted were not reviewed`] : []),
+        ...(unreviewableLockfilePaths.size > 0
+          ? [`${unreviewableLockfilePaths.size} changed lockfile(s) could not be sent in full or summarized and were not reviewed`] : []),
       ];
       // The model arbiter is evidence, not the policy boundary. The canonical
       // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST

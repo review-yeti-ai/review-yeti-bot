@@ -334,7 +334,9 @@ describe('REL-972: shared decision for lockfile-only diffs', () => {
     expect(result.noReviewableContent).toBe(false);
     expect(result.noReviewableContentKind).toBeNull();
     expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane', 'sec-lane']);
-    expect(result.effectiveFiles.map((file) => file.path)).toEqual(['package.json']);
+    // REL-1141: the lockfile beside the manifest is sent in full, never dropped silently.
+    expect(result.effectiveFiles.map((file) => file.path)).toEqual(['package.json', 'package-lock.json']);
+    expect(result.routedFiles.find((file) => file.path === 'package-lock.json')?.reason).toBe('changed-lockfile');
   });
 
   it.each([
@@ -441,7 +443,8 @@ describe('REL-972: every engine takes the same outcome', () => {
     const changedFiles = [lock('package.json', patch), lock('package-lock.json', NPM_BUMP)];
     const decision = resolveReviewApplicability(config.personas.filter((p) => p.enabled), changedFiles);
     expect(decision.noReviewableContent).toBe(false);
-    expect(decision.applicable.map((persona) => [persona.id, persona.routedPaths])).toEqual([['qual-lane', ['package.json']]]);
+    // REL-1141: the lockfile rides to the same lane in full, not silently hidden.
+    expect(decision.applicable.map((persona) => [persona.id, persona.routedPaths])).toEqual([['qual-lane', ['package.json', 'package-lock.json']]]);
 
     // The panel reaches the routed lane, which fails on the unreachable client
     // (so the run misses quorum) -- not the deterministic coverage error.

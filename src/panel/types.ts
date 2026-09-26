@@ -1,4 +1,4 @@
-import type { RoutedReviewFile, TruncatedReviewFile } from '../review/personaApplicability';
+import type { RoutedReviewFile, SummarizedLockfile, TruncatedReviewFile, UnreviewableLockfile } from '../review/personaApplicability';
 import type { UnavailablePatchFile } from '../review/patchAvailability';
 import { ProviderId } from '../config/schema';
 import { OpenRouterRequest, TokensUsed } from '../gateway/openRouterClient';
@@ -216,6 +216,17 @@ export interface PanelResult {
    * reviewed: the worker marks coverage incomplete. Absent when none.
    */
   omittedSourcePaths?: string[];
+  /**
+   * REL-1141: lockfiles over the per-file cap the lanes received as a complete
+   * package-change summary. Disclosed as "summarized: oversized lockfile".
+   * Absent when none.
+   */
+  summarizedLockfiles?: SummarizedLockfile[];
+  /**
+   * REL-1141: changed lockfiles no lane could read in full or as a summary
+   * (also in `omittedSourcePaths`, so coverage is incomplete). Absent when none.
+   */
+  unreviewableLockfiles?: UnreviewableLockfile[];
   zeroLaneNonEvidence?: boolean;
   quorum: { required: number; distinctProviders: string[]; satisfied: boolean };
   moderator: {
