@@ -723,7 +723,8 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
   let joined = false;
   let finished = false;
   const join = async (joinInput: TriageJoinInput): Promise<void> => {
-    if (joined) return;
+    // After finish() has written the summary, a late join must not write a second one.
+    if (joined || finished) return;
     joined = true;
     try {
       const summary = await flush(await settled);

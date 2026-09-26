@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { JEV_TRIAGE_LOG, startJevTriageShadow, type StartJevTriageShadowInput } from '../../src/review/jevTriageShadow';
+import { FINISH_FLUSH_MS, JEV_TRIAGE_LOG, startJevTriageShadow, type StartJevTriageShadowInput } from '../../src/review/jevTriageShadow';
+import type { JevAsker } from '../../src/gateway/jevClient';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { jevCostUsd, JEV_INPUT_TOKEN_USD_PER_MILLION } from '../../src/types/jevContract';
 import { getMetrics } from '../../src/telemetry';
@@ -193,5 +194,53 @@ describe('REL-1138: decision lines, the summary line and the cost metric agree',
     expect(f.decisionCost).toBeCloseTo(jevCostUsd(400), 15);
     expect(f.summaryCost).toBeCloseTo(f.decisionCost, 15);
     expect(f.metricCost).toBeCloseTo(f.decisionCost, 15);
+  });
+
+  const shadowInput = (asker?: JevAsker): StartJevTriageShadowInput => ({
+    env: { REVIEW_YETI_JEV_SHADOW: 'true', ...TYPESAFE_ENV },
+    repository: 'review-yeti-ai/review-yeti-bot',
+    runId: 'run_1138b',
+    prNumber: 1,
+    headSha: 'a'.repeat(40),
+    changedFiles: [changed('src/a.ts')],
+    personas: [{ id: 'sec-lane', charter: 'builtin:security' }],
+    limits: { hardTimeoutMs: 60_000 },
+    ...(asker ? { asker } : {}),
+  });
+  const JOIN_INPUT = { findings: [], personas: [], applicablePersonaIds: [], mode: 'panel', verdict: 'SHIP', conclusion: 'success' };
+
+  it('finish() is bounded by FINISH_FLUSH_MS when an asker ignores the abort signal, and still logs the call', async () => {
+    const s = spies();
+    const hanging: JevAsker = { ask: vi.fn(() => new Promise<never>(() => undefined)) as never };
+    const handle = startJevTriageShadow(shadowInput(hanging));
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const started = Date.now();
+    await handle.finish();
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(FINISH_FLUSH_MS - 50);
+    expect(elapsed).toBeLessThan(FINISH_FLUSH_MS + 1_000);
+    const decisions = logsOf(s.info, JEV_TRIAGE_LOG.decision);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ path: 'src/a.ts', outcome: 'unavailable', reason: 'aborted', late: true });
+    const summaries = logsOf(s.info, JEV_TRIAGE_LOG.summary);
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({ joined: false, status: 'aborted', asked: 1, ok: 0 });
+  });
+
+  it('join() then finish() (the worker success path) writes exactly one summary; finish() then join() too', async () => {
+    const s = spies();
+    vi.stubGlobal('fetch', jevFetch({ 'src/a.ts': 300 }));
+    const first = startJevTriageShadow(shadowInput());
+    await first.join(JOIN_INPUT);
+    await first.finish();
+    expect(logsOf(s.info, JEV_TRIAGE_LOG.summary)).toHaveLength(1);
+    expect(logsOf(s.info, JEV_TRIAGE_LOG.summary)[0]).toMatchObject({ joined: true, cost_usd: jevCostUsd(300) });
+
+    s.info.mockClear();
+    const second = startJevTriageShadow(shadowInput());
+    await second.finish();
+    await second.join(JOIN_INPUT);
+    expect(logsOf(s.info, JEV_TRIAGE_LOG.summary)).toHaveLength(1);
+    expect(logsOf(s.info, JEV_TRIAGE_LOG.join)).toHaveLength(0);
   });
 });
