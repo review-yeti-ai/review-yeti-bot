@@ -327,7 +327,7 @@ jobs:
 
       - name: Smoke-test Review Yeti transports
         id: smoke
-        if: steps.policy.outputs.passthrough != 'true' && env.TRUSTED_EXECUTION_BACKEND != 'doks'
+        if: steps.policy.outputs.passthrough != 'true' && env.TRUSTED_EXECUTION_BACKEND != 'doks' && env.TRUSTED_EXECUTION_BACKEND != 'mars'
         working-directory: .exampleorg-review-actions
         env:
           REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
@@ -342,7 +342,7 @@ jobs:
           node scripts/review-yeti-smoke.mjs
 
       - name: Validate admitted transport handoff
-        if: steps.policy.outputs.passthrough != 'true' && env.TRUSTED_EXECUTION_BACKEND != 'doks'
+        if: steps.policy.outputs.passthrough != 'true' && env.TRUSTED_EXECUTION_BACKEND != 'doks' && env.TRUSTED_EXECUTION_BACKEND != 'mars'
         working-directory: .exampleorg-review-actions
         env:
           TRANSPORT_PLAN_B64: ${{ steps.smoke.outputs.healthy_transport_plan_b64 }}
@@ -435,7 +435,7 @@ jobs:
 
       - name: Align panel seed key
         id: seed_key
-        if: steps.policy.outputs.passthrough != 'true' && env.TRUSTED_EXECUTION_BACKEND != 'doks'
+        if: steps.policy.outputs.passthrough != 'true' && env.TRUSTED_EXECUTION_BACKEND != 'doks' && env.TRUSTED_EXECUTION_BACKEND != 'mars'
         working-directory: .exampleorg-review-actions
         env:
           RESOLVED_API_KEY_ENV: ${{ steps.smoke.outputs.resolved_api_key_env }}

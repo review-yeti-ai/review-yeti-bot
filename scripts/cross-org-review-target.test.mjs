@@ -332,6 +332,7 @@ test('DOKS reviews delegate provider health to the cluster worker', () => {
 
   for (const step of [smokeStep, handoffStep, seedStep]) {
     assert.match(step, /env\.TRUSTED_EXECUTION_BACKEND != 'doks'/u);
+    assert.match(step, /env\.TRUSTED_EXECUTION_BACKEND != 'mars'/u);
   }
   assert.match(reviewStep, /execution-backend:\s*\$\{\{ env\.TRUSTED_EXECUTION_BACKEND \}\}/u);
   assert.match(reviewStep, /\n\s+if: steps\.policy\.outputs\.passthrough != 'true'\n/u);
