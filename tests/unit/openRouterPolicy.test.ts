@@ -301,6 +301,9 @@ describe('openrouter review policy', () => {
       for (const digest of ALLOWED_REVIEW_BASE_URL_DIGESTS) {
         expect(digest).toMatch(/^[0-9a-f]{64}$/);
       }
+      const tailnetDigest = createHash('sha256').update('https://llm-gateway.tailebe851.ts.net/v1').digest('hex');
+      expect(ALLOWED_REVIEW_BASE_URL_DIGESTS).toContain(tailnetDigest);
+      expect(isAllowedReviewBaseUrl('https://llm-gateway.tailebe851.ts.net/v1')).toBe(true);
     });
 
     // Checking the constant is not enough: the predicate is constructed at a separate call site,

@@ -199,6 +199,8 @@ describe('review transport configuration guard', () => {
     for (const d of inScript) {
       expect(policy).toContain(d);
     }
+    const tailnetDigest = createHash('sha256').update('https://llm-gateway.tailebe851.ts.net/v1').digest('hex');
+    expect(inScript).toContain(tailnetDigest);
   });
 
   it('admits any destination in a multi-digest GATEWAY_BASE_URL_SHA256 list and fails closed on invalid key', () => {
