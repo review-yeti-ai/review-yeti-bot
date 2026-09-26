@@ -36,6 +36,12 @@ export interface BudgetFileEntry {
   originalChars: number;
   /** Characters of the text this lane received for the file. */
   sentChars: number;
+  /**
+   * REL-1138: characters the lane would have received for this file with the budget off
+   * (today's 20k-cut patch), so `baselineChars - sentChars` is what W5 saved on it (negative
+   * when a file was sent whole past the cut). Optional: older disclosures lack it.
+   */
+  baselineChars?: number;
   /** True when the lane received more than the 20k per-file cut would have sent. */
   pastPerFileCut: boolean;
 }

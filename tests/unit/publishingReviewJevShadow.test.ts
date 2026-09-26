@@ -17,7 +17,7 @@ import { logger } from '../../src/utils/logger';
  * Negative proof (ADR 0641), run by hand while writing this file and recorded in the PR: planting
  * `changedFiles.reverse()` in `startJevTriageShadow`, or passing the triage's risk into the panel
  * options, turns the byte-identity tests red; removing the hard-deadline race from
- * `startJevTriageShadow` makes the hanging-Jev test time out; removing `jevShadow.abort()` from
+ * `startJevTriageShadow` makes the hanging-Jev test time out; removing `jevShadow.finish()` from
  * the worker's `finally` makes the abort-on-throw test fail.
  */
 

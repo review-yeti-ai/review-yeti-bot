@@ -32,12 +32,13 @@ import {
   type JevAsker,
   type JevChoiceAnswer,
   type JevNoulAnswer,
+  type JevOutcome,
   type JevQuestion,
   type JevScoreAnswer,
 } from '../gateway/jevClient';
 import { jevCharterFocus } from './jevCharterFocus';
 import { jevTransport } from './jevTransport';
-import { JEV_INPUT_TOKEN_USD_PER_MILLION } from '../types/jevContract';
+import { jevCostUsd } from '../types/jevContract';
 import { classifyLockfileOrGeneratedPath } from '../pipeline/hunkFilter';
 import { isDocumentationOrAssetPath } from './reviewableContent';
 import { isSecuritySensitivePath, securitySensitivePathClass } from './securitySensitivePaths';
@@ -309,6 +310,12 @@ export interface TriageFileDecision {
   output_tokens?: number;
   cost_usd?: number;
   latency_ms: number;
+  /**
+   * REL-1138: the call returned after the shadow stopped (hard deadline or abort). It is
+   * recorded `unavailable` (it did not count as a decision), but anything Jev billed for it is
+   * still carried here, because the client's cost metric counted it too.
+   */
+  late?: boolean;
 }
 
 function finiteOrNull(value: unknown): number | null {
@@ -446,7 +453,21 @@ export interface JevTriageShadowHandle {
   join(input: TriageJoinInput): Promise<void>;
   /** Stops outstanding calls and timers. Idempotent. */
   abort(): void;
+  /**
+   * REL-1138: abort, then -- if `join` never ran (an early throw or a recoverable-failure
+   * return) -- still log the decision line of every call that was in flight and one summary
+   * line with `joined: false`, so decision lines, summary lines and the client's cost metric
+   * describe the same set of calls. Bounded by `FINISH_FLUSH_MS`; never throws or rejects.
+   */
+  finish(): Promise<void>;
 }
+
+/**
+ * REL-1138: how long `join`/`finish` wait for calls still in flight after the shadow stopped.
+ * A real `JevClient` rejects on the abort signal at once; this only bounds an asker that
+ * ignores it.
+ */
+export const FINISH_FLUSH_MS = 1_000;
 
 export interface StartJevTriageShadowInput {
   env: JevShadowEnv;
@@ -464,7 +485,7 @@ export interface StartJevTriageShadowInput {
 
 function inertHandle(status: JevTriageShadowSummary['status']): JevTriageShadowHandle {
   const settled = Promise.resolve<JevTriageShadowSummary>({ status, decisions: [] });
-  return { settled, join: async () => undefined, abort: () => undefined };
+  return { settled, join: async () => undefined, abort: () => undefined, finish: async () => undefined };
 }
 
 function errorClass(error: unknown): string {
@@ -558,8 +579,16 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
   const controller = new AbortController();
   const decisions: Array<TriageFileDecision | undefined> = new Array(files.length).fill(undefined);
   const factsCache = files.map((file) => computeTriageFileFacts(file, limits.maxHunkChars));
+  // REL-1138: every Jev call gets exactly one decision line, whenever it ends. `inFlight` holds
+  // the calls that have started and not yet been logged; `logged` stops a second line.
+  const inFlight = new Set<number>();
+  const logged = new Set<number>();
+  let stopReason: 'timeout' | 'aborted' | null = null;
 
   const record = (index: number, decision: TriageFileDecision): void => {
+    if (logged.has(index)) return;
+    logged.add(index);
+    inFlight.delete(index);
     decisions[index] = decision;
     logger.info('Jev triage shadow decision', { event: JEV_TRIAGE_LOG.decision, ...context, ...flattenDecision(decision) });
     safeMetric(() => getMetrics().jevTriageShadowFiles.add(1, {
@@ -569,9 +598,25 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
     }));
   };
 
+  /** A call that ended after the shadow stopped: unavailable, reason timeout/aborted, cost kept. */
+  const lateDecision = (index: number, latencyMs: number, outcome?: JevOutcome<string>): TriageFileDecision => {
+    const facts = factsCache[index].facts;
+    const reason = outcome && outcome.status !== 'ok' ? outcome.reason : (stopReason || 'aborted');
+    const decision: TriageFileDecision = { path: facts.path, outcome: 'unavailable', reason, facts, latency_ms: latencyMs, late: true };
+    if (outcome && outcome.status === 'ok') {
+      const inputTokens = Number.isFinite(outcome.usage.input_tokens) ? outcome.usage.input_tokens : 0;
+      decision.model = outcome.model;
+      decision.input_tokens = inputTokens;
+      decision.output_tokens = Number.isFinite(outcome.usage.output_tokens) ? outcome.usage.output_tokens : 0;
+      decision.cost_usd = jevCostUsd(inputTokens);
+    }
+    return decision;
+  };
+
   const askOne = async (index: number): Promise<void> => {
     const { facts, hunks } = factsCache[index];
     const callStarted = now();
+    inFlight.add(index);
     try {
       const outcome = await asker.ask({
         state: { file: { path: facts.path, extension: facts.extension }, facts, hunks },
@@ -579,16 +624,23 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
         seam: JEV_TRIAGE_SHADOW_SEAM,
         signal: controller.signal,
       });
-      // Past the hard deadline (or an abort) the summary is already final: a late answer is
-      // dropped rather than logged as if it had counted.
-      if (controller.signal.aborted) return;
+      // Past the hard deadline (or an abort) the summary's decision set is already final: a
+      // late answer does not count as a decision, but it is still logged (REL-1138) -- as
+      // unavailable, with whatever Jev billed for it -- so no call is invisible.
+      if (controller.signal.aborted) {
+        record(index, lateDecision(index, outcome.durationMs, outcome as JevOutcome<string>));
+        return;
+      }
       if (outcome.status !== 'ok') {
         record(index, { path: facts.path, outcome: 'unavailable', reason: outcome.reason, facts, latency_ms: outcome.durationMs });
         return;
       }
       record(index, decisionFromAnswers(facts, outcome, personaIds, modelPin));
     } catch (error) {
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted) {
+        record(index, lateDecision(index, now() - callStarted));
+        return;
+      }
       // Includes programmer errors from validateJevQuestions: in shadow mode they are logged and
       // absorbed, never allowed to reach the worker.
       record(index, { path: facts.path, outcome: 'error', reason: errorClass(error), facts, latency_ms: now() - callStarted });
@@ -612,10 +664,13 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
   const run = Promise.all(
     Array.from({ length: Math.max(1, Math.min(limits.concurrency, eligible || 1)) }, () => workerLoop()),
   ).then(() => 'completed' as const);
+  // Every started call has ended (and so been logged). Never rejects: askOne never throws.
+  const drained = run.then(() => undefined, () => undefined);
 
   let hardTimer: ReturnType<typeof setTimeout> | undefined;
   const hardDeadline = new Promise<'timeout'>((resolve) => {
     hardTimer = setTimeout(() => {
+      stopReason = stopReason || 'timeout';
       controller.abort();
       resolve('timeout');
     }, Math.max(0, limits.hardTimeoutMs));
@@ -631,22 +686,49 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
     .catch(() => 'error' as const)
     .then((status) => {
       if (hardTimer !== undefined) clearTimeout(hardTimer);
-      const finalized = decisions.map((decision, index) => decision || {
-        path: files[index].path,
-        outcome: 'not_started' as const,
-        reason: status,
-        facts: factsCache[index].facts,
-        latency_ms: 0,
-      });
-      return { status, decisions: finalized };
+      for (let index = 0; index < files.length; index += 1) {
+        if (decisions[index]) continue;
+        // A call still in flight was asked and did not answer in time: unavailable, with the stop
+        // reason. Its decision line is written when it ends (or by the flush), not here.
+        decisions[index] = inFlight.has(index)
+          ? { path: files[index].path, outcome: 'unavailable', reason: status, facts: factsCache[index].facts, latency_ms: now() - startedAt, late: true }
+          : { path: files[index].path, outcome: 'not_started', reason: status, facts: factsCache[index].facts, latency_ms: 0 };
+      }
+      return { status, decisions: decisions.map((decision) => decision!) };
     });
 
+  /**
+   * Wait (bounded) for in-flight calls to end so their lines -- and any cost Jev billed -- land
+   * before the summary; then log a line for any call that is still hanging. Returns the live
+   * decision set the summary is computed from.
+   */
+  const flush = async (summary: JevTriageShadowSummary): Promise<JevTriageShadowSummary> => {
+    if (inFlight.size > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        drained,
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, FINISH_FLUSH_MS);
+          (timer as { unref?: () => void }).unref?.();
+        }),
+      ]);
+      if (timer !== undefined) clearTimeout(timer);
+      for (const index of Array.from(inFlight)) {
+        record(index, decisions[index] || lateDecision(index, now() - startedAt));
+      }
+    }
+    return { status: summary.status, decisions: summary.decisions.map((decision, index) => decisions[index] || decision) };
+  };
+
   let joined = false;
+  let finished = false;
   const join = async (joinInput: TriageJoinInput): Promise<void> => {
-    if (joined) return;
+    // After finish() has written the summary, a late join must not write a second one.
+    if (joined || finished) return;
     joined = true;
     try {
-      const summary = await settled;
+      const summary = await flush(await settled);
+      finished = true;
       logJoin(context, summary, joinInput, now() - startedAt, modelPin);
     } catch (error) {
       logger.warn('Jev triage shadow join failed; review unaffected', {
@@ -656,12 +738,27 @@ function startInternal(input: StartJevTriageShadowInput): JevTriageShadowHandle 
   };
 
   const abort = (): void => {
+    stopReason = stopReason || 'aborted';
     if (!controller.signal.aborted) controller.abort();
     if (hardTimer !== undefined) clearTimeout(hardTimer);
     abortResolve?.();
   };
 
-  return { settled, join, abort };
+  const finish = async (): Promise<void> => {
+    abort();
+    if (joined || finished) return;
+    finished = true;
+    try {
+      const summary = await flush(await settled);
+      logSummary(context, summary, now() - startedAt, modelPin, { joined: false });
+    } catch (error) {
+      logger.warn('Jev triage shadow summary failed; review unaffected', {
+        event: JEV_TRIAGE_LOG.summary, reason: 'summary_error', error_class: errorClass(error), ...context,
+      });
+    }
+  };
+
+  return { settled, join, abort, finish };
 }
 
 function decisionFromAnswers(
@@ -698,7 +795,7 @@ function decisionFromAnswers(
     model_pin_match: outcome.model === modelPin,
     input_tokens: inputTokens,
     output_tokens: Number.isFinite(outcome.usage.output_tokens) ? outcome.usage.output_tokens : 0,
-    cost_usd: (inputTokens * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000,
+    cost_usd: jevCostUsd(inputTokens),
     latency_ms: outcome.durationMs,
   };
 }
@@ -760,21 +857,7 @@ function logJoin(
   }
   const applicable = new Set((joinInput.applicablePersonaIds || []).map((id) => String(id)));
 
-  let asked = 0;
-  let ok = 0;
-  let inputTokens = 0;
-  let costUsd = 0;
-  const outcomes: Record<string, number> = {};
-  const models = new Set<string>();
-
   for (const decision of summary.decisions) {
-    outcomes[decision.outcome] = (outcomes[decision.outcome] || 0) + 1;
-    if (decision.outcome === 'ok' || decision.outcome === 'unavailable' || decision.outcome === 'error') asked += 1;
-    if (decision.outcome === 'ok') ok += 1;
-    inputTokens += decision.input_tokens || 0;
-    costUsd += decision.cost_usd || 0;
-    if (decision.model) models.add(decision.model);
-
     const actual = byPath.get(decision.path) || { total: 0, p0: 0, p1: 0, p2: 0 };
     const perLane = lanePath.get(decision.path) || new Map();
     const lanes: Record<string, Record<string, unknown>> = {};
@@ -835,20 +918,56 @@ function logJoin(
     }));
   }
 
+  logSummary(context, summary, wallMs, modelPin, { joined: true, panel_mode: joinInput.mode, verdict: joinInput.verdict });
+}
+
+export interface TriageDecisionTotals {
+  files: number;
+  asked: number;
+  ok: number;
+  outcomes: Record<string, number>;
+  input_tokens: number;
+  cost_usd: number;
+  models: string[];
+}
+
+/**
+ * REL-1138: the summary's totals, computed from exactly the decisions whose lines were logged,
+ * so `sum(decision.cost_usd) == summary.cost_usd` by construction. Each decision's `cost_usd`
+ * came from `jevCostUsd`, the same function the client's cost metric uses.
+ */
+export function summarizeTriageDecisions(decisions: readonly TriageFileDecision[]): TriageDecisionTotals {
+  let asked = 0;
+  let ok = 0;
+  let inputTokens = 0;
+  let costUsd = 0;
+  const outcomes: Record<string, number> = {};
+  const models = new Set<string>();
+  for (const decision of decisions) {
+    outcomes[decision.outcome] = (outcomes[decision.outcome] || 0) + 1;
+    if (decision.outcome === 'ok' || decision.outcome === 'unavailable' || decision.outcome === 'error') asked += 1;
+    if (decision.outcome === 'ok') ok += 1;
+    inputTokens += decision.input_tokens || 0;
+    costUsd += decision.cost_usd || 0;
+    if (decision.model) models.add(decision.model);
+  }
+  return { files: decisions.length, asked, ok, outcomes, input_tokens: inputTokens, cost_usd: costUsd, models: Array.from(models) };
+}
+
+function logSummary(
+  context: Record<string, unknown>,
+  summary: JevTriageShadowSummary,
+  wallMs: number,
+  modelPin: string,
+  extra: Record<string, unknown>,
+): void {
   logger.info('Jev triage shadow summary', {
     event: JEV_TRIAGE_LOG.summary,
     ...context,
     status: summary.status,
-    files: summary.decisions.length,
-    asked,
-    ok,
-    outcomes,
-    input_tokens: inputTokens,
-    cost_usd: costUsd,
+    ...summarizeTriageDecisions(summary.decisions),
     wall_ms: wallMs,
-    models: Array.from(models),
     model_pin: modelPin,
-    panel_mode: joinInput.mode,
-    verdict: joinInput.verdict,
+    ...extra,
   });
 }
