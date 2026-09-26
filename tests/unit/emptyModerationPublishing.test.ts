@@ -58,7 +58,7 @@ function result(options: { findings?: unknown[]; skipped?: boolean } = {}) {
   };
 }
 
-function deps(panelResult: Record<string, unknown>) {
+function deps(panelResult: Record<string, unknown>, diff = DIFF) {
   return {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async (_options: Record<string, unknown>) => {}) },
     completion: {
@@ -66,7 +66,7 @@ function deps(panelResult: Record<string, unknown>) {
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
       reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
     },
-    sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })),
+    sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async (_input: Record<string, unknown>) => panelResult),
     client: { complete: vi.fn(async () => { throw new Error('no provider call expected'); }) },
@@ -89,6 +89,12 @@ describe('publishing worker empty-moderation skip (REL-1139)', () => {
       expect(panelInput(d)).not.toHaveProperty('skipEmptyModeration');
       expect(panelInput(d)).not.toHaveProperty('unreadableDiffHeaders');
     }
+  });
+
+  it('forwards the unreadable-header count so the panel keeps the moderator on that run', async () => {
+    const d = deps(result(), `${DIFF}diff --git garbage\n@@ -1 +1 @@\n-x\n+y\n`);
+    await runPublishingReviewWorker(env({ [SKIP_EMPTY_MODERATION_FLAG]: 'all' }), d as never);
+    expect(panelInput(d)).toMatchObject({ skipEmptyModeration: true, unreadableDiffHeaders: 1 });
   });
 
   it('does not ask the panel to skip when the list names other repositories', async () => {

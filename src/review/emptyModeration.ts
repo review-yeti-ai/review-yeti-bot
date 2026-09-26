@@ -13,6 +13,7 @@
  * never changes lane coverage, depth or the verdict; it only removes a no-op reconciliation step
  * after full coverage has already happened.
  */
+import { repositoryFlagEnabledFor } from './repositoryFlag';
 import { isSecuritySensitivePath } from './securitySensitivePaths';
 
 export const SKIP_EMPTY_MODERATION_FLAG = 'REVIEW_YETI_SKIP_EMPTY_MODERATION';
@@ -31,7 +32,8 @@ export const EMPTY_MODERATION_SKIP_REASON =
   + 'the verdict is SHIP because no lane found anything.';
 
 /**
- * `REVIEW_YETI_SKIP_EMPTY_MODERATION` uses the same grammar as `REVIEW_YETI_INCREMENTAL`:
+ * `REVIEW_YETI_SKIP_EMPTY_MODERATION` uses the shared per-repository flag grammar
+ * (`repositoryFlagEnabledFor`, the same code as `REVIEW_YETI_INCREMENTAL`):
  * - unset, empty, `0`, `false` or `off` is off (the default);
  * - `1`, `true`, `on` or `all` is on for every repository;
  * - anything else is a comma- or space-separated list of `owner/repo` names it is on for
@@ -41,11 +43,7 @@ export function skipEmptyModerationEnabledFor(
   env: Readonly<Record<string, string | undefined>>,
   repository: string,
 ): boolean {
-  const raw = String(env[SKIP_EMPTY_MODERATION_FLAG] ?? '').trim().toLowerCase();
-  if (raw === '' || raw === '0' || raw === 'false' || raw === 'off') return false;
-  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'all') return true;
-  const target = String(repository || '').trim().toLowerCase();
-  return target.length > 0 && raw.split(/[\s,]+/u).some((entry) => entry === target);
+  return repositoryFlagEnabledFor(env, SKIP_EMPTY_MODERATION_FLAG, repository);
 }
 
 /** One lane as both sides see it. `findings` absent or not an array is ineligible. */
