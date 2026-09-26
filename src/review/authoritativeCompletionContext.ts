@@ -276,6 +276,15 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
         quorumSatisfied: expectedPersonaIds.length > 0,
         ...(incrementalVerified === undefined ? {} : { incrementalVerified }),
         ...(verdictCacheVerified === undefined ? {} : { verdictCacheVerified }),
+        // REL-1139: the same decision's disclosures, as counts, so a completion that claims a
+        // skipped moderator is re-decided on this exact head (deriveCanonicalWorkerReviewEvidence).
+        emptyModeration: {
+          truncatedFiles: applicability.truncatedFiles.length,
+          unavailablePatches: applicability.unavailablePatches.length,
+          omittedSourcePaths: applicability.omittedSourcePaths.length,
+          routedFiles: applicability.routedFiles.length,
+          uncoveredPaths: applicability.unmatchedPaths.length,
+        },
       } };
     };
     try { return await Promise.race([resolve(), expired]); }

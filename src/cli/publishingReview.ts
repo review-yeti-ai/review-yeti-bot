@@ -97,6 +97,7 @@ import {
 import { createVerdictCacheCompareReader } from '../github/verdictCacheCompareReader';
 import { incrementalReviewEnabledFor } from '../review/incrementalReview';
 import { diffShrinkEnabledFor } from '../review/diffShrink';
+import { EMPTY_MODERATION_SKIPPED, EMPTY_MODERATION_SKIP_REASON, skipEmptyModerationEnabledFor } from '../review/emptyModeration';
 import { personaLaneViewIdentity } from '../panel/panelEngine';
 import workerPackage from '../../package.json';
 import { loadMapReduceInput, renderMapReduceSummary } from '../review/mapReduceReview';
@@ -1729,6 +1730,10 @@ export async function runPublishingReviewWorker(
           ...(reviewBudget ? { reviewBudget } : {}),
           ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
           ...(mapReduce ? { mapReduce } : {}),
+          // REL-1139 (ADR 0687): default off; skips only the moderator call, never a lane or the
+          // arbiter. Eligibility is logged on every run either way.
+          ...(skipEmptyModerationEnabledFor(env, identity.repo) ? { skipEmptyModeration: true } : {}),
+          ...(unreadable.length > 0 ? { unreadableDiffHeaders: unreadable.length } : {}),
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -2039,6 +2044,10 @@ export async function runPublishingReviewWorker(
     const changedPaths = new Set(changedFiles.map((file) => file.path));
 
     const documentationOnly = fastShipApproved && Boolean(panelResult.documentationOnly);
+    // REL-1139 (ADR 0687): the panel skipped the moderator call on an empty, fully covered run.
+    // A full-panel run only; the verdict on such a run is SHIP because no lane found anything.
+    const moderationSkipped = !fastShipApproved && !notApplicable
+      && panelResult.moderation === EMPTY_MODERATION_SKIPPED;
     // REL-972: a registry-verified lockfile-only diff takes the same audited
     // exemption; label it for what it is rather than calling a yarn.lock bump
     // documentation.
@@ -2086,6 +2095,8 @@ export async function runPublishingReviewWorker(
         ]
       : [
           `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
+          // REL-1139: the same shared decision the trusted completion side re-evaluates.
+          ...(moderationSkipped ? [EMPTY_MODERATION_SKIP_REASON] : []),
           notApplicable
             ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
             : (panelResult as any).zeroLaneNonEvidence
@@ -2238,6 +2249,9 @@ export async function runPublishingReviewWorker(
           // REL-1085: the files served from cache (verified by the trusted completion side before
           // they count) and this run's clean per-file results for later runs.
           ...(verdictCacheRecord ? { verdictCache: verdictCacheRecord } : {}),
+          // REL-1139: the moderator call was skipped. The trusted completion side re-evaluates the
+          // shared decision on its own diff and refuses a claim it does not allow.
+          ...(moderationSkipped ? { moderation: EMPTY_MODERATION_SKIPPED } : {}),
           // REL-1084: the lane roster this verdict required, so a later non-authoritative run can
           // prove no lane was missing. Evidence path only (the authoritative gate owns its roster),
           // and only for a valid panel roster: a fast-ship, exemption or invalid roster omits it,

@@ -237,6 +237,13 @@ type PublishingConfig struct {
 	// lane budget; anything else is its default, the W5 hard cap). Empty
 	// forwards nothing.
 	MapReduceMinChars string
+	// REL-1139 (ADR 0687): skip the moderator call (the arbiter still runs)
+	// when every lane returned an empty APPROVE with full coverage. Forwarded verbatim as
+	// SkipEmptyModerationEnv when non-empty; the worker owns its
+	// interpretation (a comma- or space-separated owner/repo allowlist, or an
+	// on/off switch). Empty keeps both calls, byte-identical to before this
+	// field existed.
+	SkipEmptyModeration string
 	// REL-1104: where the worker pushes its metrics at exit (OTLP/protobuf,
 	// delta temporality -- VictoriaMetrics' /opentelemetry/v1/metrics). Worker
 	// pods are too short-lived to scrape, so this push is the only way their
@@ -279,6 +286,12 @@ const MapReduceEnv = "REVIEW_YETI_MAP_REDUCE"
 // src/review/mapReduceReview.ts MAP_REDUCE_MIN_CHARS_ENV). The operator
 // forwards the deployment value verbatim; the worker owns its interpretation.
 const MapReduceMinCharsEnv = "REVIEW_YETI_MAP_REDUCE_MIN_CHARS"
+
+// SkipEmptyModerationEnv is the worker's empty-moderation skip flag
+// (REL-1139, src/review/emptyModeration.ts SKIP_EMPTY_MODERATION_FLAG).
+// The operator forwards the deployment value verbatim; the worker owns its
+// interpretation.
+const SkipEmptyModerationEnv = "REVIEW_YETI_SKIP_EMPTY_MODERATION"
 
 // TerminalDeadlineEnv carries the review's terminal deadline (RFC 3339, UTC)
 // to an app-gate worker when map-reduce is configured (REL-1083,
@@ -556,6 +569,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.VerdictCache != "" {
 			env = append(env, corev1.EnvVar{Name: VerdictCacheEnv, Value: input.Publishing.VerdictCache})
+		}
+		if input.Publishing.SkipEmptyModeration != "" {
+			env = append(env, corev1.EnvVar{Name: SkipEmptyModerationEnv, Value: input.Publishing.SkipEmptyModeration})
 		}
 		if endpoint := WorkerMetricsEndpoint(input.Publishing.WorkerMetricsEndpoint); endpoint != "" {
 			env = append(env, corev1.EnvVar{Name: WorkerMetricsEndpointEnv, Value: endpoint})
@@ -929,6 +945,9 @@ func validatePublishing(config PublishingConfig) error {
 	}
 	if strings.ContainsAny(config.MapReduce, "\r\n") {
 		return configErr("map-reduce flag contains a line break")
+	}
+	if strings.ContainsAny(config.SkipEmptyModeration, "\r\n") {
+		return configErr("skip empty moderation flag contains a line break")
 	}
 	if strings.ContainsAny(config.MapReduceMinChars, "\r\n") {
 		return configErr("map-reduce min chars contains a line break")

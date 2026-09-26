@@ -170,6 +170,8 @@ describe('service-owned authoritative completion context', () => {
     expect(context).toEqual({ current: { ...current, draft, policyDigest: f.gate.coordinates.policyDigest }, coverage: {
       expectedPersonaIds: ['sec-lane', 'qual-lane'], changedFiles: [{ path: 'src/a.ts', patch: diff }],
       coverageComplete: true, quorumSatisfied: true,
+      // REL-1139: the same applicability decision's disclosures, re-checked against a skip claim.
+      emptyModeration: { truncatedFiles: 0, unavailablePatches: 0, omittedSourcePaths: 0, routedFiles: 0, uncoveredPaths: 0 },
     } });
     expect(context).not.toHaveProperty('evidence');
     expect(context).not.toHaveProperty('verdict');
