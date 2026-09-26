@@ -92,6 +92,10 @@ spec:
             - name: REVIEW_YETI_MAP_REDUCE
               value: {{ .Values.publishing.mapReduce | quote }}
             {{- end }}
+            {{- if .Values.publishing.skipEmptyModeration }}
+            - name: REVIEW_YETI_SKIP_EMPTY_MODERATION
+              value: {{ .Values.publishing.skipEmptyModeration | quote }}
+            {{- end }}
             {{- if .Values.publishing.mapReduceMinChars }}
             - name: REVIEW_YETI_MAP_REDUCE_MIN_CHARS
               value: {{ .Values.publishing.mapReduceMinChars | quote }}
