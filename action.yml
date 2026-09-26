@@ -96,8 +96,9 @@ inputs:
   execution-backend:
     description: >-
       Review execution location: local runs the existing panel on this runner; doks only admits
-      the immutable request to the Review Yeti DOKS queue. DOKS callers must grant
-      permissions: id-token: write and rely on the later Review Yeti App gate for a terminal result.
+      the immutable request to the Review Yeti DOKS queue; mars admits to the DO Managed Agents queue.
+      Remote callers must grant permissions: id-token: write and rely on the later Review Yeti App gate
+      for a terminal result.
     required: false
     default: 'local'
   doks-dispatch-url:
@@ -445,9 +446,9 @@ runs:
       run: |
         set -euo pipefail
         case "$EXECUTION_BACKEND" in
-          local|doks) ;;
+          local|doks|mars) ;;
           *)
-            echo "::error::execution-backend must be local or doks"
+            echo "::error::execution-backend must be local, doks, or mars"
             exit 1
             ;;
         esac
@@ -484,7 +485,7 @@ runs:
 
     - name: Dispatch review to DOKS
       id: doks-dispatch
-      if: ${{ inputs.execution-backend == 'doks' }}
+      if: ${{ inputs.execution-backend == 'doks' || inputs.execution-backend == 'mars' }}
       shell: bash
       env:
         DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
@@ -524,7 +525,7 @@ runs:
     # full. See review-yeti-bot#REL-513.
     - name: Fetch pull request diff
       id: diff
-      if: ${{ inputs.execution-backend != 'doks' }}
+      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -545,7 +546,7 @@ runs:
     # Dockerfile.legacy-runtime in CI. Installing into GITHUB_ACTION_PATH reifies
     # the application package.json and is the ~800 Mi review-job spike.
     - name: Install pipeline dependencies
-      if: ${{ inputs.execution-backend != 'doks' }}
+      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
       shell: bash
       env:
         NPM_PREFIX: ${{ runner.temp }}/review-yeti-npm
@@ -588,7 +589,7 @@ runs:
     # the API, into a directory the pull request cannot write to. This also means the caller does
     # not need to check the repository out at all.
     - name: Fetch reviewer configuration from the trusted base ref
-      if: ${{ inputs.execution-backend != 'doks' }}
+      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -635,7 +636,7 @@ runs:
 
     - name: Run review panel
       id: review
-      if: ${{ inputs.execution-backend != 'doks' }}
+      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}

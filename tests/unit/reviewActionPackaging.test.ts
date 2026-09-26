@@ -173,6 +173,8 @@ describe('Pi runtime packaging contract', () => {
   it('declares the pinned runtime roots as bundled dependencies', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
     expect(manifest.bundledDependencies).toEqual([
+      '@deepseek-ai/cordis',
+      '@deepseek-ai/cosmokit',
       '@quintinshaw/pi-dynamic-workflows',
       '@earendil-works/pi-ai',
       '@earendil-works/pi-coding-agent',
