@@ -45,6 +45,7 @@ const ALLOWED_REVIEW_BASE_URLS = Object.freeze([
  */
 const ALLOWED_REVIEW_BASE_URL_DIGESTS = Object.freeze([
   'ca8309dbe7eb85c5c7da280d48572eb44d159c1244ebea3548b82784cbc27c53',
+  '2f8333b09db07b39dc3455b5e5279f85c200126b8ce4d327d505cac5142d9d5b',
 ]);
 
 function digestBaseUrl(baseUrl) {

@@ -296,8 +296,8 @@ describe('openrouter review policy', () => {
 
     // A pin that silently emptied would reopen the destination to the plaintext list only, which
     // is a quiet outage rather than a loud one.
-    it('carries exactly one well-formed production pin', () => {
-      expect(ALLOWED_REVIEW_BASE_URL_DIGESTS).toHaveLength(1);
+    it('carries well-formed production pins (public and tailnet gateway)', () => {
+      expect(ALLOWED_REVIEW_BASE_URL_DIGESTS).toHaveLength(2);
       for (const digest of ALLOWED_REVIEW_BASE_URL_DIGESTS) {
         expect(digest).toMatch(/^[0-9a-f]{64}$/);
       }

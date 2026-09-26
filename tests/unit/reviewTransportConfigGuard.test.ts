@@ -181,8 +181,11 @@ describe('review transport configuration guard', () => {
       path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
       'utf8',
     );
-    const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64})/)?.[1];
-    expect(inScript).toMatch(/^[0-9a-f]{64}$/);
+    const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64}(?:\s+[0-9a-f]{64})*)/)?.[1]?.split(/\s+/) ?? [];
+    expect(inScript.length).toBeGreaterThan(0);
+    for (const d of inScript) {
+      expect(d).toMatch(/^[0-9a-f]{64}$/);
+    }
 
     // Both directions. `toContain` alone only caught script -> policy: adding a digest to the
     // policy array WITHOUT adding it to the guard script stayed green, and the drift surfaced only
@@ -191,9 +194,11 @@ describe('review transport configuration guard', () => {
     const { ALLOWED_REVIEW_BASE_URL_DIGESTS } = require(
       path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
     );
-    expect([...ALLOWED_REVIEW_BASE_URL_DIGESTS].sort()).toEqual([inScript].sort());
+    expect([...ALLOWED_REVIEW_BASE_URL_DIGESTS].sort()).toEqual([...inScript].sort());
     // Guards the assertion above against being trivially satisfied if the policy array empties.
-    expect(policy).toContain(inScript);
+    for (const d of inScript) {
+      expect(policy).toContain(d);
+    }
   });
 
   // The guard admits a trailing-slash destination by stripping it before hashing. The policy
