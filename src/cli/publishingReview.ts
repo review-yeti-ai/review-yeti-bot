@@ -90,6 +90,7 @@ import {
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
 import { loadReviewBudgetInput, renderReviewBudgetSummary, reviewBudgetEnabledFor } from '../review/reviewBudget';
+import { summarizeReviewBudgetSavings } from '../telemetry/reviewBudgetSavings';
 import {
   buildVerdictCacheRecord, planVerdictCache, renderVerdictCacheSummary, verdictCacheEnabledFor, verdictCacheLaneKeys,
   type ComparisonContentReader, type VerdictCacheBaseSource,
@@ -1766,6 +1767,8 @@ export async function runPublishingReviewWorker(
           notDeeplyReviewed: count('not-deeply-reviewed'),
           truncated: count('truncated'),
           packedCharsMax: Math.max(0, ...lanes.map((lane) => lane.packedChars)),
+          // REL-1138: W5 savings against the budget-off baseline (see telemetry/reviewBudgetSavings).
+          ...summarizeReviewBudgetSavings(panelResult.reviewBudget),
         });
       }
       if (panelResult.mapReduce) {
@@ -2505,7 +2508,11 @@ export async function runPublishingReviewWorker(
       },
     };
     } finally {
-      jevShadow.abort();
+      // REL-1138: abort, and when `join` never ran (an early throw or a recoverable-failure
+      // return) still log the in-flight calls' decision lines and a `joined: false` summary, so
+      // decision lines, summary lines and the Jev cost metric count the same calls. Bounded by
+      // FINISH_FLUSH_MS and total (never throws).
+      await jevShadow.finish();
       panelDeadline.cleanup();
       // Bounded by the shadow run's own deadline (already elapsed on every path that reached
       // evidence-building above, where it is awaited explicitly -- this is a no-op there). On an

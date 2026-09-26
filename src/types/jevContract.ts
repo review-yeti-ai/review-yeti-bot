@@ -16,6 +16,17 @@
 export const JEV_INPUT_TOKEN_USD_PER_MILLION = 0.042;
 
 /**
+ * REL-1138: the one Jev cost computation. The `review_yeti_jev_cost_usd_total` metric, the
+ * shadow's per-file decision line and its per-run summary line all call this, so the three
+ * figures can differ only in which calls they saw, never in how a call was priced. A
+ * non-finite or negative token count prices at 0 rather than poisoning a sum with NaN.
+ */
+export function jevCostUsd(inputTokens: number): number {
+  if (typeof inputTokens !== 'number' || !Number.isFinite(inputTokens) || inputTokens <= 0) return 0;
+  return (inputTokens * JEV_INPUT_TOKEN_USD_PER_MILLION) / 1_000_000;
+}
+
+/**
  * The https rule, defined once.
  *
  * Both `JevClient`'s constructor and `jevTransport` enforce it -- deliberately, because they
