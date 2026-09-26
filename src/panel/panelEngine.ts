@@ -617,6 +617,8 @@ export const SEVERITY_CALIBRATION_LINES: readonly string[] = [
 /** Known repository-visibility states a review run can be told about. */
 import { REPOSITORY_VISIBILITY_INSTRUCTION, normalizeRepositoryVisibility, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { uncoveredOnlyByUnverifiedLockfiles } from '../review/omittedLockfilePatch';
+import { errorCauseLogFields } from '../utils/errorCause';
+import { logPanelRoleFailure } from './panelRoleFailureLog';
 export type { RepositoryVisibility } from '../review/repositoryVisibility';
 
 export function repositoryVisibilityPromptLines(visibility: RepositoryVisibility): string[] {
@@ -3253,6 +3255,8 @@ async function runPersona(
                 ...(error instanceof OpenRouterResponseError && error.status !== undefined ? { providerStatus: error.status } : {}),
                 // Bounded/redacted, same contract as the generic branch below.
                 error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+                // REL-1138: sanitized cause (UND_ERR_CONNECT_TIMEOUT, ECONNRESET, ...).
+                ...errorCauseLogFields(error),
               });
               await panelDelay(backoffMs, signal);
               continue;
@@ -3264,6 +3268,7 @@ async function runPersona(
               transportMaxRetries: TRANSPORT_MAX_RETRIES,
               ...(error instanceof OpenRouterResponseError && error.status !== undefined ? { providerStatus: error.status } : {}),
               error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+              ...errorCauseLogFields(error),
             });
           }
           const promptTokens = (error as any)?.estimatedPromptTokens ?? 0;
@@ -3331,6 +3336,7 @@ async function runPersona(
               // signature (e.g. "fetch failed", a 5xx) and may still carry a provider
               // response fragment alongside it (REL-892).
               error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+              ...errorCauseLogFields(error),
             });
             await panelDelay(1000, signal);
             continue;
@@ -4543,6 +4549,10 @@ export async function executePersonaPanel(options: {
               return error instanceof Error ? error.message : String(error);
             }
           },
+        }).catch((error: unknown) => {
+          // REL-1138: say why the moderator call failed before the panel rethrows it.
+          if (!signal?.aborted) logPanelRoleFailure('moderator', moderatorId, error);
+          throw error;
         });
         if (!run.parsed || !Array.isArray(run.parsed.findings)) {
           throw new PanelConfigurationError('invalid moderator response contract');
@@ -4694,6 +4704,7 @@ export async function executePersonaPanel(options: {
         break;
       } catch (error: any) {
         throwIfPanelAborted(signal);
+        logPanelRoleFailure('arbiter', providerId, error);
         arbiterErrors.push(`${providerId}: ${error?.message || String(error)}`);
         arbiterFailures.push(thrownPanelLane('arbiter', classifyPersonaAttemptFailure(error), error));
         if (config.reviewers.fallback === 'none') break;
