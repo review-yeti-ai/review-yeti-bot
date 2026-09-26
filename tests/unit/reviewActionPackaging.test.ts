@@ -83,8 +83,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain('dispatch-doks-action.mjs');
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_URL');
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
-    expect(raw).toContain("inputs.execution-backend == 'doks'");
-    expect(raw).toContain("inputs.execution-backend != 'doks'");
+    expect(raw).toContain("inputs.execution-backend != 'local'");
+    expect(raw).toContain("inputs.execution-backend == 'local'");
     expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 

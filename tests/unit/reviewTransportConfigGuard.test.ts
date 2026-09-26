@@ -181,8 +181,11 @@ describe('review transport configuration guard', () => {
       path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
       'utf8',
     );
-    const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64})/)?.[1];
-    expect(inScript).toMatch(/^[0-9a-f]{64}$/);
+    const inScript = script.match(/GATEWAY_BASE_URL_SHA256:-([0-9a-f]{64}(?:\s+[0-9a-f]{64})*)/)?.[1]?.split(/\s+/) ?? [];
+    expect(inScript.length).toBeGreaterThan(0);
+    for (const d of inScript) {
+      expect(d).toMatch(/^[0-9a-f]{64}$/);
+    }
 
     // Both directions. `toContain` alone only caught script -> policy: adding a digest to the
     // policy array WITHOUT adding it to the guard script stayed green, and the drift surfaced only
@@ -191,9 +194,57 @@ describe('review transport configuration guard', () => {
     const { ALLOWED_REVIEW_BASE_URL_DIGESTS } = require(
       path.resolve(__dirname, '../../.github/workflows/pipelines/openrouter-policy.js'),
     );
-    expect([...ALLOWED_REVIEW_BASE_URL_DIGESTS].sort()).toEqual([inScript].sort());
+    expect([...ALLOWED_REVIEW_BASE_URL_DIGESTS].sort()).toEqual([...inScript].sort());
     // Guards the assertion above against being trivially satisfied if the policy array empties.
-    expect(policy).toContain(inScript);
+    for (const d of inScript) {
+      expect(policy).toContain(d);
+    }
+    const tailnetDigest = createHash('sha256').update('https://llm-gateway.tailebe851.ts.net/v1').digest('hex');
+    expect(inScript).toContain(tailnetDigest);
+  });
+
+  it('admits any destination in a multi-digest GATEWAY_BASE_URL_SHA256 list and fails closed on invalid key', () => {
+    const gw1 = 'https://gateway-one.test.invalid/v1';
+    const gw2 = 'https://gateway-two.test.invalid/v1';
+    const d1 = createHash('sha256').update(gw1).digest('hex');
+    const d2 = createHash('sha256').update(gw2).digest('hex');
+    const list = `${d1} ${d2}`;
+
+    expect(
+      run({
+        REVIEW_BASE_URL: gw1,
+        GATEWAY_BASE_URL_SHA256: list,
+        GATEWAY_KEY_PRESENT: 'true',
+        REVIEW_LANE_TIMEOUT_MS: '420000',
+      }).ok,
+    ).toBe(true);
+
+    expect(
+      run({
+        REVIEW_BASE_URL: gw2,
+        GATEWAY_BASE_URL_SHA256: list,
+        GATEWAY_KEY_PRESENT: 'true',
+        REVIEW_LANE_TIMEOUT_MS: '420000',
+      }).ok,
+    ).toBe(true);
+
+    const unsetKey = run({
+      REVIEW_BASE_URL: gw2,
+      GATEWAY_BASE_URL_SHA256: list,
+      GATEWAY_KEY_PRESENT: 'false',
+      REVIEW_LANE_TIMEOUT_MS: '420000',
+    });
+    expect(unsetKey.ok).toBe(false);
+    expect(unsetKey.out).toMatch(/CT_REVIEW_GATEWAY_API_KEY is unset/);
+
+    const missingTimeout = run({
+      REVIEW_BASE_URL: gw2,
+      GATEWAY_BASE_URL_SHA256: list,
+      GATEWAY_KEY_PRESENT: 'true',
+      REVIEW_LANE_TIMEOUT_MS: '',
+    });
+    expect(missingTimeout.ok).toBe(false);
+    expect(missingTimeout.out).toMatch(/REVIEW_LANE_TIMEOUT_MS is unset/);
   });
 
   // The guard admits a trailing-slash destination by stripping it before hashing. The policy

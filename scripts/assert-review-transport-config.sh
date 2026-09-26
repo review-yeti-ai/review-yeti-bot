@@ -38,7 +38,7 @@ GATEWAY_MIN_LANE_TIMEOUT_MS="${GATEWAY_MIN_LANE_TIMEOUT_MS:-300000}"
 # cuts a multi-turn lane off before it emits findings.
 FIREWORKS_MIN_LANE_TIMEOUT_MS="${FIREWORKS_MIN_LANE_TIMEOUT_MS:-300000}"
 # Digest of the normalized base URL. Keep in lockstep with openrouter-policy.js.
-GATEWAY_BASE_URL_SHA256="${GATEWAY_BASE_URL_SHA256:-ca8309dbe7eb85c5c7da280d48572eb44d159c1244ebea3548b82784cbc27c53}"
+GATEWAY_BASE_URL_SHA256="${GATEWAY_BASE_URL_SHA256:-ca8309dbe7eb85c5c7da280d48572eb44d159c1244ebea3548b82784cbc27c53 2f8333b09db07b39dc3455b5e5279f85c200126b8ce4d327d505cac5142d9d5b}"
 
 fail() { echo "::error::$1" >&2; exit 1; }
 
@@ -73,7 +73,18 @@ require_lane_timeout() {
 # Checked BEFORE the hostname cases: this destination is identified by digest, and an exact match
 # must win before any substring rule gets a chance to look at it.
 NORMALIZED_BASE_URL="${BASE_URL%"${BASE_URL##*[!/]}"}"
-if [ -n "$BASE_URL" ] && [ "$(sha256_of "$NORMALIZED_BASE_URL")" = "$GATEWAY_BASE_URL_SHA256" ]; then
+MATCHES_GATEWAY=false
+if [ -n "$BASE_URL" ]; then
+  CALCULATED_DIGEST="$(sha256_of "$NORMALIZED_BASE_URL")"
+  for EXPECTED_DIGEST in $GATEWAY_BASE_URL_SHA256; do
+    if [ "$CALCULATED_DIGEST" = "$EXPECTED_DIGEST" ]; then
+      MATCHES_GATEWAY=true
+      break
+    fi
+  done
+fi
+
+if [ "$MATCHES_GATEWAY" = "true" ]; then
   [ "$GATEWAY_KEY_PRESENT" = "true" ] || fail \
     "Review destination is the digest-pinned gateway but CT_REVIEW_GATEWAY_API_KEY is unset. Refusing to run rather than falling back to another provider's credential, which the workflow's key-selection expression would otherwise transmit to it."
   require_lane_timeout "$GATEWAY_MIN_LANE_TIMEOUT_MS" "digest-pinned gateway"
