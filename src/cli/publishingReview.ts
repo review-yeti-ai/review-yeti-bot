@@ -104,6 +104,14 @@ import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
 import { startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
+import {
+  markThrownByPanel,
+  thrownInfrastructureDiagnostics,
+  thrownInfrastructureLaneCoverage,
+  thrownPanelInfrastructureFailure,
+  type ThrownPanelInfrastructureFailure,
+} from '../review/thrownPanelInfrastructure';
+import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAvailability';
 import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
@@ -1042,6 +1050,10 @@ export async function runPublishingReviewWorker(
   // `resolveReviewEngine`'s doc comment for why this must read the resolved base-policy config
   // rather than a raw env var this early.
   let preparedPersonaIds: string[] = [];
+  // REL-1124: whether every changed file was readable by a lane, known before the panel runs. A
+  // thrown panel is infrastructure-incomplete only over complete coverage (the shared decision's
+  // rule: a gap is a property of the diff, and a fresh attempt reads the same diff).
+  let prePanelCoverageComplete: boolean | undefined;
   let authoritativeCompletionAttempted = false;
   let legacySuccessCompletionAttempted = false;
   const reportReviewResult = async (result: WorkerReviewResult): Promise<void> => {
@@ -1078,43 +1090,144 @@ export async function runPublishingReviewWorker(
         incompleteLanes?: IncompleteLaneDescription[];
       };
     },
-  ): Promise<void> => {
+  ): Promise<ThrownPanelInfrastructureFailure | undefined> => {
     // A success callback may have committed even when its acknowledgement was
     // lost. Never replace that immutable body or its already-green check with a
     // contradictory terminal failure.
-    if (legacySuccessCompletionAttempted) return;
-    const failureClass = panelFailure?.failureClass ?? classifyFailure(error);
-    const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
+    if (legacySuccessCompletionAttempted) return undefined;
     const isProvider5xx = Boolean(
       (error as any)?.failureReason === 'provider_5xx' ||
       (error instanceof Error && error.message.includes('provider_5xx'))
     );
+    // REL-1124: a panel that THREW on infrastructure (a required lane, the moderator or the arbiter
+    // lost to the gateway, a raw `fetch failed`/`terminated`) with no finding anywhere reaches the
+    // same shared decision as a returned panel (REL-1113): INCOMPLETE and re-attempted.
+    // A legacy (non-authoritative) provider_5xx already had its own bounded re-attempt (REL-620:
+    // the check stays in_progress "requeuing" and the dispatcher re-admits with 5xx backoff), so
+    // it keeps that path unchanged. The authoritative path had no re-attempt for it.
+    let thrownInfrastructure = panelFailure === undefined && prePanelCoverageComplete === true
+      && !(isProvider5xx && !authoritative)
+      ? thrownPanelInfrastructureFailure(error, { aborted: deps.signal?.aborted === true })
+      : undefined;
+    let authoritativeInfrastructureBody: WorkerReviewResult | undefined;
+    if (thrownInfrastructure && authoritative) {
+      const candidate: WorkerReviewResult = { version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
+        personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR',
+          errorClass: thrownInfrastructure!.failureClass, findings: [] })),
+        coverageComplete: true, quorumSatisfied: false,
+        failureDiagnostics: thrownInfrastructureDiagnostics(thrownInfrastructure, INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail) };
+      // The service evaluates this same function on this same payload before it re-admits.
+      if (isInfrastructureIncompleteResult(candidate)) authoritativeInfrastructureBody = candidate;
+      else thrownInfrastructure = undefined;
+    }
+    const failureClass = panelFailure?.failureClass ?? thrownInfrastructure?.failureClass ?? classifyFailure(error);
+    const githubDiffNotRenderable = isGithubDiffNotRenderableError(error);
     // The recoverable marker is the one bit the dispatcher's bounded
     // automatic retry (REL-620) reads off this event; it is set exactly when
-    // this call came from the `isRecoverableIncompletePanel` branch below or
-    // from a 502/503 provider outage, never inferred from `failureClass` alone.
-    const diagnostics = buildWorkerFailureDiagnostics(error, failureClass, {
-      githubDiffNotRenderable,
-      recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,
-      ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
-    });
+    // this call came from the `isRecoverableIncompletePanel` branch below,
+    // from a 502/503 provider outage, or from a thrown infrastructure-incomplete
+    // panel (REL-1124), never inferred from `failureClass` alone.
+    const diagnostics = authoritativeInfrastructureBody?.failureDiagnostics
+      ?? (thrownInfrastructure
+        // A legacy provider_5xx never reaches here (it keeps the REL-620 path above).
+        ? thrownInfrastructureDiagnostics(thrownInfrastructure, INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail)
+        : buildWorkerFailureDiagnostics(error, failureClass, {
+          githubDiffNotRenderable,
+          recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,
+          ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
+        }));
+    const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
+      ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
+      : undefined;
+    let infrastructureDelivered = false;
     // The dispatcher retries attempts 1..CAP; the attempt that fails as
     // CAP+1 is the exhausted one this exact worker execution is running as
     // (`identity.executionAttempt`), so no cross-process coordination is
     // needed to know whether this is the final word.
-    const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx)
+    const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx || thrownInfrastructure !== undefined)
       && !isRecoverablePanelRetryEligible(identity.executionAttempt)
       ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
       : undefined;
     if (authoritative && !authoritativeCompletionAttempted) {
       try {
-        await reportReviewResult({ version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
+        await reportReviewResult(authoritativeInfrastructureBody ?? { version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
           personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR', errorClass: failureClass, findings: [] })),
           coverageComplete: false, quorumSatisfied: false, failureDiagnostics: diagnostics });
+        infrastructureDelivered = authoritativeInfrastructureBody !== undefined;
       } catch {
         logger.error('Authoritative worker failure could not be acknowledged', {
           runId: identity.runId, reason: 'completion_callback_failed', failureClass,
         });
+      }
+    }
+    // REL-1057: a superseded run is not a failure. The service retires it
+    // itself when the newer head is admitted (or its deadline reaper does, if
+    // no newer head ever arrives), so a legacy failure callback here would
+    // only record a false failure against a head nobody will merge.
+    const persistLegacyTerminalFailure = async (): Promise<void> => {
+      if (!deps.completion || isReviewSuperseded(error)) return;
+      const event: WorkerTerminalFailure = {
+        version: 'WorkerTerminalFailure.v1',
+        runId: identity.runId,
+        repositoryId: identity.repositoryId,
+        owner: identity.owner,
+        repo: identity.repoName,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
+        failureClass,
+        diagnostics,
+      };
+      try {
+        await deps.completion.reportTerminalFailure(event);
+        infrastructureDelivered = thrownInfrastructure !== undefined;
+      } catch {
+        // The original failure remains authoritative. The callback is a durable
+        // recovery aid, never a reason to swallow or rewrite that failure.
+        logger.error('Failed to persist worker terminal failure', {
+          runId: identity.runId,
+          failureClass,
+          reason: 'completion_callback_failed',
+        });
+      }
+    };
+    // REL-1124: a thrown infrastructure failure writes its durable record BEFORE the check, so the
+    // check can say whether a re-attempt was actually scheduled; every other failure keeps the
+    // pre-existing order (check, then callback).
+    const legacyPersistedFirst = thrownInfrastructure !== undefined;
+    if (legacyPersistedFirst) await persistLegacyTerminalFailure();
+    // REL-1124: the automatic re-attempt is driven only by the durable record above (the
+    // service re-admits from the delivered INCOMPLETE body; the legacy dispatcher from the
+    // recoverable terminal failure). When that record was not written, nothing will re-admit this
+    // run, so it keeps the plain terminal failure: the check never promises a re-attempt (nor a
+    // provider_5xx requeue) and the run is not counted as an incomplete_infra retry.
+    const infrastructureUndelivered = thrownInfrastructure !== undefined && !infrastructureDelivered;
+    if (!infrastructureDelivered) thrownInfrastructure = undefined;
+    if (thrownInfrastructure) {
+      logger.warn('Review incomplete: the review panel failed on infrastructure; not a review verdict', {
+        reasonClass: 'incomplete_infra',
+        stage: thrownInfrastructure.stage,
+        runId: identity.runId,
+        repository: identity.repo,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        executionAttempt: identity.executionAttempt,
+        authoritative,
+        retryScheduled: infrastructureRetry !== undefined,
+        failedLanes: thrownInfrastructure.incompleteLanes,
+      });
+      try {
+        getMetrics().reviewIncompleteInfra.add(1, {
+          outcome: infrastructureRetry ? 'retrying' : 'exhausted',
+          failure_class: thrownInfrastructure.failureClass,
+          authoritative: String(authoritative),
+        });
+      } catch {
+        // Telemetry never changes a review outcome.
       }
     }
     if (failedCheckId !== undefined) {
@@ -1138,7 +1251,22 @@ export async function runPublishingReviewWorker(
             title: 'Review Yeti: review superseded',
             summary: 'Superseded by a newer pull request head.',
           });
-        } else if (isProvider5xx) {
+        } else if (thrownInfrastructure) {
+          // REL-1124: never a verdict and never "review did not complete": the same INCOMPLETE
+          // title family the returned-panel path publishes, naming the lanes/stage that failed.
+          await deps.checkClient.completeCheck({
+            owner: identity.owner,
+            repo: identity.repoName,
+            checkId: failedCheckId,
+            conclusion: 'failure',
+            title: renderIncompleteInfrastructureTitle(thrownInfrastructure.incompleteLanes, infrastructureRetry),
+            summary: [
+              renderIncompleteInfrastructureSummary(identity.headSha, thrownInfrastructure.incompleteLanes, infrastructureRetry, identity.executionAttempt),
+              renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
+              ...(workerLogLocator ? [workerLogLocator] : []),
+            ].join('\n\n'),
+          });
+        } else if (isProvider5xx && !infrastructureUndelivered) {
           if (typeof deps.checkClient.updateCheck === 'function') {
             await deps.checkClient.updateCheck({
               owner: identity.owner,
@@ -1151,9 +1279,6 @@ export async function runPublishingReviewWorker(
           }
         } else {
           const incompleteLanes = panelFailure?.panelEvidence?.incompleteLanes;
-          const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
-            ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
-            : undefined;
           await deps.checkClient.completeCheck({
             owner: identity.owner,
             repo: identity.repoName,
@@ -1190,39 +1315,8 @@ export async function runPublishingReviewWorker(
         });
       }
     }
-    // REL-1057: a superseded run is not a failure. The service retires it
-    // itself when the newer head is admitted (or its deadline reaper does, if
-    // no newer head ever arrives), so a legacy failure callback here would
-    // only record a false failure against a head nobody will merge.
-    if (deps.completion && !isReviewSuperseded(error)) {
-      const event: WorkerTerminalFailure = {
-        version: 'WorkerTerminalFailure.v1',
-        runId: identity.runId,
-        repositoryId: identity.repositoryId,
-        owner: identity.owner,
-        repo: identity.repoName,
-        prNumber: identity.prNumber,
-        headSha: identity.headSha,
-        baseSha: identity.baseSha,
-        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
-        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
-        executionAttempt: identity.executionAttempt,
-        ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
-        failureClass,
-        diagnostics,
-      };
-      try {
-        await deps.completion.reportTerminalFailure(event);
-      } catch {
-        // The original failure remains authoritative. The callback is a durable
-        // recovery aid, never a reason to swallow or rewrite that failure.
-        logger.error('Failed to persist worker terminal failure', {
-          runId: identity.runId,
-          failureClass,
-          reason: 'completion_callback_failed',
-        });
-      }
-    }
+    if (!legacyPersistedFirst) await persistLegacyTerminalFailure();
+    return thrownInfrastructure;
   };
 
   let checkId: number | undefined;
@@ -1613,6 +1707,8 @@ export async function runPublishingReviewWorker(
             return { status: 'error', error };
           })
         : Promise.resolve({ status: 'skipped' });
+      prePanelCoverageComplete = unreadable.length === 0
+        && omittedSourcePathsOf(unavailablePatchFilesOf(changedFiles)).length === 0;
       const panelResult = await raceWithPanelAbort(
         Promise.resolve().then(() => panelRunner({
           config: groundedConfig,
@@ -1636,7 +1732,10 @@ export async function runPublishingReviewWorker(
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
-        } as Parameters<typeof executePersonaPanel>[0])),
+        } as Parameters<typeof executePersonaPanel>[0]))
+          // REL-1124: only a rejection of the panel runner itself may be read as a reviewer lane
+          // lost to the gateway; a source read or publication failure never is.
+          .catch((error: unknown) => { throw markThrownByPanel(error); }),
         panelDeadline.signal,
       );
       throwIfPanelAborted(panelDeadline.signal);
@@ -2451,7 +2550,34 @@ export async function runPublishingReviewWorker(
         outcome = new ReviewSupersededError('during_review', identity.headSha, currentHeadSha);
       }
     }
-    await reportTerminalFailure(outcome, checkId);
+    const thrownInfrastructure = await reportTerminalFailure(outcome, checkId);
+    if (thrownInfrastructure) {
+      const thrownExpectedLanes = preparedPersonaIds.length > 0 ? preparedPersonaIds.length : null;
+      // REL-1124: the INCOMPLETE result is durably recorded and the check published; like the
+      // returned-panel INCOMPLETE path, this run ends with its receipt, not "Failed live".
+      return {
+        version: 'ReviewYetiPublishingReview.v1',
+        runId: identity.runId,
+        repositoryId: identity.repositoryId,
+        repo: identity.repo,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        publicationMode: PUBLICATION_MODE_APP_GATE,
+        transport: 'bifrost',
+        model: value(env, 'REVIEW_MODEL'),
+        verdict: 'INCOMPLETE',
+        conclusion: 'failure',
+        findingCount: 0,
+        blockingFindingCount: 0,
+        failureClass: thrownInfrastructure.failureClass,
+        startedAt,
+        completedAt: new Date(now()).toISOString(),
+        coverage: { mode: 'panel', expectedLaneCount: thrownExpectedLanes,
+          ...thrownInfrastructureLaneCoverage(thrownInfrastructure, thrownExpectedLanes),
+          rosterValid: true, quorumSatisfied: false, fullPanelComplete: false },
+      };
+    }
     throw outcome;
   }
 }
