@@ -438,6 +438,7 @@ export function packLaneBudget(
       depth,
       originalChars: full.length,
       sentChars: prompt.length,
+      baselineChars: file.effectivePatch.length,
       pastPerFileCut: depth === 'full' && file.wholePatch !== null,
     });
   }

@@ -90,6 +90,7 @@ import {
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
 import { loadReviewBudgetInput, renderReviewBudgetSummary, reviewBudgetEnabledFor } from '../review/reviewBudget';
+import { summarizeReviewBudgetSavings } from '../telemetry/reviewBudgetSavings';
 import {
   buildVerdictCacheRecord, planVerdictCache, renderVerdictCacheSummary, verdictCacheEnabledFor, verdictCacheLaneKeys,
   type ComparisonContentReader, type VerdictCacheBaseSource,
@@ -1766,6 +1767,8 @@ export async function runPublishingReviewWorker(
           notDeeplyReviewed: count('not-deeply-reviewed'),
           truncated: count('truncated'),
           packedCharsMax: Math.max(0, ...lanes.map((lane) => lane.packedChars)),
+          // REL-1138: W5 savings against the budget-off baseline (see telemetry/reviewBudgetSavings).
+          ...summarizeReviewBudgetSavings(panelResult.reviewBudget),
         });
       }
       if (panelResult.mapReduce) {

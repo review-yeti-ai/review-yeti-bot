@@ -1,12 +1,21 @@
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { logger } from '../utils/logger';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
+import { describeErrorChain, errorCauseLogFields, type SanitizedErrorCause } from '../utils/errorCause';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
 
 export class OpenRouterConnectionError extends Error {
-  constructor(message: string) {
+  /**
+   * REL-1138: the sanitized chain of the transport error this wraps (the SDK or fetch error
+   * first, then its `.cause`s), so a lane, arbiter or moderator log line can say *why*
+   * `fetch failed` / `terminated` happened. Never the raw error object: see `../utils/errorCause`.
+   */
+  readonly causeChain?: SanitizedErrorCause[];
+
+  constructor(message: string, options?: { causeChain?: SanitizedErrorCause[] }) {
     super(message);
     this.name = 'OpenRouterConnectionError';
+    if (options?.causeChain && options.causeChain.length > 0) this.causeChain = options.causeChain;
   }
 }
 
@@ -2261,8 +2270,19 @@ export class OpenRouterClient implements ReviewModelClient {
           || streamAbortController.signal.aborted) {
           classifiedError = new OpenRouterTimeoutError(`OpenRouter request for model ${request.model} exceeded ${request.timeoutMs}ms`, 'request');
         } else {
-          logger.error('OpenRouter SDK network failure or timeout', { error: redactWorkerFailureLogTail(sdkMessage), model: request.model });
-          classifiedError = new OpenRouterConnectionError(`OpenRouter SDK connection failure for model ${request.model}: ${sdkMessage}`);
+          classifiedError = new OpenRouterConnectionError(
+            `OpenRouter SDK connection failure for model ${request.model}: ${sdkMessage}`,
+            { causeChain: describeErrorChain(error) },
+          );
+          logger.error('OpenRouter SDK network failure or timeout', {
+            error: redactWorkerFailureLogTail(sdkMessage),
+            model: request.model,
+            // REL-1138: which role hit it (lane persona id, `moderator` or `arbiter`), and the
+            // sanitized cause (e.g. UND_ERR_CONNECT_TIMEOUT) that `fetch failed` hides.
+            ...(request.persona ? { persona: request.persona } : {}),
+            attempt,
+            ...errorCauseLogFields(classifiedError),
+          });
         }
       }
 
