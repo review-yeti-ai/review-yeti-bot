@@ -7,7 +7,13 @@ import { isSubmodulePatch } from './submodulePatch';
 import { omittedSourcePathsOf, unavailablePatchFilesOf, type UnavailablePatchFile } from './patchAvailability';
 import { omittedLockfilePatchReason } from './omittedLockfilePatch';
 import { isToolchainPinOrDependencyManifestPath } from './toolchainPinPaths';
-import { routeNewPackageLockfiles, withNewPackageLockfiles } from './newPackageLockfileReview';
+import {
+  routeNewPackageLockfiles,
+  withChangedLockfilesReviewed,
+  withNewPackageLockfiles,
+  type SummarizedLockfile,
+  type UnreviewableLockfile,
+} from './newPackageLockfileReview';
 import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './reviewFileShapes';
 
 type ReviewPersona = CtReviewConfigV3['personas'][number];
@@ -166,17 +172,22 @@ export interface RoutedReviewFile {
    * diff where a configured lane already applies (REL-1088).
    * `new-package-lockfile`: a lockfile whose only unverified change is a new
    * registry package, routed to the dependency and required lanes (REL-1136).
+   * `changed-lockfile`: any other changed lockfile beside a reviewed diff, sent
+   * in full to the same lanes (REL-1141).
+   * `summarized-lockfile`: a lockfile whose patch is over the per-file cap,
+   * sent to the same lanes as its complete package-change summary (REL-1141).
    */
-  reason: 'fallback' | 'uncovered-source' | 'new-package-lockfile';
+  reason: RoutedReviewReason;
 }
+
+export type RoutedReviewReason = 'fallback' | 'uncovered-source' | 'new-package-lockfile' | 'changed-lockfile' | 'summarized-lockfile';
 
 function routedFilesOf(
   personas: ReadonlyArray<{ id: string; routedPaths?: readonly string[] }>,
   uncoveredSource: readonly string[],
-  newPackageLockfiles: readonly string[] = [],
+  lockfileReasons: ReadonlyMap<string, RoutedReviewReason> = new Map(),
 ): RoutedReviewFile[] {
   const uncovered = new Set(uncoveredSource);
-  const lockfiles = new Set(newPackageLockfiles);
   const byPath = new Map<string, string[]>();
   for (const persona of personas) {
     for (const path of persona.routedPaths ?? []) {
@@ -188,8 +199,8 @@ function routedFilesOf(
   return [...byPath].map(([path, laneIds]) => ({
     path,
     laneIds,
-    reason: lockfiles.has(path) ? 'new-package-lockfile' as const
-      : uncovered.has(path) ? 'uncovered-source' as const : 'fallback' as const,
+    reason: lockfileReasons.get(path)
+      ?? (uncovered.has(path) ? 'uncovered-source' as const : 'fallback' as const),
   }));
 }
 
@@ -341,7 +352,21 @@ export interface ReviewApplicability<P> {
    * coverage is incomplete, on the worker and the trusted completion side.
    */
   omittedSourcePaths: string[];
+  /**
+   * REL-1141: lockfiles whose patch was over the per-file cap; the lanes
+   * received a complete, deterministic package-change summary instead.
+   * Disclosed in the check summary as "summarized: oversized lockfile".
+   */
+  summarizedLockfiles: SummarizedLockfile[];
+  /**
+   * REL-1141: changed lockfiles beside a reviewed diff that no lane could read
+   * in full or as a summary. Also listed in `omittedSourcePaths`, so coverage
+   * is incomplete on the worker and the trusted completion side.
+   */
+  unreviewableLockfiles: UnreviewableLockfile[];
 }
+
+export type { SummarizedLockfile, UnreviewableLockfile } from './newPackageLockfileReview';
 
 /** A reviewed file whose patch was truncated before any lane saw it. */
 export interface TruncatedReviewFile {
@@ -391,7 +416,8 @@ function lockfileOnlyRationale(changedFiles: ReadonlyArray<ReviewApplicabilityIn
     + 'A manifest or source change in the same diff would be reviewed.';
 }
 
-type ReviewDepthDisclosureKeys = 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths';
+type ReviewDepthDisclosureKeys = 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'
+  | 'summarizedLockfiles' | 'unreviewableLockfiles';
 
 /**
  * The one persona-applicability decision. The worker panel and the service's
@@ -415,14 +441,18 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
       ? [{ path: file.path, originalChars: file.truncation.originalChars, keptChars: file.truncation.keptChars }]
       : []));
   const unavailablePatches = unavailablePatchFilesOf(decision.effectiveFiles);
-  return { ...decision, truncatedFiles, unavailablePatches, omittedSourcePaths: omittedSourcePathsOf(unavailablePatches) };
+  const omitted = omittedSourcePathsOf(unavailablePatches);
+  // REL-1141: a changed lockfile no lane could read is never counted as reviewed.
+  const omittedSourcePaths = [...omitted,
+    ...decision.unreviewableLockfiles.map((file) => file.path).filter((path) => !omitted.includes(path))];
+  return { ...decision, truncatedFiles, unavailablePatches, omittedSourcePaths };
 }
 
 function decideReviewApplicability<P extends ReviewPersona>(
   enabledPersonas: readonly P[],
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
   options: { pathFilters?: readonly string[] },
-): Omit<ReviewApplicability<P>, ReviewDepthDisclosureKeys> {
+): Omit<ReviewApplicability<P>, 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'> {
   const filtered = buildEffectiveReviewFiles(changedFiles, options);
   const hunkResult = filtered.hunkResult;
   // REL-1136: a lockfile whose only unverified change is a new registry package
@@ -434,19 +464,46 @@ function decideReviewApplicability<P extends ReviewPersona>(
     newPackageLockfiles.paths,
   );
   const applicable = deriveApplicablePersonas(roster, effectiveFiles) as P[];
+  const summarizedNewPackage = new Set(newPackageLockfiles.summarized.map((file) => file.path));
   const reviewed = {
     noReviewableContent: false,
     noReviewableContentKind: null,
     noReviewableContentRationale: null,
     unverifiedLockfiles: [],
   } as const;
+  const notReviewed = { summarizedLockfiles: [] as SummarizedLockfile[], unreviewableLockfiles: [] as UnreviewableLockfile[] };
+  /**
+   * REL-1141: lanes review this diff, so every other changed lockfile the
+   * filter hid is sent to the dependency + required lanes in full, or as its
+   * package-change summary when oversized, or is named as unreviewable
+   * (coverage incomplete). Never dropped silently.
+   */
+  const withLockfilesReviewed = (laneRoster: readonly P[], uncoveredSource: readonly string[]) => {
+    const lockfiles = withChangedLockfilesReviewed(changedFiles, effectiveFiles, hunkResult);
+    const reviewedRoster = routeNewPackageLockfiles(laneRoster,
+      [...lockfiles.fullPaths, ...lockfiles.summarized.map((file) => file.path)]);
+    const reasons = new Map<string, RoutedReviewReason>();
+    for (const path of newPackageLockfiles.paths) reasons.set(path, summarizedNewPackage.has(path) ? 'summarized-lockfile' : 'new-package-lockfile');
+    for (const path of lockfiles.fullPaths) reasons.set(path, 'changed-lockfile');
+    for (const file of lockfiles.summarized) reasons.set(file.path, 'summarized-lockfile');
+    const lanes = deriveApplicablePersonas(reviewedRoster, lockfiles.files) as P[];
+    return {
+      effectiveFiles: lockfiles.files,
+      hunkResult,
+      applicable: lanes,
+      ...reviewed,
+      excludedPaths: [],
+      unmatchedPaths: [],
+      routedFiles: routedFilesOf(lanes, uncoveredSource, reasons),
+      summarizedLockfiles: [...newPackageLockfiles.summarized, ...lockfiles.summarized],
+      unreviewableLockfiles: lockfiles.unreviewable,
+    };
+  };
   if (applicable.length > 0) {
     // Nothing analyzable may ride along unreviewed: every effective file that
     // is not documentation must be covered by some lane.
     const uncovered = computeUnmatchedPaths(effectiveFiles, roster);
-    if (uncovered.length === 0) {
-      return { effectiveFiles, hunkResult, applicable, ...reviewed, excludedPaths: [], unmatchedPaths: [], routedFiles: routedFilesOf(applicable, [], newPackageLockfiles.paths) };
-    }
+    if (uncovered.length === 0) return withLockfilesReviewed(roster, []);
     // Routing may only add a lane for the routed files themselves. When no
     // configured persona applied before routing, any other uncovered analyzable
     // path is still the coverage failure it always was -- routing an .mdx, a
@@ -455,7 +512,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
     // so the fix is to extend its paths.
     const routedOnly = deriveApplicablePersonas(enabledPersonas, effectiveFiles).length === 0;
     if (routedOnly) {
-      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, excludedPaths: [], unmatchedPaths: uncovered, routedFiles: [] };
+      return { effectiveFiles, hunkResult, applicable: [], ...reviewed, ...notReviewed, excludedPaths: [], unmatchedPaths: uncovered, routedFiles: [] };
     }
     // REL-1088: a configured lane already reviews this diff on its own paths,
     // so a different uncovered source file used to be neither reviewed nor
@@ -465,17 +522,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
     // a partial roster gap. Worker, both engines and the trusted completion
     // context all reach this through this one decision, so they derive the
     // same lanes.
-    const widened = routePathsToRequiredLane(roster, uncovered);
-    const widenedApplicable = deriveApplicablePersonas(widened, effectiveFiles) as P[];
-    return {
-      effectiveFiles,
-      hunkResult,
-      applicable: widenedApplicable,
-      ...reviewed,
-      excludedPaths: [],
-      unmatchedPaths: [],
-      routedFiles: routedFilesOf(widenedApplicable, uncovered, newPackageLockfiles.paths),
-    };
+    return withLockfilesReviewed(routePathsToRequiredLane(roster, uncovered), uncovered);
   }
   // Zero lanes apply. The exemption is judged over the RAW changed files, not
   // the post-filter projection: every changed file must itself be
@@ -497,6 +544,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
         hunkResult,
         applicable,
         ...reviewed,
+        ...notReviewed,
         unverifiedLockfiles,
         excludedPaths: [],
         unmatchedPaths: unverifiedLockfiles.map((file) => file.path),
@@ -512,6 +560,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
         hunkResult,
         applicable,
         ...reviewed,
+        ...notReviewed,
         noReviewableContent: true,
         noReviewableContentKind: lockfileOnly ? 'lockfile-only' : 'documentation',
         noReviewableContentRationale: lockfileOnly ? lockfileOnlyRationale(changedFiles) : DOCUMENTATION_ONLY_RATIONALE,
@@ -532,6 +581,7 @@ function decideReviewApplicability<P extends ReviewPersona>(
     hunkResult,
     applicable,
     ...reviewed,
+    ...notReviewed,
     excludedPaths,
     unmatchedPaths: [...unmatched, ...excludedPaths.filter((path) => !unmatched.includes(path))],
     routedFiles: [],
@@ -543,11 +593,16 @@ export type ReviewDepthDisclosure = Pick<ReviewApplicability<unknown>, ReviewDep
 
 /** The depth disclosure of one decision, or null when every file was sent whole. */
 export function reviewDepthDisclosureOf(
-  decision: Pick<ReviewApplicability<unknown>, ReviewDepthDisclosureKeys>,
+  decision: Pick<ReviewApplicability<unknown>, 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'>
+    & Partial<Pick<ReviewApplicability<unknown>, 'summarizedLockfiles' | 'unreviewableLockfiles'>>,
 ): ReviewDepthDisclosure | null {
   const { truncatedFiles, unavailablePatches, omittedSourcePaths } = decision;
-  if (truncatedFiles.length === 0 && unavailablePatches.length === 0 && omittedSourcePaths.length === 0) return null;
-  return { truncatedFiles, unavailablePatches, omittedSourcePaths };
+  // Tolerate a decision shape from before REL-1141 (tests, cassettes).
+  const summarizedLockfiles = decision.summarizedLockfiles ?? [];
+  const unreviewableLockfiles = decision.unreviewableLockfiles ?? [];
+  if (truncatedFiles.length === 0 && unavailablePatches.length === 0 && omittedSourcePaths.length === 0
+    && summarizedLockfiles.length === 0 && unreviewableLockfiles.length === 0) return null;
+  return { truncatedFiles, unavailablePatches, omittedSourcePaths, summarizedLockfiles, unreviewableLockfiles };
 }
 
 /**
@@ -565,5 +620,7 @@ export function attachReviewDepthDisclosure<T extends object>(
     ...(disclosure.truncatedFiles.length > 0 ? { truncatedFiles: disclosure.truncatedFiles } : {}),
     ...(disclosure.unavailablePatches.length > 0 ? { unavailablePatches: disclosure.unavailablePatches } : {}),
     ...(disclosure.omittedSourcePaths.length > 0 ? { omittedSourcePaths: disclosure.omittedSourcePaths } : {}),
+    ...(disclosure.summarizedLockfiles.length > 0 ? { summarizedLockfiles: disclosure.summarizedLockfiles } : {}),
+    ...(disclosure.unreviewableLockfiles.length > 0 ? { unreviewableLockfiles: disclosure.unreviewableLockfiles } : {}),
   };
 }

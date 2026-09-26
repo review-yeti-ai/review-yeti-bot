@@ -42,5 +42,16 @@ export interface DiffShrinkDisclosure {
   keptFullDepth: Array<{ path: string; rule: ShrinkRule }>;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
+  /**
+   * REL-1141: changed files the lanes did NOT receive in full for reasons
+   * outside diff shrinking (hidden by the review filter, summarized, truncated,
+   * or patch unavailable), from the same applicability decision. Set by
+   * `resolveShrunkReviewApplicability`; absent when the caller had no
+   * decision. The summary claims "every change was sent in full" only when it
+   * is present and empty.
+   */
+  notSentInFull?: Array<{ path: string; why: NotSentInFullReason }>;
 }
+
+export type NotSentInFullReason = 'filtered' | 'summarized' | 'truncated' | 'unavailable' | 'unreviewable';
 
