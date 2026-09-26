@@ -75,6 +75,7 @@ export type {
   ReviewBudgetInput,
   ReviewBudgetLaneDisclosure,
 } from '../types/reviewBudget';
+import { repositoryFlagEnabledFor } from './repositoryFlag';
 
 export const REVIEW_BUDGET_FLAG = 'REVIEW_YETI_BUDGET';
 
@@ -125,11 +126,7 @@ const NOTE_PREFIX = '\\ Review Yeti budget:';
  * (case-insensitive), so it can be enabled per repository first.
  */
 export function reviewBudgetEnabledFor(env: Readonly<Record<string, string | undefined>>, repository: string): boolean {
-  const raw = String(env[REVIEW_BUDGET_FLAG] ?? '').trim().toLowerCase();
-  if (raw === '' || raw === '0' || raw === 'false' || raw === 'off') return false;
-  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'all') return true;
-  const target = String(repository || '').trim().toLowerCase();
-  return target.length > 0 && raw.split(/[\s,]+/u).some((entry) => entry === target);
+  return repositoryFlagEnabledFor(env, REVIEW_BUDGET_FLAG, repository);
 }
 
 /** Worker-side input for the engines, or undefined when the flag is off for this repository. */

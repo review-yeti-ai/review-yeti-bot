@@ -77,6 +77,7 @@ export type {
   IncrementalReviewDisclosure,
   IncrementalReviewScope,
 } from '../types/incrementalReview';
+import { repositoryFlagEnabledFor } from './repositoryFlag';
 
 export const INCREMENTAL_FLAG = 'REVIEW_YETI_INCREMENTAL';
 /** Service-side: the oldest prior review a carry-forward may rest on. */
@@ -95,11 +96,7 @@ const NOTE_PREFIX = '\\ Review Yeti:';
  * (case-insensitive). Same grammar as `REVIEW_YETI_DIFF_SHRINK`.
  */
 export function incrementalReviewEnabledFor(env: Readonly<Record<string, string | undefined>>, repository: string): boolean {
-  const raw = String(env[INCREMENTAL_FLAG] ?? '').trim().toLowerCase();
-  if (raw === '' || raw === '0' || raw === 'false' || raw === 'off') return false;
-  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'all') return true;
-  const target = String(repository || '').trim().toLowerCase();
-  return target.length > 0 && raw.split(/[\s,]+/u).some((entry) => entry === target);
+  return repositoryFlagEnabledFor(env, INCREMENTAL_FLAG, repository);
 }
 
 /** Whole hours, 1 to 720. Unset or invalid is the 72-hour default. */
