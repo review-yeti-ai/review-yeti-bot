@@ -485,7 +485,7 @@ runs:
 
     - name: Dispatch review to DOKS
       id: doks-dispatch
-      if: ${{ inputs.execution-backend == 'doks' || inputs.execution-backend == 'mars' }}
+      if: ${{ inputs.execution-backend != 'local' }}
       shell: bash
       env:
         DOKS_DISPATCH_URL: ${{ inputs.doks-dispatch-url }}
@@ -525,7 +525,7 @@ runs:
     # full. See review-yeti-bot#REL-513.
     - name: Fetch pull request diff
       id: diff
-      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
+      if: ${{ inputs.execution-backend == 'local' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -546,7 +546,7 @@ runs:
     # Dockerfile.legacy-runtime in CI. Installing into GITHUB_ACTION_PATH reifies
     # the application package.json and is the ~800 Mi review-job spike.
     - name: Install pipeline dependencies
-      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
+      if: ${{ inputs.execution-backend == 'local' }}
       shell: bash
       env:
         NPM_PREFIX: ${{ runner.temp }}/review-yeti-npm
@@ -589,7 +589,7 @@ runs:
     # the API, into a directory the pull request cannot write to. This also means the caller does
     # not need to check the repository out at all.
     - name: Fetch reviewer configuration from the trusted base ref
-      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
+      if: ${{ inputs.execution-backend == 'local' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -636,7 +636,7 @@ runs:
 
     - name: Run review panel
       id: review
-      if: ${{ inputs.execution-backend != 'doks' && inputs.execution-backend != 'mars' }}
+      if: ${{ inputs.execution-backend == 'local' }}
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}

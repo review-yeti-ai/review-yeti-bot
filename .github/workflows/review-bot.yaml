@@ -51,7 +51,7 @@ jobs:
         run: |
           tailscale status || true
           tailscale ping --c 2 100.82.68.93 || true
-          curl -kv https://llm-gateway.tailebe851.ts.net/health || true
+          curl -v https://llm-gateway.tailebe851.ts.net/health || true
 
       # "Central repo controls all personas and settings and each repo can override with a local
       # file." On the dispatch path the workspace holds this repository, so the target's override

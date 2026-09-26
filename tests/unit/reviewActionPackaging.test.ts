@@ -83,8 +83,8 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).toContain('dispatch-doks-action.mjs');
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_URL');
     expect(dispatcher).toContain('ACTIONS_ID_TOKEN_REQUEST_TOKEN');
-    expect(raw).toContain("inputs.execution-backend == 'doks'");
-    expect(raw).toContain("inputs.execution-backend != 'doks'");
+    expect(raw).toContain("inputs.execution-backend != 'local'");
+    expect(raw).toContain("inputs.execution-backend == 'local'");
     expect(raw).toContain('EXPECTED_GENERATION: ${{ inputs.expected-generation }}');
   });
 
@@ -173,8 +173,6 @@ describe('Pi runtime packaging contract', () => {
   it('declares the pinned runtime roots as bundled dependencies', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(rootRepoDir, 'package.json'), 'utf8'));
     expect(manifest.bundledDependencies).toEqual([
-      '@deepseek-ai/cordis',
-      '@deepseek-ai/cosmokit',
       '@quintinshaw/pi-dynamic-workflows',
       '@earendil-works/pi-ai',
       '@earendil-works/pi-coding-agent',

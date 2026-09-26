@@ -201,6 +201,50 @@ describe('review transport configuration guard', () => {
     }
   });
 
+  it('admits any destination in a multi-digest GATEWAY_BASE_URL_SHA256 list and fails closed on invalid key', () => {
+    const gw1 = 'https://gateway-one.test.invalid/v1';
+    const gw2 = 'https://gateway-two.test.invalid/v1';
+    const d1 = createHash('sha256').update(gw1).digest('hex');
+    const d2 = createHash('sha256').update(gw2).digest('hex');
+    const list = `${d1} ${d2}`;
+
+    expect(
+      run({
+        REVIEW_BASE_URL: gw1,
+        GATEWAY_BASE_URL_SHA256: list,
+        GATEWAY_KEY_PRESENT: 'true',
+        REVIEW_LANE_TIMEOUT_MS: '420000',
+      }).ok,
+    ).toBe(true);
+
+    expect(
+      run({
+        REVIEW_BASE_URL: gw2,
+        GATEWAY_BASE_URL_SHA256: list,
+        GATEWAY_KEY_PRESENT: 'true',
+        REVIEW_LANE_TIMEOUT_MS: '420000',
+      }).ok,
+    ).toBe(true);
+
+    const unsetKey = run({
+      REVIEW_BASE_URL: gw2,
+      GATEWAY_BASE_URL_SHA256: list,
+      GATEWAY_KEY_PRESENT: 'false',
+      REVIEW_LANE_TIMEOUT_MS: '420000',
+    });
+    expect(unsetKey.ok).toBe(false);
+    expect(unsetKey.out).toMatch(/CT_REVIEW_GATEWAY_API_KEY is unset/);
+
+    const missingTimeout = run({
+      REVIEW_BASE_URL: gw2,
+      GATEWAY_BASE_URL_SHA256: list,
+      GATEWAY_KEY_PRESENT: 'true',
+      REVIEW_LANE_TIMEOUT_MS: '',
+    });
+    expect(missingTimeout.ok).toBe(false);
+    expect(missingTimeout.out).toMatch(/REVIEW_LANE_TIMEOUT_MS is unset/);
+  });
+
   // The guard admits a trailing-slash destination by stripping it before hashing. The policy
   // module's `digestBaseUrl` hashes the RAW string, so the two layers agree only because
   // `normalizePolicyShape` strips the slash before the allowlist check runs. Nothing pinned that,
