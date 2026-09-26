@@ -8,6 +8,7 @@ import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { incrementalReviewClaimSchema } from './incrementalReviewClaim';
 import { verdictCacheClaimSchema } from './verdictCacheClaim';
+import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 
@@ -305,6 +306,14 @@ const resultSchema = z.object({
    */
   roster: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u)).min(1).max(MAX_PERSONAS)
     .refine((ids) => new Set(ids).size === ids.length, 'roster lane ids must be unique').optional(),
+  /**
+   * OPTIONAL, additive (REL-1139, `REVIEW_YETI_SKIP_EMPTY_MODERATION`, ct-meta ADR 0687): the
+   * worker skipped the moderator call because every lane completed with an empty APPROVE and
+   * coverage was full. Never evidence on its own: `deriveCanonicalWorkerReviewEvidence` re-runs
+   * the shared decision (`decideEmptyModeration`) on the trusted diff and refuses a claim it does
+   * not allow.
+   */
+  moderation: z.literal(EMPTY_MODERATION_SKIPPED).optional(),
 }).strict();
 
 const completionSchema = z.object({
@@ -360,6 +369,59 @@ export interface TrustedReviewCoverageContract {
    * A completion that served anything from cache without this is refused.
    */
   verdictCacheVerified?: boolean;
+  /**
+   * REL-1139: the trusted applicability decision's disclosure counts for this exact head, from
+   * the same `resolveReviewApplicability` the worker ran. Required before a completion that claims
+   * a skipped moderator is accepted; absent refuses such a claim.
+   */
+  emptyModeration?: TrustedEmptyModerationDisclosures;
+}
+
+/** REL-1139: what the trusted side's applicability decision reports, as counts. */
+export interface TrustedEmptyModerationDisclosures {
+  truncatedFiles: number;
+  unavailablePatches: number;
+  omittedSourcePaths: number;
+  routedFiles: number;
+  uncoveredPaths: number;
+}
+
+/**
+ * REL-1139: re-run the shared empty-moderation decision on trusted facts for a completion that
+ * claims the moderator was skipped. Null when the claim stands (or there is none); otherwise the
+ * refusal message. Facts the service cannot see (W2/W5/W6 depth reductions, analyzer hypotheses)
+ * are the worker's own stricter checks; everything the service can see is re-decided here.
+ */
+function emptyModerationClaimRefusal(
+  result: WorkerReviewResult,
+  contract: TrustedReviewCoverageContract,
+  expectedPersonaIds: readonly string[],
+  changedFiles: readonly ReviewChangedFile[],
+  coverageComplete: boolean,
+  canonical: CanonicalArbitration,
+): string | null {
+  if (result.moderation === undefined) return null;
+  const disclosures = contract.emptyModeration;
+  if (!disclosures) return 'worker skipped the moderator but the trusted context carries no empty-moderation disclosures';
+  const decision = decideEmptyModeration({
+    expectedLaneIds: expectedPersonaIds,
+    lanes: result.personas.filter((persona) => persona.evidenceSource !== 'shadow'),
+    failedLaneCount: 0,
+    coverageComplete: coverageComplete && contract.quorumSatisfied === true && result.quorumSatisfied === true,
+    changedPaths: changedFiles.map((file) => file.path),
+    truncatedFiles: disclosures.truncatedFiles,
+    unavailablePatches: disclosures.unavailablePatches,
+    omittedSourcePaths: disclosures.omittedSourcePaths,
+    routedFiles: disclosures.routedFiles,
+    uncoveredPaths: disclosures.uncoveredPaths,
+    reducedDepthEntries: 0,
+    incrementalCarriedFiles: result.incremental?.carriedForwardPaths.length ?? 0,
+    verdictCacheServedFiles: result.verdictCache?.hits?.paths.length ?? 0,
+    analyzerHypotheses: 0,
+  });
+  if (!decision.eligible) return `worker skipped the moderator on a run the shared decision does not allow (${decision.reason})`;
+  if (canonical.verdict !== 'SHIP') return `worker skipped the moderator but the canonical verdict is ${canonical.verdict}`;
+  return null;
 }
 
 export interface DerivedWorkerReviewEvidence {
@@ -801,6 +863,10 @@ export function deriveCanonicalWorkerReviewEvidence(
     }
   }
   if (isDocumentationOnlyCompletion(completion.result)) {
+    // REL-1139: a documentation-only exemption never ran a moderator to skip.
+    if (completion.result.moderation !== undefined) {
+      return invalidEvidence('documentation-only completion claims a skipped moderator');
+    }
     // REL-972: the exemption also covers registry-verified lockfile changes.
     // The trusted completion context has already required the shared
     // resolveReviewApplicability decision to report no reviewable content,
@@ -867,6 +933,9 @@ export function deriveCanonicalWorkerReviewEvidence(
 
   const mismatch = rawFieldsMatchCanonical(completion.result, canonical);
   if (mismatch) return invalidEvidence(mismatch, canonical, evidence);
+  const moderationRefusal = emptyModerationClaimRefusal(
+    completion.result, contract, expectedPersonaIds, changedFiles, coverageComplete, canonical);
+  if (moderationRefusal) return invalidEvidence(moderationRefusal, canonical, evidence);
   return { valid: true, canonical, evidence };
 }
 

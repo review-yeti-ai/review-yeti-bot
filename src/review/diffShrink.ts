@@ -72,6 +72,7 @@ export type {
   LinguistRulesState,
   ShrinkRule,
 } from '../types/diffShrink';
+import { repositoryFlagEnabledFor } from './repositoryFlag';
 
 const NOTE_PREFIX = '\\ Review Yeti:';
 
@@ -408,11 +409,7 @@ export function attachDiffShrinkDisclosure<T extends object>(
  * (case-insensitive), so it can be enabled per repository first.
  */
 export function diffShrinkEnabledFor(env: Readonly<Record<string, string | undefined>>, repository: string): boolean {
-  const raw = String(env[DIFF_SHRINK_FLAG] ?? '').trim().toLowerCase();
-  if (raw === '' || raw === '0' || raw === 'false' || raw === 'off') return false;
-  if (raw === '1' || raw === 'true' || raw === 'on' || raw === 'all') return true;
-  const target = String(repository || '').trim().toLowerCase();
-  return target.length > 0 && raw.split(/[\s,]+/u).some((entry) => entry === target);
+  return repositoryFlagEnabledFor(env, DIFF_SHRINK_FLAG, repository);
 }
 
 const GITATTRIBUTES_READ_TIMEOUT_MS = 10_000;

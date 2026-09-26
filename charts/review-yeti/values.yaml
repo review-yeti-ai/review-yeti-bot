@@ -361,6 +361,15 @@ publishing:
   # one call, packed by the W5 budget. Empty by default: nothing is forwarded and the worker uses
   # its default, the W5 hard cap (160000). Forwarded only when mapReduce is set.
   mapReduceMinChars: ""
+  # REL-1139 (ct-meta ADR 0687, proposed): skip the MODERATOR call on a run where every lane
+  # completed with an empty APPROVE, coverage was full and no security-sensitive file changed
+  # (worker flag REVIEW_YETI_SKIP_EMPTY_MODERATION). The arbiter always runs; lanes are never
+  # skipped. Empty by default, so nothing is forwarded and the moderator always runs; workers log
+  # moderator_shadow_skip_eligible on every run either way. The operator forwards a non-empty value
+  # verbatim to app-gate workers only; the worker reads it like REVIEW_YETI_INCREMENTAL: off/on/all
+  # or a comma-separated owner/repo allowlist. Do not enable it before ADR 0687 is accepted.
+  # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
+  skipEmptyModeration: ""
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
   # which already defines that component's ServiceAccount, Role, RoleBinding and
   # Deployment. Defining them here too would give the same resources two owners.

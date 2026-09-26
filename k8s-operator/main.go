@@ -158,6 +158,11 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1083: the map-reduce trigger in characters, empty unless the
 		// deployment sets it (the worker defaults to the W5 hard cap).
 		MapReduceMinChars: strings.TrimSpace(os.Getenv("REVIEW_YETI_MAP_REDUCE_MIN_CHARS")),
+		// REL-1139: skip the moderator call (never the arbiter) on empty
+		// full-coverage runs, off unless the deployment sets it (a
+		// comma-separated owner/repo allowlist for pilots). Enabling it is
+		// gated on ct-meta ADR 0687.
+		SkipEmptyModeration: strings.TrimSpace(os.Getenv(job.SkipEmptyModerationEnv)),
 		// REL-1104: worker metrics push target (VictoriaMetrics OTLP). An
 		// invalid value is dropped at projection time, never refusing a Job.
 		WorkerMetricsEndpoint: strings.TrimSpace(os.Getenv(job.WorkerMetricsEndpointEnv)),

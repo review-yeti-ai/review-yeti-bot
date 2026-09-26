@@ -104,6 +104,12 @@ import {
   SENSITIVE_PATH_PATTERNS,
 } from './classifierEngine';
 import { buildFastShipPanelResult, buildDocumentationOnlyPanelResult } from './fastShipResult';
+import {
+  EMPTY_MODERATION_SKIPPED,
+  decideEmptyModeration,
+  panelEmptyModerationFacts,
+  skippedModeratorResult,
+} from './emptyModerationSkip';
 import { buildPanelPhaseTiming, timeLaneSlotAcquire } from './panelPhaseTiming';
 import { resolveMaxConcurrentLanes } from './laneConcurrency';
 import { compactMessageWindow, MessageWindowPolicy } from './messageWindow';
@@ -3693,6 +3699,14 @@ export async function executePersonaPanel(options: {
   verdictCache?: VerdictCacheScope;
   /** REL-1083: map-reduce review of a lane larger than one budget (`REVIEW_YETI_MAP_REDUCE`); absent reviews every lane in one call. */
   mapReduce?: MapReduceInput;
+  /**
+   * REL-1139 (ct-meta ADR 0687): skip the MODERATOR call when every lane completed with an empty
+   * APPROVE and coverage was full (`REVIEW_YETI_SKIP_EMPTY_MODERATION`). The arbiter always runs.
+   * Absent or false calls the moderator, as before; eligibility is logged either way.
+   */
+  skipEmptyModeration?: boolean;
+  /** REL-1139: diff headers the caller could not read (files never sent here); any makes the skip ineligible. */
+  unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
   const panelStartedAt = Date.now();
@@ -4518,11 +4532,39 @@ export async function executePersonaPanel(options: {
     const isFlowchartPersonaActive = applicable.some((p) => p.id === 'review_flowchart');
     const combinedDiff = effectiveFiles.map((f) => f.patch || f.content || '').filter(Boolean).join('\n');
 
+    // REL-1139 (ADR 0687): the shared decision, from the settled lanes and this run's own
+    // disclosures. Evaluated on EVERY run, whatever the flag says, so eligibility can be measured
+    // while the flag stays off; the moderator is skipped only when it is also enabled. Fails
+    // closed: anything short of every lane approving empty with full coverage calls it.
+    const emptyModeration = decideEmptyModeration(panelEmptyModerationFacts({
+      applicableLaneIds: applicable.map((persona) => persona.id),
+      lanes: personas,
+      failedLaneCount: optionalFailures.length,
+      quorumSatisfied: true,
+      unreadableHeaders: options.unreadableDiffHeaders ?? 0,
+      changedPaths: (changedFiles as Array<{ path?: unknown }>).map((file) => String(file?.path ?? '')),
+      depth: depthDisclosure,
+      routedFiles,
+      uncoveredPaths: applicability.unmatchedPaths,
+      diffShrink: diffShrinkDisclosure,
+      reviewBudget: reviewBudgetPlan,
+      mapReduce: mapReducePlan,
+      incremental: incrementalDisclosure,
+      verdictCache: verdictCacheDisclosure,
+      analyzerHypotheses: Math.max(analyzersPreCheckResult?.hypothesesCount ?? 0, analyzersPreCheckResult?.hypotheses?.length ?? 0),
+    }));
+    const skipModerator = options.skipEmptyModeration === true && emptyModeration.eligible;
+    const emptyModerationShadow = {
+      moderator_shadow_skip_eligible: emptyModeration.eligible,
+      ...(emptyModeration.eligible ? {} : { moderator_shadow_skip_reason: emptyModeration.reason }),
+      moderation: skipModerator ? EMPTY_MODERATION_SKIPPED : 'called',
+    };
+
     const moderatorStartedAt = Date.now();
     // REL-1124: whether any lane found anything, for the evidence a moderator/arbiter throw carries.
     const laneFindingsObserved = personas.some((lane) => Array.isArray(lane.findings) && lane.findings.length > 0);
     const [moderatorRun, mermaidDiagram, prSummary] = await Promise.all([
-      runInSpan('review_yeti_moderator', async (modSpan) => {
+      skipModerator ? Promise.resolve(null) : runInSpan('review_yeti_moderator', async (modSpan) => {
         const moderatorInactivityTimeoutMs = configuredProviderTimeoutMs(
           moderatorProvider.review_timeout_s,
           TURN_IDLE_MS,
@@ -4622,7 +4664,18 @@ export async function executePersonaPanel(options: {
 
     throwIfPanelAborted(signal);
 
-    const moderatedFindings = moderatorRun.modFindings;
+    const moderatorOutcome: PanelResult['moderator'] = moderatorRun
+      ? {
+          providerId: moderatorId,
+          model: moderatorRun.run.response.model,
+          decision: 'RECONCILED',
+          findings: moderatorRun.modFindings,
+          usage: moderatorRun.run.response.usage,
+          costUSD: moderatorRun.run.response.costUSD,
+          durationMs: moderatorRun.run.durationMs,
+        }
+      : skippedModeratorResult(moderatorId);
+    const moderatedFindings = moderatorOutcome.findings;
     const moderatorPhaseMs = Date.now() - moderatorStartedAt;
     const arbiterStartedAt = Date.now();
 
@@ -4726,12 +4779,12 @@ export async function executePersonaPanel(options: {
 
     throwIfPanelAborted(signal);
 
-    const totalDuration = personas.reduce((acc, p) => acc + p.durationMs, 0) + moderatorRun.run.durationMs + arbiterResult.durationMs;
-    const totalCost = personas.reduce((acc, p) => acc + (p.costUSD || 0), 0) + (moderatorRun.run.response.costUSD || 0) + (arbiterResult.costUSD || 0);
+    const totalDuration = personas.reduce((acc, p) => acc + p.durationMs, 0) + moderatorOutcome.durationMs + arbiterResult.durationMs;
+    const totalCost = personas.reduce((acc, p) => acc + (p.costUSD || 0), 0) + (moderatorOutcome.costUSD || 0) + (arbiterResult.costUSD || 0);
 
     const allUsages = [
       ...personas.map((p) => p.usage),
-      moderatorRun.run.response.usage,
+      moderatorOutcome.usage,
       arbiterResult.usage,
     ];
     let panelPrompt = 0;
@@ -4806,7 +4859,7 @@ export async function executePersonaPanel(options: {
         lanes: personas,
         laneQueueWaitMs,
         failedLaneIds: optionalFailures.map((failure) => failure.id),
-      }) });
+      }), ...emptyModerationShadow });
     } catch (_) {}
 
     return {
@@ -4817,16 +4870,9 @@ export async function executePersonaPanel(options: {
         personas,
         optionalFailures,
         quorum: { required: config.quorum, distinctProviders, satisfied: true },
-        moderator: {
-          providerId: moderatorId,
-          model: moderatorRun.run.response.model,
-          decision: 'RECONCILED',
-          findings: moderatedFindings,
-          usage: moderatorRun.run.response.usage,
-          costUSD: moderatorRun.run.response.costUSD,
-          durationMs: moderatorRun.run.durationMs,
-        },
+        moderator: moderatorOutcome,
         arbiter: arbiterResult,
+        ...(skipModerator ? { moderation: EMPTY_MODERATION_SKIPPED } : {}),
         ...(mermaidDiagram ? { mermaidDiagram } : {}),
         ...(prSummary ? { prSummary, summary: prSummary } : {}),
       };
