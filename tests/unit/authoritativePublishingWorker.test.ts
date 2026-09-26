@@ -780,7 +780,9 @@ describe('authoritative prepared publishing worker', () => {
 
   it.each([
     ['request timed out', 'timeout'], ['429 rate limit', 'rate_limit'], ['403 unauthorized', 'auth'],
-    ['ECONNREFUSED', 'transport'], ['budget exhausted', 'budget_exhausted'], ['provider exploded', 'provider_error'],
+    // REL-1124: a raw transport rejection (ECONNREFUSED, fetch failed, terminated) from the panel is
+    // infrastructure-incomplete now; see rel1124ThrownPanelInfrastructure.test.ts.
+    ['budget exhausted', 'budget_exhausted'], ['provider exploded', 'provider_error'],
   ] as const)('reports typed fail-closed evidence for provider failure %s', async (message, errorClass) => {
     const f = fixture();
     const original = new Error(`${message} ${PRIVATE_DETAIL} ${TOKEN}`);
