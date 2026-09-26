@@ -102,6 +102,8 @@ const refuse = (reason: string): LockfileVerification => ({ ok: false, reason })
 
 /** The refusal for an added entry header that replaces no removed one (REL-1136 routes on it). */
 export const NEW_PACKAGE_ENTRY_REFUSAL = 'adds a new package entry';
+/** The refusal for a change that adds no line (REL-1141 summarizes such a removal). */
+export const ONLY_REMOVES_REFUSAL = 'only removes lockfile content';
 const OK: LockfileVerification = { ok: true };
 
 /** The package named by a descriptor or locator: `@s/b@...` -> `@s/b`, `b@...` -> `b`. */
@@ -329,6 +331,6 @@ export function verifyLockfileOnlyChange(
     const verdict = verifyLine(line.slice(1), added, state);
     if (!verdict.ok) return verdict;
   }
-  if (addedCount === 0) return refuse('only removes lockfile content');
+  if (addedCount === 0) return refuse(ONLY_REMOVES_REFUSAL);
   return OK;
 }

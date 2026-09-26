@@ -573,7 +573,9 @@ describe('check-summary disclosure', () => {
       { enabled: true, linguist: { status: 'not-applied', reason: 'this pull request changes a .gitattributes file' } },
     ).disclosure).join('\n');
     expect(text).toContain('- .gitattributes linguist rules not applied: this pull request changes a .gitattributes file.');
-    expect(text).toContain('- No file was shrunk; every change was sent in full.');
+    // REL-1141: without the decision's not-sent-in-full list, never claim every change was sent in full.
+    expect(text).toContain('- No file was shrunk by diff shrinking.');
+    expect(text).not.toContain('every change was sent in full');
   });
 
   it('caps long lists and neutralises backticks and newlines in paths', () => {
