@@ -277,7 +277,7 @@ describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)',
     ]);
   });
 
-  it('restores and routes every new-package lockfile in one diff, and leaves a verified re-key hidden', () => {
+  it('restores and routes every new-package lockfile in one diff, and sends a verified re-key beside them in full (REL-1141)', () => {
     const npmNewPackage = [
       '@@ -10,0 +10,5 @@',
       '+    "node_modules/left-pad": {',
@@ -293,13 +293,15 @@ describe('REL-1136: calltelemetry/ct-quasar#847 (yarn.lock adds a new package)',
     ];
     expect(isNewPackageLockfileChange(files[2])).toBe(true);
     const result = resolveReviewApplicability(enabled('architecture,security,dependencies'), files);
-    expect(result.effectiveFiles.map((file) => file.path)).toEqual(['yarn.lock', 'apps/api/package-lock.json']);
+    // REL-1141: once lanes review the diff, the verified re-key is no longer hidden either.
+    expect(result.effectiveFiles.map((file) => file.path)).toEqual(['yarn.lock', 'apps/web/yarn.lock', 'apps/api/package-lock.json']);
     expect(result.routedFiles.filter((file) => file.reason === 'new-package-lockfile').map((file) => [file.path, [...file.laneIds].sort()]))
       .toEqual([['yarn.lock', ['dep-lane', 'sec-lane']], ['apps/api/package-lock.json', ['dep-lane', 'sec-lane']]]);
+    expect(result.routedFiles.find((file) => file.path === 'apps/web/yarn.lock')?.reason).toBe('changed-lockfile');
     for (const id of ['dep-lane', 'sec-lane']) {
       const persona = result.applicable.find((candidate) => candidate.id === id)!;
       expect(scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.patch))
-        .toEqual([CT_QUASAR_847_YARN_LOCK, npmNewPackage]);
+        .toEqual([CT_QUASAR_847_YARN_LOCK, CT_QUASAR_887_YARN_LOCK, npmNewPackage]);
     }
   });
 
@@ -398,14 +400,17 @@ describe('REL-1136: what a new-package lockfile may NOT hide (still fails closed
     expect(result.effectiveFiles).toEqual([]);
   });
 
-  it('a new-package patch larger than one lane reads whole', () => {
+  it('a new-package patch larger than one lane reads whole is summarized, not failed or hidden (REL-1141)', () => {
     const filler = Array.from({ length: Math.ceil(MAX_FILE_PATCH_CHARS / 20) }, (_, i) => `+    dep-${i}: "npm:^1.0.0"`).join('\n');
     const big = `${NEW_PACKAGE}\n+  dependencies:\n${filler}`;
     expect(big.length).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
     expect(verifyLockfileOnlyChange('yarn.lock', big, { allowNewEntries: true })).toEqual({ ok: true });
     const result = resolveReviewApplicability(enabled(), [lock(big)]);
-    expect(result.applicable).toEqual([]);
-    expect(result.unmatchedPaths).toEqual(['yarn.lock']);
+    expect(result.applicable.map((persona) => persona.id)).toEqual(['sec-lane']);
+    expect(result.unmatchedPaths).toEqual([]);
+    expect(result.summarizedLockfiles.map((file) => file.path)).toEqual(['yarn.lock']);
+    expect(result.effectiveFiles[0].patch).toContain('left-pad@1.3.0');
+    expect(result.routedFiles.map((file) => [file.path, file.reason])).toEqual([['yarn.lock', 'summarized-lockfile']]);
   });
 
   it.each([

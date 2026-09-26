@@ -51,7 +51,7 @@
  * and plugins are repository code. It stays a documented follow-up until the
  * worker has a formatter it can run without executing repository code.
  */
-import type { DiffShrinkDisclosure, DiffShrinkInput, DiffShrinkRename } from '../types/diffShrink';
+import type { DiffShrinkDisclosure, DiffShrinkInput, DiffShrinkRename, NotSentInFullReason } from '../types/diffShrink';
 import { linguistExclusionFor, parseLinguistAttributes } from './gitattributesLinguist';
 import { isRegularFileMode } from './lockfileChangeVerification';
 import {
@@ -386,7 +386,29 @@ export function resolveShrunkReviewApplicability<P extends Parameters<typeof res
   const decision = resolveReviewApplicability(enabledPersonas, changedFiles, applicabilityOptions);
   if (!diffShrink?.enabled || decision.applicable.length === 0) return { ...decision, diffShrink: null };
   const { files, disclosure } = planDiffShrink(decision.effectiveFiles, diffShrink);
-  return { ...decision, effectiveFiles: files, diffShrink: disclosure };
+  return { ...decision, effectiveFiles: files, diffShrink: { ...disclosure, notSentInFull: notSentInFullOf(decision) } };
+}
+
+/**
+ * REL-1141: every changed file the decision did not send whole, for a reason
+ * outside diff shrinking, in a stable order. A summary that says "every change
+ * was sent in full" beside a hidden or summarized lockfile is what let
+ * calltelemetry/openclaw-linear-plugin#30 read as a complete review.
+ */
+export function notSentInFullOf(
+  decision: Pick<ReviewApplicability<unknown>, 'effectiveFiles' | 'hunkResult' | 'truncatedFiles' | 'unavailablePatches'
+    | 'summarizedLockfiles' | 'unreviewableLockfiles'>,
+): NonNullable<DiffShrinkDisclosure['notSentInFull']> {
+  const rows = new Map<string, NotSentInFullReason>();
+  const effective = new Set(decision.effectiveFiles.map((file) => file.path));
+  for (const file of decision.unreviewableLockfiles) rows.set(file.path, 'unreviewable');
+  for (const file of decision.hunkResult.files) {
+    if (file.status === 'ignored' && !effective.has(file.path) && !rows.has(file.path)) rows.set(file.path, 'filtered');
+  }
+  for (const file of decision.summarizedLockfiles) rows.set(file.path, 'summarized');
+  for (const file of decision.truncatedFiles) if (!rows.has(file.path)) rows.set(file.path, 'truncated');
+  for (const file of decision.unavailablePatches) if (!rows.has(file.path)) rows.set(file.path, 'unavailable');
+  return [...rows].map(([path, why]) => ({ path, why }));
 }
 
 /**
@@ -532,6 +554,22 @@ export function renderDiffShrinkSummary(disclosure: DiffShrinkDisclosure | null)
   }
   const touched = disclosure.whitespaceOnlyFiles.length + disclosure.collapsedWhitespaceHunks.length
     + disclosure.renames.length + disclosure.linguistExcluded.length;
-  if (touched === 0) lines.push('- No file was shrunk; every change was sent in full.');
+  // REL-1141: never claim every change was sent in full when something was not.
+  const notSentInFull = disclosure.notSentInFull;
+  if (Array.isArray(notSentInFull) && notSentInFull.length > 0) {
+    const label: Record<NotSentInFullReason, string> = {
+      filtered: 'hidden by the review filter',
+      summarized: 'summarized: oversized lockfile',
+      truncated: 'truncated',
+      unavailable: 'patch unavailable',
+      unreviewable: 'not reviewed',
+    };
+    lines.push(`- ${touched === 0 ? 'No file was shrunk, but not' : 'Not'} every change was sent in full `
+      + `(${notSentInFull.length}): ${listed(notSentInFull, (entry) => `${code(entry.path)} (${label[entry.why]})`)}`);
+  } else if (touched === 0) {
+    lines.push(Array.isArray(notSentInFull)
+      ? '- No file was shrunk; every change was sent in full.'
+      : '- No file was shrunk by diff shrinking.');
+  }
   return lines;
 }
