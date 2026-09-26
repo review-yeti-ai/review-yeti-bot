@@ -1139,6 +1139,74 @@ export async function runPublishingReviewWorker(
     const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
       ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
       : undefined;
+    let infrastructureDelivered = false;
+    // The dispatcher retries attempts 1..CAP; the attempt that fails as
+    // CAP+1 is the exhausted one this exact worker execution is running as
+    // (`identity.executionAttempt`), so no cross-process coordination is
+    // needed to know whether this is the final word.
+    const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx || thrownInfrastructure !== undefined)
+      && !isRecoverablePanelRetryEligible(identity.executionAttempt)
+      ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
+      : undefined;
+    if (authoritative && !authoritativeCompletionAttempted) {
+      try {
+        await reportReviewResult(authoritativeInfrastructureBody ?? { version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
+          personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR', errorClass: failureClass, findings: [] })),
+          coverageComplete: false, quorumSatisfied: false, failureDiagnostics: diagnostics });
+        infrastructureDelivered = authoritativeInfrastructureBody !== undefined;
+      } catch {
+        logger.error('Authoritative worker failure could not be acknowledged', {
+          runId: identity.runId, reason: 'completion_callback_failed', failureClass,
+        });
+      }
+    }
+    // REL-1057: a superseded run is not a failure. The service retires it
+    // itself when the newer head is admitted (or its deadline reaper does, if
+    // no newer head ever arrives), so a legacy failure callback here would
+    // only record a false failure against a head nobody will merge.
+    const persistLegacyTerminalFailure = async (): Promise<void> => {
+      if (!deps.completion || isReviewSuperseded(error)) return;
+      const event: WorkerTerminalFailure = {
+        version: 'WorkerTerminalFailure.v1',
+        runId: identity.runId,
+        repositoryId: identity.repositoryId,
+        owner: identity.owner,
+        repo: identity.repoName,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
+        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+        executionAttempt: identity.executionAttempt,
+        ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
+        failureClass,
+        diagnostics,
+      };
+      try {
+        await deps.completion.reportTerminalFailure(event);
+        infrastructureDelivered = thrownInfrastructure !== undefined;
+      } catch {
+        // The original failure remains authoritative. The callback is a durable
+        // recovery aid, never a reason to swallow or rewrite that failure.
+        logger.error('Failed to persist worker terminal failure', {
+          runId: identity.runId,
+          failureClass,
+          reason: 'completion_callback_failed',
+        });
+      }
+    };
+    // REL-1124: a thrown infrastructure failure writes its durable record BEFORE the check, so the
+    // check can say whether a re-attempt was actually scheduled; every other failure keeps the
+    // pre-existing order (check, then callback).
+    const legacyPersistedFirst = thrownInfrastructure !== undefined;
+    if (legacyPersistedFirst) await persistLegacyTerminalFailure();
+    // REL-1124: the automatic re-attempt is driven only by the durable record above (the
+    // service re-admits from the delivered INCOMPLETE body; the legacy dispatcher from the
+    // recoverable terminal failure). When that record was not written, nothing will re-admit this
+    // run, so it keeps the plain terminal failure: the check never promises a re-attempt (nor a
+    // provider_5xx requeue) and the run is not counted as an incomplete_infra retry.
+    const infrastructureUndelivered = thrownInfrastructure !== undefined && !infrastructureDelivered;
+    if (!infrastructureDelivered) thrownInfrastructure = undefined;
     if (thrownInfrastructure) {
       logger.warn('Review incomplete: the review panel failed on infrastructure; not a review verdict', {
         reasonClass: 'incomplete_infra',
@@ -1160,27 +1228,6 @@ export async function runPublishingReviewWorker(
         });
       } catch {
         // Telemetry never changes a review outcome.
-      }
-    }
-    let infrastructureDelivered = false;
-    // The dispatcher retries attempts 1..CAP; the attempt that fails as
-    // CAP+1 is the exhausted one this exact worker execution is running as
-    // (`identity.executionAttempt`), so no cross-process coordination is
-    // needed to know whether this is the final word.
-    const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx || thrownInfrastructure !== undefined)
-      && !isRecoverablePanelRetryEligible(identity.executionAttempt)
-      ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
-      : undefined;
-    if (authoritative && !authoritativeCompletionAttempted) {
-      try {
-        await reportReviewResult(authoritativeInfrastructureBody ?? { version: 'WorkerReviewResult.v1', completedAt: new Date(now()).toISOString(),
-          personas: preparedPersonaIds.map((id) => ({ id, decision: 'ERROR', status: 'ERROR', errorClass: failureClass, findings: [] })),
-          coverageComplete: false, quorumSatisfied: false, failureDiagnostics: diagnostics });
-        infrastructureDelivered = authoritativeInfrastructureBody !== undefined;
-      } catch {
-        logger.error('Authoritative worker failure could not be acknowledged', {
-          runId: identity.runId, reason: 'completion_callback_failed', failureClass,
-        });
       }
     }
     if (failedCheckId !== undefined) {
@@ -1219,7 +1266,7 @@ export async function runPublishingReviewWorker(
               ...(workerLogLocator ? [workerLogLocator] : []),
             ].join('\n\n'),
           });
-        } else if (isProvider5xx) {
+        } else if (isProvider5xx && !infrastructureUndelivered) {
           if (typeof deps.checkClient.updateCheck === 'function') {
             await deps.checkClient.updateCheck({
               owner: identity.owner,
@@ -1268,41 +1315,8 @@ export async function runPublishingReviewWorker(
         });
       }
     }
-    // REL-1057: a superseded run is not a failure. The service retires it
-    // itself when the newer head is admitted (or its deadline reaper does, if
-    // no newer head ever arrives), so a legacy failure callback here would
-    // only record a false failure against a head nobody will merge.
-    if (deps.completion && !isReviewSuperseded(error)) {
-      const event: WorkerTerminalFailure = {
-        version: 'WorkerTerminalFailure.v1',
-        runId: identity.runId,
-        repositoryId: identity.repositoryId,
-        owner: identity.owner,
-        repo: identity.repoName,
-        prNumber: identity.prNumber,
-        headSha: identity.headSha,
-        baseSha: identity.baseSha,
-        policyDigest: value(env, 'REVIEW_POLICY_DIGEST'),
-        configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
-        executionAttempt: identity.executionAttempt,
-        ...(failedCheckId === undefined ? {} : { checkId: failedCheckId }),
-        failureClass,
-        diagnostics,
-      };
-      try {
-        await deps.completion.reportTerminalFailure(event);
-        infrastructureDelivered = thrownInfrastructure !== undefined;
-      } catch {
-        // The original failure remains authoritative. The callback is a durable
-        // recovery aid, never a reason to swallow or rewrite that failure.
-        logger.error('Failed to persist worker terminal failure', {
-          runId: identity.runId,
-          failureClass,
-          reason: 'completion_callback_failed',
-        });
-      }
-    }
-    return infrastructureDelivered ? thrownInfrastructure : undefined;
+    if (!legacyPersistedFirst) await persistLegacyTerminalFailure();
+    return thrownInfrastructure;
   };
 
   let checkId: number | undefined;

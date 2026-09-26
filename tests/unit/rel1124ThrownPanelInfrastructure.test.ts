@@ -248,7 +248,28 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
     const original = requiredSecLaneFetchFailed();
     f.panelRunner.mockRejectedValue(original);
     f.reportReviewResult.mockRejectedValue(new Error('completion endpoint unreachable'));
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(original);
+    // Nothing recorded the INCOMPLETE body, so nothing will re-admit this run: the check must not
+    // promise a re-attempt, and the run is not counted as an incomplete_infra retry.
+    const title = f.checkClient.completeCheck.mock.calls[0]?.[0]?.title;
+    expect(title).toBe('Review Yeti: review did not complete');
+    expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.summary).not.toMatch(/scheduled automatically/u);
+    expect(metric).not.toHaveBeenCalled();
+    expect(f.warn).not.toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
+      expect.anything());
+  });
+
+  it('an undelivered AUTHORITATIVE provider_5xx never claims a requeue either', async () => {
+    const f = fixture('1');
+    const error = attachPanelFailureEvidence(new PanelInfrastructureError('required persona failure: HTTP 502 provider_5xx',
+      { failureClass: 'provider_error', failureReason: 'provider_5xx' }), {
+      stage: 'lanes', lanes: [{ id: 'sec-lane', failureClass: 'provider_error', providerStatus: 502 }], findingsObserved: false });
+    f.panelRunner.mockRejectedValue(error);
+    f.reportReviewResult.mockRejectedValue(new Error('completion endpoint unreachable'));
+    await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(error);
+    expect(f.checkClient.updateCheck).not.toHaveBeenCalled();
+    expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title).toBe('Review Yeti: review did not complete');
   });
 });
 
@@ -413,9 +434,14 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     const original = requiredSecLaneFetchFailed();
     f.panelRunner.mockRejectedValue(original);
     f.reportTerminalFailure.mockRejectedValue(new Error('completion endpoint unreachable'));
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(original);
     expect(f.reportTerminalFailure).toHaveBeenCalledOnce();
+    // The dispatcher re-admits only from that record: without it the check promises nothing.
+    expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title).toBe('Review Yeti: review did not complete');
+    expect(metric).not.toHaveBeenCalled();
   });
+
 
   it('negative proof: a non-infrastructure thrown panel is not marked recoverable', async () => {
     const f = legacyFixture('1');
