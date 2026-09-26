@@ -10,6 +10,7 @@ import { executePersonaPanel, extractMessageContentText } from '../../src/panel/
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OpenRouterConnectionError } from '../../src/gateway/openRouterClient';
 import type { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { WORKER_TERMINAL_DEADLINE_ENV } from '../../src/config/workerTerminalDeadline';
 
 function config() {
   return ctReviewConfigV3Schema.parse({
@@ -38,9 +39,19 @@ function socketCut(): OpenRouterConnectionError {
   });
 }
 
+/** `fetch failed` (the generic retry branch also matches it) over an undici connect timeout. */
+function connectTimeout(): OpenRouterConnectionError {
+  return new OpenRouterConnectionError('OpenRouter SDK connection failure for model claude-5-sonnet: fetch failed', {
+    causeChain: [
+      { depth: 0, name: 'TypeError', message: 'fetch failed' },
+      { depth: 1, name: 'ConnectTimeoutError', code: 'UND_ERR_CONNECT_TIMEOUT', message: 'Connect Timeout Error' },
+    ],
+  });
+}
+
 type Role = 'lane' | 'moderator' | 'arbiter';
 
-function client(failRole: Role, failTimes: number) {
+function client(failRole: Role, failTimes: number, makeError: () => Error = socketCut) {
   let failures = 0;
   return {
     complete: vi.fn(async (opts: any) => {
@@ -49,7 +60,7 @@ function client(failRole: Role, failTimes: number) {
       const role: Role = prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'lane';
       if (role === failRole && failures < failTimes) {
         failures += 1;
-        throw socketCut();
+        throw makeError();
       }
       const payload = role === 'arbiter'
         ? { verdict: 'SHIP', rationale: 'ok' }
@@ -81,6 +92,7 @@ describe('REL-1138 panel transport-failure cause', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it('a lane transport retry logs the cause code', async () => {
@@ -96,6 +108,25 @@ describe('REL-1138 panel transport-failure cause', () => {
     expect(retry).toBeDefined();
     expect(retry.errorCauseCode).toBe('UND_ERR_SOCKET');
     expect(JSON.stringify(retry.errorCause)).toContain('other side closed');
+  });
+
+  it('a lane with no room for a transport backoff logs the cause on the budget-exhausted and generic-retry lines', async () => {
+    vi.useFakeTimers();
+    // A worker terminal deadline already inside the retry margin: no transport backoff fits, so
+    // each failure goes straight to the "budget exhausted" line and then the generic branch.
+    vi.stubEnv(WORKER_TERMINAL_DEADLINE_ENV, new Date(Date.now() + 1_000).toISOString());
+    const mockClient = client('lane', 1_000, connectTimeout);
+    let settled = false;
+    const panel = run(mockClient).then(() => undefined, () => undefined).finally(() => { settled = true; });
+    for (let step = 0; step < 2_000 && !settled; step += 1) await vi.advanceTimersByTimeAsync(1_000);
+    await panel;
+
+    const exhausted = warnsMatching(/^Transport retry budget for provider 'claude' exhausted for persona arch-lane/);
+    expect(exhausted.length).toBeGreaterThan(0);
+    for (const line of exhausted) expect(line.errorCauseCode).toBe('UND_ERR_CONNECT_TIMEOUT');
+    const generic = warnsMatching(/^Retrying transient error for provider claude in persona arch-lane/);
+    expect(generic.length).toBeGreaterThan(0);
+    for (const line of generic) expect(line.errorCauseCode).toBe('UND_ERR_CONNECT_TIMEOUT');
   });
 
   it('an arbiter transport failure logs the cause code before the panel fails closed', async () => {

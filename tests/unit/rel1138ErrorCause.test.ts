@@ -122,6 +122,14 @@ describe('REL-1138 errorCauseLogFields', () => {
     expect(describeErrorCause(undiciConnectTimeout())).toEqual(fields.errorCause);
   });
 
+  it('reads per-address children of a directly thrown AggregateError (no wrapper, no causeChain)', () => {
+    const v4 = Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { code: 'ECONNREFUSED', syscall: 'connect', address: '10.0.0.1', port: 443 });
+    const v6 = Object.assign(new Error('connect ETIMEDOUT [fd00::1]:443'), { code: 'ETIMEDOUT', syscall: 'connect' });
+    const fields = errorCauseLogFields(new AggregateError([v4, v6], 'all addresses failed'));
+    expect(fields.errorCause?.map((entry) => [entry.depth, entry.code])).toEqual([[1, 'ECONNREFUSED'], [1, 'ETIMEDOUT']]);
+    expect(fields.errorCauseCode).toBeDefined();
+  });
+
   it('prefers a precomputed causeChain carried on the error', () => {
     const carried = [{ depth: 0, name: 'TypeError', message: 'terminated' }, { depth: 1, code: 'UND_ERR_SOCKET' }];
     const error = Object.assign(new Error('wrapped'), { causeChain: carried });
