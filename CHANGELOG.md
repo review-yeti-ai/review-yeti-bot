@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.93.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.93.0...v1.93.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **pipeline:** use tailnet dns url and bump default lane timeout to 240s ([6e74453](https://github.com/review-yeti-ai/review-yeti-bot/commit/6e74453f6f8ff51a787d1fd209246d70c5c34e54))
+
 ## [1.93.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.92.9...v1.93.0) (2026-09-26)
 
 
