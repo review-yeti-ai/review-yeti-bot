@@ -54,10 +54,10 @@ inputs:
   lane-timeout-ms:
     description: >-
       Per-lane streaming deadline in ms for transports this action synthesizes when no explicit
-      transport plan is supplied. Defaults to 90000, which suits the OpenRouter route it was tuned
-      against; a slower gateway needs more or every lane dies mid-stream.
+      transport plan is supplied. Defaults to 240000, which provides headroom for reasoning models;
+      a slower gateway needs more or every lane dies mid-stream.
     required: false
-    default: ''
+    default: '240000'
   action-budget-ms:
     description: >-
       REL-1113: wall-clock budget in ms for the review pipeline process. When reviewer lanes fail on

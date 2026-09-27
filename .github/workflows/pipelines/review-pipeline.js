@@ -199,7 +199,7 @@ const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
  * A hardcoded deadline with no lever is not a safety property, it is a ceiling on which
  * transports can be used at all. Still bounded and still defaulted, just nameable.
  */
-const DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS = 90_000;
+const DEFAULT_AUTO_TRANSPORT_TIMEOUT_MS = 240_000;
 
 /** Exported and pure so the boundary parsing is testable. Computing it inline in a module-load
  * IIFE made it unreachable from a test, which is how it shipped unasserted. */
