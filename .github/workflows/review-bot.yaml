@@ -53,8 +53,8 @@ jobs:
         continue-on-error: true
         run: |
           tailscale status || true
-          tailscale ping --c 2 100.82.68.93 || true
-          curl -v https://llm-gateway.tailebe851.ts.net/health || true
+          tailscale ping --c 2 100.85.134.120 || tailscale ping --c 2 llm-gateway.tailebe851.ts.net || true
+          curl -v --connect-timeout 5 --max-time 15 https://llm-gateway.tailebe851.ts.net/health || true
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
 
