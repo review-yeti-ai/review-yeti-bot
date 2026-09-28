@@ -114,6 +114,7 @@ function persuasiveAsker() {
 function harness(kind: 'clean' | 'advisory' | 'blocking', extra: Record<string, unknown> = {}) {
   return {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => panelResult(kind)),

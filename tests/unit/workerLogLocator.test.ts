@@ -46,6 +46,7 @@ function deps(panelRunner: unknown) {
       createCheck: vi.fn(async () => 4242),
       completeCheck: vi.fn(async (_options: { summary: string; conclusion: string }) => {}),
     },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({
       diff: 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n',
       githubReads: 1,

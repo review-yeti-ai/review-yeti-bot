@@ -324,6 +324,7 @@ describe('Two-Tier Cancellation Architecture', () => {
           checkClient: mockCheckClient,
           panelRunner,
           isCurrentHead: () => currentHead,
+          currentPullRequestVerifier: vi.fn(async () => undefined),
           sourceLoader: vi.fn(async () => ({
             changedFiles: [{ path: 'file.ts', status: 'modified', additions: 1, deletions: 0 }],
           })) as any,

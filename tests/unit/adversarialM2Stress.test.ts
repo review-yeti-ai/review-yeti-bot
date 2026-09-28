@@ -68,6 +68,7 @@ function mockDeps(overrides: Record<string, unknown> = {}) {
         publishGateCheck,
       },
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: VALID_DIFF, githubReads: 1 })),
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['arch'],
@@ -119,6 +120,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
   it('Scenario 3: Source loader network failure -> single check fails closed', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => {
         throw new Error('GitHub API 503 Service Unavailable fetching diff');
       }),
@@ -139,6 +141,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
   it('Scenario 4: Empty diff produces no reviewable files -> single check fails closed', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })),
     });
 
@@ -292,6 +295,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
   it('Scenario 9: Unreadable diff headers fail closed with failure conclusion', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF_WITH_UNREADABLE, githubReads: 1 })),
     });
 

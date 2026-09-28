@@ -593,6 +593,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
 
       const deps: PublishingReviewDeps = {
         checkClient,
+        currentPullRequestVerifier: vi.fn(async () => undefined),
         sourceLoader: sourceLoader as any,
         panelRunner: panelRunner as any,
         composedReviewRunner: composedReviewRunner as any,

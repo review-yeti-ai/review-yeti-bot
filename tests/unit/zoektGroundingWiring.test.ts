@@ -45,6 +45,7 @@ function deps(panelRunner: ReturnType<typeof vi.fn>, over: Record<string, unknow
       createCheck: vi.fn(async () => 4242),
       completeCheck: vi.fn(async () => {}),
     },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: panelRunner as never,
