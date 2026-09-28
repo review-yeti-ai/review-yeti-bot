@@ -422,9 +422,11 @@ globalThis.fetch = async (url, init) => {
   // a later message (cache-friendly prefix) and carry content blocks, so match on the persona
   // assignment line across every message instead of the first 200 chars of the system prompt.
   const flatten = (content) => (Array.isArray(content) ? content.map((part) => part.text || '').join('') : String(content));
-  const system = body.messages.map((message) => flatten(message.content)).join('\\n');
+  // No escape sequences here on purpose: this source is inside a template literal, where every
+  // backslash is halved before the child runs, which makes escaped patterns easy to misread.
+  const system = body.messages.map((message) => flatten(message.content)).join(' ');
   let findings = [];
-  if (/You are \\S+ Testing/i.test(system)) {
+  if (/You are [^ ]+ Testing/i.test(system)) {
     testingCalls += 1;
     if (mode === 'auth') return new Response('{"error":{"message":"unauthorized"}}', { status: 401, headers: { 'content-type': 'application/json' } });
     if (mode === 'fail' || mode === 'findings' || (mode === 'recover' && testingCalls === 1)) throw new TypeError('terminated');
