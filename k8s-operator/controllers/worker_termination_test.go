@@ -30,6 +30,7 @@ import (
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
+	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
 )
 
 // TestWorkerEvictionPreservesUnknownEffectState verifies that node-level pod eviction
@@ -386,3 +387,60 @@ func TestAssertCanPromoteToSucceededGuard(t *testing.T) {
 		t.Fatalf("expected ErrMissingReceiptAudit for missing evidence ref, got %v", err)
 	}
 }
+
+// TestSuccessfulWorkerWithoutReceiptAnnotationsFailsClosed verifies that when a worker completes
+// with exit 0 and JobComplete, but lacks receipt annotations, the controller never synthesizes
+// fake receipt digests and fails closed to PhaseFailed with ReasonUnresolvedEffect.
+func TestSuccessfulWorkerWithoutReceiptAnnotationsFailsClosed(t *testing.T) {
+	f := newTerminationFixture(t)
+	worker := f.worker(t)
+	assignFakeWorkerUID(t, f.kube, worker)
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      worker.Name + "-bare",
+			Namespace: f.review.Namespace,
+			Labels: map[string]string{
+				"review-yeti.ai/run-id":        f.review.Spec.RunID,
+				"batch.kubernetes.io/job-name": worker.Name,
+			},
+		},
+		Spec: corev1.PodSpec{NodeName: "workers-memory-16gb-bare"},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodSucceeded,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:  job.WorkerContainerName,
+				State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, Reason: "Completed"}},
+			}},
+		},
+	}
+	bindTestPodToWorker(pod, worker)
+	if err := f.kube.Create(context.Background(), pod); err != nil {
+		t.Fatalf("create worker pod: %v", err)
+	}
+
+	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{
+		Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: metav1.NewTime(f.now),
+	}}
+	if err := f.kube.Status().Update(context.Background(), worker); err != nil {
+		t.Fatalf("mark worker succeeded: %v", err)
+	}
+
+	if _, err := f.reconciler.Reconcile(context.Background(), f.req); err != nil {
+		t.Fatalf("reconcile bare successful worker: %v", err)
+	}
+
+	review := storedReview(t, f.kube, f.req)
+	if review.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want PhaseFailed (missing receipt audit must fail closed)", review.Status.Phase)
+	}
+	if review.Status.ReceiptDigest != "" {
+		t.Fatalf("receiptDigest = %q, want empty (must never synthesize fake receipt for successful worker)", review.Status.ReceiptDigest)
+	}
+	ready := meta.FindStatusCondition(review.Status.Conditions, "Ready")
+	if ready == nil || ready.Reason != controllers.ReasonUnresolvedEffect {
+		t.Fatalf("ready condition = %+v, want ReasonUnresolvedEffect", ready)
+	}
+}
+

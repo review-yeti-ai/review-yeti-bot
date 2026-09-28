@@ -146,6 +146,10 @@ func TestTerminalWorkerFinalizerPreservesSuccessfulOutcomeAcrossTTLDeletion(t *t
 
 	completed := r.Now().Add(time.Minute)
 	r.Now = func() time.Time { return completed }
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	worker.Status.Succeeded = 1
 	worker.Status.Conditions = []batchv1.JobCondition{{
 		Type: batchv1.JobComplete, Status: corev1.ConditionTrue,
@@ -215,6 +219,10 @@ func TestLiveRefreshA2ShipIsDurableBeforeTTLDeletesWorker(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := storedWorker(t, kube, req)
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	completed := time.Date(2026, 9, 11, 19, 35, 10, 0, time.UTC)
 	worker.Status.Succeeded = 1
 	worker.Status.CompletionTime = &metav1.Time{Time: completed}
@@ -265,6 +273,10 @@ func TestSuccessfulWorkerObservedAfterFailurePendingPreservesAppShip(t *testing.
 	}
 
 	worker := storedWorker(t, kube, req)
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	completed := review.Spec.TerminalDeadline.Add(-time.Second)
 	worker.Status.Succeeded = 1
 	worker.Status.CompletionTime = &metav1.Time{Time: completed}
@@ -335,6 +347,10 @@ func TestCompletedWorkerObservedAfterDeadlinePreservesAuthoritativeSuccess(t *te
 	}
 	review := storedReview(t, kube, req)
 	worker := storedWorker(t, kube, req)
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	completed := review.Spec.TerminalDeadline.Add(-time.Second)
 	worker.Status.Succeeded = 1
 	worker.Status.Conditions = []batchv1.JobCondition{{
@@ -459,6 +475,10 @@ func TestTerminalWorkerFromOlderOperatorIsGuardedBeforeParentStatusWrite(t *test
 		t.Fatal(err)
 	}
 	worker = storedWorker(t, kube, req)
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	worker.Status.Succeeded = 1
 	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
 	if err := kube.Status().Update(ctx, worker); err != nil {
@@ -1497,6 +1517,10 @@ func TestAppGatePublicationWorkerStatusMessages(t *testing.T) {
 
 	// Step 2: Mark worker succeeded -> WorkerSucceeded message
 	worker := storedWorker(t, kube, req)
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(ctx, worker); err != nil {
+		t.Fatal(err)
+	}
 	worker.Status.Succeeded = 1
 	if err := kube.Status().Update(ctx, worker); err != nil {
 		t.Fatal(err)

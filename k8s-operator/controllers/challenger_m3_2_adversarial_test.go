@@ -347,7 +347,7 @@ func TestChallenger_TerminalDeletion_ReceiptAuditabilityPreservedBeforeSecretDel
 
 	// Create a completed review marked for deletion
 	completed := metav1.NewTime(now)
-	review := terminalReviewFixture(now, reviewv1alpha2.PhaseSucceeded, &completed)
+	review := terminalReviewFixture(now, reviewv1alpha2.PhaseFailed, &completed)
 	// Clear any pre-existing receipt fields to ensure reconciler populates them
 	review.Status.ReceiptDigest = ""
 	review.Status.ReceiptEvidenceRef = ""

@@ -401,6 +401,10 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatal(err)
 	}
+	attachReceiptAnnotations(&worker)
+	if err := kube.Update(context.Background(), &worker); err != nil {
+		t.Fatalf("update worker annotations: %v", err)
+	}
 	worker.Status.Succeeded = 1
 	if err := kube.Status().Update(context.Background(), &worker); err != nil {
 		t.Fatalf("mark worker succeeded: %v", err)

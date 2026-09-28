@@ -400,8 +400,15 @@ func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
 		}
 	}
 
-	// 2. Synthesize durable deterministic receipt evidence from the
-	// work request digest or the pod termination record.
+	// Never synthesize a fake ReceiptDigest for successful jobs or when phase is Succeeded.
+	// Genuine receipt annotations are strictly required; missing annotations must leave
+	// ReceiptDigest empty so AssertCanPromoteToSucceeded catches ErrMissingReceiptAudit and fails closed.
+	if (worker != nil && worker.Status.Succeeded > 0) || review.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+		return false, nil
+	}
+
+	// 2. Synthesize durable deterministic receipt evidence for terminal non-successful deletions
+	// from the work request digest or the pod termination record.
 	h := sha256.New()
 	seed := fmt.Sprintf("%s:%s:%s:%d", review.Spec.RunID, review.Spec.Repo, review.Spec.HeadSHA, review.Spec.RepositoryID)
 	h.Write([]byte(seed))

@@ -531,6 +531,11 @@ export class K8sJobRunner {
     }
 
     const sanitizedPersona = spec.persona.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/^-+|-+$/g, '') || 'worker';
+    if (spec.jobName !== undefined) {
+      if (typeof spec.jobName !== 'string' || spec.jobName.trim() === '') {
+        throw new Error(`INVALID_SHAPE: jobName must be a non-empty string`);
+      }
+    }
     let rawJobName = spec.jobName;
     if (!rawJobName) {
       const sanitizedSha = spec.commitSha.slice(0, 7).toLowerCase().replace(/[^a-z0-9]/g, '') || '0000000';

@@ -1795,18 +1795,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFencingAndLease(
 }
 
 // resolveAuthoritativeFencingEpoch determines the authoritative mission epoch.
-// It checks status, spec, and sibling PRReviewJobs for the same (RepositoryID, PRNumber)
-// in the namespaced boundary to detect any higher established mission authority or epoch advancements.
+// Once established in status, it returns it immediately in O(1) time without querying siblings.
+// When uninitialized (== 0), it checks sibling PRReviewJobs using the cached informer client.
 func (r *PRReviewJobV1Alpha2Reconciler) resolveAuthoritativeFencingEpoch(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (int64, error) {
-	var maxObservedEpoch int64 = review.Status.AuthoritativeFencingEpoch
-	if review.Spec.FencingEpoch > maxObservedEpoch {
-		maxObservedEpoch = review.Spec.FencingEpoch
+	if review.Status.AuthoritativeFencingEpoch > 0 {
+		return review.Status.AuthoritativeFencingEpoch, nil
 	}
 
-	reader := r.admissionReader()
+	var maxObservedEpoch int64 = review.Spec.FencingEpoch
+
+	reader := r.Client
 	var reviews reviewv1alpha2.PRReviewJobList
 	if err := reader.List(ctx, &reviews, client.InNamespace(review.Namespace)); err != nil {
 		return 0, err
