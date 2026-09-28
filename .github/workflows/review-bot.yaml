@@ -48,15 +48,16 @@ jobs:
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
 
-      - name: Verify tailnet connectivity
-        if: env.TS_AUTHKEY != '' || vars.TS_OIDC_CLIENT_ID != ''
-        continue-on-error: true
+      # Hosted runners can exchange small Tailnet packets while losing packets
+      # above ~1,000 bytes. A smaller tunnel MTU makes TLS certificate flights
+      # complete; the gateway probe must pass before starting paid review lanes.
+      - name: Verify gateway Tailnet TLS
+        if: vars.OPENROUTER_BASE_URL == 'https://llm-gateway.tailebe851.ts.net/v1'
         run: |
-          tailscale status || true
-          tailscale ping --c 2 llm-gateway.tailebe851.ts.net || true
-          curl -v --connect-timeout 5 --max-time 15 https://llm-gateway.tailebe851.ts.net/health || true
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          set -euo pipefail
+          sudo ip link set dev tailscale0 mtu 1100
+          curl -fsS -o /dev/null --connect-timeout 5 --max-time 15 \
+            https://llm-gateway.tailebe851.ts.net/health
 
       # "Central repo controls all personas and settings and each repo can override with a local
       # file." On the dispatch path the workspace holds this repository, so the target's override
