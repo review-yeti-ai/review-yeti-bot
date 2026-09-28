@@ -3,7 +3,7 @@
 ## Test Philosophy
 - **Opaque-Box & Requirement-Driven**: Tests validate external wire contracts, Kubernetes manifests, operator reconciliation behavior, and lifecycle invariants derived strictly from `ORIGINAL_REQUEST.md` and `PROJECT.md § Feature Inventory`.
 - **Zero Internal Dependency**: No reliance on private methods, unexposed AST functions, or synthetic monkey-patches. All tests interact exclusively through public APIs, wire JSON parsers, schema validators, and Kubernetes CR/Job projections.
-- **Strict Invariant Verification**: Rigorous enforcement of tripartite fencing (fencing epoch vs. execution attempt vs. worker lease token), 100% wire parity with `urn:calltelemetry:agent-harness:v1`, strict `.000Z` timestamps, payload limits (<=65,536 bytes), controlled namespace boundary (`ct-review-system`), and UNKNOWN effect safety.
+- **Strict Invariant Verification**: Rigorous enforcement of tripartite fencing (fencing epoch vs. execution attempt vs. worker lease token), 100% wire parity with `urn:review-yeti:agent-harness:v1`, strict `.000Z` timestamps, payload limits (<=65,536 bytes), controlled namespace boundary (`ct-review-system`), and UNKNOWN effect safety.
 - **Methodology**: 4-Tier Test Architecture combining Category-Partition, Boundary Value Analysis (BVA), Pairwise Combinatorial Interaction, and Real-World Lifecycle Scenarios.
 
 ---
@@ -63,7 +63,7 @@ Every feature from `PROJECT.md § Feature Inventory` is mapped across all 4 tier
 - `TEST_T1_F3_01`: Container Environment Identity Injection — Asserts all 12 `CT_*` environment variables (`CT_LOGICAL_CHILD_ID`, `CT_FENCING_EPOCH`, `CT_MISSION_ID`, `CT_GENERATION`, `CT_EXECUTION_ID`, `CT_TENANT_ID`, `CT_ENVIRONMENT_ID`, `CT_WORKSPACE_ID`, `CT_REPOSITORY`, `CT_REQUEST_DIGEST`, `CT_WORK_REQUEST_PATH`, `CT_EXECUTION_RECEIPT_PATH`) are properly injected into reviewer container.
 - `TEST_T1_F3_02`: Downward API Identity Injection — Asserts `CT_POD_NAME` and `CT_POD_NAMESPACE` use Kubernetes `fieldRef` pointing to `metadata.name` and `metadata.namespace`.
 - `TEST_T1_F3_03`: InitContainer WorkRequest Staging — Verifies initContainer `stage-work-request` carries canonical JSON payload in `CT_WORK_REQUEST_PAYLOAD` and writes to `/workspace/.ct-harness/work-request.json`.
-- `TEST_T1_F3_04`: Job Metadata Labels & Annotations — Confirms Job and Pod templates inject `ct.calltelemetry.com/logical-child-id`, `ct.calltelemetry.com/fencing-epoch`, and `ct.calltelemetry.com/request-digest`.
+- `TEST_T1_F3_04`: Job Metadata Labels & Annotations — Confirms Job and Pod templates inject `review-yeti.ai/logical-child-id`, `review-yeti.ai/fencing-epoch`, and `review-yeti.ai/request-digest`.
 - `TEST_T1_F3_05`: Pod Security Context Invariants — Confirms `runAsNonRoot: true`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, and `capabilities: { drop: ['ALL'] }`.
 
 #### F4: Runner Pod Completion & Receipt Validation
@@ -104,7 +104,7 @@ Every feature from `PROJECT.md § Feature Inventory` is mapped across all 4 tier
 #### F9: Go Operator Terminal Deletion Receipt Auditability
 - `TEST_T1_F9_01`: Receipt Digest Persisted Prior to Secret Deletion — Asserts `status.ReceiptDigest` is durably written before per-run Secret is deleted.
 - `TEST_T1_F9_02`: Receipt Evidence Ref Persisted — Asserts `status.ReceiptEvidenceRef` is recorded before finalizer removal.
-- `TEST_T1_F9_03`: Finalizer Sequence Ordering — Verifies `reviewjob.finalizers.calltelemetry.com` blocks resource removal until secret cleanup and status audit sync complete.
+- `TEST_T1_F9_03`: Finalizer Sequence Ordering — Verifies `reviewjob.finalizers.review-yeti.ai` blocks resource removal until secret cleanup and status audit sync complete.
 - `TEST_T1_F9_04`: Forensic Auditability After Pod TTL Deletion — Asserts PRReviewJob status retains full forensic termination and receipt data after worker Pod is collected.
 - `TEST_T1_F9_05`: Idempotent Secret Cleanup — Asserts reconciler safely handles already-deleted run Secrets without blocking finalizer removal.
 
@@ -123,7 +123,7 @@ Every feature from `PROJECT.md § Feature Inventory` is mapped across all 4 tier
 - `TEST_T1_F11_05`: Deterministic Execution Invariance — Asserts multiple consecutive runs produce identical results with zero network dependency.
 
 #### F12: Final Integration & Offline Contract Qualification
-- `TEST_T1_F12_01`: Upstream Python Schema Parity — Validates that TS wire JSON conforms to `urn:calltelemetry:agent-harness:v1` validated by Python validator.
+- `TEST_T1_F12_01`: Upstream Python Schema Parity — Validates that TS wire JSON conforms to `urn:review-yeti:agent-harness:v1` validated by Python validator.
 - `TEST_T1_F12_02`: Cross-Language Request Digest Equality — Confirms SHA-256 calculated by TS `requestDigest` matches Python `compute_request_digest`.
 - `TEST_T1_F12_03`: Go Operator Reconciliation Tests Pass — Verifies `k8s-operator` controller tests pass cleanly.
 - `TEST_T1_F12_04`: TypeScript Unit Test Suite Passes — Verifies `npm test tests/unit/...` passes with zero regressions.
@@ -243,7 +243,7 @@ Every feature from `PROJECT.md § Feature Inventory` is mapped across all 4 tier
 ### Tier 4: Real-World Scenarios (End-to-End Workflows — >=5 tests)
 
 - `TEST_T4_SCENARIO_01`: Standard Clean PR Review Workflow with Conforming Receipt
-  - Full-lifecycle PR review on `calltelemetry/cisco-cdr` (PR #402). `K8sJobRunner` constructs compliant WorkRequest envelope; generates batch/v1 Job manifest with initContainer staging; simulates worker execution producing evidence artifact; verifies conforming `ct-agent-execution-receipt.v1` with outcome `succeeded`; operator reconciles completion and archives audit receipt.
+  - Full-lifecycle PR review on `review-yeti-ai/review-yeti-bot` (PR #402). `K8sJobRunner` constructs compliant WorkRequest envelope; generates batch/v1 Job manifest with initContainer staging; simulates worker execution producing evidence artifact; verifies conforming `ct-agent-execution-receipt.v1` with outcome `succeeded`; operator reconciles completion and archives audit receipt.
 - `TEST_T4_SCENARIO_02`: Spot Node Preemption with UNKNOWN External Effect Preservation
   - Simulates worker pod preemption on a DOKS spot node during a multi-file review while an external review comment effect is in flight (`EXECUTING`). Operator `worker_termination.go` captures `WorkerTerminationStatus` (`exitCode: 137`, `reason: "OOMKilled"`/`Evicted`); external effect is preserved as `UNKNOWN`; condition `UnknownEffectPending = True` is recorded; zero effects promoted to success.
 - `TEST_T4_SCENARIO_03`: Stale Worker Lease & Fencing Epoch Mismatch Fence Closure

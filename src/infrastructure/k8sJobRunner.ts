@@ -530,8 +530,13 @@ export class K8sJobRunner {
       throw new Error(`INVALID_SHAPE: commitSha must be a non-empty string`);
     }
 
-    const sanitizedPersona = spec.persona.toLowerCase().replace(/[^a-z0-9]/g, '-');
-    const jobName = spec.jobName ?? `ct-agent-${sanitizedPersona}-pr${spec.prNumber}-${spec.commitSha.slice(0, 7)}`;
+    const sanitizedPersona = spec.persona.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/^-+|-+$/g, '') || 'worker';
+    let rawJobName = spec.jobName;
+    if (!rawJobName) {
+      const sanitizedSha = spec.commitSha.slice(0, 7).toLowerCase().replace(/[^a-z0-9]/g, '') || '0000000';
+      rawJobName = `ct-agent-${sanitizedPersona}-pr${spec.prNumber}-${sanitizedSha}`;
+    }
+    const jobName = rawJobName;
     if (typeof jobName !== 'string' || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(jobName)) {
       throw new Error(`INVALID_SHAPE: jobName '${jobName}' does not conform to RFC 1123 DNS subdomain`);
     }

@@ -84,7 +84,7 @@ npm run lint
 
 1. **Tripartite Fencing Independence**:
    - Explicitly separates **Mission Fencing Epoch** (`scope.fencing_epoch`), **Child Attempt Number** (`child_execution.attempt`), and **Worker Lease Token** (`receipt.lease.fencing_token`). Updating lease tokens or retrying child executions never alters the authoritative fencing epoch.
-2. **Wire Parity with `urn:calltelemetry:agent-harness:v1`**:
+2. **Wire Parity with `urn:review-yeti:agent-harness:v1`**:
    - `ct-agent-work-request.v1`: Exactly 18 closed properties, 9 mandatory scope fields, RFC 8785 canonical JSON, strict `.000Z` timestamps, payload size <= 65,536 bytes.
    - `ct-agent-execution-receipt.v1`: Exactly 12 closed properties, SHA-256 `request_digest`, non-empty `evidence_refs`, and all effects `SUCCEEDED` when `outcome == "succeeded"`.
 3. **Controlled Namespace Boundary**:
