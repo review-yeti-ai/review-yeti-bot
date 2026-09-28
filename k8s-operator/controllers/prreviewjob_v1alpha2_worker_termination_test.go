@@ -114,6 +114,18 @@ func (f *terminationFixture) finishWorker(t *testing.T, succeeded bool, terminat
 	finishedAt := metav1.NewTime(f.now.Add(time.Minute))
 	condition := batchv1.JobFailed
 	if succeeded {
+		if worker.Annotations == nil {
+			worker.Annotations = make(map[string]string)
+		}
+		if worker.Annotations["review-yeti.ai/receipt-digest"] == "" {
+			worker.Annotations["review-yeti.ai/receipt-digest"] = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		}
+		if worker.Annotations["review-yeti.ai/receipt-evidence-ref"] == "" {
+			worker.Annotations["review-yeti.ai/receipt-evidence-ref"] = "audit://" + f.review.Namespace + "/" + f.review.Spec.RunID + "/receipt"
+		}
+		if err := f.kube.Update(context.Background(), worker); err != nil {
+			t.Fatalf("update worker annotations: %v", err)
+		}
 		worker.Status.Succeeded = 1
 		condition = batchv1.JobComplete
 	} else {

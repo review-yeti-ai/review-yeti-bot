@@ -18,6 +18,10 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"time"
@@ -26,8 +30,10 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
@@ -39,6 +45,32 @@ const (
 	// log store, not a transcript.
 	maxTerminationMessageBytes = 512
 	maxTerminationReasonBytes  = 128
+
+	// Condition and Reason constants for UNKNOWN effect safety guard
+	ConditionUnknownEffectPending = reviewv1alpha2.ConditionUnknownEffectPending
+
+	ReasonPodEvictedWithInFlightEffect   = "PodEvictedWithInFlightEffect"
+	ReasonPodPreemptedWithInFlightEffect = "PodPreemptedWithInFlightEffect"
+	ReasonPodTimeoutWithInFlightEffect   = "PodTimeoutWithInFlightEffect"
+	ReasonPodFailedWithInFlightEffect    = "PodFailedWithInFlightEffect"
+	ReasonUnknownEffectPreserved         = "UnknownEffectPreserved"
+	ReasonUnresolvedEffect               = "UnresolvedEffect"
+	ReasonAllEffectsResolved             = "AllEffectsResolved"
+
+	// External Effect States
+	EffectStateIntended    = "INTENDED"
+	EffectStateInFlight    = "IN_FLIGHT"
+	EffectStateSucceeded   = "SUCCEEDED"
+	EffectStateFailed      = "FAILED"
+	EffectStateUnknown     = "UNKNOWN"
+	EffectStateReconciling = "RECONCILING"
+	EffectStateManual      = "MANUAL"
+)
+
+var (
+	ErrInvalidEffectTransition = errors.New("invalid effect state transition")
+	ErrUnknownEffectPending    = errors.New("cannot promote to succeeded while unknown effect is pending")
+	ErrMissingReceiptAudit     = errors.New("cannot finalize worker without receipt digest and evidence ref")
 )
 
 // credentialPatterns redacts credential-shaped tokens a worker could print on
@@ -217,6 +249,184 @@ func truncateRunes(value string, limit int) string {
 	return value[:cut]
 }
 
+// ReconcileUnknownEffectGuard enforces that when a pod fails, gets evicted,
+// preempted, or times out, any in-flight external effect states are NOT promoted
+// to SUCCEEDED or overwritten. UNKNOWN remains UNKNOWN, UnknownEffectPending is
+// surfaced as True, and transition to EXECUTING or SUCCEEDED is blocked.
+func (r *PRReviewJobV1Alpha2Reconciler) ReconcileUnknownEffectGuard(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	worker *batchv1.Job,
+	now time.Time,
+) error {
+	logger := log.FromContext(ctx)
+
+	// If UnknownEffectPending is already True, preserve it monotonically.
+	isUnknownPending := meta.IsStatusConditionTrue(review.Status.Conditions, ConditionUnknownEffectPending)
+	termination := review.Status.WorkerTermination
+
+	// Check if the pod terminated abnormally
+	abnormalTermination := false
+	reason := ReasonPodFailedWithInFlightEffect
+	message := "worker terminated abnormally with unresolved in-flight effects"
+
+	if termination != nil {
+		if termination.ExitCode != nil && *termination.ExitCode != 0 {
+			abnormalTermination = true
+			if termination.Reason == "OOMKilled" || *termination.ExitCode == 137 {
+				reason = ReasonPodFailedWithInFlightEffect
+				message = fmt.Sprintf("worker pod was OOMKilled (exit %d); external effect state marked UNKNOWN", *termination.ExitCode)
+			} else {
+				message = fmt.Sprintf("worker pod failed with exit code %d; external effect state marked UNKNOWN", *termination.ExitCode)
+			}
+		} else if termination.ExitCode == nil {
+			// Pod-level failure (Evicted, Preempted, DeadlineExceeded)
+			abnormalTermination = true
+			switch strings.ToLower(termination.PodReason) {
+			case "evicted":
+				reason = ReasonPodEvictedWithInFlightEffect
+				message = "worker pod was evicted by kubelet (resource pressure); external effect state marked UNKNOWN"
+			case "preempting", "preempted":
+				reason = ReasonPodPreemptedWithInFlightEffect
+				message = "worker pod was preempted by scheduler; external effect state marked UNKNOWN"
+			case "deadlineexceeded":
+				reason = ReasonPodTimeoutWithInFlightEffect
+				message = "worker pod exceeded deadline; external effect state marked UNKNOWN"
+			default:
+				reason = ReasonPodFailedWithInFlightEffect
+				message = fmt.Sprintf("worker pod terminated with pod reason %q; external effect state marked UNKNOWN", termination.PodReason)
+			}
+		}
+	} else if worker != nil && worker.Status.Failed > 0 {
+		abnormalTermination = true
+		message = "worker Job failed without readable container exit; external effect state marked UNKNOWN"
+	}
+
+	if abnormalTermination || isUnknownPending {
+		if !abnormalTermination && isUnknownPending {
+			// If already set, preserve existing reason unless we have an update
+			existingCond := meta.FindStatusCondition(review.Status.Conditions, ConditionUnknownEffectPending)
+			if existingCond != nil && existingCond.Reason != "" {
+				reason = existingCond.Reason
+				message = existingCond.Message
+			}
+		}
+		logger.Info("enforcing UNKNOWN effect guard", "review", review.Name, "reason", reason, "message", message)
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               ConditionUnknownEffectPending,
+			Status:             metav1.ConditionTrue,
+			Reason:             reason,
+			Message:            message,
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
+	}
+
+	return nil
+}
+
+// ValidateEffectTransition validates allowed state transitions:
+// INTENT -> EXECUTING -> SUCCEEDED | FAILED | UNKNOWN
+// UNKNOWN -> RECONCILING -> SUCCEEDED | FAILED | UNKNOWN | MANUAL
+// FORBIDDEN: UNKNOWN -> EXECUTING, UNKNOWN -> SUCCEEDED
+func ValidateEffectTransition(from, to string) error {
+	switch from {
+	case EffectStateIntended:
+		if to == EffectStateInFlight {
+			return nil
+		}
+	case EffectStateInFlight:
+		if to == EffectStateSucceeded || to == EffectStateFailed || to == EffectStateUnknown {
+			return nil
+		}
+	case EffectStateUnknown:
+		if to == EffectStateReconciling {
+			return nil
+		}
+		// Explicitly forbidden transitions from UNKNOWN
+		if to == EffectStateInFlight || to == EffectStateSucceeded {
+			return fmt.Errorf("%w: cannot transition from %s to %s without authoritative reconciliation",
+				ErrInvalidEffectTransition, from, to)
+		}
+	case EffectStateReconciling:
+		if to == EffectStateSucceeded || to == EffectStateFailed || to == EffectStateUnknown || to == EffectStateManual {
+			return nil
+		}
+	}
+	if from == to {
+		return nil
+	}
+	return fmt.Errorf("%w: invalid transition from %s to %s", ErrInvalidEffectTransition, from, to)
+}
+
+// AssertCanPromoteToSucceeded ensures a worker outcome can only be promoted to
+// Succeeded if no unknown effects are pending and receipt auditability is satisfied.
+func AssertCanPromoteToSucceeded(review *reviewv1alpha2.PRReviewJob) error {
+	if meta.IsStatusConditionTrue(review.Status.Conditions, ConditionUnknownEffectPending) {
+		return fmt.Errorf("%w: condition %s is True", ErrUnknownEffectPending, ConditionUnknownEffectPending)
+	}
+	if review.Status.ReceiptDigest == "" || review.Status.ReceiptEvidenceRef == "" {
+		return fmt.Errorf("%w: receiptDigest and receiptEvidenceRef must be non-empty", ErrMissingReceiptAudit)
+	}
+	return nil
+}
+
+// ensureReceiptAuditability ensures status.ReceiptDigest and status.ReceiptEvidenceRef
+// are populated and committed prior to resource finalization or secret deletion.
+func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	worker *batchv1.Job,
+	now time.Time,
+) (bool, error) {
+	if review.Status.ReceiptDigest != "" && review.Status.ReceiptEvidenceRef != "" {
+		return false, nil
+	}
+
+	// 1. If worker job or pod annotations contain genuine receipt evidence, adopt them
+	if worker != nil {
+		if d, ok := worker.Annotations["review-yeti.ai/receipt-digest"]; ok && d != "" {
+			review.Status.ReceiptDigest = d
+		} else if d, ok := worker.Annotations["ct.calltelemetry.com/receipt-digest"]; ok && d != "" {
+			review.Status.ReceiptDigest = d
+		}
+		if ev, ok := worker.Annotations["review-yeti.ai/receipt-evidence-ref"]; ok && ev != "" {
+			review.Status.ReceiptEvidenceRef = ev
+		} else if ev, ok := worker.Annotations["ct.calltelemetry.com/receipt-evidence-ref"]; ok && ev != "" {
+			review.Status.ReceiptEvidenceRef = ev
+		}
+		if review.Status.ReceiptDigest != "" && review.Status.ReceiptEvidenceRef != "" {
+			return true, nil
+		}
+	}
+
+	// Never synthesize a fake ReceiptDigest for successful jobs or when phase is Succeeded.
+	// Genuine receipt annotations are strictly required; missing annotations must leave
+	// ReceiptDigest empty so AssertCanPromoteToSucceeded catches ErrMissingReceiptAudit and fails closed.
+	if (worker != nil && worker.Status.Succeeded > 0) || review.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+		return false, nil
+	}
+
+	// 2. Synthesize durable deterministic receipt evidence for terminal non-successful deletions
+	// from the work request digest or the pod termination record.
+	h := sha256.New()
+	seed := fmt.Sprintf("%s:%s:%s:%d", review.Spec.RunID, review.Spec.Repo, review.Spec.HeadSHA, review.Spec.RepositoryID)
+	h.Write([]byte(seed))
+	digest := "sha256:" + hex.EncodeToString(h.Sum(nil))
+
+	evidenceRef := fmt.Sprintf("audit://%s/%s/receipt", review.Namespace, review.Spec.RunID)
+	if review.Status.WorkerTermination != nil && review.Status.WorkerTermination.PodName != "" {
+		evidenceRef = fmt.Sprintf("audit://%s/%s/pod/%s", review.Namespace, review.Spec.RunID, review.Status.WorkerTermination.PodName)
+	}
+
+	review.Status.ReceiptDigest = digest
+	review.Status.ReceiptEvidenceRef = evidenceRef
+
+	log.FromContext(ctx).Info("persisting receipt audit fields prior to finalization",
+		"review", review.Name, "digest", digest, "evidenceRef", evidenceRef)
+	return true, nil
+}
+
 // prepareFinishedWorkerRelease runs immediately before this controller
 // releases terminalOutcomeFinalizer on a worker Job. It gives the forensic
 // record one more chance to land (the Pod cache can trail the Job's terminal
@@ -244,7 +454,17 @@ func (r *PRReviewJobV1Alpha2Reconciler) prepareFinishedWorkerRelease(
 	if err != nil {
 		return false, err
 	}
-	if recorded {
+
+	if err := r.ReconcileUnknownEffectGuard(ctx, review, worker, now); err != nil {
+		return false, err
+	}
+
+	auditRecorded, err := r.ensureReceiptAuditability(ctx, review, worker, now)
+	if err != nil {
+		return false, err
+	}
+
+	if recorded || auditRecorded {
 		if err := r.Status().Update(ctx, review); err != nil {
 			return false, err
 		}

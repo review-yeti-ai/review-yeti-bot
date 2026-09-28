@@ -226,6 +226,9 @@ func TestV1Alpha2CRDRejectsEveryOtherSpecChange(t *testing.T) {
 		"runnerMode":           "prebaked",
 		"qualificationProfile": "same-head",
 		"qualificationModel":   "openrouter/some-model",
+		"logicalChildId":       "child-fencing-test-2",
+		"fencingEpoch":         int64(99),
+		"workerLeaseToken":     "lease-token-changed",
 	}
 	for fieldName, value := range changes {
 		fieldName, value := fieldName, value

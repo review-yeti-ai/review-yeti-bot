@@ -39,11 +39,27 @@ import (
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
 )
 
+func attachReceiptAnnotations(worker *batchv1.Job) {
+	if worker.Annotations == nil {
+		worker.Annotations = make(map[string]string)
+	}
+	if worker.Annotations["review-yeti.ai/receipt-digest"] == "" {
+		worker.Annotations["review-yeti.ai/receipt-digest"] = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	}
+	if worker.Annotations["review-yeti.ai/receipt-evidence-ref"] == "" {
+		worker.Annotations["review-yeti.ai/receipt-evidence-ref"] = "audit://" + worker.Namespace + "/" + worker.Name + "/receipt"
+	}
+}
+
 // markWorkerSucceeded flips a fixture's worker Job to Succeeded=1 with a
 // JobComplete condition, the same shape missingJobFixture callers use to
 // drive the controller into the patchWorkerSuccessTTL branch.
 func markWorkerSucceeded(t *testing.T, kube client.Client, worker *batchv1.Job, at metav1.Time) {
 	t.Helper()
+	attachReceiptAnnotations(worker)
+	if err := kube.Update(context.Background(), worker); err != nil {
+		t.Fatalf("update worker annotations: %v", err)
+	}
 	worker.Status.Succeeded = 1
 	worker.Status.Conditions = []batchv1.JobCondition{{
 		Type: batchv1.JobComplete, Status: corev1.ConditionTrue, LastTransitionTime: at,

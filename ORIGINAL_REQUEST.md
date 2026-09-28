@@ -168,3 +168,46 @@ Requested team: Full multi-agent team (parallel work streams across dispatcher, 
 - [ ] TypeScript builds with zero errors (`npm run build`).
 - [ ] All unit and integration test suites pass (`npm test`).
 
+
+## 2026-09-27T21:52:53Z
+
+Implement the new agentic harness improvements from recent `ct-meta` commits (API-3330 and API-3333) into the DOKS runner lifecycle across both the TypeScript dispatcher and Go Kubernetes operator.
+
+Working directory: /Users/jasonbarbee/work/review-yeti-bot
+Integrity mode: development
+
+Reference material:
+- Architecture specification: `docs/plans/adaptive-agent-factory/2026-09-27-generalize-review-yeti-agent-harness.md` in `ct-meta`
+- Schema contracts: `knowledge/contracts/agent-harness.v1.schema.json` in `ct-meta`
+- Contract validator: `tools/agent_harness_contract.py` in `ct-meta`
+- Operator controllers: `k8s-operator/controllers/` in `review-yeti-bot`
+- Runner infrastructure: `src/infrastructure/k8sJobRunner.ts` in `review-yeti-bot`
+
+## Requirements
+
+### R1. TypeScript Runner Contract & Fencing Lifecycle
+Extend `K8sJobRunner` and the DOKS job dispatch pipeline in `review-yeti-bot` to construct and emit valid `ct-agent-work-request.v1` envelopes for runner Jobs. The job manifest generator must inject `logical_child_id`, `fencing_epoch`, and child execution identities into the runner container environment and volume mounts. Upon pod completion, the runner must validate and produce conforming `ct-agent-execution-receipt.v1` structures.
+
+### R2. Go Operator Fencing & Terminal Outcome Reconciliation
+Update the Go `PRReviewJob` v1alpha2 controller (`k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` and `worker_termination.go`) to reconcile child execution state against the authoritative fencing epoch:
+- Distinguish between mission fencing epoch, child attempt number, and worker lease token.
+- Handle pod failures, preemption, and eviction by recording terminal status without overwriting or promoting `UNKNOWN` external effect states to success.
+- Ensure terminal deletion and secret cleanup preserve receipt auditability.
+
+### R3. Task Observer & Lifecycle Evidence Emission
+Incorporate API-3333 task-observer lifecycle hooks into the runner wrapper. Ensure execution receipts reference generated evidence artifacts, structured diagnostics, and phase transitions, mapping workflow phases (`INTENT` -> `INTENDED`, `EXECUTING` -> `IN_FLIGHT`, `UNKNOWN`/`RECONCILING`/`MANUAL` -> `UNKNOWN`) consistently with `ct-effect-intent.v1`.
+
+### R4. Controlled Execution Environment
+All Kubernetes manifests generated or reconciled must target the namespaced boundary (`ct-review-system`). Do not modify cluster-wide RBAC, storage classes, or production secrets directly.
+
+## Acceptance Criteria
+
+### Schema & Contract Conformance
+- [ ] Runner WorkRequest payloads validate cleanly against `ct-agent-work-request.v1` schema from `ct-meta`
+- [ ] Execution receipt payloads validate cleanly against `ct-agent-execution-receipt.v1` schema from `ct-meta`
+- [ ] Fencing epoch mismatches or stale worker lease tokens trigger fail-closed reconciliation in the Go controller
+
+### Controller & Dispatcher Tests
+- [ ] Go controller unit and reconciliation tests pass (`go test ./controllers/...` in `k8s-operator`) with zero regressions
+- [ ] TypeScript runner unit tests pass (`npm test tests/unit/...`) with zero regressions
+- [ ] Offline contract qualification in `ct-meta` (`python3 test/agent_harness_contract_test.py`) passes without errors
