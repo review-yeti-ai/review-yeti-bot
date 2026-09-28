@@ -401,6 +401,10 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatal(err)
 	}
+	attachReceiptAnnotations(&worker)
+	if err := kube.Update(context.Background(), &worker); err != nil {
+		t.Fatalf("update worker annotations: %v", err)
+	}
 	worker.Status.Succeeded = 1
 	if err := kube.Status().Update(context.Background(), &worker); err != nil {
 		t.Fatalf("mark worker succeeded: %v", err)
@@ -1595,3 +1599,383 @@ func runSecretNameOf(env []corev1.EnvVar) string {
 	}
 	return ""
 }
+
+func TestPRReviewJobV1Alpha2WorkerInjectsTripartiteFencingEnv(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.LogicalChildID = "child-exec-99"
+	review.Spec.FencingEpoch = 3
+	review.Spec.WorkerLeaseToken = "token-attempt-1"
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	// First reconcile creates PVC
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	// Second reconcile acquires lease and creates worker Job
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+
+	var worker batchv1.Job
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
+		t.Fatalf("get worker Job: %v", err)
+	}
+
+	container := worker.Spec.Template.Spec.Containers[0]
+	childID := ""
+	epoch := ""
+	token := ""
+	for _, env := range container.Env {
+		switch env.Name {
+		case "CT_LOGICAL_CHILD_ID":
+			childID = env.Value
+		case "CT_FENCING_EPOCH":
+			epoch = env.Value
+		case "CT_WORKER_LEASE_TOKEN":
+			token = env.Value
+		}
+	}
+	if childID != "child-exec-99" {
+		t.Fatalf("CT_LOGICAL_CHILD_ID = %q, want child-exec-99", childID)
+	}
+	if epoch != "3" {
+		t.Fatalf("CT_FENCING_EPOCH = %q, want 3", epoch)
+	}
+	if token != "token-attempt-1" {
+		t.Fatalf("CT_WORKER_LEASE_TOKEN = %q, want token-attempt-1", token)
+	}
+}
+
+func TestPRReviewJobV1Alpha2FailsClosedOnStaleFencingEpoch(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.FencingEpoch = 2
+	review.Status.AuthoritativeFencingEpoch = 4 // Stale epoch: authoritative is higher
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if result.RequeueAfter > 0 {
+		t.Fatalf("expected immediate fail-closed without requeue, got %v", result.RequeueAfter)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get updated review: %v", err)
+	}
+
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("status.phase = %s, want %s", updated.Status.Phase, reviewv1alpha2.PhaseFailed)
+	}
+
+	cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionFencingEpochMismatch)
+	if cond == nil {
+		t.Fatal("expected ConditionFencingEpochMismatch to be set")
+	}
+	if cond.Status != metav1.ConditionTrue {
+		t.Fatalf("ConditionFencingEpochMismatch status = %s, want True", cond.Status)
+	}
+	if cond.Reason != "EpochMismatch" {
+		t.Fatalf("ConditionFencingEpochMismatch reason = %s, want EpochMismatch", cond.Reason)
+	}
+
+	readyCond := meta.FindStatusCondition(updated.Status.Conditions, "Ready")
+	if readyCond == nil || readyCond.Status != metav1.ConditionFalse {
+		t.Fatal("expected Ready condition to be False on epoch mismatch")
+	}
+
+	// Verify no worker Job was created
+	var worker batchv1.Job
+	workerErr := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker)
+	if workerErr == nil {
+		t.Fatal("worker Job must NOT be created when fencing epoch mismatch occurs")
+	}
+}
+
+func TestPRReviewJobV1Alpha2FailsClosedOnNamespaceMissionAuthorityRegression(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+
+	// Sibling review for the same PR with higher authoritative epoch 5
+	sibling := v1alpha2Review(now)
+	sibling.Name = "ct-review-sibling-000000000000000000"
+	sibling.Spec.RunID = "run_sibling00000000000000000000000"
+	sibling.Spec.RunSecretName = "ct-review-run-sibling00000000000000000000000"
+	sibling.Spec.FencingEpoch = 5
+	sibling.Status.AuthoritativeFencingEpoch = 5
+
+	// New candidate review with regressed epoch 3
+	candidate := v1alpha2Review(now)
+	candidate.Name = "ct-review-candidate-0000000000000000"
+	candidate.Spec.RunID = "run_candidate000000000000000000000"
+	candidate.Spec.RunSecretName = "ct-review-run-candidate000000000000000000000"
+	candidate.Spec.FencingEpoch = 3
+	candidate.Status.AuthoritativeFencingEpoch = 0 // Unset
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(sibling, candidate).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: candidate.Namespace, Name: candidate.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile returned unexpected error: %v", err)
+	}
+	if result.RequeueAfter > 0 {
+		t.Fatalf("expected immediate fail-closed, got %v", result.RequeueAfter)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get candidate: %v", err)
+	}
+
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("candidate phase = %s, want Failed due to mission authority epoch mismatch", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionFencingEpochMismatch)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected ConditionFencingEpochMismatch=True, got %#v", cond)
+	}
+}
+
+func TestPRReviewJobV1Alpha2InitializesAuthoritativeFencingEpoch(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.FencingEpoch = 2
+	review.Status.AuthoritativeFencingEpoch = 0
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	// First reconcile creates PVC
+	_, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get updated review: %v", err)
+	}
+	if updated.Status.AuthoritativeFencingEpoch != 2 {
+		t.Fatalf("status.AuthoritativeFencingEpoch = %d, want 2", updated.Status.AuthoritativeFencingEpoch)
+	}
+	if cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionFencingEpochMismatch); cond != nil {
+		t.Fatalf("unexpected ConditionFencingEpochMismatch: %#v", cond)
+	}
+}
+
+func TestPRReviewJobV1Alpha2FailsClosedOnStaleWorkerLeaseToken(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.FencingEpoch = 1
+	review.Status.AuthoritativeFencingEpoch = 1
+	review.Spec.WorkerLeaseToken = "token-attempt-1"
+	review.Status.ActiveWorkerLeaseToken = "token-attempt-2" // Mismatch: active token has moved on
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if result.RequeueAfter > 0 {
+		t.Fatalf("expected immediate fail-closed, got %v", result.RequeueAfter)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get updated: %v", err)
+	}
+
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("status.phase = %s, want Failed", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionStaleWorkerLease)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected ConditionStaleWorkerLease=True, got %#v", cond)
+	}
+	if cond.Reason != "LeaseExpired" {
+		t.Fatalf("condition reason = %s, want LeaseExpired", cond.Reason)
+	}
+}
+
+func TestPRReviewJobV1Alpha2FailsClosedOnExpiredWorkspaceLease(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.WorkerLeaseToken = "token-1"
+
+	// Create an expired Lease in ct-review-system
+	leaseName := workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
+	pastTime := metav1.NewMicroTime(now.Add(-10 * time.Minute))
+	duration := int32(120) // 2 minutes duration, expired 8 minutes ago
+	holder := review.Spec.RunID
+	transitions := int32(1)
+	lease := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      leaseName,
+			Namespace: review.Namespace,
+			Labels: map[string]string{
+				"review-yeti.ai/repository-id": "123",
+				"review-yeti.ai/pr-number":     "42",
+			},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &holder,
+			LeaseDurationSeconds: &duration,
+			AcquireTime:          &pastTime,
+			RenewTime:            &pastTime,
+			LeaseTransitions:     &transitions,
+		},
+	}
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, lease).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if result.RequeueAfter > 0 {
+		t.Fatalf("expected immediate fail-closed, got %v", result.RequeueAfter)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get review: %v", err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionStaleWorkerLease)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != "LeaseExpired" {
+		t.Fatalf("expected ConditionStaleWorkerLease True LeaseExpired, got %#v", cond)
+	}
+}
+
+func TestPRReviewJobV1Alpha2FailsClosedDuringRunningJobWithoutPodMutation(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.FencingEpoch = 2
+	review.Status.Phase = reviewv1alpha2.PhaseRunning
+	review.Status.AuthoritativeFencingEpoch = 4 // Regressed: status epoch was bumped
+
+	// Existing running worker Job
+	worker := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      review.Name + "-worker",
+			Namespace: review.Namespace,
+			Labels: map[string]string{
+				"review-yeti.ai/run-id":           review.Spec.RunID,
+				"review-yeti.ai/publication-mode": review.Spec.PublicationMode,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "reviewer-worker", Image: review.Spec.WorkerImage}},
+				},
+			},
+		},
+		Status: batchv1.JobStatus{
+			Active: 1, // Currently running
+		},
+	}
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, worker).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	result, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if result.RequeueAfter > 0 {
+		t.Fatalf("expected immediate fail-closed, got %v", result.RequeueAfter)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get review: %v", err)
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionFencingEpochMismatch)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected ConditionFencingEpochMismatch=True, got %#v", cond)
+	}
+
+	// CRITICAL: Worker Job must NOT be deleted or mutated
+	var survivingWorker batchv1.Job
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: worker.Namespace, Name: worker.Name}, &survivingWorker); err != nil {
+		t.Fatalf("worker Job was mutated or deleted: %v", err)
+	}
+}
+
+func TestPRReviewJobV1Alpha2DoesNotPromoteToSucceededOnEpochMismatch(t *testing.T) {
+	now := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Spec.FencingEpoch = 1
+	review.Status.Phase = reviewv1alpha2.PhaseRunning
+	review.Status.AuthoritativeFencingEpoch = 2 // Epoch regressed
+
+	worker := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      review.Name + "-worker",
+			Namespace: review.Namespace,
+			Labels: map[string]string{
+				"review-yeti.ai/run-id":           review.Spec.RunID,
+				"review-yeti.ai/publication-mode": review.Spec.PublicationMode,
+			},
+		},
+		Status: batchv1.JobStatus{
+			Succeeded: 1, // Worker claims success
+		},
+	}
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, worker).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	_, err := reconciler.Reconcile(context.Background(), req)
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+
+	var updated reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
+		t.Fatalf("get review: %v", err)
+	}
+	if updated.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("CRITICAL SAFETY VIOLATION: review was promoted to Succeeded despite epoch mismatch!")
+	}
+	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	}
+	cond := meta.FindStatusCondition(updated.Status.Conditions, reviewv1alpha2.ConditionFencingEpochMismatch)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected ConditionFencingEpochMismatch=True, got %#v", cond)
+	}
+}
+

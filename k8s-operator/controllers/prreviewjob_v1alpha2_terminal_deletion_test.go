@@ -381,6 +381,14 @@ func TestPRReviewJobV1Alpha2ReconcilerBuildsWorkerWithFailedTTLThenPatchesToSucc
 		t.Fatalf("built worker TTL = %v, want 456 (the failed-TTL env)", worker.Spec.TTLSecondsAfterFinished)
 	}
 
+	if worker.Annotations == nil {
+		worker.Annotations = make(map[string]string)
+	}
+	worker.Annotations["review-yeti.ai/receipt-digest"] = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	worker.Annotations["review-yeti.ai/receipt-evidence-ref"] = "audit://" + worker.Namespace + "/" + worker.Name + "/receipt"
+	if err := kube.Update(context.Background(), &worker); err != nil {
+		t.Fatalf("update worker annotations: %v", err)
+	}
 	worker.Status.Succeeded = 1
 	if err := kube.Status().Update(context.Background(), &worker); err != nil {
 		t.Fatalf("mark worker succeeded: %v", err)

@@ -177,3 +177,147 @@ func TestDispatchTimingStatusRejectsBackwardOrUnknownObservations(t *testing.T) 
 		t.Fatalf("failed observations should not corrupt timing: %v", err)
 	}
 }
+
+func TestPRReviewJobV1Alpha2FencingProjection(t *testing.T) {
+	fixture := contractFixture()
+	fixture.Spec.LogicalChildID = "child-review-worker-1"
+	fixture.Spec.FencingEpoch = 42
+	fixture.Spec.WorkerLeaseToken = "lease-token-alpha"
+
+	encoded, err := json.Marshal(fixture.Spec)
+	if err != nil {
+		t.Fatalf("marshal spec with fencing: %v", err)
+	}
+	var projected map[string]any
+	if err := json.Unmarshal(encoded, &projected); err != nil {
+		t.Fatalf("unmarshal spec with fencing: %v", err)
+	}
+
+	if projected["logicalChildId"] != "child-review-worker-1" {
+		t.Fatalf("projected logicalChildId = %v, want child-review-worker-1", projected["logicalChildId"])
+	}
+	if projected["fencingEpoch"] != float64(42) {
+		t.Fatalf("projected fencingEpoch = %v, want 42", projected["fencingEpoch"])
+	}
+	if projected["workerLeaseToken"] != "lease-token-alpha" {
+		t.Fatalf("projected workerLeaseToken = %v, want lease-token-alpha", projected["workerLeaseToken"])
+	}
+}
+
+func TestPRReviewJobV1Alpha2FencingValidation(t *testing.T) {
+	validSpec := contractFixture().Spec
+	validSpec.LogicalChildID = "child-review-worker-1"
+	validSpec.FencingEpoch = 1
+	validSpec.WorkerLeaseToken = "lease-token-1"
+	if err := validSpec.ValidateFencing(); err != nil {
+		t.Fatalf("valid fencing spec rejected: %v", err)
+	}
+
+	// Nil spec
+	var nilSpec *v1alpha2.PRReviewJobSpec
+	if err := nilSpec.ValidateFencing(); err == nil {
+		t.Fatal("expected error on nil spec")
+	}
+
+	// Invalid logical child ID (invalid characters)
+	invalidChildID := validSpec
+	invalidChildID.LogicalChildID = "child@bad#id"
+	if err := invalidChildID.ValidateFencing(); err == nil {
+		t.Fatal("expected error on invalid logicalChildId characters")
+	}
+
+	// Invalid fencing epoch (negative or 0)
+	invalidEpoch := validSpec
+	invalidEpoch.FencingEpoch = -5
+	if err := invalidEpoch.ValidateFencing(); err == nil {
+		t.Fatal("expected error on negative fencingEpoch")
+	}
+
+	// Invalid fencing epoch (exceeds max safe integer)
+	exceedsMaxEpoch := validSpec
+	exceedsMaxEpoch.FencingEpoch = 9007199254740992
+	if err := exceedsMaxEpoch.ValidateFencing(); err == nil {
+		t.Fatal("expected error on fencingEpoch exceeding max safe integer")
+	}
+
+	// Invalid worker lease token (invalid characters)
+	invalidLease := validSpec
+	invalidLease.WorkerLeaseToken = "token with spaces!"
+	if err := invalidLease.ValidateFencing(); err == nil {
+		t.Fatal("expected error on invalid workerLeaseToken")
+	}
+}
+
+func TestPRReviewJobV1Alpha2StatusHelpers(t *testing.T) {
+	status := &v1alpha2.PRReviewJobStatus{}
+
+	if status.HasFencingEpochMismatch() {
+		t.Fatal("expected HasFencingEpochMismatch false on empty status")
+	}
+	if status.HasStaleWorkerLease() {
+		t.Fatal("expected HasStaleWorkerLease false on empty status")
+	}
+	if status.HasUnknownEffectPending() {
+		t.Fatal("expected HasUnknownEffectPending false on empty status")
+	}
+	if status.ReceiptIsAuditable() {
+		t.Fatal("expected ReceiptIsAuditable false on empty status")
+	}
+
+	now := metav1.NewTime(time.Now())
+	status.Conditions = append(status.Conditions, metav1.Condition{
+		Type:               v1alpha2.ConditionFencingEpochMismatch,
+		Status:             metav1.ConditionTrue,
+		Reason:             "EpochMismatch",
+		LastTransitionTime: now,
+	})
+	if !status.HasFencingEpochMismatch() {
+		t.Fatal("expected HasFencingEpochMismatch true")
+	}
+
+	status.Conditions = append(status.Conditions, metav1.Condition{
+		Type:               v1alpha2.ConditionStaleWorkerLease,
+		Status:             metav1.ConditionTrue,
+		Reason:             "LeaseExpired",
+		LastTransitionTime: now,
+	})
+	if !status.HasStaleWorkerLease() {
+		t.Fatal("expected HasStaleWorkerLease true")
+	}
+
+	status.Conditions = append(status.Conditions, metav1.Condition{
+		Type:               v1alpha2.ConditionUnknownEffectPending,
+		Status:             metav1.ConditionTrue,
+		Reason:             "UnknownEffectPreserved",
+		LastTransitionTime: now,
+	})
+	if !status.HasUnknownEffectPending() {
+		t.Fatal("expected HasUnknownEffectPending true")
+	}
+
+	status.ReceiptDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	if !status.ReceiptIsAuditable() {
+		t.Fatal("expected ReceiptIsAuditable true when ReceiptDigest is set")
+	}
+}
+
+func TestPRReviewJobV1Alpha2FencingDeepCopy(t *testing.T) {
+	original := contractFixture()
+	original.Spec.LogicalChildID = "child-1"
+	original.Spec.FencingEpoch = 5
+	original.Spec.WorkerLeaseToken = "token-1"
+	original.Status.AuthoritativeFencingEpoch = 5
+	original.Status.ActiveWorkerLeaseToken = "token-1"
+	original.Status.ReceiptDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	original.Status.ReceiptEvidenceRef = "audit://ct-review-system/receipt-1"
+
+	copied := original.DeepCopy()
+	if copied.Spec.LogicalChildID != "child-1" || copied.Spec.FencingEpoch != 5 || copied.Spec.WorkerLeaseToken != "token-1" {
+		t.Fatalf("spec fencing fields were not deep copied: %#v", copied.Spec)
+	}
+	if copied.Status.AuthoritativeFencingEpoch != 5 || copied.Status.ActiveWorkerLeaseToken != "token-1" ||
+		copied.Status.ReceiptDigest != original.Status.ReceiptDigest || copied.Status.ReceiptEvidenceRef != original.Status.ReceiptEvidenceRef {
+		t.Fatalf("status fencing/receipt fields were not deep copied: %#v", copied.Status)
+	}
+}
+
