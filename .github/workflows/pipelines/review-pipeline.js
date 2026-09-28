@@ -1478,6 +1478,16 @@ function isOpenRouterEndpoint(value) {
   return String(value || '').replace(/\/+$/, '').toLowerCase() === 'https://openrouter.ai/api/v1';
 }
 
+/**
+ * REL-1162: Fireworks was removed as a Review Yeti provider (account suspended, HTTP 412;
+ * operator decision 2026-09-28). Any transport that names it or targets its endpoint is
+ * refused a credential rather than mapped onto another provider's key.
+ */
+function isRetiredFireworksTransport(nameLower, urlLower) {
+  return String(nameLower || '').toLowerCase().includes('fireworks')
+    || String(urlLower || '').toLowerCase().includes('fireworks.ai');
+}
+
 function resolveModelConfig(env = process.env) {
   const apiKey = env.OPENROUTER_REVIEW_FLEET_KEY || env.OPENROUTER_PR_REVIEW_API_KEY || env.OPENROUTER_API_KEY || '';
   // Older callers passed the selected provider's URL/model through the legacy OpenRouter
@@ -1510,12 +1520,15 @@ function resolveModelConfig(env = process.env) {
     ? rawTransports.map((t) => {
         const keyEnv = t.api_key_env || t.apiKeyEnv;
         let resolvedKey = keyEnv ? env[keyEnv] : '';
-        if (!resolvedKey) {
-          const nameLower = String(t.name || t.provider || '').toLowerCase();
-          const urlLower = String(t.base_url || t.baseUrl || '').toLowerCase();
-          if (nameLower.includes('fireworks') || urlLower.includes('fireworks.ai')) {
-            resolvedKey = env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY || '';
-          } else if (nameLower.includes('ollama') || urlLower.includes('ollama.com') || urlLower.includes('ollama.ai')) {
+        const nameLower = String(t.name || t.provider || '').toLowerCase();
+        const urlLower = String(t.base_url || t.baseUrl || '').toLowerCase();
+        // REL-1162: Fireworks was removed from Review Yeti (suspended account, HTTP 412). A plan
+        // entry naming it -- or pointing at its endpoint -- resolves no credential, so the
+        // `.filter` below drops it. It must never fall through to another provider's key.
+        if (isRetiredFireworksTransport(nameLower, urlLower)) {
+          resolvedKey = '';
+        } else if (!resolvedKey) {
+          if (nameLower.includes('ollama') || urlLower.includes('ollama.com') || urlLower.includes('ollama.ai')) {
             resolvedKey = env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY || '';
           } else if (nameLower.includes('anthropic') || urlLower.includes('anthropic.com')) {
             resolvedKey = env.ANTHROPIC_API_KEY || '';
@@ -1636,18 +1649,8 @@ function resolveModelConfig(env = process.env) {
       });
     }
 
-    // Preserve the legacy direct-provider order when OpenRouter is not configured.
-    // Fireworks remains the first direct fallback in that mode; it is not silently
-    // mixed into the OpenRouter route when an OpenRouter key is present.
-    if (!apiKey && (env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY)) {
-      autoTransports.push({
-        name: 'fireworks',
-        baseUrl: (env.FIREWORKS_BASE_URL || 'https://api.fireworks.ai/inference/v1').replace(/\/+$/, ''),
-        apiKey: env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY,
-        model: env.FIREWORKS_MODEL || 'accounts/fireworks/models/glm-5.3-flash',
-        timeoutMs: 120_000,
-      });
-    }
+    // REL-1162: the implicit Fireworks direct fallback was removed with the provider. A stray
+    // FIREWORKS_* credential in the environment no longer adds a transport.
 
     // These providers are opt-in fallbacks. They are intentionally added even when
     // OpenRouter is configured, but only when their own credentials are present.
@@ -8424,6 +8427,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  isRetiredFireworksTransport,
   // REL-1107: exported so the identity-probe retry and its diagnostics are testable.
   resolveAuthenticatedPublisher,
   isTransientIdentityProbeFailure,

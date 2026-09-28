@@ -226,7 +226,15 @@ describe('openrouter review policy', () => {
     it('admits each named public destination', () => {
       expect(() => validateOpenRouterReviewPolicy(base('https://openrouter.ai/api/v1', 'z-ai/glm-5.3-flash'))).not.toThrow();
       expect(() => validateOpenRouterReviewPolicy(base('https://opencode.ai/zen/v1', 'glm-5.3-flash'))).not.toThrow();
-      expect(() => validateOpenRouterReviewPolicy(base('https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/glm-5p3-flash'))).not.toThrow();
+    });
+
+    // REL-1162: Fireworks was removed (suspended account, HTTP 412). Its endpoint and model ids
+    // are no longer admitted, even as a same-destination pair.
+    it('refuses the removed Fireworks destination and model ids', () => {
+      expect(policyModule.isAllowedReviewBaseUrl('https://api.fireworks.ai/inference/v1')).toBe(false);
+      expect(() => validateOpenRouterReviewPolicy(base('https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/glm-5p3-flash'))).toThrow();
+      expect(() => validateOpenRouterReviewPolicy(base('https://openrouter.ai/api/v1', 'accounts/fireworks/models/glm-5p3-flash'))).toThrow();
+      expect(() => validateOpenRouterReviewPolicy(base('https://openrouter.ai/api/v1', 'accounts/fireworks/models/deepseek-v4-flash-0731'))).toThrow();
     });
 
     it('still rejects any destination outside the list', () => {
@@ -329,8 +337,6 @@ describe('openrouter review policy', () => {
       ['opencode', 'https://opencode.ai/zen/v1', 'glm-5.3-flash'],
       ['digest-pinned gateway', 'https://gateway.test.invalid/v1', 'neuralwatt/glm-5.3-flash'],
       ['digest-pinned gateway (deepseek)', 'https://gateway.test.invalid/v1', 'neuralwatt/deepseek-v4-flash'],
-      ['fireworks', 'https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/glm-5p3-flash'],
-      ['fireworks deepseek', 'https://api.fireworks.ai/inference/v1', 'accounts/fireworks/models/deepseek-v4-flash-0731'],
     ])('resolves a valid policy for the %s destination', (_label, baseUrl, model) => {
       const resolve = () =>
         resolveOpenRouterReviewPolicy({

@@ -409,12 +409,13 @@ describe('Multi-Transport Fast Failover', () => {
 
     const config = resolveModelConfig(env);
     expect(config.enabled).toBe(true);
-    expect(config.transports.length).toBe(3);
-    expect(config.transports[0].name).toBe('fireworks');
-    expect(config.transports[0].apiKey).toBe('secret-fw');
-    expect(config.transports[1].name).toBe('ollama');
-    expect(config.transports[1].apiKey).toBe('secret-ollama');
-    expect(config.transports[2].name).toBe('openrouter-fallback');
-    expect(config.transports[2].apiKey).toBe('secret-openrouter');
+    // REL-1162: Fireworks was removed. Its plan entry resolves no credential -- even with its own
+    // key present -- so only the remaining candidates are admitted, in order.
+    expect(config.transports.length).toBe(2);
+    expect(config.transports.some((t: { name: string }) => t.name === 'fireworks')).toBe(false);
+    expect(config.transports[0].name).toBe('ollama');
+    expect(config.transports[0].apiKey).toBe('secret-ollama');
+    expect(config.transports[1].name).toBe('openrouter-fallback');
+    expect(config.transports[1].apiKey).toBe('secret-openrouter');
   });
 });

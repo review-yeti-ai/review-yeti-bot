@@ -72,31 +72,18 @@ describe('review transport configuration guard', () => {
 
   // Both destinations must fail closed on a missing key, not just opencode. Only the accept path
   // was covered here, which would have let the OpenRouter branch rot into a no-op unnoticed.
-  it('accepts a fully consistent fireworks configuration', () => {
-    expect(run({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }).ok).toBe(true);
-  });
-
-  it('refuses fireworks without its own key rather than falling back', () => {
+  // REL-1162: Fireworks was removed (suspended account, HTTP 412). The guard refuses it outright,
+  // even with a key present and a valid lane timeout, and emits no destination class for it.
+  it('refuses the removed Fireworks destination even with a key and a valid lane timeout', () => {
     const r = run({
       REVIEW_BASE_URL: FIREWORKS,
-      FIREWORKS_KEY_PRESENT: 'false',
+      FIREWORKS_KEY_PRESENT: 'true',
       OPENROUTER_KEY_PRESENT: 'true',
+      GATEWAY_KEY_PRESENT: 'true',
       REVIEW_LANE_TIMEOUT_MS: '420000',
     });
     expect(r.ok).toBe(false);
-    expect(r.out).toMatch(/CT_REVIEW_FIREWORKS_API_KEY is unset/);
-  });
-
-  it('requires an explicit lane timeout for fireworks', () => {
-    const r = run({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '' });
-    expect(r.ok).toBe(false);
-    expect(r.out).toMatch(/REVIEW_LANE_TIMEOUT_MS is unset/);
-  });
-
-  it('rejects a lane timeout tighter than the fireworks budget', () => {
-    const r = run({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '90000' });
-    expect(r.ok).toBe(false);
-    expect(r.out).toMatch(/tighter than the fireworks provider budget/);
+    expect(r.out).toMatch(/Fireworks, which was removed from Review Yeti \(REL-1162\)/);
   });
 
   it('refuses OpenRouter without its own key', () => {
@@ -288,7 +275,6 @@ describe('review transport configuration guard', () => {
     ['opencode', { REVIEW_BASE_URL: OPENCODE, OPENCODE_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }],
     ['openrouter', { REVIEW_BASE_URL: OPENROUTER, OPENROUTER_KEY_PRESENT: 'true' }],
     ['gateway', gatewayEnv({ GATEWAY_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' })],
-    ['fireworks', { REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' }],
   ])('emits the %s destination class for the credential selector', (expected, env) => {
     const r = destinationOf(env as Record<string, string>);
     expect(r.ok).toBe(true);
@@ -299,6 +285,12 @@ describe('review transport configuration guard', () => {
   // provider's credential. A rejected destination must therefore emit nothing at all.
   it('emits no destination class when the configuration is rejected', () => {
     const r = destinationOf({ REVIEW_BASE_URL: 'https://evil.example/v1' });
+    expect(r.ok).toBe(false);
+    expect(r.destination).toBe('');
+  });
+
+  it('emits no destination class for the removed Fireworks destination (REL-1162)', () => {
+    const r = destinationOf({ REVIEW_BASE_URL: FIREWORKS, FIREWORKS_KEY_PRESENT: 'true', REVIEW_LANE_TIMEOUT_MS: '420000' });
     expect(r.ok).toBe(false);
     expect(r.destination).toBe('');
   });
@@ -319,7 +311,9 @@ describe('review transport configuration guard', () => {
     expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
     expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
     expect(selector).toContain("outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY");
-    expect(selector).toContain("outputs.destination == 'fireworks' && secrets.CT_REVIEW_FIREWORKS_API_KEY");
+    // REL-1162: no Fireworks arm, and no Fireworks credential anywhere in the workflow.
+    expect(selector).not.toContain('fireworks');
+    expect(workflow).not.toMatch(/CT_REVIEW_FIREWORKS_API_KEY|fireworks-api-key/);
     // Every arm that reaches a secret must be gated by a destination comparison. Checked per-arm
     // rather than at the tail: the previous negative regex required `}}` right after the secret,
     // so a bare `|| secrets.X` inserted MID-expression stayed green -- and since `&&` binds
@@ -327,7 +321,7 @@ describe('review transport configuration guard', () => {
     const armsWithSecrets = selector
       .split(/\r?\n/)
       .filter((line) => line.includes('secrets.'));
-    expect(armsWithSecrets).toHaveLength(4);
+    expect(armsWithSecrets).toHaveLength(3);
     for (const arm of armsWithSecrets) {
       expect(arm).toMatch(/outputs\.destination == '[a-z]+'\s*&&\s*secrets\./);
     }
