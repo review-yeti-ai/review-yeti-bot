@@ -51,7 +51,7 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 		"workerImage", "runSecretName",
 	}
 	wantProperties := append([]string(nil), wantRequired...)
-	wantProperties = append(wantProperties, "cancelReason", "cancelRequested", "executionAttempt", "preparedReview", "qualificationModel", "qualificationProfile", "runnerMode")
+	wantProperties = append(wantProperties, "cancelReason", "cancelRequested", "executionAttempt", "fencingEpoch", "logicalChildId", "preparedReview", "qualificationModel", "qualificationProfile", "runnerMode", "workerLeaseToken")
 	sort.Strings(wantRequired)
 	sort.Strings(wantProperties)
 	gotRequired := append([]string(nil), spec.Required...)

@@ -50,10 +50,13 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
       'cancelReason',
       'cancelRequested',
       'executionAttempt',
+      'fencingEpoch',
+      'logicalChildId',
       'preparedReview',
       'qualificationModel',
       'qualificationProfile',
       'runnerMode',
+      'workerLeaseToken',
     ].sort());
     expect(projection.spec).not.toHaveProperty('qualificationModel');
     expect(projection.spec).not.toHaveProperty('qualificationProfile');
