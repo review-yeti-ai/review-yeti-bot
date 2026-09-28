@@ -12,7 +12,7 @@ inputs:
     required: false
     default: ''
   fireworks-api-key:
-    description: 'Fireworks AI API key for fast direct inference.'
+    description: 'Deprecated and ignored (REL-1162): Fireworks was removed as a Review Yeti provider. Kept only so existing callers do not warn.'
     required: false
     default: ''
   ollama-api-key:
@@ -647,8 +647,6 @@ runs:
         REVIEW_TRANSPORT_COMPAT: ${{ inputs.transport-compat }}
         REVIEW_LANE_TIMEOUT_MS: ${{ inputs.lane-timeout-ms }}
         REVIEW_ACTION_BUDGET_MS: ${{ inputs.action-budget-ms }}
-        FIREWORKS_PR_REVIEW_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_PR_REVIEW_API_KEY || env.FIREWORKS_API_KEY }}
-        FIREWORKS_API_KEY: ${{ inputs.fireworks-api-key || env.FIREWORKS_API_KEY }}
         OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}
         OLLAMA_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_API_KEY }}
         SYNTHETIC_API_KEY: ${{ inputs.synthetic-api-key || env.SYNTHETIC_API_KEY }}

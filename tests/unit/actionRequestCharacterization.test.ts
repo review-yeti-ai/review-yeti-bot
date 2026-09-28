@@ -241,18 +241,10 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
       stream: true,
     });
 
+    // REL-1162: the historical fixture still declares a Fireworks transport, but Fireworks was
+    // removed from Review Yeti. The Action drops it at the runtime mapper: no request is built.
+    expect(captured).not.toHaveProperty('fireworks');
     expect(captured).toEqual({
-      fireworks: {
-        endpoint_class: 'direct-fireworks-openai-compatible',
-        method: 'POST',
-        headers: { authorization: '<redacted>', 'content-type': 'application/json' },
-        timeout_ms: 120000,
-        body: {
-          ...common('accounts/fireworks/models/deepseek-v4-flash-0731'),
-          reasoning_effort: 'high',
-          perf_metrics_in_response: true,
-        },
-      },
       ollama: {
         endpoint_class: 'direct-ollama-cloud-openai-compatible',
         method: 'POST',
@@ -292,12 +284,6 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
       },
     });
     expect(contracts).toEqual({
-      fireworks: {
-        policyDeclared: 'json_object',
-        requestObserved: 'json_object',
-        providerSupported: 'unreported',
-        terminalParsed: true,
-      },
       ollama: {
         policyDeclared: 'unknown',
         requestObserved: 'json_object',
@@ -313,13 +299,14 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
     });
   });
 
-  it('proves OpenRouter-only fields never reach Fireworks or Ollama', async () => {
-    const { captured } = await capturePanelRequests();
-    for (const name of ['fireworks', 'ollama']) {
+  it('proves OpenRouter-only fields never reach a direct transport (Ollama)', async () => {
+    const { runtime, captured } = await capturePanelRequests();
+    // REL-1162: the fixture's Fireworks transport never reaches the request path at all.
+    expect(runtime.modelConfig.transports.map((transport: any) => transport.name)).not.toContain('fireworks');
+    for (const name of ['ollama']) {
       expect(captured[name].body).not.toHaveProperty('provider');
       expect(captured[name].body).not.toHaveProperty('plugins');
     }
-    expect(captured.fireworks.body).not.toHaveProperty('seed');
     expect(captured['openrouter-fallback'].body).not.toHaveProperty('seed');
     expect(captured.ollama.body.seed).toBe(144208749);
     expect(captured['openrouter-fallback'].body).toHaveProperty('provider');
@@ -328,7 +315,9 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
 
   it('categorizes smoke/panel semantic parity and the remaining OpenRouter routing drift', async () => {
     const { captured } = await capturePanelRequests();
-    const parity = Object.fromEntries(fixture.plan.transports.map((transport: any) => {
+    // REL-1162: Fireworks is dropped by the runtime mapper, so it has no panel request to compare.
+    const admitted = fixture.plan.transports.filter((transport: any) => transport.name !== 'fireworks');
+    const parity = Object.fromEntries(admitted.map((transport: any) => {
       const smoke = smokeBodyFromFixture(transport);
       const panel = captured[transport.name].body;
       return [transport.name, {
@@ -345,11 +334,6 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
     }));
 
     expect(parity).toEqual({
-      fireworks: {
-        model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
-        perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'equal',
-        temperature: 'prompt-specific-difference', max_tokens: 'prompt-specific-difference',
-      },
       ollama: {
         model: 'equal', response_format: 'equal', stream: 'equal', reasoning: 'equal',
         perf_metrics_in_response: 'equal', provider: 'equal', plugins: 'equal',
