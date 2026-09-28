@@ -37,6 +37,11 @@ type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: Incremen
 interface Client extends Queryable { release(): void }
 interface Pool extends Queryable { connect(): Promise<Client> }
 
+/** A current successful gate that can still publish after its run succeeds.
+ * Both closed-PR run selection and gate settlement must use this predicate. */
+export const UNPUBLISHED_SUCCESS_GATE_SQL =
+  "gate.current_attempt AND gate.desired_state = 'success' AND gate.published_version < gate.desired_version";
+
 export function gateAttemptId(runId: string, generation: number, executionAttempt: number): string {
   if (!/^run_[a-f0-9]{32}$/u.test(runId)
     || !Number.isSafeInteger(generation) || generation < 0
@@ -409,6 +414,31 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         coordinates.repositoryId, coordinates.prNumber, expectedAppId, JSON.stringify(coordinates), externalId, now]);
       if (saved.rows.length !== 1) throw new Error('Gate reservation conflicts with persisted identity');
       return fromRow(saved.rows[0]);
+  }
+
+  /** Settle an unreviewable PR's current gate without opening a second transaction.
+   * The caller holds the PR advisory lock and commits this with run/outbox retirement. */
+  static async cancelForUnreviewablePullRequestInTransaction(client: Queryable, runId: string,
+    now: number, reason: 'candidate-superseded' | 'pull-request-closed'): Promise<void> {
+    // Bound checks reconcile to cancelled on their existing check ID. A reserved
+    // intent has no check to publish, so its new version is tombstoned locally.
+    // This also retires a successful verdict still awaiting publication.
+    await client.query(`UPDATE review_gate_attempts AS gate SET
+        desired_state = 'cancelled', desired_version = desired_version + 1,
+        decision = $2::jsonb, current_attempt = false,
+        published_version = CASE WHEN creation_state = 'reserved'
+          THEN desired_version + 1 ELSE published_version END,
+        lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+        available_at = to_timestamp($3 / 1000.0), updated_at = to_timestamp($3 / 1000.0)
+      WHERE gate.run_id = $1
+        AND ((gate.current_attempt AND gate.desired_state IN ('queued', 'in_progress'))
+          OR (${UNPUBLISHED_SUCCESS_GATE_SQL}))`,
+    [runId, JSON.stringify({ status: 'cancelled', eligible: false, reason }), now]);
+  }
+
+  static async cancelForClosedPullRequestInTransaction(client: Queryable, runId: string,
+    now: number): Promise<void> {
+    await this.cancelForUnreviewablePullRequestInTransaction(client, runId, now, 'pull-request-closed');
   }
 
   async claimPublication(workerId: string, now: number, leaseMs = 60_000): Promise<GatePublicationClaim | null> {

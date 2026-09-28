@@ -365,6 +365,7 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
           checkClient: cc as any,
           completion,
           panelRunner: panelRunner as any,
+          currentPullRequestVerifier: vi.fn(async () => undefined),
           sourceLoader: vi.fn(async () => ({ diff: 'diff --git a/a b/a', githubReads: 1 })),
           visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
           configLoader: vi.fn(async () => createDefaultV3Config()),

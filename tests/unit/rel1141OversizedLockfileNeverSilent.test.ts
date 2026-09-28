@@ -342,6 +342,7 @@ function workerDeps(panel: Partial<PanelResult>) {
   };
   return {
     checkClient,
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: 'diff --git a/package.json b/package.json\n@@ -1 +1 @@\n-old\n+new\n', githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => panel) as never,

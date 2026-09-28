@@ -125,6 +125,7 @@ function env(): NodeJS.ProcessEnv {
 function deps(reviewBudget: unknown) {
   return {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n', githubReads: 1 })),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => ({

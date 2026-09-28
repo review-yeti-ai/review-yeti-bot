@@ -17,6 +17,17 @@
  */
 export type ReviewSupersessionStage = 'pre_review' | 'during_review' | 'completion';
 
+/** Shared live-PR rule for the dispatcher and the worker's pre-model fence. */
+export function reviewabilityFailure(
+  current: { open: boolean; draft: boolean; headSha: string },
+  expectedHeadSha: string,
+): 'closed' | 'draft' | 'head_moved' | null {
+  if (!current.open) return 'closed';
+  if (current.draft) return 'draft';
+  if (current.headSha !== expectedHeadSha) return 'head_moved';
+  return null;
+}
+
 export class ReviewSupersededError extends Error {
   constructor(
     readonly stage: ReviewSupersessionStage,

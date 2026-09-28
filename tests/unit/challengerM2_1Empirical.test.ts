@@ -606,6 +606,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
       const engine = new ReviewJobDispatchEngine({
         repository: repo,
         projector: projector as any,
+        currentPullRequestFor: async (claimed) => ({ open: true, draft: false, headSha: claimed.headSha }),
         runSecretProvisioner: {
           provision: async () => { 
             // Concurrently admit a newer commit BEFORE token binding finishes!
@@ -659,6 +660,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
       const engine = new ReviewJobDispatchEngine({
         repository: repo,
         projector: projector as any,
+        currentPullRequestFor: async (claimed) => ({ open: true, draft: false, headSha: claimed.headSha }),
         runSecretProvisioner: {
           provision: async () => ({ workerTokenDigest: tokenDigest }),
         },

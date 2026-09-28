@@ -436,6 +436,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
           checkClient: mockCheckClient,
           panelRunner,
           isCurrentHead: () => false, // Superseded!
+          currentPullRequestVerifier: vi.fn(async () => undefined),
           sourceLoader: vi.fn(async () => ({
             changedFiles: [{ path: 'main.ts', status: 'modified', additions: 1, deletions: 0 }],
           })) as any,
@@ -466,6 +467,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
         runPublishingReviewWorker(baseWorkerEnv, {
           checkClient: mockCheckClient,
           panelRunner,
+          currentPullRequestVerifier: vi.fn(async () => undefined),
           sourceLoader: vi.fn(async () => ({
             diff: 'diff --git a/main.ts b/main.ts\n--- a/main.ts\n+++ b/main.ts\n@@ -1 +1 @@\n+test',
           })) as any,
@@ -494,6 +496,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
         runPublishingReviewWorker(baseWorkerEnv, {
           checkClient: mockCheckClient,
           panelRunner,
+          currentPullRequestVerifier: vi.fn(async () => undefined),
           sourceLoader: vi.fn(async () => ({
             diff: 'diff --git a/main.ts b/main.ts\n--- a/main.ts\n+++ b/main.ts\n@@ -1 +1 @@\n+test',
           })) as any,
@@ -523,6 +526,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
           checkClient: mockCheckClient,
           panelRunner,
           isCurrentHead: () => true, // Still current head!
+          currentPullRequestVerifier: vi.fn(async () => undefined),
           sourceLoader: vi.fn(async () => ({
             changedFiles: [{ path: 'main.ts', status: 'modified', additions: 1, deletions: 0 }],
           })) as any,

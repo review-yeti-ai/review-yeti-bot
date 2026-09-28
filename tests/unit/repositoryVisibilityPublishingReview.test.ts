@@ -42,6 +42,7 @@ const DIFF = 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n';
 function deps(over: Record<string, unknown> = {}) {
   return {
     checkClient: checkClient(),
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     panelRunner: vi.fn(async () => ({
       applicablePersonaIds: ['sec-lane'],

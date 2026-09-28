@@ -1196,6 +1196,7 @@ describe('publishing worker wiring', () => {
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker(env, {
       checkClient,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: addedFile('src/app.ts', 10, 'a'), githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,
@@ -1246,6 +1247,7 @@ describe('publishing worker wiring', () => {
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }),
     }), {
       checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: addedFile('src/app.ts', 10, 'a'), githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,
