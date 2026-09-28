@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.94.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.93.1...v1.94.0) (2026-09-28)
+
+
+### Features
+
+* **harness:** implement DOKS agentic harness lifecycle (API-3330, API-3333) ([#1093](https://github.com/review-yeti-ai/review-yeti-bot/issues/1093)) ([871217a](https://github.com/review-yeti-ai/review-yeti-bot/commit/871217ae59c1243aca088f7c1556000f647a5fe8))
+
 ## [1.93.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.93.0...v1.93.1) (2026-09-27)
 
 
