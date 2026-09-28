@@ -92,11 +92,24 @@ describe('Dispatch path: persona resolution defaults', () => {
       base_url: 'https://openrouter.ai/api/v1',
       model: 'z-ai/glm-5.3-flash',
     });
-    expect(runtime.modelConfig.transports[0]).toMatchObject({
-      name: 'fireworks',
-      baseUrl: 'https://api.fireworks.ai/inference/v1',
-      model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+    // REL-1162: Fireworks was removed. A legacy handoff naming it is dropped -- even though its
+    // api_key_env resolves -- so no credential is ever sent to the Fireworks endpoint.
+    for (const transport of runtime.modelConfig.transports) {
+      expect(transport.name).not.toMatch(/fireworks/i);
+      expect(transport.baseUrl).not.toMatch(/fireworks\.ai/i);
+    }
+  });
+
+  it('adds no implicit Fireworks transport from a stray FIREWORKS_* credential (REL-1162)', () => {
+    const runtime = pipeline.resolveActionReviewRuntime({ parsed: {} }, {
+      FIREWORKS_API_KEY: 'stray-fireworks-key',
+      FIREWORKS_PR_REVIEW_API_KEY: 'stray-fireworks-key',
     });
+    expect(runtime.modelConfig.transports.some((t: { name: string; baseUrl: string }) =>
+      /fireworks/i.test(t.name) || /fireworks\.ai/i.test(t.baseUrl))).toBe(false);
+    expect(pipeline.isRetiredFireworksTransport('fireworks', '')).toBe(true);
+    expect(pipeline.isRetiredFireworksTransport('renamed', 'https://api.fireworks.ai/inference/v1')).toBe(true);
+    expect(pipeline.isRetiredFireworksTransport('bifrost', 'https://gateway.test.invalid/v1')).toBe(false);
   });
 
   it('defaults to the default reviewer set when nothing is configured', () => {

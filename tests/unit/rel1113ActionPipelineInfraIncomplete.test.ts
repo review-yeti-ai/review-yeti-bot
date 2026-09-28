@@ -418,9 +418,13 @@ const mode = process.env.STUB_MODE;
 let testingCalls = 0;
 globalThis.fetch = async (url, init) => {
   const body = JSON.parse(init.body);
-  const system = String(body.messages[0].content).slice(0, 200);
+  // REL-1162: the replay no longer targets Fireworks (removed). Other routes may name the persona in
+  // a later message (cache-friendly prefix) and carry content blocks, so match on the persona
+  // assignment line across every message instead of the first 200 chars of the system prompt.
+  const flatten = (content) => (Array.isArray(content) ? content.map((part) => part.text || '').join('') : String(content));
+  const system = body.messages.map((message) => flatten(message.content)).join('\\n');
   let findings = [];
-  if (/Testing/i.test(system)) {
+  if (/You are \\S+ Testing/i.test(system)) {
     testingCalls += 1;
     if (mode === 'auth') return new Response('{"error":{"message":"unauthorized"}}', { status: 401, headers: { 'content-type': 'application/json' } });
     if (mode === 'fail' || mode === 'findings' || (mode === 'recover' && testingCalls === 1)) throw new TypeError('terminated');
@@ -455,7 +459,11 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
         PR_DIFF: extraEnv.PR_DIFF ?? DIFF,
         ACTIVE_PERSONAS: JSON.stringify(personas),
         OPENROUTER_API_KEY: 'test-key',
-        OPENROUTER_BASE_URL: 'https://api.fireworks.ai/inference/v1',
+        // REL-1162: was the Fireworks endpoint (removed). opencode keeps the original shape: one
+        // direct transport per lane, so a dropped stream is a lost lane rather than a failover.
+        OPENROUTER_BASE_URL: 'https://opencode.ai/zen/v1',
+        OPENROUTER_MODEL: 'glm-5.3-flash',
+        REVIEW_TRANSPORT_COMPAT: 'opencode',
         GITHUB_OUTPUT: path.join(dir, 'output'),
         GITHUB_STEP_SUMMARY: path.join(dir, 'summary.md'),
         RUNNER_TEMP: dir,
