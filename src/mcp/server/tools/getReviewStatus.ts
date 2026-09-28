@@ -9,10 +9,132 @@ import {
   type ReviewCheckRun,
   type ReviewActiveWorker,
   type ReviewStatusOutput,
+  type ReviewTiming,
 } from './schemas';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
+}
+
+/**
+ * `review_runs`-native timing columns, shared by every query branch.
+ *
+ * This exists so a timing column cannot be added to one branch and forgotten in
+ * another: the branches differ only in their predicate and ordering, and all
+ * four SELECT lists interpolate this one constant. (A per-branch copy is exactly
+ * how this class of omission ships.)
+ */
+const REVIEW_RUN_TIMING_COLUMNS = `
+                   r.received_at, r.burst_started_at, r.cancel_requested_at,
+                   r.cancel_propagated_at, r.terminal_deadline`;
+
+/**
+ * Durable execution markers, keyed by run_id alone.
+ *
+ * `review_runs` has no started_at/completed_at column -- verified against the
+ * live production schema. Execution start and finish are recorded only as
+ * `review.lifecycle.*` rows in `review_event_outbox`, each with `occurred_at`.
+ * This read is deliberately independent of the branches above so it cannot go
+ * missing when one branch is edited.
+ */
+const LIFECYCLE_MARKER_SQL = `
+  SELECT event_kind, MIN(occurred_at) AS occurred_at
+    FROM review_event_outbox
+   WHERE run_id = $1 AND event_kind = ANY($2::text[])
+   GROUP BY event_kind
+`;
+
+const LIFECYCLE_MARKER_KINDS = [
+  'review.lifecycle.dispatched',
+  'review.lifecycle.started',
+  'review.lifecycle.terminal',
+];
+
+/**
+ * Statuses in which a run has genuinely terminated. Deliberately an allowlist:
+ * an unrecognised future status is treated as NOT terminal, so the conservative
+ * failure mode is a null duration rather than an invented one.
+ */
+const TERMINAL_RUN_STATUSES = new Set([
+  'succeeded', 'complete', 'failed', 'cancelled', 'superseded', 'terminal',
+]);
+
+function isoOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(String(value));
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
+
+/** Seconds between two durable instants, or null if either end is missing. */
+function secondsBetween(from: string | null, to: string | null): number | null {
+  if (!from || !to) return null;
+  const start = Date.parse(from);
+  const end = Date.parse(to);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const delta = (end - start) / 1000;
+  return delta >= 0 ? delta : null;
+}
+
+export function buildReviewTiming(
+  row: any,
+  markers: Map<string, string>,
+  runStatus: unknown,
+): ReviewTiming {
+  const receivedAt = isoOrNull(row.received_at);
+  const createdAt = isoOrNull(row.created_at);
+  const dispatchedAt = markers.get('review.lifecycle.dispatched') ?? null;
+  const startedAt = markers.get('review.lifecycle.started') ?? null;
+  const terminalMarker = markers.get('review.lifecycle.terminal') ?? null;
+
+  const runIsTerminal = typeof runStatus === 'string' && TERMINAL_RUN_STATUSES.has(runStatus);
+
+  // completed_at is populated ONLY for a genuinely terminal run. This is the
+  // load-bearing guard: a still-running review reports null rather than a
+  // count-up to "now", and a partial span (some sub-step done, the rest still
+  // running) is never published as a final duration. The durable terminal
+  // marker is preferred; the terminal updated_at write is the fallback.
+  const completedAt = runIsTerminal ? (terminalMarker ?? isoOrNull(row.updated_at)) : null;
+
+  // The queue wait ends when a worker actually claimed the run: the started
+  // marker when present, else the dispatch marker. Null until that happens.
+  const claimedAt = startedAt ?? dispatchedAt;
+
+  return {
+    received_at: receivedAt,
+    created_at: createdAt,
+    burst_started_at: isoOrNull(row.burst_started_at),
+    dispatched_at: dispatchedAt,
+    started_at: startedAt,
+    completed_at: completedAt,
+    cancel_requested_at: isoOrNull(row.cancel_requested_at),
+    cancel_propagated_at: isoOrNull(row.cancel_propagated_at),
+    terminal_deadline: isoOrNull(row.terminal_deadline),
+    // Prefer the receipt; created_at is the same instant for ~97% of rows.
+    queue_seconds: secondsBetween(receivedAt ?? createdAt, claimedAt),
+    // Requires BOTH a durable start and a terminal instant, so an unfinished
+    // run -- or one with no start marker at all -- yields null.
+    execution_seconds: secondsBetween(startedAt, completedAt),
+  };
+}
+
+async function readLifecycleMarkers(
+  db: ReviewStatusDbClient,
+  runId: unknown,
+): Promise<Map<string, string>> {
+  const markers = new Map<string, string>();
+  if (typeof runId !== 'string' || runId.length === 0) return markers;
+  try {
+    const result = await db.query(LIFECYCLE_MARKER_SQL, [runId, LIFECYCLE_MARKER_KINDS]);
+    for (const row of result?.rows ?? []) {
+      const occurredAt = isoOrNull(row.occurred_at);
+      if (typeof row.event_kind === 'string' && occurredAt) markers.set(row.event_kind, occurredAt);
+    }
+  } catch {
+    // The marker ledger is an enrichment, not the status answer. A deployment
+    // without review_event_outbox still returns the run itself; every timing
+    // duration then resolves to null rather than a fabricated value.
+  }
+  return markers;
 }
 
 export const getReviewStatusDefinition: ToolDefinition = {
@@ -62,7 +184,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
             SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
                    r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
                    r.created_at, r.updated_at, g.attempt_id, g.check_id, g.desired_state,
-                   g.decision, g.current_attempt
+                   g.decision, g.current_attempt,${REVIEW_RUN_TIMING_COLUMNS}
               FROM review_runs r
               LEFT JOIN review_gate_attempts g ON g.run_id = r.run_id AND g.current_attempt = true
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
@@ -76,7 +198,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
             SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
                    r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
                    r.created_at, r.updated_at, g.attempt_id, g.check_id, g.desired_state,
-                   g.decision, g.current_attempt
+                   g.decision, g.current_attempt,${REVIEW_RUN_TIMING_COLUMNS}
               FROM review_runs r
               LEFT JOIN review_gate_attempts g ON g.run_id = r.run_id AND g.current_attempt = true
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
@@ -94,7 +216,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           const sql = `
             SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
                    r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
-                   r.created_at, r.updated_at, r.artifacts
+                   r.created_at, r.updated_at, r.artifacts${REVIEW_RUN_TIMING_COLUMNS}
               FROM review_runs r
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
                AND (r.head_sha = $4 OR r.head_sha LIKE ($4 || '%'))
@@ -106,7 +228,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           const sql = `
             SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
                    r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
-                   r.created_at, r.updated_at, r.artifacts
+                   r.created_at, r.updated_at, r.artifacts${REVIEW_RUN_TIMING_COLUMNS}
               FROM review_runs r
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
              ORDER BY
@@ -206,6 +328,12 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
             }
           : null;
 
+      // Timing is computed from the row plus its durable lifecycle markers. The
+      // marker read is best-effort and never changes the status answer: if the
+      // ledger is unavailable, every duration resolves to null.
+      const markers = await readLifecycleMarkers(db, row.run_id);
+      const timing = buildReviewTiming(row, markers, row.run_status);
+
       return buildToolResultJson({
         found: true,
         verdict,
@@ -214,6 +342,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         phase,
         check_run: checkRun,
         active_worker: activeWorker,
+        timing,
       } satisfies ReviewStatusOutput);
     },
   };
