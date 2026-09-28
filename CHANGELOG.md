@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.94.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.94.0...v1.94.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* **transport:** remove Fireworks as a Review Yeti provider (REL-1162) ([#1094](https://github.com/review-yeti-ai/review-yeti-bot/issues/1094)) ([1858a86](https://github.com/review-yeti-ai/review-yeti-bot/commit/1858a86ffa10dcf8d3ca8c2adc86696ac6de5e01))
+
 ## [1.94.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.93.1...v1.94.0) (2026-09-28)
 
 
