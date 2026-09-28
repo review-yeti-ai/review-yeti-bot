@@ -147,7 +147,8 @@ jobs:
       # qualified central inputs; consumer override admission remains separately guarded.
       # Central admissions always cross the DOKS App-gate boundary. A repository
       # variable or reusable-workflow input cannot downgrade them to local mode.
-      TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && 'mars' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
+      # REL-1163: central defaults to doks; mars only on an explicit central opt-in input (on hold).
+      TRUSTED_EXECUTION_BACKEND: ${{ inputs.central_execution && (inputs.execution_backend == 'mars' && 'mars' || 'doks') || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}
     steps:
       # Resolve only the existing exampleorg owner admission or the one
       # exact public repository boundary. The trusted reusable workflow performs

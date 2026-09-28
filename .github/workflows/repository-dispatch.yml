@@ -247,5 +247,7 @@ jobs:
       refresh_execution_attempt: ${{ fromJSON(needs.validate.outputs.refresh_execution_attempt) }}
       expected_generation: ${{ fromJSON(needs.validate.outputs.review_generation) }}
       passthrough: ${{ vars.REVIEW_YETI_PASSTHROUGH == 'true' }}
-      execution_backend: mars
+      # REL-1163: mars (DO Managed Agents) is on hold pending funds. Central runs on doks unless
+      # the repository variable REVIEW_YETI_CENTRAL_EXECUTION_BACKEND is explicitly 'mars'.
+      execution_backend: ${{ vars.REVIEW_YETI_CENTRAL_EXECUTION_BACKEND == 'mars' && 'mars' || 'doks' }}
     secrets: inherit

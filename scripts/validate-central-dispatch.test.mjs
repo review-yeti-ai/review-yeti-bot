@@ -573,7 +573,9 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(receiver, /refresh_execution_attempt:\s*\$\{\{ steps\.request\.outputs\.refresh_execution_attempt \}\}/u);
   assert.match(receiver, /expected_generation:\s*\$\{\{ fromJSON\(needs\.validate\.outputs\.review_generation\) \}\}/u);
   assert.match(receiver, /refresh_execution_attempt:\s*\$\{\{ fromJSON\(needs\.validate\.outputs\.refresh_execution_attempt\) \}\}/u);
-  assert.match(receiver, /execution_backend:\s*mars/u);
+  // REL-1163: central defaults to doks; mars is an explicit opt-in only (on hold pending funds).
+  assert.match(receiver, /execution_backend:\s*\$\{\{ vars\.REVIEW_YETI_CENTRAL_EXECUTION_BACKEND == 'mars' && 'mars' \|\| 'doks' \}\}/u);
+  assert.doesNotMatch(receiver, /execution_backend:\s*mars\s*$/mu);
   assert.match(receiver, /secrets: inherit/u);
   // REL-540 / ADR 0511: the receiver's validate job runs as the ct-review-bot App, never the PAT.
   assert.match(receiver, /create-github-app-token@[0-9a-f]{40}/u);

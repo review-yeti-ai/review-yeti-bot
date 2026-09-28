@@ -629,7 +629,7 @@ grep -Fq 'if-no-files-found: error' "$repo_root/.github/workflows/promote-v1.yml
 grep -Fq 'run: .exampleorg-review-actions/scripts/publish-review-check-run.sh' "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'REVIEW_YETI_PASSTHROUGH: ${{ steps.policy.outputs.passthrough }}' "$repo_root/.github/workflows/review-yeti.yml"
-grep -Fq "TRUSTED_EXECUTION_BACKEND: \${{ inputs.central_execution && 'mars' || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}" "$repo_root/.github/workflows/review-yeti.yml"
+grep -Fq "TRUSTED_EXECUTION_BACKEND: \${{ inputs.central_execution && (inputs.execution_backend == 'mars' && 'mars' || 'doks') || inputs.execution_backend || vars.REVIEW_YETI_EXECUTION_BACKEND || 'local' }}" "$repo_root/.github/workflows/review-yeti.yml"
 grep -Fq "REVIEW_YETI_DOKS_PUBLISH_MODE: \${{ inputs.central_execution && 'app-gate' || vars.REVIEW_YETI_DOKS_PUBLISH_MODE || 'disabled' }}" "$repo_root/.github/workflows/review-yeti.yml"
 # shellcheck disable=SC2016
 grep -Fq 'REVIEW_YETI_RESOLVED_BACKEND: ${{ env.TRUSTED_EXECUTION_BACKEND }}' "$repo_root/.github/workflows/review-yeti.yml"
