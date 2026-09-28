@@ -256,13 +256,14 @@ describe('resolveModelConfig', () => {
   });
 
   it('retains central stream, reasoning, and timeout fields in an explicit transport plan', () => {
+    // REL-1162: was a Fireworks entry (provider removed); any direct transport exercises the mapping.
     const cfg = resolveModelConfig({
-      FIREWORKS_PR_REVIEW_API_KEY: 'fw-key',
+      OLLAMA_PR_REVIEW_API_KEY: 'ollama-key',
       REVIEW_YETI_TRANSPORTS: JSON.stringify([{
-        name: 'fireworks',
-        base_url: 'https://api.fireworks.ai/inference/v1',
-        api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
-        model: 'accounts/fireworks/models/deepseek-v4-flash-0731',
+        name: 'ollama',
+        base_url: 'https://ollama.com/v1',
+        api_key_env: 'OLLAMA_PR_REVIEW_API_KEY',
+        model: 'glm-5.3-flash',
         models: ['fallback/model'],
         stream: true,
         reasoning_effort: 'high',
