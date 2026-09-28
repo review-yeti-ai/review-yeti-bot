@@ -70,6 +70,7 @@ function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow' } = {
   const legacyFailure = vi.fn<WorkerCompletionAdapter['reportTerminalFailure']>(async () => undefined);
   const now = vi.fn().mockReturnValueOnce(START).mockReturnValue(START + 1_000);
   const deps: PublishingReviewDeps = { checkClient, sourceLoader, panelRunner, client, now,
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const), reviewCompletion: { reportReviewResult } };
   const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
