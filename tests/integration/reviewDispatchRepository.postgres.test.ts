@@ -4126,6 +4126,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(state.run.status).toBe('superseded');
       expect(state.run.cancel_reason).toBe('superseded_or_closed');
       expect(state.outbox.status).toBe('terminal');
+      expect(state.outbox.projection_name).toBeNull();
+      expect(state.run.cancel_propagated_at).toEqual(new Date(2_000));
+      expect(state.outbox.cancel_propagated_at).toEqual(new Date(2_000));
+      expect(await repository.findPendingCancellations()).toEqual([]);
       expect(await repository.claimNext('after-close', 2_001, 30_000)).toBeNull();
       expect(await repository.getRunStatus(admitted.run.runId, 1)).toMatchObject({
         current: false, cancelRequested: true, cancelReason: 'superseded_or_closed',
