@@ -1432,6 +1432,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [runId, workerId, claimAttempt, now],
       );
       if (retired.rows.length) {
+        await PostgresReviewGateRepository.cancelForUnreviewablePullRequestInTransaction(
+          client, runId, now, 'candidate-superseded');
         await this.appendLifecycle(client, runId, 'review.lifecycle.superseded', now,
           { stage: 'terminal', terminal_class: 'superseded_or_closed' });
       }

@@ -4148,11 +4148,13 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
 
     it('retires only the stale claimed attempt after a fresh dispatch read', async () => {
-      const { repository, client } = await createRepository();
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
       const admitted = await repository.admit(authoritativeAdmission('closed-before-projection', 1_000));
       // The gate must be bound before an authoritative run can be claimed.
       await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 91,
         published_version = desired_version WHERE run_id = $1`, [admitted.run.runId]);
+      const bound = (await client.query(`SELECT desired_version, published_version
+        FROM review_gate_attempts WHERE run_id = $1`, [admitted.run.runId])).rows[0];
       const claim = (await repository.claimNext('dispatch-stale', 1_001, 30_000))!;
       expect(claim.runId).toBe(admitted.run.runId);
       expect(await repository.supersedeClaim(claim.runId, 'dispatch-stale', claim.claimAttempt, 1_002)).toBe(true);
@@ -4161,7 +4163,38 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(state.run.status).toBe('superseded');
       expect(state.outbox.status).toBe('terminal');
       expect(state.run.cancel_reason).toBe('superseded_or_closed');
+      const gate = (await client.query(`SELECT current_attempt, desired_state, desired_version,
+        published_version, decision FROM review_gate_attempts WHERE run_id = $1`, [claim.runId])).rows[0];
+      expect(gate.current_attempt).toBe(false);
+      expect(gate.desired_state).toBe('cancelled');
+      expect(gate.decision).toMatchObject({ reason: 'candidate-superseded' });
+      expect(Number(gate.desired_version)).toBe(Number(bound.desired_version) + 1);
+      expect(gate.published_version).toBe(bound.published_version);
       expect(await repository.claimNext('after-stale', 1_004, 30_000)).toBeNull();
+    });
+
+    it('rolls back a superseded claim when its gate cannot be cancelled', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('supersede-gate-rollback', 1_000));
+      await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 95,
+        published_version = desired_version WHERE run_id = $1`, [admitted.run.runId]);
+      const claim = (await repository.claimNext('dispatch-rollback', 1_001, 30_000))!;
+      await client.query(`CREATE FUNCTION reject_supersede_gate_cancel() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.desired_state = 'cancelled' THEN RAISE EXCEPTION 'gate-settlement-test'; END IF;
+          RETURN NEW;
+        END $$`);
+      await client.query(`CREATE TRIGGER reject_supersede_gate_cancel BEFORE UPDATE ON review_gate_attempts
+        FOR EACH ROW EXECUTE FUNCTION reject_supersede_gate_cancel()`);
+
+      await expect(repository.supersedeClaim(claim.runId, 'dispatch-rollback', claim.claimAttempt, 1_002))
+        .rejects.toThrow('gate-settlement-test');
+      const state = await dispatchState(client, claim.runId);
+      expect(state.run.status).toBe('queued');
+      expect(state.outbox.status).toBe('claimed');
+      const gate = (await client.query(`SELECT current_attempt, desired_state FROM review_gate_attempts
+        WHERE run_id = $1`, [claim.runId])).rows[0];
+      expect(gate).toMatchObject({ current_attempt: true, desired_state: 'queued' });
     });
 
     it('cancels a projected authoritative worker and retires its protected gate after closure', async () => {

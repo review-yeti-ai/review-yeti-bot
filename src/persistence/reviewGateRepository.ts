@@ -416,10 +416,10 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       return fromRow(saved.rows[0]);
   }
 
-  /** Settle a closed PR's current gate without opening a second transaction.
+  /** Settle an unreviewable PR's current gate without opening a second transaction.
    * The caller holds the PR advisory lock and commits this with run/outbox retirement. */
-  static async cancelForClosedPullRequestInTransaction(client: Queryable, runId: string,
-    now: number): Promise<void> {
+  static async cancelForUnreviewablePullRequestInTransaction(client: Queryable, runId: string,
+    now: number, reason: 'candidate-superseded' | 'pull-request-closed'): Promise<void> {
     // Bound checks reconcile to cancelled on their existing check ID. A reserved
     // intent has no check to publish, so its new version is tombstoned locally.
     // This also retires a successful verdict still awaiting publication.
@@ -433,7 +433,12 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       WHERE gate.run_id = $1
         AND ((gate.current_attempt AND gate.desired_state IN ('queued', 'in_progress'))
           OR (${UNPUBLISHED_SUCCESS_GATE_SQL}))`,
-    [runId, JSON.stringify({ status: 'cancelled', eligible: false, reason: 'pull-request-closed' }), now]);
+    [runId, JSON.stringify({ status: 'cancelled', eligible: false, reason }), now]);
+  }
+
+  static async cancelForClosedPullRequestInTransaction(client: Queryable, runId: string,
+    now: number): Promise<void> {
+    await this.cancelForUnreviewablePullRequestInTransaction(client, runId, now, 'pull-request-closed');
   }
 
   async claimPublication(workerId: string, now: number, leaseMs = 60_000): Promise<GatePublicationClaim | null> {
