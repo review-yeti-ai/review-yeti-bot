@@ -259,6 +259,7 @@ function workerDeps(panel: Partial<PanelResult>) {
   };
   return {
     checkClient,
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: 'diff --git a/src/a.ts b/src/a.ts\n@@ -1 +1 @@\n-old\n+new\n', githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => panel) as never,
@@ -392,6 +393,7 @@ describe('REL-1092: the service acknowledges the worker completion (no ack misma
         createCheck: vi.fn<PublishingCheckClient['createCheck']>(async () => 4242),
         completeCheck: vi.fn<PublishingCheckClient['completeCheck']>(async () => undefined),
       },
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn<NonNullable<PublishingReviewDeps['sourceLoader']>>().mockResolvedValue({
         baseSha: BASE, headSha: HEAD, diff, diffDigest: createHash('sha256').update(diff).digest('hex'), githubReads: 4,
       }),

@@ -73,6 +73,7 @@ function runner(calls: Call[], result: Record<string, unknown> | { throwAfter: E
 function deps(calls: Call[], result: Record<string, unknown> | { throwAfter: Error }) {
   return {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: runner(calls, result),

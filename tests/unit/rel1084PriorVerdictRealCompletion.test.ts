@@ -127,6 +127,7 @@ async function realPriorCompletion(options: { findings?: Record<string, LaneFind
   const reportReviewResult = vi.fn<WorkerReviewCompletionAdapter['reportReviewResult']>().mockResolvedValue(undefined);
   const deps: PublishingReviewDeps = {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => undefined) },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: PRIOR_HEAD, diff: DIFF,
       diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 as const })) as never,
     panelRunner: panelRunner as never,

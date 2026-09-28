@@ -72,6 +72,7 @@ function harness(over: Partial<PublishingReviewDeps> = {}) {
   const deps = {
     checkClient,
     completion,
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner,
@@ -136,6 +137,21 @@ describe('qualification read identity (REL-1057)', () => {
 });
 
 describe('publishing worker: head moved before the review (pre_review)', () => {
+  it('still checks the live PR when a custom source loader is injected', async () => {
+    const githubRead = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      state: 'closed', draft: false, head: { sha: HEAD },
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    // Leave the verifier uninjected: the default live reader must run despite
+    // the custom source loader used by this test harness.
+    const h = harness({ currentPullRequestVerifier: undefined });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((caught) => caught);
+    expect(githubRead).toHaveBeenCalledOnce();
+    expect(error).toBeInstanceOf(ReviewSupersededError);
+    expect(error).toMatchObject({ stage: 'pre_review', reviewedHeadSha: HEAD });
+    expect(h.panelRunner).not.toHaveBeenCalled();
+    expectNeutralSupersededCheck(h.checkClient);
+  });
+
   it('ends a closed PR before the first model call even when its head is unchanged', async () => {
     const currentPullRequestVerifier = vi.fn(async () => {
       throw new GitHubPullRequestUnavailableError('closed', 1, HEAD);
@@ -171,6 +187,7 @@ describe('publishing worker: head moved before the review (pre_review)', () => {
 
   it('treats a head that moved during the qualification read the same way', async () => {
     const h = harness({
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => { throw movedHead('GitHub pull request moved during qualification read'); }) as never,
     });
     await expect(runPublishingReviewWorker(env(), h.deps)).rejects.toBeInstanceOf(ReviewSupersededError);
@@ -179,6 +196,7 @@ describe('publishing worker: head moved before the review (pre_review)', () => {
 
   it('keeps a base-only move a failure: the admitted head is still the one to review', async () => {
     const h = harness({
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => {
         throw new GitHubPullRequestIdentityMovedError('GitHub projected pull request identity mismatch', 1, HEAD, HEAD, NEWER_BASE);
       }) as never,
@@ -205,6 +223,7 @@ describe('publishing worker: head moved before the review (pre_review)', () => {
     const h = harness({
       completion: undefined,
       reviewCompletion: { reportReviewResult },
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => { throw movedHead(); }) as never,
     });
     const authoritativeEnv = env({

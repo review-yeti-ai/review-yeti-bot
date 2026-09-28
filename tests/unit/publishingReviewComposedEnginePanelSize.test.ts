@@ -96,6 +96,7 @@ function sevenTaskComposedResult() {
 function deps(over: Record<string, unknown> = {}) {
   return {
     checkClient: checkClient(),
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     composedReviewRunner: vi.fn(async () => sevenTaskComposedResult()) as never,
@@ -133,6 +134,7 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     delete (localEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
     const d = {
       checkClient: checkClient(),
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,
@@ -162,6 +164,7 @@ describe('composed engine panelSize wiring (threshold invariance)', () => {
     (localEnv as Record<string, unknown>).REVIEW_ENGINE = 'composed';
     const d = {
       checkClient: checkClient(),
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,

@@ -74,14 +74,14 @@ function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000
 }
 
 function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
-  baseSha?: string; configDigest?: string; policyDigest?: string; prNumber?: number;
+  baseSha?: string; configDigest?: string; policyDigest?: string; prNumber?: number; headSha?: string;
 } = {}) {
   // Mirror the authoritative identity's policy provenance without depending on
   // a network adapter. The repository must hash the entire supplied identity.
   const identity = {
     ...buildReviewRunIdentity({
       owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: overrides.prNumber || 42,
-      headSha: 'a'.repeat(40), baseSha: overrides.baseSha || 'b'.repeat(40),
+      headSha: overrides.headSha || 'a'.repeat(40), baseSha: overrides.baseSha || 'b'.repeat(40),
       configDigest: overrides.configDigest || 'd'.repeat(64),
     }),
     reviewPolicy: {
@@ -391,6 +391,27 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     }), () => now + 1)).toBe('published');
     return claim;
   }
+
+  it('resolves the latest PR head by received time, even when row creation order disagrees', async () => {
+    const { repository, client } = await createRepository();
+    const older = await repository.admit(sameHeadAdmission('head-order-older', 1_000));
+    const newerHead = 'c'.repeat(40);
+    const newer = await repository.admit(sameHeadAdmission('head-order-newer', 2_000,
+      { headSha: newerHead }));
+    expect(older.status).toBe('accepted');
+    expect(newer.status).toBe('accepted');
+    // A query ordered by created_at would incorrectly select the older head.
+    await client.query('UPDATE review_runs SET created_at = to_timestamp($2 / 1000.0) WHERE run_id = $1',
+      [older.run.runId, 5_000]);
+    await client.query('UPDATE review_runs SET created_at = to_timestamp($2 / 1000.0) WHERE run_id = $1',
+      [newer.run.runId, 4_000]);
+    await expect(repository.getRunStatus(older.run.runId, 1)).resolves.toMatchObject({
+      currentHeadSha: newerHead, isCurrentHead: false,
+    });
+    await expect(repository.getRunStatus(newer.run.runId, 1)).resolves.toMatchObject({
+      currentHeadSha: newerHead, isCurrentHead: true,
+    });
+  });
 
   it('records the dispatch lifecycle transition matrix exactly once with unchanged authority returns', async () => {
     const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);

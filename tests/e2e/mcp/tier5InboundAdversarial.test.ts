@@ -1294,6 +1294,7 @@ index 1111111..2222222 100644
       const deps: PublishingReviewDeps = {
         composedReviewRunner: composedRunner,
         panelRunner: panelRunner,
+        currentPullRequestVerifier: vi.fn(async () => undefined),
         sourceLoader: sourceLoader,
         visibilityLookup: async () => 'PUBLIC',
         checkClient: {

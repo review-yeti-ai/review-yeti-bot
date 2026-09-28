@@ -163,6 +163,7 @@ describe('REL-1138: decision lines, the summary line and the cost metric agree',
     };
     const deps = {
       checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })),
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       // Let the fast Jev call land before the panel fails.

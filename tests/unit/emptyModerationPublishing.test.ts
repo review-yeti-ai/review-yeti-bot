@@ -66,6 +66,7 @@ function deps(panelResult: Record<string, unknown>, diff = DIFF) {
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
       reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
     },
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })),
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async (_input: Record<string, unknown>) => panelResult),

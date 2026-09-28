@@ -877,6 +877,7 @@ describe('publishing worker wiring', () => {
     await runPublishingReviewWorker(env, {
       checkClient,
       completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,
@@ -953,6 +954,7 @@ describe('publishing worker wiring', () => {
     await runPublishingReviewWorker(workerEnv({ REVIEW_YETI_VERDICT_CACHE: 'acme/app' }), {
       checkClient,
       completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,

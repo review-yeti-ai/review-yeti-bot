@@ -155,6 +155,23 @@ describe('ReviewJobDispatchEngine', () => {
     expect(projector.ensure).not.toHaveBeenCalled();
   });
 
+  it('refuses a live PR fence when the repository cannot durably supersede the claim', () => {
+    expect(() => fixture({ repository: { supersedeClaim: undefined } }))
+      .toThrow('Live PR fencing requires durable claim supersession');
+  });
+
+  it('does not read the live PR for a disabled-publication claim', async () => {
+    const currentPullRequestFor = vi.fn(async () => { throw new Error('GitHub unavailable'); });
+    const { engine, repository, projector } = fixture({ currentPullRequestFor });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'projected', runId: claim.runId, projectionName: `ct-review-${'1'.repeat(32)}`,
+    });
+    expect(currentPullRequestFor).not.toHaveBeenCalled();
+    expect(repository.releaseForRetry).not.toHaveBeenCalled();
+    expect(repository.supersedeClaim).not.toHaveBeenCalled();
+    expect(projector.ensure).toHaveBeenCalledOnce();
+  });
+
   it('retries a failed live PR read without provisioning or projecting', async () => {
     const { engine, repository, projector, runSecretProvisioner } = fixture({
       repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },

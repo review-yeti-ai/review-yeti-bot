@@ -871,6 +871,14 @@ describe('pull request closed admission (REL-896)', () => {
       merged: false, now: NOW, deliveryId: 'github-webhook:delivery-live-closed',
     });
   });
+  it('does not terminalize a close delivery when the live PR read fails', async () => {
+    const currentPullRequestForClose = vi.fn(async () => { throw new Error('GitHub unavailable'); });
+    const f = closedFixture(undefined, currentPullRequestForClose);
+    const response = await postWebhook(f.instance, closedPayload(), 'delivery-live-read-failed');
+    expect(response.status).toBe(500);
+    expect(currentPullRequestForClose).toHaveBeenCalledOnce();
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+  });
   it('terminalizes in-flight runs when a PR is merged', async () => {
     const f = closedFixture();
     const body = closedPayload({ pull_request: {
