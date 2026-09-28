@@ -1379,20 +1379,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [input.owner, input.repo, input.prNumber, input.repositoryId, input.now, errorText],
       );
       for (const row of result.rows as Record<string, unknown>[]) {
-        // A bound authoritative Gate must settle on its existing check ID. A
-        // reserved intent has never created a check and can be tombstoned.
-        // This also retires a SHIP result awaiting publication after closure.
-        await client.query(`UPDATE review_gate_attempts SET
-            desired_state = 'cancelled', desired_version = desired_version + 1,
-            decision = $2::jsonb, current_attempt = false,
-            published_version = CASE WHEN creation_state = 'reserved'
-              THEN desired_version + 1 ELSE published_version END,
-            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
-            available_at = to_timestamp($3 / 1000.0), updated_at = to_timestamp($3 / 1000.0)
-          WHERE run_id = $1 AND current_attempt
-            AND (desired_state IN ('queued', 'in_progress')
-              OR (desired_state = 'success' AND published_version < desired_version))`,
-        [row.run_id, JSON.stringify({ status: 'cancelled', eligible: false, reason: 'pull-request-closed' }), input.now]);
+        await PostgresReviewGateRepository.cancelForClosedPullRequestInTransaction(
+          client, String(row.run_id), input.now);
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', input.now, {
           stage: 'terminal',
           terminal_class: row.authoritative_gate_app_id == null

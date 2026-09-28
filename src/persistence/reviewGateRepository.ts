@@ -411,6 +411,26 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       return fromRow(saved.rows[0]);
   }
 
+  /** Settle a closed PR's current gate without opening a second transaction.
+   * The caller holds the PR advisory lock and commits this with run/outbox retirement. */
+  static async cancelForClosedPullRequestInTransaction(client: Queryable, runId: string,
+    now: number): Promise<void> {
+    // Bound checks reconcile to cancelled on their existing check ID. A reserved
+    // intent has no check to publish, so its new version is tombstoned locally.
+    // This also retires a successful verdict still awaiting publication.
+    await client.query(`UPDATE review_gate_attempts SET
+        desired_state = 'cancelled', desired_version = desired_version + 1,
+        decision = $2::jsonb, current_attempt = false,
+        published_version = CASE WHEN creation_state = 'reserved'
+          THEN desired_version + 1 ELSE published_version END,
+        lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+        available_at = to_timestamp($3 / 1000.0), updated_at = to_timestamp($3 / 1000.0)
+      WHERE run_id = $1 AND current_attempt
+        AND (desired_state IN ('queued', 'in_progress')
+          OR (desired_state = 'success' AND published_version < desired_version))`,
+    [runId, JSON.stringify({ status: 'cancelled', eligible: false, reason: 'pull-request-closed' }), now]);
+  }
+
   async claimPublication(workerId: string, now: number, leaseMs = 60_000): Promise<GatePublicationClaim | null> {
     if (!workerId.trim() || !Number.isSafeInteger(leaseMs) || leaseMs < 1_000 || leaseMs > 120_000) {
       throw new Error('Invalid gate publication lease');
