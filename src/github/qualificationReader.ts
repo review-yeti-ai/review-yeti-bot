@@ -5,6 +5,7 @@ import {
   type GitDiffFailureReason, type GitDiffSource,
 } from './gitDiffSource';
 import { patchUnavailableNote } from '../review/patchAvailability';
+import { reviewabilityFailure } from '../review/reviewSupersession';
 import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 
 const PR_ROUTE = 'GET /repos/{owner}/{repo}/pulls/{pull_number}';
@@ -408,9 +409,7 @@ export async function verifyReviewablePullRequest(
     || typeof data.head?.sha !== 'string' || !/^[a-f0-9]{40}$/u.test(data.head.sha)) {
     throw new GitHubQualificationReadError('GitHub qualification pull request state is invalid', 1);
   }
-  if (data.state === 'closed') throw new GitHubPullRequestUnavailableError('closed', 1, data.head.sha);
-  if (data.draft) throw new GitHubPullRequestUnavailableError('draft', 1, data.head.sha);
-  if (data.head.sha !== input.expectedHeadSha) {
-    throw new GitHubPullRequestUnavailableError('head_moved', 1, data.head.sha);
-  }
+  const reason = reviewabilityFailure({ open: data.state === 'open', draft: data.draft,
+    headSha: data.head.sha }, input.expectedHeadSha);
+  if (reason) throw new GitHubPullRequestUnavailableError(reason, 1, data.head.sha);
 }

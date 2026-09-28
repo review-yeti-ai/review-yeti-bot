@@ -860,6 +860,17 @@ describe('pull request closed admission (REL-896)', () => {
     });
     expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
   });
+  it('terminalizes when the live close fence confirms the PR is closed', async () => {
+    const currentPullRequestForClose = vi.fn(async () => ({ open: false }));
+    const f = closedFixture(undefined, currentPullRequestForClose);
+    const response = await postWebhook(f.instance, closedPayload(), 'delivery-live-closed');
+    expect(response.body).toMatchObject({ status: 'accepted', reason: 'pull_request_closed', terminalized: 1 });
+    expect(currentPullRequestForClose).toHaveBeenCalledOnce();
+    expect(f.terminalizeRunsForClosedPullRequest).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      merged: false, now: NOW, deliveryId: 'github-webhook:delivery-live-closed',
+    });
+  });
   it('terminalizes in-flight runs when a PR is merged', async () => {
     const f = closedFixture();
     const body = closedPayload({ pull_request: {

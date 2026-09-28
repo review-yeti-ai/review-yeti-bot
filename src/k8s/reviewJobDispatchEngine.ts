@@ -1,5 +1,6 @@
 import type { ReviewDispatchRepository } from '../persistence/reviewDispatchRepository';
 import type { ReviewDispatchClaim } from '../review/reviewRun';
+import { reviewabilityFailure } from '../review/reviewSupersession';
 import {
   buildReviewJobProjection,
   type PRReviewJobProjection,
@@ -129,7 +130,7 @@ export class ReviewJobDispatchEngine {
           ? { status: 'retry', runId: claim.runId, availableAt, reason: 'live-pr-read' }
           : { status: 'lease-lost', runId: claim.runId };
       }
-      if (!current.open || current.draft || current.headSha !== claim.headSha) {
+      if (reviewabilityFailure(current, claim.headSha)) {
         const retired = await this.options.repository.supersedeClaim!(
           claim.runId, this.options.workerId, claim.claimAttempt, this.now(),
         );

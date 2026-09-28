@@ -141,6 +141,20 @@ describe('ReviewJobDispatchEngine', () => {
     expect(projector.ensure).not.toHaveBeenCalled();
   });
 
+  it('reports lease-lost when another dispatcher wins the supersession race', async () => {
+    const { engine, repository, projector, runSecretProvisioner } = fixture({
+      repository: {
+        claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+        supersedeClaim: vi.fn(async () => false),
+      },
+      currentPullRequestFor: vi.fn(async () => ({ open: false, draft: false, headSha: claim.headSha })),
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+    expect(repository.supersedeClaim).toHaveBeenCalledExactlyOnceWith(claim.runId, 'dispatcher-a', 7, now);
+    expect(runSecretProvisioner?.provision).not.toHaveBeenCalled();
+    expect(projector.ensure).not.toHaveBeenCalled();
+  });
+
   it('retries a failed live PR read without provisioning or projecting', async () => {
     const { engine, repository, projector, runSecretProvisioner } = fixture({
       repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },

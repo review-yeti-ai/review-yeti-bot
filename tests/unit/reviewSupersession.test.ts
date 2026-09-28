@@ -149,6 +149,15 @@ describe('publishing worker: head moved before the review (pre_review)', () => {
     expectNeutralSupersededCheck(h.checkClient);
     expect(h.completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
+  it('propagates a failed live read instead of calling it superseded', async () => {
+    const failure = new GitHubQualificationReadError('GitHub qualification read failed', 1, 503);
+    const h = harness({ currentPullRequestVerifier: vi.fn(async () => { throw failure; }) });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((caught) => caught);
+    expect(error).toBe(failure);
+    expect(h.panelRunner).not.toHaveBeenCalled();
+    expect(h.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+    expect(h.completion.reportTerminalFailure).toHaveBeenCalledTimes(1);
+  });
   it('ends superseded with a neutral check and no failure callback', async () => {
     const h = harness({ sourceLoader: vi.fn(async () => { throw movedHead(); }) as never });
     const error = await runPublishingReviewWorker(env({ REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion' }), h.deps)
