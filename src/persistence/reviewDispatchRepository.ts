@@ -20,7 +20,7 @@ import {
 } from '../review/workerCompletion';
 import { buildAuthoritativeReviewIdentity } from '../review/authoritativeReviewIdentity';
 import { savePreparedPublishingPolicy } from './preparedReviewRepository';
-import { PostgresReviewGateRepository } from './reviewGateRepository';
+import { PostgresReviewGateRepository, UNPUBLISHED_SUCCESS_GATE_SQL } from './reviewGateRepository';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 import {
   appendLifecycleEventForRun,
@@ -1346,8 +1346,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               AND (runs.status IN ('queued', 'running') OR (
                 runs.status = 'succeeded' AND EXISTS (
                   SELECT 1 FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id
-                    AND gate.current_attempt AND gate.desired_state = 'success'
-                    AND gate.published_version < gate.desired_version
+                    AND (${UNPUBLISHED_SUCCESS_GATE_SQL})
                 )
               ))
          ), closed AS (
