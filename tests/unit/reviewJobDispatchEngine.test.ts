@@ -184,6 +184,21 @@ describe('ReviewJobDispatchEngine', () => {
     expect(projector.ensure).not.toHaveBeenCalled();
   });
 
+  it('reports lease-lost when a failed live PR read cannot release the claim', async () => {
+    const { engine, repository, projector, runSecretProvisioner } = fixture({
+      repository: {
+        claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })),
+        releaseForRetry: vi.fn(async () => false),
+      },
+      currentPullRequestFor: vi.fn(async () => { throw new Error('GitHub unavailable'); }),
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId: claim.runId });
+    expect(repository.releaseForRetry).toHaveBeenCalledOnce();
+    expect(repository.supersedeClaim).not.toHaveBeenCalled();
+    expect(runSecretProvisioner?.provision).not.toHaveBeenCalled();
+    expect(projector.ensure).not.toHaveBeenCalled();
+  });
+
   it('reuses a durable token digest after a projector retry without provisioning again', async () => {
     const provision = vi.fn(async () => ({ workerTokenDigest: 'f'.repeat(64) }));
     const { engine, repository } = fixture({

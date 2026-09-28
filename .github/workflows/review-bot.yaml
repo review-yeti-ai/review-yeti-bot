@@ -52,12 +52,19 @@ jobs:
       # above ~1,000 bytes. A smaller tunnel MTU makes TLS certificate flights
       # complete; the gateway probe must pass before starting paid review lanes.
       - name: Verify gateway Tailnet TLS
-        if: vars.OPENROUTER_BASE_URL == 'https://llm-gateway.tailebe851.ts.net/v1'
+        if: contains(vars.OPENROUTER_BASE_URL, '.ts.net')
+        env:
+          GATEWAY_BASE_URL: ${{ vars.OPENROUTER_BASE_URL }}
         run: |
           set -euo pipefail
+          gateway_base="${GATEWAY_BASE_URL%/}"
+          case "$gateway_base" in
+            https://*.ts.net/v1) ;;
+            *) echo '::error::Tailnet gateway URL must be an HTTPS .ts.net /v1 endpoint'; exit 1 ;;
+          esac
           sudo ip link set dev tailscale0 mtu 1100
           curl -fsS -o /dev/null --connect-timeout 5 --max-time 15 \
-            https://llm-gateway.tailebe851.ts.net/health
+            "${gateway_base%/v1}/health"
 
       # "Central repo controls all personas and settings and each repo can override with a local
       # file." On the dispatch path the workspace holds this repository, so the target's override
