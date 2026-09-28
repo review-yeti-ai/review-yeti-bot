@@ -155,7 +155,7 @@ describe('PostgresReviewDispatchRepository', () => {
       if (/UPDATE review_dispatch_outbox AS outbox/u.test(sql)) {
         return { rows: [{ run_id: row.run_id, authoritative_gate_app_id: 4385771 }] };
       }
-      if (/UPDATE review_gate_attempts SET/u.test(sql)) throw new Error('gate settlement failed');
+      if (/UPDATE review_gate_attempts AS gate SET/u.test(sql)) throw new Error('gate settlement failed');
       return { rows: [] };
     });
     const release = vi.fn();
@@ -171,7 +171,7 @@ describe('PostgresReviewDispatchRepository', () => {
       'BEGIN',
       expect.stringContaining('pg_advisory_xact_lock'),
       expect.stringContaining('UPDATE review_dispatch_outbox AS outbox'),
-      expect.stringContaining('UPDATE review_gate_attempts SET'),
+      expect.stringContaining('UPDATE review_gate_attempts AS gate SET'),
       'ROLLBACK',
     ]);
     expect(release).toHaveBeenCalledOnce();
