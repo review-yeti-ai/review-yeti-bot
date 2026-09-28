@@ -33,7 +33,6 @@ export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
   'openrouter-primary',
   'gemini',
-  'fireworks',
   'ollama',
 ]);
 export const EXPECTED_GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
@@ -106,8 +105,11 @@ export function validatePolicy(policy, repository = '') {
   }
   const enabledTransports = getEnabledTransports(policy);
   const enabledNames = enabledTransports.map((transport) => transport.name);
-  if (transports.some((transport) => transport.name === 'fireworks' && transport.enabled === true)) {
-    throw new Error('Fireworks transport is disabled');
+  // REL-1162: Fireworks was removed from Review Yeti (suspended account, HTTP 412). Absence,
+  // not a disabled shape, is the contract -- the same rule Synthetic follows (REL-896).
+  if (transports.some((transport) => transport.name === 'fireworks'
+      || /fireworks\.ai/iu.test(String(transport.base_url || '')))) {
+    throw new Error('Fireworks transport must not be declared -- removed from Review Yeti (REL-1162)');
   }
   if (OLLAMA_REPOSITORIES.size > 0) {
     throw new Error('OLLAMA_REPOSITORIES is retired; the default policy is Ollama-only for every repository');
@@ -149,9 +151,8 @@ export function validatePolicy(policy, repository = '') {
   const bifrost = transports.find((transport) => transport.name === 'bifrost');
   const gemini = transports.find((transport) => transport.name === 'gemini');
   const ollama = transports.find((transport) => transport.name === 'ollama');
-  const fireworks = transports.find((transport) => transport.name === 'fireworks');
   const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
-  if (!gemini || !ollama || !fireworks || !openrouter || !bifrost) {
+  if (!gemini || !ollama || !openrouter || !bifrost) {
     throw new Error('policy must define OpenRouter, Gemini, Ollama, and Bifrost transports');
   }
   if (bifrost.api_key_env !== 'BIFROST_PR_REVIEW_API_KEY') {
@@ -167,15 +168,6 @@ export function validatePolicy(policy, repository = '') {
       || gemini.structured_output !== 'strict'
       || gemini.reasoning_effort !== 'high') {
     throw new Error('Gemini must use the pinned Google OpenAI-compatible endpoint/model with strict high-reasoning output');
-  }
-  if (fireworks.base_url !== 'https://api.fireworks.ai/inference/v1'
-      || fireworks.api_key_env !== 'FIREWORKS_PR_REVIEW_API_KEY'
-      || fireworks.model !== 'accounts/fireworks/models/glm-5.3-flash'
-      || fireworks.compat !== 'openai'
-      || fireworks.structured_output !== 'strict'
-      || fireworks.perf_metrics_in_response !== true
-      || fireworks.reasoning_effort !== 'high') {
-    throw new Error('Fireworks must remain declared with its existing disabled transport contract');
   }
 
   // 2026-09-03 (REL-525, run 33791242325): at 'high' two of six lanes spent 66,880-67,758

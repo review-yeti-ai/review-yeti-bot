@@ -64,7 +64,6 @@ function policyFixture() {
         },
         { name: 'gemini', enabled: false, base_url: EXPECTED_GEMINI_BASE_URL, api_key_env: 'GEMINI_API_KEY', model: EXPECTED_GEMINI_MODEL, compat: 'openai', timeout_ms: 90000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', reasoning_effort: 'high' },
         { name: 'fixture-provider', enabled: false, base_url: 'https://fixture-provider.test/openai/v1', api_key_env: 'FIXTURE_PROVIDER_API_KEY', model: 'fixture-provider/glm-5.3-flash', compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', quarantine_on_timeout: false, reasoning_effort: 'high' },
-        { name: 'fireworks', enabled: false, base_url: 'https://api.fireworks.ai/inference/v1', api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY', model: 'accounts/fireworks/models/glm-5.3-flash', compat: 'openai', timeout_ms: 120000, connect_timeout_ms: 15000, stream: true, structured_output: 'strict', perf_metrics_in_response: true, reasoning_effort: 'high' },
         { name: 'ollama', enabled: false, base_url: 'https://ollama.test/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'glm-5.3-flash', compat: 'openai', timeout_ms: 30000, connect_timeout_ms: 30000, stream: true, reasoning_effort: 'medium', max_tokens: 65536 },
       ],
     },
@@ -121,7 +120,7 @@ test('the smoke contract pins Bifrost primary with OpenRouter fleet fallback', (
   assert.deepEqual(EXPECTED_TRANSPORT_ORDER, ['bifrost']);
   assert.equal(bifrost.enabled, true);
   assert.equal(openrouter.enabled, false, 'ADR 0652: no OpenRouter review lane');
-  for (const disabled of ['gemini', 'fixture-provider', 'fireworks', 'ollama', 'openrouter-primary']) {
+  for (const disabled of ['gemini', 'fixture-provider', 'ollama', 'openrouter-primary']) {
     const declared = policy.review_yeti.transports.find((transport) => transport.name === disabled);
     assert.equal(declared.enabled, false, `${disabled} must remain declared but disabled`);
   }
@@ -911,18 +910,31 @@ test('the committed policy retains disabled providers as non-admitted transports
   const bifrost = policy.review_yeti.transports.find((transport) => transport.name === 'bifrost');
   const gemini = policy.review_yeti.transports.find((transport) => transport.name === 'gemini');
   const ollama = policy.review_yeti.transports.find((transport) => transport.name === 'ollama');
-  const fireworks = policy.review_yeti.transports.find((transport) => transport.name === 'fireworks');
   const openrouter = policy.review_yeti.transports.find((transport) => transport.name === 'openrouter-primary');
   assert.deepEqual(policy.review_yeti.transports.map((transport) => transport.name), EXPECTED_CONFIGURED_TRANSPORT_ORDER);
+  assert.equal(policy.review_yeti.transports.some((transport) => transport.name === 'fireworks'), false, 'Fireworks was removed (REL-1162)');
   assert.equal(bifrost.enabled, true, 'bifrost is the only enabled transport (ADR 0652)');
-  for (const disabled of [gemini, fireworks, ollama, openrouter]) {
+  for (const disabled of [gemini, ollama, openrouter]) {
     assert.equal(disabled.enabled, false, `${disabled.name} must stay declared-but-disabled`);
   }
   assert.deepEqual(validatePolicy(policy).map((transport) => transport.name), EXPECTED_TRANSPORT_ORDER);
 });
 
-test('validatePolicy rejects re-enabling Fireworks without a reviewed policy change', () => {
-  const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
-  policy.review_yeti.transports.find((transport) => transport.name === 'fireworks').enabled = true;
-  assert.throws(() => validatePolicy(policy), /Fireworks transport is disabled/);
+test('validatePolicy rejects any reintroduced Fireworks transport, enabled or not (REL-1162)', () => {
+  for (const enabled of [false, true]) {
+    const policy = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+    policy.review_yeti.transports.push({
+      ...policy.review_yeti.transports.find((transport) => transport.name === 'gemini'),
+      name: 'fireworks',
+      enabled,
+      base_url: 'https://api.fireworks.ai/inference/v1',
+      api_key_env: 'FIREWORKS_PR_REVIEW_API_KEY',
+      model: 'accounts/fireworks/models/glm-5p3-flash',
+    });
+    assert.throws(() => validatePolicy(policy), /Fireworks transport must not be declared/);
+  }
+  // A renamed transport pointed at the Fireworks endpoint is refused too.
+  const renamed = JSON.parse(readFileSync(new URL('../policy/review-yeti.json', import.meta.url), 'utf8'));
+  renamed.review_yeti.transports.find((transport) => transport.name === 'gemini').base_url = 'https://api.fireworks.ai/inference/v1';
+  assert.throws(() => validatePolicy(renamed), /Fireworks transport must not be declared/);
 });

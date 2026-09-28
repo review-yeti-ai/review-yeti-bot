@@ -47,7 +47,6 @@ jobs:
           node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
-          node --check scripts/ollama-qualification.mjs
           node --check scripts/openrouter-qualification.mjs
           node --check scripts/pi-openrouter-qualification.mjs
           node --check scripts/run-pi-qualification-row.mjs
@@ -114,7 +113,6 @@ jobs:
           node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs
-          node --test scripts/ollama-qualification.test.mjs
           node --test scripts/openrouter-qualification.test.mjs
           node --test scripts/pi-openrouter-qualification.test.mjs
           node --test scripts/transport-telemetry.test.mjs
@@ -125,8 +123,16 @@ jobs:
           grep -Fq '"action_channel_pattern":' policy/review-yeti.json
           grep -Fq '"name": "gemini"' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "gemini") | .enabled == false' policy/review-yeti.json >/dev/null
-          grep -Fq '"name": "fireworks"' policy/review-yeti.json
-          jq -e '.review_yeti.transports[] | select(.name == "fireworks") | .enabled == false' policy/review-yeti.json >/dev/null
+          # REL-1162: the Fireworks-baselined one-time comparison (ollama-qualification) was retired with it.
+          if [ -e .github/workflows/ollama-qualification.yml ] || [ -e scripts/review-yeti-fireworks-debug.mjs ]; then
+            echo '::error::retired Fireworks qualification/debug tooling must not return (REL-1162)'
+            exit 1
+          fi
+          # REL-1162: Fireworks was removed from Review Yeti (suspended account). It must never resurface.
+          if grep -Fq '"name": "fireworks"' policy/review-yeti.json || grep -Fq 'api.fireworks.ai' policy/review-yeti.json; then
+            echo '::error::removed Fireworks transport must not return to production policy (REL-1162)'
+            exit 1
+          fi
           grep -Fq '"name": "ollama"' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "bifrost"' policy/review-yeti.json
@@ -202,22 +208,11 @@ jobs:
             echo "::error::the central receiver must not use the operator PAT (ADR 0511)"
             exit 1
           fi
-          test -f .github/workflows/ollama-qualification.yml
           test -f .github/workflows/openrouter-qualification.yml
-          grep -Fq 'workflow_dispatch:' .github/workflows/ollama-qualification.yml
           grep -Fq 'workflow_dispatch:' .github/workflows/openrouter-qualification.yml
-          grep -Eq '^    timeout-minutes: 15$' .github/workflows/ollama-qualification.yml
           grep -Eq '^    timeout-minutes: 15$' .github/workflows/openrouter-qualification.yml
-          if grep -Eq '^    timeout-minutes: (1[6-9]|[2-9][0-9]|[1-9][0-9]{2,})$' .github/workflows/ollama-qualification.yml; then
-            echo "::error::qualification workflow may not exceed the 15-minute hard ceiling"
-            exit 1
-          fi
           if grep -Eq '^    timeout-minutes: (1[6-9]|[2-9][0-9]|[1-9][0-9]{2,})$' .github/workflows/openrouter-qualification.yml; then
             echo "::error::OpenRouter qualification workflow may not exceed the 15-minute hard ceiling"
-            exit 1
-          fi
-          if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):' .github/workflows/ollama-qualification.yml; then
-            echo "::error::Fireworks/Ollama comparison must remain manual and non-recurring"
             exit 1
           fi
           if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):' .github/workflows/openrouter-qualification.yml; then
@@ -245,16 +240,9 @@ jobs:
           grep -Fq 'refs/heads/telemetry' .github/workflows/transport-telemetry.yml
           grep -Fq "publication: 'none'" scripts/transport-telemetry.mjs
           grep -Fq "production_authority: 'unchanged'" scripts/transport-telemetry.mjs
-          grep -Fq 'publication=none' scripts/ollama-qualification.mjs
-          grep -Fq 'authoritative_arm: '\''none'\''' scripts/ollama-qualification.mjs
-          grep -Fq 'production_authority: '\''unchanged'\''' scripts/ollama-qualification.mjs
           grep -Fq "publication: 'none'" scripts/openrouter-qualification.mjs
           grep -Fq "authoritative_arm: 'none'" scripts/openrouter-qualification.mjs
           grep -Fq "production_authority: 'unchanged'" scripts/openrouter-qualification.mjs
-          if grep -Fq 'continue-on-error: true' .github/workflows/ollama-qualification.yml; then
-            echo "::error::comparison integrity failures must fail the workflow"
-            exit 1
-          fi
           grep -Fq 'healthy_transports' .github/workflows/review-yeti.yml
           grep -Fq 'transport-plan-b64:' .github/workflows/review-yeti.yml
           grep -Fq 'transport_plan_b64' scripts/emit-policy.mjs

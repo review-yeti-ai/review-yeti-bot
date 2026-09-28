@@ -83,11 +83,9 @@ if any(item.get('name') == 'synthetic' for item in configured_transports):
     raise SystemExit('Synthetic transport must not be declared -- the provider account was cancelled (REL-896)')
 if openrouter is None or openrouter.get('enabled') is not False:
     raise SystemExit('OpenRouter must be declared-but-disabled; ADR 0652 supersedes the REL-710 fleet fallback')
-if any(item.get('name') == 'fireworks' for item in transports):
-    raise SystemExit('Fireworks transport must be disabled')
-fireworks = next((item for item in configured_transports if item.get('name') == 'fireworks'), None)
-if not fireworks or fireworks.get('enabled') is not False:
-    raise SystemExit('Fireworks must remain declared with enabled: false')
+# REL-1162: Fireworks was removed (suspended account, HTTP 412). Like Synthetic, absent -- not disabled.
+if any(item.get('name') == 'fireworks' or 'fireworks.ai' in str(item.get('base_url', '')) for item in configured_transports):
+    raise SystemExit('Fireworks transport must not be declared -- removed from Review Yeti (REL-1162)')
 if (gemini.get('base_url'), gemini.get('api_key_env'), gemini.get('model'), gemini.get('compat')) != (
     'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_API_KEY', 'gemini-3.7-flash', 'openai'
 ):
@@ -566,14 +564,46 @@ done
 for field in timeout_ms connect_timeout_ms ttft_ms stall_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
-    # REL-896: removing the synthetic transport shifted the committed transports array --
-    # index 3 is now fireworks (bifrost, openrouter-primary, gemini, fireworks, ollama).
+    # REL-896/REL-1162: removing synthetic and then fireworks shifted the committed transports
+    # array -- index 3 is now ollama (bifrost, openrouter-primary, gemini, ollama).
     run_case "$name" "transport.3.${field}" "$value" 1
-    grep -q "transport fireworks.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
+    grep -q "transport ollama.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
   done
 done
 
 run_transport_relation_case
+
+# REL-1162: a reintroduced Fireworks transport -- disabled, or renamed but pointed at the
+# Fireworks endpoint -- must be refused. Absence is the contract.
+for fw_case in disabled renamed; do
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$fw_case" <<'PY'
+import json
+import sys
+
+source, destination, case = sys.argv[1:]
+policy = json.load(open(source))
+transports = policy['review_yeti']['transports']
+if case == 'disabled':
+    template = dict(next(item for item in transports if item['name'] == 'gemini'))
+    template.update(name='fireworks', enabled=False, base_url='https://api.fireworks.ai/inference/v1',
+                    api_key_env='FIREWORKS_PR_REVIEW_API_KEY', model='accounts/fireworks/models/glm-5p3-flash')
+    transports.append(template)
+else:
+    next(item for item in transports if item['name'] == 'gemini')['base_url'] = 'https://api.fireworks.ai/inference/v1'
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/fireworks-${fw_case}.output" node emit-policy.mjs) >"$tmp_dir/fireworks-${fw_case}.log" 2>&1
+  fw_rc=$?
+  set -e
+  if [[ "$fw_rc" -ne 1 ]] || ! grep -q 'Fireworks transport must not be declared' "$tmp_dir/fireworks-${fw_case}.log"; then
+    echo "[fireworks-${fw_case}-rejected] expected Fireworks rejection, got rc=$fw_rc" >&2
+    cat "$tmp_dir/fireworks-${fw_case}.log" >&2
+    exit 1
+  fi
+  echo "[fireworks-${fw_case}-rejected] passed"
+done
 run_transport_budget_overflow_case
 run_transport_retry_budget_overflow_case
 run_ttft_unsafe_case transport

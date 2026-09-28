@@ -71,6 +71,8 @@ export function buildLocalConfig(policy) {
   };
 }
 
+export const RETIRED_PROVIDER_KEY_ENVS = Object.freeze(['FIREWORKS_PR_REVIEW_API_KEY', 'FIREWORKS_API_KEY']);
+
 export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, mcpConfig = undefined) {
   const review = policy.review_yeti;
   const budget = review.budget;
@@ -106,6 +108,9 @@ export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, 
   for (const transport of review.transports) {
     if (!activeKeyEnvs.has(transport.api_key_env)) delete environment[transport.api_key_env];
   }
+  // REL-1162: removed providers are no longer declared in policy, so the loop above cannot
+  // see their credentials. Scrub them explicitly so a stale key never reaches the engine.
+  for (const retired of RETIRED_PROVIDER_KEY_ENVS) delete environment[retired];
   return environment;
 }
 

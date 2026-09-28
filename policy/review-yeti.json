@@ -138,31 +138,6 @@
         "reasoning_effort": "high"
       },
       {
-        "name": "fireworks",
-        "enabled": false,
-        "base_url": "https://api.fireworks.ai/inference/v1",
-        "api_key_env": "FIREWORKS_PR_REVIEW_API_KEY",
-        "model": "accounts/fireworks/models/glm-5.3-flash",
-        "compat": "openai",
-        "timeout_ms": 120000,
-        "connect_timeout_ms": 15000,
-        "ttft_ms": 60000,
-        "stall_ms": 20000,
-        "stream": true,
-        "dispatch_weight": 1,
-        "max_in_flight": 1,
-        "concurrency_scope": "provider",
-        "capacity_wait_timeout_ms": 30000,
-        "rate_limit": {
-          "scope": "provider",
-          "max_retries": 1,
-          "max_retry_after_ms": 5000
-        },
-        "structured_output": "strict",
-        "perf_metrics_in_response": true,
-        "reasoning_effort": "high"
-      },
-      {
         "name": "ollama",
         "enabled": false,
         "base_url": "https://ollama.com/v1",

@@ -32,7 +32,7 @@ jobs:
     name: Probe transports and append the ledger
     runs-on: ubuntu-latest
     # Five bounded transport probes, well inside the 15-minute operational ceiling this repo uses
-    # for every non-review workflow (see ollama-qualification.yml / openrouter-qualification.yml).
+    # for every non-review workflow (see openrouter-qualification.yml).
     timeout-minutes: 15
     permissions:
       # Only this job needs write access, and only to append to the dedicated `telemetry` branch;
@@ -43,7 +43,6 @@ jobs:
       OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
       OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
       OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-      FIREWORKS_PR_REVIEW_API_KEY: ${{ secrets.FIREWORKS_PR_REVIEW_API_KEY }}
       REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
       BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
     steps:

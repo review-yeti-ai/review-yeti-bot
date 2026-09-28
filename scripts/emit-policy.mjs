@@ -95,9 +95,11 @@ if (!openrouterLaneGuard || openrouterLaneGuard.enabled !== false) {
 if (review.dispatch_mode !== 'ordered') {
   throw new Error('policy must use ordered Bifrost dispatch for every repository');
 }
-const fireworksTransport = review.transports.find((transport) => transport.name === 'fireworks');
-if (!fireworksTransport || fireworksTransport.enabled !== false) {
-  throw new Error('Fireworks must remain declared with enabled: false');
+// REL-1162: the Fireworks account is suspended (HTTP 412) and the operator removed Fireworks
+// from Review Yeti (2026-09-28). Like Synthetic (REL-896), it must be absent, not disabled.
+if (review.transports.some((transport) => transport.name === 'fireworks'
+    || /fireworks\.ai/iu.test(String(transport.base_url || '')))) {
+  throw new Error('Fireworks transport must not be declared -- removed from Review Yeti (REL-1162)');
 }
 const bifrostTransport = review.transports.find((transport) => transport.name === 'bifrost');
 if (!bifrostTransport
