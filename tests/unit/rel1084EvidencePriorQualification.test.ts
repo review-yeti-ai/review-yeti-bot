@@ -106,6 +106,7 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
   await runPublishingReviewWorker(env, {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
     completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: override?.diff ?? DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: panelRunner as never,

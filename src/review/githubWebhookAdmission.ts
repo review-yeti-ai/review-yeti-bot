@@ -153,6 +153,9 @@ export interface GitHubWebhookAdmissionOptions {
   admission: Pick<ReviewDispatchRepository, 'admit' | 'terminalizeRunsForClosedPullRequest'> &
     Partial<Pick<ReviewDispatchRepository, 'cancelRunsForPullRequest' | 'advanceDebounceAvailableAt'>>;
   authoritativePublishing?: AuthoritativeReviewAdmission;
+  /** Reject delayed close deliveries when the PR has already reopened. */
+  currentPullRequestForClose?: (input: { repositoryId: number; owner: string; repo: string;
+    prNumber: number }) => Promise<{ open: boolean }>;
   now?: () => number;
   mergeGroupGate?(payload: unknown): Promise<{ checkId: number; conclusion: 'success' | 'failure'; constituents: number }>;
   resolveRepositoryConfig?: (params: {
@@ -407,6 +410,16 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       if (closedPayload.number !== closedPayload.pull_request.number
         || closedPayload.pull_request.base.repo.full_name !== closedPayload.repository.full_name) {
         return { status: 'ignored', reason: 'not_enrolled' };
+      }
+      if (options.currentPullRequestForClose) {
+        const current = await options.currentPullRequestForClose({
+          repositoryId: closedPayload.repository.id, owner: closedOwner, repo: closedRepo,
+          prNumber: closedPayload.pull_request.number,
+        });
+        if (current.open) {
+          return { status: 'ignored', reason: 'stale_closed_delivery', deliveryId: delivery,
+            prNumber: closedPayload.pull_request.number };
+        }
       }
       const closedReceivedAt = now();
       const closed = await options.admission.terminalizeRunsForClosedPullRequest({

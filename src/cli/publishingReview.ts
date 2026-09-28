@@ -50,7 +50,8 @@ import {
   type OpenAITransportConfig,
 } from '../review/openaiTransport';
 import {
-  GitHubPullRequestIdentityMovedError, GitHubQualificationReadError, loadSameHeadReviewSource, readPullRequestIdentity,
+  GitHubPullRequestIdentityMovedError, GitHubPullRequestUnavailableError, GitHubQualificationReadError,
+  loadSameHeadReviewSource, readPullRequestIdentity, verifyReviewablePullRequest,
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
 import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
@@ -852,6 +853,8 @@ export interface PublishingReviewDeps {
    * conflict. Injectable for tests; defaults to one GitHub read with `GH_TOKEN`.
    */
   pullRequestIdentityReader?: typeof readPullRequestIdentity;
+  /** Fresh live state fence immediately before the first model call. A custom sourceLoader does not disable it. */
+  currentPullRequestVerifier?: typeof verifyReviewablePullRequest;
   /**
    * REL-1093: bound on the fresh head read made after the root signal aborted
    * (SIGTERM from a cancelled Job). Injectable for tests.
@@ -1675,6 +1678,20 @@ export async function runPublishingReviewWorker(
       // 10 is what makes running them side by side safe. `shadowOutcomePromise` is awaited only
       // once evidence is built (`buildReviewResult({ includeShadow: true })`), well after the
       // panel's own check publication below, so a slow shadow lane never delays it.
+      // The diff's bracketing reads prove exact content, but setup and grounding
+      // can take time. Recheck state/head at the last safe boundary before any
+      // panel or shadow model call; a closed PR with an unchanged SHA is stale.
+      try {
+        await (deps.currentPullRequestVerifier || verifyReviewablePullRequest)({
+          token: value(env, 'GH_TOKEN'), repo: identity.repo, prNumber: identity.prNumber,
+          expectedHeadSha: identity.headSha,
+        }, undefined, githubRetryOptionsFromEnv(env));
+      } catch (error) {
+        if (error instanceof GitHubPullRequestUnavailableError) {
+          throw new ReviewSupersededError('pre_review', identity.headSha, error.currentHeadSha);
+        }
+        throw error;
+      }
       shadowDeadline = isShadow
         ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal)
         : undefined;

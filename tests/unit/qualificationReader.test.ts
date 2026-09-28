@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GitHubQualificationReadError, loadSameHeadReviewSource } from '../../src/github/qualificationReader';
+import { GitHubQualificationReadError,
+  loadSameHeadReviewSource, verifyReviewablePullRequest } from '../../src/github/qualificationReader';
 
 const headSha = 'a'.repeat(40);
 const baseSha = 'b'.repeat(40);
@@ -20,6 +21,27 @@ function metadata(head = headSha, base = baseSha) {
 }
 
 describe('same-head qualification reader', () => {
+  it.each([
+    ['closed', { state: 'closed', draft: false, head: { sha: headSha } }],
+    ['draft', { state: 'open', draft: true, head: { sha: headSha } }],
+    ['head_moved', { state: 'open', draft: false, head: { sha: 'c'.repeat(40) } }],
+  ])('rejects %s immediately before model dispatch', async (reason, data) => {
+    const request = vi.fn(async () => ({ data }));
+    await expect(verifyReviewablePullRequest({ token: input().token, repo: input().repo,
+      prNumber: input().prNumber, expectedHeadSha: headSha }, request as any))
+      .rejects.toMatchObject({ name: 'GitHubPullRequestUnavailableError', reason });
+    expect(request).toHaveBeenCalledOnce();
+  });
+
+  it('allows an open exact-head PR and rejects an unavailable state read', async () => {
+    const current = { state: 'open', draft: false, head: { sha: headSha } };
+    await expect(verifyReviewablePullRequest({ token: input().token, repo: input().repo,
+      prNumber: input().prNumber, expectedHeadSha: headSha }, vi.fn(async () => ({ data: current })) as any))
+      .resolves.toBeUndefined();
+    await expect(verifyReviewablePullRequest({ token: input().token, repo: input().repo,
+      prNumber: input().prNumber, expectedHeadSha: headSha }, vi.fn(async () => ({ data: {} })) as any))
+      .rejects.toBeInstanceOf(GitHubQualificationReadError);
+  });
   it('reads one exact PR diff and rechecks the projected head', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce(metadata())

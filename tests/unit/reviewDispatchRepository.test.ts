@@ -150,6 +150,33 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.release).toHaveBeenCalledOnce();
   });
 
+  it('rolls back run and outbox retirement when closed-PR gate settlement fails', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (/UPDATE review_dispatch_outbox AS outbox/u.test(sql)) {
+        return { rows: [{ run_id: row.run_id, authoritative_gate_app_id: 4385771 }] };
+      }
+      if (/UPDATE review_gate_attempts AS gate SET/u.test(sql)) throw new Error('gate settlement failed');
+      return { rows: [] };
+    });
+    const release = vi.fn();
+    const client = { query, release };
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.terminalizeRunsForClosedPullRequest({
+      repositoryId: 123, owner: identity.owner, repo: identity.repo, prNumber: identity.prNumber,
+      merged: false, now: 2_000, deliveryId: 'close-delivery',
+    })).rejects.toThrow('gate settlement failed');
+
+    expect(query.mock.calls.map(([sql]) => sql)).toEqual([
+      'BEGIN',
+      expect.stringContaining('pg_advisory_xact_lock'),
+      expect.stringContaining('UPDATE review_dispatch_outbox AS outbox'),
+      expect.stringContaining('UPDATE review_gate_attempts AS gate SET'),
+      'ROLLBACK',
+    ]);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it('accepts only the exact one-based generation returned by the durable allocator', async () => {
     const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
     const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });

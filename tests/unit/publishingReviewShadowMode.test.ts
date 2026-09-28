@@ -145,6 +145,7 @@ function emptyComposedResult() {
 function deps(over: Record<string, unknown> = {}) {
   return {
     checkClient: checkClient(),
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => cleanPanelResult()) as never,
@@ -230,6 +231,7 @@ describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', 
   it('is byte-identical to a plain panel run when the composed run produces nothing', async () => {
     const panelOnlyDeps = {
       checkClient: checkClient(),
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: vi.fn(async () => cleanPanelResult()) as never,
@@ -285,6 +287,7 @@ describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', 
     delete (plainEnv as Record<string, unknown>).REVIEW_YETI_POLICY_JSON;
     const d = {
       checkClient: checkClient(),
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
       panelRunner: panelRunner as never,

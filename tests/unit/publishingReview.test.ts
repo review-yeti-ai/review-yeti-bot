@@ -98,6 +98,7 @@ function usageClient(calls: Array<[string, string, number, number]>) {
 function deps(over: Record<string, unknown> = {}) {
   return {
     checkClient: checkClient(),
+    currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: DIFF, githubReads: 1 })) as never,
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
     panelRunner: vi.fn(async () => ({
@@ -120,7 +121,8 @@ describe('qualification source arguments', () => {
     // because the mock accepted any arguments. Assert the arguments, not just the
     // call.
     const loader = vi.fn(async () => ({ diff: DIFF, githubReads: 1 }));
-    await runPublishingReviewWorker(env(), deps({ sourceLoader: loader as never }));
+    await runPublishingReviewWorker(env(), deps({ currentPullRequestVerifier: vi.fn(async () => undefined),
+      sourceLoader: loader as never }));
 
     expect(loader).toHaveBeenCalledTimes(1);
     const arg = (loader.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
@@ -793,6 +795,7 @@ describe('runPublishingReviewWorker', () => {
   it('does not classify an incomplete panel as recoverable when some diff headers were unreadable', async () => {
     const completion = { reportTerminalFailure: vi.fn(), reportTerminalSuccess: vi.fn() };
     const d = deps({ completion,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`, githubReads: 1 })),
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane', 'arch-lane'],
@@ -1068,6 +1071,7 @@ describe('runPublishingReviewWorker', () => {
         quorum: { required: 0, distinctProviders: [], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({
         diff: 'diff --git a/docs/uat/runs/benchmarks/x.json b/docs/uat/runs/benchmarks/x.json\n@@ -1 +1 @@\n-a\n+b\n',
         githubReads: 1,
@@ -1094,6 +1098,7 @@ describe('runPublishingReviewWorker', () => {
         quorum: { required: 0, distinctProviders: [], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({
         diff: 'diff --git a/docs/uat/runs/benchmarks/x.json b/docs/uat/runs/benchmarks/x.json\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/src/app.ts b/src/app.ts\n@@ -1 +1 @@\n-a\n+b\n',
         githubReads: 1,
@@ -1154,6 +1159,7 @@ describe('runPublishingReviewWorker', () => {
     const client = checkClient();
     const d = deps({
       checkClient: client,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({
         diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`,
         githubReads: 1,
@@ -1519,7 +1525,8 @@ describe('runPublishingReviewWorker', () => {
   });
 
   it('refuses to ship an empty diff as a clean review', async () => {
-    const d = deps({ sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })) as never });
+    const d = deps({ currentPullRequestVerifier: vi.fn(async () => undefined),
+      sourceLoader: vi.fn(async () => ({ diff: '', githubReads: 1 })) as never });
     await expect(runPublishingReviewWorker(env(), d as never)).rejects.toThrow(/no reviewable diff/u);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({ conclusion: 'failure' }),
@@ -1632,7 +1639,8 @@ describe('runPublishingReviewWorker', () => {
   it('reports a source-load failure without invoking the panel', async () => {
     const original = new Error('fetch failed');
     const completion = { reportTerminalFailure: vi.fn(async () => {}) };
-    const d = deps({ completion, sourceLoader: vi.fn().mockRejectedValue(original) });
+    const d = deps({ completion, currentPullRequestVerifier: vi.fn(async () => undefined),
+      sourceLoader: vi.fn().mockRejectedValue(original) });
     await expect(runPublishingReviewWorker(env(), d)).rejects.toBe(original);
     expect(d.panelRunner).not.toHaveBeenCalled();
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
@@ -1648,7 +1656,8 @@ describe('runPublishingReviewWorker', () => {
     // httpStatus field, not by parsing the message anywhere downstream.
     const original = new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406);
     const completion = { reportTerminalFailure: vi.fn(async () => {}) };
-    const d = deps({ completion, sourceLoader: vi.fn().mockRejectedValue(original) });
+    const d = deps({ completion, currentPullRequestVerifier: vi.fn(async () => undefined),
+      sourceLoader: vi.fn().mockRejectedValue(original) });
     await expect(runPublishingReviewWorker(env(), d)).rejects.toBe(original);
     expect(d.panelRunner).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -2202,6 +2211,7 @@ describe('hosted lane — repository visibility resolution', () => {
     const client = checkClient();
     const d = deps({
       checkClient: client,
+      currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({
         diff: `${DIFF}diff --git nonsense\n@@ -1 +1 @@\n-a\n+b\n`,
         githubReads: 1,
