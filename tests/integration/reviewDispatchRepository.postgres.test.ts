@@ -4107,10 +4107,14 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
 
     it('retires an authoritative-gate run before admission and leaves a terminal cancellation reason', async () => {
-      const { repository, client } = await createRepository();
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
       const input = authoritativeAdmission('closed-authoritative', 1_000);
       const admitted = await repository.admit(input);
       expect(Number((await dispatchState(client, admitted.run.runId)).run.authoritative_gate_app_id)).toBe(4385771);
+      const reserved = (await client.query(`SELECT creation_state, check_id, desired_version, published_version
+        FROM review_gate_attempts WHERE run_id = $1`, [admitted.run.runId])).rows[0];
+      expect(reserved.creation_state).toBe('reserved');
+      expect(reserved.check_id).toBeNull();
 
       const result = await repository.terminalizeRunsForClosedPullRequest({
         repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
@@ -4125,6 +4129,17 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(await repository.claimNext('after-close', 2_001, 30_000)).toBeNull();
       expect(await repository.getRunStatus(admitted.run.runId, 1)).toMatchObject({
         current: false, cancelRequested: true, cancelReason: 'superseded_or_closed',
+      });
+      const gate = (await client.query(`SELECT desired_state, desired_version, published_version, check_id
+        FROM review_gate_attempts WHERE run_id = $1`, [admitted.run.runId])).rows[0];
+      expect(gate.desired_state).toBe('cancelled');
+      expect(gate.check_id).toBeNull();
+      expect(Number(gate.desired_version)).toBe(Number(reserved.desired_version) + 1);
+      expect(gate.published_version).toBe(gate.desired_version);
+      const terminal = (await lifecycleEvents(client, admitted.run.runId))
+        .find((event) => event.eventKind === 'review.lifecycle.terminal');
+      expect(terminal?.data).toMatchObject({
+        stage: 'terminal', terminal_class: 'superseded_or_closed', retry_class: 'pull_request_closed',
       });
     });
 
@@ -4150,6 +4165,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const admitted = await repository.admit(authoritativeAdmission('closed-during-review', 1_000));
       await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 92,
         published_version = desired_version WHERE run_id = $1`, [admitted.run.runId]);
+      const bound = (await client.query(`SELECT creation_state, check_id, desired_version, published_version
+        FROM review_gate_attempts WHERE run_id = $1`, [admitted.run.runId])).rows[0];
+      expect(bound.creation_state).toBe('bound');
+      expect(Number(bound.check_id)).toBe(92);
       const claim = (await repository.claimNext('dispatch-running', 1_001, 30_000))!;
       expect(await repository.markProjected(claim.runId, 'dispatch-running', claim.claimAttempt,
         'ct-review-running', 1_002)).toBe(true);
@@ -4164,9 +4183,12 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(await repository.getRunStatus(claim.runId, claim.executionAttempt)).toMatchObject({
         current: false, cancelRequested: true, cancelReason: 'superseded_or_closed',
       });
-      const gate = await client.query('SELECT desired_state, decision FROM review_gate_attempts WHERE run_id = $1', [claim.runId]);
+      const gate = await client.query(`SELECT desired_state, desired_version, published_version, decision
+        FROM review_gate_attempts WHERE run_id = $1`, [claim.runId]);
       expect(gate.rows[0].desired_state).toBe('cancelled');
       expect(gate.rows[0].decision).toMatchObject({ reason: 'pull-request-closed' });
+      expect(Number(gate.rows[0].desired_version)).toBe(Number(bound.desired_version) + 1);
+      expect(gate.rows[0].published_version).toBe(bound.published_version);
       const gates = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'enabled' });
       expect(await gates.reapTerminalAttempts(1_004)).toBe(0);
     });
