@@ -100,6 +100,15 @@ export class GitHubPullRequestIdentityMovedError extends GitHubQualificationRead
   }
 }
 
+/** Live pre-model read found a PR that cannot accept a review. */
+export class GitHubPullRequestUnavailableError extends GitHubQualificationReadError {
+  constructor(readonly reason: 'closed' | 'draft' | 'head_moved', githubReads: number,
+    readonly currentHeadSha?: string) {
+    super(`GitHub qualification pull request ${reason}`, githubReads);
+    this.name = 'GitHubPullRequestUnavailableError';
+  }
+}
+
 function validateInput(input: SameHeadQualificationInput): { owner: string; repo: string } {
   if (!input.token.startsWith('ghs_')) {
     throw new Error('GitHub qualification token is not an installation token');
@@ -380,4 +389,28 @@ export async function readPullRequestIdentity(
     requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest), retry,
   );
   return pullRequestIdentity((await safeRequest(request, { owner, repo, pull_number: input.prNumber }, 1)).data, 1);
+}
+
+/** One bounded current-state read immediately before a worker starts the panel. */
+export async function verifyReviewablePullRequest(
+  input: PullRequestIdentityInput & { expectedHeadSha: string },
+  requestFn?: GitHubQualificationRequest,
+  retry?: GitHubRetryOptions,
+): Promise<void> {
+  const { owner, repo } = validateInput({ ...input, expectedBaseSha: '0'.repeat(40) });
+  const octokit = requestFn ? undefined : new Octokit({ auth: input.token });
+  const request = retryingRequest(
+    requestFn ?? (octokit!.request.bind(octokit) as unknown as GitHubQualificationRequest), retry,
+  );
+  const data = (await safeRequest(request, { owner, repo, pull_number: input.prNumber }, 1)).data as
+    { state?: unknown; draft?: unknown; head?: { sha?: unknown } } | null;
+  if (!data || (data.state !== 'open' && data.state !== 'closed') || typeof data.draft !== 'boolean'
+    || typeof data.head?.sha !== 'string' || !/^[a-f0-9]{40}$/u.test(data.head.sha)) {
+    throw new GitHubQualificationReadError('GitHub qualification pull request state is invalid', 1);
+  }
+  if (data.state === 'closed') throw new GitHubPullRequestUnavailableError('closed', 1, data.head.sha);
+  if (data.draft) throw new GitHubPullRequestUnavailableError('draft', 1, data.head.sha);
+  if (data.head.sha !== input.expectedHeadSha) {
+    throw new GitHubPullRequestUnavailableError('head_moved', 1, data.head.sha);
+  }
 }

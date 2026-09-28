@@ -103,7 +103,8 @@ function signed(body: unknown, delivery = 'delivery-123') {
   return { raw, signature, delivery };
 }
 
-function closedFixture(terminalizedRunIds: string[] = [`run_${'1'.repeat(32)}`]) {
+function closedFixture(terminalizedRunIds: string[] = [`run_${'1'.repeat(32)}`],
+  currentPullRequestForClose?: () => Promise<{ open: boolean }>) {
   const admit = vi.fn();
   const terminalizeRunsForClosedPullRequest = vi.fn(async () => ({ terminalizedRunIds }));
   const onEvent = createGitHubWebhookAdmissionHandler({
@@ -112,6 +113,7 @@ function closedFixture(terminalizedRunIds: string[] = [`run_${'1'.repeat(32)}`])
       repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']),
     },
     admission: { admit, terminalizeRunsForClosedPullRequest } as any,
+    ...(currentPullRequestForClose ? { currentPullRequestForClose } : {}),
     now: () => NOW,
   });
   const instance = createActionDispatchApp({
@@ -848,6 +850,16 @@ describe('native GitHub App webhook admission', () => {
 });
 
 describe('pull request closed admission (REL-896)', () => {
+  it('ignores a delayed close delivery after the PR has reopened', async () => {
+    const currentPullRequestForClose = vi.fn(async () => ({ open: true }));
+    const f = closedFixture(undefined, currentPullRequestForClose);
+    const response = await postWebhook(f.instance, closedPayload(), 'delivery-stale-close');
+    expect(response.body).toMatchObject({ status: 'ignored', reason: 'stale_closed_delivery' });
+    expect(currentPullRequestForClose).toHaveBeenCalledExactlyOnceWith({
+      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+    });
+    expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
+  });
   it('terminalizes in-flight runs when a PR is merged', async () => {
     const f = closedFixture();
     const body = closedPayload({ pull_request: {

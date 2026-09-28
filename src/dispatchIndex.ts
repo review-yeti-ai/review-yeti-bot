@@ -10,6 +10,7 @@ import {
   getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
 } from './github/boundedAppToken';
 import { GitHubInstallationClient } from './github/installationClient';
+import { AuthoritativeReviewReader } from './github/authoritativeReviewReader';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
 import { enqueueReviewCiCompletionInTransaction } from './persistence/reviewCiRepository';
@@ -113,6 +114,12 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     onEvent: createGitHubWebhookAdmissionHandler({
       config: webhookConfig,
       admission: repository,
+      currentPullRequestForClose: async ({ repositoryId, owner, repo, prNumber }) => {
+        const minted = await getBoundedRepositoryToken(installationCredentialsForRepository(owner, repo), 'read');
+        const reader = new AuthoritativeReviewReader({ token: minted.token, baseUrl });
+        const current = await reader.currentCandidate({ repositoryId, owner, repo, prNumber });
+        return { open: current.open };
+      },
       ...(authoritative ? { authoritativePublishing: authoritative.admission } : {}),
       mergeGroupGate: createMergeGroupGate({
         config: webhookConfig,

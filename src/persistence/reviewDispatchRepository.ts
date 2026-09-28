@@ -103,8 +103,9 @@ export const NON_PUBLISHABLE_DEADLINE_ERROR_TEXT =
  * error texts are deliberately distinct from every prefix or exact string
  * claimAbandonedPublishingRuns and retireExpiredNonPublishableRuns key on
  * (RECOVERY_UNCONFIRMED_ERROR_TEXT, the reapedPrefix, WORKER_TERMINAL_FAILURE_PREFIX),
- * and terminalizeRunsForClosedPullRequest always leaves the row in status
- * 'terminal' rather than 'queued'/'running'/'failed' -- both reapers'
+ * and terminalizeRunsForClosedPullRequest leaves a legacy row 'terminal'
+ * and an authoritative-gate row 'superseded', never 'queued'/'running'/'failed'.
+ * Both reapers'
  * candidate predicates require one of those other statuses (or a matching
  * text) before they touch a row, so a closed-PR row is invisible to both by
  * construction and never gets a check minted for it.
@@ -367,6 +368,7 @@ export type AbandonedRunReconciliation =
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
+  supersedeClaim(runId: string, workerId: string, claimAttempt: number, now: number): Promise<boolean>;
   heartbeat(runId: string, workerId: string, claimAttempt: number, now: number, leaseMs: number): Promise<boolean>;
   markProjected(runId: string, workerId: string, claimAttempt: number, projectionName: string, now: number, workerTokenDigest?: string): Promise<boolean>;
   bindWorkerTokenDigest(runId: string, workerId: string, claimAttempt: number, workerTokenDigest: string, now: number): Promise<boolean>;
@@ -1307,11 +1309,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
    * per-repository/PR advisory lock (so a concurrent admit()/markWorkerFailure/
    * markWorkerSuccess for this PR cannot interleave with this transition),
    * same unconditional outbox terminalization regardless of the outbox's
-   * current lease/claim state. A worker still executing when the PR closes
-   * is not interrupted mid-request; its eventual markWorkerSuccess/
-   * markWorkerFailure/evidence callback simply finds the run already
-   * 'terminal' and is rejected as already_failed/conflict/unauthorized by
-   * those methods' own status guards, never resurrecting it.
+   * current lease/claim state. A projected worker is queued for Job cancellation
+   * and sees a non-current status; any late completion is rejected by the run
+   * status guard and cannot resurrect it. An existing authoritative check is
+   * settled as cancelled, while a reserved check is tombstoned.
    *
    * Joining review_dispatch_outbox scopes this to rows the outbox-based
    * dispatch flow created via admit(); the separate legacy in-process path
@@ -1342,15 +1343,23 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
              JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
             WHERE runs.owner = $1 AND runs.repo = $2 AND runs.pr_number = $3
               AND runs.repository_id = $4
-              AND runs.status IN ('queued', 'running')
-              -- Authoritative-gate rows have their own reaper and
-              -- publication lifecycle (reviewGateRepository); a closed PR
-              -- does not terminalize them here.
-              AND runs.authoritative_gate_app_id IS NULL
+              AND (runs.status IN ('queued', 'running') OR (
+                runs.status = 'succeeded' AND EXISTS (
+                  SELECT 1 FROM review_gate_attempts gate WHERE gate.run_id = runs.run_id
+                    AND gate.current_attempt AND gate.desired_state = 'success'
+                    AND gate.published_version < gate.desired_version
+                )
+              ))
          ), closed AS (
            UPDATE review_runs AS runs
-              SET status = 'terminal', stage = 'terminal',
+              SET status = CASE WHEN runs.authoritative_gate_app_id IS NULL THEN 'terminal' ELSE 'superseded' END,
+                  stage = 'terminal',
                   error_text = $6::text, lease_owner = NULL, lease_expires_at = NULL,
+                  cancel_requested_at = to_timestamp($5 / 1000.0),
+                  cancel_reason = 'superseded_or_closed',
+                  cancel_propagated_at = CASE WHEN EXISTS
+                    (SELECT 1 FROM review_dispatch_outbox o WHERE o.run_id = runs.run_id AND o.projection_name IS NOT NULL)
+                    THEN NULL ELSE to_timestamp($5 / 1000.0) END,
                   updated_at = to_timestamp($5 / 1000.0)
              FROM candidate
             WHERE runs.run_id = candidate.run_id
@@ -1358,16 +1367,37 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          )
          UPDATE review_dispatch_outbox AS outbox
             SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+                cancel_requested_at = to_timestamp($5 / 1000.0),
+                cancel_reason = 'superseded_or_closed',
+                cancel_propagated_at = CASE WHEN outbox.projection_name IS NULL
+                  THEN to_timestamp($5 / 1000.0) ELSE NULL END,
                 updated_at = to_timestamp($5 / 1000.0)
            FROM closed
           WHERE outbox.run_id = closed.run_id
-         RETURNING outbox.run_id`,
+         RETURNING outbox.run_id, (SELECT authoritative_gate_app_id FROM review_runs
+           WHERE run_id = outbox.run_id) AS authoritative_gate_app_id`,
         [input.owner, input.repo, input.prNumber, input.repositoryId, input.now, errorText],
       );
       for (const row of result.rows as Record<string, unknown>[]) {
+        // A bound authoritative Gate must settle on its existing check ID. A
+        // reserved intent has never created a check and can be tombstoned.
+        // This also retires a SHIP result awaiting publication after closure.
+        await client.query(`UPDATE review_gate_attempts SET
+            desired_state = 'cancelled', desired_version = desired_version + 1,
+            decision = $2::jsonb, current_attempt = false,
+            published_version = CASE WHEN creation_state = 'reserved'
+              THEN desired_version + 1 ELSE published_version END,
+            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+            available_at = to_timestamp($3 / 1000.0), updated_at = to_timestamp($3 / 1000.0)
+          WHERE run_id = $1 AND current_attempt
+            AND (desired_state IN ('queued', 'in_progress')
+              OR (desired_state = 'success' AND published_version < desired_version))`,
+        [row.run_id, JSON.stringify({ status: 'cancelled', eligible: false, reason: 'pull-request-closed' }), input.now]);
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.terminal', input.now, {
           stage: 'terminal',
-          terminal_class: input.merged ? 'pull_request_merged' : 'pull_request_closed',
+          terminal_class: row.authoritative_gate_app_id == null
+            ? input.merged ? 'pull_request_merged' : 'pull_request_closed'
+            : 'superseded_or_closed',
           retry_class: 'pull_request_closed',
         });
       }
@@ -1379,6 +1409,47 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     } finally {
       client.release();
     }
+  }
+
+  /** Retire only the claimed attempt whose live PR read failed the exact-head/open check. */
+  async supersedeClaim(runId: string, workerId: string, claimAttempt: number, now: number): Promise<boolean> {
+    validateClaimAttempt(claimAttempt);
+    return this.inTransaction(async (client) => {
+      const identity = await client.query(
+        'SELECT repository_id, pr_number FROM review_runs WHERE run_id = $1', [runId],
+      );
+      if (!identity.rows[0]) return false;
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        reviewDispatchPrLockKey(Number(identity.rows[0].repository_id), Number(identity.rows[0].pr_number)),
+      ]);
+      const retired = await client.query(
+        `WITH candidate AS (
+           SELECT outbox.run_id FROM review_dispatch_outbox outbox
+             JOIN review_runs runs ON runs.run_id = outbox.run_id
+            WHERE outbox.run_id = $1 AND outbox.lease_owner = $2
+              AND outbox.attempt = $3 AND outbox.status = 'claimed'
+              AND runs.status = 'queued'
+         ), run AS (
+           UPDATE review_runs runs SET status = 'superseded', stage = 'terminal',
+             error_text = 'superseded_or_closed', cancel_requested_at = to_timestamp($4 / 1000.0),
+             cancel_reason = 'superseded_or_closed',
+             cancel_propagated_at = to_timestamp($4 / 1000.0),
+             lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
+           FROM candidate WHERE runs.run_id = candidate.run_id RETURNING runs.run_id
+         )
+         UPDATE review_dispatch_outbox outbox SET status = 'terminal',
+           cancel_requested_at = to_timestamp($4 / 1000.0), cancel_reason = 'superseded_or_closed',
+           cancel_propagated_at = to_timestamp($4 / 1000.0),
+           lease_owner = NULL, lease_expires_at = NULL, updated_at = to_timestamp($4 / 1000.0)
+         FROM run WHERE outbox.run_id = run.run_id RETURNING outbox.run_id`,
+        [runId, workerId, claimAttempt, now],
+      );
+      if (retired.rows.length) {
+        await this.appendLifecycle(client, runId, 'review.lifecycle.superseded', now,
+          { stage: 'terminal', terminal_class: 'superseded_or_closed' });
+      }
+      return retired.rows.length > 0;
+    });
   }
 
   async advanceDebounceAvailableAt(
@@ -2359,7 +2430,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       const headRes = await this.queryable.query(
         `SELECT head_sha FROM review_runs
           WHERE owner = $1 AND repo = $2 AND pr_number = $3
-          ORDER BY admitted_at DESC NULLS LAST, created_at DESC
+          ORDER BY received_at DESC NULLS LAST, created_at DESC
           LIMIT 1`,
         [row.owner, row.repo, row.pr_number],
       );

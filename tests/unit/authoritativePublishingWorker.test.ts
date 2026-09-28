@@ -911,6 +911,10 @@ describe('authoritative prepared publishing worker', () => {
     let callbackAttempts = 0;
     const derivations: ReturnType<typeof deriveCanonicalWorkerReviewEvidence>[] = [];
     f.fetch.mockImplementation(async (input, init) => {
+      if (String(input) === 'https://api.github.com/repos/example/project/pulls/42' && init?.method === 'GET') {
+        return new Response(JSON.stringify({ state: 'open', draft: false, head: { sha: HEAD } }),
+          { status: 200, headers: { 'content-type': 'application/json' } });
+      }
       if (String(input) === rawEndpoint && init?.method === 'POST') {
         return new Response(JSON.stringify({ id: 4242 }), { status: 200 });
       }
@@ -951,7 +955,7 @@ describe('authoritative prepared publishing worker', () => {
     expect(legacy).not.toHaveBeenCalled();
     const retry = delivery === '503 then recorded' || delivery === 'lost acknowledgement then duplicate';
     expect(derivations).toHaveLength(retry ? 2 : 1);
-    expect(f.fetch).toHaveBeenCalledTimes(retry ? 4 : 3);
+    expect(f.fetch).toHaveBeenCalledTimes(retry ? 5 : 4);
     const rawCalls = f.fetch.mock.calls.filter(([url]) => String(url).startsWith(rawEndpoint));
     expect(rawCalls.map(([url, init]) => [String(url), init?.method])).toEqual([
       [rawEndpoint, 'POST'], [`${rawEndpoint}/4242`, 'PATCH'],

@@ -35,6 +35,7 @@ function fixture(overrides: Record<string, any> = {}) {
     bindWorkerTokenDigest: vi.fn(async () => true),
     releaseForRetry: vi.fn(async () => true),
     markTerminal: vi.fn(async () => true),
+    supersedeClaim: vi.fn(async () => true),
     ...overrides.repository,
   };
   const projector = { ensure: vi.fn(async () => undefined), ...overrides.projector };
@@ -46,6 +47,9 @@ function fixture(overrides: Record<string, any> = {}) {
     projector,
     runSecretProvisioner,
     preparedReviewFor: overrides.preparedReviewFor,
+    currentPullRequestFor: overrides.currentPullRequestFor || (async () => ({
+      open: true, draft: false, headSha: claim.headSha,
+    })),
     workerId: 'dispatcher-a',
     workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     namespace: 'ct-review-qualification',
@@ -119,6 +123,34 @@ describe('ReviewJobDispatchEngine', () => {
       now,
       'f'.repeat(64),
     );
+  });
+
+  it.each([
+    ['closed before claim', { open: false, draft: false, headSha: claim.headSha }],
+    ['converted to draft', { open: true, draft: true, headSha: claim.headSha }],
+    ['superseded head', { open: true, draft: false, headSha: 'f'.repeat(40) }],
+  ])('retires a publishing claim for %s before Secret or Job creation', async (_case, current) => {
+    const { engine, repository, projector, runSecretProvisioner } = fixture({
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },
+      currentPullRequestFor: vi.fn(async () => current),
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'superseded', runId: claim.runId,
+      reason: 'superseded_or_closed' });
+    expect(repository.supersedeClaim).toHaveBeenCalledExactlyOnceWith(claim.runId, 'dispatcher-a', 7, now);
+    expect(runSecretProvisioner?.provision).not.toHaveBeenCalled();
+    expect(projector.ensure).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed live PR read without provisioning or projecting', async () => {
+    const { engine, repository, projector, runSecretProvisioner } = fixture({
+      repository: { claimNext: vi.fn(async () => ({ ...claim, publicationMode: 'app-gate' as const })) },
+      currentPullRequestFor: vi.fn(async () => { throw new Error('GitHub unavailable'); }),
+    });
+    await expect(engine.runOnce()).resolves.toEqual({ status: 'retry', runId: claim.runId,
+      availableAt: now + 5_000, reason: 'live-pr-read' });
+    expect(repository.releaseForRetry).toHaveBeenCalledOnce();
+    expect(runSecretProvisioner?.provision).not.toHaveBeenCalled();
+    expect(projector.ensure).not.toHaveBeenCalled();
   });
 
   it('reuses a durable token digest after a projector retry without provisioning again', async () => {

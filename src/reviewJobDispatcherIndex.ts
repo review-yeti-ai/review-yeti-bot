@@ -17,6 +17,8 @@ import { getPreparedPublishingPolicy } from './persistence/preparedReviewReposit
 import { parsePreparedReviewExecution } from './review/preparedPublishingPolicy';
 import { logger } from './utils/logger';
 import { getGitHubAppIdentity, getGitHubAppRepositoryPublishToken } from './github/appAuth';
+import { getBoundedRepositoryToken, validateGitHubAppApiBaseUrl } from './github/boundedAppToken';
+import { AuthoritativeReviewReader } from './github/authoritativeReviewReader';
 import { GitHubInstallationClient } from './github/installationClient';
 import { AbandonedRunReaper } from './review/abandonedRunReaper';
 import { DelegatedFailureReader } from './k8s/delegatedFailureReader';
@@ -42,6 +44,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const appId = String(environment.GITHUB_APP_ID || '').trim();
   const privateKey = String(environment.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
   const external = centralExternalTargetConfigFromEnv(environment);
+  const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
   const credentialsForRepository = (owner: string, repo: string) => {
     const dedicated = external.appCredentials;
     return dedicated && external.repositories.has(`${owner}/${repo}`)
@@ -101,6 +104,15 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const engine = new ReviewJobDispatchEngine({
     repository,
     projector: new KubernetesReviewJobProjector(customObjects),
+    currentPullRequestFor: async (claim) => {
+      const [owner, repo] = claim.repo.split('/');
+      const credentials = credentialsForRepository(owner, repo);
+      const minted = await getBoundedRepositoryToken({ ...credentials, owner, repo, baseUrl }, 'read');
+      const reader = new AuthoritativeReviewReader({ token: minted.token, baseUrl });
+      const current = await reader.currentCandidate({ repositoryId: claim.repositoryId, owner, repo,
+        prNumber: claim.prNumber });
+      return { open: current.open, draft: current.draft, headSha: current.headSha };
+    },
     runSecretProvisioner,
     workerId: config.workerId,
     workerImage: config.workerImage,

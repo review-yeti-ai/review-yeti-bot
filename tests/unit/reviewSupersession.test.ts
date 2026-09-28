@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker, type PublishingReviewDeps } from '../../src/cli/publishingReview';
 import {
   GitHubPullRequestIdentityMovedError,
+  GitHubPullRequestUnavailableError,
   GitHubQualificationReadError,
   loadSameHeadReviewSource,
   readPullRequestIdentity,
@@ -135,6 +136,19 @@ describe('qualification read identity (REL-1057)', () => {
 });
 
 describe('publishing worker: head moved before the review (pre_review)', () => {
+  it('ends a closed PR before the first model call even when its head is unchanged', async () => {
+    const currentPullRequestVerifier = vi.fn(async () => {
+      throw new GitHubPullRequestUnavailableError('closed', 1, HEAD);
+    });
+    const h = harness({ currentPullRequestVerifier });
+    const error = await runPublishingReviewWorker(env(), h.deps).catch((caught) => caught);
+    expect(error).toBeInstanceOf(ReviewSupersededError);
+    expect(error).toMatchObject({ stage: 'pre_review', reviewedHeadSha: HEAD });
+    expect(currentPullRequestVerifier).toHaveBeenCalledOnce();
+    expect(h.panelRunner).not.toHaveBeenCalled();
+    expectNeutralSupersededCheck(h.checkClient);
+    expect(h.completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
   it('ends superseded with a neutral check and no failure callback', async () => {
     const h = harness({ sourceLoader: vi.fn(async () => { throw movedHead(); }) as never });
     const error = await runPublishingReviewWorker(env({ REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion' }), h.deps)

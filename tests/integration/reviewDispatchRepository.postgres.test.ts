@@ -4085,7 +4085,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null, lease_expires_at: null });
     });
 
-    it('leaves an authoritative-gate run untouched', async () => {
+    it('retires an authoritative-gate run before admission and leaves a terminal cancellation reason', async () => {
       const { repository, client } = await createRepository();
       const input = authoritativeAdmission('closed-authoritative', 1_000);
       const admitted = await repository.admit(input);
@@ -4096,10 +4096,91 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         merged: false, now: 2_000, deliveryId: 'github-webhook:close-authoritative',
       });
 
-      expect(result.terminalizedRunIds).toEqual([]);
+      expect(result.terminalizedRunIds).toEqual([admitted.run.runId]);
       const state = await dispatchState(client, admitted.run.runId);
-      expect(state.run.status).toBe('queued');
-      expect(state.run.error_text).toBeNull();
+      expect(state.run.status).toBe('superseded');
+      expect(state.run.cancel_reason).toBe('superseded_or_closed');
+      expect(state.outbox.status).toBe('terminal');
+      expect(await repository.claimNext('after-close', 2_001, 30_000)).toBeNull();
+      expect(await repository.getRunStatus(admitted.run.runId, 1)).toMatchObject({
+        current: false, cancelRequested: true, cancelReason: 'superseded_or_closed',
+      });
+    });
+
+    it('retires only the stale claimed attempt after a fresh dispatch read', async () => {
+      const { repository, client } = await createRepository();
+      const admitted = await repository.admit(authoritativeAdmission('closed-before-projection', 1_000));
+      // The gate must be bound before an authoritative run can be claimed.
+      await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 91,
+        published_version = desired_version WHERE run_id = $1`, [admitted.run.runId]);
+      const claim = (await repository.claimNext('dispatch-stale', 1_001, 30_000))!;
+      expect(claim.runId).toBe(admitted.run.runId);
+      expect(await repository.supersedeClaim(claim.runId, 'dispatch-stale', claim.claimAttempt, 1_002)).toBe(true);
+      expect(await repository.supersedeClaim(claim.runId, 'dispatch-stale', claim.claimAttempt, 1_003)).toBe(false);
+      const state = await dispatchState(client, claim.runId);
+      expect(state.run.status).toBe('superseded');
+      expect(state.outbox.status).toBe('terminal');
+      expect(state.run.cancel_reason).toBe('superseded_or_closed');
+      expect(await repository.claimNext('after-stale', 1_004, 30_000)).toBeNull();
+    });
+
+    it('cancels a projected authoritative worker and retires its protected gate after closure', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('closed-during-review', 1_000));
+      await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 92,
+        published_version = desired_version WHERE run_id = $1`, [admitted.run.runId]);
+      const claim = (await repository.claimNext('dispatch-running', 1_001, 30_000))!;
+      expect(await repository.markProjected(claim.runId, 'dispatch-running', claim.claimAttempt,
+        'ct-review-running', 1_002)).toBe(true);
+
+      await repository.terminalizeRunsForClosedPullRequest({
+        repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        merged: false, now: 1_003, deliveryId: 'github-webhook:close-running',
+      });
+      expect(await repository.findPendingCancellations()).toMatchObject([{
+        runId: claim.runId, projectionName: 'ct-review-running', cancelReason: 'superseded_or_closed',
+      }]);
+      expect(await repository.getRunStatus(claim.runId, claim.executionAttempt)).toMatchObject({
+        current: false, cancelRequested: true, cancelReason: 'superseded_or_closed',
+      });
+      const gate = await client.query('SELECT desired_state, decision FROM review_gate_attempts WHERE run_id = $1', [claim.runId]);
+      expect(gate.rows[0].desired_state).toBe('cancelled');
+      expect(gate.rows[0].decision).toMatchObject({ reason: 'pull-request-closed' });
+      const gates = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'enabled' });
+      expect(await gates.reapTerminalAttempts(1_004)).toBe(0);
+    });
+
+    it('cancels an unpublished SHIP gate after closure', async () => {
+      const { repository, client } = await createRepository();
+      const pending = await repository.admit(authoritativeAdmission('closed-before-ship-publication', 1_000));
+      await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [pending.run.runId]);
+      await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 93,
+        desired_state = 'success', desired_version = desired_version + 1
+        WHERE run_id = $1`, [pending.run.runId]);
+      const closed = await repository.terminalizeRunsForClosedPullRequest({
+        repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        merged: false, now: 1_100, deliveryId: 'github-webhook:close-before-ship',
+      });
+      expect(closed.terminalizedRunIds).toEqual([pending.run.runId]);
+      const gate = await client.query('SELECT desired_state, decision FROM review_gate_attempts WHERE run_id = $1', [pending.run.runId]);
+      expect(gate.rows[0]).toMatchObject({ desired_state: 'cancelled',
+        decision: { reason: 'pull-request-closed' } });
+      expect((await dispatchState(client, pending.run.runId)).run.status).toBe('superseded');
+    });
+
+    it('preserves an already published SHIP gate when its PR closes', async () => {
+      const { repository, client } = await createRepository();
+      const published = await repository.admit(authoritativeAdmission('already-published-ship', 2_000));
+      await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [published.run.runId]);
+      await client.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 94,
+        desired_state = 'success', desired_version = desired_version + 1,
+        published_version = desired_version + 1 WHERE run_id = $1`, [published.run.runId]);
+      const afterPublication = await repository.terminalizeRunsForClosedPullRequest({
+        repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+        merged: false, now: 2_100, deliveryId: 'github-webhook:close-after-ship',
+      });
+      expect(afterPublication.terminalizedRunIds).not.toContain(published.run.runId);
+      expect((await dispatchState(client, published.run.runId)).run.status).toBe('succeeded');
     });
 
     it("leaves another PR's run untouched", async () => {
@@ -4366,6 +4447,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const engine = new ReviewJobDispatchEngine({
         repository,
         projector,
+        currentPullRequestFor: async (claimed) => ({ open: true, draft: false, headSha: claimed.headSha }),
         runSecretProvisioner: { provision: async () => ({ workerTokenDigest: 'f'.repeat(64) }) },
         workerId: 'dispatcher-a',
         workerImage: `ghcr.io/review-yeti-ai/review-yeti-worker@sha256:${'e'.repeat(64)}`,

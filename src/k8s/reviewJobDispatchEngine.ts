@@ -59,7 +59,7 @@ export interface ReviewJobDispatchEngineOptions {
     'claimNext' | 'markProjected' | 'bindWorkerTokenDigest' | 'releaseForRetry' | 'markTerminal'
   > & Partial<Pick<
     ReviewDispatchRepository,
-    'markCancelPropagated' | 'findPendingCancellations' | 'reopenOrphanedProjectionCancellation'
+    'markCancelPropagated' | 'findPendingCancellations' | 'reopenOrphanedProjectionCancellation' | 'supersedeClaim'
   >>;
   projector: ReviewJobProjector;
   /** Required to dispatch an app-gate review; absent, publishing runs are refused. */
@@ -70,6 +70,8 @@ export interface ReviewJobDispatchEngineOptions {
   runnerMode?: RunnerMode;
   /** Service-owned immutable policy read; absence must not fall back to legacy publishing. */
   preparedReviewFor?(claim: ReviewDispatchClaim): Promise<string>;
+  /** Fresh service-owned GitHub truth before a publishing job consumes capacity. */
+  currentPullRequestFor?(claim: ReviewDispatchClaim): Promise<{ open: boolean; draft: boolean; headSha: string }>;
   now?: () => number;
   leaseMs?: number;
   retryDelayMs?: number;
@@ -81,7 +83,8 @@ export type ReviewJobDispatchOutcome =
   | { status: 'idle' }
   | { status: 'projected'; runId: string; projectionName: string }
   | { status: 'terminal'; runId: string; reason: 'projection-rejected' | 'run-secret-unavailable' }
-  | { status: 'retry'; runId: string; availableAt: number; reason: 'run-secret-provisioning' | 'projection' }
+  | { status: 'superseded'; runId: string; reason: 'superseded_or_closed' }
+  | { status: 'retry'; runId: string; availableAt: number; reason: 'run-secret-provisioning' | 'projection' | 'live-pr-read' }
   | { status: 'lease-lost'; runId: string; orphanedCancellation?: OrphanedCancellationOutcome };
 
 export class ReviewJobDispatchEngine {
@@ -96,6 +99,9 @@ export class ReviewJobDispatchEngine {
     this.retryDelayMs = options.retryDelayMs ?? 5_000;
     this.circuitBreaker = options.circuitBreaker ?? new DispatchCircuitBreaker({ now: this.now });
     if (!options.workerId.trim()) throw new Error('dispatcher worker id is required');
+    if (options.currentPullRequestFor && !options.repository.supersedeClaim) {
+      throw new Error('Live PR fencing requires durable claim supersession');
+    }
     if (!Number.isSafeInteger(this.leaseMs) || this.leaseMs <= 0) throw new Error('dispatcher lease must be positive');
     if (!Number.isSafeInteger(this.retryDelayMs) || this.retryDelayMs < 0) throw new Error('dispatcher retry delay cannot be negative');
   }
@@ -107,6 +113,31 @@ export class ReviewJobDispatchEngine {
     }
     const claim = await this.options.repository.claimNext(this.options.workerId, now, this.leaseMs);
     if (!claim) return { status: 'idle' };
+
+    if (claim.publicationMode === 'app-gate') {
+      let current: { open: boolean; draft: boolean; headSha: string };
+      try {
+        if (!this.options.currentPullRequestFor) throw new Error('Live PR reader unavailable');
+        current = await this.options.currentPullRequestFor(claim);
+      } catch {
+        const retryNow = this.now();
+        const availableAt = retryNow + this.retryDelayMs;
+        const released = await this.options.repository.releaseForRetry(
+          claim.runId, this.options.workerId, claim.claimAttempt, retryNow, availableAt,
+        );
+        return released
+          ? { status: 'retry', runId: claim.runId, availableAt, reason: 'live-pr-read' }
+          : { status: 'lease-lost', runId: claim.runId };
+      }
+      if (!current.open || current.draft || current.headSha !== claim.headSha) {
+        const retired = await this.options.repository.supersedeClaim!(
+          claim.runId, this.options.workerId, claim.claimAttempt, this.now(),
+        );
+        return retired
+          ? { status: 'superseded', runId: claim.runId, reason: 'superseded_or_closed' }
+          : { status: 'lease-lost', runId: claim.runId };
+      }
+    }
 
     let projection: PRReviewJobProjection;
     try {
