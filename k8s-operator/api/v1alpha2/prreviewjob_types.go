@@ -19,8 +19,26 @@ package v1alpha2
 import (
 	"errors"
 	"fmt"
+	"regexp"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// Well-known condition types for PRReviewJob status.
+const (
+	// ConditionFencingEpochMismatch indicates that spec.fencingEpoch does not
+	// match or has been superseded by the authoritative mission fencing epoch.
+	// This condition triggers fail-closed reconciliation.
+	ConditionFencingEpochMismatch = "FencingEpochMismatch"
+
+	// ConditionStaleWorkerLease indicates that spec.workerLeaseToken does not
+	// match the active fencing token of the coordination Lease, indicating
+	// the worker was superseded or evicted. Triggers fail-closed reconciliation.
+	ConditionStaleWorkerLease = "StaleWorkerLease"
+
+	// ConditionUnknownEffectPending indicates that an external side effect is in
+	// an UNKNOWN state, preventing the job from transitioning to Succeeded.
+	ConditionUnknownEffectPending = "UnknownEffectPending"
 )
 
 // PRReviewJobPhase is the bounded Kubernetes execution phase.
@@ -40,7 +58,7 @@ const (
 // The CRD schema rejects all fields not declared here and every spec update
 // except the one-way cancelRequested transition (REL-1073).
 // +kubebuilder:validation:XValidation:rule="self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && !(has(oldSelf.cancelRequested) && oldSelf.cancelRequested))",message="PRReviewJob spec is immutable except for a one-way cancelRequested false-to-true transition"
-// +kubebuilder:validation:XValidation:rule="self.runId == oldSelf.runId && self.deliveryId == oldSelf.deliveryId && self.repositoryId == oldSelf.repositoryId && self.repo == oldSelf.repo && self.prNumber == oldSelf.prNumber && self.headSha == oldSelf.headSha && self.baseSha == oldSelf.baseSha && self.receivedAt == oldSelf.receivedAt && self.terminalDeadline == oldSelf.terminalDeadline && self.policyDigest == oldSelf.policyDigest && self.configDigest == oldSelf.configDigest && self.publicationMode == oldSelf.publicationMode && self.workerImage == oldSelf.workerImage && self.runSecretName == oldSelf.runSecretName && has(self.executionAttempt) == has(oldSelf.executionAttempt) && (!has(self.executionAttempt) || self.executionAttempt == oldSelf.executionAttempt) && has(self.preparedReview) == has(oldSelf.preparedReview) && (!has(self.preparedReview) || self.preparedReview == oldSelf.preparedReview) && has(self.runnerMode) == has(oldSelf.runnerMode) && (!has(self.runnerMode) || self.runnerMode == oldSelf.runnerMode) && has(self.qualificationProfile) == has(oldSelf.qualificationProfile) && (!has(self.qualificationProfile) || self.qualificationProfile == oldSelf.qualificationProfile) && has(self.qualificationModel) == has(oldSelf.qualificationModel) && (!has(self.qualificationModel) || self.qualificationModel == oldSelf.qualificationModel)",message="PRReviewJob spec fields other than cancelRequested and cancelReason are immutable"
+// +kubebuilder:validation:XValidation:rule="self.runId == oldSelf.runId && self.deliveryId == oldSelf.deliveryId && self.repositoryId == oldSelf.repositoryId && self.repo == oldSelf.repo && self.prNumber == oldSelf.prNumber && self.headSha == oldSelf.headSha && self.baseSha == oldSelf.baseSha && self.receivedAt == oldSelf.receivedAt && self.terminalDeadline == oldSelf.terminalDeadline && self.policyDigest == oldSelf.policyDigest && self.configDigest == oldSelf.configDigest && self.publicationMode == oldSelf.publicationMode && self.workerImage == oldSelf.workerImage && self.runSecretName == oldSelf.runSecretName && has(self.executionAttempt) == has(oldSelf.executionAttempt) && (!has(self.executionAttempt) || self.executionAttempt == oldSelf.executionAttempt) && has(self.preparedReview) == has(oldSelf.preparedReview) && (!has(self.preparedReview) || self.preparedReview == oldSelf.preparedReview) && has(self.runnerMode) == has(oldSelf.runnerMode) && (!has(self.runnerMode) || self.runnerMode == oldSelf.runnerMode) && has(self.qualificationProfile) == has(oldSelf.qualificationProfile) && (!has(self.qualificationProfile) || self.qualificationProfile == oldSelf.qualificationProfile) && has(self.qualificationModel) == has(oldSelf.qualificationModel) && (!has(self.qualificationModel) || self.qualificationModel == oldSelf.qualificationModel) && has(self.logicalChildId) == has(oldSelf.logicalChildId) && (!has(self.logicalChildId) || self.logicalChildId == oldSelf.logicalChildId) && has(self.fencingEpoch) == has(oldSelf.fencingEpoch) && (!has(self.fencingEpoch) || self.fencingEpoch == oldSelf.fencingEpoch) && has(self.workerLeaseToken) == has(oldSelf.workerLeaseToken) && (!has(self.workerLeaseToken) || self.workerLeaseToken == oldSelf.workerLeaseToken)",message="PRReviewJob spec fields other than cancelRequested and cancelReason are immutable"
 // +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
 // +kubebuilder:validation:XValidation:rule="(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')",message="qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
 // +kubebuilder:validation:XValidation:rule="!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))",message="preparedReview requires the prebaked app-gate lane"
@@ -136,6 +154,26 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:MaxLength=256
 	// +optional
 	QualificationModel string `json:"qualificationModel,omitempty"`
+	// LogicalChildID identifies the logical child execution within the mission.
+	// Must conform to RFC 1123 / ID pattern (1 to 128 alphanumeric characters, dots, dashes, underscores, starting with alphanumeric).
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`
+	// +optional
+	LogicalChildID string `json:"logicalChildId,omitempty"`
+	// FencingEpoch is the authoritative mission fencing epoch boundary.
+	// Must be a positive integer >= 1.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=9007199254740991
+	// +optional
+	FencingEpoch int64 `json:"fencingEpoch,omitempty"`
+	// WorkerLeaseToken is the expected fencing token for the active worker lease.
+	// Stale tokens trigger fail-closed reconciliation.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`
+	// +optional
+	WorkerLeaseToken string `json:"workerLeaseToken,omitempty"`
 	// CancelRequested indicates that the review run was superseded or explicitly cancelled.
 	// It is the only spec field that may change after creation, and only from
 	// absent/false to true (REL-1073).
@@ -387,6 +425,28 @@ type PRReviewJobStatus struct {
 	// captured before the worker Job's TTL is allowed to collect the Pod.
 	// +optional
 	WorkerTermination *WorkerTerminationStatus `json:"workerTermination,omitempty"`
+	// AuthoritativeFencingEpoch records the authoritative mission fencing epoch
+	// recognized by the operator.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=9007199254740991
+	// +optional
+	AuthoritativeFencingEpoch int64 `json:"authoritativeFencingEpoch,omitempty"`
+	// ActiveWorkerLeaseToken records the active fencing token bound to the worker's coordination Lease.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`
+	// +optional
+	ActiveWorkerLeaseToken string `json:"activeWorkerLeaseToken,omitempty"`
+	// ReceiptDigest records the sha256 digest of the canonical JSON execution receipt (ct-agent-execution-receipt.v1).
+	// +kubebuilder:validation:Pattern=`^sha256:[a-f0-9]{64}$`
+	// +kubebuilder:validation:MaxLength=71
+	// +optional
+	ReceiptDigest string `json:"receiptDigest,omitempty"`
+	// ReceiptEvidenceRef records the URI or digest of the stored evidence bundle containing the execution receipt artifacts.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=512
+	// +optional
+	ReceiptEvidenceRef string `json:"receiptEvidenceRef,omitempty"`
 	Message           string                   `json:"message,omitempty"`
 	Conditions        []metav1.Condition       `json:"conditions,omitempty"`
 }
@@ -411,4 +471,89 @@ type PRReviewJobList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []PRReviewJob `json:"items"`
+}
+
+var (
+	logicalChildIDPattern   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+	workerLeaseTokenPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+	receiptDigestPattern    = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
+)
+
+// ValidateFencing verifies that fencing identity fields comply with schema bounds.
+func (s *PRReviewJobSpec) ValidateFencing() error {
+	if s == nil {
+		return errors.New("nil PRReviewJobSpec")
+	}
+	if s.LogicalChildID != "" {
+		if len(s.LogicalChildID) > 128 {
+			return fmt.Errorf("logicalChildId length %d exceeds max 128", len(s.LogicalChildID))
+		}
+		if !logicalChildIDPattern.MatchString(s.LogicalChildID) {
+			return fmt.Errorf("logicalChildId %q does not match RFC 1123 / ID pattern", s.LogicalChildID)
+		}
+	}
+	if s.FencingEpoch != 0 {
+		if s.FencingEpoch < 1 {
+			return fmt.Errorf("fencingEpoch must be >= 1, got %d", s.FencingEpoch)
+		}
+		if s.FencingEpoch > 9007199254740991 {
+			return fmt.Errorf("fencingEpoch %d exceeds maximum safe integer", s.FencingEpoch)
+		}
+	}
+	if s.WorkerLeaseToken != "" {
+		if len(s.WorkerLeaseToken) > 128 {
+			return fmt.Errorf("workerLeaseToken length %d exceeds max 128", len(s.WorkerLeaseToken))
+		}
+		if !workerLeaseTokenPattern.MatchString(s.WorkerLeaseToken) {
+			return fmt.Errorf("workerLeaseToken %q does not match token pattern", s.WorkerLeaseToken)
+		}
+	}
+	return nil
+}
+
+// HasFencingEpochMismatch checks if ConditionFencingEpochMismatch is True.
+func (s *PRReviewJobStatus) HasFencingEpochMismatch() bool {
+	if s == nil {
+		return false
+	}
+	for _, c := range s.Conditions {
+		if c.Type == ConditionFencingEpochMismatch && c.Status == metav1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// HasStaleWorkerLease checks if ConditionStaleWorkerLease is True.
+func (s *PRReviewJobStatus) HasStaleWorkerLease() bool {
+	if s == nil {
+		return false
+	}
+	for _, c := range s.Conditions {
+		if c.Type == ConditionStaleWorkerLease && c.Status == metav1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// HasUnknownEffectPending checks if ConditionUnknownEffectPending is True.
+func (s *PRReviewJobStatus) HasUnknownEffectPending() bool {
+	if s == nil {
+		return false
+	}
+	for _, c := range s.Conditions {
+		if c.Type == ConditionUnknownEffectPending && c.Status == metav1.ConditionTrue {
+			return true
+		}
+	}
+	return false
+}
+
+// ReceiptIsAuditable returns true if execution receipt references are committed.
+func (s *PRReviewJobStatus) ReceiptIsAuditable() bool {
+	if s == nil {
+		return false
+	}
+	return s.ReceiptDigest != "" || s.ReceiptEvidenceRef != "" || s.WorkerTermination != nil
 }

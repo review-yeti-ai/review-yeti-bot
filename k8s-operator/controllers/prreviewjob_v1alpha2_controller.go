@@ -20,9 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -51,6 +53,9 @@ const (
 	workerCreationReserved           = "WorkerCreationReserved"
 	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
 	failurePublicationCondition      = "FailurePublication"
+
+	ConditionFencingEpochMismatch = reviewv1alpha2.ConditionFencingEpochMismatch
+	ConditionStaleWorkerLease     = reviewv1alpha2.ConditionStaleWorkerLease
 	// runSecretCleanupFinalizer guards the per-run Secret named by
 	// spec.runSecretName. The TypeScript dispatcher creates that Secret before
 	// this resource exists (so it can never carry an ownerReference back to a
@@ -185,6 +190,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		return r.reconcileElapsedDeadline(ctx, &review, now)
 	}
 
+	// =========================================================================
+	// FENCING & LEASE FAIL-CLOSED RECONCILIATION (API-3330 / Requirement R2)
+	// =========================================================================
+	if terminal, result, err := r.reconcileFencingAndLease(ctx, &review, now); terminal {
+		return result, err
+	}
+
 	workerName := review.Name + "-worker"
 	var existing batchv1.Job
 	existingErr := r.getCachedThenLive(ctx, types.NamespacedName{Namespace: review.Namespace, Name: workerName}, &existing)
@@ -302,6 +314,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceLeaseRejected", err.Error())
 	}
 
+	if review.Spec.WorkerLeaseToken != "" {
+		review.Status.ActiveWorkerLeaseToken = review.Spec.WorkerLeaseToken
+	} else if leaseResult.Lease != nil && leaseResult.Lease.Spec.LeaseTransitions != nil {
+		review.Status.ActiveWorkerLeaseToken = fmt.Sprintf("%d", *leaseResult.Lease.Spec.LeaseTransitions)
+	}
+
 	worker, err := job.BuildWorkerJob(job.Input{
 		Review:           &review,
 		WorkspacePVCName: pvcName,
@@ -309,6 +327,18 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		Now:              now,
 		Publishing:       r.Publishing,
 	})
+	if err == nil && len(worker.Spec.Template.Spec.Containers) > 0 {
+		container := &worker.Spec.Template.Spec.Containers[0]
+		if review.Spec.LogicalChildID != "" {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CT_LOGICAL_CHILD_ID", Value: review.Spec.LogicalChildID})
+		}
+		if review.Spec.FencingEpoch > 0 {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CT_FENCING_EPOCH", Value: strconv.FormatInt(review.Spec.FencingEpoch, 10)})
+		}
+		if review.Spec.WorkerLeaseToken != "" {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CT_WORKER_LEASE_TOKEN", Value: review.Spec.WorkerLeaseToken})
+		}
+	}
 	if err != nil {
 		// The lease was acquired for this attempt, but no Job exists. Release it
 		// before recording a terminal contract failure so a later run is not
@@ -595,6 +625,25 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 		return ctrl.Result{}, nil
 	}
 
+	if worker.Status.Succeeded > 0 {
+		// Safeguard: Never promote to Succeeded if fencing epoch regressed or lease expired.
+		// Verify worker lease token BEFORE releasing the workspace lease.
+		if review.Spec.FencingEpoch > 0 && review.Status.AuthoritativeFencingEpoch > 0 &&
+			review.Spec.FencingEpoch < review.Status.AuthoritativeFencingEpoch {
+			return r.failClosedFencing(ctx, review, reviewv1alpha2.ConditionFencingEpochMismatch, "EpochMismatch",
+				fmt.Sprintf("spec.fencingEpoch (%d) < authoritative (%d)", review.Spec.FencingEpoch, review.Status.AuthoritativeFencingEpoch), now)
+		}
+		if review.Spec.WorkerLeaseToken != "" {
+			stale, reason, msg, err := r.verifyWorkerLeaseToken(ctx, review, now)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if stale {
+				return r.failClosedFencing(ctx, review, reviewv1alpha2.ConditionStaleWorkerLease, reason, msg, now)
+			}
+		}
+	}
+
 	if err := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); err != nil && !errors.Is(err, workspace.ErrLeaseHeld) {
 		return ctrl.Result{}, err
 	}
@@ -616,12 +665,31 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if worker.Status.Succeeded > 0 {
-		if terminationRecorded {
-			if err := r.Status().Update(ctx, review); err != nil {
-				return ctrl.Result{}, err
-			}
+
+	// Reconcile UNKNOWN effect guard based on pod outcome
+	if err := r.ReconcileUnknownEffectGuard(ctx, review, worker, now); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Ensure ReceiptDigest and ReceiptEvidenceRef are populated
+	auditRecorded, err := r.ensureReceiptAuditability(ctx, review, worker, now)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if terminationRecorded || auditRecorded {
+		if err := r.Status().Update(ctx, review); err != nil {
+			return ctrl.Result{}, err
 		}
+	}
+
+	if worker.Status.Succeeded > 0 {
+		// GUARD: Check if UnknownEffectPending or missing receipt blocks promotion
+		if err := AssertCanPromoteToSucceeded(review); err != nil {
+			return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, ReasonUnresolvedEffect,
+				"worker completed with unconfirmed external effects; fail-closed")
+		}
+
 		if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -1108,6 +1176,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalWorkspace(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
+	// If the review failed closed due to fencing or stale lease, preserve pod state without active mutation
+	if meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionFencingEpochMismatch) ||
+		meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionStaleWorkerLease) {
+		return r.reconcileTerminalDeletion(ctx, review)
+	}
+
 	released, err := r.releaseTerminalWorkerObservation(ctx, review)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -1237,6 +1311,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalDeletion(
 // already have removed the review, and a repeated attempt (retry, requeue
 // race) must not surface that as an error.
 func (r *PRReviewJobV1Alpha2Reconciler) deleteTerminalReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (ctrl.Result, error) {
+	if review.Status.ReceiptDigest == "" || review.Status.ReceiptEvidenceRef == "" {
+		if _, err := r.ensureReceiptAuditability(ctx, review, nil, r.clock()); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Status().Update(ctx, review); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
 		return ctrl.Result{}, err
 	}
@@ -1273,6 +1355,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
 ) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(review, runSecretCleanupFinalizer) {
 		return ctrl.Result{}, nil
+	}
+	if review.Status.ReceiptDigest == "" || review.Status.ReceiptEvidenceRef == "" {
+		if _, err := r.ensureReceiptAuditability(ctx, review, nil, r.clock()); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Status().Update(ctx, review); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if job.IsValidRunSecretName(review.Spec.RunSecretName) {
 		secret := &corev1.Secret{
@@ -1539,6 +1629,15 @@ func managedWorkerJobMatches(review *reviewv1alpha2.PRReviewJob, worker *batchv1
 }
 
 func managedWorkerEnvMatches(review *reviewv1alpha2.PRReviewJob, env []corev1.EnvVar) bool {
+	if review.Spec.LogicalChildID != "" && envValue(env, "CT_LOGICAL_CHILD_ID") != review.Spec.LogicalChildID {
+		return false
+	}
+	if review.Spec.FencingEpoch > 0 && envValue(env, "CT_FENCING_EPOCH") != strconv.FormatInt(review.Spec.FencingEpoch, 10) {
+		return false
+	}
+	if review.Spec.WorkerLeaseToken != "" && envValue(env, "CT_WORKER_LEASE_TOKEN") != review.Spec.WorkerLeaseToken {
+		return false
+	}
 	receiptOnly := envValue(env, job.ReceiptOnlyEnv)
 	fullPanel := envValue(env, job.FullPanelQualificationEnv)
 	sameHead := envValue(env, job.SameHeadQualificationEnv)
@@ -1645,6 +1744,223 @@ func envValue(env []corev1.EnvVar, name string) string {
 }
 
 func timePtr(value metav1.Time) *metav1.Time { return &value }
+
+// reconcileFencingAndLease verifies the mission fencing epoch and worker lease token.
+// If an epoch regression, epoch mismatch, or stale/expired worker lease token is detected,
+// it fails closed: sets the failure conditions and phase without mutating pod state.
+func (r *PRReviewJobV1Alpha2Reconciler) reconcileFencingAndLease(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	now time.Time,
+) (bool, ctrl.Result, error) {
+	// If already failed due to fencing or lease, stay terminal
+	if meta.IsStatusConditionTrue(review.Status.Conditions, ConditionFencingEpochMismatch) ||
+		meta.IsStatusConditionTrue(review.Status.Conditions, ConditionStaleWorkerLease) {
+		return true, ctrl.Result{}, nil
+	}
+
+	// 1. VERIFY MISSION FENCING EPOCH
+	if review.Spec.FencingEpoch > 0 || review.Status.AuthoritativeFencingEpoch > 0 {
+		authoritativeEpoch, err := r.resolveAuthoritativeFencingEpoch(ctx, review)
+		if err != nil {
+			return true, ctrl.Result{}, err
+		}
+
+		if review.Spec.FencingEpoch > 0 && authoritativeEpoch > 0 && review.Spec.FencingEpoch < authoritativeEpoch {
+			message := fmt.Sprintf("spec.fencingEpoch (%d) is stale compared to authoritative fencing epoch (%d)",
+				review.Spec.FencingEpoch, authoritativeEpoch)
+			res, failErr := r.failClosedFencing(ctx, review, ConditionFencingEpochMismatch, "EpochMismatch", message, now)
+			return true, res, failErr
+		}
+
+		// Initialize authoritative fencing epoch in status if not yet set
+		if review.Status.AuthoritativeFencingEpoch == 0 && review.Spec.FencingEpoch > 0 {
+			review.Status.AuthoritativeFencingEpoch = review.Spec.FencingEpoch
+		}
+	}
+
+	// 2. VERIFY WORKER LEASE TOKEN
+	if review.Spec.WorkerLeaseToken != "" {
+		stale, reason, msg, err := r.verifyWorkerLeaseToken(ctx, review, now)
+		if err != nil {
+			return true, ctrl.Result{}, err
+		}
+		if stale {
+			res, failErr := r.failClosedFencing(ctx, review, ConditionStaleWorkerLease, reason, msg, now)
+			return true, res, failErr
+		}
+	}
+
+	return false, ctrl.Result{}, nil
+}
+
+// resolveAuthoritativeFencingEpoch determines the authoritative mission epoch.
+// It checks status, spec, and sibling PRReviewJobs for the same (RepositoryID, PRNumber)
+// in the namespaced boundary to detect any higher established mission authority or epoch advancements.
+func (r *PRReviewJobV1Alpha2Reconciler) resolveAuthoritativeFencingEpoch(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (int64, error) {
+	var maxObservedEpoch int64 = review.Status.AuthoritativeFencingEpoch
+	if review.Spec.FencingEpoch > maxObservedEpoch {
+		maxObservedEpoch = review.Spec.FencingEpoch
+	}
+
+	reader := r.admissionReader()
+	var reviews reviewv1alpha2.PRReviewJobList
+	if err := reader.List(ctx, &reviews, client.InNamespace(review.Namespace)); err != nil {
+		return 0, err
+	}
+
+	for i := range reviews.Items {
+		item := &reviews.Items[i]
+		if item.Spec.RepositoryID == review.Spec.RepositoryID && item.Spec.PRNumber == review.Spec.PRNumber {
+			if item.Status.AuthoritativeFencingEpoch > maxObservedEpoch {
+				maxObservedEpoch = item.Status.AuthoritativeFencingEpoch
+			}
+			if item.Spec.FencingEpoch > maxObservedEpoch {
+				maxObservedEpoch = item.Spec.FencingEpoch
+			}
+		}
+	}
+
+	if maxObservedEpoch > 0 {
+		return maxObservedEpoch, nil
+	}
+
+	return 1, nil
+}
+
+// verifyWorkerLeaseToken checks spec.WorkerLeaseToken against active lease state in ct-review-system.
+func (r *PRReviewJobV1Alpha2Reconciler) verifyWorkerLeaseToken(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	now time.Time,
+) (bool, string, string, error) {
+	// 1. Direct status comparison if active token was already recorded and differs
+	if review.Status.ActiveWorkerLeaseToken != "" && review.Spec.WorkerLeaseToken != review.Status.ActiveWorkerLeaseToken {
+		msg := fmt.Sprintf("spec.workerLeaseToken %q does not match active worker lease token %q",
+			review.Spec.WorkerLeaseToken, review.Status.ActiveWorkerLeaseToken)
+		return true, "LeaseExpired", msg, nil
+	}
+
+	// 2. Inspect active coordinationv1.Lease
+	leaseName := workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
+	var lease coordinationv1.Lease
+	err := r.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: leaseName}, &lease)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// If worker creation was already reserved or running, missing lease is terminal
+			if workerCreationWasAttempted(review) {
+				msg := fmt.Sprintf("active workspace lease %q not found for running or reserved worker", leaseName)
+				return true, "LeaseExpired", msg, nil
+			}
+			return false, "", "", nil
+		}
+		return false, "", "", err
+	}
+
+	if lease.DeletionTimestamp != nil {
+		msg := fmt.Sprintf("active workspace lease %q is terminating", leaseName)
+		return true, "LeaseExpired", msg, nil
+	}
+
+	// Check lease holder identity
+	if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity != "" && *lease.Spec.HolderIdentity != review.Spec.RunID {
+		msg := fmt.Sprintf("workspace lease %q is held by another run %q", leaseName, *lease.Spec.HolderIdentity)
+		return true, "LeaseExpired", msg, nil
+	}
+
+	// Check lease expiry
+	expiresAt, err := leaseExpires(&lease)
+	if err != nil {
+		msg := fmt.Sprintf("failed to parse workspace lease expiration: %v", err)
+		return true, "LeaseExpired", msg, nil
+	}
+	if !now.Before(expiresAt) {
+		msg := fmt.Sprintf("workspace lease %q expired at %s (current time: %s)", leaseName, expiresAt.Format(time.RFC3339), now.Format(time.RFC3339))
+		return true, "LeaseExpired", msg, nil
+	}
+
+	// Compare token against transition representation or annotation if present
+	if lease.Spec.LeaseTransitions != nil {
+		transitionToken := fmt.Sprintf("%d", *lease.Spec.LeaseTransitions)
+		tokenPrefixed := fmt.Sprintf("token-%d", *lease.Spec.LeaseTransitions)
+		annotatedToken := ""
+		if lease.Annotations != nil {
+			annotatedToken = lease.Annotations["review-yeti.ai/lease-token"]
+		}
+		if annotatedToken != "" && review.Spec.WorkerLeaseToken != annotatedToken {
+			msg := fmt.Sprintf("spec.workerLeaseToken %q does not match lease annotation token %q", review.Spec.WorkerLeaseToken, annotatedToken)
+			return true, "LeaseExpired", msg, nil
+		}
+		if annotatedToken == "" && review.Status.ActiveWorkerLeaseToken != "" && review.Spec.WorkerLeaseToken != transitionToken && review.Spec.WorkerLeaseToken != tokenPrefixed {
+			msg := fmt.Sprintf("spec.workerLeaseToken %q does not match active lease transitions (%s/%s)", review.Spec.WorkerLeaseToken, transitionToken, tokenPrefixed)
+			return true, "LeaseExpired", msg, nil
+		}
+	}
+
+	return false, "", "", nil
+}
+
+func leaseExpires(lease *coordinationv1.Lease) (time.Time, error) {
+	if lease.Spec.LeaseDurationSeconds == nil || *lease.Spec.LeaseDurationSeconds <= 0 {
+		return time.Time{}, errors.New("lease duration invalid")
+	}
+	var base time.Time
+	if lease.Spec.RenewTime != nil {
+		base = lease.Spec.RenewTime.Time
+	} else if lease.Spec.AcquireTime != nil {
+		base = lease.Spec.AcquireTime.Time
+	}
+	if base.IsZero() {
+		return time.Time{}, errors.New("lease missing acquire and renew time")
+	}
+	return base.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second), nil
+}
+
+// failClosedFencing transitions the review to PhaseFailed with the specified condition,
+// strictly avoiding any mutation of worker Jobs or Pods.
+func (r *PRReviewJobV1Alpha2Reconciler) failClosedFencing(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	conditionType string,
+	reason string,
+	message string,
+	now time.Time,
+) (ctrl.Result, error) {
+	review.Status.Phase = reviewv1alpha2.PhaseFailed
+	review.Status.ObservedGeneration = review.Generation
+	review.Status.Message = message
+
+	// Surface the fencing or lease condition
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               conditionType,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+	})
+
+	// Surface Ready = False
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+	})
+
+	// Persist the status update without touching any Pods or Jobs
+	if err := r.Status().Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Fail closed: no requeue, no worker dispatch, no pod mutation
+	return ctrl.Result{}, nil
+}
 
 // SetupWithManager registers only the v1alpha2 projection and its owned Jobs.
 // PVCs are intentionally not owned because their lifecycle is PR-scoped.
