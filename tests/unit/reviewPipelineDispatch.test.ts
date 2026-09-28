@@ -112,6 +112,19 @@ describe('Dispatch path: persona resolution defaults', () => {
     expect(pipeline.isRetiredFireworksTransport('bifrost', 'https://gateway.test.invalid/v1')).toBe(false);
   });
 
+  it('drops a renamed plan transport that targets the Fireworks endpoint through resolveModelConfig (REL-1162)', () => {
+    const cfg = pipeline.resolveModelConfig({
+      OLLAMA_PR_REVIEW_API_KEY: 'ollama-key',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([
+        { name: 'renamed-direct', base_url: 'https://api.fireworks.ai/inference/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'm' },
+        { name: 'ollama', base_url: 'https://ollama.com/v1', api_key_env: 'OLLAMA_PR_REVIEW_API_KEY', model: 'glm-5.3-flash' },
+      ]),
+    });
+    // The renamed entry's api_key_env resolves, yet it is still refused a credential and dropped.
+    expect(cfg.transports.map((t: { name: string }) => t.name)).toEqual(['ollama']);
+    expect(cfg.transports.some((t: { baseUrl: string }) => /fireworks\.ai/i.test(t.baseUrl))).toBe(false);
+  });
+
   it('defaults to the default reviewer set when nothing is configured', () => {
     expect(ids({}, null, {})).toEqual(['security', 'performance', 'architecture', 'testing', 'dependencies']);
   });
