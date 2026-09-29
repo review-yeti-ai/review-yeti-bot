@@ -55,10 +55,12 @@ describe('release workflow contract', () => {
   it('exposes the release token only to publishing steps', () => {
     const workflow = yaml.load(fs.readFileSync(canonicalPath, 'utf8')) as any;
     const releaseJob = workflow.jobs['validate-and-release'];
-    expect(workflow.env ?? {}).not.toHaveProperty('GH_TOKEN');
-    expect(workflow.env ?? {}).not.toHaveProperty('GITHUB_TOKEN');
-    expect(releaseJob.env).not.toHaveProperty('GH_TOKEN');
-    expect(releaseJob.env).not.toHaveProperty('GITHUB_TOKEN');
+    // runContinuationPhase accepts all three names. Any one of them can turn a fixture into a live API write.
+    const runtimeTokens = ['GITHUB_PUBLISH_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'];
+    for (const token of runtimeTokens) {
+      expect(workflow.env ?? {}).not.toHaveProperty(token);
+      expect(releaseJob.env ?? {}).not.toHaveProperty(token);
+    }
 
     const publishingSteps = [
       'Ensure GitHub Release Exists',
@@ -70,12 +72,15 @@ describe('release workflow contract', () => {
       const step = releaseJob.steps.find((candidate: any) => candidate.name === name);
       expect(step, name).toBeDefined();
       expect(step.env.GH_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}');
+      expect(step.env).not.toHaveProperty('GITHUB_PUBLISH_TOKEN');
+      expect(step.env).not.toHaveProperty('GITHUB_TOKEN');
     }
 
     for (const step of releaseJob.steps) {
       if (publishingSteps.includes(step.name)) continue;
-      expect(step.env ?? {}, step.name).not.toHaveProperty('GH_TOKEN');
-      expect(step.env ?? {}, step.name).not.toHaveProperty('GITHUB_TOKEN');
+      for (const token of runtimeTokens) {
+        expect(step.env ?? {}, step.name).not.toHaveProperty(token);
+      }
     }
   });
 
