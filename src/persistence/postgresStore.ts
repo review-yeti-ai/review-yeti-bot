@@ -19,6 +19,7 @@ import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
 import { applySchemaOnce, withSchemaLockRetry } from './schemaMigrationGate';
+import { LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL } from './legacyAppGateReceiptPolicy';
 
 export const ADVISORY_LOCK_ID = 1029384;
 
@@ -429,6 +430,9 @@ export class PostgresStore {
       const schemaOutcome = await applySchemaOnce(client, [
         coreSchemaSql,
         REVIEW_GATE_SCHEMA_SQL,
+        // Historical bridge only: dispatch owns the receipt column and the
+        // gate schema owns authoritative_gate_app_id, so both must exist first.
+        LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL,
         REVIEW_GENERATION_RECOVERY_SCHEMA_SQL,
         PREPARED_REVIEW_SCHEMA_SQL,
         REVIEW_CI_SCHEMA_SQL,

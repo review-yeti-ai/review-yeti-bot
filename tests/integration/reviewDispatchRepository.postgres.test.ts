@@ -537,7 +537,14 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [runId]);
     expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
     await client.query('UPDATE review_runs SET result_digest = $2 WHERE run_id = $1', [runId, completionDigest]);
+    expect((await client.query(`SELECT status, terminal_receipt_digest
+      FROM review_dispatch_outbox WHERE run_id = $1`, [runId])).rows[0]).toEqual({
+      status: 'projected',
+      terminal_receipt_digest: null,
+    });
 
+    // This receipt can only come from completion.content_digest: authoritative
+    // runs never use the legacy terminal outbox receipt column.
     const status = await repository.getRunStatus(runId, 1);
     expect(status?.receipt).toMatchObject({
       version: 'AppGateReceipt.v1',

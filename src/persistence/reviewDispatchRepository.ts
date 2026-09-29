@@ -40,6 +40,7 @@ import {
   isReviewGateCancellationReason,
   type ReviewGateCancellationReason,
 } from '../review/reviewGatePolicy';
+import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
 
 interface QueryResult {
   rows: any[];
@@ -2244,8 +2245,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       && String(row.base_sha) === input.baseSha
       && String(row.effective_policy_digest) === input.policyDigest
       && String(row.effective_config_digest) === input.configDigest
-      && String(row.publication_mode) === 'app-gate'
-      && row.authoritative_gate_app_id == null
+      && isLegacyAppGateRun(row.publication_mode, row.authoritative_gate_app_id)
       && Number(row.execution_attempt) + 1 === input.executionAttempt;
     if (!metadataMatches) return { runId: input.runId, status: 'unauthorized' };
 
@@ -2291,8 +2291,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           AND runs.repository_id = $9
           AND runs.effective_policy_digest = $10
           AND runs.effective_config_digest = $11
-          AND runs.publication_mode = 'app-gate'
-          AND runs.authoritative_gate_app_id IS NULL
+          AND ${LEGACY_APP_GATE_RUN_SQL}
           AND runs.status IN ('queued', 'running')
           AND outbox.status = 'terminal'
           AND outbox.execution_attempt + 1 = $12

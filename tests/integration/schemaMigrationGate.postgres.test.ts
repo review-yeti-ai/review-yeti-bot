@@ -154,16 +154,25 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
   it('API-3371 backfills only legacy successful terminal receipts', async () => {
     await initializeFresh();
     const suffix = randomBytes(8).toString('hex');
-    const legacyRunId = `run_legacy_${suffix}`;
-    const authoritativeRunId = `run_authoritative_${suffix}`;
-    const legacyDelivery = `delivery_legacy_${suffix}`;
-    const authoritativeDelivery = `delivery_authoritative_${suffix}`;
     const receiptDigest = 'd'.repeat(64);
+    const scenarios = [
+      { label: 'legacy', publicationMode: 'app-gate', runStatus: 'succeeded',
+        outboxStatus: 'terminal', resultDigest: receiptDigest, authoritativeGateAppId: null },
+      { label: 'authoritative', publicationMode: 'app-gate', runStatus: 'succeeded',
+        outboxStatus: 'terminal', resultDigest: receiptDigest, authoritativeGateAppId: 43_857_710 },
+      { label: 'failed', publicationMode: 'app-gate', runStatus: 'failed',
+        outboxStatus: 'terminal', resultDigest: receiptDigest, authoritativeGateAppId: null },
+      { label: 'disabled', publicationMode: 'disabled', runStatus: 'succeeded',
+        outboxStatus: 'terminal', resultDigest: receiptDigest, authoritativeGateAppId: null },
+      { label: 'projected', publicationMode: 'app-gate', runStatus: 'succeeded',
+        outboxStatus: 'projected', resultDigest: receiptDigest, authoritativeGateAppId: null },
+      { label: 'invalid_digest', publicationMode: 'app-gate', runStatus: 'succeeded',
+        outboxStatus: 'terminal', resultDigest: 'not-a-digest', authoritativeGateAppId: null },
+    ] as const;
 
-    for (const [runId, deliveryId, authoritativeGateAppId] of [
-      [legacyRunId, legacyDelivery, null],
-      [authoritativeRunId, authoritativeDelivery, 43_857_710],
-    ] as const) {
+    for (const scenario of scenarios) {
+      const runId = `run_${scenario.label}_${suffix}`;
+      const deliveryId = `delivery_${scenario.label}_${suffix}`;
       await pool.query(`INSERT INTO review_runs
         (run_id, identity_digest, owner, repo, pr_number, head_sha, base_sha,
          snapshot_digest, config_digest, effective_policy_digest,
@@ -171,8 +180,8 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
          repository_id, installation_id, delivery_id, result_digest,
          authoritative_gate_app_id)
         VALUES ($1, $2, 'calltelemetry', 'cisco-cdr', 42, $3, $4, $5, $6,
-          $7, $8, '{}'::jsonb, 'app-gate', 'succeeded', 'complete', 123, 456,
-          $9, $10, $11)`, [
+          $7, $8, '{}'::jsonb, $9, $10, 'complete', 123, 456,
+          $11, $12, $13)`, [
         runId,
         randomBytes(32).toString('hex'),
         'a'.repeat(40),
@@ -181,9 +190,11 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
         'e'.repeat(64),
         'f'.repeat(64),
         '1'.repeat(64),
+        scenario.publicationMode,
+        scenario.runStatus,
         deliveryId,
-        receiptDigest,
-        authoritativeGateAppId,
+        scenario.resultDigest,
+        scenario.authoritativeGateAppId,
       ]);
       await pool.query(`INSERT INTO github_deliveries
         (delivery_id, event_name, repository_id, installation_id,
@@ -192,8 +203,8 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
       [deliveryId, '2'.repeat(64), runId]);
       await pool.query(`INSERT INTO review_dispatch_outbox
         (run_id, delivery_id, status, execution_attempt, worker_token_digest)
-        VALUES ($1, $2, 'terminal', 0, $3)`,
-      [runId, deliveryId, '3'.repeat(64)]);
+        VALUES ($1, $2, $3, 0, $4)`,
+      [runId, deliveryId, scenario.outboxStatus, '3'.repeat(64)]);
     }
 
     await pool.query(`ALTER TABLE review_dispatch_outbox
@@ -201,15 +212,24 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
     await pool.query(`DELETE FROM ${SCHEMA_MIGRATIONS_TABLE}`);
 
     await initializeFresh();
-    await initializeFresh();
 
     const receipts = await pool.query(`SELECT run_id, terminal_receipt_digest
-      FROM review_dispatch_outbox WHERE run_id = ANY($1::text[]) ORDER BY run_id`,
-    [[authoritativeRunId, legacyRunId]]);
-    expect(receipts.rows).toEqual([
-      { run_id: authoritativeRunId, terminal_receipt_digest: null },
-      { run_id: legacyRunId, terminal_receipt_digest: receiptDigest },
-    ]);
+      FROM review_dispatch_outbox WHERE run_id = ANY($1::text[])`,
+    [scenarios.map(({ label }) => `run_${label}_${suffix}`)]);
+    expect(Object.fromEntries(receipts.rows.map(({ run_id: runId, terminal_receipt_digest: digest }) =>
+      [runId, digest]))).toEqual(Object.fromEntries(scenarios.map(({ label }) => [
+      `run_${label}_${suffix}`,
+      label === 'legacy' ? receiptDigest : null,
+    ])));
+
+    const persistedReceipt = '9'.repeat(64);
+    await pool.query(`UPDATE review_dispatch_outbox SET terminal_receipt_digest = $2
+      WHERE run_id = $1`, [`run_legacy_${suffix}`, persistedReceipt]);
+    await pool.query(`DELETE FROM ${SCHEMA_MIGRATIONS_TABLE}`);
+    await initializeFresh();
+    expect((await pool.query(`SELECT terminal_receipt_digest
+      FROM review_dispatch_outbox WHERE run_id = $1`, [`run_legacy_${suffix}`])).rows[0])
+      .toEqual({ terminal_receipt_digest: persistedReceipt });
   });
 
   it('a rollout start completes promptly while a serving pod holds a live transaction on review_runs', async () => {
