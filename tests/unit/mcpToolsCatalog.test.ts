@@ -758,6 +758,18 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
   // SUITE 7: cancel_review Tool Execution
   // =========================================================================
   describe('Suite 7: cancel_review Tool Execution', () => {
+    it('TC-CANC-008: Fails closed when the review database is unavailable', async () => {
+      const cancelRunsForPullRequest = vi.fn();
+      const tool = createCancelReviewTool({
+        cancellationRepository: { cancelRunsForPullRequest },
+      });
+
+      await expect(tool.execute({
+        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
+      })).rejects.toThrow(/review database is required/);
+      expect(cancelRunsForPullRequest).not.toHaveBeenCalled();
+    });
+
     it('TC-CANC-001: Cancels active review run and signals pod reaping', async () => {
       mockDb.query
         .mockResolvedValueOnce({
