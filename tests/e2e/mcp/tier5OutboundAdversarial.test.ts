@@ -970,7 +970,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
               );
             }
 
-            if (text.includes('WORK TURN')) {
+            if (text.includes('WORK TURN') || text.includes('TASK_FINALIZE_NOW')) {
               return createFakeResponse(JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
             }
 

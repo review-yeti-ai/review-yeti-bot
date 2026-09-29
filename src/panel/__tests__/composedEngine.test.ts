@@ -616,6 +616,48 @@ describe('executeComposedReview', () => {
     expect(callsByTask.get('task-1')).toBe(3);
   });
 
+  it('preserves one investigation turn when a task is limited to two turns', async () => {
+    const callsByTask = new Map<string, number>();
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      const taskId = threeTasks().find((task) => text.includes(task.id))?.id;
+      if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
+      const call = (callsByTask.get(taskId) ?? 0) + 1;
+      callsByTask.set(taskId, call);
+      if (call === 1) {
+        return fakeResponse(JSON.stringify({
+          tool: 'get_diff',
+          args: { path: 'src/auth/guard.ts' },
+        }));
+      }
+      return fakeResponse(JSON.stringify({
+        nonce,
+        task: taskId,
+        status: 'COMPLETE',
+        findings: [],
+      }));
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_per_task: 2 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(result.unreportedLanes ?? []).toEqual([]);
+    expect(result.personas).toHaveLength(3);
+    expect(result.personas.every((lane) => lane.toolTurns === 1)).toBe(true);
+    expect([...callsByTask.values()]).toEqual([2, 2, 2]);
+  });
+
   it('fails closed when every planned task produces no verdict', async () => {
     const { complete, workTurns } = routedClient(() => 'not a verdict');
     const cfg: any = config();
