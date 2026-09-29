@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.0...v1.97.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **review:** retry undici fetch failures instead of quarantining every lane ([#1111](https://github.com/review-yeti-ai/review-yeti-bot/issues/1111)) ([7b4f422](https://github.com/review-yeti-ai/review-yeti-bot/commit/7b4f42235d8856176973a81e3fbb0896f8936528))
+
 ## [1.97.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.96.1...v1.97.0) (2026-09-29)
 
 
