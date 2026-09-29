@@ -36,6 +36,10 @@ import {
   type ReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryRequest,
 } from '../review/reviewGenerationRecovery';
+import {
+  isReviewGateCancellationReason,
+  type ReviewGateCancellationReason,
+} from '../review/reviewGatePolicy';
 
 interface QueryResult {
   rows: any[];
@@ -458,7 +462,7 @@ export interface ReviewDispatchRepository {
    */
   cancelRunsForPullRequest(
     repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string;
-      gateReason?: 'candidate-superseded' | 'operator-cancelled'; now?: number },
+      gateReason?: ReviewGateCancellationReason; now?: number },
     prNumber?: number,
     cancelReason?: string,
     now?: number,
@@ -1552,7 +1556,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
 
   async cancelRunsForPullRequest(
     repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string;
-      gateReason?: 'candidate-superseded' | 'operator-cancelled'; now?: number },
+      gateReason?: ReviewGateCancellationReason; now?: number },
     prNumberArg?: number,
     cancelReasonArg?: string,
     nowArg?: number,
@@ -1560,16 +1564,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     let repositoryId: number;
     let prNumber: number;
     let cancelReason: string;
-    let gateReason: 'candidate-superseded' | 'operator-cancelled' = 'candidate-superseded';
+    let gateReason: ReviewGateCancellationReason = 'candidate-superseded';
     let now: number;
     if (typeof repositoryIdOrInput === 'object') {
       repositoryId = repositoryIdOrInput.repositoryId;
       prNumber = repositoryIdOrInput.prNumber;
       cancelReason = repositoryIdOrInput.cancelReason;
       const requestedGateReason = repositoryIdOrInput.gateReason;
-      if (requestedGateReason !== undefined
-        && requestedGateReason !== 'candidate-superseded'
-        && requestedGateReason !== 'operator-cancelled') {
+      if (requestedGateReason !== undefined && !isReviewGateCancellationReason(requestedGateReason)) {
         throw new Error('Invalid cancellation gate reason');
       }
       gateReason = requestedGateReason ?? gateReason;

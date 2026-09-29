@@ -32,10 +32,28 @@ export interface ReviewRiskAcceptance {
   appliedAt: string;
 }
 
+/**
+ * Cancellation reasons are a shared persistence and event-wire contract.
+ * Keep their runtime values and TypeScript type sourced from this tuple so a
+ * new reason cannot compile in one gate path while snapshots reject it.
+ */
+export const REVIEW_GATE_CANCELLATION_REASONS = [
+  'candidate-superseded',
+  'pull-request-closed',
+  'operator-cancelled',
+] as const;
+
+export type ReviewGateCancellationReason = typeof REVIEW_GATE_CANCELLATION_REASONS[number];
+
+export function isReviewGateCancellationReason(value: unknown): value is ReviewGateCancellationReason {
+  return typeof value === 'string'
+    && (REVIEW_GATE_CANCELLATION_REASONS as readonly string[]).includes(value);
+}
+
 export type ReviewGateDecision =
   | { status: 'pending'; eligible: false; reason: 'review-pending' }
   | { status: 'timed_out'; eligible: false; reason: 'review-deadline-exceeded' }
-  | { status: 'cancelled'; eligible: false; reason: 'candidate-superseded' | 'pull-request-closed' | 'operator-cancelled' }
+  | { status: 'cancelled'; eligible: false; reason: ReviewGateCancellationReason }
   | { status: 'failure'; eligible: false; reason: 'invalid-evidence' | 'infrastructure-failure' | 'incomplete-review' | 'blocking-findings' }
   | { status: 'success'; eligible: true; reason: 'clean-review' | 'central-exemption' }
   | { status: 'success'; eligible: true; reason: 'human-accepted-risk'; audit: {
