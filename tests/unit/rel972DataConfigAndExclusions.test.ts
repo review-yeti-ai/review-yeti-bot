@@ -70,6 +70,8 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
     'etc/service.ini',
     'app/settings.properties',
     'fixtures/rows.ndjson',
+    'ova/versions/0.8.6.28.env',
+    'config/.env.production',
   ])('routes an uncovered %s to the required lane', (path) => {
     const result = resolveReviewApplicability(sourceOnlyRoster(), files(path));
     expect(result.applicable.map((persona) => persona.id)).toEqual(['sec-lane']);
@@ -132,6 +134,12 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
 
   it('classifies data/config formats without touching documentation or source', () => {
     expect(isDataOrConfigPath(LAB_ASSETS)).toBe(true);
+    expect(isDataOrConfigPath('ova/versions/0.8.6.28.env')).toBe(true);
+    expect(isDataOrConfigPath('.env')).toBe(true);
+    expect(isDataOrConfigPath('config/.env.local')).toBe(true);
+    expect(isDataOrConfigPath('config\\.env.local')).toBe(true);
+    expect(isDataOrConfigPath('scripts/env')).toBe(false);
+    expect(isDataOrConfigPath('config/app.envrc')).toBe(false);
     expect(isDataOrConfigPath('docs/guide.md')).toBe(false);
     expect(isDataOrConfigPath('src/main.ts')).toBe(false);
     expect(isDataOrConfigPath('tools/inventory.lua')).toBe(false);
