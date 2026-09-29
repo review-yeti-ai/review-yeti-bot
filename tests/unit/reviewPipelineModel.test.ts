@@ -231,6 +231,38 @@ describe('resolveModelConfig', () => {
     expect(calls[0].body.max_tokens).toBe(24_576);
   });
 
+  it('clamps an oversized transport plan only for the guarded gateway alias', async () => {
+    const transport = (baseUrl: string, model: string) => JSON.stringify([{
+      name: 'openrouter', base_url: baseUrl, model, max_tokens: 100_000, stream: false,
+    }]);
+    const privateUrl = 'https://llm-gateway.example.ts.net/v1';
+    const gateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-test-key',
+      OPENROUTER_BASE_URL: privateUrl,
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+      REVIEW_YETI_TRANSPORTS: transport(privateUrl, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS),
+    });
+    expect(gateway.transports[0].maxTokens).toBe(100_000);
+    const gatewayFetch = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...gateway, fetchImplementation: gatewayFetch.impl,
+    });
+    expect(gatewayFetch.calls[0].body.max_tokens).toBe(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+
+    const directUrl = 'https://openrouter.ai/api/v1';
+    const direct = resolveModelConfig({
+      OPENROUTER_API_KEY: 'direct-test-key',
+      REVIEW_YETI_TRANSPORTS: transport(directUrl, 'deepseek/deepseek-v4-flash-0731'),
+    });
+    expect(direct.transports[0].maxTokens).toBe(100_000);
+    const directFetch = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...direct, fetchImplementation: directFetch.impl,
+    });
+    expect(directFetch.calls[0].body.max_tokens).toBe(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
+    expect(directFetch.calls[0].body.max_tokens).toBeGreaterThan(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+  });
+
   it('maps the guarded gateway destination to the Bifrost model alias without changing policy', () => {
     const cfg = resolveModelConfig({
       OPENROUTER_API_KEY: 'gateway-key',
