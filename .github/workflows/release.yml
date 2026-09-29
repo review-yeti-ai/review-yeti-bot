@@ -46,8 +46,6 @@ jobs:
       contents: write
       pull-requests: read
     env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REVIEW_YETI_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
     outputs:
       version: ${{ steps.resolve-version.outputs.version }}
@@ -156,6 +154,7 @@ jobs:
 
       - name: Ensure GitHub Release Exists
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
         run: |
           if ! gh release view "$RELEASE_VER" >/dev/null 2>&1; then
@@ -164,6 +163,7 @@ jobs:
 
       - name: Upload Benchmark Matrix Downloadable Assets
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
           JSON_PATH: ${{ steps.benchmark.outputs.json_path }}
           MD_PATH: ${{ steps.benchmark.outputs.md_path }}
@@ -172,6 +172,7 @@ jobs:
 
       - name: Embed Summary Benchmark Table into Release Notes
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VER: ${{ steps.resolve-version.outputs.version }}
           MD_PATH: ${{ steps.benchmark.outputs.md_path }}
         run: |

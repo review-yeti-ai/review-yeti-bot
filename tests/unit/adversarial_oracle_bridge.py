@@ -64,6 +64,16 @@ def load_packet(raw: bytes) -> dict:
     return packet
 
 
+def canonical_result(value: Any) -> dict:
+    encoded = canonical(value)
+    return {
+        'ok': True,
+        'canonical': encoded.decode('ascii'),
+        'digest': 'sha256:' + hashlib.sha256(encoded).hexdigest(),
+        'length': len(encoded),
+    }
+
+
 def main() -> int:
     mode = sys.argv[1] if len(sys.argv) > 1 else 'canonical'
     raw_input = sys.stdin.buffer.read()
@@ -71,14 +81,20 @@ def main() -> int:
     if mode == 'canonical':
         try:
             value = json.loads(raw_input.decode('utf-8'))
-            encoded = canonical(value)
-            digest = hashlib.sha256(encoded).hexdigest()
-            print(json.dumps({
-                'ok': True,
-                'canonical': encoded.decode('ascii'),
-                'digest': 'sha256:' + digest,
-                'length': len(encoded)
-            }))
+            print(json.dumps(canonical_result(value)))
+            return 0
+        except ContractError as err:
+            print(json.dumps({'ok': False, 'error': str(err)}))
+            return 0
+        except Exception as err:
+            print(json.dumps({'ok': False, 'error': type(err).__name__ + ': ' + str(err)}))
+            return 0
+
+    elif mode == 'canonical_batch':
+        try:
+            values = json.loads(raw_input.decode('utf-8'))
+            require(type(values) is list, 'INVALID_JSON')
+            print(json.dumps([canonical_result(value) for value in values]))
             return 0
         except ContractError as err:
             print(json.dumps({'ok': False, 'error': str(err)}))

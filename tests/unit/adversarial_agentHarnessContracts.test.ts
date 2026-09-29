@@ -112,6 +112,19 @@ function runPythonOracle(mode: 'canonical' | 'load_packet', input: string | Buff
   return JSON.parse(stdout);
 }
 
+function runPythonCanonicalBatch(values: unknown[]): Array<{ ok: boolean; canonical?: string; error?: string }> {
+  const stdout = execFileSync('python3', [ORACLE_SCRIPT, 'canonical_batch'], {
+    input: JSON.stringify(values),
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const result = JSON.parse(stdout);
+  if (!Array.isArray(result)) {
+    throw new Error(`Python canonical batch failed: ${result.error || stdout}`);
+  }
+  return result;
+}
+
 function assertThrowsCode(code: string, fn: () => void): void {
   try {
     fn();
@@ -516,11 +529,13 @@ describe('Empirical Adversarial Challenges: agentHarnessContracts.ts', () => {
         return obj;
       }
 
-      for (let i = 0; i < 50; i++) {
-        const randObj = generateRandomObject();
-        const tsCanonical = canonicalJson(randObj);
-        const pyResult = runPythonOracle('canonical', JSON.stringify(randObj));
-        expect(pyResult.ok).toBe(true);
+      const cases = Array.from({ length: 50 }, () => generateRandomObject());
+      const oracleResults = runPythonCanonicalBatch(cases);
+      expect(oracleResults).toHaveLength(cases.length);
+      for (let i = 0; i < cases.length; i++) {
+        const tsCanonical = canonicalJson(cases[i]);
+        const pyResult = oracleResults[i];
+        expect(pyResult.ok, `case ${i}: ${pyResult.error || ''}`).toBe(true);
         expect(tsCanonical).toBe(pyResult.canonical);
       }
     });

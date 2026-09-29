@@ -147,6 +147,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
         headSha: 'head-sha-null-byte',
         db: mockDb,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
@@ -243,6 +244,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
           db: mockDb,
           checkClient: checkClientMock,
           suppressExit: true,
+          env: {},
         }),
       ).rejects.toThrow('HTTP 503 Service Unavailable');
 
@@ -455,6 +457,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
           db: mockPool,
           timeoutMs: 40,
           suppressExit: true,
+          env: {},
         }),
       ).rejects.toThrow(/timeout guard/);
     });
@@ -477,6 +480,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
         db: hungDb,
         timeoutMs: 50,
         suppressExit: true,
+        env: {},
       });
 
       // Race with a watchdog timer of 300ms
@@ -539,6 +543,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
         commentPublisher: { publishReview: publishReviewMock },
         checkClient: { publishGateCheck: publishGateCheckMock },
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
@@ -581,11 +586,13 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
         runId: 'run-repeated-test',
         db: mockDb,
         suppressExit: true,
+        env: {},
       });
       const res2 = await runContinuationPhase({
         runId: 'run-repeated-test',
         db: mockDb,
         suppressExit: true,
+        env: {},
       });
 
       expect(res1.ok).toBe(true);
