@@ -52,9 +52,10 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
  */
 const DATA_OR_CONFIG_EXTENSION =
   /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties|env)$/i;
+const DOTENV_CONFIG_FILE = /(?:^|\/)\.env(?:\.[^/]+)?$/i;
 
 export function isDataOrConfigPath(filePath: string): boolean {
-  return DATA_OR_CONFIG_EXTENSION.test(filePath);
+  return DATA_OR_CONFIG_EXTENSION.test(filePath) || DOTENV_CONFIG_FILE.test(filePath.replace(/\\/g, '/'));
 }
 
 /**
