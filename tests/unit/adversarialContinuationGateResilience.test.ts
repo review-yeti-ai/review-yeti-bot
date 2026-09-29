@@ -2,12 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   evaluateGatePolicy,
   formatContinuationSummary,
-  normalizeFinding,
   loadContinuationState,
   runContinuationPhase,
   type ContinuationGateVerdict,
   type ContinuationGateConclusion,
 } from '../../src/review/continuationPhase';
+import { normalizeFinding } from '../../src/review/findings';
 import {
   withGitHubRetry,
   classifyGitHubTransient,

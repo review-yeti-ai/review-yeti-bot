@@ -87,7 +87,7 @@ func (r *countingAdmissionReader) List(ctx context.Context, list client.ObjectLi
 	return r.Reader.List(ctx, list, opts...)
 }
 
-func TestPRReviewJobV1Alpha2ReconcilerCreatesPVCThenHardenedWorkerJob(t *testing.T) {
+func TestPRReviewJobV1Alpha2ReconcilerCreatesEmptyDirWorkerWithoutPVC(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
@@ -494,7 +494,7 @@ func histogramSampleCount(t *testing.T, name string) uint64 {
 	return 0
 }
 
-func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testing.T) {
+func TestPRReviewJobV1Alpha2ReconcilerProceedsWithEmptyDirDespiteForeignPVC(t *testing.T) {
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
@@ -523,7 +523,7 @@ func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testin
 	}
 }
 
-func TestPRReviewJobV1Alpha2ReconcilerQueuesWhilePriorWorkspacePVCTerminates(t *testing.T) {
+func TestPRReviewJobV1Alpha2ReconcilerAdmitsWorkerDespiteTerminatingPriorPVC(t *testing.T) {
 	now := time.Date(2026, 9, 10, 16, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)

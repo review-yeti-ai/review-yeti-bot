@@ -6,7 +6,7 @@ import {
   sanitizeJsonString,
   type Finding,
   type FindingSeverity,
-} from '../gateway/streamingMultiplexer';
+} from './findings';
 import {
   CommentPublisher,
   type PublishInlineCommentRequest,
@@ -91,7 +91,6 @@ export function isContinuationPhase(
   return false;
 }
 
-export { normalizeFinding };
 
 /**
  * Evaluates gate policy based on extracted findings.

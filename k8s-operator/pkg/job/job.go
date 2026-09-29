@@ -74,20 +74,21 @@ const (
 	PhaseEnvVar          = "CT_PHASE"
 )
 
-// IsPrepWorkerJob returns true if the worker Job represents a prep phase worker.
-func IsPrepWorkerJob(worker *batchv1.Job) bool {
+// isPhaseWorkerJob reports whether the worker Job represents the given phase,
+// detected via the Job label, the pod template label, or the CT_PHASE env var.
+func isPhaseWorkerJob(worker *batchv1.Job, phase string) bool {
 	if worker == nil {
 		return false
 	}
-	if worker.Labels != nil && worker.Labels[JobPhaseLabel] == JobPhasePrep {
+	if worker.Labels != nil && worker.Labels[JobPhaseLabel] == phase {
 		return true
 	}
-	if worker.Spec.Template.Labels != nil && worker.Spec.Template.Labels[JobPhaseLabel] == JobPhasePrep {
+	if worker.Spec.Template.Labels != nil && worker.Spec.Template.Labels[JobPhaseLabel] == phase {
 		return true
 	}
 	for _, c := range worker.Spec.Template.Spec.Containers {
 		for _, env := range c.Env {
-			if env.Name == PhaseEnvVar && env.Value == JobPhasePrep {
+			if env.Name == PhaseEnvVar && env.Value == phase {
 				return true
 			}
 		}
@@ -95,25 +96,14 @@ func IsPrepWorkerJob(worker *batchv1.Job) bool {
 	return false
 }
 
+// IsPrepWorkerJob returns true if the worker Job represents a prep phase worker.
+func IsPrepWorkerJob(worker *batchv1.Job) bool {
+	return isPhaseWorkerJob(worker, JobPhasePrep)
+}
+
 // IsContinuationWorkerJob returns true if the worker Job represents a continuation phase worker.
 func IsContinuationWorkerJob(worker *batchv1.Job) bool {
-	if worker == nil {
-		return false
-	}
-	if worker.Labels != nil && worker.Labels[JobPhaseLabel] == JobPhaseContinuation {
-		return true
-	}
-	if worker.Spec.Template.Labels != nil && worker.Spec.Template.Labels[JobPhaseLabel] == JobPhaseContinuation {
-		return true
-	}
-	for _, c := range worker.Spec.Template.Spec.Containers {
-		for _, env := range c.Env {
-			if env.Name == PhaseEnvVar && env.Value == JobPhaseContinuation {
-				return true
-			}
-		}
-	}
-	return false
+	return isPhaseWorkerJob(worker, JobPhaseContinuation)
 }
 
 const (

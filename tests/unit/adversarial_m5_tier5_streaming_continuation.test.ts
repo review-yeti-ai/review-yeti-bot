@@ -14,10 +14,10 @@ import {
   runContinuationPhase,
   evaluateGatePolicy,
   formatContinuationSummary,
-  normalizeFinding,
   loadContinuationState,
   isContinuationPhase,
 } from '../../src/review/continuationPhase';
+import { normalizeFinding } from '../../src/review/findings';
 import {
   runPrepPhase,
   extractDiffAndTriage,
