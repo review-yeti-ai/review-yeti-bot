@@ -313,6 +313,32 @@ test('manual dispatch without refresh admits an initial review but cannot replac
   }), /attempt 1 requires zero worker checks/u);
 });
 
+for (const engine of ['panel', 'composed']) {
+  test(`incomplete ${engine} retry rejects a wrong summary head and duplicate evidence lines`, async () => {
+    const summary = incompleteRosterSummary(6, 5, engine);
+    const lines = summary.split('\n');
+    const coverageLine = lines.find((line) => line.startsWith('Coverage: '));
+    const findingsLine = lines.find((line) => line.startsWith('Findings: '));
+    const mutations = [
+      ['wrong summary head SHA', summary.replace(headSha, 'c'.repeat(40))],
+      ['duplicate Coverage line', summary.replace(coverageLine, `${coverageLine}\n${coverageLine}`)],
+      ['duplicate Findings line', summary.replace(findingsLine, `${findingsLine}\n${findingsLine}`)],
+    ];
+    for (const [label, mutatedSummary] of mutations) {
+      assert.notEqual(mutatedSummary, summary, label);
+      await assert.rejects(
+        validate({
+          attempt: 2,
+          pages: [page([workerCheck({ title: 'Review Yeti: BLOCK', summary: mutatedSummary })])],
+          gatePages: [page([incompleteRosterGateCheck(6, 5)])],
+        }),
+        /a1 worker is not a completed recoverable infrastructure failure/u,
+        label,
+      );
+    }
+  });
+}
+
 test('incomplete roster retry rejects findings, contradictory coverage, or mismatched Gate evidence', async () => {
   const summary = incompleteRosterSummary(6, 5);
   const composedSummary = incompleteRosterSummary(6, 5, 'composed');
