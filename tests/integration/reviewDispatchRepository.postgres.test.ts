@@ -4118,6 +4118,28 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         WHERE run_id = $1`, [admitted.run.runId])).rows[0])
         .toMatchObject({ desired_state: 'queued', current_attempt: true });
     });
+
+    it('rejects an out-of-contract gate reason without partially settling state', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('invalid-cancel-gate-reason', 1_000));
+
+      await expect(repository.cancelRunsForPullRequest({
+        repositoryId: 123,
+        prNumber: 42,
+        cancelReason: 'operator requested cancellation',
+        gateReason: 'bogus' as any,
+        now: 2_000,
+      })).rejects.toThrow('Invalid cancellation gate reason');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .some((event) => event.eventKind === 'review.lifecycle.cancelled')).toBe(false);
+    });
   });
 
   describe('terminalizeRunsForClosedPullRequest (REL-896)', () => {
