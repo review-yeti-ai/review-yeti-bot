@@ -370,10 +370,10 @@ publishing:
   # or a comma-separated owner/repo allowlist. Do not enable it before ADR 0687 is accepted.
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   skipEmptyModeration: ""
-  # REL-1160: asynchronous streaming review continuations (disabled by default).
-  # Empty or "false" leaves the worker default (off / monolithic execution).
-  # Opt-in via "true" or a comma-separated owner/repo allowlist for pilot cohort.
-  enableContinuations: "false"
+  # REL-1160: asynchronous streaming review continuations (enabled by default).
+  # "true" enables decoupled prep/continuation phases across all repositories.
+  # Revert path: set to "false" to force monolithic execution.
+  enableContinuations: "true"
   # Per-run publish credentials are owned by k8s/review-job-dispatcher.yaml.tpl,
   # which already defines that component's ServiceAccount, Role, RoleBinding and
   # Deployment. Defining them here too would give the same resources two owners.
