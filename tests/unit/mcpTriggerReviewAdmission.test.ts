@@ -86,6 +86,7 @@ describe('trigger_review governed admission', () => {
         publicationMode: 'app-gate',
         centralActionDispatch: false,
         debounce: false,
+        dispatchPriority: 'expedited',
         effectivePolicyDigest: POLICY_DIGEST,
         identity,
         authoritativeGate: { expectedAppId: 4385771, prepared },
@@ -116,6 +117,7 @@ describe('trigger_review governed admission', () => {
       repo: 'cisco-cdr',
       pull_number: 5135,
       head_sha: HEAD_SHA,
+      priority: 'expedited',
     });
 
     expect(admit).toHaveBeenCalledOnce();
