@@ -199,7 +199,7 @@ function boundedTaskText(value: unknown): string | null {
   return value.length <= MAX_TASK_TEXT_LENGTH ? value : value.slice(0, MAX_TASK_TEXT_LENGTH);
 }
 
-function resolveMaxTasks(maxTasks: number | undefined): number {
+export function resolveComposedMaxTasks(maxTasks: unknown): number {
   if (typeof maxTasks !== 'number' || !Number.isSafeInteger(maxTasks) || maxTasks < 1) {
     return DEFAULT_MAX_TASKS;
   }
@@ -224,7 +224,7 @@ export function validateTaskPlan(
   plan: RawReviewTaskPlan | null | undefined,
   context: ValidateTaskPlanContext,
 ): TaskPlanValidationResult {
-  const effectiveMaxTasks = resolveMaxTasks(context.maxTasks);
+  const effectiveMaxTasks = resolveComposedMaxTasks(context.maxTasks);
   const rawTasks: RawReviewTask[] = Array.isArray(plan?.tasks) ? (plan!.tasks as RawReviewTask[]) : [];
 
   // --- Rule 1: cardinality ------------------------------------------------
