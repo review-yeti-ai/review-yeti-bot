@@ -6,6 +6,7 @@
     "action_channel_pattern": "^v[0-9]+(\\.[0-9]+){0,2}$",
     "personas": "architecture,security,documentation",
     "review_engine": "dsh",
+    "fallback_review_engine": "composed",
     "dispatch_mode": "ordered",
     "mcp_servers": [
       {

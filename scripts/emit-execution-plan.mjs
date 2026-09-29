@@ -39,6 +39,7 @@ const ALLOWED_REVIEW_KEYS = [
   // Selects the publishing worker engine. Not part of the credential-free
   // transport plan; the worker reads it from the policy file itself.
   'review_engine',
+  'fallback_review_engine',
 ];
 const ALLOWED_INCREMENTAL_KEYS = ['repositories', 'max_incremental_chain'];
 const ALLOWED_BUDGET_KEYS = [
@@ -122,6 +123,14 @@ export function validateExecutionPlanPolicy(policy, repository = '') {
   if (policy.review_yeti.review_engine !== undefined
       && !['panel', 'composed', 'shadow', 'deepseek-harness', 'dsh', 'shadow-dsh'].includes(policy.review_yeti.review_engine)) {
     throw new Error('policy.review_yeti.review_engine must be panel, composed, shadow, deepseek-harness, dsh, or shadow-dsh');
+  }
+  if (policy.review_yeti.fallback_review_engine !== undefined
+      && policy.review_yeti.fallback_review_engine !== 'composed') {
+    throw new Error('policy.review_yeti.fallback_review_engine must be composed');
+  }
+  if (['deepseek-harness', 'dsh'].includes(policy.review_yeti.review_engine)
+      && policy.review_yeti.fallback_review_engine !== 'composed') {
+    throw new Error('DSH requires an explicit composed fallback until the worker supports DSH');
   }
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
   if (!['ordered', 'striped'].includes(policy.review_yeti.dispatch_mode)) {

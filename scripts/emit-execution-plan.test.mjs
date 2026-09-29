@@ -20,6 +20,8 @@ function clone(value) {
 }
 
 test('emits a credential-free canonical execution plan with a stable digest', () => {
+  assert.equal(committedPolicy.review_yeti.review_engine, 'dsh');
+  assert.equal(committedPolicy.review_yeti.fallback_review_engine, 'composed');
   const fixture = buildExecutionPlanFixture(committedPolicy);
   const rendered = JSON.stringify(fixture);
 
@@ -72,6 +74,15 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   ]) {
     assert.equal(rendered.toLowerCase().includes(forbidden.toLowerCase()), false, `${forbidden} must be absent`);
   }
+});
+
+test('DSH requires the explicit composed fallback in operator policy', () => {
+  const missing = clone(committedPolicy);
+  delete missing.review_yeti.fallback_review_engine;
+  assert.throws(() => buildExecutionPlan(missing), /DSH requires an explicit composed fallback/);
+  const panel = clone(committedPolicy);
+  panel.review_yeti.fallback_review_engine = 'panel';
+  assert.throws(() => buildExecutionPlan(panel), /fallback_review_engine must be composed/);
 });
 
 test('derives execution deadlines from each transport handoff contract', () => {
