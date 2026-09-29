@@ -137,6 +137,7 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
     expect(isDataOrConfigPath('ova/versions/0.8.6.28.env')).toBe(true);
     expect(isDataOrConfigPath('.env')).toBe(true);
     expect(isDataOrConfigPath('config/.env.local')).toBe(true);
+    expect(isDataOrConfigPath('config\\.env.local')).toBe(true);
     expect(isDataOrConfigPath('scripts/env')).toBe(false);
     expect(isDataOrConfigPath('config/app.envrc')).toBe(false);
     expect(isDataOrConfigPath('docs/guide.md')).toBe(false);
