@@ -176,8 +176,9 @@ export function formatContinuationSummary(options: {
       const escapedDesc = String(rawDesc).slice(0, 120).replace(/\|/g, '\\|').replace(/\n/g, ' ');
       const severity = f?.severity || 'P0';
       const file = f?.file || 'unknown';
+      const escapedFile = String(file).replace(/`/g, "'").replace(/\|/g, '\\|').replace(/\n/g, ' ');
       const line = f?.line ?? 1;
-      lines.push(`| **${severity}** | \`${file}:${line}\` | ${escapedTitle} | ${escapedDesc} |`);
+      lines.push(`| **${severity}** | \`${escapedFile}:${line}\` | ${escapedTitle} | ${escapedDesc} |`);
     }
   }
 

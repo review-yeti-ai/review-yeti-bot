@@ -98,15 +98,23 @@ export async function shallowFetchHead(options: {
         execFileSync('git', ['remote', 'set-url', 'origin', remoteUrl], { cwd: workspacePath, stdio: 'ignore', timeout: 5000 });
       }
 
-      const fetchArgs = ['fetch', '--depth=1'];
       if (options.token) {
         const authHeader = `Authorization: Basic ${Buffer.from(`x-access-token:${options.token}`).toString('base64')}`;
-        fetchArgs.unshift('-c', `http.extraheader=${authHeader}`);
+        execFileSync('git', ['config', '--local', 'http.extraheader', authHeader], { cwd: workspacePath, stdio: 'ignore', timeout: 5000 });
       }
-      fetchArgs.push('origin', options.headSha);
 
-      execFileSync('git', fetchArgs, { cwd: workspacePath, stdio: 'ignore', timeout: 10000 });
-      execFileSync('git', ['checkout', options.headSha], { cwd: workspacePath, stdio: 'ignore', timeout: 5000 });
+      try {
+        execFileSync('git', ['fetch', '--depth=1', 'origin', options.headSha], { cwd: workspacePath, stdio: 'ignore', timeout: 10000 });
+        execFileSync('git', ['checkout', options.headSha], { cwd: workspacePath, stdio: 'ignore', timeout: 5000 });
+      } finally {
+        if (options.token) {
+          try {
+            execFileSync('git', ['config', '--local', '--unset-all', 'http.extraheader'], { cwd: workspacePath, stdio: 'ignore', timeout: 5000 });
+          } catch {
+            // ignore cleanup error
+          }
+        }
+      }
     }
     const durationMs = Date.now() - start;
     return { durationMs, sha: options.headSha, success: true };

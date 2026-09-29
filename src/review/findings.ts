@@ -84,8 +84,8 @@ export function extractFindings(text: string): Finding[] {
   // 1. Try JSON block extraction
   const jsonBlockRegexes = [
     /```(?:json)?\s*([\s\S]*?)\s*```/gi,
-    /(\{[\s\S]*?"findings"[\s\S]*?\})/gi,
-    /(\[\s*\{[\s\S]*?"severity"[\s\S]*?\}\s*\])/gi,
+    ...(text.includes('"findings"') ? [/(\{[\s\S]*?"findings"[\s\S]*?\})/gi] : []),
+    ...(text.includes('"severity"') ? [/(\[\s*\{[\s\S]*?"severity"[\s\S]*?\}\s*\])/gi] : []),
   ];
 
   let parsed = false;
