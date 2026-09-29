@@ -40,6 +40,8 @@ export interface ReviewRiskAcceptance {
 export const REVIEW_GATE_CANCELLATION_REASONS = [
   'candidate-superseded',
   'pull-request-closed',
+  'pull-request-draft',
+  'review-opted-out',
   'operator-cancelled',
 ] as const;
 

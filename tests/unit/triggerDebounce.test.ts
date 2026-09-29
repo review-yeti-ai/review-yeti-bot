@@ -465,6 +465,7 @@ describe('Milestone 1 — Hybrid Trigger Model & Commit Debouncing', () => {
         repositoryId: 614653796,
         prNumber: 42,
         cancelReason: 'converted_to_draft',
+        gateReason: 'pull-request-draft',
         now: BASE_NOW + 5_000,
       });
 
@@ -570,7 +571,10 @@ describe('Milestone 1 — Hybrid Trigger Model & Commit Debouncing', () => {
         reason: 'converted_to_draft',
         cancelled: 2,
       }));
-      expect(cancelRunsForPullRequest).toHaveBeenCalledWith(614653796, 42, 'converted_to_draft', BASE_NOW);
+      expect(cancelRunsForPullRequest).toHaveBeenCalledWith({
+        repositoryId: 614653796, prNumber: 42, cancelReason: 'converted_to_draft',
+        gateReason: 'pull-request-draft', now: BASE_NOW,
+      });
     });
   });
 
@@ -598,7 +602,10 @@ describe('Milestone 1 — Hybrid Trigger Model & Commit Debouncing', () => {
           status: 'ignored',
           reason: 'opt_out_label_present',
         }));
-        expect(cancelRunsForPullRequest).toHaveBeenCalledWith(614653796, 42, 'opt_out_label', BASE_NOW);
+        expect(cancelRunsForPullRequest).toHaveBeenCalledWith({
+          repositoryId: 614653796, prNumber: 42, cancelReason: 'opt_out_label',
+          gateReason: 'review-opted-out', now: BASE_NOW,
+        });
         expect(admit).not.toHaveBeenCalled();
       }
     );
@@ -625,7 +632,10 @@ describe('Milestone 1 — Hybrid Trigger Model & Commit Debouncing', () => {
         status: 'ignored',
         reason: 'opt_out_label_present',
       }));
-      expect(cancelRunsForPullRequest).toHaveBeenCalledWith(614653796, 42, 'opt_out_label', BASE_NOW);
+      expect(cancelRunsForPullRequest).toHaveBeenCalledWith({
+        repositoryId: 614653796, prNumber: 42, cancelReason: 'opt_out_label',
+        gateReason: 'review-opted-out', now: BASE_NOW,
+      });
     });
 
     it('action: labeled with an opt-in label advances debounce if pending', async () => {

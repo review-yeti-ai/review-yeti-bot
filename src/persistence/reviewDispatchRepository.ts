@@ -465,11 +465,8 @@ export interface ReviewDispatchRepository {
    * Cancel in-flight reviews for a pull request (e.g. converted to draft or opt-out label added).
    */
   cancelRunsForPullRequest(
-    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string;
-      gateReason?: ReviewGateCancellationReason; now?: number },
-    prNumber?: number,
-    cancelReason?: string,
-    now?: number,
+    input: { repositoryId: number; prNumber: number; cancelReason: string;
+      gateReason: ReviewGateCancellationReason; now?: number },
   ): Promise<{ cancelledRunIds: string[] }>;
   /**
    * Mark cancellation as propagated to Kubernetes / worker pod for a specific execution attempt.
@@ -1667,34 +1664,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return result.rows.map((row: Record<string, unknown>) => String(row.run_id));
   }
 
-  async cancelRunsForPullRequest(
-    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string;
-      gateReason?: ReviewGateCancellationReason; now?: number },
-    prNumberArg?: number,
-    cancelReasonArg?: string,
-    nowArg?: number,
-  ): Promise<{ cancelledRunIds: string[] }> {
-    let repositoryId: number;
-    let prNumber: number;
-    let cancelReason: string;
-    let gateReason: ReviewGateCancellationReason = 'candidate-superseded';
-    let now: number;
-    if (typeof repositoryIdOrInput === 'object') {
-      repositoryId = repositoryIdOrInput.repositoryId;
-      prNumber = repositoryIdOrInput.prNumber;
-      cancelReason = repositoryIdOrInput.cancelReason;
-      const requestedGateReason = repositoryIdOrInput.gateReason;
-      if (requestedGateReason !== undefined && !isReviewGateCancellationReason(requestedGateReason)) {
-        throw new Error('Invalid cancellation gate reason');
-      }
-      gateReason = requestedGateReason ?? gateReason;
-      now = repositoryIdOrInput.now ?? Date.now();
-    } else {
-      repositoryId = repositoryIdOrInput;
-      prNumber = prNumberArg!;
-      cancelReason = cancelReasonArg!;
-      now = nowArg ?? Date.now();
+  async cancelRunsForPullRequest(input: {
+    repositoryId: number;
+    prNumber: number;
+    cancelReason: string;
+    gateReason: ReviewGateCancellationReason;
+    now?: number;
+  }): Promise<{ cancelledRunIds: string[] }> {
+    const { repositoryId, prNumber, cancelReason, gateReason } = input;
+    if (!isReviewGateCancellationReason(gateReason)) {
+      throw new Error('Invalid cancellation gate reason');
     }
+    const now = input.now ?? Date.now();
 
     const client = await this.pool.connect();
     try {

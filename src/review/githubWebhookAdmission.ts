@@ -461,7 +461,13 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
       }
       const draftReceivedAt = now();
       const cancelled = options.admission.cancelRunsForPullRequest
-        ? await options.admission.cancelRunsForPullRequest(draftPayload.repository.id, draftPayload.pull_request.number, 'converted_to_draft', draftReceivedAt)
+        ? await options.admission.cancelRunsForPullRequest({
+          repositoryId: draftPayload.repository.id,
+          prNumber: draftPayload.pull_request.number,
+          cancelReason: 'converted_to_draft',
+          gateReason: 'pull-request-draft',
+          now: draftReceivedAt,
+        })
         : { cancelledRunIds: [] };
       return {
         status: 'accepted',
@@ -493,7 +499,9 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
 
       if (isOptOutLabel(labelName) || hasOptOutLabel(prLabels)) {
         if (options.admission.cancelRunsForPullRequest) {
-          await options.admission.cancelRunsForPullRequest(repositoryId, prNumber, 'opt_out_label', receivedAt);
+          await options.admission.cancelRunsForPullRequest({
+            repositoryId, prNumber, cancelReason: 'opt_out_label', gateReason: 'review-opted-out', now: receivedAt,
+          });
         }
         return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber };
       }
@@ -635,7 +643,10 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
     const receivedAt = now();
     if (hasOptOutLabel(prLabels)) {
       if (options.admission.cancelRunsForPullRequest) {
-        await options.admission.cancelRunsForPullRequest(repositoryId, pr.number, 'opt_out_label', receivedAt);
+        await options.admission.cancelRunsForPullRequest({
+          repositoryId, prNumber: pr.number, cancelReason: 'opt_out_label',
+          gateReason: 'review-opted-out', now: receivedAt,
+        });
       }
       return { status: 'ignored', reason: 'opt_out_label_present', deliveryId: delivery, prNumber: pr.number };
     }

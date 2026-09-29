@@ -4058,6 +4058,30 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
   describe('cancelRunsForPullRequest protected gate settlement (REL-1188)', () => {
     it.each([
+      { cancelReason: 'converted_to_draft', gateReason: 'pull-request-draft' as const },
+      { cancelReason: 'opt_out_label', gateReason: 'review-opted-out' as const },
+    ])('persists the truthful $gateReason gate reason', async ({ cancelReason, gateReason }) => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const input = authoritativeAdmission(`truthful-${gateReason}`, 1_000);
+      const admitted = await repository.admit(input);
+
+      await expect(repository.cancelRunsForPullRequest({
+        repositoryId: input.repositoryId,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason,
+        gateReason,
+        now: 2_000,
+      })).resolves.toEqual({ cancelledRunIds: [admitted.run.runId] });
+
+      expect((await client.query(`SELECT decision FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0].decision)
+        .toMatchObject({ status: 'cancelled', reason: gateReason });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .find((event) => event.eventKind === 'review.lifecycle.cancelled')?.data)
+        .toMatchObject({ retry_class: gateReason });
+    });
+
+    it.each([
       { owner: '', label: 'empty owner' },
       { repo: ' ', label: 'empty repository' },
       { prNumber: 0, label: 'non-positive pull request number' },
@@ -4736,7 +4760,13 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const { repository, client } = await createRepository();
       await repository.admit(sameHeadAdmission('race-closed', 1_000));
       const claim = (await repository.claimNext('dispatcher-a', 1_100, 30_000))!;
-      await repository.cancelRunsForPullRequest(claim.repositoryId, claim.prNumber, 'pull_request_closed', 1_200);
+      await repository.cancelRunsForPullRequest({
+        repositoryId: claim.repositoryId,
+        prNumber: claim.prNumber,
+        cancelReason: 'pull_request_closed',
+        gateReason: 'pull-request-closed',
+        now: 1_200,
+      });
       expect((await outboxRow(client, claim.runId)).cancel_propagated_at).not.toBeNull();
       await expect(repository.reopenOrphanedProjectionCancellation(
         claim.runId, claim.claimAttempt, projectionName, 1_300,
