@@ -196,6 +196,11 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   if (input.publicationMode !== 'disabled' && input.publicationMode !== 'app-gate') {
     throw new Error('publication mode must be disabled or app-gate');
   }
+  if (input.dispatchPriority !== undefined
+    && input.dispatchPriority !== 'normal'
+    && input.dispatchPriority !== 'expedited') {
+    throw new Error('dispatch priority must be normal or expedited');
+  }
   if (typeof input.centralActionDispatch !== 'boolean'
     || (input.centralActionDispatch && !['repository_dispatch', 'workflow_dispatch'].includes(input.eventName))) {
     throw new Error('central Action dispatch classification is invalid');
@@ -984,8 +989,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [input.deliveryId, runRow.run_id],
       );
       await client.query(
-        `INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, execution_attempt, available_at, created_at, updated_at)
-         VALUES ($1, $2, 'pending', $6, to_timestamp($5 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
+        `INSERT INTO review_dispatch_outbox
+           (run_id, delivery_id, status, execution_attempt, dispatch_priority, available_at, created_at, updated_at)
+         VALUES ($1, $2, 'pending', $6, $7, to_timestamp($5 / 1000.0), to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
          ON CONFLICT (run_id) DO UPDATE
            SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
                available_at = EXCLUDED.available_at, lease_owner = NULL,
@@ -1007,6 +1013,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                  ELSE review_dispatch_outbox.execution_attempt END,
                worker_token_digest = CASE WHEN review_dispatch_outbox.status IN ('projected', 'terminal')
                  THEN NULL ELSE review_dispatch_outbox.worker_token_digest END,
+               dispatch_priority = GREATEST(review_dispatch_outbox.dispatch_priority, EXCLUDED.dispatch_priority),
                updated_at = EXCLUDED.updated_at
          WHERE (review_dispatch_outbox.status IN ('projected', 'terminal')
              OR $6::integer > review_dispatch_outbox.execution_attempt)
@@ -1021,7 +1028,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                 AND r.delivery_id = EXCLUDED.delivery_id
            )`,
         [runRow.run_id, input.deliveryId, input.receivedAt, runRow.retry_from_reaper_failure === true,
-          availableAt, generationRecovery.length],
+          availableAt, generationRecovery.length, input.dispatchPriority === 'expedited' ? 1 : 0],
+      );
+      // A duplicate delivery for an exact queued identity does not re-arm the
+      // outbox, but an operator may still raise a pending normal request into
+      // the expedited lane. Never reset a claimed row and never downgrade.
+      await client.query(
+        `UPDATE review_dispatch_outbox
+            SET dispatch_priority = GREATEST(dispatch_priority, $2),
+                updated_at = CASE WHEN dispatch_priority < $2
+                  THEN to_timestamp($3 / 1000.0) ELSE updated_at END
+          WHERE run_id = $1 AND status = 'pending'`,
+        [runRow.run_id, input.dispatchPriority === 'expedited' ? 1 : 0, input.receivedAt],
       );
       for (const evidence of generationRecovery) {
         await client.query(
@@ -1082,7 +1100,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
              FROM review_dispatch_outbox AS outbox
              JOIN review_runs AS runs ON runs.run_id = outbox.run_id
             WHERE ${dispatchClaimPredicate('$2')}
-            ORDER BY outbox.available_at, outbox.created_at
+            ORDER BY outbox.dispatch_priority DESC, outbox.available_at, outbox.created_at
             FOR UPDATE OF outbox SKIP LOCKED
             LIMIT 1
          )

@@ -265,6 +265,8 @@ export class PostgresStore {
           projection_name TEXT,
           attempt INTEGER NOT NULL DEFAULT 0,
           execution_attempt INTEGER NOT NULL DEFAULT 0,
+          dispatch_priority SMALLINT NOT NULL DEFAULT 0
+            CONSTRAINT review_dispatch_outbox_priority_check CHECK (dispatch_priority IN (0, 1)),
           worker_token_digest VARCHAR(64),
           available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           cancel_requested_at TIMESTAMP WITH TIME ZONE,
@@ -278,6 +280,19 @@ export class PostgresStore {
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS execution_attempt INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS dispatch_priority SMALLINT NOT NULL DEFAULT 0;
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+             WHERE conname = 'review_dispatch_outbox_priority_check'
+               AND conrelid = 'review_dispatch_outbox'::regclass
+          ) THEN
+            ALTER TABLE review_dispatch_outbox ADD CONSTRAINT review_dispatch_outbox_priority_check
+              CHECK (dispatch_priority IN (0, 1));
+          END IF;
+        END $$;
+        ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS worker_token_digest VARCHAR(64);
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMP WITH TIME ZONE;
@@ -287,6 +302,8 @@ export class PostgresStore {
           ADD COLUMN IF NOT EXISTS cancel_propagated_at TIMESTAMP WITH TIME ZONE;
         CREATE INDEX IF NOT EXISTS review_dispatch_cancel_sweep_idx
           ON review_dispatch_outbox (cancel_requested_at, cancel_propagated_at, projection_name);
+        CREATE INDEX IF NOT EXISTS review_dispatch_priority_claim_idx
+          ON review_dispatch_outbox (status, dispatch_priority DESC, available_at, created_at, lease_expires_at);
         CREATE INDEX IF NOT EXISTS review_runs_delivery_idx ON review_runs (delivery_id);
 
         CREATE TABLE IF NOT EXISTS review_completion_outbox (
