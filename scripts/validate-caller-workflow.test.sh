@@ -155,13 +155,17 @@ for required_secret in CT_REVIEW_BOT_APP_ID CT_REVIEW_BOT_APP_PRIVATE_KEY; do
     exit 1
   }
 done
-for optional_secret in CONTEXT7_API_KEY GEMINI_API_KEY HONCHO_API_KEY HONCHO_BASE_URL OLLAMA_PR_REVIEW_API_KEY OPENROUTER_REVIEW_FLEET_KEY REVIEW_YETI_BIFROST_API_KEY; do
+for optional_secret in CONTEXT7_API_KEY GEMINI_API_KEY HONCHO_API_KEY HONCHO_BASE_URL OLLAMA_PR_REVIEW_API_KEY REVIEW_YETI_BIFROST_API_KEY; do
   declaration="$(sed -n "/^      ${optional_secret}:$/,/^      [A-Z0-9_]*:$/p" <<<"$secret_interface")"
   grep -Fxq '        required: false' <<<"$declaration" || {
     echo "${optional_secret} must remain an optional workflow_call secret" >&2
     exit 1
   }
 done
+if grep -Fq 'OPENROUTER_REVIEW_FLEET_KEY' <<<"$secret_interface"; then
+  echo 'retired OpenRouter credential must not be declared by workflow_call' >&2
+  exit 1
+fi
 
 # The target App reads consumer contents while the dedicated central App reads
 # private central history. The two identities must remain distinct and the
@@ -264,7 +268,7 @@ grep -Fq "central-ref must be a platform-owned major release ref such as v1" <<<
 # The public external self-review repository cannot resolve this private
 # reusable workflow. Every direct shape fails with one explicit route: use the
 # base-owned central dispatch workflow instead.
-external_workflow=$'name: Review Yeti\non:\n  pull_request_target:\njobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff\n    secrets:\n      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}\n      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}\n      REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}\n      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.CT_REVIEW_OPENROUTER_API_KEY }}\n'
+external_workflow=$'name: Review Yeti\non:\n  pull_request_target:\njobs:\n  review:\n    uses: exampleorg/example-review-actions/.github/workflows/review-yeti.yml@54a9ec171b5a8cbc90515ad3998b7c0a9ffb65ff\n    secrets:\n      CT_REVIEW_BOT_APP_ID: ${{ secrets.CT_REVIEW_BOT_APP_ID }}\n      CT_REVIEW_BOT_APP_PRIVATE_KEY: ${{ secrets.CT_REVIEW_BOT_APP_PRIVATE_KEY }}\n      REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}\n'
 if output="$({
   PATH="$tmp_dir/bin:$PATH" GH_TOKEN=test \
     REVIEW_REPOSITORY=review-yeti-ai/review-yeti-bot CENTRAL_REF=v1 EXPECTED_BASE_SHA="$base_sha" \

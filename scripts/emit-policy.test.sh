@@ -69,20 +69,22 @@ if any(item.get('name') == 'bifrost' and (not isinstance(item.get('max_tokens'),
 bifrost = next((item for item in configured_transports if item.get('name') == 'bifrost'), None)
 ollama = next((item for item in configured_transports if item.get('name') == 'ollama'), None)
 gemini = next((item for item in configured_transports if item.get('name') == 'gemini'), None)
-openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
-if not openrouter or not ollama or not gemini or not bifrost:
-    raise SystemExit('policy must define named OpenRouter, Gemini, Ollama, and Bifrost transports')
+if not ollama or not gemini or not bifrost:
+    raise SystemExit('policy must define named Gemini, Ollama, and Bifrost transports')
 if gemini.get('enabled') is not False or ollama.get('enabled') is not False or bifrost.get('enabled') is not True:
     raise SystemExit('Bifrost must stay enabled; Gemini and Ollama must stay declared-but-disabled')
-if openrouter.get('enabled') is not False:
-    raise SystemExit('OpenRouter must stay declared-but-disabled (ADR 0652: no OpenRouter review lane)')
 # REL-896: the synthetic.new account was cancelled and the transport was fully removed (not
 # merely disabled). It must never resurface -- a reintroduced declaration, even disabled, means
 # the removal PR was reverted or partially reapplied without a fresh review of this contract.
 if any(item.get('name') == 'synthetic' for item in configured_transports):
     raise SystemExit('Synthetic transport must not be declared -- the provider account was cancelled (REL-896)')
-if openrouter is None or openrouter.get('enabled') is not False:
-    raise SystemExit('OpenRouter must be declared-but-disabled; ADR 0652 supersedes the REL-710 fleet fallback')
+if any(
+    item.get('name') == 'openrouter-primary'
+    or item.get('compat') == 'openrouter'
+    or 'openrouter.ai' in str(item.get('base_url', '')).lower()
+    for item in configured_transports
+):
+    raise SystemExit('OpenRouter transport must not be declared -- Review Yeti uses NeuralWatt through Bifrost (REL-976)')
 # REL-1162: Fireworks was removed (suspended account, HTTP 412). Like Synthetic, absent -- not disabled.
 if any(item.get('name') == 'fireworks' or 'fireworks.ai' in str(item.get('base_url', '')) for item in configured_transports):
     raise SystemExit('Fireworks transport must not be declared -- removed from Review Yeti (REL-1162)')
@@ -90,7 +92,7 @@ if (gemini.get('base_url'), gemini.get('api_key_env'), gemini.get('model'), gemi
     'https://generativelanguage.googleapis.com/v1beta/openai', 'GEMINI_API_KEY', 'gemini-3.7-flash', 'openai'
 ):
     raise SystemExit('Gemini must remain pinned to the Google OpenAI-compatible contract')
-if review.get('openrouter_max_attempts') != '2':
+if review.get('max_attempts') != '2':
     raise SystemExit('each transport must retain one retry')
 budget = review.get('budget')
 if not isinstance(budget, dict):
@@ -98,16 +100,6 @@ if not isinstance(budget, dict):
 for key in ('lane_deadline_ms', 'lane_overhead_ms', 'lane_call_budget', 'max_review_assignments', 'max_investigation_turns'):
     if key not in budget:
         raise SystemExit(f'policy budget is missing {key}')
-if openrouter is None:
-    openrouter = next((item for item in configured_transports if item.get('name') == 'openrouter-primary'), None)
-if openrouter is None:
-    raise SystemExit('policy must define the openrouter-primary transport')
-if openrouter.get('stream') is not True:
-    raise SystemExit('openrouter-primary must use streaming for provider attribution')
-if openrouter.get('model') != 'z-ai/glm-5.3-flash':
-    raise SystemExit('openrouter-primary must use the explicit GLM-5.3 Flash route')
-if openrouter.get('models') != []:
-    raise SystemExit('openrouter-primary must not declare unapproved fallback models')
 for t in configured_transports:
     t_name = t.get('name', '<unnamed>')
     for required_field in ('name', 'enabled', 'base_url', 'api_key_env', 'model', 'compat', 'stream', 'timeout_ms'):
@@ -120,33 +112,8 @@ for t in configured_transports:
         raise SystemExit(f'transport {t_name} uses unpinned latest model tag: {t.get("model")}')
     if t.get('stream') is not True:
         raise SystemExit(f'transport {t_name} must declare stream: true')
-if (openrouter.get('max_in_flight'), openrouter.get('capacity_wait_timeout_ms')) != (2, 180000):
-    raise SystemExit('openrouter-primary must bound large-diff concurrency and queue admission at 2/180000ms')
-if 'plugins' in openrouter:
-    raise SystemExit('openrouter-primary must not use the Auto Router plugin')
-if openrouter.get('structured_output') != 'strict':
-    raise SystemExit('openrouter-primary must use strict investigation output')
-if openrouter.get('allow_banned_providers') is not None:
-    raise SystemExit('openrouter-primary must not use the deprecated provider-ban override')
-if openrouter.get('quarantine_on_timeout') is not False:
-    raise SystemExit('OpenRouter must own timeout rerouting without dynamic provider bans')
-routing = openrouter.get('provider_routing') or {}
-if routing.get('ignore') != ['morph', 'fireworks']:
-    raise SystemExit('openrouter-primary must exclude the verified Morph and Fireworks outages')
-if routing.get('allow_fallbacks') is not True:
-    raise SystemExit('openrouter-primary must allow cheap hosts to fall')
-if routing.get('sort') != 'throughput':
-    raise SystemExit('openrouter-primary must sort by throughput')
-if 'quantizations' in routing:
-    raise SystemExit('openrouter-primary must delegate quantization to live routing')
-if routing.get('preferred_min_throughput') != {'p90': 40}:
-    raise SystemExit('openrouter-primary must enforce the p90 throughput floor')
-if routing.get('preferred_max_latency') != {'p99': 3}:
-    raise SystemExit('openrouter-primary must enforce the p99 latency preference')
-if routing.get('only') or routing.get('order'):
-    raise SystemExit('openrouter-primary must not pin provider.only or provider.order')
-if review.get('openrouter_stream') != 'true':
-    raise SystemExit('global openrouter_stream must be true so configured transports use SSE TTFT')
+if review.get('stream') != 'true':
+    raise SystemExit('legacy action streaming input must stay true so configured transports use SSE TTFT')
 for transport in review.get('transports', []):
     if transport.get('stream') is not True:
         raise SystemExit(f'{transport.get("name")} must stream')
@@ -168,7 +135,7 @@ for transport in review.get('transports', []):
 # meaningful if that count changes.
 lane_deadline_ms = int(budget['lane_deadline_ms'])
 lane_overhead_ms = int(budget['lane_overhead_ms'])
-max_attempts = int(review['openrouter_max_attempts'])
+max_attempts = int(review['max_attempts'])
 transport_connect_sum_ms = sum(t['connect_timeout_ms'] for t in transports)
 transport_stall_sum_ms = sum(t['stall_ms'] for t in transports)
 stall_envelope_ms = transport_connect_sum_ms + transport_stall_sum_ms
@@ -217,12 +184,10 @@ if max_passes * lane_deadline_ms > job_cap_ms:
 # On a non-streaming fallback, the "TTFT" abort wraps the entire request rather than just the wait
 # for a first byte. The committed policy declares streaming on every transport, so a tight TTFT is
 # legitimate here; the invariant for any future non-streaming change is exercised below.
-# Raised 60000->75000 (REL-499): example-api PR #4764 showed two of six persona lanes time out on
-# openrouter-primary and fail over, with one lane exhausting every transport into a BLOCK verdict.
-# example-meta ADR 0481 records the incident and the decision to widen the OpenRouter TTFT/stall
-# window (deepseek/deepseek-v4-flash-0731 on openrouter.ai) rather than reopen Fireworks admission.
-if review.get('openrouter_ttft_ms') != '75000':
-    raise SystemExit('openrouter_ttft_ms must preserve the qualified 75000ms large-diff first-token budget')
+# The hosted action still exposes this legacy-named input. Preserve the qualified
+# 75000ms first-token budget independently of the selected Bifrost provider.
+if review.get('ttft_ms') != '75000':
+    raise SystemExit('ttft_ms must preserve the qualified 75000ms large-diff first-token budget')
 print('policy budget source passed')
 PY
 
@@ -353,7 +318,7 @@ review = policy['review_yeti']
 # emit-policy, so the overflow fixture drives the lane deadline over the
 # edge via the declared overhead reserve instead of mutating the transport.
 lane_deadline_ms = int(review['budget']['lane_deadline_ms'])
-attempts = int(review['openrouter_max_attempts'])
+attempts = int(review['max_attempts'])
 enabled = [item for item in review['transports'] if item.get('enabled') is True]
 base_sum = sum(item['connect_timeout_ms'] + item['stall_ms'] for item in enabled)
 # Smallest overhead that makes required exceed the lane deadline:
@@ -379,7 +344,7 @@ run_transport_budget_overflow_case() {
 }
 
 # Same failure mode, isolated to the retry multiplier: a modest connect+stall envelope that fits
-# once but overflows once multiplied by openrouter_max_attempts.
+# once but overflows once multiplied by max_attempts.
 write_transport_retry_budget_overflow_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
 import json
@@ -388,8 +353,8 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-# A lane deadline that covers OpenRouter request retries (180s) but cannot fit
-# the full connect+stall dead-call envelope plus overhead (360s).
+# A lane deadline that covers the legacy action request retry budget but cannot
+# fit the full connect+stall dead-call envelope plus overhead.
 review['budget']['lane_deadline_ms'] = '300000'
 json.dump(policy, open(destination, 'w'))
 PY
@@ -428,7 +393,7 @@ budget['lane_overhead_ms'] = '120000'
 transports = [item for item in review['transports'] if item.get('enabled') is True]
 raw_dead_call_budget = (
     sum(item['connect_timeout_ms'] + item['stall_ms'] for item in transports)
-    * int(review['openrouter_max_attempts'])
+    * int(review['max_attempts'])
 )
 budget['lane_deadline_ms'] = str(raw_dead_call_budget)
 with open(destination, 'w') as handle:
@@ -458,7 +423,7 @@ run_transport_overhead_overflow_case() {
 # ttft, where a live run
 # showed the "TTFT" abort silently becomes a total-generation cap wrapping the entire request.
 # Both ways a transport can end up declared non-streaming are exercised: per-transport
-# `stream: false`, and the global `openrouter_stream` flag.
+# `stream: false`, and the global stream flag.
 write_ttft_unsafe_policy() {
   local stream_scope="$1"
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$stream_scope" <<'PY'
@@ -468,12 +433,12 @@ import sys
 source, destination, stream_scope = sys.argv[1:]
 policy = json.load(open(source))
 review = policy['review_yeti']
-review['openrouter_ttft_ms'] = '30000'
-next(item for item in review['transports'] if item['name'] == 'openrouter-primary')['ttft_ms'] = 30_000
+review['ttft_ms'] = '30000'
+next(item for item in review['transports'] if item['name'] == 'bifrost')['ttft_ms'] = 30_000
 if stream_scope == 'transport':
     next(item for item in review['transports'] if item['name'] == 'bifrost')['stream'] = False
 elif stream_scope == 'global':
-    review['openrouter_stream'] = 'false'
+    review['stream'] = 'false'
 else:
     raise SystemExit(f'unknown stream_scope {stream_scope!r}')
 with open(destination, 'w') as handle:
@@ -513,9 +478,9 @@ if [item.get('name') for item in plan] != ['bifrost']:
 if any(item.get('stream') is not True for item in plan):
     raise SystemExit('base64 transport plan must preserve streaming for every transport')
 PY
-grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | grep -qx 'deny'
-grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | grep -Fx 'morph,fireworks'
-grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fq '"ignore":["morph","fireworks"]'
+grep -A1 '^openrouter_data_collection<<' "$tmp_dir/valid.output" | tail -1 | grep -qx ''
+grep -A1 '^openrouter_ignore_providers<<' "$tmp_dir/valid.output" | tail -1 | grep -qx ''
+grep -A1 '^openrouter_provider_routing<<' "$tmp_dir/valid.output" | grep -Fqx '{}'
 grep -qx 'v1' "$tmp_dir/valid.output"
 grep -q '^repository<<' "$tmp_dir/valid.output"
 grep -qx 'review-yeti-ai/review-yeti-bot' "$tmp_dir/valid.output"
@@ -564,9 +529,8 @@ done
 for field in timeout_ms connect_timeout_ms ttft_ms stall_ms; do
   for value in 0 -1 180001 true 1.5 ''; do
     name="invalid-transport-${field}-${value:-empty}"
-    # REL-896/REL-1162: removing synthetic and then fireworks shifted the committed transports
-    # array -- index 3 is now ollama (bifrost, openrouter-primary, gemini, ollama).
-    run_case "$name" "transport.3.${field}" "$value" 1
+    # OpenRouter, Synthetic, and Fireworks are absent; index 2 is Ollama.
+    run_case "$name" "transport.2.${field}" "$value" 1
     grep -q "transport ollama.${field} must be an integer between 1ms and 180000ms" "$tmp_dir/${name}.log"
   done
 done
@@ -604,36 +568,46 @@ PY
   fi
   echo "[fireworks-${fw_case}-rejected] passed"
 done
+
+# REL-976: OpenRouter is removed rather than parked. Reject a transport by its
+# historical name, compatibility mode, or endpoint even when disabled.
+for openrouter_case in name compat endpoint; do
+  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" "$openrouter_case" <<'PY'
+import json
+import sys
+
+source, destination, case = sys.argv[1:]
+policy = json.load(open(source))
+transports = policy['review_yeti']['transports']
+template = dict(next(item for item in transports if item['name'] == 'gemini'))
+template['name'] = 'candidate-provider'
+if case == 'name':
+    template['name'] = 'openrouter-primary'
+elif case == 'compat':
+    template['compat'] = 'openrouter'
+elif case == 'endpoint':
+    template['base_url'] = 'https://openrouter.ai/api/v1'
+else:
+    raise SystemExit(f'unknown OpenRouter case: {case}')
+transports.append(template)
+with open(destination, 'w') as handle:
+    json.dump(policy, handle)
+PY
+  set +e
+  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$tmp_dir/openrouter-${openrouter_case}.output" node emit-policy.mjs) >"$tmp_dir/openrouter-${openrouter_case}.log" 2>&1
+  openrouter_rc=$?
+  set -e
+  if [[ "$openrouter_rc" -ne 1 ]] || ! grep -q 'OpenRouter transport must not be declared' "$tmp_dir/openrouter-${openrouter_case}.log"; then
+    echo "[openrouter-${openrouter_case}-rejected] expected OpenRouter rejection, got rc=$openrouter_rc" >&2
+    cat "$tmp_dir/openrouter-${openrouter_case}.log" >&2
+    exit 1
+  fi
+  echo "[openrouter-${openrouter_case}-rejected] passed"
+done
 run_transport_budget_overflow_case
 run_transport_retry_budget_overflow_case
 run_ttft_unsafe_case transport
 run_ttft_unsafe_case global
-
-write_openrouter_timeout_mismatch_policy() {
-  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
-import json
-import sys
-
-source, destination = sys.argv[1:]
-policy = json.load(open(source))
-openrouter = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'openrouter-primary')
-openrouter['timeout_ms'] += 1
-with open(destination, 'w') as handle:
-    json.dump(policy, handle)
-PY
-}
-
-run_openrouter_timeout_mismatch_case() {
-  local output_file="$tmp_dir/invalid-openrouter-timeout.output"
-  write_openrouter_timeout_mismatch_policy
-  set +e
-  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/invalid-openrouter-timeout.log" 2>&1
-  local rc=$?
-  set -e
-  [[ "$rc" -eq 1 ]]
-  grep -q 'openrouter-primary.timeout_ms must equal review_yeti.openrouter_timeout_ms' "$tmp_dir/invalid-openrouter-timeout.log"
-  echo "[invalid-openrouter-timeout] passed"
-}
 
 write_short_lane_deadline_policy() {
   python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
@@ -643,9 +617,9 @@ import sys
 source, destination = sys.argv[1:]
 policy = json.load(open(source))
 # Derive so this case always isolates the envelope guard. A pinned literal was tuned to a
-# previous openrouter_timeout_ms; once that value changed, the envelope stopped binding and a
+# previous request_timeout_ms; once that value changed, the envelope stopped binding and a
 # different guard fired first, failing this case for the wrong reason. Same defect class as #74.
-envelope = int(policy['review_yeti']['openrouter_timeout_ms']) * int(policy['review_yeti']['openrouter_max_attempts'])
+envelope = int(policy['review_yeti']['request_timeout_ms']) * int(policy['review_yeti']['max_attempts'])
 policy['review_yeti']['budget']['lane_deadline_ms'] = str(envelope - 1)
 with open(destination, 'w') as handle:
     json.dump(policy, handle)
@@ -660,7 +634,7 @@ run_short_lane_deadline_case() {
   local rc=$?
   set -e
   [[ "$rc" -eq 1 ]]
-  grep -q 'lane_deadline_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-lane-envelope.log"
+  grep -q 'lane_deadline_ms must cover the request retry envelope' "$tmp_dir/invalid-lane-envelope.log"
   echo "[invalid-lane-envelope] passed"
 }
 
@@ -694,39 +668,7 @@ for value in 0 -1 abc '' __missing__; do
   echo "[$name] passed"
 done
 
-write_openrouter_capacity_wait_policy() {
-  python3 - "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json" <<'PY'
-import json
-import sys
-
-source, destination = sys.argv[1:]
-policy = json.load(open(source))
-openrouter = next(item for item in policy['review_yeti']['transports'] if item['name'] == 'openrouter-primary')
-openrouter['capacity_wait_timeout_ms'] = 179999
-with open(destination, 'w') as handle:
-    json.dump(policy, handle)
-PY
-}
-
-run_openrouter_capacity_wait_case() {
-  local output_file="$tmp_dir/invalid-openrouter-capacity-wait.output"
-  write_openrouter_capacity_wait_policy
-  set +e
-  (cd "$tmp_dir/scripts" && GITHUB_OUTPUT="$output_file" node emit-policy.mjs) >"$tmp_dir/invalid-openrouter-capacity-wait.log" 2>&1
-  local rc=$?
-  set -e
-  if [[ "$rc" -ne 1 ]]; then
-    echo "[invalid-openrouter-capacity-wait] expected exit 1, got $rc" >&2
-    cat "$tmp_dir/invalid-openrouter-capacity-wait.log" >&2
-    exit 1
-  fi
-  grep -q 'openrouter-primary.capacity_wait_timeout_ms must cover the OpenRouter request retry envelope' "$tmp_dir/invalid-openrouter-capacity-wait.log"
-  echo "[invalid-openrouter-capacity-wait] passed"
-}
-
-run_openrouter_timeout_mismatch_case
 run_short_lane_deadline_case
-run_openrouter_capacity_wait_case
 run_transport_overhead_overflow_case
 
 echo "emit-policy lane_call_budget contract passed"
@@ -761,9 +703,8 @@ for value in v v1.2.3.4; do
 done
 echo "[channel-edge-cases] passed"
 
-# Exact repository overrides are resolved centrally. Every consumer emits Bifrost
-# primary plus the OpenRouter fleet fallback; Example API also keeps the six-lane /
-# 30-second Bifrost admission envelope.
+# Exact repository overrides are resolved centrally. Every consumer emits only
+# the Bifrost NeuralWatt route; Example API keeps the bounded admission envelope.
 cp "$repo_root/policy/review-yeti.json" "$tmp_dir/policy/review-yeti.json"
 cisco_output="$tmp_dir/cisco-policy.output"
 (cd "$tmp_dir/scripts" && REVIEW_REPOSITORY=exampleorg/example-api GITHUB_OUTPUT="$cisco_output" node emit-policy.mjs)

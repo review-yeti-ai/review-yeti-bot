@@ -3,9 +3,8 @@ name: Transport telemetry
 # Scheduled, read-only, non-publishing per-transport smoke ledger for ADR 0481 / ADR 0467's
 # revisit bar: "Revisit provider weights and capacities only with account-tier evidence plus
 # per-provider latency, queue, rate-limit, and review-quality receipts" (ADR 0467), and ADR
-# 0481's own "When to revisit": "OpenRouter-primary lane timeouts/BLOCKs recur after this tuning
-# lands ... the mitigation is not working at the policy layer." This workflow supplies that
-# multi-run, per-transport evidence stream. It never runs the review panel, never touches a pull
+# This workflow supplies a multi-run, per-transport evidence stream. It never runs the review
+# panel, never touches a pull
 # request, and never comments, checks, verdicts, merges, or mutates provider policy -- it only
 # probes every transport declared in policy/review-yeti.json (enabled or not) with the same
 # bounded smoke review-yeti.yml uses for admission, then appends one JSON line per transport per
@@ -32,7 +31,7 @@ jobs:
     name: Probe transports and append the ledger
     runs-on: ubuntu-latest
     # Five bounded transport probes, well inside the 15-minute operational ceiling this repo uses
-    # for every non-review workflow (see openrouter-qualification.yml).
+    # for every non-review workflow.
     timeout-minutes: 15
     permissions:
       # Only this job needs write access, and only to append to the dedicated `telemetry` branch;
@@ -41,8 +40,6 @@ jobs:
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-      OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-      OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
       REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
       BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
     steps:

@@ -44,15 +44,12 @@ test('emits a credential-free canonical execution plan with a stable digest', ()
   );
   const bifrost = fixture.plan.transports.find((transport) => transport.name === 'bifrost');
   assert.equal(bifrost.reasoning.wire_shape, 'reasoning_effort');
-  // Assert the plan DERIVES the model from the policy rather than hardcoding a
-// pool name here. A literal makes this test a mirror of production data, so
-// repointing the transport (e.g. openrouter-pool -> fireworks-pool when the
-// OpenRouter pool is exhausted) fails a test that was never about which pool
-// is in use — only that the plan carries the policy's choice through.
-const bifrostPolicy = committedPolicy.review_yeti.transports.find(
-  (transport) => transport.name === 'bifrost',
-);
-assert.equal(bifrost.model, bifrostPolicy.model);
+  // Assert the plan derives the model from policy rather than hardcoding the
+  // NeuralWatt pool name in a test that only verifies policy propagation.
+  const bifrostPolicy = committedPolicy.review_yeti.transports.find(
+    (transport) => transport.name === 'bifrost',
+  );
+  assert.equal(bifrost.model, bifrostPolicy.model);
   assert.deepEqual(bifrost.capacity, {
     max_in_flight: 4,
     concurrency_scope: 'provider',
@@ -120,44 +117,16 @@ test('Every repository emits the single Bifrost flash-pool transport (ADR 0652)'
 });
 
 test('rejects unknown keys at every execution-policy object boundary', () => {
-  const openrouterIndex = committedPolicy.review_yeti.transports.findIndex((transport) => transport.name === 'openrouter-primary');
   const cases = [
     ['policy', (policy) => { policy.unexpected = true; }],
     ['policy.review_yeti', (policy) => { policy.review_yeti.unexpected = true; }],
     ['policy.review_yeti.budget', (policy) => { policy.review_yeti.budget.unexpected = true; }],
     ['policy.review_yeti.transports[0]', (policy) => { policy.review_yeti.transports[0].unexpected = true; }],
-    [
-      `policy.review_yeti.transports[${openrouterIndex}].provider_routing`,
-      (policy) => { policy.review_yeti.transports[openrouterIndex].provider_routing.unexpected = true; },
-    ],
-    [
-      `policy.review_yeti.transports[${openrouterIndex}].provider_routing.preferred_min_throughput`,
-      (policy) => {
-        policy.review_yeti.transports[openrouterIndex].provider_routing.preferred_min_throughput.unexpected = true;
-      },
-    ],
-    [
-      `policy.review_yeti.transports[${openrouterIndex}].provider_routing.preferred_max_latency`,
-      (policy) => {
-        policy.review_yeti.transports[openrouterIndex].provider_routing.preferred_max_latency.unexpected = true;
-      },
-    ],
-    [
-      `policy.review_yeti.transports[${openrouterIndex}].models`,
-      (policy) => { policy.review_yeti.transports[openrouterIndex].models = { unexpected: true }; },
-    ],
   ];
 
   for (const [path, mutate] of cases) {
     const policy = clone(committedPolicy);
     mutate(policy);
-    if (path.endsWith('.models')) {
-      assert.throws(
-        () => buildExecutionPlan(policy),
-        /policy\.review_yeti\.transports\[\d+\]\.models must be an array of non-empty strings/,
-      );
-      continue;
-    }
     assert.throws(() => buildExecutionPlan(policy), new RegExp(`${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} contains unknown keys: unexpected`));
   }
 });

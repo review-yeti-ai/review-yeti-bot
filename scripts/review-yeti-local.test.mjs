@@ -26,7 +26,7 @@ test('materializes the committed provider order and routing into the local CLI c
   assert.equal(config.github_action.openrouter.stream, true);
   // Derive from policy; a pinned literal turns any budget change into a spurious failure (#74).
   assert.equal(config.github_action.openrouter.timeout_ms, bifrostTransport.timeout_ms);
-  assert.equal(config.github_action.openrouter.ttft_ms, Number(policy.review_yeti.openrouter_ttft_ms));
+  assert.equal(config.github_action.openrouter.ttft_ms, Number(policy.review_yeti.ttft_ms));
   // Derive from policy for the same reason as timeout_ms above: the Bifrost
   // transport's pool gets repointed when a provider pool is exhausted, and a
   // literal here fails a test that is about materialization, not routing.
@@ -45,6 +45,8 @@ test('materializes the committed provider order and routing into the local CLI c
 test('passes bounded limits and routing without exposing credential values', () => {
   const env = buildLocalEnvironment(policy, '/tmp/review-yeti-config-test', {
     FIREWORKS_PR_REVIEW_API_KEY: 'fireworks-secret',
+    OPENROUTER_PR_REVIEW_API_KEY: 'openrouter-secret',
+    OPENROUTER_REVIEW_FLEET_KEY: 'openrouter-fleet-secret',
     GITHUB_ACTIONS: 'true',
     GITHUB_OUTPUT: '/tmp/should-not-be-used',
     MCP_CONFIG_JSON: '{"servers":[{"id":"ambient-unvalidated"}]}',
@@ -55,6 +57,8 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.MCP_CONFIG_JSON, undefined);
   assert.equal(env.REVIEW_YETI_CONFIG_DIR, '/tmp/review-yeti-config-test');
   assert.equal(env.FIREWORKS_PR_REVIEW_API_KEY, undefined);
+  assert.equal(env.OPENROUTER_PR_REVIEW_API_KEY, undefined);
+  assert.equal(env.OPENROUTER_REVIEW_FLEET_KEY, undefined);
   assert.equal(env.MAX_PERSONAS, String(policy.review_yeti.personas.split(',').length));
   assert.equal(env.MAX_DIFF_CHARS, '2000000');
   assert.equal(env.MAX_FILE_DIFF_CHARS, '524288');
@@ -64,11 +68,9 @@ test('passes bounded limits and routing without exposing credential values', () 
   assert.equal(env.LANE_CALL_BUDGET, '24');
   assert.equal(env.OPENROUTER_STREAM, 'true');
   assert.equal(env.OPENROUTER_TIMEOUT_MS, String(bifrostTransport.timeout_ms));
-  // Track policy rather than pinning a literal (see LANE_DEADLINE_MS above and #74): REL-499
-  // raised openrouter_ttft_ms 60000->75000 after example-api PR #4764 showed persona lanes time
-  // out on openrouter-primary; a hardcoded value here would go stale on the next tuning pass.
-  // Tracks the global openrouter_ttft_ms alias rather than a per-transport literal.
-  assert.equal(env.OPENROUTER_TTFT_MS, String(policy.review_yeti.openrouter_ttft_ms));
+  // The CLI variable is legacy-named, but the value is sourced from the
+  // provider-neutral policy TTFT budget.
+  assert.equal(env.OPENROUTER_TTFT_MS, String(policy.review_yeti.ttft_ms));
   assert.equal(env.OPENROUTER_MAX_ATTEMPTS, '2');
   const transports = JSON.parse(env.REVIEW_YETI_TRANSPORTS);
   assert.deepEqual(transports.map((transport) => transport.name), ['bifrost']);

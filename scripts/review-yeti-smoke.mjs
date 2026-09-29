@@ -28,10 +28,9 @@ export {
 
 export const EXPECTED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
-]); // ADR 0652: single Bifrost flash-pool lane; OpenRouter is declared-but-disabled
+]); // ADR 0652: single Bifrost/NeuralWatt lane
 export const EXPECTED_CONFIGURED_TRANSPORT_ORDER = Object.freeze([
   'bifrost',
-  'openrouter-primary',
   'gemini',
   'ollama',
 ]);
@@ -43,26 +42,6 @@ const DEFAULT_POLICY_PATH = resolve(fileURLToPath(new URL('../policy/review-yeti
 export { STREAMING_FETCH_DISPATCHER_OPTIONS, getStreamingFetchDispatcher };
 
 const DEFAULT_TIMEOUT_MS = 90_000;
-export const EXPECTED_OPENROUTER_ROUTING = Object.freeze({
-  allow_fallbacks: true,
-  require_parameters: true,
-  ignore: ['morph', 'fireworks'],
-  sort: 'throughput',
-  preferred_min_throughput: { p90: 40 },
-  preferred_max_latency: { p99: 3 },
-  data_collection: 'deny',
-});
-export const EXPECTED_OPENROUTER_MODELS = Object.freeze([
-  'z-ai/glm-5.3-flash',
-]);
-export const EXPECTED_OPENROUTER_MODEL = EXPECTED_OPENROUTER_MODELS[0];
-
-// Provider selectors freeze routing against an endpoint list that changes underneath us. The
-// policy may retain a narrowly-scoped account safety exclusion for a provider with a verified
-// outage, while all other endpoint eligibility remains OpenRouter's live decision. Rejecting
-// only/order outright is deliberately stricter than validating a duplicated allowlist here.
-const FORBIDDEN_ROUTING_SELECTORS = Object.freeze(['only', 'order']);
-
 export function getEnabledTransports(policy) {
   const transports = policy?.review_yeti?.transports;
   return Array.isArray(transports) ? transports.filter((transport) => transport.enabled === true) : [];
@@ -87,7 +66,7 @@ export function validatePolicy(policy, repository = '') {
   for (const [label, value] of [
     ['lane_deadline_ms', Number(budget?.lane_deadline_ms)],
     ['max_investigation_turns', Number(budget?.max_investigation_turns)],
-    ['openrouter_max_attempts', Number(policy.review_yeti?.openrouter_max_attempts)],
+    ['max_attempts', Number(policy.review_yeti?.max_attempts)],
   ]) {
     if (!positiveSafeInteger(value)) throw new Error(`Review Yeti ${label} must be a positive safe integer`);
   }
@@ -147,19 +126,20 @@ export function validatePolicy(policy, repository = '') {
   if (transports.some((transport) => transport.name === 'synthetic')) {
     throw new Error('Synthetic transport must not be declared -- the provider account was cancelled (REL-896)');
   }
+  if (transports.some((transport) => transport.name === 'openrouter-primary'
+      || transport.compat === 'openrouter'
+      || /openrouter\.ai/iu.test(String(transport.base_url || '')))) {
+    throw new Error('OpenRouter transport must not be declared -- Review Yeti uses NeuralWatt through Bifrost (REL-976)');
+  }
 
   const bifrost = transports.find((transport) => transport.name === 'bifrost');
   const gemini = transports.find((transport) => transport.name === 'gemini');
   const ollama = transports.find((transport) => transport.name === 'ollama');
-  const openrouter = transports.find((transport) => transport.name === 'openrouter-primary');
-  if (!gemini || !ollama || !openrouter || !bifrost) {
-    throw new Error('policy must define OpenRouter, Gemini, Ollama, and Bifrost transports');
+  if (!gemini || !ollama || !bifrost) {
+    throw new Error('policy must define Gemini, Ollama, and Bifrost transports');
   }
   if (bifrost.api_key_env !== 'BIFROST_PR_REVIEW_API_KEY') {
     throw new Error('Bifrost must use BIFROST_PR_REVIEW_API_KEY');
-  }
-  if (openrouter.api_key_env !== 'OPENROUTER_PR_REVIEW_API_KEY') {
-    throw new Error('OpenRouter must use OPENROUTER_PR_REVIEW_API_KEY sourced from OPENROUTER_REVIEW_FLEET_KEY');
   }
   if (gemini.base_url !== EXPECTED_GEMINI_BASE_URL
       || gemini.api_key_env !== 'GEMINI_API_KEY'
@@ -191,64 +171,14 @@ export function validatePolicy(policy, repository = '') {
     throw new Error('Bifrost must allow a 15-minute live thinking stream');
   }
 
-  // Checked BEFORE the exact-shape comparison below. That comparison would also reject a pinned
-  // policy, but only with a generic "routing must leave selection to OpenRouter" message, which
-  // says nothing about which key is at fault or why it is fatal. It also applies to every
-  // transport, not just the fallback: any transport that pins a provider can select a hard-banned
-  // slug and crash the panel before a single persona runs.
-  for (const transport of transports) {
-    for (const selector of FORBIDDEN_ROUTING_SELECTORS) {
-      if (transport.provider_routing?.[selector] !== undefined) {
-        throw new Error(
-          `transport ${transport.name} pins provider routing via "${selector}"; `
-          + 'routing must be left to OpenRouter so a hard-banned provider can never be selected',
-        );
-      }
-    }
-  }
-
-  if (JSON.stringify(openrouter?.provider_routing) !== JSON.stringify(EXPECTED_OPENROUTER_ROUTING)) {
-    throw new Error('OpenRouter routing must delegate provider selection, preserve the blocked-provider exclusions, and keep throughput floors/fallbacks');
-  }
-  if (openrouter?.allow_banned_providers !== undefined) {
-    throw new Error('OpenRouter must not re-enable a hard-banned provider');
-  }
-  if (openrouter?.plugins !== undefined) {
-    throw new Error('OpenRouter explicit model fallback must not use auto-router plugins');
-  }
-  if (openrouter?.model !== EXPECTED_OPENROUTER_MODEL
-      || JSON.stringify(openrouter?.models) !== JSON.stringify(EXPECTED_OPENROUTER_MODELS.slice(1))) {
-    throw new Error('OpenRouter must use only the approved GLM-5.3 Flash primary route with no unapproved fallback models');
-  }
-  if (openrouter?.dispatch_weight !== 2
-      || openrouter?.max_in_flight !== 2
-      || openrouter?.concurrency_scope !== 'provider'
-      || openrouter?.capacity_wait_timeout_ms !== 180000) {
-    throw new Error('OpenRouter must use bounded 2:1 striping with two provider-scoped slots and a 180-second admission wait');
-  }
-  // The approved route leaves reasoning selection to the model/provider contract; pinning `max`
-  // would force a previously measured worst-performing arm.
-  if (openrouter?.reasoning_effort === 'max') {
-    throw new Error("OpenRouter must not use reasoning_effort 'max'; measured ablation: recall 0.425 vs 0.750 and 3.5x the errors");
-  }
-  if (openrouter?.structured_output !== 'strict') throw new Error('OpenRouter must use strict investigation output');
   for (const transport of enabledTransports) {
     if (transport.quarantine_on_timeout !== false) {
       throw new Error(`active transport ${transport.name} must keep timeouts lane-local`);
     }
   }
-  if (policy.review_yeti?.openrouter_max_attempts !== '2') throw new Error('each transport must retain one retry');
-  if (policy.review_yeti?.openrouter_stream !== 'true') throw new Error('OpenRouter must use streaming for provider attribution');
-  if (openrouter?.timeout_ms !== Number(policy.review_yeti?.openrouter_timeout_ms)) {
-    throw new Error('OpenRouter transport timeout must match the central request timeout');
-  }
-  if (openrouter?.ttft_ms !== Number(policy.review_yeti?.openrouter_ttft_ms)) {
-    throw new Error('OpenRouter transport TTFT must match the central request TTFT');
-  }
-  if (openrouter?.stall_ms !== centralStallMs) {
-    throw new Error('OpenRouter transport stall must match the central stall timeout');
-  }
-  const maxAttempts = Number(policy.review_yeti?.openrouter_max_attempts);
+  if (policy.review_yeti?.max_attempts !== '2') throw new Error('each transport must retain one retry');
+  if (policy.review_yeti?.stream !== 'true') throw new Error('hosted provider transport must use streaming');
+  const maxAttempts = Number(policy.review_yeti?.max_attempts);
   const maxInvestigationTurns = Number(budget.max_investigation_turns);
   // Shared with emit-policy.mjs via lane-deadline-invariant.mjs so the two enforcement points
   // cannot drift again (this copy has already drifted from the primary once: first missing
@@ -497,12 +427,12 @@ export async function runSmoke({
   const transports = validatePolicy(loadedPolicy, repository);
   const results = [];
   const review = loadedPolicy.review_yeti || {};
-  const fallbackTtftMs = Number(ttftMs ?? review.openrouter_ttft_ms ?? timeoutMs);
+  const fallbackTtftMs = Number(ttftMs ?? review.ttft_ms ?? timeoutMs);
   if (!Number.isFinite(fallbackTtftMs) || fallbackTtftMs <= 0) {
     throw new Error('Review Yeti smoke TTFT budget must be a positive number');
   }
   log(
-    `[Review Yeti smoke] policy stream=${review.openrouter_stream ?? 'unset'} ` +
+    `[Review Yeti smoke] policy stream=${review.stream ?? 'unset'} ` +
       `ttft_ms=${fallbackTtftMs} timeout_ms=${timeoutMs}`,
   );
 

@@ -7,15 +7,15 @@
 // ```json fences, or schema-drifted objects. The worker's contract validator
 // rejects those (malformed_output). The arbiter parses ANY output, extracts
 // the verdict, enforces the enum + schema, and returns contract-conformant
-// JSON — using a provider that honors strict json_schema (openrouter).
+// JSON using the governed Bifrost route backed by NeuralWatt.
 //
-// Env: OPENROUTER_PR_REVIEW_API_KEY (required), ARBITER_MODEL (optional,
-// default z-ai/glm-5.3-flash), ARBITER_MAX_RETRIES (default 2).
+// Env: BIFROST_PR_REVIEW_API_KEY (required), ARBITER_MODEL (optional,
+// default pr-reviewer), ARBITER_MAX_RETRIES (default 2).
 
 import readline from 'node:readline';
 import { isEntrypoint } from './entrypoint-guard.mjs';
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const BIFROST_BASE_URL = 'https://gateway-internal.example.com/v1';
 const ARBITER_SCHEMA = {
   type: 'object',
   required: ['verdict', 'findings'],
@@ -42,8 +42,7 @@ const ARBITER_SCHEMA = {
 };
 
 function apiKey() {
-  return process.env.OPENROUTER_PR_REVIEW_API_KEY ||
-         process.env.OPENROUTER_REVIEW_FLEET_KEY || '';
+  return process.env.BIFROST_PR_REVIEW_API_KEY || '';
 }
 
 function extractJson(text) {
@@ -93,7 +92,7 @@ function normalizeFindings(f) {
 
 async function arbitrate(rawOutput, expectedSchemaHint) {
   const key = apiKey();
-  if (!key) return { error: 'OPENROUTER_PR_REVIEW_API_KEY env not configured' };
+  if (!key) return { error: 'BIFROST_PR_REVIEW_API_KEY env not configured' };
   const raw = String(rawOutput || '').slice(0, 60000);
   if (!raw.trim()) return { error: 'raw_output is required' };
 
@@ -114,7 +113,7 @@ async function arbitrate(rawOutput, expectedSchemaHint) {
   let lastErr = '';
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const bodyStr = JSON.stringify({
-      model: process.env.ARBITER_MODEL || 'z-ai/glm-5.3-flash',
+      model: process.env.ARBITER_MODEL || 'pr-reviewer',
       messages: [
         { role: 'system', content:
           'You are a review-output arbiter. You receive a raw AI-reviewer output that may be prose, markdown-fenced JSON, or schema-drifted JSON. ' +
@@ -126,7 +125,7 @@ async function arbitrate(rawOutput, expectedSchemaHint) {
       max_tokens: 4000,
       response_format: { type: 'json_schema', json_schema: { name: 'arbitrated_verdict', strict: true, schema: ARBITER_SCHEMA } },
     });
-    const req = fetch(OPENROUTER_URL, {
+    const req = fetch(`${BIFROST_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: bodyStr,
@@ -201,11 +200,11 @@ async function handle(request) {
     if (name === 'arbitrate_verdict') return toolResult(await arbitrate(args.raw_output, args.schema_hint));
     if (name === 'arbiter_status') {
       const key = apiKey();
-      if (!key) return toolResult({ ready: false, missing: 'OPENROUTER_PR_REVIEW_API_KEY' }, true);
-      const res = await fetch('https://openrouter.ai/api/v1/models', {
+      if (!key) return toolResult({ ready: false, missing: 'BIFROST_PR_REVIEW_API_KEY' }, true);
+      const res = await fetch(`${BIFROST_BASE_URL}/models`, {
         headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(10_000),
       }).catch((e) => ({ status: 0, error: String(e) }));
-      return toolResult({ ready: Boolean(res.status), model: process.env.ARBITER_MODEL || 'z-ai/glm-5.3-flash', upstream: res.status || String(res.error) });
+      return toolResult({ ready: Boolean(res.status), model: process.env.ARBITER_MODEL || 'pr-reviewer', upstream: res.status || String(res.error) });
     }
     throw Object.assign(new Error(`unknown tool: ${name}`), { code: -32602 });
   } catch (error) {

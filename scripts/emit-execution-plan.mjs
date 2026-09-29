@@ -21,10 +21,10 @@ const ALLOWED_REVIEW_KEYS = [
   'personas',
   'dispatch_mode',
   'transports',
-  'openrouter_stream',
-  'openrouter_timeout_ms',
-  'openrouter_ttft_ms',
-  'openrouter_max_attempts',
+  'stream',
+  'request_timeout_ms',
+  'ttft_ms',
+  'max_attempts',
   'stall_ms',
   'budget',
   'max_diff_chars',
@@ -97,7 +97,6 @@ const ALLOWED_PLUGIN_KEYS = [
 const BASE_URL_CLASSES = new Map([
   ['https://generativelanguage.googleapis.com/v1beta/openai', 'direct-gemini-openai-compatible'],
   ['https://ollama.com/v1', 'direct-ollama-cloud-openai-compatible'],
-  ['https://openrouter.ai/api/v1', 'openrouter-gateway'],
   ['https://gateway-internal.example.com/v1', 'exampleorg-bifrost-openai-compatible'],
 ]);
 
@@ -250,7 +249,7 @@ export function buildExecutionPlan(policy, repository = '') {
   policy = validateExecutionPlanPolicy(policy, repository);
   const review = policy.review_yeti;
   const transports = review.transports.filter((transport) => transport.enabled === true);
-  const maxAttempts = Number(review.openrouter_max_attempts);
+  const maxAttempts = Number(review.max_attempts);
 
   return {
     schema: 'exampleorg.review-execution-plan.v1',

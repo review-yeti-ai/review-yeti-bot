@@ -68,52 +68,6 @@
         "structured_output": "strict"
       },
       {
-        "name": "openrouter-primary",
-        "enabled": false,
-        "base_url": "https://openrouter.ai/api/v1",
-        "api_key_env": "OPENROUTER_PR_REVIEW_API_KEY",
-        "model": "z-ai/glm-5.3-flash",
-        "models": [],
-        "compat": "openrouter",
-        "timeout_ms": 90000,
-        "connect_timeout_ms": 20000,
-        "ttft_ms": 75000,
-        "stall_ms": 30000,
-        "stream": true,
-        "dispatch_weight": 2,
-        "max_in_flight": 2,
-        "concurrency_scope": "provider",
-        "capacity_wait_timeout_ms": 180000,
-        "rate_limit": {
-          "scope": "provider",
-          "max_retries": 1,
-          "max_retry_after_ms": 5000
-        },
-        "structured_output": "strict",
-        "quarantine_on_timeout": false,
-        "ignore_providers": [
-          "morph",
-          "fireworks"
-        ],
-        "provider_routing": {
-          "allow_fallbacks": true,
-          "require_parameters": true,
-          "ignore": [
-            "morph",
-            "fireworks"
-          ],
-          "sort": "throughput",
-          "preferred_min_throughput": {
-            "p90": 40
-          },
-          "preferred_max_latency": {
-            "p99": 3
-          },
-          "data_collection": "deny"
-        },
-        "reasoning_effort": "high"
-      },
-      {
         "name": "gemini",
         "enabled": false,
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -164,10 +118,10 @@
         "quarantine_on_timeout": false
       }
     ],
-    "openrouter_stream": "true",
-    "openrouter_timeout_ms": "90000",
-    "openrouter_ttft_ms": "75000",
-    "openrouter_max_attempts": "2",
+    "stream": "true",
+    "request_timeout_ms": "90000",
+    "ttft_ms": "75000",
+    "max_attempts": "2",
     "stall_ms": "30000",
     "budget": {
       "lane_deadline_ms": 1080000,

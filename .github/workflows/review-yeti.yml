@@ -94,9 +94,6 @@ on:
       REVIEW_YETI_BIFROST_API_KEY:
         description: Optional Bifrost provider credential.
         required: false
-      OPENROUTER_REVIEW_FLEET_KEY:
-        description: Optional OpenRouter provider credential.
-        required: false
       GEMINI_API_KEY:
         description: Optional Gemini provider credential.
         required: false
@@ -335,8 +332,6 @@ jobs:
           BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           REVIEW_YETI_SMOKE_TIMEOUT_MS: 90000
         run: |
           echo "stream=${{ steps.policy.outputs.openrouter_stream }} ttft_ms=${{ steps.policy.outputs.openrouter_ttft_ms }} timeout_ms=${{ steps.policy.outputs.openrouter_timeout_ms }}"
@@ -442,8 +437,6 @@ jobs:
           RESOLVED_API_KEY_ENV: ${{ steps.smoke.outputs.resolved_api_key_env }}
           REVIEW_YETI_BIFROST_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
           BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
-          OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
         run: node scripts/align-panel-seed-key.mjs
 
@@ -456,8 +449,6 @@ jobs:
           BIFROST_PR_REVIEW_API_KEY: ${{ secrets.REVIEW_YETI_BIFROST_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OLLAMA_PR_REVIEW_API_KEY: ${{ secrets.OLLAMA_PR_REVIEW_API_KEY }}
-          OPENROUTER_REVIEW_FLEET_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
-          OPENROUTER_PR_REVIEW_API_KEY: ${{ secrets.OPENROUTER_REVIEW_FLEET_KEY }}
           HONCHO_BASE_URL: ${{ secrets.HONCHO_BASE_URL || 'https://honcho.do.example.com' }}
           HONCHO_API_KEY: ${{ secrets.HONCHO_API_KEY }}
           HONCHO_WORKSPACE: ${{ vars.HONCHO_WORKSPACE || 'exampleorg' }}

@@ -60,18 +60,23 @@ export function buildLocalConfig(policy) {
         models: primary.models,
         ignore_providers: routing.ignore,
         provider_routing: routing,
-        stream: review.openrouter_stream === 'true',
-        timeout_ms: integer(review.openrouter_timeout_ms, 'openrouter_timeout_ms'),
+        stream: review.stream === 'true',
+        timeout_ms: integer(review.request_timeout_ms, 'request_timeout_ms'),
         connect_timeout_ms: primary.connect_timeout_ms,
-        ttft_ms: integer(review.openrouter_ttft_ms, 'openrouter_ttft_ms'),
-        max_attempts: integer(review.openrouter_max_attempts, 'openrouter_max_attempts'),
+        ttft_ms: integer(review.ttft_ms, 'ttft_ms'),
+        max_attempts: integer(review.max_attempts, 'max_attempts'),
       },
     },
     exclude: splitList(review.exclude),
   };
 }
 
-export const RETIRED_PROVIDER_KEY_ENVS = Object.freeze(['FIREWORKS_PR_REVIEW_API_KEY', 'FIREWORKS_API_KEY']);
+export const RETIRED_PROVIDER_KEY_ENVS = Object.freeze([
+  'FIREWORKS_PR_REVIEW_API_KEY',
+  'FIREWORKS_API_KEY',
+  'OPENROUTER_PR_REVIEW_API_KEY',
+  'OPENROUTER_REVIEW_FLEET_KEY',
+]);
 
 export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, mcpConfig = undefined) {
   const review = policy.review_yeti;
@@ -97,10 +102,12 @@ export function buildLocalEnvironment(policy, configDir, baseEnv = process.env, 
     LANE_DEADLINE_MS: String(budget.lane_deadline_ms),
     LANE_CALL_BUDGET: String(budget.lane_call_budget),
     EXCLUDE_PATHS: review.exclude,
-    OPENROUTER_STREAM: review.openrouter_stream,
-    OPENROUTER_TIMEOUT_MS: String(review.openrouter_timeout_ms),
-    OPENROUTER_TTFT_MS: String(review.openrouter_ttft_ms),
-    OPENROUTER_MAX_ATTEMPTS: String(review.openrouter_max_attempts),
+    // The installed CLI retains these legacy environment names. Their values
+    // now come from provider-neutral policy fields and carry no OpenRouter route.
+    OPENROUTER_STREAM: review.stream,
+    OPENROUTER_TIMEOUT_MS: String(review.request_timeout_ms),
+    OPENROUTER_TTFT_MS: String(review.ttft_ms),
+    OPENROUTER_MAX_ATTEMPTS: String(review.max_attempts),
   };
   if (mcpConfig !== undefined) environment.MCP_CONFIG_JSON = JSON.stringify(validateMcpConfig(mcpConfig));
   else delete environment.MCP_CONFIG_JSON;
@@ -226,7 +233,6 @@ function writeConfig(policy) {
 function policySummary(policy, policyPath) {
   const review = policy.review_yeti;
   const transports = getEnabledTransports(policy);
-  const openrouter = transports.find((transport) => transport.compat === 'openrouter');
   return {
     schema: policy.schema,
     policy_source: policyPath || process.env.REVIEW_YETI_POLICY_PATH || 'policy/review-yeti.json',
@@ -249,12 +255,6 @@ function policySummary(policy, policyPath) {
       lane_deadline_ms: Number(review.budget.lane_deadline_ms),
       lane_call_budget: Number(review.budget.lane_call_budget),
       max_passes: Number(review.max_passes),
-    },
-    openrouter: {
-      data_collection: openrouter.provider_routing?.data_collection,
-      ignore_providers: openrouter.provider_routing?.ignore || [],
-      sort: openrouter.provider_routing?.sort,
-      quantizations: openrouter.provider_routing?.quantizations || [],
     },
   };
 }

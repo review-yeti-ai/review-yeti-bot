@@ -47,9 +47,7 @@ jobs:
           node --check scripts/validate-transport-handoff.mjs
           node --check scripts/review-yeti-local.mjs
           node --check scripts/review-yeti-mcp.mjs
-          node --check scripts/openrouter-qualification.mjs
-          node --check scripts/pi-openrouter-qualification.mjs
-          node --check scripts/run-pi-qualification-row.mjs
+          node --check scripts/arbiter-mcp.mjs
           node --check scripts/transport-telemetry.mjs
           node --check scripts/transport-telemetry-report.mjs
           node --check scripts/annotate-transport-failover.mjs
@@ -73,7 +71,6 @@ jobs:
           bash -n scripts/resolve-release-channel.sh
           bash -n scripts/validate-release-provenance.sh
           bash -n scripts/doks-action-qualification.test.sh
-          bash -n scripts/worker-parity-qualification.test.sh
           bash -n scripts/emit-policy.test.sh
           bash -n scripts/validate-caller-workflow.test.sh
           bash -n scripts/promote-v1.test.sh
@@ -95,7 +92,6 @@ jobs:
           bash scripts/self-cancel-run.test.sh
           bash scripts/emit-policy.test.sh
           bash scripts/doks-action-qualification.test.sh
-          bash scripts/worker-parity-qualification.test.sh
           bash scripts/release-channel.test.sh
           grep -Eq '^action_ref<<' "$RUNNER_TEMP/policy-output"
           grep -Eq '^repository<<' "$RUNNER_TEMP/policy-output"
@@ -113,8 +109,6 @@ jobs:
           node --test scripts/validate-transport-handoff.test.mjs
           node --test scripts/review-yeti-local.test.mjs
           node --test scripts/review-yeti-mcp.test.mjs
-          node --test scripts/openrouter-qualification.test.mjs
-          node --test scripts/pi-openrouter-qualification.test.mjs
           node --test scripts/transport-telemetry.test.mjs
           node --test scripts/transport-telemetry-report.test.mjs
           node --test scripts/annotate-transport-failover.test.mjs
@@ -137,9 +131,10 @@ jobs:
           jq -e '.review_yeti.transports[] | select(.name == "ollama") | .enabled == false' policy/review-yeti.json >/dev/null
           grep -Fq '"name": "bifrost"' policy/review-yeti.json
           jq -e '.review_yeti.transports[] | select(.name == "bifrost") | .enabled == true' policy/review-yeti.json >/dev/null
-          grep -Fq '"name": "openrouter-primary"' policy/review-yeti.json
-          grep -Fq '"model": "z-ai/glm-5.3-flash"' policy/review-yeti.json
-          grep -Fq '"models": []' policy/review-yeti.json
+          if grep -Fqi 'openrouter' policy/review-yeti.json; then
+            echo '::error::OpenRouter must not return to Review Yeti production policy (REL-976)'
+            exit 1
+          fi
           if grep -Fqi 'deepseek' policy/review-yeti.json; then
             echo '::error::retired DeepSeek routing must not return to production policy'
             exit 1
@@ -150,21 +145,14 @@ jobs:
             echo '::error::retired Synthetic transport must not return to production policy (REL-896)'
             exit 1
           fi
-          grep -Fq '"allow_fallbacks": true' policy/review-yeti.json
-          grep -Fq '"sort": "throughput"' policy/review-yeti.json
-          grep -Fq '"p90": 40' policy/review-yeti.json
-          grep -Fq '"p99": 3' policy/review-yeti.json
-          # ADR 0652 (operator decision 2026-09-22): no OpenRouter review lane.
-          # The transport stays declared for shape/contract checks but must not be enabled.
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .enabled == false' policy/review-yeti.json >/dev/null
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .provider_routing.ignore == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
-          jq -e '.review_yeti.transports[] | select(.name == "openrouter-primary") | .ignore_providers == ["morph", "fireworks"]' policy/review-yeti.json >/dev/null
           if [ "$(grep -c '^[[:space:]]*max-file-diff-chars:' .github/workflows/review-yeti.yml)" -ne 1 ]; then
             echo '::error::Review Yeti action inputs must be unique'
             exit 1
           fi
-          grep -Fq 'OPENROUTER_REVIEW_FLEET_KEY:' .github/workflows/review-yeti.yml
-          grep -Fq 'secrets.OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml
+          if grep -Fq 'OPENROUTER_REVIEW_FLEET_KEY' .github/workflows/review-yeti.yml .github/workflows/transport-telemetry.yml; then
+            echo '::error::OpenRouter credential wiring must not return to Review Yeti workflows (REL-976)'
+            exit 1
+          fi
           grep -Fq 'REVIEW_YETI_BIFROST_API_KEY:' .github/workflows/review-yeti.yml
           grep -Fq 'secrets.REVIEW_YETI_BIFROST_API_KEY' .github/workflows/review-yeti.yml
           if grep -E 'secrets\.[A-Z0-9_]+[[:space:]]*\|\|[[:space:]]*secrets\.' .github/workflows/review-yeti.yml .github/workflows/transport-telemetry.yml; then
@@ -208,17 +196,7 @@ jobs:
             echo "::error::the central receiver must not use the operator PAT (ADR 0511)"
             exit 1
           fi
-          test -f .github/workflows/openrouter-qualification.yml
-          grep -Fq 'workflow_dispatch:' .github/workflows/openrouter-qualification.yml
-          grep -Eq '^    timeout-minutes: 15$' .github/workflows/openrouter-qualification.yml
-          if grep -Eq '^    timeout-minutes: (1[6-9]|[2-9][0-9]|[1-9][0-9]{2,})$' .github/workflows/openrouter-qualification.yml; then
-            echo "::error::OpenRouter qualification workflow may not exceed the 15-minute hard ceiling"
-            exit 1
-          fi
-          if grep -Eq '^  (schedule|pull_request|pull_request_target|repository_dispatch|workflow_run):' .github/workflows/openrouter-qualification.yml; then
-            echo "::error::OpenRouter qualification must remain manual and non-recurring"
-            exit 1
-          fi
+          test ! -e .github/workflows/openrouter-qualification.yml
           test -f .github/workflows/transport-telemetry.yml
           grep -Fq 'schedule:' .github/workflows/transport-telemetry.yml
           grep -Fq 'workflow_dispatch:' .github/workflows/transport-telemetry.yml
@@ -240,9 +218,6 @@ jobs:
           grep -Fq 'refs/heads/telemetry' .github/workflows/transport-telemetry.yml
           grep -Fq "publication: 'none'" scripts/transport-telemetry.mjs
           grep -Fq "production_authority: 'unchanged'" scripts/transport-telemetry.mjs
-          grep -Fq "publication: 'none'" scripts/openrouter-qualification.mjs
-          grep -Fq "authoritative_arm: 'none'" scripts/openrouter-qualification.mjs
-          grep -Fq "production_authority: 'unchanged'" scripts/openrouter-qualification.mjs
           grep -Fq 'healthy_transports' .github/workflows/review-yeti.yml
           grep -Fq 'transport-plan-b64:' .github/workflows/review-yeti.yml
           grep -Fq 'transport_plan_b64' scripts/emit-policy.mjs
