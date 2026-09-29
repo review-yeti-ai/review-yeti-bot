@@ -9,6 +9,7 @@ const {
   globalRunCircuitBreaker,
   DEFAULT_DIRECT_MAX_OUTPUT_TOKENS,
   DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS,
+  DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
 } = require(pipelinePath);
 
 describe('Multi-Transport Fast Failover', () => {
@@ -350,13 +351,12 @@ describe('Multi-Transport Fast Failover', () => {
     expect(result.decision).toBe('APPROVE');
     expect(requestBodies).toHaveLength(2);
     expect(requestBodies[0].model).toBe('deepseek/deepseek-v4-flash-0731');
-    expect(requestBodies[0].max_tokens).toBeUndefined();
+    expect(requestBodies[0].max_tokens).toBe(DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
     expect(requestBodies[0].reasoning).toEqual({ effort: 'high' });
     expect(requestBodies[1].model).toBe('deepseek/deepseek-v4-flash-0731');
-    // REL-547: this recovery path already reduces reasoning to 'none'; it must also
-    // establish the bounded output budget it was always intended to (raiseMaxOutputTokens
-    // previously no-op'd on an undefined max_tokens).
-    expect(requestBodies[1].max_tokens).toBe(DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
+    // REL-547: recovery reduces reasoning to 'none'. The route-level OpenRouter ceiling remains
+    // authoritative; the smaller format-recovery floor must never lower or exceed it.
+    expect(requestBodies[1].max_tokens).toBe(DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
     expect(requestBodies[1].reasoning).toEqual({ effort: 'none' });
     expect(requestBodies[1].provider).toEqual({ data_collection: 'deny' });
     expect(requestBodies[1].plugins).toBeUndefined();

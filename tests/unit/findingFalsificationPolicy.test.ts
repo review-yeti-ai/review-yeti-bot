@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { callFalsificationModelTurn, resolveFindingFalsificationPolicy } from '../../.github/workflows/pipelines/review-pipeline';
+import {
+  callFalsificationModelTurn,
+  resolveActionReviewRuntime,
+  resolveFindingFalsificationPolicy,
+} from '../../.github/workflows/pipelines/review-pipeline';
 
 function localConfig(value: unknown) {
   return { parsed: { review: { finding_falsification: value } } };
@@ -15,6 +19,17 @@ function localConfig(value: unknown) {
 type FalsificationPolicyInput = Parameters<typeof resolveFindingFalsificationPolicy>[0];
 function resolvePolicy(args: { localConfig: unknown; env: Record<string, string | undefined> }) {
   return resolveFindingFalsificationPolicy(args as unknown as FalsificationPolicyInput);
+}
+
+// Plain-JS declaration inference loses the real localConfig parameter because
+// the implementation defaults it to null. Preserve the runtime contract here
+// without weakening the test's result type.
+function resolveRuntime(localConfig: unknown, env: Record<string, string | undefined>) {
+  const resolver = resolveActionReviewRuntime as unknown as (
+    config: unknown,
+    runtimeEnv: Record<string, string | undefined>,
+  ) => ReturnType<typeof resolveActionReviewRuntime>;
+  return resolver(localConfig, env);
 }
 
 describe('resolveFindingFalsificationPolicy', () => {
@@ -37,6 +52,38 @@ describe('resolveFindingFalsificationPolicy', () => {
 });
 
 describe('callFalsificationModelTurn', () => {
+  it('keeps an explicit direct transport model when the guarded action destination is the gateway', async () => {
+    const directModel = 'deepseek/deepseek-v4-flash-0731';
+    const runtime = resolveRuntime({ parsed: {} }, {
+      OPENROUTER_API_KEY: 'direct-key',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+      REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+        name: 'openrouter-direct',
+        base_url: 'https://openrouter.ai/api/v1',
+        model: directModel,
+        api_key_env: 'OPENROUTER_API_KEY',
+      }]),
+    });
+    let requestBody: Record<string, unknown> | undefined;
+
+    const result = await callFalsificationModelTurn(
+      { messages: [{ role: 'user', content: 'verify' }], timeoutMs: 5_000 },
+      {
+        ...runtime.modelConfig,
+        fetchImplementation: async (_url: string, init: { body: string }) => {
+          requestBody = JSON.parse(init.body);
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: '{"verdict":"upheld"}' } }],
+          }), { status: 200, headers: { 'content-type': 'application/json' } });
+        },
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(runtime.modelConfig.model).not.toBe('pr-reviewer');
+    expect(requestBody?.model).toBe(directModel);
+  });
+
   it('marks its own deadline firing as timedOut so the stage can classify it as verifier_timeout', async () => {
     const result = await callFalsificationModelTurn(
       { messages: [{ role: 'user', content: 'x' }], timeoutMs: 20 },

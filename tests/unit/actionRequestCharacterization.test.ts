@@ -263,6 +263,7 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
         timeout_ms: 90000,
         body: {
           ...common('deepseek/deepseek-v4-flash-0731'),
+          max_tokens: 8000,
           messages: [
             { role: 'system', content: '<panel-system-prompt>' },
             { role: 'user', content: '<panel-evidence-prompt>' },

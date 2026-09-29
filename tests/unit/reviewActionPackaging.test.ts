@@ -37,6 +37,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('api-key');
     expect(inputs).toContain('llm-api-key');
     expect(inputs).toContain('llm-base-url');
+    expect(inputs).toContain('transport-destination');
     expect(inputs).toContain('model');
     expect(inputs).toContain('personas');
     expect(inputs).toContain('max-diff-chars');
@@ -51,6 +52,9 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(inputs).toContain('expected-generation');
     expect(inputs).toContain('ollama-api-key');
     expect(inputs).toContain('synthetic-api-key');
+    expect(fs.readFileSync(actionPath, 'utf8')).toContain(
+      'REVIEW_TRANSPORT_DESTINATION: ${{ inputs.transport-destination }}',
+    );
   });
 
   it('does not impose a fixed per-reviewer diff cap by default', () => {
