@@ -311,6 +311,7 @@ describe('review transport configuration guard', () => {
     expect(selector).toContain("outputs.destination == 'opencode' && secrets.CT_REVIEW_OPENCODE_API_KEY");
     expect(selector).toContain("outputs.destination == 'gateway' && secrets.CT_REVIEW_GATEWAY_API_KEY");
     expect(selector).toContain("outputs.destination == 'openrouter' && secrets.CT_REVIEW_OPENROUTER_API_KEY");
+    expect(workflow).toContain('transport-destination: ${{ steps.transport.outputs.destination }}');
     // REL-1162: no Fireworks arm, and no Fireworks credential anywhere in the workflow.
     expect(selector).not.toContain('fireworks');
     expect(workflow).not.toMatch(/CT_REVIEW_FIREWORKS_API_KEY|fireworks-api-key/);

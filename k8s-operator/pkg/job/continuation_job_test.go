@@ -192,3 +192,134 @@ func findEnvVar(container corev1.Container, name string) *corev1.EnvVar {
 	}
 	return nil
 }
+
+func TestIsContinuationsEnabled(t *testing.T) {
+	cases := []struct {
+		name     string
+		config   string
+		repo     string
+		expected bool
+	}{
+		{"empty config", "", "calltelemetry/cisco-cdr", false},
+		{"false config", "false", "calltelemetry/cisco-cdr", false},
+		{"zero config", "0", "calltelemetry/cisco-cdr", false},
+		{"off config", "off", "calltelemetry/cisco-cdr", false},
+		{"true config", "true", "calltelemetry/cisco-cdr", true},
+		{"1 config", "1", "calltelemetry/cisco-cdr", true},
+		{"on config", "on", "calltelemetry/cisco-cdr", true},
+		{"all config", "all", "calltelemetry/cisco-cdr", true},
+		{"allowlist match first", "calltelemetry/cisco-cdr, calltelemetry/ct-infrastructure", "calltelemetry/cisco-cdr", true},
+		{"allowlist match second", "calltelemetry/cisco-cdr, calltelemetry/ct-infrastructure", "calltelemetry/ct-infrastructure", true},
+		{"allowlist case insensitive", "CallTelemetry/Cisco-CDR", "calltelemetry/cisco-cdr", true},
+		{"allowlist no match", "calltelemetry/cisco-cdr", "calltelemetry/other-repo", false},
+		{"empty repo", "calltelemetry/cisco-cdr", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := job.IsContinuationsEnabled(tc.config, tc.repo)
+			if got != tc.expected {
+				t.Errorf("IsContinuationsEnabled(%q, %q) = %v; want %v", tc.config, tc.repo, got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerJob_AutomaticContinuationsDefaulting(t *testing.T) {
+	now := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+
+	t.Run("defaults to prep when continuations enabled", func(t *testing.T) {
+		review := reviewFixture(now)
+		review.Spec.PublicationMode = job.PublicationModeAppGate
+		review.Spec.QualificationProfile = ""
+		input := buildInput(review, now)
+		input.Phase = ""
+		input.Publishing = publishingFixture()
+		input.Publishing.EnableContinuations = "true"
+
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("BuildWorkerJob failed: %v", err)
+		}
+		if built.Labels[job.JobPhaseLabel] != job.JobPhasePrep {
+			t.Errorf("job label %s = %q, want %q", job.JobPhaseLabel, built.Labels[job.JobPhaseLabel], job.JobPhasePrep)
+		}
+		if !job.IsPrepWorkerJob(built) {
+			t.Errorf("IsPrepWorkerJob(built) = false, want true")
+		}
+		expectedName := review.Name + "-worker"
+		if built.Name != expectedName {
+			t.Errorf("expected Job name %q, got %q", expectedName, built.Name)
+		}
+	})
+
+	t.Run("leaves monolithic when continuations disabled", func(t *testing.T) {
+		review := reviewFixture(now)
+		review.Spec.PublicationMode = job.PublicationModeAppGate
+		review.Spec.QualificationProfile = ""
+		input := buildInput(review, now)
+		input.Phase = ""
+		input.Publishing = publishingFixture()
+		input.Publishing.EnableContinuations = "false"
+
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("BuildWorkerJob failed: %v", err)
+		}
+		if phase, exists := built.Labels[job.JobPhaseLabel]; exists && phase != "" {
+			t.Errorf("expected no job phase label, got %q", phase)
+		}
+		if job.IsPrepWorkerJob(built) {
+			t.Errorf("expected IsPrepWorkerJob(built) = false")
+		}
+		expectedName := review.Name + "-worker"
+		if built.Name != expectedName {
+			t.Errorf("expected Job name %q, got %q", expectedName, built.Name)
+		}
+	})
+
+	t.Run("defaults to prep on repo allowlist match", func(t *testing.T) {
+		review := reviewFixture(now)
+		review.Spec.Repo = "calltelemetry/cisco-cdr"
+		review.Spec.PublicationMode = job.PublicationModeAppGate
+		review.Spec.QualificationProfile = ""
+		input := buildInput(review, now)
+		input.Phase = ""
+		input.Publishing = publishingFixture()
+		input.Publishing.EnableContinuations = "calltelemetry/cisco-cdr, calltelemetry/ct-infrastructure"
+
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("BuildWorkerJob failed: %v", err)
+		}
+		if built.Labels[job.JobPhaseLabel] != job.JobPhasePrep {
+			t.Errorf("job label %s = %q, want %q", job.JobPhaseLabel, built.Labels[job.JobPhaseLabel], job.JobPhasePrep)
+		}
+		if !job.IsPrepWorkerJob(built) {
+			t.Errorf("IsPrepWorkerJob(built) = false, want true")
+		}
+	})
+
+	t.Run("leaves monolithic on repo allowlist non-match", func(t *testing.T) {
+		review := reviewFixture(now)
+		review.Spec.Repo = "calltelemetry/other-repo"
+		review.Spec.PublicationMode = job.PublicationModeAppGate
+		review.Spec.QualificationProfile = ""
+		input := buildInput(review, now)
+		input.Phase = ""
+		input.Publishing = publishingFixture()
+		input.Publishing.EnableContinuations = "calltelemetry/cisco-cdr"
+
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("BuildWorkerJob failed: %v", err)
+		}
+		if phase, exists := built.Labels[job.JobPhaseLabel]; exists && phase != "" {
+			t.Errorf("expected no job phase label, got %q", phase)
+		}
+		if job.IsPrepWorkerJob(built) {
+			t.Errorf("expected IsPrepWorkerJob(built) = false")
+		}
+	})
+}
+

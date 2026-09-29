@@ -1311,7 +1311,20 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 // stall_ms, stream total deadline) remain the only generation bound. Qualification
 // harnesses may still send an explicit max_tokens.
 const DEFAULT_MAX_OUTPUT_TOKENS = undefined;
-const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = undefined;
+// OpenRouter reserves credit against the declared completion ceiling before it
+// starts generating. Omitting max_tokens makes it reserve against DeepSeek V4
+// Flash 0731's full 131,072-token model limit, which rejected otherwise-funded
+// review requests with HTTP 402. This cap applies to both direct OpenRouter and
+// OpenRouter-labelled gateway routes; direct Ollama/Fireworks transports retain
+// their separate uncapped-first-pass contract below.
+const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 8_000;
+// The digest-pinned Review Yeti gateway exposes the reviewed `pr-reviewer`
+// alias, which Bifrost resolves to the exact OpenRouter model configured by
+// GitOps. Sending OpenRouter's vendor-qualified id directly makes Bifrost
+// interpret `deepseek` as a native provider and fail before OpenRouter is
+// reached. The workflow's fail-closed destination guard supplies this class;
+// keep the provider/model policy exact and translate only at the wire boundary.
+const DIGEST_PINNED_GATEWAY_MODEL_ALIAS = 'pr-reviewer';
 const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
@@ -1474,6 +1487,12 @@ function resolveDirectOpenRouterModel(value) {
     : OPENROUTER_DIRECT_PRIMARY_MODEL;
 }
 
+function resolveTransportRequestModel(model, destinationClass) {
+  return String(destinationClass || '').trim().toLowerCase() === 'gateway'
+    ? DIGEST_PINNED_GATEWAY_MODEL_ALIAS
+    : model;
+}
+
 function isOpenRouterEndpoint(value) {
   return String(value || '').replace(/\/+$/, '').toLowerCase() === 'https://openrouter.ai/api/v1';
 }
@@ -1497,11 +1516,14 @@ function resolveModelConfig(env = process.env) {
   const baseUrl = explicitTransportHandoff
     ? 'https://openrouter.ai/api/v1'
     : (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const model = explicitTransportHandoff
+  const policyModel = explicitTransportHandoff
     ? OPENROUTER_DIRECT_PRIMARY_MODEL
     : (isOpenRouterEndpoint(baseUrl)
       ? resolveDirectOpenRouterModel(env.OPENROUTER_MODEL)
       : (env.OPENROUTER_MODEL || OPENROUTER_DIRECT_PRIMARY_MODEL));
+  const model = explicitTransportHandoff
+    ? policyModel
+    : resolveTransportRequestModel(policyModel, env.REVIEW_TRANSPORT_DESTINATION);
   const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || dynamicDefaultDiff;
 
@@ -1817,6 +1839,7 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
     actionInputs: trustedOpenRouterInputsFromEnv(env),
     trustedConfig,
   });
+  const explicitTransportHandoff = hasExplicitTransportHandoff(env);
   const localReviewerProviderIds = localProviders
     .map((provider) => {
       if (typeof provider === 'string') return provider.trim();
@@ -1827,7 +1850,12 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
   const modelConfig = {
     ...resolveModelConfig(env),
     baseUrl: openRouterPolicy.base_url,
-    model: openRouterPolicy.model,
+    // An explicit transport plan owns its per-endpoint model ids. Keep the
+    // canonical policy model at the top level in that case; translating it to
+    // the gateway-only alias would leak `pr-reviewer` into direct transports.
+    model: explicitTransportHandoff
+      ? openRouterPolicy.model
+      : resolveTransportRequestModel(openRouterPolicy.model, env.REVIEW_TRANSPORT_DESTINATION),
     openRouterPolicy,
     maxDiffChars: actionPolicy.maxDiffChars,
   };
@@ -2829,12 +2857,45 @@ function classifyTelemetryHttpFailure(status) {
   return 'unknown';
 }
 
+/**
+ * True when an error is a transport-level socket fault worth retrying.
+ *
+ * `fetch failed` is undici's wrapper for every network-layer fault, and it is what a
+ * Tailscale-fronted gateway returns when the tunnel blips. It carries no errno, so
+ * the older errno-only list missed it entirely: the attempt was NOT retried, it
+ * classified as `unknown`, and `trip()` therefore defaulted to `transport` scope and
+ * quarantined every lane on the run. One blip became a whole-run INCOMPLETE.
+ *
+ * Matching the wrapper is deliberate rather than unwrapping to the cause: undici
+ * exposes the underlying code inconsistently across versions, a retry here is cheap
+ * and bounded, and a false quarantine is total. Anything genuinely non-transient
+ * still exhausts the retry budget and reaches the breaker.
+ *
+ * Single source of truth: the retry gate and the classifier previously carried
+ * separate copies of this list, which is exactly how one of them fell behind.
+ */
+const TRANSIENT_SOCKET_PATTERN = /ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|socket hang up|network timeout|fetch failed/i;
+
+function isTransientSocketError(error) {
+  const message = String(error?.message || error || '');
+  if (TRANSIENT_SOCKET_PATTERN.test(message)) return true;
+  // undici often puts the real code on `cause` rather than in the message.
+  const cause = error?.cause;
+  if (cause && cause !== error) return isTransientSocketError(cause);
+  return false;
+}
+
 function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
+  // Pass the ORIGINAL error, not `message`. The transient check unwraps `cause`,
+  // and a string has no `cause` -- so stringifying first would silently disable that
+  // branch here while the retry gate (which passes the object) still used it, and the
+  // two would disagree on exactly the errors that need to agree.
+
   if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
   if (/provider_capacity_wait_cancelled|review_cancelled/i.test(message)) return 'cancelled';
   if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity|reasoning exceeded/i.test(message)) return 'timeout';
-  if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
+  if (isTransientSocketError(error)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
 }
@@ -3359,6 +3420,15 @@ function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
   if (String(value).trim().toLowerCase() === 'unlimited') return undefined;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function boundOpenRouterMaxOutputTokens(value, configuredProvider, isOpenRouterDestination = false) {
+  const normalized = normalizeMaxOutputTokens(value, undefined);
+  if (!isOpenRouterDestination && configuredProvider !== 'openrouter') return normalized;
+  return Math.min(
+    normalized ?? DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+    DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+  );
 }
 
 function assignMaxOutputTokens(requestBody, value) {
@@ -4070,7 +4140,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       };
       assignMaxOutputTokens(
         requestBody,
-        normalizeMaxOutputTokens(configuredMaxOutputTokens, undefined),
+        boundOpenRouterMaxOutputTokens(
+          configuredMaxOutputTokens,
+          configuredProvider,
+          isOpenRouterTransport,
+        ),
       );
       if (isOpenRouterTransport) {
         requestBody.session_id = openRouterCacheIdentity;
@@ -4829,7 +4903,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           });
           return withTelemetry({ ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage }, null);
         } catch (err) {
-          const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
+          const isTransientSocket = isTransientSocketError(err);
           const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
           const attemptCancelled = cancellationSignal?.aborted || err?.code === 'provider_capacity_wait_cancelled';
           const attemptFailureClass = attemptCancelled ? 'cancelled' : classifyTelemetryTransportError(err);
@@ -5823,7 +5897,10 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: options.model || transport.model || cfg.model,
+          // Explicit transport plans own the wire model for each endpoint.
+          // The top-level policy model remains the fallback for the implicit
+          // single-transport case only.
+          model: transport.model || options.model || cfg.model,
           messages,
           temperature: 0.1,
           max_tokens: normalizeMaxOutputTokens(options.maxOutputTokens ?? transport.maxTokens, DEFAULT_MAX_OUTPUT_TOKENS),
@@ -8434,6 +8511,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  // Exported so the transport-fault classification and its retry gate are testable
+  // directly, rather than only through a live lane failure.
+  isTransientSocketError,
+  classifyTelemetryTransportError,
   isRetiredFireworksTransport,
   // REL-1107: exported so the identity-probe retry and its diagnostics are testable.
   resolveAuthenticatedPublisher,
@@ -8462,6 +8543,8 @@ module.exports = {
   globalProviderCapacityManager,
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+  DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
+  resolveTransportRequestModel,
   normalizeMaxOutputTokens,
   assignMaxOutputTokens,
   raiseMaxOutputTokens,

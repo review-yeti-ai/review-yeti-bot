@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { buildWorkerFailureDiagnostics, type WorkerCompletionAdapter } from '../../src/review/workerCompletion';
-import { runPublishingReviewWorker, type PublishingCheckClient, type PublishingReviewDeps } from '../../src/cli/publishingReview';
+import {
+  PUBLISHING_MAX_OUTPUT_TOKENS,
+  runPublishingReviewWorker,
+  type PublishingCheckClient,
+  type PublishingReviewDeps,
+} from '../../src/cli/publishingReview';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import { parseChangedFiles } from '../../src/review/changedFiles';
@@ -393,14 +398,18 @@ describe('authoritative prepared publishing worker', () => {
     expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0])).toEqual(expectedEvent(f, cleanResult()));
     expect(receipt).toMatchObject({ conclusion: 'success', verdict: 'SHIP', transport: 'bifrost', model: transport.model });
     expect(f.fetch).not.toHaveBeenCalled();
-    // REL-1132: the metered client the engine received is a pass-through to the admitted client:
-    // the exact request object reaches `f.client.complete` unchanged and its outcome propagates.
+    // REL-1132: the metered client delegates to the admitted client. The publishing boundary adds
+    // its mandatory output ceiling without mutating the engine-owned request object.
     expect(f.client.complete).not.toHaveBeenCalled();
     const probe = { model: transport.model, messages: [] } as unknown as Parameters<typeof f.client.complete>[0];
     await expect(f.panelRunner.mock.calls[0][0].client.complete(probe))
       .rejects.toThrow('A test must never invoke a provider');
-    expect(f.client.complete).toHaveBeenCalledExactlyOnceWith(probe);
-    expect(f.client.complete.mock.calls[0][0]).toBe(probe);
+    expect(f.client.complete).toHaveBeenCalledExactlyOnceWith({
+      ...probe,
+      maxTokens: PUBLISHING_MAX_OUTPUT_TOKENS,
+    });
+    expect(f.client.complete.mock.calls[0][0]).not.toBe(probe);
+    expect(probe).not.toHaveProperty('maxTokens');
   });
 
   it('creates and completes exactly one raw Review Yeti check, never the service-owned gate', async () => {

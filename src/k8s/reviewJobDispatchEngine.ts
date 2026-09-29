@@ -19,7 +19,7 @@ import { recoverOrphanedProjectionCancellation, type OrphanedCancellationOutcome
 export interface CancellationSweepFailure {
   runId: string;
   projectionName: string;
-  reason: 'patch-failed' | 'field-pruned';
+  reason: 'patch-failed' | 'field-pruned' | 'persistence-rejected' | 'persistence-failed';
   statusCode?: number;
 }
 
@@ -337,7 +337,31 @@ export class ReviewJobDispatchEngine {
           failures.push({ runId: item.runId, projectionName: item.projectionName, reason: 'field-pruned' });
           continue;
         }
-        await this.options.repository.markCancelPropagated(item.runId, item.executionAttempt, this.now());
+        let acknowledged: boolean;
+        try {
+          acknowledged = await this.options.repository.markCancelPropagated(
+            item.runId,
+            item.executionAttempt,
+            this.now(),
+          );
+        } catch {
+          failed++;
+          failures.push({
+            runId: item.runId,
+            projectionName: item.projectionName,
+            reason: 'persistence-failed',
+          });
+          continue;
+        }
+        if (!acknowledged) {
+          failed++;
+          failures.push({
+            runId: item.runId,
+            projectionName: item.projectionName,
+            reason: 'persistence-rejected',
+          });
+          continue;
+        }
         propagated++;
       } catch (error) {
         failed++;
@@ -373,12 +397,11 @@ export class ReviewJobDispatchEngine {
         event.cancelReason,
       );
       if (!cancellationLanded(result)) return false;
-      await this.options.repository.markCancelPropagated(
+      return await this.options.repository.markCancelPropagated(
         event.runId,
         event.executionAttempt,
         this.now(),
       );
-      return true;
     } catch {
       return false;
     }

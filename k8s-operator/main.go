@@ -167,8 +167,8 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1104: worker metrics push target (VictoriaMetrics OTLP). An
 		// invalid value is dropped at projection time, never refusing a Job.
 		WorkerMetricsEndpoint: strings.TrimSpace(os.Getenv(job.WorkerMetricsEndpointEnv)),
-		// REL-1160: asynchronous review continuation execution (disabled by default).
-		EnableContinuations: strings.TrimSpace(os.Getenv(job.EnableContinuationsEnv)),
+		// REL-1160: asynchronous review continuation execution (defaults to true).
+		EnableContinuations: envOr(job.EnableContinuationsEnv, "true"),
 	}
 }
 

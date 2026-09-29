@@ -138,6 +138,9 @@ jobs:
           # Unset for OpenRouter and for the digest-pinned gateway: both accept the content-block
           # message form natively, so flattening them would destroy the prompt-cache breakpoint.
           transport-compat: ${{ vars.REVIEW_TRANSPORT_COMPAT }}
+          # The guard above is the authority for this class. Bifrost exposes a reviewed
+          # `pr-reviewer` alias, while `model` remains the exact OpenRouter policy id.
+          transport-destination: ${{ steps.transport.outputs.destination }}
           lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REL-1113: lane re-attempts after an infrastructure failure must finish inside this job's
           # 15-minute `timeout-minutes`, leaving room for setup and publication: 13 minutes.

@@ -212,6 +212,26 @@ describe('resolveModelConfig', () => {
     }).transports[0].maxTokens).toBeUndefined();
   });
 
+  it('maps the guarded gateway destination to the Bifrost model alias without changing policy', () => {
+    const cfg = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-key',
+      OPENROUTER_BASE_URL: 'https://gateway.example.invalid/v1',
+      OPENROUTER_MODEL: 'deepseek/deepseek-v4-flash-0731',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+
+    expect(cfg.model).toBe(pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS);
+    expect(cfg.transports).toMatchObject([{
+      name: 'openrouter',
+      model: pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
+      baseUrl: 'https://gateway.example.invalid/v1',
+    }]);
+    expect(pipeline.resolveTransportRequestModel(
+      'deepseek/deepseek-v4-flash-0731',
+      'openrouter',
+    )).toBe('deepseek/deepseek-v4-flash-0731');
+  });
+
   it('keeps the direct OpenRouter pair authoritative when multiple provider keys are present', () => {
     const cfg = resolveModelConfig({
       FIREWORKS_API_KEY: 'fw-key-123',
@@ -779,6 +799,27 @@ describe('reviewWithModel', () => {
       perf_metrics_in_response: true,
     });
     expect(calls[0].body.max_tokens).toBeUndefined();
+  });
+
+  it.each([
+    ['direct OpenRouter destination without provider label', 'openrouter-direct', undefined, 'https://openrouter.ai/api/v1', undefined, pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS],
+    ['OpenRouter-labelled gateway', 'openrouter', 'openrouter', 'https://gateway.example.invalid/v1', undefined, pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS],
+    ['oversized direct OpenRouter override', 'openrouter-direct', undefined, 'https://openrouter.ai/api/v1', 100_000, pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS],
+    ['smaller direct OpenRouter override', 'openrouter-direct', undefined, 'https://openrouter.ai/api/v1', 4_096, 4_096],
+  ])('bounds %s review requests before dispatch', async (_label, name, provider, baseUrl, maxTokens, expected) => {
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: impl,
+      transports: [{
+        name,
+        ...(provider === undefined ? {} : { provider }),
+        baseUrl,
+        apiKey: 'review-fleet-key',
+        model: 'deepseek/deepseek-v4-flash-0731',
+        ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
+      }],
+    });
+    expect(calls[0].body.max_tokens).toBe(expected);
   });
 
   it('omits max_tokens on the live panel so high-reasoning cannot starve findings JSON', async () => {
@@ -2836,7 +2877,7 @@ describe('reviewWithModel', () => {
 
     const user = calls[0].body.messages.find((m: any) => m.role === 'user').content;
     expect(user.length).toBeLessThanOrEqual(412_000);
-    expect(calls[0].body.max_tokens).toBeUndefined();
+    expect(calls[0].body.max_tokens).toBe(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
   });
 
   it('includes prior-turn session context in the prompt when present', async () => {
