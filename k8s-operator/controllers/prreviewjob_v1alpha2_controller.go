@@ -939,6 +939,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 			return ctrl.Result{}, nil
 		}
 
+		if workerEndedSuperseded(review) {
+			if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, r.recordSuperseded(ctx, review)
+		}
+
 		// GUARD: Check if UnknownEffectPending or missing receipt blocks promotion
 		if err := AssertCanPromoteToSucceeded(review); err != nil {
 			return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseFailed, ReasonUnresolvedEffect,
@@ -947,9 +954,6 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 
 		if err := r.patchWorkerSuccessTTL(ctx, worker); err != nil {
 			return ctrl.Result{}, err
-		}
-		if workerEndedSuperseded(review) {
-			return ctrl.Result{}, r.recordSuperseded(ctx, review)
 		}
 		return ctrl.Result{}, r.setPhase(ctx, review, reviewv1alpha2.PhaseSucceeded, "WorkerSucceeded", workerMessage(review, "completed"))
 	}

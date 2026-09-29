@@ -135,7 +135,7 @@ func TestAppGateReceiptRequiresTrustedExactCoordinates(t *testing.T) {
 		}},
 		{"cancelled", func(status map[string]any) { status["cancelRequested"] = true }},
 		{"stale head", func(status map[string]any) { status["isCurrentHead"] = false }},
-		{"failed run", func(status map[string]any) { status["status"] = "failed" }},
+		{"running run", func(status map[string]any) { status["status"] = "running" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -518,5 +518,31 @@ func TestAppGateReceiptRejectsUnusableRunSecretToken(t *testing.T) {
 				t.Fatalf("unusable token promoted review: %+v", after.Status)
 			}
 		})
+	}
+}
+
+func TestAppGateReceiptAcceptsFailedVerdictWithReceipt(t *testing.T) {
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	installAppGateReceiptEndpoint(t, r, kube, review, func(w http.ResponseWriter, request *http.Request) {
+		status := validAppGateRunStatus(t, review)
+		status["status"] = "failed"
+		_ = json.NewEncoder(w).Encode(status)
+	})
+	worker := storedWorker(t, kube, req)
+	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := kube.Status().Update(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	after := storedReview(t, kube, req)
+	if after.Status.Phase != reviewv1alpha2.PhaseSucceeded || after.Status.ReceiptDigest == "" {
+		t.Fatalf("failed verdict with valid receipt must promote review: phase=%s digest=%q", after.Status.Phase, after.Status.ReceiptDigest)
 	}
 }
