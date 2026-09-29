@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.96.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.96.0...v1.96.1) (2026-09-29)
+
+
+### Bug Fixes
+
+* **dispatcher:** require durable cancellation acknowledgement [REL-1157] ([894ca1a](https://github.com/review-yeti-ai/review-yeti-bot/commit/894ca1a13a6a71fba138d78bffa5d1b00241f95b))
+* **review:** bound hosted completion output [REL-976] ([#1101](https://github.com/review-yeti-ai/review-yeti-bot/issues/1101)) ([d342b95](https://github.com/review-yeti-ai/review-yeti-bot/commit/d342b951121c6e44f0a097ba79b73eb9dc74dddb))
+
 ## [1.96.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.95.0...v1.96.0) (2026-09-29)
 
 
