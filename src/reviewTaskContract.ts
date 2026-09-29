@@ -24,7 +24,7 @@
  *    security-floor check below for why that specifically matters.
  */
 
-import { classifyDomainLanesByHeuristic } from './panel/classifierEngine';
+import { classifyDomainLanesByHeuristic } from './pathDomainContract';
 
 // ---------------------------------------------------------------------------
 // Task dimensions
@@ -92,7 +92,8 @@ export function isValidTaskId(value: unknown): value is string {
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_MAX_TASKS = 8;
-export const MAX_TASKS_HARD_CAP = 64;
+/** A plan the validator accepts must fit the completion wire format and trusted gate. */
+export const MAX_TASKS_HARD_CAP = DEFAULT_MAX_TASKS;
 export const MAX_TASK_TEXT_LENGTH = 400;
 
 // ---------------------------------------------------------------------------

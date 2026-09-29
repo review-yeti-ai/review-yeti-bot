@@ -191,6 +191,9 @@ describe('publishingWorkerConfig', () => {
     expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
       personas: 'security', review_engine: engine,
     } }) }, transport)).toThrow(/review policy could not be parsed/u);
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: engine, fallback_review_engine: 'panel',
+    } }) }, transport)).toThrow(/review policy could not be parsed/u);
   });
 
   it('falls back to panel for an unrecognized review_engine value (fail-inert, not fail-open to a guess)', () => {
