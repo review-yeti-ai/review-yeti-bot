@@ -1311,7 +1311,20 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 // stall_ms, stream total deadline) remain the only generation bound. Qualification
 // harnesses may still send an explicit max_tokens.
 const DEFAULT_MAX_OUTPUT_TOKENS = undefined;
-const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = undefined;
+// OpenRouter reserves credit against the declared completion ceiling before it
+// starts generating. Omitting max_tokens makes it reserve against DeepSeek V4
+// Flash 0731's full 131,072-token model limit, which rejected otherwise-funded
+// review requests with HTTP 402. This cap applies to both direct OpenRouter and
+// OpenRouter-labelled gateway routes; direct Ollama/Fireworks transports retain
+// their separate uncapped-first-pass contract below.
+const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 8_000;
+// The digest-pinned Review Yeti gateway exposes the reviewed `pr-reviewer`
+// alias, which Bifrost resolves to the exact OpenRouter model configured by
+// GitOps. Sending OpenRouter's vendor-qualified id directly makes Bifrost
+// interpret `deepseek` as a native provider and fail before OpenRouter is
+// reached. The workflow's fail-closed destination guard supplies this class;
+// keep the provider/model policy exact and translate only at the wire boundary.
+const DIGEST_PINNED_GATEWAY_MODEL_ALIAS = 'pr-reviewer';
 const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
 // Direct DeepSeek V4 transports expose reasoning separately, but `max_tokens`
 // still caps the complete generated sequence (reasoning plus the final JSON).
@@ -1474,6 +1487,12 @@ function resolveDirectOpenRouterModel(value) {
     : OPENROUTER_DIRECT_PRIMARY_MODEL;
 }
 
+function resolveTransportRequestModel(model, destinationClass) {
+  return String(destinationClass || '').trim().toLowerCase() === 'gateway'
+    ? DIGEST_PINNED_GATEWAY_MODEL_ALIAS
+    : model;
+}
+
 function isOpenRouterEndpoint(value) {
   return String(value || '').replace(/\/+$/, '').toLowerCase() === 'https://openrouter.ai/api/v1';
 }
@@ -1497,11 +1516,14 @@ function resolveModelConfig(env = process.env) {
   const baseUrl = explicitTransportHandoff
     ? 'https://openrouter.ai/api/v1'
     : (env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1').replace(/\/+$/, '');
-  const model = explicitTransportHandoff
+  const policyModel = explicitTransportHandoff
     ? OPENROUTER_DIRECT_PRIMARY_MODEL
     : (isOpenRouterEndpoint(baseUrl)
       ? resolveDirectOpenRouterModel(env.OPENROUTER_MODEL)
       : (env.OPENROUTER_MODEL || OPENROUTER_DIRECT_PRIMARY_MODEL));
+  const model = explicitTransportHandoff
+    ? policyModel
+    : resolveTransportRequestModel(policyModel, env.REVIEW_TRANSPORT_DESTINATION);
   const dynamicDefaultDiff = calculateSafeDiffCapacity(model);
   const maxDiffChars = parseInt(env.MAX_DIFF_CHARS || '', 10) || dynamicDefaultDiff;
 
@@ -1810,6 +1832,7 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
     actionInputs: trustedOpenRouterInputsFromEnv(env),
     trustedConfig,
   });
+  const explicitTransportHandoff = hasExplicitTransportHandoff(env);
   const localReviewerProviderIds = localProviders
     .map((provider) => {
       if (typeof provider === 'string') return provider.trim();
@@ -1820,7 +1843,12 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
   const modelConfig = {
     ...resolveModelConfig(env),
     baseUrl: openRouterPolicy.base_url,
-    model: openRouterPolicy.model,
+    // An explicit transport plan owns its per-endpoint model ids. Keep the
+    // canonical policy model at the top level in that case; translating it to
+    // the gateway-only alias would leak `pr-reviewer` into direct transports.
+    model: explicitTransportHandoff
+      ? openRouterPolicy.model
+      : resolveTransportRequestModel(openRouterPolicy.model, env.REVIEW_TRANSPORT_DESTINATION),
     openRouterPolicy,
     maxDiffChars: actionPolicy.maxDiffChars,
   };
@@ -3354,6 +3382,15 @@ function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function boundOpenRouterMaxOutputTokens(value, configuredProvider, isOpenRouterDestination = false) {
+  const normalized = normalizeMaxOutputTokens(value, undefined);
+  if (!isOpenRouterDestination && configuredProvider !== 'openrouter') return normalized;
+  return Math.min(
+    normalized ?? DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+    DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+  );
+}
+
 function assignMaxOutputTokens(requestBody, value) {
   if (value === undefined) delete requestBody.max_tokens;
   else requestBody.max_tokens = value;
@@ -4063,7 +4100,11 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       };
       assignMaxOutputTokens(
         requestBody,
-        normalizeMaxOutputTokens(configuredMaxOutputTokens, undefined),
+        boundOpenRouterMaxOutputTokens(
+          configuredMaxOutputTokens,
+          configuredProvider,
+          isOpenRouterTransport,
+        ),
       );
       if (isOpenRouterTransport) {
         requestBody.session_id = openRouterCacheIdentity;
@@ -5816,7 +5857,10 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
         method: 'POST',
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: options.model || transport.model || cfg.model,
+          // Explicit transport plans own the wire model for each endpoint.
+          // The top-level policy model remains the fallback for the implicit
+          // single-transport case only.
+          model: transport.model || options.model || cfg.model,
           messages,
           temperature: 0.1,
           max_tokens: normalizeMaxOutputTokens(options.maxOutputTokens ?? transport.maxTokens, DEFAULT_MAX_OUTPUT_TOKENS),
@@ -8455,6 +8499,8 @@ module.exports = {
   globalProviderCapacityManager,
   DEFAULT_MAX_OUTPUT_TOKENS,
   DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
+  DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
+  resolveTransportRequestModel,
   normalizeMaxOutputTokens,
   assignMaxOutputTokens,
   raiseMaxOutputTokens,

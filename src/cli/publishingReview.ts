@@ -82,7 +82,6 @@ import {
 } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
 import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
-
 import { parseChangedFiles } from '../review/changedFiles';
 import { loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
 import {
@@ -119,6 +118,31 @@ import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
+
+/**
+ * Hard ceiling for every model call made by the hosted publishing worker.
+ *
+ * Bifrost may route the `pr-reviewer` alias through OpenRouter. OpenRouter
+ * reserves credit against the request's declared completion ceiling and, when
+ * `max_tokens` is absent, uses the model's full 131,072-token output limit. A
+ * healthy funded key can therefore reject an ordinary review before generation
+ * starts. Keep the ceiling at this service boundary so persona, moderator,
+ * arbiter, and composed-engine calls all carry the same bounded contract while
+ * unrelated direct transports retain their deliberately uncapped behaviour.
+ */
+export const PUBLISHING_MAX_OUTPUT_TOKENS = 8_000;
+
+function boundedPublishingModelClient(client: ReviewModelClient): ReviewModelClient {
+  return {
+    complete(request) {
+      const requested = Number(request.maxTokens);
+      const maxTokens = Number.isSafeInteger(requested) && requested > 0
+        ? Math.min(requested, PUBLISHING_MAX_OUTPUT_TOKENS)
+        : PUBLISHING_MAX_OUTPUT_TOKENS;
+      return client.complete({ ...request, maxTokens });
+    },
+  };
+}
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
 
@@ -1440,7 +1464,9 @@ export async function runPublishingReviewWorker(
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
-    const modelClient = deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey });
+    const modelClient = boundedPublishingModelClient(
+      deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey }),
+    );
     // REL-1132: every call the engines make is metered into this run's ledger. The composed shadow
     // engine gets its own label so its cost never reads as panel cost.
     const client = meterModelClient(modelClient, tokenLedger);
