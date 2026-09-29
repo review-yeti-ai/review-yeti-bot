@@ -4081,6 +4081,48 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       })).resolves.toBeNull();
     });
 
+    it('selects the newest active run with a stable run-id tie-break', async () => {
+      const { repository, client } = await createRepository(trustedValidation, true);
+      const older = await repository.admit(sameHeadAdmission(
+        'operator-cancel-lookup-older', 1_000, { headSha: '1'.repeat(40) },
+      ));
+      const newer = await repository.admit(sameHeadAdmission(
+        'operator-cancel-lookup-newer', 1_500, { headSha: '2'.repeat(40) },
+      ));
+
+      // Admission correctly supersedes the older candidate. Recreate the
+      // legacy/race shape this lookup must nevertheless resolve deterministically.
+      await client.query(`UPDATE review_runs
+        SET status = 'queued', updated_at = CASE run_id
+          WHEN $1 THEN to_timestamp(1) WHEN $2 THEN to_timestamp(1.5) END
+        WHERE run_id = ANY($3::text[])`, [
+        older.run.runId,
+        newer.run.runId,
+        [older.run.runId, newer.run.runId],
+      ]);
+
+      const lookup = {
+        owner: newer.run.identity.owner,
+        repo: newer.run.identity.repo,
+        prNumber: newer.run.identity.prNumber,
+      };
+      await expect(repository.findActiveRunForPullRequest(lookup)).resolves.toEqual({
+        runId: newer.run.runId,
+        repositoryId: newer.run.repositoryId,
+        attempt: newer.run.attempt,
+      });
+
+      await client.query(`UPDATE review_runs SET updated_at = to_timestamp(2)
+        WHERE run_id = ANY($1::text[])`, [[older.run.runId, newer.run.runId]]);
+      const stableWinner = [older.run, newer.run]
+        .sort((left, right) => left.runId < right.runId ? -1 : 1).at(0)!;
+      await expect(repository.findActiveRunForPullRequest(lookup)).resolves.toEqual({
+        runId: stableWinner.runId,
+        repositoryId: stableWinner.repositoryId,
+        attempt: stableWinner.attempt,
+      });
+    });
+
     it('atomically retires the run, dispatch outbox, and protected gate', async () => {
       const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
       const admitted = await repository.admit(authoritativeAdmission('operator-cancel', 1_000));
