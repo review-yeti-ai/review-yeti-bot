@@ -2555,7 +2555,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
          LEFT JOIN review_worker_completions AS completion
            ON completion.run_id = runs.run_id
           AND completion.execution_attempt = $2
-          AND runs.status = 'succeeded'
+          AND runs.status IN ('succeeded', 'failed')
           AND runs.result_digest = completion.content_digest
           AND EXISTS (
             SELECT 1 FROM review_gate_attempts AS gate
@@ -2564,8 +2564,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                AND gate.worker_result_digest = completion.content_digest
                AND gate.creation_state = 'bound'
                AND gate.current_attempt
-               AND gate.desired_state = 'success'
-               AND gate.decision->>'status' = 'success'
+               AND gate.desired_state IN ('success', 'failure', 'failed')
+               AND gate.decision->>'status' IN ('success', 'failure', 'failed')
           )
         WHERE runs.run_id = $1`,
       [runId, executionAttempt],

@@ -389,7 +389,8 @@ func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
 	// must come from the authenticated exact-attempt service lookup.
 	if review.Spec.PublicationMode == job.PublicationModeAppGate && worker != nil && worker.Status.Succeeded > 0 {
 		if job.IsPrepWorkerJob(worker) ||
-			(isTerminalPhase(review.Status.Phase) && !failurePublicationPending(review)) {
+			(isTerminalPhase(review.Status.Phase) && !failurePublicationPending(review)) ||
+			workerEndedSuperseded(review) {
 			return false, nil
 		}
 		receipt, err := r.fetchAppGateReceipt(ctx, review)
@@ -429,7 +430,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
 	// Never synthesize a fake ReceiptDigest for successful jobs or when phase is Succeeded.
 	// Genuine receipt annotations are strictly required; missing annotations must leave
 	// ReceiptDigest empty so AssertCanPromoteToSucceeded catches ErrMissingReceiptAudit and fails closed.
-	if (worker != nil && worker.Status.Succeeded > 0) || review.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+	if ((worker != nil && worker.Status.Succeeded > 0) && !workerEndedSuperseded(review)) || review.Status.Phase == reviewv1alpha2.PhaseSucceeded {
 		return false, nil
 	}
 
