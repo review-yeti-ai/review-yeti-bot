@@ -847,10 +847,11 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
             return createFakeResponse(JSON.stringify({ tool: 'knowledge_search', args: { query: 'buffer' } }));
           }
 
-          if (text.includes('[PI_TOOL_RESULT]')) {
+          if (text.includes('[PI_TOOL_RESULT]') || text.includes('TASK_FINALIZATION')) {
+            const evidence = extractAllMessagesText(payload.messages);
             workToolCaptured = true;
-            expect(text).toContain('ADR-0564');
-            expect(text).toContain('[SCOPE: governed-knowledge-adr | EXHAUSTIVE: true]');
+            expect(evidence).toContain('ADR-0564');
+            expect(evidence).toContain('[SCOPE: governed-knowledge-adr | EXHAUSTIVE: true]');
             return createFakeResponse(
               JSON.stringify({
                 nonce,
@@ -970,7 +971,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
               );
             }
 
-            if (text.includes('WORK TURN')) {
+            if (text.includes('WORK TURN') || text.includes('TASK_FINALIZATION')) {
               return createFakeResponse(JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
             }
 
