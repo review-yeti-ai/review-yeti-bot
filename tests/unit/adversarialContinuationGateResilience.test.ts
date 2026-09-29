@@ -165,6 +165,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
         db: mockDb,
         commentPublisher: mockCommentPublisher,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
@@ -292,6 +293,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
         db: mockDb,
         commentPublisher: mockCommentPublisher,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
@@ -323,6 +325,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
           db: hungDb,
           timeoutMs,
           suppressExit: true,
+          env: {},
         }),
       ).rejects.toThrow(/Continuation execution exceeded 80ms timeout guard/);
 
@@ -372,6 +375,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
           checkClient: hungCheckClient,
           timeoutMs,
           suppressExit: true,
+          env: {},
         }),
       ).rejects.toThrow(/Continuation execution exceeded 80ms timeout guard/);
 
@@ -419,6 +423,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
           commentPublisher: hungCommentPublisher,
           timeoutMs,
           suppressExit: true,
+          env: {},
         }),
       ).rejects.toThrow(/Continuation execution exceeded 80ms timeout guard/);
 
@@ -580,6 +585,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
         db: mockDb,
         checkClient: mockCheckClient,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import yaml from 'js-yaml';
 
 const root = process.cwd();
 const canonicalPath = path.join(root, '.github/workflows/release.yml');
@@ -49,6 +50,23 @@ describe('release workflow contract', () => {
       'REVIEW_YETI_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres',
     );
     expect(releaseJob).toContain('pg_isready -U postgres -d postgres');
+  });
+
+  it('exposes the release token only to publishing steps', () => {
+    const workflow = yaml.load(fs.readFileSync(canonicalPath, 'utf8')) as any;
+    const releaseJob = workflow.jobs['validate-and-release'];
+    expect(releaseJob.env).not.toHaveProperty('GH_TOKEN');
+    expect(releaseJob.env).not.toHaveProperty('GITHUB_TOKEN');
+
+    for (const name of [
+      'Ensure GitHub Release Exists',
+      'Upload Benchmark Matrix Downloadable Assets',
+      'Embed Summary Benchmark Table into Release Notes',
+    ]) {
+      const step = releaseJob.steps.find((candidate: any) => candidate.name === name);
+      expect(step, name).toBeDefined();
+      expect(step.env.GH_TOKEN).toBe('${{ secrets.GITHUB_TOKEN }}');
+    }
   });
 
   it('promotes rolling v1 only downstream of the canonical validated release job', () => {
