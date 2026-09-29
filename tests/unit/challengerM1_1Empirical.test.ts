@@ -698,7 +698,10 @@ describe('Challenger M1-1: Empirical Stress & Adversarial Verification', () => {
         status: 'ignored',
         reason: 'opt_out_label_present',
       }));
-      expect(cancelRunsForPullRequest).toHaveBeenCalledWith(614653796, 42, 'opt_out_label', BASE_NOW);
+      expect(cancelRunsForPullRequest).toHaveBeenCalledWith({
+        repositoryId: 614653796, prNumber: 42, cancelReason: 'opt_out_label',
+        gateReason: 'review-opted-out', now: BASE_NOW,
+      });
       expect(admit).not.toHaveBeenCalled();
     });
 

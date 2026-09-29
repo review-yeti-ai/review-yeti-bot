@@ -36,6 +36,10 @@ import {
   type ReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryRequest,
 } from '../review/reviewGenerationRecovery';
+import {
+  isReviewGateCancellationReason,
+  type ReviewGateCancellationReason,
+} from '../review/reviewGatePolicy';
 
 interface QueryResult {
   rows: any[];
@@ -365,6 +369,17 @@ export type AbandonedRunReconciliation =
   | { reconciled: false }
   | { reconciled: true; outcome: AbandonedRunReconciliationOutcome };
 
+export interface ActiveReviewRunForPullRequest {
+  runId: string;
+  repositoryId: number;
+  attempt: number;
+}
+
+export interface CancelActiveReviewRunsOutcome {
+  activeRun: ActiveReviewRunForPullRequest;
+  cancelledRunIds: string[];
+}
+
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
@@ -437,14 +452,21 @@ export interface ReviewDispatchRepository {
     headSha?: string,
     now?: number,
   ): Promise<{ advanced: boolean; runId?: string }>;
+  /** Select and cancel the active attempt behind one PR lock and transaction. */
+  cancelActiveRunsForPullRequest(input: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    cancelReason: string;
+    gateReason: ReviewGateCancellationReason;
+    now?: number;
+  }): Promise<CancelActiveReviewRunsOutcome | null>;
   /**
    * Cancel in-flight reviews for a pull request (e.g. converted to draft or opt-out label added).
    */
   cancelRunsForPullRequest(
-    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string; now?: number },
-    prNumber?: number,
-    cancelReason?: string,
-    now?: number,
+    input: { repositoryId: number; prNumber: number; cancelReason: string;
+      gateReason: ReviewGateCancellationReason; now?: number },
   ): Promise<{ cancelledRunIds: string[] }>;
   /**
    * Mark cancellation as propagated to Kubernetes / worker pod for a specific execution attempt.
@@ -1520,27 +1542,155 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }
   }
 
-  async cancelRunsForPullRequest(
-    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string; now?: number },
-    prNumberArg?: number,
-    cancelReasonArg?: string,
-    nowArg?: number,
-  ): Promise<{ cancelledRunIds: string[] }> {
-    let repositoryId: number;
-    let prNumber: number;
-    let cancelReason: string;
-    let now: number;
-    if (typeof repositoryIdOrInput === 'object') {
-      repositoryId = repositoryIdOrInput.repositoryId;
-      prNumber = repositoryIdOrInput.prNumber;
-      cancelReason = repositoryIdOrInput.cancelReason;
-      now = repositoryIdOrInput.now ?? Date.now();
-    } else {
-      repositoryId = repositoryIdOrInput;
-      prNumber = prNumberArg!;
-      cancelReason = cancelReasonArg!;
-      now = nowArg ?? Date.now();
+  async cancelActiveRunsForPullRequest(input: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+    cancelReason: string;
+    gateReason: ReviewGateCancellationReason;
+    now?: number;
+  }): Promise<CancelActiveReviewRunsOutcome | null> {
+    if (!input.owner.trim() || !input.repo.trim() || !Number.isSafeInteger(input.prNumber)
+      || input.prNumber <= 0 || !input.cancelReason.trim()
+      || !isReviewGateCancellationReason(input.gateReason)) {
+      throw new Error('Invalid active-run cancellation request');
     }
+    const now = input.now ?? Date.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const candidate = await client.query(
+        `SELECT runs.repository_id
+           FROM review_runs runs
+           JOIN review_dispatch_outbox outbox USING (run_id)
+          WHERE runs.owner = $1 AND runs.repo = $2 AND runs.pr_number = $3
+            AND runs.status IN ('queued', 'running', 'publishing')
+          ORDER BY runs.updated_at DESC, runs.run_id
+          LIMIT 1`,
+        [input.owner, input.repo, input.prNumber],
+      );
+      if (!candidate.rows[0]) {
+        await client.query('COMMIT');
+        return null;
+      }
+      const repositoryId = Number(candidate.rows[0].repository_id);
+      if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+        throw new Error('Active review run repository identity is invalid');
+      }
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        reviewDispatchPrLockKey(repositoryId, input.prNumber),
+      ]);
+      const selected = await client.query(
+        `SELECT runs.run_id, runs.repository_id, runs.attempt
+           FROM review_runs runs
+           JOIN review_dispatch_outbox outbox USING (run_id)
+          WHERE runs.owner = $1 AND runs.repo = $2 AND runs.pr_number = $3
+            AND runs.repository_id = $4
+            AND runs.status IN ('queued', 'running', 'publishing')
+          ORDER BY runs.updated_at DESC, runs.run_id
+          LIMIT 1
+          FOR UPDATE OF runs, outbox`,
+        [input.owner, input.repo, input.prNumber, repositoryId],
+      );
+      const row = selected.rows[0];
+      if (!row) {
+        await client.query('COMMIT');
+        return null;
+      }
+      const activeRun = {
+        runId: String(row.run_id),
+        repositoryId: Number(row.repository_id),
+        attempt: Number(row.attempt ?? 0),
+      };
+      const cancelledRunIds = await this.cancelRunsForPullRequestInTransaction(client, {
+        repositoryId,
+        prNumber: input.prNumber,
+        cancelReason: input.cancelReason,
+        gateReason: input.gateReason,
+        now,
+      });
+      if (!cancelledRunIds.includes(activeRun.runId)) {
+        throw new Error('Atomic cancellation omitted its selected active run');
+      }
+      await client.query('COMMIT');
+      return { activeRun, cancelledRunIds };
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async cancelRunsForPullRequestInTransaction(client: Queryable, input: {
+    repositoryId: number;
+    prNumber: number;
+    cancelReason: string;
+    gateReason: ReviewGateCancellationReason;
+    now: number;
+  }): Promise<string[]> {
+    const result = await client.query(
+      `WITH candidate AS (
+         SELECT runs.run_id
+           FROM review_runs runs
+           JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+          WHERE runs.repository_id = $1 AND runs.pr_number = $2
+            AND runs.status IN ('queued', 'running', 'publishing')
+       ), cancelled AS (
+         UPDATE review_runs AS runs
+            SET status = 'cancelled', stage = 'complete',
+                error_text = $4::text, lease_owner = NULL, lease_expires_at = NULL,
+                cancel_requested_at = to_timestamp($3 / 1000.0),
+                cancel_reason = $4::text,
+                updated_at = to_timestamp($3 / 1000.0)
+           FROM candidate
+          WHERE runs.run_id = candidate.run_id
+         RETURNING runs.run_id
+       )
+       UPDATE review_dispatch_outbox AS outbox
+          SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+              cancel_requested_at = to_timestamp($3 / 1000.0),
+              cancel_reason = $4::text,
+              cancel_propagated_at = CASE WHEN outbox.projection_name IS NULL THEN to_timestamp($3 / 1000.0) ELSE NULL END,
+              updated_at = to_timestamp($3 / 1000.0)
+         FROM cancelled
+        WHERE outbox.run_id = cancelled.run_id
+       RETURNING outbox.run_id, outbox.cancel_propagated_at`,
+      [input.repositoryId, input.prNumber, input.now, input.cancelReason],
+    );
+    for (const row of result.rows as Record<string, unknown>[]) {
+      await PostgresReviewGateRepository.cancelForUnreviewablePullRequestInTransaction(
+        client, String(row.run_id), input.now, input.gateReason,
+      );
+      if (row.cancel_propagated_at) {
+        await client.query(
+          `UPDATE review_runs SET cancel_propagated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
+          [row.run_id, input.now],
+        );
+      }
+      await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.cancelled', input.now, {
+        stage: 'cancelled',
+        terminal_class: 'cancelled',
+        // The operator rationale remains in review_runs/review_dispatch_outbox. The closed
+        // lifecycle v1 contract deliberately excludes free-form text from event payloads.
+        retry_class: input.gateReason,
+      });
+    }
+    return result.rows.map((row: Record<string, unknown>) => String(row.run_id));
+  }
+
+  async cancelRunsForPullRequest(input: {
+    repositoryId: number;
+    prNumber: number;
+    cancelReason: string;
+    gateReason: ReviewGateCancellationReason;
+    now?: number;
+  }): Promise<{ cancelledRunIds: string[] }> {
+    const { repositoryId, prNumber, cancelReason, gateReason } = input;
+    if (!isReviewGateCancellationReason(gateReason)) {
+      throw new Error('Invalid cancellation gate reason');
+    }
+    const now = input.now ?? Date.now();
 
     const client = await this.pool.connect();
     try {
@@ -1548,50 +1698,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
         reviewDispatchPrLockKey(repositoryId, prNumber),
       ]);
-      const result = await client.query(
-        `WITH candidate AS (
-           SELECT runs.run_id
-             FROM review_runs runs
-             JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
-            WHERE runs.repository_id = $1 AND runs.pr_number = $2
-              AND runs.status IN ('queued', 'running', 'publishing')
-         ), cancelled AS (
-           UPDATE review_runs AS runs
-              SET status = 'cancelled', stage = 'complete',
-                  error_text = $4::text, lease_owner = NULL, lease_expires_at = NULL,
-                  cancel_requested_at = to_timestamp($3 / 1000.0),
-                  cancel_reason = $4::text,
-                  updated_at = to_timestamp($3 / 1000.0)
-             FROM candidate
-            WHERE runs.run_id = candidate.run_id
-           RETURNING runs.run_id
-         )
-         UPDATE review_dispatch_outbox AS outbox
-            SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
-                cancel_requested_at = to_timestamp($3 / 1000.0),
-                cancel_reason = $4::text,
-                cancel_propagated_at = CASE WHEN outbox.projection_name IS NULL THEN to_timestamp($3 / 1000.0) ELSE NULL END,
-                updated_at = to_timestamp($3 / 1000.0)
-           FROM cancelled
-          WHERE outbox.run_id = cancelled.run_id
-         RETURNING outbox.run_id, outbox.cancel_propagated_at`,
-        [repositoryId, prNumber, now, cancelReason],
-      );
-      for (const row of result.rows as Record<string, unknown>[]) {
-        if (row.cancel_propagated_at) {
-          await client.query(
-            `UPDATE review_runs SET cancel_propagated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
-            [row.run_id, now],
-          );
-        }
-        await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.cancelled', now, {
-          stage: 'cancelled',
-          terminal_class: 'cancelled',
-          cancel_reason: cancelReason,
-        });
-      }
+      const cancelledRunIds = await this.cancelRunsForPullRequestInTransaction(client, {
+        repositoryId, prNumber, cancelReason, gateReason, now,
+      });
       await client.query('COMMIT');
-      return { cancelledRunIds: result.rows.map((row: Record<string, unknown>) => String(row.run_id)) };
+      return { cancelledRunIds };
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;

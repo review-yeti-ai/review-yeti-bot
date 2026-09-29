@@ -758,18 +758,23 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
   // SUITE 7: cancel_review Tool Execution
   // =========================================================================
   describe('Suite 7: cancel_review Tool Execution', () => {
-    it('TC-CANC-001: Cancels active review run and signals pod reaping', async () => {
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [{ run_id: 'run_to_cancel', attempt: 1, lease_owner: 'review-worker-pr-44-xyz', status: 'running' }],
-        })
-        .mockResolvedValueOnce({ rows: [] }) // update review_runs
-        .mockResolvedValueOnce({ rows: [] }); // update outbox
+    it('TC-CANC-008: Fails closed when the transactional repository is unavailable', async () => {
+      const tool = createCancelReviewTool();
 
+      await expect(tool.execute({
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
+      })).rejects.toThrow(/transactional dispatch repository is required/);
+    });
+
+    it('TC-CANC-001: Cancels active review run and signals pod reaping', async () => {
       const mockPatch = vi.fn(async () => ({ reapedPod: 'review-worker-pr-44-xyz', success: true }));
+      const cancelActiveRunsForPullRequest = vi.fn(async () => ({
+        activeRun: { runId: 'run_to_cancel', repositoryId: 123, attempt: 1 },
+        cancelledRunIds: ['run_to_cancel'],
+      }));
 
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
+        cancellationRepository: { cancelActiveRunsForPullRequest },
         patchCancellation: mockPatch,
       });
 
@@ -785,14 +790,70 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       expect(data.attempt_id).toBe('review-attempt-44-1');
       expect(data.reaped_pod).toBe('review-worker-pr-44-xyz');
       expect(data.message).toContain('Superseded by new commit push');
+      expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith({
+        owner: 'exampleorg',
+        repo: 'example-api',
+        prNumber: 44,
+        cancelReason: 'Superseded by new commit push',
+        gateReason: 'operator-cancelled',
+        now: expect.any(Number),
+      });
       expect(mockPatch).toHaveBeenCalled();
     });
 
-    it('TC-CANC-002: Throws error when canceling non-existent or inactive PR run', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [] });
-
+    it.each([
+      { label: 'cleanup patch reports failure', patchMode: 'failure' },
+      { label: 'cleanup patch throws', patchMode: 'throws' },
+      { label: 'cleanup patch is unavailable', patchMode: 'unavailable' },
+    ])('TC-CANC-006: Keeps cleanup queued when $label', async ({ patchMode }) => {
+      const cancelActiveRunsForPullRequest = vi.fn(async () => ({
+        activeRun: { runId: 'run_to_cancel', repositoryId: 123, attempt: 1 },
+        cancelledRunIds: ['run_to_cancel'],
+      }));
+      const mockPatch = vi.fn(async () => {
+        if (patchMode === 'throws') throw new Error('Kubernetes API unavailable');
+        return { success: false, reapedPod: 'worker-must-not-be-reported' };
+      });
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
+        cancellationRepository: { cancelActiveRunsForPullRequest },
+        ...(patchMode === 'unavailable' ? {} : { patchCancellation: mockPatch }),
+      });
+
+      const result = await tool.execute({
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
+      });
+      const data = JSON.parse((result.content[0] as any).text);
+      expect(data.reaped_pod).toBeUndefined();
+      expect(data.message).toContain('worker cleanup is queued');
+      expect(data.message).not.toContain('cleanup confirmed');
+      expect(mockPatch).toHaveBeenCalledTimes(patchMode === 'unavailable' ? 0 : 1);
+    });
+
+    it('TC-CANC-003: Propagates an atomic cancellation repository failure', async () => {
+      const cancelActiveRunsForPullRequest = vi.fn(async () => {
+        throw new Error('review database unavailable');
+      });
+      const tool = createCancelReviewTool({
+        cancellationRepository: { cancelActiveRunsForPullRequest },
+      });
+
+      await expect(tool.execute({
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
+      })).rejects.toThrow(/review database unavailable/);
+    });
+
+    it('TC-CANC-004: Rejects an unbounded audit rationale', async () => {
+      const tool = createCancelReviewTool();
+
+      await expect(tool.execute({
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'x'.repeat(513),
+      })).rejects.toThrow(/reason must be at most 512 characters/);
+    });
+
+    it('TC-CANC-002: Throws error when canceling non-existent or inactive PR run', async () => {
+      const cancelActiveRunsForPullRequest = vi.fn(async () => null);
+      const tool = createCancelReviewTool({
+        cancellationRepository: { cancelActiveRunsForPullRequest },
       });
 
       await expect(
@@ -803,6 +864,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           reason: 'Cleanup',
         })
       ).rejects.toThrow(/Not Found: No active review run found/);
+      expect(cancelActiveRunsForPullRequest).toHaveBeenCalledOnce();
     });
   });
 

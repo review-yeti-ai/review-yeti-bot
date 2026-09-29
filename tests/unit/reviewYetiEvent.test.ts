@@ -126,6 +126,19 @@ describe('review-yeti-event.v1 parser', () => {
     }
   });
 
+  it('rejects free-form cancellation rationale from the closed lifecycle event contract', () => {
+    expect(() => parseReviewYetiEventV1({
+      ...validLifecycleEvent(),
+      event_kind: 'review.lifecycle.cancelled',
+      data: {
+        stage: 'cancelled',
+        terminal_class: 'cancelled',
+        retry_class: 'operator-cancelled',
+        cancel_reason: 'operator supplied free-form rationale',
+      },
+    })).toThrow();
+  });
+
   it('rejects an envelope whose serialized representation exceeds 16 KiB', () => {
     const oversized = {
       ...validProgressEvent(),

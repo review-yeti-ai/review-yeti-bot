@@ -168,7 +168,10 @@ export function createDefaultToolRegistry(options?: {
     admissionRepository: options?.admissionRepository ?? options?.triggerDeps?.admissionRepository,
     ...options?.triggerDeps,
   }));
-  registry.registerTool(createCancelReviewTool({ queryableDatabase: db, ...options?.cancelDeps }));
+  registry.registerTool(createCancelReviewTool({
+    cancellationRepository: options?.admissionRepository ?? options?.triggerDeps?.admissionRepository,
+    ...options?.cancelDeps,
+  }));
   registry.registerTool(createWatchReviewProgressTool(options?.watchDeps));
   registry.registerTool(createPreflightDiffReviewTool({
     ...(modelClient ? { modelClient } : {}),
