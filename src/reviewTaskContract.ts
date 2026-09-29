@@ -81,7 +81,7 @@ const SECURITY_DIMENSION: TaskDimension = 'security';
  * hand-maintained copies would drift, and the drift would only surface as a valid plan being
  * rejected as an invalid roster.
  */
-const TASK_ID_PATTERN = /^[a-z][a-z0-9_-]{0,127}$/u;
+export const TASK_ID_PATTERN = /^[a-z][a-z0-9_-]{0,127}$/u;
 
 export function isValidTaskId(value: unknown): value is string {
   return typeof value === 'string' && TASK_ID_PATTERN.test(value);

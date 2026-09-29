@@ -11,7 +11,7 @@ import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
-import { DEFAULT_MAX_TASKS, TASK_DIMENSIONS, validateTaskPlan } from '../reviewTaskContract';
+import { DEFAULT_MAX_TASKS, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan } from '../reviewTaskContract';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -215,7 +215,7 @@ export function buildPersonaTelemetryPayload(lane: {
 }
 
 const personaSchema = z.object({
-  id: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u),
+  id: z.string().regex(TASK_ID_PATTERN),
   decision: z.enum(['APPROVE', 'FINDINGS', 'ERROR']),
   status: z.enum(['COMPLETE', 'ERROR']).optional(),
   /** Bounded operational classification only; provider text/transcripts never cross this boundary. */
@@ -264,11 +264,11 @@ const resultSchema = z.object({
   completedAt: z.string().datetime({ offset: true }),
   personas: z.array(personaSchema).max(MAX_PERSONAS),
   taskPlan: z.array(z.object({
-    id: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u),
+    id: z.string().regex(TASK_ID_PATTERN),
     dimension: z.enum(TASK_DIMENSIONS),
     paths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(MAX_CHANGED_FILES),
-    question: z.string().min(1).max(400),
-    rationale: z.string().min(1).max(400),
+    question: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
+    rationale: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
   }).strict()).min(1).max(DEFAULT_MAX_TASKS).optional(),
   coverageComplete: z.boolean(),
   quorumSatisfied: z.boolean(),
@@ -312,7 +312,7 @@ const resultSchema = z.object({
    * every roster lane completed (`storedEvidenceShipCompleteReason`); without it the prior is
    * refused.
    */
-  roster: z.array(z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u)).min(1).max(MAX_PERSONAS)
+  roster: z.array(z.string().regex(TASK_ID_PATTERN)).min(1).max(MAX_PERSONAS)
     .refine((ids) => new Set(ids).size === ids.length, 'roster lane ids must be unique').optional(),
   /**
    * OPTIONAL, additive (REL-1139, `REVIEW_YETI_SKIP_EMPTY_MODERATION`, ct-meta ADR 0687): the
@@ -505,7 +505,7 @@ function validateCoverageContract(contract: TrustedReviewCoverageContract): stri
     throw new WorkerReviewCompletionError('invalid-contract', 'trusted expected persona IDs are required and bounded');
   }
   const expected = contract.expectedPersonaIds.map((id) => {
-    if (typeof id !== 'string' || !/^[a-z][a-z0-9_-]{0,127}$/u.test(id)) {
+    if (typeof id !== 'string' || !TASK_ID_PATTERN.test(id)) {
       throw new WorkerReviewCompletionError('invalid-contract', 'trusted expected persona ID is invalid');
     }
     return id;
