@@ -11,7 +11,7 @@ import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
-import { DEFAULT_MAX_TASKS, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan } from '../reviewTaskContract';
+import { DEFAULT_MAX_TASKS, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -653,13 +653,7 @@ export function deriveStoredCompletionVerdict(
   if (!Number.isSafeInteger(trusted.expectedLanes) || trusted.expectedLanes <= 0) return null;
   const composed = trusted.reviewEngine === 'composed';
   if (composed) {
-    const plan = result.taskPlan;
-    if (!plan || plan.length !== trusted.expectedLanes
-      || new Set(plan.map((task) => task.id)).size !== plan.length) return null;
-    const requiredIds = new Set(plan.map((task) => task.id));
-    if (result.personas.some((persona) => persona.evidenceSource !== 'shadow' && !requiredIds.has(persona.id))) {
-      return null;
-    }
+    if (!composedPlanLaneIds(result.taskPlan, result.personas, trusted.expectedLanes).valid) return null;
   } else if (result.taskPlan) {
     return null;
   }
@@ -669,6 +663,27 @@ export function deriveStoredCompletionVerdict(
   const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
     trusted.coverageComplete === true && result.coverageComplete, undefined, composed);
   return arbitration.valid ? arbitration.canonical : null;
+}
+
+/** Same plan-to-lane admission for live completions and stored prior rechecks. */
+function composedPlanLaneIds(
+  plan: readonly Pick<ReviewTask, 'id'>[] | undefined,
+  personas: readonly WorkerReviewPersonaEvidence[],
+  expectedLanes: number,
+): { valid: true; ids: string[] } | { valid: false; message: string } {
+  if (!plan || plan.length !== expectedLanes) {
+    return { valid: false, message: 'composed task plan lane count mismatch' };
+  }
+  const ids = plan.map((task) => task.id);
+  const allowed = new Set(ids);
+  if (allowed.size !== ids.length) return { valid: false, message: 'duplicate composed task id' };
+  const seen = new Set<string>();
+  for (const persona of personas) {
+    if (seen.has(persona.id)) return { valid: false, message: `duplicate persona lane: ${persona.id}` };
+    if (!allowed.has(persona.id)) return { valid: false, message: `unknown persona lane: ${persona.id}` };
+    seen.add(persona.id);
+  }
+  return { valid: true, ids };
 }
 
 /**
@@ -943,7 +958,9 @@ export function deriveCanonicalWorkerReviewEvidence(
     if (!validatedPlan.valid || canonicalJson(validatedPlan.tasks) !== canonicalJson(completion.result.taskPlan)) {
       return invalidEvidence('composed task plan does not cover the trusted changed files');
     }
-    requiredIds = validatedPlan.tasks.map((task) => task.id);
+    const admittedIds = composedPlanLaneIds(validatedPlan.tasks, completion.result.personas, validatedPlan.tasks.length);
+    if (!admittedIds.valid) return invalidEvidence(admittedIds.message);
+    requiredIds = admittedIds.ids;
   } else if (completion.result.taskPlan) {
     return invalidEvidence('panel completion cannot claim a composed task plan');
   }
