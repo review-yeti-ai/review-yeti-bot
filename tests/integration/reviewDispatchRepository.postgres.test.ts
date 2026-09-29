@@ -4057,6 +4057,85 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
   });
 
   describe('cancelRunsForPullRequest protected gate settlement (REL-1188)', () => {
+    it.each([
+      { owner: '', label: 'empty owner' },
+      { repo: ' ', label: 'empty repository' },
+      { prNumber: 0, label: 'non-positive pull request number' },
+      { cancelReason: '', label: 'empty operator reason' },
+      { gateReason: 'bogus' as any, label: 'out-of-contract gate reason' },
+    ])('rejects $label before mutating cancellation state', async ({ label, ...patch }) => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission(`invalid-active-cancel-${label.replaceAll(' ', '-')}`, 1_000));
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+        ...patch,
+      })).rejects.toThrow('Invalid active-run cancellation request');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .some((event) => event.eventKind === 'review.lifecycle.cancelled')).toBe(false);
+    });
+
+    it('rejects a corrupted active-run repository identity without mutating cancellation state', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('invalid-active-cancel-repository-id', 1_000));
+      await client.query('UPDATE review_runs SET repository_id = 0 WHERE run_id = $1', [admitted.run.runId]);
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).rejects.toThrow('Active review run repository identity is invalid');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+    });
+
+    it('rolls back when the atomic cancellation outcome omits its selected run', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('atomic-cancel-invariant', 1_000));
+      await client.query(`CREATE FUNCTION suppress_atomic_cancel_outbox() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.status = 'terminal' THEN RETURN NULL; END IF;
+          RETURN NEW;
+        END $$`);
+      await client.query(`CREATE TRIGGER suppress_atomic_cancel_outbox BEFORE UPDATE ON review_dispatch_outbox
+        FOR EACH ROW EXECUTE FUNCTION suppress_atomic_cancel_outbox()`);
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).rejects.toThrow('Atomic cancellation omitted its selected active run');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .some((event) => event.eventKind === 'review.lifecycle.cancelled')).toBe(false);
+    });
+
     it('atomically returns the active run selected for operator cancellation', async () => {
       const { repository, client } = await createRepository(trustedValidation, true);
       const admitted = await repository.admit(authoritativeAdmission('operator-cancel-lookup', 1_000));
