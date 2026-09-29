@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.6...v1.97.7) (2026-09-29)
+
+
+### Bug Fixes
+
+* **review:** honor DSH composed fallback in DOKS gate ([#1124](https://github.com/review-yeti-ai/review-yeti-bot/issues/1124)) ([e5ece67](https://github.com/review-yeti-ai/review-yeti-bot/commit/e5ece67ca5362b45828adab59e955d4e940d67a8))
+
 ## [1.97.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.5...v1.97.6) (2026-09-29)
 
 
