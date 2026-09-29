@@ -208,6 +208,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
         commentPublisher: commentPublisherMock,
         checkClient: checkClientMock,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
@@ -371,6 +372,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
         commentPublisher: commentPublisherMock,
         checkClient: checkClientMock,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
@@ -407,6 +409,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
           db: mockDb,
           timeoutMs: 50, // 50ms timeout
           suppressExit: true,
+          env: {},
         }),
       ).rejects.toThrow(/timeout guard/);
     });
@@ -447,6 +450,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
         headSha: 'sha-persist',
         db: mockDb,
         suppressExit: true,
+        env: {},
       });
 
       expect(result.ok).toBe(true);
