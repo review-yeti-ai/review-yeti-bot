@@ -557,6 +557,25 @@ export class GitHubInstallationClient {
     return Number(data.id);
   }
 
+  async findGateCheck(
+    owner: string,
+    repo: string,
+    headSha: string,
+  ): Promise<{ id: number; status: string; conclusion?: string } | undefined> {
+    const query = new URLSearchParams({
+      check_name: CHECK_CONTEXT_GATE,
+      filter: 'all',
+      per_page: '10',
+    });
+    const result = await this.request(`/repos/${owner}/${repo}/commits/${encodeURIComponent(headSha)}/check-runs?${query}`);
+    const checkRuns = Array.isArray(result?.check_runs) ? result.check_runs : [];
+    const match = checkRuns.find((c: any) => c.name === CHECK_CONTEXT_GATE && c.head_sha === headSha);
+    if (match && Number.isSafeInteger(match.id)) {
+      return { id: Number(match.id), status: match.status, conclusion: match.conclusion };
+    }
+    return undefined;
+  }
+
   async publishGateCheck(
     owner: string,
     repo: string,
@@ -564,6 +583,7 @@ export class GitHubInstallationClient {
     options: GateCheckOptions,
   ): Promise<number> {
     const title = validateCheckRunTitle(options.title);
+    const reconcile = () => this.findGateCheck(owner, repo, headSha);
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
@@ -579,7 +599,7 @@ export class GitHubInstallationClient {
         },
         ...(options.detailsUrl ? { details_url: options.detailsUrl } : {}),
       }),
-    });
+    }, { reconcile });
     return Number(data.id);
   }
 

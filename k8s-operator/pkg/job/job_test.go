@@ -376,13 +376,13 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	}
 	requestCPU := container.Resources.Requests[corev1.ResourceCPU]
 	requestMemory := container.Resources.Requests[corev1.ResourceMemory]
-	if got := requestCPU.String(); got != "250m" || requestMemory.String() != "512Mi" {
-		t.Fatalf("resource requests = %v, want 250m/512Mi", container.Resources.Requests)
+	if got := requestCPU.String(); got != "50m" || requestMemory.String() != "96Mi" {
+		t.Fatalf("resource requests = %v, want 50m/96Mi", container.Resources.Requests)
 	}
 	limitCPU := container.Resources.Limits[corev1.ResourceCPU]
 	limitMemory := container.Resources.Limits[corev1.ResourceMemory]
-	if got := limitCPU.String(); got != "1" || limitMemory.String() != "1536Mi" {
-		t.Fatalf("resource limits = %v, want 1/1536Mi", container.Resources.Limits)
+	if got := limitCPU.String(); got != "1" || limitMemory.String() != "256Mi" {
+		t.Fatalf("resource limits = %v, want 1/256Mi", container.Resources.Limits)
 	}
 	if envValue(container, "REVIEW_RECEIPT_ONLY") != "true" || envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
 		t.Fatalf("receipt-only env missing: %#v", container.Env)
@@ -682,7 +682,7 @@ func TestBuildWorkerJobNeverExtendsTerminalDeadline(t *testing.T) {
 	}
 }
 
-func TestBuildWorkerJobRequiresCurrentRunLeaseAndExactPVC(t *testing.T) {
+func TestBuildWorkerJobRequiresCurrentRunLease(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
 	review.Spec.RunnerMode = "generic"
@@ -696,7 +696,6 @@ func TestBuildWorkerJobRequiresCurrentRunLeaseAndExactPVC(t *testing.T) {
 			past := metav1.NewMicroTime(now.Add(-17 * time.Minute))
 			input.WorkspaceLease.Lease.Spec.RenewTime = &past
 		}},
-		{name: "wrong pvc", mutate: func(input *job.Input) { input.WorkspacePVCName = "ct-review-ws-wrong" }},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1089,36 +1088,37 @@ func TestBuildWorkerJobPrebakedCustomStorageSizeFromEnv(t *testing.T) {
 	}
 }
 
-func TestBuildWorkerJobGenericRequiresPVC(t *testing.T) {
+func TestBuildWorkerJobGenericUsesEmptyDir(t *testing.T) {
 	now := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
 	review.Spec.RunnerMode = "generic"
 
-	// Valid PVC name succeeds
+	// Valid PVC name succeeds with EmptyDir
 	validInput := buildInput(review, now)
 	result, err := job.BuildWorkerJob(validInput)
 	if err != nil {
-		t.Fatalf("BuildWorkerJob failed with valid generic PVC: %v", err)
+		t.Fatalf("BuildWorkerJob failed with valid generic input: %v", err)
 	}
 	workspaceVol := result.Spec.Template.Spec.Volumes[0]
 	if workspaceVol.Name != "workspace" {
 		t.Fatalf("Volumes[0].Name = %q, want workspace", workspaceVol.Name)
 	}
-	if workspaceVol.PersistentVolumeClaim == nil {
-		t.Fatal("Volumes[0].PersistentVolumeClaim is nil, want PVC for generic")
+	if workspaceVol.EmptyDir == nil {
+		t.Fatal("Volumes[0].EmptyDir is nil, want EmptyDir for generic")
 	}
-	if workspaceVol.PersistentVolumeClaim.ClaimName != workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber) {
-		t.Fatalf("ClaimName = %q, want %q", workspaceVol.PersistentVolumeClaim.ClaimName, workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber))
-	}
-	if workspaceVol.EmptyDir != nil {
-		t.Fatal("Volumes[0].EmptyDir is non-nil, want nil for generic")
+	if workspaceVol.PersistentVolumeClaim != nil {
+		t.Fatal("Volumes[0].PersistentVolumeClaim is non-nil, want nil for generic")
 	}
 
-	// Empty PVC name fails
-	invalidInput := buildInput(review, now)
-	invalidInput.WorkspacePVCName = ""
-	if _, err := job.BuildWorkerJob(invalidInput); !errors.Is(err, job.ErrJobConfiguration) {
-		t.Fatalf("BuildWorkerJob error = %v, want ErrJobConfiguration for empty PVC name in generic mode", err)
+	// Empty PVC name also succeeds with EmptyDir
+	emptyInput := buildInput(review, now)
+	emptyInput.WorkspacePVCName = ""
+	emptyResult, err := job.BuildWorkerJob(emptyInput)
+	if err != nil {
+		t.Fatalf("BuildWorkerJob error = %v, want success for empty PVC name in generic mode", err)
+	}
+	if emptyResult.Spec.Template.Spec.Volumes[0].EmptyDir == nil {
+		t.Fatal("empty PVC name in generic mode must use EmptyDir")
 	}
 }
 

@@ -387,12 +387,16 @@ spec:
                 description: PRReviewJobPhase is the bounded Kubernetes execution
                   phase.
                 enum:
-                - Queued
+                - Pending
                 - Running
                 - Succeeded
                 - Failed
+                - Queued
+                - Retrying
                 - Expired
                 - Cancelled
+                - AwaitingResumption
+                - Suspended
                 type: string
               pvcName:
                 type: string

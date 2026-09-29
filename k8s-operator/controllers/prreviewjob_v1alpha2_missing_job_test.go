@@ -54,9 +54,6 @@ func missingJobFixture(t *testing.T, mode string, hooks interceptor.Funcs) (*con
 		},
 	}
 	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(review)}
-	if _, err := r.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("provision never-started workspace: %v", err)
-	}
 	return r, kube, req
 }
 
@@ -1442,9 +1439,11 @@ func TestMissingWorkerJobCleanupPreservesActivePodAndForeignLease(t *testing.T) 
 				if err := kube.Get(ctx, leaseKey, &lease); err != nil || !reflect.DeepEqual(lease.Spec, originalLease.Spec) {
 					t.Fatalf("active lease was released or changed: %v", err)
 				}
-				var pvc corev1.PersistentVolumeClaim
-				if err := kube.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: review.Status.PVCName}, &pvc); err != nil || pvc.DeletionTimestamp != nil {
-					t.Fatalf("active workspace was removed or marked for deletion: %v", err)
+				if review.Status.PVCName != "" {
+					var pvc corev1.PersistentVolumeClaim
+					if err := kube.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: review.Status.PVCName}, &pvc); err != nil || pvc.DeletionTimestamp != nil {
+						t.Fatalf("active workspace was removed or marked for deletion: %v", err)
+					}
 				}
 			})
 		}
