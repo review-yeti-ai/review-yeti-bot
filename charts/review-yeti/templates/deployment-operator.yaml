@@ -100,6 +100,10 @@ spec:
             - name: REVIEW_YETI_MAP_REDUCE_MIN_CHARS
               value: {{ .Values.publishing.mapReduceMinChars | quote }}
             {{- end }}
+            {{- if .Values.publishing.enableContinuations }}
+            - name: REVIEW_YETI_ENABLE_CONTINUATIONS
+              value: {{ .Values.publishing.enableContinuations | quote }}
+            {{- end }}
             - name: REVIEW_YETI_GATEWAY_SECRET_NAME
               value: {{ .Values.publishing.gatewaySecretName | quote }}
             - name: REVIEW_YETI_GATEWAY_SECRET_KEY

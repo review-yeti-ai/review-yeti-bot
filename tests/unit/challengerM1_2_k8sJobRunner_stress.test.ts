@@ -227,7 +227,7 @@ describe('Empirical Adversarial Stress Suite: K8sJobRunner (challenger_m1_2)', (
       const volumeNames = podSpec.volumes.map((v) => v.name);
       expect(new Set(volumeNames).size).toBe(volumeNames.length); // No duplicate volumes
       expect(volumeNames[0]).toBe('workspace-volume');
-      expect(podSpec.volumes[0].persistentVolumeClaim?.claimName).toBe('ct-review-bot-workspace-pvc');
+      expect(podSpec.volumes[0].emptyDir).toBeDefined();
 
       // InitContainers verification
       expect(podSpec.initContainers).toBeDefined();

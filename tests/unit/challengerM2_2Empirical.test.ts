@@ -701,7 +701,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
       const controllerCode = readFileSync(controllerFilePath, 'utf8');
 
       // 1. PhaseCancelled constant is declared
-      expect(typesCode).toContain('PhaseCancelled PRReviewJobPhase = "Cancelled"');
+      expect(typesCode).toMatch(/PhaseCancelled\s+PRReviewJobPhase\s*=\s*"Cancelled"/);
 
       // 2. CancelRequested and CancelReason are in Spec
       expect(typesCode).toContain('CancelRequested *bool `json:"cancelRequested,omitempty"`');

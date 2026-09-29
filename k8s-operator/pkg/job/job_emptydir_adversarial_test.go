@@ -8,7 +8,6 @@ package job_test
 
 import (
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
-	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
 func TestAdversarialStorageSizeParsing(t *testing.T) {
@@ -117,42 +115,37 @@ func TestAdversarialStorageSizeParsing(t *testing.T) {
 func TestAdversarialRunnerModeVolumeAllocation(t *testing.T) {
 	now := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
 
-	t.Run("Generic mode strictly enforces matching PVCName", func(t *testing.T) {
+	t.Run("Generic mode unconditionally mounts EmptyDir", func(t *testing.T) {
 		review := reviewFixture(now)
 		review.Spec.RunnerMode = "generic"
 
-		// 1. Missing PVC name must fail
+		// 1. Missing PVC name succeeds and mounts EmptyDir
 		input := buildInput(review, now)
 		input.WorkspacePVCName = ""
-		_, err := job.BuildWorkerJob(input)
-		if err == nil || !strings.Contains(err.Error(), "workspace PVC name") {
-			t.Fatalf("expected error on empty WorkspacePVCName, got: %v", err)
-		}
-
-		// 2. Mismatched PVC name must fail
-		input.WorkspacePVCName = "tampered-pvc-name"
-		_, err = job.BuildWorkerJob(input)
-		if err == nil || !strings.Contains(err.Error(), "workspace PVC name does not match") {
-			t.Fatalf("expected error on mismatched WorkspacePVCName, got: %v", err)
-		}
-
-		// 3. Exact matching PVC name must succeed with PersistentVolumeClaim
-		expectedPVC := workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)
-		input.WorkspacePVCName = expectedPVC
 		built, err := job.BuildWorkerJob(input)
 		if err != nil {
-			t.Fatalf("BuildWorkerJob failed on valid generic PVC: %v", err)
+			t.Fatalf("BuildWorkerJob failed on empty WorkspacePVCName in generic mode: %v", err)
+		}
+		wsVol := built.Spec.Template.Spec.Volumes[0]
+		if wsVol.EmptyDir == nil {
+			t.Fatal("generic runner mode must use EmptyDir")
+		}
+		if wsVol.PersistentVolumeClaim != nil {
+			t.Fatal("generic runner mode must NOT have PersistentVolumeClaim")
 		}
 
-		wsVol := built.Spec.Template.Spec.Volumes[0]
-		if wsVol.PersistentVolumeClaim == nil {
-			t.Fatal("generic runner mode must use PersistentVolumeClaim")
+		// 2. Ignores foreign/provided PVC name and mounts EmptyDir
+		input.WorkspacePVCName = "malicious-foreign-pvc"
+		built, err = job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("BuildWorkerJob failed: %v", err)
 		}
-		if wsVol.PersistentVolumeClaim.ClaimName != expectedPVC {
-			t.Fatalf("ClaimName = %q, want %q", wsVol.PersistentVolumeClaim.ClaimName, expectedPVC)
+		wsVol = built.Spec.Template.Spec.Volumes[0]
+		if wsVol.EmptyDir == nil {
+			t.Fatal("generic runner mode must use EmptyDir")
 		}
-		if wsVol.EmptyDir != nil {
-			t.Fatal("generic runner mode must NOT have EmptyDir")
+		if wsVol.PersistentVolumeClaim != nil {
+			t.Fatal("generic runner mode must NOT have PersistentVolumeClaim")
 		}
 	})
 
