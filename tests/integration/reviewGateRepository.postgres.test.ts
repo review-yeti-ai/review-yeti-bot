@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomInt } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import {
@@ -22,6 +22,7 @@ import {
   type StoredReviewGate,
   type TrustedGateCompletionContext,
 } from '../../src/persistence/reviewGateRepository';
+import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
@@ -43,6 +44,11 @@ const WORKER_PROOF = { workerTokenDigest: 'd'.repeat(64) };
 const RECEIVED_AT = Date.parse('2026-09-09T12:00:00.000Z');
 const COMPLETED_AT = RECEIVED_AT + 60_000;
 const ENABLED_LIFECYCLE_EVENTS = { lifecycleEvents: 'enabled' as const };
+// PostgreSQL advisory locks are database-global, not scoped by this suite's
+// random search_path schema. Use a high randomized repository id so concurrent
+// Postgres files cannot make reaper try-lock assertions intermittently skip a
+// candidate that belongs to this otherwise isolated fixture.
+const REPOSITORY_ID = 1_100_000_000 + randomInt(900_000_000);
 
 describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
   let pool: Pool | undefined;
@@ -60,7 +66,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     return {
       owner: 'exampleorg',
       repo: 'example-review-actions',
-      repositoryId: 3210,
+      repositoryId: REPOSITORY_ID,
       prNumber: 42,
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),
@@ -75,7 +81,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     id: string,
     generation = 0,
     executionAttempt = 0,
-    repositoryId = 3210,
+    repositoryId = REPOSITORY_ID,
     prNumber = 42,
   ): Promise<void> {
     await pool!.query(`
@@ -104,11 +110,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         attempt_id, run_id, review_generation, execution_attempt,
         repository_id, pr_number, expected_app_id, coordinates, external_id,
         desired_state, desired_version, published_version, current_attempt, available_at
-      ) VALUES ($1, $2, 0, 1, 3210, 42, $3, $4, $5,
-        'cancelled', 1, -1, $6, to_timestamp($7 / 1000.0))
+      ) VALUES ($1, $2, 0, 1, $3, 42, $4, $5, $6,
+        'cancelled', 1, -1, $7, to_timestamp($8 / 1000.0))
     `, [
       coordinates.attemptId,
       id,
+      REPOSITORY_ID,
       expectedAppId,
       JSON.stringify(coordinates),
       deriveReviewGateExternalId(coordinates),
@@ -246,7 +253,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     await pool!.query('UPDATE review_gate_attempts SET published_version = desired_version WHERE run_id = $1', [id]);
 
     const retryId = runId(8);
-    await insertRun(retryId, 0, 0, 3210, 43);
+    await insertRun(retryId, 0, 0, REPOSITORY_ID, 43);
     const retryRepository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
     await retryRepository.reserve(retryId, APP_ID, RECEIVED_AT + 6_000);
     const retryClaim = (await retryRepository.claimPublication('matrix-retry-worker', RECEIVED_AT + 7_000, 5_000))!;
@@ -816,7 +823,9 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       let superseding: Promise<StoredReviewGate | null> | undefined;
       try {
         await probe.query('BEGIN');
-        const lock = await probe.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', ['review-dispatch:3210:42']);
+        const lock = await probe.query('SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0)) AS acquired', [
+          reviewDispatchPrLockKey(REPOSITORY_ID, 42),
+        ]);
         expect(lock.rows[0].acquired).toBe(false);
         await probe.query('COMMIT');
         superseding = f.repository.reserve(newerRun, APP_ID, f.clock());
@@ -942,7 +951,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
 
       const event: WorkerReviewCompletion = {
         version: 'WorkerReviewCompletion.v1', runId: id,
-        repositoryId: 3210, owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        repositoryId: REPOSITORY_ID, owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
         policyDigest: 'c'.repeat(64), configDigest: CONFIG_DIGEST, executionAttempt: 5,
         result: {
@@ -1064,7 +1073,9 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const client = await pool!.connect();
       try {
         await client.query('BEGIN');
-        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['review-dispatch:3210:42']);
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          reviewDispatchPrLockKey(REPOSITORY_ID, 42),
+        ]);
         expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(0);
       } finally { await client.query('ROLLBACK'); client.release(); }
       expect(await repository.reapTerminalAttempts(RECEIVED_AT + 900_000)).toBe(1);

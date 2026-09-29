@@ -838,6 +838,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
         prNumber: adm.run.identity.prNumber,
         now: tClose,
         cancelReason: 'pull request closed before the review completed',
+        gateReason: 'pull-request-closed',
       });
       expect(res1.cancelledRunIds).toHaveLength(1);
 

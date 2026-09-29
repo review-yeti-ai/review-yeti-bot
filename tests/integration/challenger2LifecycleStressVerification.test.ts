@@ -343,7 +343,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       async query(sql: string, params: any[] = []): Promise<{ rows: any[] }> {
         await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
 
-        if (sql.includes('SELECT run_id, attempt, status, head_sha') || sql.includes('SELECT run_id, attempt, head_sha, lease_owner, status')) {
+        if (sql.includes('SELECT run_id, attempt, status, head_sha')
+          || sql.includes('SELECT run_id, repository_id, attempt, head_sha, lease_owner, status')) {
           const owner = params[0];
           const repo = params[1];
           const prNumber = params[2];
@@ -387,12 +388,44 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       addRun(run: any) {
         this.runs.set(run.run_id, run);
       }
+
+      async cancelActiveRunsForPullRequest(input: {
+        owner: string; repo: string; prNumber: number; cancelReason: string;
+      }): Promise<{
+        activeRun: { runId: string; repositoryId: number; attempt: number };
+        cancelledRunIds: string[];
+      } | null> {
+        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
+        const run = Array.from(this.runs.values()).find((candidate) =>
+          candidate.owner === input.owner
+          && candidate.repo === input.repo
+          && candidate.pr_number === input.prNumber
+          && ['queued', 'running', 'publishing'].includes(candidate.status));
+        if (!run) return null;
+        const matched = Array.from(this.runs.values()).filter((candidate) =>
+          candidate.repository_id === run.repository_id
+          && candidate.pr_number === input.prNumber
+          && ['queued', 'running', 'publishing'].includes(candidate.status));
+        for (const candidate of matched) {
+          candidate.status = 'cancelled';
+          candidate.error_text = input.cancelReason;
+          candidate.lease_owner = null;
+        }
+        return {
+          activeRun: {
+            runId: String(run.run_id), repositoryId: Number(run.repository_id),
+            attempt: Number(run.attempt || 1),
+          },
+          cancelledRunIds: matched.map((candidate) => candidate.run_id),
+        };
+      }
     }
 
     it('RACE-001: Concurrent trigger_review(force: false) and cancel_review on active run resolves deterministically without exception', async () => {
       const db = new MockReviewDatabase([
         {
           run_id: 'run_active_pr_99',
+          repository_id: 123,
           owner: 'exampleorg',
           repo: 'example-api',
           pr_number: 99,
@@ -404,7 +437,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       ]);
 
       const triggerTool = createTriggerReviewTool({ queryableDatabase: db as any });
-      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any });
+      const cancelTool = createCancelReviewTool({ cancellationRepository: db });
 
       const triggerPromise = triggerTool.execute({
         owner: 'exampleorg',
@@ -438,6 +471,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const db = new MockReviewDatabase([
         {
           run_id: 'run_heavy_cancel_pr_100',
+          repository_id: 123,
           owner: 'exampleorg',
           repo: 'example-api',
           pr_number: 100,
@@ -448,7 +482,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         },
       ]);
 
-      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any });
+      const cancelTool = createCancelReviewTool({ cancellationRepository: db });
 
       const CONCURRENCY = 20;
       const cancelPromises = Array.from({ length: CONCURRENCY }).map((_, i) =>
