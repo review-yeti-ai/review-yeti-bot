@@ -165,14 +165,14 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
   });
 
   it('wires cancel_review through the triggerDeps admission repository fallback', async () => {
+    const findActiveRunForPullRequest = vi.fn(async () => ({
+      runId: 'run_active', repositoryId: 123, attempt: 1,
+    }));
     const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_active'] }));
     const registry = createDefaultToolRegistry({
-      db: {
-        query: vi.fn(async () => ({ rows: [{
-          run_id: 'run_active', repository_id: 123, attempt: 1, status: 'queued',
-        }] })),
-      } as any,
-      triggerDeps: { admissionRepository: { cancelRunsForPullRequest } },
+      triggerDeps: {
+        admissionRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
+      },
     });
 
     const tool = registry.getTool('cancel_review');
@@ -182,6 +182,9 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
     }, {} as any) as any;
 
     expect(JSON.parse((result.content[0] as any).text)).toMatchObject({ cancelled: true });
+    expect(findActiveRunForPullRequest).toHaveBeenCalledWith({
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 44,
+    });
     expect(cancelRunsForPullRequest).toHaveBeenCalledWith(expect.objectContaining({
       repositoryId: 123, prNumber: 44, gateReason: 'operator-cancelled',
     }));
