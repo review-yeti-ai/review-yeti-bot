@@ -51,7 +51,7 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
  * checked first by every caller).
  */
 const DATA_OR_CONFIG_EXTENSION =
-  /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties)$/i;
+  /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties|env)$/i;
 
 export function isDataOrConfigPath(filePath: string): boolean {
   return DATA_OR_CONFIG_EXTENSION.test(filePath);
