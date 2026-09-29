@@ -352,6 +352,9 @@ describe('authoritative prepared publishing worker', () => {
 
     expect(f.panelRunner).not.toHaveBeenCalled();
     expect(composedReviewRunner).toHaveBeenCalledOnce();
+    const publishedSummary = f.checkClient.completeCheck.mock.calls[0]?.[0].summary;
+    expect(publishedSummary).toContain('Coverage: engine=composed; planned tasks=1; expected tasks=1; completed tasks=1; failed tasks=0;');
+    expect(publishedSummary).not.toContain('Coverage: mode=panel');
     const completion = f.reportReviewResult.mock.calls[0]?.[0];
     expect(completion?.result.personas.map((persona) => persona.id)).toEqual(['task-a']);
     expect(completion?.result.taskPlan).toEqual(taskPlan);
