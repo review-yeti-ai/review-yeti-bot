@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.96.1...v1.97.0) (2026-09-29)
+
+
+### Features
+
+* **REL-1160:** default review continuations to true ([#1113](https://github.com/review-yeti-ai/review-yeti-bot/issues/1113)) ([3ac76d1](https://github.com/review-yeti-ai/review-yeti-bot/commit/3ac76d141c080353d8cde63b46c2058ed8c12395))
+
 ## [1.96.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.96.0...v1.96.1) (2026-09-29)
 
 
