@@ -108,6 +108,34 @@ describe('ActionDispatchApi - GET status endpoint', () => {
     expect(res.body.workerTokenDigest).toBeUndefined();
   });
 
+  it('returns a durable receipt only to the exact worker token', async () => {
+    const receipt = {
+      runId: 'run_abc123', executionAttempt: 2, repositoryId: 42,
+      owner: 'calltelemetry', repo: 'ct-meta', prNumber: 3591,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+      digest: `sha256:${'e'.repeat(64)}`,
+      evidenceRef: 'audit://review-yeti/run_abc123/attempts/2/completion',
+    };
+    const { app } = createTestApp({ runStatusResult: {
+      current: false, status: 'completed', cancelRequested: false,
+      isCurrentHead: true, workerTokenDigest: tokenDigest, receipt,
+    } });
+
+    const authorized = await request(app)
+      .get('/api/dispatch/runs/run_abc123/attempts/2/status')
+      .set('Authorization', `Bearer ${token}`);
+    expect(authorized.status).toBe(200);
+    expect(authorized.body.receipt).toEqual(receipt);
+    expect(authorized.body.workerTokenDigest).toBeUndefined();
+
+    const unauthorized = await request(app)
+      .get('/api/dispatch/runs/run_abc123/attempts/2/status')
+      .set('Authorization', 'Bearer another-worker');
+    expect(unauthorized.status).toBe(401);
+    expect(unauthorized.body.receipt).toBeUndefined();
+  });
+
   it('returns superseded status when cancelRequested is true', async () => {
     const { app } = createTestApp({
       runStatusResult: {

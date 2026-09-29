@@ -68,18 +68,18 @@ rules:
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # REL-896: delete-only. The dispatcher creates each run Secret before its
+  # REL-896: the dispatcher creates each run Secret before its
   # PRReviewJob exists (so it can never carry an ownerReference), and the
   # dispatcher's own RBAC stops at get/create on Secrets -- it must never
   # gain patch, which would let a compromised dispatcher (it already holds
   # the GitHub App key) overwrite any credential Secret in the namespace.
-  # The operator instead holds a run-Secret cleanup finalizer on the
-  # PRReviewJob and deletes the named Secret when that resource is deleted;
-  # delete-only means this identity can never plant or read a credential.
-  # Do not add get, list, watch, update, or patch here.
+  # The operator holds a run-Secret cleanup finalizer on the PRReviewJob and
+  # deletes the named Secret when that resource is deleted. It also reads only
+  # the exact run Secret to authenticate its durable service receipt lookup.
+  # Never grant list, watch, create, update, or patch here.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["delete"]
+    verbs: ["get", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
