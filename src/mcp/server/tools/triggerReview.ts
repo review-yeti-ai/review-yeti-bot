@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { TERMINAL_DEADLINE_MS } from '../../../config/terminalDeadline';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -198,7 +199,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
 
       if (deps.admissionRepository) {
         const receivedAt = nowFn();
-        const terminalDeadline = receivedAt + 900_000;
+        const terminalDeadline = receivedAt + TERMINAL_DEADLINE_MS;
         const deliveryId = `mcp-trigger-${randomUUID()}`;
         const payloadDigest = sha256(`${deliveryId}:${headSha}:${receivedAt}`);
         const admission = await deps.admissionRepository.admit({
