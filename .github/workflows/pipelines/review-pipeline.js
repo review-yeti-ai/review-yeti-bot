@@ -1314,9 +1314,9 @@ const DEFAULT_MAX_OUTPUT_TOKENS = undefined;
 // OpenRouter reserves credit against the declared completion ceiling before it
 // starts generating. Omitting max_tokens makes it reserve against DeepSeek V4
 // Flash 0731's full 131,072-token model limit, which rejected otherwise-funded
-// review requests with HTTP 402. This cap applies to both direct OpenRouter and
-// OpenRouter-labelled gateway routes; direct Ollama/Fireworks transports retain
-// their separate uncapped-first-pass contract below.
+// review requests with HTTP 402. This cap applies to direct OpenRouter and
+// unclassified OpenRouter-labelled routes. The separately guarded, digest-pinned
+// NeuralWatt gateway alias has its own bounded completion budget below.
 const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 8_000;
 // The digest-pinned Review Yeti gateway exposes the reviewed `pr-reviewer`
 // alias, which Bifrost resolves to the exact OpenRouter model configured by
@@ -1751,6 +1751,7 @@ function resolveModelConfig(env = process.env) {
     model: (transports.length > 0 ? transports[0].model : model),
     maxDiffChars,
     transports,
+    guardedGatewayDestination: env.REVIEW_TRANSPORT_DESTINATION === 'gateway',
     dispatchMode: resolveDispatchMode(env.REVIEW_YETI_DISPATCH_MODE),
   };
 }
@@ -3422,8 +3423,11 @@ function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function boundOpenRouterMaxOutputTokens(value, configuredProvider, isOpenRouterDestination = false) {
+function boundOpenRouterMaxOutputTokens(value, configuredProvider, isOpenRouterDestination = false, guardedGatewayAlias = false) {
   const normalized = normalizeMaxOutputTokens(value, undefined);
+  if (guardedGatewayAlias && !isOpenRouterDestination) {
+    return Math.min(normalized ?? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+  }
   if (!isOpenRouterDestination && configuredProvider !== 'openrouter') return normalized;
   return Math.min(
     normalized ?? DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
@@ -4144,6 +4148,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           configuredMaxOutputTokens,
           configuredProvider,
           isOpenRouterTransport,
+          options.guardedGatewayDestination === true && requestModel === DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
         ),
       );
       if (isOpenRouterTransport) {

@@ -205,11 +205,29 @@ describe('resolveModelConfig', () => {
       REVIEW_TRANSPORT_DESTINATION: 'gateway',
     });
     expect(gateway.transports[0].maxTokens).toBe(24_576);
+    expect(gateway.guardedGatewayDestination).toBe(true);
     expect(resolveModelConfig({
       OPENROUTER_API_KEY: 'other-test-key',
       OPENROUTER_BASE_URL: 'https://other.example/v1',
       OPENROUTER_MODEL: 'some/model',
     }).transports[0].maxTokens).toBeUndefined();
+  });
+
+  it('sends the guarded NeuralWatt gateway budget without raising the direct OpenRouter cap', async () => {
+    const gateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-test-key',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      OPENROUTER_MODEL: 'neuralwatt/glm-5.3-flash',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...gateway,
+      transports: gateway.transports.map((transport: any) => ({ ...transport, stream: false })),
+      fetchImplementation: impl,
+    });
+    expect(calls[0].body.model).toBe(pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS);
+    expect(calls[0].body.max_tokens).toBe(24_576);
   });
 
   it('maps the guarded gateway destination to the Bifrost model alias without changing policy', () => {
