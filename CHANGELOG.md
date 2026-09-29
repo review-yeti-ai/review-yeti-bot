@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.9...v1.97.10) (2026-09-29)
+
+
+### Bug Fixes
+
+* classify unreported malformed review tasks as no verdict ([#1134](https://github.com/review-yeti-ai/review-yeti-bot/issues/1134)) ([9b48222](https://github.com/review-yeti-ai/review-yeti-bot/commit/9b4822224cee47f445708de8eb5c6af204c9dca9))
+
 ## [1.97.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.8...v1.97.9) (2026-09-29)
 
 
