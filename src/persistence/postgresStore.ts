@@ -19,6 +19,7 @@ import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
 import { applySchemaOnce, withSchemaLockRetry } from './schemaMigrationGate';
+import { LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL } from './legacyAppGateReceiptPolicy';
 
 export const ADVISORY_LOCK_ID = 1029384;
 
@@ -268,6 +269,8 @@ export class PostgresStore {
           dispatch_priority SMALLINT NOT NULL DEFAULT 0
             CONSTRAINT review_dispatch_outbox_priority_check CHECK (dispatch_priority IN (0, 1)),
           worker_token_digest VARCHAR(64),
+          terminal_receipt_digest VARCHAR(64)
+            CHECK (terminal_receipt_digest IS NULL OR terminal_receipt_digest ~ '^[a-f0-9]{64}$'),
           available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           cancel_requested_at TIMESTAMP WITH TIME ZONE,
           cancel_reason TEXT,
@@ -294,6 +297,9 @@ export class PostgresStore {
         END $$;
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS worker_token_digest VARCHAR(64);
+        ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS terminal_receipt_digest VARCHAR(64)
+            CHECK (terminal_receipt_digest IS NULL OR terminal_receipt_digest ~ '^[a-f0-9]{64}$');
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE review_dispatch_outbox
@@ -424,6 +430,9 @@ export class PostgresStore {
       const schemaOutcome = await applySchemaOnce(client, [
         coreSchemaSql,
         REVIEW_GATE_SCHEMA_SQL,
+        // Historical bridge only: dispatch owns the receipt column and the
+        // gate schema owns authoritative_gate_app_id, so both must exist first.
+        LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL,
         REVIEW_GENERATION_RECOVERY_SCHEMA_SQL,
         PREPARED_REVIEW_SCHEMA_SQL,
         REVIEW_CI_SCHEMA_SQL,

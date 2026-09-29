@@ -40,6 +40,7 @@ import {
   isReviewGateCancellationReason,
   type ReviewGateCancellationReason,
 } from '../review/reviewGatePolicy';
+import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
 
 interface QueryResult {
   rows: any[];
@@ -996,6 +997,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            SET status = 'pending', delivery_id = EXCLUDED.delivery_id,
                available_at = EXCLUDED.available_at, lease_owner = NULL,
                lease_expires_at = NULL, projection_name = NULL,
+               terminal_receipt_digest = NULL,
          -- Re-arm only alongside a run the statement above just returned to
          -- 'queued'. A worker provider failure leaves the outbox 'projected'
          -- and needs a new execution attempt. A terminal dispatch with token or
@@ -2243,8 +2245,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       && String(row.base_sha) === input.baseSha
       && String(row.effective_policy_digest) === input.policyDigest
       && String(row.effective_config_digest) === input.configDigest
-      && String(row.publication_mode) === 'app-gate'
-      && row.authoritative_gate_app_id == null
+      && isLegacyAppGateRun(row.publication_mode, row.authoritative_gate_app_id)
       && Number(row.execution_attempt) + 1 === input.executionAttempt;
     if (!metadataMatches) return { runId: input.runId, status: 'unauthorized' };
 
@@ -2263,13 +2264,14 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     const retired = await client.query(
       `UPDATE review_dispatch_outbox
           SET status = 'terminal', lease_owner = NULL, lease_expires_at = NULL,
+              terminal_receipt_digest = $5,
               updated_at = to_timestamp($2 / 1000.0)
         WHERE run_id = $1
           AND status IN ('pending', 'claimed', 'projected')
           AND execution_attempt + 1 = $3
           AND worker_token_digest = $4
       RETURNING run_id`,
-      [input.runId, now, input.executionAttempt, proof.workerTokenDigest],
+      [input.runId, now, input.executionAttempt, proof.workerTokenDigest, resultDigest],
     );
     if (retired.rows.length !== 1) throw new Error('worker success retirement lost its locked identity');
     const transitioned = await client.query(
@@ -2289,8 +2291,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           AND runs.repository_id = $9
           AND runs.effective_policy_digest = $10
           AND runs.effective_config_digest = $11
-          AND runs.publication_mode = 'app-gate'
-          AND runs.authoritative_gate_app_id IS NULL
+          AND ${LEGACY_APP_GATE_RUN_SQL}
           AND runs.status IN ('queued', 'running')
           AND outbox.status = 'terminal'
           AND outbox.execution_attempt + 1 = $12
@@ -2522,10 +2523,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async getRunStatus(runId: string, executionAttempt: number): Promise<RunStatusResult | null> {
-    // Action-dispatch owns the durable gate predicate. The operator cannot
-    // inspect PostgreSQL: it only re-verifies the versioned receipt's immutable
-    // coordinates and digest over the authenticated status channel. Both
-    // implementations consume the same v1 wire fixture in tests.
+    // Action-dispatch owns the legacy success predicate and persists its chosen
+    // receipt digest on the terminal outbox transition. Authoritative-gate runs
+    // continue to require the bound gate/completion digest. This reader only
+    // projects those durable decisions; it does not re-derive either one.
     const res = await this.queryable.query(
       `SELECT runs.run_id,
               runs.status,
@@ -2543,7 +2544,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               outbox.worker_token_digest,
               outbox.cancel_requested_at AS outbox_cancel_requested_at,
               outbox.cancel_reason AS outbox_cancel_reason,
-              completion.content_digest AS completion_digest
+              COALESCE(
+                CASE WHEN runs.status = 'succeeded' AND outbox.status = 'terminal'
+                  THEN outbox.terminal_receipt_digest END,
+                completion.content_digest
+              ) AS receipt_digest
          FROM review_runs AS runs
          LEFT JOIN review_dispatch_outbox AS outbox
            ON outbox.run_id = runs.run_id AND outbox.execution_attempt + 1 = $2
@@ -2611,8 +2616,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       currentHeadSha,
       isCurrentHead,
       workerTokenDigest: row.worker_token_digest ? String(row.worker_token_digest) : undefined,
-      receipt: typeof row.completion_digest === 'string'
-        && /^[a-f0-9]{64}$/u.test(row.completion_digest)
+      receipt: typeof row.receipt_digest === 'string'
+        && /^[a-f0-9]{64}$/u.test(row.receipt_digest)
         && row.worker_token_digest ? {
         version: 'AppGateReceipt.v1',
         runId: String(row.run_id),
@@ -2625,7 +2630,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         baseSha: String(row.base_sha),
         policyDigest: String(row.effective_policy_digest),
         configDigest: String(row.effective_config_digest),
-        digest: `sha256:${String(row.completion_digest)}`,
+        digest: `sha256:${String(row.receipt_digest)}`,
         evidenceRef: `audit://review-yeti/${encodeURIComponent(String(row.run_id))}/attempts/${executionAttempt}/completion`,
       } : undefined,
     };
