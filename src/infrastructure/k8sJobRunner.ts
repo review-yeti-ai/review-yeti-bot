@@ -75,6 +75,7 @@ export interface K8sJobSpec {
   ttlSecondsAfterFinished?: number;
   activeDeadlineSeconds?: number;
   envVars?: Record<string, string>;
+  phase?: 'prep' | 'continuation';
 
   // Milestone 1 Scope & Fencing parameters
   logicalChildId?: string;
@@ -147,7 +148,7 @@ export interface GeneratedK8sJobManifest {
           command: string[];
           resources: {
             requests: { cpu: string; memory: string };
-            limits: { cpu: string; memory: string };
+            limits: { cpu?: string; memory: string };
           };
           volumeMounts: Array<{
             name: string;
@@ -344,7 +345,7 @@ export class K8sJobRunner {
   private isK8sAvailable: boolean = false;
   private namespace: string;
   private defaultImage: string;
-  private defaultPvcName: string;
+  private defaultPvcName?: string;
   private workspaceMountPath?: string;
   private observerManager: TaskObserverLifecycleManager = new TaskObserverLifecycleManager();
 
@@ -377,11 +378,12 @@ export class K8sJobRunner {
     }
     this.defaultImage = defaultImage;
 
-    const defaultPvcName = options?.defaultPvcName ?? (process.env.K8S_WORKSPACE_PVC || 'ct-review-bot-workspace-pvc');
-    if (!defaultPvcName || typeof defaultPvcName !== 'string' || defaultPvcName.trim() === '') {
-      throw new Error(`INVALID_SHAPE: defaultPvcName must be a non-empty string`);
-    }
-    this.defaultPvcName = defaultPvcName;
+    const defaultPvcName = options?.defaultPvcName !== undefined
+      ? options.defaultPvcName
+      : process.env.K8S_WORKSPACE_PVC;
+    this.defaultPvcName = (typeof defaultPvcName === 'string' && defaultPvcName.trim() !== '')
+      ? defaultPvcName.trim()
+      : undefined;
     this.workspaceMountPath = options?.workspaceMountPath;
 
     if (options?.batchV1Api) {
@@ -562,9 +564,14 @@ export class K8sJobRunner {
       throw new Error(`INVALID_SHAPE: image must be a non-empty string`);
     }
 
-    const pvcClaimName = spec.pvcClaimName ?? this.defaultPvcName;
-    if (!pvcClaimName || typeof pvcClaimName !== 'string' || pvcClaimName.trim() === '') {
-      throw new Error(`INVALID_SHAPE: pvcClaimName must be a non-empty string`);
+    let effectivePvcName: string | undefined;
+    if (spec.pvcClaimName !== undefined) {
+      if (typeof spec.pvcClaimName !== 'string' || spec.pvcClaimName.trim() === '') {
+        throw new Error('INVALID_SHAPE: pvcClaimName must be a non-empty string');
+      }
+      effectivePvcName = spec.pvcClaimName.trim();
+    } else if (this.defaultPvcName) {
+      effectivePvcName = this.defaultPvcName;
     }
 
     const ttl = spec.ttlSecondsAfterFinished ?? 300;
@@ -622,6 +629,11 @@ export class K8sJobRunner {
       { name: 'WORKSPACE_PATH', value: `/workspace/${subPath}` },
     ];
 
+    const effectivePhase = spec.phase || spec.envVars?.CT_PHASE;
+    if (effectivePhase) {
+      harnessEnv.push({ name: 'CT_PHASE', value: effectivePhase });
+    }
+
     // Append custom spec.envVars (excluding collisions with CT_* variables)
     if (spec.envVars) {
       for (const [k, v] of Object.entries(spec.envVars)) {
@@ -644,6 +656,7 @@ export class K8sJobRunner {
           commitSha: spec.commitSha.slice(0, 7),
           'ct.calltelemetry.com/logical-child-id': scope.logical_child_id.slice(0, 63),
           'ct.calltelemetry.com/fencing-epoch': String(scope.fencing_epoch),
+          ...(effectivePhase ? { 'review-yeti.ai/job-phase': effectivePhase } : {}),
         },
         annotations: {
           'ct.calltelemetry.com/request-digest': reqDigest,
@@ -659,6 +672,7 @@ export class K8sJobRunner {
             labels: {
               app: 'ct-review-agent',
               persona: sanitizedPersona,
+              ...(effectivePhase ? { 'review-yeti.ai/job-phase': effectivePhase } : {}),
             },
             annotations: {
               'ct.calltelemetry.com/request-digest': reqDigest,
@@ -707,12 +721,12 @@ export class K8sJobRunner {
                 command: ['node', '/app/dist/agentWorker.js'],
                 resources: {
                   requests: {
-                    cpu: spec.cpuRequest ?? '250m',
-                    memory: spec.memoryRequest ?? '512Mi',
+                    cpu: spec.cpuRequest ?? '50m',
+                    memory: spec.memoryRequest ?? '96Mi',
                   },
                   limits: {
-                    cpu: spec.cpuLimit ?? '500m',
-                    memory: spec.memoryLimit ?? '1Gi',
+                    ...(spec.cpuLimit && spec.cpuLimit !== 'none' ? { cpu: spec.cpuLimit } : {}),
+                    memory: spec.memoryLimit ?? '256Mi',
                   },
                 },
                 volumeMounts: [
@@ -730,12 +744,17 @@ export class K8sJobRunner {
               },
             ],
             volumes: [
-              {
-                name: 'workspace-volume',
-                persistentVolumeClaim: {
-                  claimName: pvcClaimName,
-                },
-              },
+              effectivePvcName
+                ? {
+                    name: 'workspace-volume',
+                    persistentVolumeClaim: {
+                      claimName: effectivePvcName,
+                    },
+                  }
+                : {
+                    name: 'workspace-volume',
+                    emptyDir: {},
+                  },
             ],
           },
         },

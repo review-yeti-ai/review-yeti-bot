@@ -317,7 +317,6 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     };
 
     expect(() => new K8sJobRunner({ defaultImage: '' })).toThrow(/INVALID_SHAPE/);
-    expect(() => new K8sJobRunner({ defaultPvcName: '' })).toThrow(/INVALID_SHAPE/);
 
     expect(() => runner.buildWorkRequest({ ...validSpec, tenantId: '' })).toThrow(/INVALID_SHAPE/);
     expect(() => runner.buildWorkRequest({ ...validSpec, environmentId: '' })).toThrow(/INVALID_SHAPE/);
@@ -333,6 +332,10 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     expect(() => runner.generateJobManifest({ ...validSpec, image: '' })).toThrow(/INVALID_SHAPE/);
     expect(() => runner.generateJobManifest({ ...validSpec, pvcClaimName: '' })).toThrow(/INVALID_SHAPE/);
     expect(() => runner.generateJobManifest({ ...validSpec, jobName: '' })).toThrow(/INVALID_SHAPE/);
+
+    const emptyDirManifest = runner.generateJobManifest(validSpec);
+    expect(emptyDirManifest.spec.template.spec.volumes[0].emptyDir).toBeDefined();
+    expect(emptyDirManifest.spec.template.spec.volumes[0].persistentVolumeClaim).toBeUndefined();
   });
 
   // Test 12: Generates conforming simulation receipt with matching scope and canonical request digest (Milestone 2)

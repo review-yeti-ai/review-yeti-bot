@@ -99,29 +99,30 @@ func TestPRReviewJobV1Alpha2ReconcilerCreatesPVCThenHardenedWorkerJob(t *testing
 	if err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
-	if result.RequeueAfter <= 0 {
-		t.Fatal("PVC creation must requeue before acquiring a lease")
+	if result.RequeueAfter > 0 {
+		t.Fatal("worker Job should be created without requeue")
 	}
 
 	var pvc corev1.PersistentVolumeClaim
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)}, &pvc); err != nil {
-		t.Fatalf("get workspace PVC: %v", err)
-	}
-	if err := workspace.ValidatePVC(&pvc, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber); err != nil {
-		t.Fatalf("created PVC failed identity validation: %v", err)
-	}
-
-	result, err = reconciler.Reconcile(context.Background(), req)
-	if err != nil {
-		t.Fatalf("second reconcile: %v", err)
-	}
-	if result.RequeueAfter > 0 {
-		t.Fatal("worker Job should be created after PVC and lease acquisition")
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)}, &pvc); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected no PVC to be created under emptyDir storage: %v", err)
 	}
 
 	var worker batchv1.Job
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
 		t.Fatalf("get worker Job: %v", err)
+	}
+	var foundWorkspace bool
+	for _, vol := range worker.Spec.Template.Spec.Volumes {
+		if vol.Name == "workspace" {
+			foundWorkspace = true
+			if vol.EmptyDir == nil {
+				t.Fatalf("workspace volume %#v is not emptyDir", vol)
+			}
+		}
+	}
+	if !foundWorkspace {
+		t.Fatal("workspace volume not found")
 	}
 	if worker.Spec.BackoffLimit == nil || *worker.Spec.BackoffLimit != 0 {
 		t.Fatalf("backoffLimit = %v, want 0", worker.Spec.BackoffLimit)
@@ -388,12 +389,13 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
-	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
-	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
-	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
-	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+	pvc, err := workspace.BuildPVC(review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, now.Add(-time.Hour))
+	if err != nil {
 		t.Fatal(err)
 	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, pvc).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
 	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
 		t.Fatal(err)
 	}
@@ -427,12 +429,12 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesWorkspaceAfterTerminalWorker(t *te
 	if updated.Status.Phase != reviewv1alpha2.PhaseSucceeded || updated.Status.CompletionTime == nil {
 		t.Fatalf("terminal status = %#v", updated.Status)
 	}
-	var pvc corev1.PersistentVolumeClaim
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)}, &pvc); err != nil {
+	var storedPVC corev1.PersistentVolumeClaim
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber)}, &storedPVC); err != nil {
 		t.Fatal(err)
 	}
-	if pvc.Annotations[workspace.LastUsedAtAnnotation] != now.Format(time.RFC3339Nano) {
-		t.Fatalf("last-used-at = %q, want %q", pvc.Annotations[workspace.LastUsedAtAnnotation], now.Format(time.RFC3339Nano))
+	if storedPVC.Annotations[workspace.LastUsedAtAnnotation] != now.Format(time.RFC3339Nano) {
+		t.Fatalf("last-used-at = %q, want %q", storedPVC.Annotations[workspace.LastUsedAtAnnotation], now.Format(time.RFC3339Nano))
 	}
 	if _, err := workspace.NewLeaseManager(kube).Acquire(context.Background(), review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, "run_22222222222222222222222222222222", now.Add(15*time.Minute), now.Add(time.Second)); err != nil {
 		t.Fatalf("released workspace lease should be acquirable: %v", err)
@@ -512,12 +514,12 @@ func TestPRReviewJobV1Alpha2ReconcilerFailsClosedOnPVCIdentityMismatch(t *testin
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name}, &updated); err != nil {
 		t.Fatalf("get review: %v", err)
 	}
-	if updated.Status.Phase != reviewv1alpha2.PhaseFailed {
-		t.Fatalf("phase = %s, want Failed", updated.Status.Phase)
+	if updated.Status.Phase != reviewv1alpha2.PhaseRunning {
+		t.Fatalf("phase = %s, want Running", updated.Status.Phase)
 	}
 	var worker batchv1.Job
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err == nil {
-		t.Fatal("identity mismatch must not create a worker Job")
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
+		t.Fatalf("worker Job must be created with emptyDir despite foreign PVC: %v", err)
 	}
 }
 
@@ -539,38 +541,19 @@ func TestPRReviewJobV1Alpha2ReconcilerQueuesWhilePriorWorkspacePVCTerminates(t *
 	if err != nil {
 		t.Fatalf("reconcile terminating workspace: %v", err)
 	}
-	if result.RequeueAfter <= 0 {
-		t.Fatal("terminating workspace must requeue within the existing review deadline")
+	if result.RequeueAfter != 0 {
+		t.Fatalf("terminating PVC must not cause requeue under emptyDir storage, got: %v", result.RequeueAfter)
 	}
 	var updated reviewv1alpha2.PRReviewJob
 	if err := kube.Get(context.Background(), req.NamespacedName, &updated); err != nil {
-		t.Fatalf("get queued review: %v", err)
+		t.Fatalf("get review: %v", err)
 	}
-	if updated.Status.Phase != reviewv1alpha2.PhaseQueued || updated.Status.Message != workspace.ErrWorkspaceTerminating.Error() {
-		t.Fatalf("status = %#v, want queued terminating-workspace state", updated.Status)
+	if updated.Status.Phase != reviewv1alpha2.PhaseRunning {
+		t.Fatalf("status = %#v, want Running", updated.Status)
 	}
 	var worker batchv1.Job
-	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); !apierrors.IsNotFound(err) {
-		t.Fatalf("terminating workspace must not create a worker Job: %v", err)
-	}
-
-	// Simulate Kubernetes finishing the prior PVC deletion. The next two
-	// reconciles provision the replacement PVC and then admit this attempt.
-	pvc.Finalizers = nil
-	if err := kube.Update(context.Background(), pvc); err != nil && !apierrors.IsNotFound(err) {
-		t.Fatalf("release terminating PVC finalizer: %v", err)
-	}
-	if err := kube.Delete(context.Background(), pvc); err != nil && !apierrors.IsNotFound(err) {
-		t.Fatalf("finish terminating PVC deletion: %v", err)
-	}
-	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("provision replacement workspace: %v", err)
-	}
-	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("admit review after workspace deletion: %v", err)
-	}
 	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: review.Namespace, Name: review.Name + "-worker"}, &worker); err != nil {
-		t.Fatalf("get worker after workspace deletion: %v", err)
+		t.Fatalf("terminating PVC must not prevent worker Job creation: %v", err)
 	}
 }
 
@@ -889,15 +872,12 @@ func TestPRReviewJobV1Alpha2ReconcilerAdmitsOldestWaitingReviewFirst(t *testing.
 	}
 	if err := kube.Get(context.Background(), types.NamespacedName{
 		Namespace: newer.Namespace,
-		Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
-	}, &corev1.PersistentVolumeClaim{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("newer review must not allocate a workspace before the older review: %v", err)
+		Name:      newer.Name + "-worker",
+	}, &batchv1.Job{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("newer review must not allocate a worker before the older review: %v", err)
 	}
 
 	oldestReq := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: oldest.Namespace, Name: oldest.Name}}
-	if result, err := reconciler.Reconcile(context.Background(), oldestReq); err != nil || result.RequeueAfter <= 0 {
-		t.Fatalf("provision oldest workspace: result=%#v err=%v", result, err)
-	}
 	if result, err := reconciler.Reconcile(context.Background(), oldestReq); err != nil || result.RequeueAfter != 0 {
 		t.Fatalf("admit oldest review: result=%#v err=%v", result, err)
 	}
@@ -1162,8 +1142,8 @@ func TestPRReviewJobV1Alpha2ReconcilerSkipsInvalidAdmissionCandidates(t *testing
 			if err != nil {
 				t.Fatalf("reconcile newer review: %v", err)
 			}
-			if result.RequeueAfter <= 0 {
-				t.Fatal("valid newer review must continue through workspace admission")
+			if result.RequeueAfter != 0 {
+				t.Fatalf("valid newer review should proceed without requeue, got: %v", result)
 			}
 			var updated reviewv1alpha2.PRReviewJob
 			if err := kube.Get(context.Background(), newerReq.NamespacedName, &updated); err != nil {
@@ -1175,9 +1155,9 @@ func TestPRReviewJobV1Alpha2ReconcilerSkipsInvalidAdmissionCandidates(t *testing
 			}
 			if err := kube.Get(context.Background(), types.NamespacedName{
 				Namespace: newer.Namespace,
-				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
-			}, &corev1.PersistentVolumeClaim{}); err != nil {
-				t.Fatalf("valid newer review did not reach workspace admission: %v", err)
+				Name:      newer.Name + "-worker",
+			}, &batchv1.Job{}); err != nil {
+				t.Fatalf("valid newer review did not create worker Job: %v", err)
 			}
 
 			var storedCandidate reviewv1alpha2.PRReviewJob
@@ -1302,8 +1282,8 @@ func TestPRReviewJobV1Alpha2ReconcilerCountsUnobservedWorkerAttemptAgainstCapaci
 			}
 			if err := kube.Get(context.Background(), types.NamespacedName{
 				Namespace: newer.Namespace,
-				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
-			}, &corev1.PersistentVolumeClaim{}); err != nil {
+				Name:      newer.Name + "-worker",
+			}, &batchv1.Job{}); err != nil {
 				t.Fatalf("newer review did not proceed after candidate terminalized: %v", err)
 			}
 		})
@@ -1393,16 +1373,16 @@ func TestPRReviewJobV1Alpha2ReconcilerUsesStableEqualReceivedAtTieBreakers(t *te
 			if blocked != test.wantBlocked {
 				t.Fatalf("blocked=%v condition=%#v result=%#v, want %v", blocked, ready, result, test.wantBlocked)
 			}
-			var pvc corev1.PersistentVolumeClaim
+			var worker batchv1.Job
 			err = kube.Get(context.Background(), types.NamespacedName{
 				Namespace: newer.Namespace,
-				Name:      workspace.PVCName(newer.Spec.RepositoryID, newer.Spec.PRNumber),
-			}, &pvc)
+				Name:      newer.Name + "-worker",
+			}, &worker)
 			if test.wantBlocked && !apierrors.IsNotFound(err) {
-				t.Fatalf("blocked newer review must not create a PVC: %v", err)
+				t.Fatalf("blocked newer review must not create a worker Job: %v", err)
 			}
 			if !test.wantBlocked && err != nil {
-				t.Fatalf("unblocked newer review must create a PVC: %v", err)
+				t.Fatalf("unblocked newer review must create a worker Job: %v", err)
 			}
 		})
 	}

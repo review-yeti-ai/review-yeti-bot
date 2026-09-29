@@ -39,19 +39,25 @@ const (
 	// ConditionUnknownEffectPending indicates that an external side effect is in
 	// an UNKNOWN state, preventing the job from transitioning to Succeeded.
 	ConditionUnknownEffectPending = "UnknownEffectPending"
+
+	// ConditionAwaitingResumption indicates that the prep phase has completed
+	// and the review is suspended awaiting model completion from the streaming multiplexer.
+	ConditionAwaitingResumption = "AwaitingResumption"
 )
 
 // PRReviewJobPhase is the bounded Kubernetes execution phase.
-// +kubebuilder:validation:Enum=Queued;Running;Succeeded;Failed;Expired;Cancelled
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Queued;Retrying;Expired;Cancelled;AwaitingResumption;Suspended
 type PRReviewJobPhase string
 
 const (
-	PhaseQueued    PRReviewJobPhase = "Queued"
-	PhaseRunning   PRReviewJobPhase = "Running"
-	PhaseSucceeded PRReviewJobPhase = "Succeeded"
-	PhaseFailed    PRReviewJobPhase = "Failed"
-	PhaseExpired   PRReviewJobPhase = "Expired"
-	PhaseCancelled PRReviewJobPhase = "Cancelled"
+	PhaseQueued             PRReviewJobPhase = "Queued"
+	PhaseRunning            PRReviewJobPhase = "Running"
+	PhaseSucceeded          PRReviewJobPhase = "Succeeded"
+	PhaseFailed             PRReviewJobPhase = "Failed"
+	PhaseExpired            PRReviewJobPhase = "Expired"
+	PhaseCancelled          PRReviewJobPhase = "Cancelled"
+	PhaseAwaitingResumption PRReviewJobPhase = "AwaitingResumption"
+	PhaseSuspended          PRReviewJobPhase = "Suspended"
 )
 
 // PRReviewJobSpec is an immutable, non-secret projection of an authenticated review run.

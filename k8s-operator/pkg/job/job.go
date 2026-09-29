@@ -67,6 +67,56 @@ const (
 	FullPanelQualificationProfile = "full-panel"
 	SameHeadQualificationProfile  = "same-head"
 	ReceiptOnlyWorkerComponent    = "receipt-only-worker"
+
+	JobPhaseLabel        = "review-yeti.ai/job-phase"
+	JobPhasePrep         = "prep"
+	JobPhaseContinuation = "continuation"
+	PhaseEnvVar          = "CT_PHASE"
+)
+
+// IsPrepWorkerJob returns true if the worker Job represents a prep phase worker.
+func IsPrepWorkerJob(worker *batchv1.Job) bool {
+	if worker == nil {
+		return false
+	}
+	if worker.Labels != nil && worker.Labels[JobPhaseLabel] == JobPhasePrep {
+		return true
+	}
+	if worker.Spec.Template.Labels != nil && worker.Spec.Template.Labels[JobPhaseLabel] == JobPhasePrep {
+		return true
+	}
+	for _, c := range worker.Spec.Template.Spec.Containers {
+		for _, env := range c.Env {
+			if env.Name == PhaseEnvVar && env.Value == JobPhasePrep {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// IsContinuationWorkerJob returns true if the worker Job represents a continuation phase worker.
+func IsContinuationWorkerJob(worker *batchv1.Job) bool {
+	if worker == nil {
+		return false
+	}
+	if worker.Labels != nil && worker.Labels[JobPhaseLabel] == JobPhaseContinuation {
+		return true
+	}
+	if worker.Spec.Template.Labels != nil && worker.Spec.Template.Labels[JobPhaseLabel] == JobPhaseContinuation {
+		return true
+	}
+	for _, c := range worker.Spec.Template.Spec.Containers {
+		for _, env := range c.Env {
+			if env.Name == PhaseEnvVar && env.Value == JobPhaseContinuation {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+const (
 	// Jobs are disposable execution records. TTL 0 makes kube delete a
 	// *succeeded* Job as soon as it reaches Complete (see
 	// WorkerSuccessTTLSeconds). A failed Job is built with the longer
@@ -132,10 +182,10 @@ const (
 	// never resolves would retain its run Secret forever.
 	DefaultTerminalMaxRetentionSeconds = int64(86400)
 	TerminalMaxRetentionSecondsEnv     = "REVIEW_YETI_TERMINAL_MAX_RETENTION_SECONDS"
-	WorkerCPURequest                   = "250m"
-	WorkerMemoryRequest                = "512Mi"
+	WorkerCPURequest                   = "50m"
+	WorkerMemoryRequest                = "96Mi"
 	WorkerCPULimit                     = "1"
-	WorkerMemoryLimit                  = "1536Mi"
+	WorkerMemoryLimit                  = "256Mi"
 	// The CRD's CEL rule bounds terminalDeadline - receivedAt to [900s, 3600s]
 	// (see charts/review-yeti/templates/crd.yaml and
 	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
@@ -180,6 +230,8 @@ type Input struct {
 	// required only for PublicationModeAppGate and, consistent with this builder's
 	// contract, holds Secret *names and keys* -- never a credential value.
 	Publishing PublishingConfig
+	// Phase specifies the execution phase ("prep" or "continuation").
+	Phase string
 }
 
 // PublishingConfig configures the app-gate publishing lane. Bifrost is the only
@@ -251,7 +303,12 @@ type PublishingConfig struct {
 	// not an absolute http(s) URL is dropped (see WorkerMetricsEndpoint), never
 	// a reason to refuse the Job. Empty projects nothing.
 	WorkerMetricsEndpoint string
+	// REL-1160: enable durable review continuations (disabled by default).
+	EnableContinuations string
 }
+
+// EnableContinuationsEnv controls whether review continuations are enabled (REL-1160).
+const EnableContinuationsEnv = "REVIEW_YETI_ENABLE_CONTINUATIONS"
 
 // WorkerMetricsEndpointEnv is the worker's metrics push endpoint (REL-1104,
 // src/telemetry/metrics.ts WORKER_METRICS_ENDPOINT_ENV).
@@ -382,6 +439,17 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	labels["review-yeti.ai/publication-mode"] = spec.PublicationMode
 	annotations["review-yeti.ai/run-id"] = spec.RunID
 
+	phase := input.Phase
+	if phase == "" && review.Annotations != nil {
+		phase = review.Annotations[JobPhaseLabel]
+	}
+	if phase == "" && review.Labels != nil {
+		phase = review.Labels[JobPhaseLabel]
+	}
+	if phase != "" {
+		labels[JobPhaseLabel] = phase
+	}
+
 	templateLabels := copyStringMap(labels)
 	templateAnnotations := copyStringMap(annotations)
 	one := int32(1)
@@ -418,6 +486,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: "REVIEW_REPO", Value: spec.Repo},
 		{Name: "REVIEW_PR_NUMBER", Value: strconv.Itoa(int(spec.PRNumber))},
 		{Name: "REVIEW_HEAD_SHA", Value: spec.HeadSHA},
+		{Name: "GIT_HEAD_SHA", Value: spec.HeadSHA},
 		{Name: "REVIEW_BASE_SHA", Value: spec.BaseSHA},
 		{Name: "REVIEW_POLICY_DIGEST", Value: spec.PolicyDigest},
 		{Name: "REVIEW_CONFIG_DIGEST", Value: spec.ConfigDigest},
@@ -427,6 +496,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		{Name: "CT_REVIEW_DATA_DIR", Value: "/tmp/.ct-memory"},
 		{Name: WorkerPodNameEnv, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: WorkerPodNamespaceEnv, ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+	}
+	if phase != "" {
+		env = append(env, corev1.EnvVar{Name: PhaseEnvVar, Value: phase})
 	}
 	if spec.QualificationProfile == FullPanelQualificationProfile || spec.QualificationProfile == SameHeadQualificationProfile {
 		qualificationTimeoutMillis := max(int64(1_000),
@@ -588,6 +660,42 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	} else {
 		env = append(env, corev1.EnvVar{Name: ReceiptOnlyEnv, Value: "true"})
 	}
+	if phase == JobPhaseContinuation {
+		secretName := spec.RunSecretName
+		if secretName == "" {
+			secretName = "ct-review-db-credentials"
+		}
+		optionalTrue := true
+		env = append(env, corev1.EnvVar{
+			Name: "DATABASE_URL",
+			ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+				Key:                  "DATABASE_URL",
+				Optional:             &optionalTrue,
+			}},
+		})
+		if spec.PublicationMode != PublicationModeAppGate && spec.RunSecretName != "" {
+			optionalTrue := true
+			env = append(env,
+				corev1.EnvVar{
+					Name: "GITHUB_PUBLISH_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+						Key:                  "GITHUB_PUBLISH_TOKEN",
+						Optional:             &optionalTrue,
+					}},
+				},
+				corev1.EnvVar{
+					Name: "GH_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: spec.RunSecretName},
+						Key:                  "GITHUB_READ_TOKEN",
+						Optional:             &optionalTrue,
+					}},
+				},
+			)
+		}
+	}
 	container := corev1.Container{
 		Name:            WorkerContainerName,
 		Image:           spec.WorkerImage,
@@ -644,26 +752,20 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 				`fi`,
 		}
 	}
-	var workspaceVolume corev1.VolumeSource
-	if spec.RunnerMode == "generic" {
-		workspaceVolume = corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: input.WorkspacePVCName,
-				ReadOnly:  false,
-			},
-		}
-	} else {
-		sizeLimit := WorkerStorageSize()
-		workspaceVolume = corev1.VolumeSource{
-			EmptyDir: &corev1.EmptyDirVolumeSource{
-				SizeLimit: &sizeLimit,
-			},
-		}
+	sizeLimit := WorkerStorageSize()
+	workspaceVolume := corev1.VolumeSource{
+		EmptyDir: &corev1.EmptyDirVolumeSource{
+			SizeLimit: &sizeLimit,
+		},
+	}
+	jobSuffix := "-worker"
+	if phase == JobPhaseContinuation {
+		jobSuffix = "-continuation"
 	}
 	return &batchv1.Job{
 		TypeMeta: metav1.TypeMeta{APIVersion: batchv1.SchemeGroupVersion.String(), Kind: "Job"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        review.Name + "-worker",
+			Name:        review.Name + jobSuffix,
 			Namespace:   review.Namespace,
 			Labels:      labels,
 			Annotations: annotations,
@@ -735,8 +837,19 @@ func validateInput(input Input) error {
 	}
 	review := input.Review
 	spec := review.Spec
-	if len(validation.IsDNS1123Subdomain(review.Name)) != 0 || len(review.Name)+len("-worker") > 63 {
-		return configErr("review name is not a valid Kubernetes object name, or is too long for the -worker suffix")
+	phase := input.Phase
+	if phase == "" && review.Annotations != nil {
+		phase = review.Annotations[JobPhaseLabel]
+	}
+	if phase == "" && review.Labels != nil {
+		phase = review.Labels[JobPhaseLabel]
+	}
+	suffix := "-worker"
+	if phase == JobPhaseContinuation {
+		suffix = "-continuation"
+	}
+	if len(validation.IsDNS1123Subdomain(review.Name)) != 0 || len(review.Name)+len(suffix) > 63 {
+		return configErr("review name is not a valid Kubernetes object name, or is too long for the " + suffix + " suffix")
 	}
 	if !runIDPattern.MatchString(spec.RunID) || len(spec.DeliveryID) == 0 || len(spec.DeliveryID) > 512 || spec.RepositoryID <= 0 ||
 		!repoPattern.MatchString(spec.Repo) || spec.PRNumber <= 0 || !shaPattern.MatchString(spec.HeadSHA) || !shaPattern.MatchString(spec.BaseSHA) ||
@@ -769,11 +882,6 @@ func validateInput(input Input) error {
 	if window < time.Duration(MinTerminalDeadlineSeconds)*time.Second || window > time.Duration(MaxTerminalDeadlineSeconds)*time.Second ||
 		input.Now.Before(spec.ReceivedAt.Time) {
 		return ErrJobDeadline
-	}
-	if spec.RunnerMode == "generic" {
-		if input.WorkspacePVCName != workspace.PVCName(spec.RepositoryID, spec.PRNumber) {
-			return configErr("workspace PVC name does not match the repository and PR it claims")
-		}
 	}
 	lease := input.WorkspaceLease
 	if !lease.Acquired || lease.Lease == nil || lease.HolderIdentity != spec.RunID {

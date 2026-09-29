@@ -192,13 +192,15 @@ describe('Empirical Adversarial Challenge Suite: Parameter Defaulting & Falsy Co
       }).toThrow(/INVALID_SHAPE/);
     });
 
-    it('K8sJobRunner constructor throws INVALID_SHAPE when defaultPvcName is empty string', () => {
-      expect(() => {
-        new K8sJobRunner({
-          defaultPvcName: '',
-          forceSimulation: true,
-        });
-      }).toThrow(/INVALID_SHAPE/);
+    it('K8sJobRunner constructor allows defaultPvcName to be empty string or omitted', () => {
+      const runner = new K8sJobRunner({
+        defaultPvcName: '',
+        forceSimulation: true,
+      });
+      const manifest = runner.generateJobManifest(baseSpec);
+      const volume = manifest.spec.template.spec.volumes[0];
+      expect(volume.emptyDir).toBeDefined();
+      expect(volume.persistentVolumeClaim).toBeUndefined();
     });
 
     it('generateJobManifest throws INVALID_SHAPE when spec.jobName is empty string', () => {
@@ -211,13 +213,16 @@ describe('Empirical Adversarial Challenge Suite: Parameter Defaulting & Falsy Co
       }).toThrow(/INVALID_SHAPE/);
     });
 
-    it('fails closed on whitespace-only image, pvcClaimName, and jobName', () => {
+    it('fails closed on whitespace-only image and jobName', () => {
       const runner = new K8sJobRunner({ forceSimulation: true });
       expect(() => runner.generateJobManifest({ ...baseSpec, image: '   ' })).toThrow(/INVALID_SHAPE/);
-      expect(() => runner.generateJobManifest({ ...baseSpec, pvcClaimName: '   ' })).toThrow(/INVALID_SHAPE/);
       expect(() => runner.generateJobManifest({ ...baseSpec, jobName: '   ' })).toThrow(/INVALID_SHAPE/);
       expect(() => new K8sJobRunner({ defaultImage: '   ', forceSimulation: true })).toThrow(/INVALID_SHAPE/);
-      expect(() => new K8sJobRunner({ defaultPvcName: '   ', forceSimulation: true })).toThrow(/INVALID_SHAPE/);
+    });
+
+    it('throws INVALID_SHAPE on whitespace-only pvcClaimName', () => {
+      const runner = new K8sJobRunner({ forceSimulation: true });
+      expect(() => runner.generateJobManifest({ ...baseSpec, pvcClaimName: '   ' })).toThrow(/INVALID_SHAPE/);
     });
   });
 
@@ -316,8 +321,12 @@ describe('Empirical Adversarial Challenge Suite: Parameter Defaulting & Falsy Co
       await expect(runner.dispatchJob({ ...baseSpec, commitSha: '' })).rejects.toThrow(/INVALID_SHAPE/);
       await expect(runner.dispatchJob({ ...baseSpec, persona: '' })).rejects.toThrow(/INVALID_SHAPE/);
       await expect(runner.dispatchJob({ ...baseSpec, image: '' })).rejects.toThrow(/INVALID_SHAPE/);
-      await expect(runner.dispatchJob({ ...baseSpec, pvcClaimName: '' })).rejects.toThrow(/INVALID_SHAPE/);
       await expect(runner.dispatchJob({ ...baseSpec, jobName: '' })).rejects.toThrow(/INVALID_SHAPE/);
+      await expect(runner.dispatchJob({ ...baseSpec, pvcClaimName: '' })).rejects.toThrow(/INVALID_SHAPE/);
+      await expect(runner.dispatchJob({ ...baseSpec, pvcClaimName: '   ' })).rejects.toThrow(/INVALID_SHAPE/);
+      const res = await runner.dispatchJob(baseSpec);
+      expect(res.manifest.spec.template.spec.volumes[0].emptyDir).toBeDefined();
+      expect(res.manifest.spec.template.spec.volumes[0].persistentVolumeClaim).toBeUndefined();
     });
   });
 });
