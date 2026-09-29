@@ -32,13 +32,54 @@ export interface ReviewRiskAcceptance {
   appliedAt: string;
 }
 
+/**
+ * Cancellation reasons are a shared persistence and event-wire contract.
+ * Keep their runtime values and TypeScript type sourced from this tuple so a
+ * new reason cannot compile in one gate path while snapshots reject it.
+ */
+export const REVIEW_GATE_CANCELLATION_REASONS = [
+  'candidate-superseded',
+  'pull-request-closed',
+  'pull-request-draft',
+  'review-opted-out',
+  'operator-cancelled',
+] as const;
+
+export type ReviewGateCancellationReason = typeof REVIEW_GATE_CANCELLATION_REASONS[number];
+
+const REVIEW_GATE_PENDING_REASONS = ['review-pending'] as const;
+const REVIEW_GATE_TIMEOUT_REASONS = ['review-deadline-exceeded'] as const;
+const REVIEW_GATE_FAILURE_REASONS = [
+  'invalid-evidence',
+  'infrastructure-failure',
+  'incomplete-review',
+  'blocking-findings',
+] as const;
+const REVIEW_GATE_AUTOMATIC_SUCCESS_REASONS = ['clean-review', 'central-exemption'] as const;
+const REVIEW_GATE_ACCEPTED_RISK_REASONS = ['human-accepted-risk'] as const;
+
+/** Complete durable gate-decision vocabulary shared by policy and wire schemas. */
+export const REVIEW_GATE_REASONS = [
+  ...REVIEW_GATE_PENDING_REASONS,
+  ...REVIEW_GATE_TIMEOUT_REASONS,
+  ...REVIEW_GATE_CANCELLATION_REASONS,
+  ...REVIEW_GATE_FAILURE_REASONS,
+  ...REVIEW_GATE_AUTOMATIC_SUCCESS_REASONS,
+  ...REVIEW_GATE_ACCEPTED_RISK_REASONS,
+] as const;
+
+export function isReviewGateCancellationReason(value: unknown): value is ReviewGateCancellationReason {
+  return typeof value === 'string'
+    && (REVIEW_GATE_CANCELLATION_REASONS as readonly string[]).includes(value);
+}
+
 export type ReviewGateDecision =
-  | { status: 'pending'; eligible: false; reason: 'review-pending' }
-  | { status: 'timed_out'; eligible: false; reason: 'review-deadline-exceeded' }
-  | { status: 'cancelled'; eligible: false; reason: 'candidate-superseded' | 'pull-request-closed' }
-  | { status: 'failure'; eligible: false; reason: 'invalid-evidence' | 'infrastructure-failure' | 'incomplete-review' | 'blocking-findings' }
-  | { status: 'success'; eligible: true; reason: 'clean-review' | 'central-exemption' }
-  | { status: 'success'; eligible: true; reason: 'human-accepted-risk'; audit: {
+  | { status: 'pending'; eligible: false; reason: typeof REVIEW_GATE_PENDING_REASONS[number] }
+  | { status: 'timed_out'; eligible: false; reason: typeof REVIEW_GATE_TIMEOUT_REASONS[number] }
+  | { status: 'cancelled'; eligible: false; reason: ReviewGateCancellationReason }
+  | { status: 'failure'; eligible: false; reason: typeof REVIEW_GATE_FAILURE_REASONS[number] }
+  | { status: 'success'; eligible: true; reason: typeof REVIEW_GATE_AUTOMATIC_SUCCESS_REASONS[number] }
+  | { status: 'success'; eligible: true; reason: typeof REVIEW_GATE_ACCEPTED_RISK_REASONS[number]; audit: {
     eventId: number; actorLogin: string; actorPermission: string; appliedAt: string; reviewedAt: string;
   } };
 

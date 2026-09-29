@@ -4110,6 +4110,292 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
   });
 
+  describe('cancelRunsForPullRequest protected gate settlement (REL-1188)', () => {
+    it.each([
+      { cancelReason: 'converted_to_draft', gateReason: 'pull-request-draft' as const },
+      { cancelReason: 'opt_out_label', gateReason: 'review-opted-out' as const },
+    ])('persists the truthful $gateReason gate reason', async ({ cancelReason, gateReason }) => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const input = authoritativeAdmission(`truthful-${gateReason}`, 1_000);
+      const admitted = await repository.admit(input);
+
+      await expect(repository.cancelRunsForPullRequest({
+        repositoryId: input.repositoryId,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason,
+        gateReason,
+        now: 2_000,
+      })).resolves.toEqual({ cancelledRunIds: [admitted.run.runId] });
+
+      expect((await client.query(`SELECT decision FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0].decision)
+        .toMatchObject({ status: 'cancelled', reason: gateReason });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .find((event) => event.eventKind === 'review.lifecycle.cancelled')?.data)
+        .toMatchObject({ retry_class: gateReason });
+    });
+
+    it.each([
+      { owner: '', label: 'empty owner' },
+      { repo: ' ', label: 'empty repository' },
+      { prNumber: 0, label: 'non-positive pull request number' },
+      { cancelReason: '', label: 'empty operator reason' },
+      { gateReason: 'bogus' as any, label: 'out-of-contract gate reason' },
+    ])('rejects $label before mutating cancellation state', async ({ label, ...patch }) => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission(`invalid-active-cancel-${label.replaceAll(' ', '-')}`, 1_000));
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+        ...patch,
+      })).rejects.toThrow('Invalid active-run cancellation request');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .some((event) => event.eventKind === 'review.lifecycle.cancelled')).toBe(false);
+    });
+
+    it('rejects a corrupted active-run repository identity without mutating cancellation state', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('invalid-active-cancel-repository-id', 1_000));
+      await client.query('UPDATE review_runs SET repository_id = 0 WHERE run_id = $1', [admitted.run.runId]);
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).rejects.toThrow('Active review run repository identity is invalid');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+    });
+
+    it('rolls back when the atomic cancellation outcome omits its selected run', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('atomic-cancel-invariant', 1_000));
+      await client.query(`CREATE FUNCTION suppress_atomic_cancel_outbox() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.status = 'terminal' THEN RETURN NULL; END IF;
+          RETURN NEW;
+        END $$`);
+      await client.query(`CREATE TRIGGER suppress_atomic_cancel_outbox BEFORE UPDATE ON review_dispatch_outbox
+        FOR EACH ROW EXECUTE FUNCTION suppress_atomic_cancel_outbox()`);
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).rejects.toThrow('Atomic cancellation omitted its selected active run');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .some((event) => event.eventKind === 'review.lifecycle.cancelled')).toBe(false);
+    });
+
+    it('atomically returns the active run selected for operator cancellation', async () => {
+      const { repository, client } = await createRepository(trustedValidation, true);
+      const admitted = await repository.admit(authoritativeAdmission('operator-cancel-lookup', 1_000));
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).resolves.toEqual({
+        activeRun: {
+          runId: admitted.run.runId,
+          repositoryId: 123,
+          attempt: admitted.run.attempt,
+        },
+        cancelledRunIds: [admitted.run.runId],
+      });
+
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation replay',
+        gateReason: 'operator-cancelled',
+        now: 2_500,
+      })).resolves.toBeNull();
+      expect((await dispatchState(client, admitted.run.runId)).run.status).toBe('cancelled');
+    });
+
+    it('selects the newest active run', async () => {
+      const { repository, client } = await createRepository(trustedValidation, true);
+      const older = await repository.admit(sameHeadAdmission(
+        'operator-cancel-lookup-older', 1_000, { headSha: '1'.repeat(40) },
+      ));
+      const newer = await repository.admit(sameHeadAdmission(
+        'operator-cancel-lookup-newer', 1_500, { headSha: '2'.repeat(40) },
+      ));
+
+      // Admission correctly supersedes the older candidate. Recreate the
+      // legacy/race shape this lookup must nevertheless resolve deterministically.
+      await client.query(`UPDATE review_runs
+        SET status = 'queued', updated_at = CASE run_id
+          WHEN $1 THEN to_timestamp(1) WHEN $2 THEN to_timestamp(1.5) END
+        WHERE run_id = ANY($3::text[])`, [
+        older.run.runId,
+        newer.run.runId,
+        [older.run.runId, newer.run.runId],
+      ]);
+
+      const lookup = {
+        owner: newer.run.identity.owner,
+        repo: newer.run.identity.repo,
+        prNumber: newer.run.identity.prNumber,
+      };
+      await expect(repository.cancelActiveRunsForPullRequest({
+        ...lookup, cancelReason: 'cancel newest', gateReason: 'operator-cancelled', now: 2_000,
+      })).resolves.toMatchObject({
+        activeRun: {
+          runId: newer.run.runId,
+          repositoryId: newer.run.repositoryId,
+          attempt: newer.run.attempt,
+        },
+        cancelledRunIds: expect.arrayContaining([older.run.runId, newer.run.runId]),
+      });
+    });
+
+    it('uses run id as the stable tie-break for equally fresh active runs', async () => {
+      const { repository, client } = await createRepository(trustedValidation, true);
+      const first = await repository.admit(sameHeadAdmission(
+        'operator-cancel-tie-first', 1_000, { headSha: '3'.repeat(40) },
+      ));
+      const second = await repository.admit(sameHeadAdmission(
+        'operator-cancel-tie-second', 1_500, { headSha: '4'.repeat(40) },
+      ));
+      await client.query(`UPDATE review_runs SET updated_at = to_timestamp(2), status = 'queued'
+        WHERE run_id = ANY($1::text[])`, [[first.run.runId, second.run.runId]]);
+      const stableWinner = [first.run, second.run]
+        .sort((left, right) => left.runId < right.runId ? -1 : 1).at(0)!;
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: stableWinner.identity.owner,
+        repo: stableWinner.identity.repo,
+        prNumber: stableWinner.identity.prNumber,
+        cancelReason: 'cancel stable winner',
+        gateReason: 'operator-cancelled',
+        now: 2_500,
+      })).resolves.toMatchObject({
+        activeRun: {
+          runId: stableWinner.runId,
+          repositoryId: stableWinner.repositoryId,
+          attempt: stableWinner.attempt,
+        },
+        cancelledRunIds: expect.arrayContaining([first.run.runId, second.run.runId]),
+      });
+    });
+
+    it('atomically retires the run, dispatch outbox, and protected gate', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('operator-cancel', 1_000));
+
+      const result = await repository.cancelRunsForPullRequest({
+        repositoryId: 123,
+        prNumber: 42,
+        cancelReason: 'operator requested cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      });
+
+      expect(result.cancelledRunIds).toEqual([admitted.run.runId]);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'cancelled', stage: 'complete', cancel_reason: 'operator requested cancellation',
+      });
+      expect(state.outbox).toMatchObject({ status: 'terminal', cancel_reason: 'operator requested cancellation' });
+      expect(state.run.cancel_propagated_at).toEqual(new Date(2_000));
+      expect(state.outbox.cancel_propagated_at).toEqual(new Date(2_000));
+      const gate = (await client.query(`SELECT desired_state, current_attempt, desired_version,
+        published_version, decision FROM review_gate_attempts WHERE run_id = $1`, [admitted.run.runId])).rows[0];
+      expect(gate).toMatchObject({
+        desired_state: 'cancelled', current_attempt: false,
+        decision: { status: 'cancelled', eligible: false, reason: 'operator-cancelled' },
+      });
+      expect(gate.published_version).toBe(gate.desired_version);
+      const cancelledLifecycle = (await lifecycleEvents(client, admitted.run.runId))
+        .find((event) => event.eventKind === 'review.lifecycle.cancelled');
+      expect(cancelledLifecycle?.data).toMatchObject({
+          stage: 'cancelled', terminal_class: 'cancelled', retry_class: 'operator-cancelled',
+        });
+      expect(cancelledLifecycle?.data).not.toHaveProperty('cancel_reason');
+    });
+
+    it('rolls back run and outbox cancellation when protected gate settlement fails', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('operator-cancel-rollback', 1_000));
+      await client.query(`CREATE FUNCTION reject_operator_gate_cancel() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.desired_state = 'cancelled' THEN RAISE EXCEPTION 'operator-gate-settlement-test'; END IF;
+          RETURN NEW;
+        END $$`);
+      await client.query(`CREATE TRIGGER reject_operator_gate_cancel BEFORE UPDATE ON review_gate_attempts
+        FOR EACH ROW EXECUTE FUNCTION reject_operator_gate_cancel()`);
+
+      await expect(repository.cancelRunsForPullRequest({
+        repositoryId: 123,
+        prNumber: 42,
+        cancelReason: 'operator requested cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).rejects.toThrow('operator-gate-settlement-test');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+    });
+
+    it('rejects an out-of-contract gate reason without partially settling state', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('invalid-cancel-gate-reason', 1_000));
+
+      await expect(repository.cancelRunsForPullRequest({
+        repositoryId: 123,
+        prNumber: 42,
+        cancelReason: 'operator requested cancellation',
+        gateReason: 'bogus' as any,
+        now: 2_000,
+      })).rejects.toThrow('Invalid cancellation gate reason');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .some((event) => event.eventKind === 'review.lifecycle.cancelled')).toBe(false);
+    });
+  });
+
   describe('terminalizeRunsForClosedPullRequest (REL-896)', () => {
     const closedInput = (input: Parameters<PostgresReviewDispatchRepository['admit']>[0], merged: boolean, now: number) => ({
       repositoryId: input.repositoryId,
@@ -4528,7 +4814,13 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       const { repository, client } = await createRepository();
       await repository.admit(sameHeadAdmission('race-closed', 1_000));
       const claim = (await repository.claimNext('dispatcher-a', 1_100, 30_000))!;
-      await repository.cancelRunsForPullRequest(claim.repositoryId, claim.prNumber, 'pull_request_closed', 1_200);
+      await repository.cancelRunsForPullRequest({
+        repositoryId: claim.repositoryId,
+        prNumber: claim.prNumber,
+        cancelReason: 'pull_request_closed',
+        gateReason: 'pull-request-closed',
+        now: 1_200,
+      });
       expect((await outboxRow(client, claim.runId)).cancel_propagated_at).not.toBeNull();
       await expect(repository.reopenOrphanedProjectionCancellation(
         claim.runId, claim.claimAttempt, projectionName, 1_300,

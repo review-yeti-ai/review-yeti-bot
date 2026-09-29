@@ -45,6 +45,7 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
   const callerIdentity = 'challenger2-reviewer';
 
   let mockDb: any;
+  let mockCancellationRepository: any;
   let app: express.Express;
   let router: RemoteMcpRouter;
   let activeServers: http.Server[] = [];
@@ -88,10 +89,26 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     mockDb = {
       query: vi.fn(),
     };
+    mockCancellationRepository = {
+      cancelActiveRunsForPullRequest: vi.fn(async (input: {
+        owner: string; repo: string; prNumber: number;
+      }) => {
+        const result = await mockDb.query('SELECT active review run', [
+          input.owner, input.repo, input.prNumber,
+        ]);
+        const row = result.rows[0];
+        const activeRun = row ? {
+          runId: String(row.run_id), repositoryId: Number(row.repository_id),
+          attempt: Number(row.attempt || 1),
+        } : null;
+        return activeRun ? { activeRun, cancelledRunIds: [activeRun.runId] } : null;
+      }),
+    };
 
     router = createRemoteMcpRouter({
       authenticator: createTestAuthenticator(),
       db: mockDb,
+      cancelDeps: { cancellationRepository: mockCancellationRepository },
     });
 
     app = express();
@@ -357,11 +374,9 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     });
 
     it('ADV-CANC-003: Cancellation of already-finished attempt throws Not Found error', async () => {
-      // Query returns empty because run is 'completed' (not in 'queued','running','publishing')
-      mockDb.query.mockResolvedValueOnce({ rows: [] });
-
+      const cancelActiveRunsForPullRequest = vi.fn(async () => null);
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
+        cancellationRepository: { cancelActiveRunsForPullRequest },
       });
 
       await expect(
@@ -401,37 +416,14 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     });
 
     it('ADV-CANC-005: Valid cancellation updates DB, terminates outbox, and reaps pod', async () => {
-      let dbUpdatedWithReason: string | undefined;
-      let outboxTerminated = false;
-
-      mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
-        if (sql.includes('review_runs') && sql.includes('SELECT')) {
-          return {
-            rows: [
-              {
-                run_id: 'run_to_cancel_live',
-                attempt: 3,
-                lease_owner: 'review-worker-pod-999',
-                status: 'running',
-              },
-            ],
-          };
-        }
-        if (sql.includes('UPDATE review_runs') && sql.includes("status = 'cancelled'")) {
-          dbUpdatedWithReason = params[1];
-          return { rows: [] };
-        }
-        if (sql.includes('UPDATE review_dispatch_outbox') && sql.includes("status = 'terminal'")) {
-          outboxTerminated = true;
-          return { rows: [] };
-        }
-        return { rows: [] };
-      });
-
       const mockPatch = vi.fn(async () => ({ reapedPod: 'review-worker-pod-999', success: true }));
+      const cancelActiveRunsForPullRequest = vi.fn(async () => ({
+        activeRun: { runId: 'run_to_cancel_live', repositoryId: 123, attempt: 3 },
+        cancelledRunIds: ['run_to_cancel_live'],
+      }));
 
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
+        cancellationRepository: { cancelActiveRunsForPullRequest },
         patchCancellation: mockPatch,
       });
 
@@ -446,8 +438,14 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       expect(data.cancelled).toBe(true);
       expect(data.attempt_id).toBe('review-attempt-55-3');
       expect(data.reaped_pod).toBe('review-worker-pod-999');
-      expect(dbUpdatedWithReason).toBe('Security incident: malicious code detected in PR');
-      expect(outboxTerminated).toBe(true);
+      expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith({
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
+        prNumber: 55,
+        cancelReason: 'Security incident: malicious code detected in PR',
+        gateReason: 'operator-cancelled',
+        now: expect.any(Number),
+      });
       expect(mockPatch).toHaveBeenCalledWith(
         'ct-review-to_cancel_live',
         'ct-review-system',

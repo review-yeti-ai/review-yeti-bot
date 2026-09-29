@@ -92,6 +92,23 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
     router = createRemoteMcpRouter({
       authenticator,
       db: mockDb,
+      cancelDeps: {
+        cancellationRepository: {
+          cancelActiveRunsForPullRequest: vi.fn(async (input: {
+            owner: string; repo: string; prNumber: number;
+          }) => {
+            const result = await mockDb.query('SELECT active review run', [
+              input.owner, input.repo, input.prNumber,
+            ]);
+            const row = result.rows[0];
+            const activeRun = row ? {
+              runId: String(row.run_id), repositoryId: Number(row.repository_id),
+              attempt: Number(row.attempt || 1),
+            } : null;
+            return activeRun ? { activeRun, cancelledRunIds: [activeRun.runId] } : null;
+          }),
+        },
+      },
     });
 
     app = express();

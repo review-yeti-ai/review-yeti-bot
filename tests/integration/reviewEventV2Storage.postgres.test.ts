@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import type { DashboardData } from '../../src/persistence/dashboardStore';
 import { ADVISORY_LOCK_ID, PostgresStore } from '../../src/persistence/postgresStore';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
+import { timeBudgetMs } from '../support/timeBudget';
 
 import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -470,7 +471,7 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
       repository_id: '123', pr_number: '42', next_sequence: '7',
     }]);
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_v2_outbox')).rows[0].count).toBe(0);
-  });
+  }, timeBudgetMs(5_000));
 
   it('keeps the dormant storage path brokerless and does not allocate v2 rows or readiness state', async () => {
     expect(process.env.NATS_URL).toBeUndefined();
@@ -479,7 +480,7 @@ describeWithPostgres('Review Yeti v2 additive storage foundation', () => {
     expect((await pool.query('SELECT COUNT(*)::int AS count FROM review_event_v2_sequence_counters')).rows[0].count).toBe(0);
     expect((await pool.query(`SELECT table_name FROM information_schema.tables
       WHERE table_schema = current_schema() AND table_name LIKE '%readiness%'`)).rows).toEqual([]);
-  });
+  }, timeBudgetMs(5_000));
 
   it('restores exact present and absent fixture environment states without exposing values', () => {
     const baseline = snapshotEnvironment();
