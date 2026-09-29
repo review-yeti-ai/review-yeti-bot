@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.97.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.7...v1.97.8) (2026-09-29)
+
+
+### Bug Fixes
+
+* **review:** report composed task coverage in checks ([#1128](https://github.com/review-yeti-ai/review-yeti-bot/issues/1128)) ([6304f9f](https://github.com/review-yeti-ai/review-yeti-bot/commit/6304f9fd5b8d2aa250a7eec87f2a72d0ab470f26))
+* route env config files to review personas ([#1127](https://github.com/review-yeti-ai/review-yeti-bot/issues/1127)) ([699c90a](https://github.com/review-yeti-ai/review-yeti-bot/commit/699c90a676afe5a3036a5d825e2282a922072146))
+
 ## [1.97.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.6...v1.97.7) (2026-09-29)
 
 
