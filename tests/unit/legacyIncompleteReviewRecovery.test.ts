@@ -48,6 +48,8 @@ describe('legacy incomplete-review generation recovery', () => {
     ['count mismatch', [gate({ output: { title: 'Review Yeti Gate: Failed (incomplete panel)', summary: 'Review Yeti Gate failed: the panel expected 5 review lane(s) but 3 completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.' } })]],
     ['duplicate id', [gate(), gate()]],
     ['newer success', [gate(), gate({ id: 2_002, completed_at: '2026-09-29T21:00:02Z', conclusion: 'success' })]],
+    ['same-second newer success', [gate(), gate({ id: 2_002, conclusion: 'success' })]],
+    ['same-second newer success in reverse API order', [gate({ id: 2_002, conclusion: 'success' }), gate()]],
     ['newer active gate', [gate(), gate({ id: 2_002, status: 'in_progress', conclusion: null, completed_at: null })]],
   ])('rejects %s', (_label, gates) => {
     expect(() => evaluateReviewGenerationRecoveryLedger(request, [worker()], gates)).toThrow(/generation recovery ledger/u);
@@ -56,6 +58,13 @@ describe('legacy incomplete-review generation recovery', () => {
   it('does not trust a bare BLOCK title in reconstructed evidence', () => {
     expect(() => validateReviewGenerationRecoveryEvidence(request, [{ generation: 1, checkId: 1_001,
       externalId: `${runId}:a1`, conclusion: 'failure', title: 'Review Yeti: BLOCK' }])).toThrow(/generation recovery ledger/u);
+  });
+
+  it('selects the higher-id failed Gate when completion timestamps tie', () => {
+    const older = gate({ id: 2_000, conclusion: 'success' });
+    for (const gates of [[older, gate()], [gate(), older]]) {
+      expect(evaluateReviewGenerationRecoveryLedger(request, [worker()], gates)).toHaveLength(1);
+    }
   });
 
   it('reads both bounded App-owned inventories without writing or relabeling checks', async () => {
