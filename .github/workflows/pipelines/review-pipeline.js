@@ -2850,12 +2850,40 @@ function classifyTelemetryHttpFailure(status) {
   return 'unknown';
 }
 
+/**
+ * True when an error is a transport-level socket fault worth retrying.
+ *
+ * `fetch failed` is undici's wrapper for every network-layer fault, and it is what a
+ * Tailscale-fronted gateway returns when the tunnel blips. It carries no errno, so
+ * the older errno-only list missed it entirely: the attempt was NOT retried, it
+ * classified as `unknown`, and `trip()` therefore defaulted to `transport` scope and
+ * quarantined every lane on the run. One blip became a whole-run INCOMPLETE.
+ *
+ * Matching the wrapper is deliberate rather than unwrapping to the cause: undici
+ * exposes the underlying code inconsistently across versions, a retry here is cheap
+ * and bounded, and a false quarantine is total. Anything genuinely non-transient
+ * still exhausts the retry budget and reaches the breaker.
+ *
+ * Single source of truth: the retry gate and the classifier previously carried
+ * separate copies of this list, which is exactly how one of them fell behind.
+ */
+const TRANSIENT_SOCKET_PATTERN = /ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|UND_ERR_HEADERS_TIMEOUT|socket hang up|network timeout|fetch failed/i;
+
+function isTransientSocketError(error) {
+  const message = String(error?.message || error || '');
+  if (TRANSIENT_SOCKET_PATTERN.test(message)) return true;
+  // undici often puts the real code on `cause` rather than in the message.
+  const cause = error?.cause;
+  if (cause && cause !== error) return isTransientSocketError(cause);
+  return false;
+}
+
 function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
   if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
   if (/provider_capacity_wait_cancelled|review_cancelled/i.test(message)) return 'cancelled';
   if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity|reasoning exceeded/i.test(message)) return 'timeout';
-  if (/ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(message)) return 'transient_socket';
+  if (isTransientSocketError(message)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
 }
@@ -4863,7 +4891,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           });
           return withTelemetry({ ...responseBase, decision: findings.length === 0 ? 'APPROVE' : 'FINDINGS', findings, coverage }, null);
         } catch (err) {
-          const isTransientSocket = /ECONNRESET|ETIMEDOUT|EPIPE|UND_ERR_SOCKET_TIMEOUT|network timeout/i.test(err.message || '');
+          const isTransientSocket = isTransientSocketError(err);
           const isUnusableDirectOutput = /empty_sse|Streaming response exceeded total deadline/i.test(err.message || '');
           const attemptCancelled = cancellationSignal?.aborted || err?.code === 'provider_capacity_wait_cancelled';
           const attemptFailureClass = attemptCancelled ? 'cancelled' : classifyTelemetryTransportError(err);
@@ -8471,6 +8499,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  // Exported so the transport-fault classification and its retry gate are testable
+  // directly, rather than only through a live lane failure.
+  isTransientSocketError,
+  classifyTelemetryTransportError,
   isRetiredFireworksTransport,
   // REL-1107: exported so the identity-probe retry and its diagnostics are testable.
   resolveAuthenticatedPublisher,
