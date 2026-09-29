@@ -413,6 +413,60 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
   });
 
+  it('exposes an exact-attempt receipt only for a durable matching SHIP gate', async () => {
+    const { repository, client } = await createRepository();
+    const admitted = await repository.admit(authoritativeAdmission('receipt-status', 1_000));
+    const runId = admitted.run.runId;
+    const tokenDigest = 'f'.repeat(64);
+    const completionDigest = 'e'.repeat(64);
+    await client.query(`UPDATE review_dispatch_outbox
+      SET worker_token_digest = $2, status = 'projected' WHERE run_id = $1`, [runId, tokenDigest]);
+    await client.query(`INSERT INTO review_worker_completions
+      (run_id, execution_attempt, content_digest, payload, byte_length)
+      VALUES ($1, 1, $2, '{}'::jsonb, 2)`, [runId, completionDigest]);
+    await client.query(`UPDATE review_gate_attempts
+      SET creation_state = 'bound', check_id = 98, worker_result_digest = $2,
+          decision = '{"status":"failure"}'::jsonb, desired_state = 'failure'
+      WHERE run_id = $1`, [runId, completionDigest]);
+
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query(`UPDATE review_gate_attempts
+      SET decision = '{"status":"success"}'::jsonb, desired_state = 'success'
+      WHERE run_id = $1`, [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query('UPDATE review_runs SET result_digest = $2 WHERE run_id = $1', [runId, completionDigest]);
+
+    const status = await repository.getRunStatus(runId, 1);
+    expect(status?.receipt).toMatchObject({
+      version: 'AppGateReceipt.v1',
+      runId, executionAttempt: 1, repositoryId: 123,
+      owner: 'exampleorg', repo: 'example-api', prNumber: 42,
+      headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+      digest: `sha256:${completionDigest}`,
+      evidenceRef: `audit://review-yeti/${runId}/attempts/1/completion`,
+    });
+    expect((await repository.getRunStatus(runId, 2))?.receipt).toBeUndefined();
+
+    await client.query('UPDATE review_gate_attempts SET current_attempt = false WHERE run_id = $1', [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query('UPDATE review_gate_attempts SET current_attempt = true WHERE run_id = $1', [runId]);
+
+    await client.query("UPDATE review_gate_attempts SET creation_state = 'creating', check_id = NULL WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 98 WHERE run_id = $1", [runId]);
+
+    await client.query("UPDATE review_gate_attempts SET desired_state = 'failure' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_gate_attempts SET desired_state = 'success' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeDefined();
+
+    await client.query(`UPDATE review_gate_attempts SET worker_result_digest = $2
+      WHERE run_id = $1`, [runId, '0'.repeat(64)]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+  });
+
   it('records the dispatch lifecycle transition matrix exactly once with unchanged authority returns', async () => {
     const { repository, client } = await createRepository({ lifecycleEvents: 'enabled' }, true);
 

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -63,9 +64,13 @@ const (
 	// PRReviewJob that isn't admitted yet), and its own RBAC intentionally
 	// stops at get/create on Secrets: a patch verb would let a compromised
 	// dispatcher process (it already holds the GitHub App key) overwrite any
-	// credential Secret in the namespace, not just its own run Secret. A
-	// finalizer plus a delete-only operator identity is the accepted
-	// alternative -- delete cannot be used to plant or read a credential.
+	// credential Secret in the namespace, not just its own run Secret. The
+	// operator has get/delete (not list/watch/patch) on Secrets: delete cleans
+	// up the exact named run Secret, while an uncached get reads that same
+	// Secret's publish token to verify its durable completion receipt. RBAC
+	// alone cannot constrain dynamic Secret names, so the exact-name check is
+	// load-bearing; a compromised operator identity could read other named
+	// Secrets in the namespace.
 	runSecretCleanupFinalizer = "review-yeti.ai/run-secret-cleanup"
 )
 
@@ -76,7 +81,11 @@ const (
 type PRReviewJobV1Alpha2Reconciler struct {
 	client.Client
 	// Confirm cached Job misses before treating an execution as lost.
-	APIReader         client.Reader
+	APIReader client.Reader
+	// SecretReader must be the manager's uncached APIReader. The operator Role
+	// deliberately has get/delete but no list/watch on Secrets, so an
+	// informer-backed client must never be used for the publish credential.
+	SecretReader      client.Reader
 	Scheme            *runtime.Scheme
 	Now               func() time.Time
 	MaxConcurrentJobs int
@@ -84,6 +93,10 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	// every app-gate review -- deliberately, since this lane fails closed and a
 	// half-configured transport must not reach a running worker.
 	Publishing job.PublishingConfig
+	// ReceiptHTTPClient permits a verified test CA for the trusted dispatch
+	// status lookup. A nil value uses Go's system-root TLS transport. Redirects
+	// and the request deadline are constrained by the lookup itself.
+	ReceiptHTTPClient *http.Client
 	// Recorder is optional. When set, a Forbidden run-Secret delete surfaces as
 	// a warning Event on the PRReviewJob in addition to the log line; nil is
 	// tolerated so unit tests do not need to wire a fake recorder.
@@ -96,7 +109,7 @@ type PRReviewJobV1Alpha2Reconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;delete
 // Reconcile converts optimistic-concurrency write conflicts into a quiet,
 // metric-counted requeue (REL-903). The single shared policy lives in
 // conflictRequeue.go so the v1alpha1 and v1alpha2 reconcilers cannot diverge.
@@ -1031,8 +1044,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 	if err == nil {
 		worker = &observed
 		if managedWorkerJobMatches(review, worker) && worker.Status.Succeeded > 0 {
+			// Keep the pending condition during receipt verification: it is the
+			// narrow exception that lets a pre-deadline success observed after
+			// failure delegation prove itself even though phase is Failed. Clear
+			// it only after the exact outcome has been durably reconciled.
+			result, reconcileErr := r.reconcileExistingJob(ctx, review, worker, r.clock())
+			if reconcileErr != nil {
+				return result, reconcileErr
+			}
 			meta.RemoveStatusCondition(&review.Status.Conditions, failurePublicationCondition)
-			return r.reconcileExistingJob(ctx, review, worker, r.clock())
+			if err := r.Status().Update(ctx, review); err != nil {
+				return ctrl.Result{}, err
+			}
+			return result, nil
 		}
 	}
 	if err != nil && !apierrors.IsNotFound(err) {

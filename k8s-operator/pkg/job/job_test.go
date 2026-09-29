@@ -1127,7 +1127,9 @@ func TestBuildWorkerJobGenericUsesEmptyDir(t *testing.T) {
 // check to decide whether a Secret it is about to delete is provably this
 // review's own run Secret (see reconcileRunSecretDeletion in
 // prreviewjob_v1alpha2_controller.go); a false positive here would let the
-// operator's delete-only RBAC grant remove an arbitrary Secret by name.
+// operator's get/delete RBAC grant target an arbitrary Secret by name. The
+// operator never lists or watches Secrets and uses uncached get only for the
+// exact run Secret's publish token.
 func TestIsValidRunSecretName(t *testing.T) {
 	tests := []struct {
 		name string

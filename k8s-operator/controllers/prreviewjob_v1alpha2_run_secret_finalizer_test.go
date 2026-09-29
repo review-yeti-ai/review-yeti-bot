@@ -20,9 +20,12 @@ limitations under the License.
 // granting it patch would let a compromised dispatcher process (it already
 // holds the GitHub App key) overwrite any credential Secret in the namespace,
 // not just its own run Secret. The accepted alternative is a finalizer on the
-// PRReviewJob (review-yeti.ai/run-secret-cleanup) plus a delete-only operator
-// RBAC grant on Secrets: delete-only cannot itself be used to plant or read a
-// credential. These tests exercise that finalizer's full lifecycle.
+// PRReviewJob (review-yeti.ai/run-secret-cleanup) plus an operator get/delete
+// grant on Secrets, with no list/watch/patch. Delete cleans up the exact named
+// run Secret; an uncached get separately reads its publish token for durable
+// receipt verification. A compromised operator identity could read another
+// Secret if its name were known, so the code's exact run-name check matters.
+// These tests exercise the cleanup finalizer's full lifecycle.
 package controllers_test
 
 import (
