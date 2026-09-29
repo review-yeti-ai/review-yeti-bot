@@ -602,8 +602,15 @@ function rawPublicationRoster(
   };
 }
 
-function renderCoverageSummary(coverage: PublishingCoverageProjection): string {
+function renderCoverageSummary(coverage: PublishingCoverageProjection, engine: ReviewEngine = 'panel', taskCount?: number): string {
   const expected = coverage.expectedLaneCount === null ? 'unknown' : String(coverage.expectedLaneCount);
+  // The composed engine deliberately projects its task roster into the shared
+  // panel-shaped coverage contract. Show the actual engine in the human check
+  // summary so a successful composed run is not reported as a persona panel.
+  if (engine === 'composed') {
+    const planned = taskCount === undefined ? 'unknown' : String(taskCount);
+    return `Coverage: engine=composed; planned tasks=${planned}; expected tasks=${expected}; completed tasks=${coverage.completedLaneCount}; failed tasks=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; task coverage complete=${coverage.fullPanelComplete}.`;
+  }
   return `Coverage: mode=${coverage.mode}; expected lanes=${expected}; completed lanes=${coverage.completedLaneCount}; failed lanes=${coverage.failedLaneCount}; roster valid=${coverage.rosterValid}; quorum satisfied=${coverage.quorumSatisfied}; full panel complete=${coverage.fullPanelComplete}.`;
 }
 
@@ -2140,7 +2147,7 @@ export async function runPublishingReviewWorker(
           `### Review Yeti: SHIP (${exemptionLabel})`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (no analyzable source changed).`,
           `- **Rationale**: \`${safeClassifierRationale}\``,
-          renderCoverageSummary(coverage),
+          renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           renderTransportSummary(transport.model, resolvedTransportModel),
           `Repository visibility: ${repositoryVisibility}.`,
         ]
@@ -2156,7 +2163,7 @@ export async function runPublishingReviewWorker(
           // REL-1085: every file served from the verdict cache, or why none was.
           ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
           ...renderMapReduceSummary(panelResult.mapReduce),
-          renderCoverageSummary(coverage),
+          renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
           renderTransportSummary(transport.model, resolvedTransportModel),
@@ -2185,7 +2192,7 @@ export async function runPublishingReviewWorker(
           // REL-1085: every file served from the verdict cache, or why none was.
           ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
           ...renderMapReduceSummary(panelResult.mapReduce),
-          renderCoverageSummary(coverage),
+          renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           ...(renderRoutedFiles(panelResult) ? [renderRoutedFiles(panelResult)!] : []),
           ...renderReviewDepthDisclosure(panelResult),
           ...(renderUnreportedLanes(panelResult) ? [renderUnreportedLanes(panelResult)!] : []),
@@ -2409,7 +2416,7 @@ export async function runPublishingReviewWorker(
         title: renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry),
         summary: [
           renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt),
-          renderCoverageSummary(coverage),
+          renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           renderTransportSummary(transport.model, resolvedTransportModel),
           renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs, tokenAccounting }),
           renderFailedLanesSummary(failedLanes),
