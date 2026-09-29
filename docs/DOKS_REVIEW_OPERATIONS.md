@@ -278,6 +278,17 @@ do not retain raw review prompts or credentials.
 
 ### Native output and turn-budget failures
 
+Legacy workers can label a zero-finding, incomplete roster `Review Yeti: BLOCK`.
+An explicit central same-head retry can recover that generation only when the
+service independently reads both complete, bounded App-owned check inventories:
+the exact run/head worker summary must report no findings and an incomplete
+panel or composed roster, and the newest completed `Review Yeti Gate` must fail
+with matching expected/completed counts after the worker completed. Missing,
+active, foreign, contradictory, or duplicate evidence is refused. The recovery
+receipt preserves the original BLOCK title and paired observations; it never
+rewrites the old check or creates an approval. Admission retains the existing
+three-generation cap and allocates the next generation atomically.
+
 A quick `budget_exhausted` failure can mean the model spent its allowed
 turns reading code without returning a verdict. It does not necessarily mean
 the wall-clock deadline expired. Inspect per-persona error categories as well:
