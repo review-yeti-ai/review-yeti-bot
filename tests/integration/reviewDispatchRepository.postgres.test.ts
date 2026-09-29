@@ -359,6 +359,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         execution_attempt INTEGER NOT NULL DEFAULT 0,
         dispatch_priority SMALLINT NOT NULL DEFAULT 0 CHECK (dispatch_priority IN (0, 1)),
         worker_token_digest VARCHAR(64),
+        terminal_receipt_digest VARCHAR(64),
         available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         cancel_requested_at TIMESTAMPTZ,
         cancel_reason TEXT,
@@ -536,7 +537,14 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [runId]);
     expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
     await client.query('UPDATE review_runs SET result_digest = $2 WHERE run_id = $1', [runId, completionDigest]);
+    expect((await client.query(`SELECT status, terminal_receipt_digest
+      FROM review_dispatch_outbox WHERE run_id = $1`, [runId])).rows[0]).toEqual({
+      status: 'projected',
+      terminal_receipt_digest: null,
+    });
 
+    // This receipt can only come from completion.content_digest: authoritative
+    // runs never use the legacy terminal outbox receipt column.
     const status = await repository.getRunStatus(runId, 1);
     expect(status?.receipt).toMatchObject({
       version: 'AppGateReceipt.v1',
@@ -735,6 +743,29 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     await expect(repository.markWorkerSuccess(success, { workerTokenDigest }, 1_004))
       .resolves.toEqual({ runId: admitted.run.runId, status: 'succeeded' });
+    await expect(repository.getRunStatus(admitted.run.runId, claim.executionAttempt)).resolves.toMatchObject({
+      status: 'succeeded',
+      isCurrentHead: true,
+      receipt: {
+        version: 'AppGateReceipt.v1',
+        runId: admitted.run.runId,
+        executionAttempt: claim.executionAttempt,
+        repositoryId: input.repositoryId,
+        owner: input.identity.owner,
+        repo: input.identity.repo,
+        prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha,
+        baseSha: input.identity.baseSha,
+        policyDigest: input.effectivePolicyDigest,
+        configDigest: input.identity.configDigest,
+        digest: `sha256:${workerTerminalSuccessDigest(success)}`,
+        evidenceRef: `audit://review-yeti/${admitted.run.runId}/attempts/${claim.executionAttempt}/completion`,
+      },
+    });
+    expect((await repository.getRunStatus(admitted.run.runId, claim.executionAttempt + 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [admitted.run.runId]);
+    expect((await repository.getRunStatus(admitted.run.runId, claim.executionAttempt))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_dispatch_outbox SET status = 'terminal' WHERE run_id = $1", [admitted.run.runId]);
     const state = await dispatchState(client, admitted.run.runId);
     expect(state.run).toMatchObject({
       status: 'succeeded',
@@ -749,6 +780,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       status: 'terminal',
       execution_attempt: 0,
       worker_token_digest: workerTokenDigest,
+      terminal_receipt_digest: workerTerminalSuccessDigest(success),
       lease_owner: null,
       lease_expires_at: null,
     });
