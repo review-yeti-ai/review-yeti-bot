@@ -11,7 +11,7 @@ import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
-import { TASK_DIMENSIONS, validateTaskPlan } from '../panel/reviewTask';
+import { DEFAULT_MAX_TASKS, TASK_DIMENSIONS, validateTaskPlan } from '../panel/reviewTask';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -269,7 +269,7 @@ const resultSchema = z.object({
     paths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(MAX_CHANGED_FILES),
     question: z.string().min(1).max(400),
     rationale: z.string().min(1).max(400),
-  }).strict()).min(1).max(8).optional(),
+  }).strict()).min(1).max(DEFAULT_MAX_TASKS).optional(),
   coverageComplete: z.boolean(),
   quorumSatisfied: z.boolean(),
   /** Optional worker-computed summaries; consistency checks only, never eligibility authority. */
@@ -639,7 +639,8 @@ function arbitrateLanes(
  * stored, for deciding whether a later run may rest on it. The worker's optional `result.verdict`
  * is never read (the authoritative worker does not even set it). The two trusted inputs the gate
  * took from its live coverage contract come from the gate's own stored evidence for this exact
- * completion: how many lanes the service required, and whether coverage was complete.
+ * completion: how many lanes the service required, whether coverage was complete, and whether
+ * the service verified a composed review. Older records without an engine are panel records.
  *
  * The changed files' patch text is not stored, so findings are validated without it. That can
  * only keep a finding the gate dropped as unanchored, never drop one the gate kept, so this is
@@ -647,14 +648,26 @@ function arbitrateLanes(
  */
 export function deriveStoredCompletionVerdict(
   result: WorkerReviewResult,
-  trusted: { expectedLanes: number; coverageComplete: boolean },
+  trusted: { expectedLanes: number; coverageComplete: boolean; reviewEngine?: 'composed' },
 ): CanonicalArbitration | null {
   if (!Number.isSafeInteger(trusted.expectedLanes) || trusted.expectedLanes <= 0) return null;
+  const composed = trusted.reviewEngine === 'composed';
+  if (composed) {
+    const plan = result.taskPlan;
+    if (!plan || plan.length !== trusted.expectedLanes
+      || new Set(plan.map((task) => task.id)).size !== plan.length) return null;
+    const requiredIds = new Set(plan.map((task) => task.id));
+    if (result.personas.some((persona) => persona.evidenceSource !== 'shadow' && !requiredIds.has(persona.id))) {
+      return null;
+    }
+  } else if (result.taskPlan) {
+    return null;
+  }
   // Shadow lanes never gated a verdict; the authoritative completion never carries them.
   const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
   if (new Set(gating.map((persona) => persona.id)).size !== gating.length) return null;
   const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
-    trusted.coverageComplete === true && result.coverageComplete, undefined, Boolean(result.taskPlan));
+    trusted.coverageComplete === true && result.coverageComplete, undefined, composed);
   return arbitration.valid ? arbitration.canonical : null;
 }
 
@@ -766,7 +779,7 @@ export function storedCompletionShipCompleteReason(
   if (evidence.coverageComplete !== true || evidence.quorumSatisfied !== true) return 'gate-incomplete';
   if (evidence.infrastructureFailure !== false) return 'gate-infrastructure-failure';
   if (evidence.verdict !== SHIP_VERDICT || evidence.p0Count !== 0 || evidence.p1Count !== 0) return 'gate-not-ship';
-  return storedLanesRefusal(result, expectedLanes);
+  return storedLanesRefusal(result, expectedLanes, evidence.reviewEngine === 'composed' ? 'composed' : undefined);
 }
 
 /**
@@ -774,7 +787,7 @@ export function storedCompletionShipCompleteReason(
  * required lanes through the same arbitration as the published verdict, must be a complete SHIP
  * with no P0/P1 at published severity on any lane.
  */
-function storedLanesRefusal(result: WorkerReviewResult, expectedLanes: number): StoredPriorRefusal | null {
+function storedLanesRefusal(result: WorkerReviewResult, expectedLanes: number, reviewEngine?: 'composed'): StoredPriorRefusal | null {
   if (result.quorumSatisfied !== true) return 'worker-quorum-unmet';
   if (result.coverageComplete !== true) return 'worker-coverage-incomplete';
   if (result.personas.some((persona) => persona.findings.some((finding) => {
@@ -783,7 +796,7 @@ function storedLanesRefusal(result: WorkerReviewResult, expectedLanes: number): 
   }))) return 'blocking-finding';
   // Quorum there needs exactly that many lanes, none failed (error lanes included) and complete
   // coverage, so a missing, extra, duplicate or failed lane is refused.
-  const canonical = deriveStoredCompletionVerdict(result, { expectedLanes, coverageComplete: true });
+  const canonical = deriveStoredCompletionVerdict(result, { expectedLanes, coverageComplete: true, reviewEngine });
   if (canonical === null) return 'rederived-invalid';
   const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
   if (gating.some((persona) => persona.decision === 'ERROR' || persona.status === 'ERROR')) return 'lane-failed';
@@ -951,6 +964,7 @@ export function deriveCanonicalWorkerReviewEvidence(
   const quorumSatisfied = contract.quorumSatisfied && completion.result.quorumSatisfied && canonical.quorumSatisfied;
   const evidence: ReviewGateEvidence = {
     verdict: canonical.verdict,
+    ...(contract.reviewEngine === 'composed' ? { reviewEngine: 'composed' as const } : {}),
     completedAt: completion.result.completedAt,
     coverageComplete,
     quorumSatisfied,
