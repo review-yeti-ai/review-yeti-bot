@@ -110,6 +110,7 @@ describe('ActionDispatchApi - GET status endpoint', () => {
 
   it('returns a durable receipt only to the exact worker token', async () => {
     const receipt = {
+      version: 'AppGateReceipt.v1' as const,
       runId: 'run_abc123', executionAttempt: 2, repositoryId: 42,
       owner: 'calltelemetry', repo: 'ct-meta', prNumber: 3591,
       headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),

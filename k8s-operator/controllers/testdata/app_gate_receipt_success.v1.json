@@ -1,0 +1,20 @@
+{
+  "status": "succeeded",
+  "cancelRequested": false,
+  "isCurrentHead": true,
+  "receipt": {
+    "version": "AppGateReceipt.v1",
+    "runId": "run_11111111111111111111111111111111",
+    "executionAttempt": 2,
+    "repositoryId": 123,
+    "owner": "calltelemetry",
+    "repo": "cisco-cdr",
+    "prNumber": 42,
+    "headSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "baseSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "policyDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "configDigest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "evidenceRef": "audit://review-yeti/run_11111111111111111111111111111111/attempts/2/completion"
+  }
+}

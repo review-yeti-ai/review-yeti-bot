@@ -7,6 +7,7 @@ import {
   type RunStatusResult,
 } from '../../src/persistence/reviewDispatchRepository';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import appGateReceiptFixture from '../../k8s-operator/controllers/testdata/app_gate_receipt_success.v1.json';
 
 describe('Two-Tier Cancellation Architecture', () => {
   describe('PostgresReviewDispatchRepository cancellation methods', () => {
@@ -146,6 +147,7 @@ describe('Two-Tier Cancellation Architecture', () => {
     });
 
     it('binds status receipt to the persisted completion and matching gate decision', async () => {
+      const expected = appGateReceiptFixture.receipt;
       const mockQuery = vi.fn(async (sql: string) => {
         if (sql.includes('FROM review_runs AS runs')) {
           expect(sql).toContain('completion.execution_attempt = $2');
@@ -154,14 +156,15 @@ describe('Two-Tier Cancellation Architecture', () => {
           expect(sql).toContain("runs.status = 'succeeded'");
           expect(sql).toContain('runs.result_digest = completion.content_digest');
           return { rows: [{
-            run_id: 'run_receipt', status: 'completed',
-            repository_id: 123, owner: 'calltelemetry', repo: 'ct-meta', pr_number: 42,
-            head_sha: 'a'.repeat(40), base_sha: 'b'.repeat(40),
-            effective_policy_digest: 'c'.repeat(64), effective_config_digest: 'd'.repeat(64),
-            worker_token_digest: 'f'.repeat(64), completion_digest: 'e'.repeat(64),
+            run_id: expected.runId, status: appGateReceiptFixture.status,
+            repository_id: expected.repositoryId, owner: expected.owner, repo: expected.repo,
+            pr_number: expected.prNumber,
+            head_sha: expected.headSha, base_sha: expected.baseSha,
+            effective_policy_digest: expected.policyDigest, effective_config_digest: expected.configDigest,
+            worker_token_digest: 'f'.repeat(64), completion_digest: expected.digest.slice('sha256:'.length),
           }] };
         }
-        return { rows: [{ head_sha: 'a'.repeat(40) }] };
+        return { rows: [{ head_sha: expected.headSha }] };
       });
       const repo = new PostgresReviewDispatchRepository(
         { connect: vi.fn(), query: mockQuery } as any,
@@ -169,15 +172,8 @@ describe('Two-Tier Cancellation Architecture', () => {
         { lifecycleEvents: 'disabled' },
       );
 
-      const status = await repo.getRunStatus('run_receipt', 2);
-      expect(status?.receipt).toEqual({
-        runId: 'run_receipt', executionAttempt: 2, repositoryId: 123,
-        owner: 'calltelemetry', repo: 'ct-meta', prNumber: 42,
-        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
-        policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
-        digest: `sha256:${'e'.repeat(64)}`,
-        evidenceRef: 'audit://review-yeti/run_receipt/attempts/2/completion',
-      });
+      const status = await repo.getRunStatus(expected.runId, expected.executionAttempt);
+      expect(status?.receipt).toEqual(expected);
     });
   });
 

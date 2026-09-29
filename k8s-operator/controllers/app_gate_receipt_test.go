@@ -2,6 +2,7 @@ package controllers_test
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,24 +23,46 @@ import (
 
 const testPublishToken = "test-publish-token-exact-attempt"
 
-func validAppGateRunStatus(review *reviewv1alpha2.PRReviewJob) map[string]any {
-	owner, repo, _ := strings.Cut(review.Spec.Repo, "/")
-	attempt := int32(1)
-	if review.Spec.ExecutionAttempt != nil {
-		attempt = *review.Spec.ExecutionAttempt
+// The TypeScript repository test reads this same fixture. A changed wire
+// shape or evidence reference must pass both languages before it can ship.
+//
+//go:embed testdata/app_gate_receipt_success.v1.json
+var appGateReceiptSuccessFixture []byte
+
+func validAppGateRunStatus(t *testing.T, review *reviewv1alpha2.PRReviewJob) map[string]any {
+	t.Helper()
+	var status map[string]any
+	if err := json.Unmarshal(appGateReceiptSuccessFixture, &status); err != nil {
+		t.Errorf("parse shared receipt fixture: %v", err)
+		return map[string]any{}
 	}
-	return map[string]any{
-		"status": "succeeded", "cancelRequested": false, "isCurrentHead": true,
-		"receipt": map[string]any{
-			"runId": review.Spec.RunID, "executionAttempt": attempt,
-			"repositoryId": review.Spec.RepositoryID, "owner": owner, "repo": repo,
-			"prNumber": review.Spec.PRNumber, "headSha": review.Spec.HeadSHA,
-			"baseSha": review.Spec.BaseSHA, "policyDigest": review.Spec.PolicyDigest,
-			"configDigest": review.Spec.ConfigDigest,
-			"digest":       "sha256:" + strings.Repeat("1", 64),
-			"evidenceRef":  fmt.Sprintf("audit://review-yeti/%s/attempts/%d/completion", review.Spec.RunID, attempt),
-		},
+	receipt, ok := status["receipt"].(map[string]any)
+	if !ok {
+		t.Errorf("shared receipt fixture is missing its receipt")
+		return map[string]any{}
 	}
+	// Most tests use the fixed v1 fixture unchanged. The live-refresh test
+	// generates a second run identity; keep the same fixture wire shape while
+	// rebinding its immutable coordinates to that test's exact attempt.
+	if receipt["runId"] != review.Spec.RunID {
+		owner, repo, _ := strings.Cut(review.Spec.Repo, "/")
+		attempt := int32(1)
+		if review.Spec.ExecutionAttempt != nil {
+			attempt = *review.Spec.ExecutionAttempt
+		}
+		receipt["runId"] = review.Spec.RunID
+		receipt["executionAttempt"] = attempt
+		receipt["repositoryId"] = review.Spec.RepositoryID
+		receipt["owner"] = owner
+		receipt["repo"] = repo
+		receipt["prNumber"] = review.Spec.PRNumber
+		receipt["headSha"] = review.Spec.HeadSHA
+		receipt["baseSha"] = review.Spec.BaseSHA
+		receipt["policyDigest"] = review.Spec.PolicyDigest
+		receipt["configDigest"] = review.Spec.ConfigDigest
+		receipt["evidenceRef"] = fmt.Sprintf("audit://review-yeti/%s/attempts/%d/completion", review.Spec.RunID, attempt)
+	}
+	return status
 }
 
 func installAppGateReceiptEndpoint(
@@ -73,7 +96,7 @@ func installValidAppGateReceipt(t *testing.T, r *controllers.PRReviewJobV1Alpha2
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(review))
+		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, review))
 	})
 }
 
@@ -83,6 +106,9 @@ func TestAppGateReceiptRequiresTrustedExactCoordinates(t *testing.T) {
 		mutate func(map[string]any)
 	}{
 		{"no receipt", func(status map[string]any) { delete(status, "receipt") }},
+		{"foreign contract version", func(status map[string]any) {
+			status["receipt"].(map[string]any)["version"] = "AppGateReceipt.v2"
+		}},
 		{"foreign run", func(status map[string]any) {
 			status["receipt"].(map[string]any)["runId"] = "run_22222222222222222222222222222222"
 		}},
@@ -119,7 +145,7 @@ func TestAppGateReceiptRequiresTrustedExactCoordinates(t *testing.T) {
 			}
 			review := storedReview(t, kube, req)
 			installAppGateReceiptEndpoint(t, r, kube, review, func(w http.ResponseWriter, request *http.Request) {
-				status := validAppGateRunStatus(review)
+				status := validAppGateRunStatus(t, review)
 				tc.mutate(status)
 				_ = json.NewEncoder(w).Encode(status)
 			})
@@ -157,7 +183,7 @@ func TestAppGateReceiptTransportFailureRetriesWithoutSuccess(t *testing.T) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(review))
+		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, review))
 	})
 	worker := storedWorker(t, kube, req)
 	worker.Status.Succeeded = 1
@@ -187,7 +213,7 @@ func TestAppGateReceiptNetworkFailureRetriesWithoutSuccess(t *testing.T) {
 	}
 	review := storedReview(t, kube, req)
 	server := installAppGateReceiptEndpoint(t, r, kube, review, func(w http.ResponseWriter, request *http.Request) {
-		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(review))
+		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, review))
 	})
 	server.Close()
 	worker := storedWorker(t, kube, req)
@@ -311,7 +337,7 @@ func TestAppGateReceiptRejectsInsecureStatusURLs(t *testing.T) {
 			}
 			review := storedReview(t, kube, req)
 			server := installAppGateReceiptEndpoint(t, r, kube, review, func(w http.ResponseWriter, request *http.Request) {
-				_ = json.NewEncoder(w).Encode(validAppGateRunStatus(review))
+				_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, review))
 			})
 			r.Publishing.CompletionURL = tc.url(server.URL)
 			worker := storedWorker(t, kube, req)

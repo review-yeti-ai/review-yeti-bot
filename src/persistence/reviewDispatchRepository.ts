@@ -488,6 +488,7 @@ export interface RunStatusResult {
   isCurrentHead: boolean;
   workerTokenDigest?: string;
   receipt?: {
+    version: 'AppGateReceipt.v1';
     runId: string;
     executionAttempt: number;
     repositoryId: number;
@@ -2392,6 +2393,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async getRunStatus(runId: string, executionAttempt: number): Promise<RunStatusResult | null> {
+    // Action-dispatch owns the durable gate predicate. The operator cannot
+    // inspect PostgreSQL: it only re-verifies the versioned receipt's immutable
+    // coordinates and digest over the authenticated status channel. Both
+    // implementations consume the same v1 wire fixture in tests.
     const res = await this.queryable.query(
       `SELECT runs.run_id,
               runs.status,
@@ -2480,6 +2485,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       receipt: typeof row.completion_digest === 'string'
         && /^[a-f0-9]{64}$/u.test(row.completion_digest)
         && row.worker_token_digest ? {
+        version: 'AppGateReceipt.v1',
         runId: String(row.run_id),
         executionAttempt,
         repositoryId: Number(row.repository_id),

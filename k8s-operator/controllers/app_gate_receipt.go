@@ -32,12 +32,13 @@ var (
 	receiptDigestPattern      = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
-// The status endpoint authenticates the exact run Secret's publish token and
-// returns a receipt only after the durable completion and service gate match.
-// The operator independently checks every immutable coordinate before using
-// its digest; neither a worker-written annotation nor a successful HTTP code
-// alone is sufficient to promote an app-gate Job.
+// Action-dispatch owns the durable completion/gate predicate and authenticates
+// the exact run Secret's publish token. This operator only re-verifies the
+// versioned wire receipt against immutable PRReviewJob coordinates before
+// using its digest. The shared v1 fixture is exercised by both Go and TS tests;
+// neither a worker annotation nor HTTP success alone can promote the Job.
 type appGateReceipt struct {
+	Version          string `json:"version"`
 	RunID            string `json:"runId"`
 	ExecutionAttempt int32  `json:"executionAttempt"`
 	RepositoryID     int64  `json:"repositoryId"`
@@ -78,6 +79,7 @@ func validateAppGateReceipt(receipt *appGateReceipt, review *reviewv1alpha2.PRRe
 	}
 	owner, repo, ok := strings.Cut(review.Spec.Repo, "/")
 	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") ||
+		receipt.Version != "AppGateReceipt.v1" ||
 		receipt.RunID != review.Spec.RunID || receipt.ExecutionAttempt != attempt ||
 		receipt.RepositoryID != review.Spec.RepositoryID || receipt.Owner != owner || receipt.Repo != repo ||
 		receipt.PRNumber != review.Spec.PRNumber || receipt.HeadSHA != review.Spec.HeadSHA ||

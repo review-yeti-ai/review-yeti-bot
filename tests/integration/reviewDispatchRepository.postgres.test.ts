@@ -440,6 +440,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     const status = await repository.getRunStatus(runId, 1);
     expect(status?.receipt).toMatchObject({
+      version: 'AppGateReceipt.v1',
       runId, executionAttempt: 1, repositoryId: 123,
       owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
       headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
