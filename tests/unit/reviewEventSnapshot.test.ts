@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PostgresReviewEventSnapshotStore } from '../../src/events/reviewEventSnapshot';
+import { REVIEW_GATE_REASONS } from '../../src/review/reviewGatePolicy';
 
 const runId = `run_${'a'.repeat(32)}`;
 const scope = { repositoryIds: [123] };
@@ -152,6 +153,13 @@ describe('authoritative review event snapshots', () => {
       .store.getSnapshot(runId, scope);
     expect(snapshot?.gate).toMatchObject({ state: 'failure', published: false, reason: null });
     expect(JSON.stringify(snapshot)).not.toContain('unrecognized-private-gate-diagnostic');
+  });
+
+  it.each(REVIEW_GATE_REASONS)('accepts the shared %s gate-reason vocabulary', async gateReason => {
+    const snapshot = await fixture(record({ gate_attempt_id: `${runId}-g0-e1`, gate_app_id: 4385771,
+      gate_state: 'failure', gate_published: false, gate_reason: gateReason }))
+      .store.getSnapshot(runId, scope);
+    expect(snapshot?.gate?.reason).toBe(gateReason);
   });
 
   it('preserves the bounded operator cancellation gate reason', async () => {

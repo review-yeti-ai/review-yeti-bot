@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { reviewEventRunIdSchema as runIdSchema, reviewEventGitShaSchema as sha,
   reviewEventDigestSchema as digest } from './reviewEventIdentity';
-import { REVIEW_GATE_CANCELLATION_REASONS } from '../review/reviewGatePolicy';
+import { REVIEW_GATE_REASONS } from '../review/reviewGatePolicy';
 
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,255}$/u);
 const integer = z.preprocess(value => typeof value === 'string' && /^\d+$/u.test(value) ? Number(value) : value,
@@ -14,9 +14,7 @@ const timestamp = z.preprocess(value => value instanceof Date ? value.toISOStrin
 const statuses = ['queued', 'running', 'publishing', 'succeeded', 'failed', 'cancelled', 'superseded', 'terminal'] as const;
 const snapshotStages = ['admission', 'snapshot', 'config', 'submodules', 'review', 'arbiter', 'publish', 'complete', 'terminal'] as const;
 const gateStates = ['queued', 'in_progress', 'success', 'failure', 'cancelled', 'timed_out'] as const;
-const gateReasons = ['review-pending', 'review-deadline-exceeded', ...REVIEW_GATE_CANCELLATION_REASONS,
-  'invalid-evidence', 'infrastructure-failure', 'incomplete-review', 'blocking-findings', 'clean-review',
-  'central-exemption', 'human-accepted-risk'] as const;
+const gateReasons = REVIEW_GATE_REASONS;
 const completionStates = ['pending', 'claimed', 'dispatched', 'completed', 'error', 'superseded', 'terminal'] as const;
 
 export interface ReviewSnapshotScope {
