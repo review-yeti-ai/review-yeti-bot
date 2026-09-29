@@ -809,18 +809,22 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
     });
 
     it.each([
-      { label: 'cleanup patch reports failure', withPatch: true },
-      { label: 'cleanup patch is unavailable', withPatch: false },
-    ])('TC-CANC-006: Keeps cleanup queued when $label', async ({ withPatch }) => {
+      { label: 'cleanup patch reports failure', patchMode: 'failure' },
+      { label: 'cleanup patch throws', patchMode: 'throws' },
+      { label: 'cleanup patch is unavailable', patchMode: 'unavailable' },
+    ])('TC-CANC-006: Keeps cleanup queued when $label', async ({ patchMode }) => {
       mockDb.query.mockResolvedValueOnce({
         rows: [{ run_id: 'run_to_cancel', repository_id: 123, attempt: 1, status: 'running' }],
       });
       const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_to_cancel'] }));
-      const mockPatch = vi.fn(async () => ({ success: false, reapedPod: 'worker-must-not-be-reported' }));
+      const mockPatch = vi.fn(async () => {
+        if (patchMode === 'throws') throw new Error('Kubernetes API unavailable');
+        return { success: false, reapedPod: 'worker-must-not-be-reported' };
+      });
       const tool = createCancelReviewTool({
         queryableDatabase: mockDb,
         cancellationRepository: { cancelRunsForPullRequest },
-        ...(withPatch ? { patchCancellation: mockPatch } : {}),
+        ...(patchMode === 'unavailable' ? {} : { patchCancellation: mockPatch }),
       });
 
       const result = await tool.execute({
@@ -830,7 +834,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       expect(data.reaped_pod).toBeUndefined();
       expect(data.message).toContain('worker cleanup is queued');
       expect(data.message).not.toContain('cleanup confirmed');
-      expect(mockPatch).toHaveBeenCalledTimes(withPatch ? 1 : 0);
+      expect(mockPatch).toHaveBeenCalledTimes(patchMode === 'unavailable' ? 0 : 1);
     });
 
     it('TC-CANC-003: Fails closed when the transactional repository is unavailable', async () => {
