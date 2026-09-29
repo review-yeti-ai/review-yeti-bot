@@ -101,6 +101,14 @@ describe('claimed-run cancellation race (REL-1073)', () => {
     expect(repository.markCancelPropagated).not.toHaveBeenCalled();
   });
 
+  it('leaves a persistence-rejected cancellation to the sweep', async () => {
+    const { engine, repository } = engineWith({ markCancelPropagated: async () => false });
+    await expect(engine.runOnce()).resolves.toEqual({
+      status: 'lease-lost', runId, orphanedCancellation: 'pending-sweep',
+    });
+    expect(repository.markCancelPropagated).toHaveBeenCalledWith(runId, 1, now);
+  });
+
   it('does nothing when the lost lease was not a cancellation', async () => {
     const { engine, projector } = engineWith({ reopen: async () => null });
     await expect(engine.runOnce()).resolves.toEqual({ status: 'lease-lost', runId });

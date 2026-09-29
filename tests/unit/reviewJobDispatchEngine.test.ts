@@ -750,6 +750,58 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     expect(markCancelPropagated).toHaveBeenCalledWith('run_event_1', 3, 1_700_000_000_000);
   });
 
+  it('does not claim an immediate cancellation when persistence rejects the acknowledgement', async () => {
+    const markCancelPropagated = vi.fn(async () => false);
+    const engine = sweepEngine(
+      vi.fn(async () => ({ status: 'patched' as const, cancelRequested: true })),
+      markCancelPropagated,
+    );
+
+    await expect(engine.handleCancellation({
+      runId: 'run_event_rejected', executionAttempt: 2, projectionName: 'prj-event-rejected',
+    })).resolves.toBe(false);
+    expect(markCancelPropagated).toHaveBeenCalledWith('run_event_rejected', 2, expect.any(Number));
+  });
+
+  it('counts a rejected durable acknowledgement as a bounded sweep failure', async () => {
+    const markCancelPropagated = vi.fn(async () => false);
+    const outcome = await sweepEngine(
+      vi.fn(async () => ({ status: 'patched' as const, cancelRequested: true })),
+      markCancelPropagated,
+    ).sweepPendingCancellations(10);
+
+    expect(outcome).toEqual({
+      propagated: 0,
+      failed: 1,
+      failures: [{
+        runId: 'run_pruned',
+        projectionName: 'prj-pruned',
+        reason: 'persistence-rejected',
+      }],
+    });
+  });
+
+  it('redacts a thrown persistence error and keeps the sweep failure bounded', async () => {
+    const markCancelPropagated = vi.fn(async () => {
+      throw new Error('postgres://secret-host/review_yeti: connection refused');
+    });
+    const outcome = await sweepEngine(
+      vi.fn(async () => ({ status: 'patched' as const, cancelRequested: true })),
+      markCancelPropagated,
+    ).sweepPendingCancellations(10);
+
+    expect(outcome).toEqual({
+      propagated: 0,
+      failed: 1,
+      failures: [{
+        runId: 'run_pruned',
+        projectionName: 'prj-pruned',
+        reason: 'persistence-failed',
+      }],
+    });
+    expect(JSON.stringify(outcome)).not.toContain('secret-host');
+  });
+
   // REL-1073: the deployed CRD had no spec.cancelRequested. The API server
   // pruned it, answered 200, and 217 runs were marked propagated while nothing
   // was cancelled. Only a stored cancelRequested === true (or a CR that is
