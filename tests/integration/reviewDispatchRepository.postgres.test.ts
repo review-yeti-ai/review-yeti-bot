@@ -359,6 +359,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         execution_attempt INTEGER NOT NULL DEFAULT 0,
         dispatch_priority SMALLINT NOT NULL DEFAULT 0 CHECK (dispatch_priority IN (0, 1)),
         worker_token_digest VARCHAR(64),
+        terminal_receipt_digest VARCHAR(64),
         available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         cancel_requested_at TIMESTAMPTZ,
         cancel_reason TEXT,
@@ -772,6 +773,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       status: 'terminal',
       execution_attempt: 0,
       worker_token_digest: workerTokenDigest,
+      terminal_receipt_digest: workerTerminalSuccessDigest(success),
       lease_owner: null,
       lease_expires_at: null,
     });

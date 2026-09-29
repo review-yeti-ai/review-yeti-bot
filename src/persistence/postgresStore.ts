@@ -268,6 +268,8 @@ export class PostgresStore {
           dispatch_priority SMALLINT NOT NULL DEFAULT 0
             CONSTRAINT review_dispatch_outbox_priority_check CHECK (dispatch_priority IN (0, 1)),
           worker_token_digest VARCHAR(64),
+          terminal_receipt_digest VARCHAR(64)
+            CHECK (terminal_receipt_digest IS NULL OR terminal_receipt_digest ~ '^[a-f0-9]{64}$'),
           available_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           cancel_requested_at TIMESTAMP WITH TIME ZONE,
           cancel_reason TEXT,
@@ -294,6 +296,9 @@ export class PostgresStore {
         END $$;
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS worker_token_digest VARCHAR(64);
+        ALTER TABLE review_dispatch_outbox
+          ADD COLUMN IF NOT EXISTS terminal_receipt_digest VARCHAR(64)
+            CHECK (terminal_receipt_digest IS NULL OR terminal_receipt_digest ~ '^[a-f0-9]{64}$');
         ALTER TABLE review_dispatch_outbox
           ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMP WITH TIME ZONE;
         ALTER TABLE review_dispatch_outbox

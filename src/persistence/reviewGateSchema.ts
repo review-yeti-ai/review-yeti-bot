@@ -5,6 +5,21 @@ import { MAX_COMPLETION_BYTES } from '../review/workerReviewCompletion';
 export const REVIEW_GATE_SCHEMA_SQL = `
   ALTER TABLE review_runs ADD COLUMN IF NOT EXISTS authoritative_gate_app_id BIGINT
     CHECK (authoritative_gate_app_id > 0);
+  -- One-time compatibility bridge for legacy App-gate successes created
+  -- before action-dispatch persisted the receipt choice explicitly. This runs
+  -- after authoritative_gate_app_id and terminal_receipt_digest both exist.
+  -- Runtime readers consume only the persisted receipt; they do not re-derive
+  -- this historical success predicate.
+  UPDATE review_dispatch_outbox AS outbox
+     SET terminal_receipt_digest = runs.result_digest
+    FROM review_runs AS runs
+   WHERE outbox.run_id = runs.run_id
+     AND outbox.terminal_receipt_digest IS NULL
+     AND outbox.status = 'terminal'
+     AND runs.status = 'succeeded'
+     AND runs.publication_mode = 'app-gate'
+     AND runs.authoritative_gate_app_id IS NULL
+     AND runs.result_digest ~ '^[a-f0-9]{64}$';
   CREATE TABLE IF NOT EXISTS review_gate_attempts (
     attempt_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
