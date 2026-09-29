@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.3...v1.97.4) (2026-09-29)
+
+
+### Bug Fixes
+
+* **release:** guard all continuation token aliases ([#1120](https://github.com/review-yeti-ai/review-yeti-bot/issues/1120)) ([05bd8a7](https://github.com/review-yeti-ai/review-yeti-bot/commit/05bd8a765631e4bc6f5ee48c05552e6da16b7ff7))
+
 ## [1.97.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.2...v1.97.3) (2026-09-29)
 
 
