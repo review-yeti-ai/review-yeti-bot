@@ -126,11 +126,12 @@ export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths }
  * reserves credit against the request's declared completion ceiling and, when
  * `max_tokens` is absent, uses the model's full 131,072-token output limit. A
  * healthy funded key can therefore reject an ordinary review before generation
- * starts. Keep the ceiling at this service boundary so persona, moderator,
- * arbiter, and composed-engine calls all carry the same bounded contract while
- * unrelated direct transports retain their deliberately uncapped behaviour.
+ * starts. Reserve a large emergency ceiling: reasoning and final JSON share
+ * the allowance, and 8,000 tokens proved insufficient on run 36595979843.
+ * Apply the same ceiling to persona, moderator, arbiter, and composed-engine
+ * calls while direct transports retain their deliberately uncapped behaviour.
  */
-export const PUBLISHING_MAX_OUTPUT_TOKENS = 8_000;
+export const PUBLISHING_MAX_OUTPUT_TOKENS = 65_536;
 
 function boundedPublishingModelClient(client: ReviewModelClient): ReviewModelClient {
   return {

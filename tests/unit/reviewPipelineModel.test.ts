@@ -2,6 +2,7 @@ import { timeBudgetMs } from '../support/timeBudget';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'path';
 import fs from 'fs';
+import { PUBLISHING_MAX_OUTPUT_TOKENS } from '../../src/cli/publishingReview';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -805,6 +806,37 @@ describe('reviewWithModel', () => {
       }],
     });
     expect(calls[0].body.max_tokens).toBe(expected);
+  });
+
+  it('reserves catastrophic headroom for reasoning and findings on both review paths', async () => {
+    expect(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS).toBe(65_536);
+    expect(PUBLISHING_MAX_OUTPUT_TOKENS).toBe(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
+
+    const calls: number[] = [];
+    const impl = async (_url: string, init: any) => {
+      const maxTokens = JSON.parse(init.body).max_tokens;
+      calls.push(maxTokens);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{
+          finish_reason: maxTokens <= 8_000 ? 'length' : 'stop',
+          message: maxTokens <= 8_000
+            ? { content: '', reasoning: 'reasoning consumed the completion budget' }
+            : { content: JSON.stringify({ findings: [] }) },
+        }] }),
+      };
+    };
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      fetchImplementation: impl,
+      transports: [{
+        name: 'openrouter', provider: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        apiKey: 'review-fleet-key', model: 'deepseek/deepseek-v4-flash-0731',
+      }],
+    });
+    expect(result.decision).toBe('APPROVE');
+    expect(calls).toEqual([65_536]);
   });
 
   it('omits max_tokens on the live panel so high-reasoning cannot starve findings JSON', async () => {
