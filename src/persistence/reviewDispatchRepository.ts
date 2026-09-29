@@ -441,7 +441,8 @@ export interface ReviewDispatchRepository {
    * Cancel in-flight reviews for a pull request (e.g. converted to draft or opt-out label added).
    */
   cancelRunsForPullRequest(
-    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string; now?: number },
+    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string;
+      gateReason?: 'candidate-superseded' | 'operator-cancelled'; now?: number },
     prNumber?: number,
     cancelReason?: string,
     now?: number,
@@ -1506,7 +1507,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async cancelRunsForPullRequest(
-    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string; now?: number },
+    repositoryIdOrInput: number | { repositoryId: number; prNumber: number; cancelReason: string;
+      gateReason?: 'candidate-superseded' | 'operator-cancelled'; now?: number },
     prNumberArg?: number,
     cancelReasonArg?: string,
     nowArg?: number,
@@ -1514,11 +1516,19 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     let repositoryId: number;
     let prNumber: number;
     let cancelReason: string;
+    let gateReason: 'candidate-superseded' | 'operator-cancelled' = 'candidate-superseded';
     let now: number;
     if (typeof repositoryIdOrInput === 'object') {
       repositoryId = repositoryIdOrInput.repositoryId;
       prNumber = repositoryIdOrInput.prNumber;
       cancelReason = repositoryIdOrInput.cancelReason;
+      const requestedGateReason = repositoryIdOrInput.gateReason;
+      if (requestedGateReason !== undefined
+        && requestedGateReason !== 'candidate-superseded'
+        && requestedGateReason !== 'operator-cancelled') {
+        throw new Error('Invalid cancellation gate reason');
+      }
+      gateReason = requestedGateReason ?? gateReason;
       now = repositoryIdOrInput.now ?? Date.now();
     } else {
       repositoryId = repositoryIdOrInput;
@@ -1563,6 +1573,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [repositoryId, prNumber, now, cancelReason],
       );
       for (const row of result.rows as Record<string, unknown>[]) {
+        await PostgresReviewGateRepository.cancelForUnreviewablePullRequestInTransaction(
+          client, String(row.run_id), now, gateReason,
+        );
         if (row.cancel_propagated_at) {
           await client.query(
             `UPDATE review_runs SET cancel_propagated_at = to_timestamp($2 / 1000.0) WHERE run_id = $1`,
@@ -1572,7 +1585,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.cancelled', now, {
           stage: 'cancelled',
           terminal_class: 'cancelled',
-          cancel_reason: cancelReason,
+          retry_class: gateReason,
         });
       }
       await client.query('COMMIT');

@@ -419,7 +419,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
   /** Settle an unreviewable PR's current gate without opening a second transaction.
    * The caller holds the PR advisory lock and commits this with run/outbox retirement. */
   static async cancelForUnreviewablePullRequestInTransaction(client: Queryable, runId: string,
-    now: number, reason: 'candidate-superseded' | 'pull-request-closed'): Promise<void> {
+    now: number, reason: 'candidate-superseded' | 'pull-request-closed' | 'operator-cancelled'): Promise<void> {
     // Bound checks reconcile to cancelled on their existing check ID. A reserved
     // intent has no check to publish, so its new version is tombstoned locally.
     // This also retires a successful verdict still awaiting publication.

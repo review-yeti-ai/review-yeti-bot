@@ -154,6 +154,19 @@ describe('authoritative review event snapshots', () => {
     expect(JSON.stringify(snapshot)).not.toContain('unrecognized-private-gate-diagnostic');
   });
 
+  it('preserves the bounded operator cancellation gate reason', async () => {
+    const snapshot = await fixture(record({
+      status: 'cancelled', gate_attempt_id: `${runId}-g0-e1`, gate_check_id: '456',
+      gate_app_id: 4385771, gate_state: 'cancelled', gate_published: true,
+      gate_reason: 'operator-cancelled',
+    })).store.getSnapshot(runId, scope);
+
+    expect(snapshot?.gate).toEqual({
+      attemptId: `${runId}-g0-e1`, checkId: 456, expectedAppId: 4385771,
+      state: 'cancelled', published: true, reason: 'operator-cancelled',
+    });
+  });
+
   it.each([
     [{ status: 'superseded' }, 'superseded'],
     [{ status: 'cancelled', gate_attempt_id: `${runId}-g0-e1`, gate_state: 'cancelled',

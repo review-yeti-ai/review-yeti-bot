@@ -13,7 +13,7 @@ const timestamp = z.preprocess(value => value instanceof Date ? value.toISOStrin
 const statuses = ['queued', 'running', 'publishing', 'succeeded', 'failed', 'cancelled', 'superseded', 'terminal'] as const;
 const snapshotStages = ['admission', 'snapshot', 'config', 'submodules', 'review', 'arbiter', 'publish', 'complete', 'terminal'] as const;
 const gateStates = ['queued', 'in_progress', 'success', 'failure', 'cancelled', 'timed_out'] as const;
-const gateReasons = ['review-pending', 'review-deadline-exceeded', 'candidate-superseded', 'pull-request-closed',
+const gateReasons = ['review-pending', 'review-deadline-exceeded', 'candidate-superseded', 'pull-request-closed', 'operator-cancelled',
   'invalid-evidence', 'infrastructure-failure', 'incomplete-review', 'blocking-findings', 'clean-review',
   'central-exemption', 'human-accepted-risk'] as const;
 const completionStates = ['pending', 'claimed', 'dispatched', 'completed', 'error', 'superseded', 'terminal'] as const;

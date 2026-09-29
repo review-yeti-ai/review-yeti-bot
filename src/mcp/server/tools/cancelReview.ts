@@ -18,7 +18,7 @@ export const cancelReviewDefinition: ToolDefinition = {
       owner: { type: 'string', description: 'GitHub repository owner/organization.' },
       repo: { type: 'string', description: 'GitHub repository name.' },
       pull_number: { type: 'number', description: 'Pull request number.' },
-      reason: { type: 'string', description: 'Mandatory non-empty rationale for audit logging.' },
+      reason: { type: 'string', minLength: 1, maxLength: 512, description: 'Mandatory bounded rationale for audit logging.' },
     },
     required: ['owner', 'repo', 'pull_number', 'reason'],
     additionalProperties: false,
@@ -28,6 +28,15 @@ export const cancelReviewDefinition: ToolDefinition = {
 export interface CancelReviewDependencies {
   queryableDatabase?: {
     query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
+  };
+  cancellationRepository?: {
+    cancelRunsForPullRequest(input: {
+      repositoryId: number;
+      prNumber: number;
+      cancelReason: string;
+      gateReason: 'operator-cancelled';
+      now: number;
+    }): Promise<{ cancelledRunIds: string[] }>;
   };
   patchCancellation?: (
     name: string,
@@ -55,67 +64,63 @@ export function createCancelReviewTool(deps: CancelReviewDependencies = {}) {
       if (!reason || !reason.trim()) {
         throw new Error('owner, repo, pull_number, and a non-empty reason are required for audit logging');
       }
+      if (!deps.queryableDatabase) {
+        throw new Error('Cancellation service unavailable: review database is required');
+      }
 
       let attemptId = `review-attempt-${pull_number}-1`;
-      let reapedPod: string | undefined = `review-worker-pr-${pull_number}-pod`;
+      let reapedPod: string | undefined;
 
-      if (deps.queryableDatabase) {
-        const activeRes = await deps.queryableDatabase.query(
-          `SELECT run_id, attempt, head_sha, lease_owner, status
-             FROM review_runs
-            WHERE owner = $1 AND repo = $2 AND pr_number = $3
-              AND status IN ('queued', 'running', 'publishing')
-            LIMIT 1`,
-          [owner, repo, pull_number]
+      const activeRes = await deps.queryableDatabase.query(
+        `SELECT run_id, repository_id, attempt, head_sha, lease_owner, status
+           FROM review_runs
+          WHERE owner = $1 AND repo = $2 AND pr_number = $3
+            AND status IN ('queued', 'running', 'publishing')
+          ORDER BY updated_at DESC, run_id
+          LIMIT 1`,
+        [owner, repo, pull_number]
+      );
+
+      const activeRun = activeRes.rows[0];
+      if (!activeRun) {
+        throw new Error(
+          `Not Found: No active review run found for ${owner}/${repo} PR #${pull_number} to cancel`
         );
+      }
 
-        const activeRun = activeRes.rows[0];
-        if (!activeRun) {
-          throw new Error(
-            `Not Found: No active review run found for ${owner}/${repo} PR #${pull_number} to cancel`
-          );
-        }
+      const runId = String(activeRun.run_id);
+      const repositoryId = Number(activeRun.repository_id);
+      if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
+        throw new Error('Cancellation service unavailable: active run repository identity is invalid');
+      }
+      if (!deps.cancellationRepository) {
+        throw new Error('Cancellation service unavailable: transactional dispatch repository is required');
+      }
+      attemptId = `review-attempt-${pull_number}-${activeRun.attempt || 1}`;
+      const now = nowFn();
 
-        const runId = String(activeRun.run_id);
-        attemptId = `review-attempt-${pull_number}-${activeRun.attempt || 1}`;
-        reapedPod = activeRun.lease_owner || undefined;
-        const now = nowFn();
-
-        await deps.queryableDatabase.query(
-          `UPDATE review_runs
-              SET status = 'cancelled',
-                  error_text = $2,
-                  lease_owner = NULL,
-                  lease_expires_at = NULL,
-                  updated_at = to_timestamp($3 / 1000.0)
-            WHERE run_id = $1`,
-          [runId, reason, now]
+      const cancelled = await deps.cancellationRepository.cancelRunsForPullRequest({
+        repositoryId,
+        prNumber: pull_number,
+        cancelReason: reason,
+        gateReason: 'operator-cancelled',
+        now,
+      });
+      if (!cancelled.cancelledRunIds.includes(runId)) {
+        throw new Error(
+          `Not Found: No active review run found for ${owner}/${repo} PR #${pull_number} to cancel`
         );
+      }
 
+      if (deps.patchCancellation) {
+        const crdName = `ct-review-${runId.replace(/^run_/u, '')}`;
         try {
-          await deps.queryableDatabase.query(
-            `UPDATE review_dispatch_outbox
-                SET status = 'terminal',
-                    lease_owner = NULL,
-                    lease_expires_at = NULL,
-                    updated_at = to_timestamp($2 / 1000.0)
-              WHERE run_id = $1`,
-            [runId, now]
-          );
-        } catch {
-          // Table may not exist
-        }
-
-        if (deps.patchCancellation) {
-          const crdName = `ct-review-${runId.replace(/^run_/u, '')}`;
-          try {
-            const cancelOutcome = await deps.patchCancellation(crdName, namespace, reason);
-            if (cancelOutcome.reapedPod) {
-              reapedPod = cancelOutcome.reapedPod;
-            }
-          } catch {
-            // Reaping completes asynchronously via operator TTL
+          const cancelOutcome = await deps.patchCancellation(crdName, namespace, reason);
+          if (cancelOutcome.success && cancelOutcome.reapedPod) {
+            reapedPod = cancelOutcome.reapedPod;
           }
+        } catch {
+          // Reaping completes asynchronously via the durable cancellation sweep.
         }
       }
 
@@ -123,7 +128,9 @@ export function createCancelReviewTool(deps: CancelReviewDependencies = {}) {
         cancelled: true,
         attempt_id: attemptId,
         reaped_pod: reapedPod,
-        message: `Review attempt cancelled and worker pod reaped (reason: ${reason})`,
+        message: reapedPod
+          ? `Review attempt cancelled and worker cleanup confirmed (reason: ${reason})`
+          : `Review attempt cancellation committed; worker cleanup is queued (reason: ${reason})`,
       } satisfies CancelReviewOutput);
     },
   };

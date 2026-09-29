@@ -4056,6 +4056,68 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
   });
 
+  describe('cancelRunsForPullRequest protected gate settlement (REL-1188)', () => {
+    it('atomically retires the run, dispatch outbox, and protected gate', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('operator-cancel', 1_000));
+
+      const result = await repository.cancelRunsForPullRequest({
+        repositoryId: 123,
+        prNumber: 42,
+        cancelReason: 'operator requested cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      });
+
+      expect(result.cancelledRunIds).toEqual([admitted.run.runId]);
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({
+        status: 'cancelled', stage: 'complete', cancel_reason: 'operator requested cancellation',
+      });
+      expect(state.outbox).toMatchObject({ status: 'terminal', cancel_reason: 'operator requested cancellation' });
+      expect(state.run.cancel_propagated_at).toEqual(new Date(2_000));
+      expect(state.outbox.cancel_propagated_at).toEqual(new Date(2_000));
+      const gate = (await client.query(`SELECT desired_state, current_attempt, desired_version,
+        published_version, decision FROM review_gate_attempts WHERE run_id = $1`, [admitted.run.runId])).rows[0];
+      expect(gate).toMatchObject({
+        desired_state: 'cancelled', current_attempt: false,
+        decision: { status: 'cancelled', eligible: false, reason: 'operator-cancelled' },
+      });
+      expect(gate.published_version).toBe(gate.desired_version);
+      expect((await lifecycleEvents(client, admitted.run.runId))
+        .find((event) => event.eventKind === 'review.lifecycle.cancelled')?.data).toMatchObject({
+          stage: 'cancelled', terminal_class: 'cancelled', retry_class: 'operator-cancelled',
+        });
+    });
+
+    it('rolls back run and outbox cancellation when protected gate settlement fails', async () => {
+      const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
+      const admitted = await repository.admit(authoritativeAdmission('operator-cancel-rollback', 1_000));
+      await client.query(`CREATE FUNCTION reject_operator_gate_cancel() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.desired_state = 'cancelled' THEN RAISE EXCEPTION 'operator-gate-settlement-test'; END IF;
+          RETURN NEW;
+        END $$`);
+      await client.query(`CREATE TRIGGER reject_operator_gate_cancel BEFORE UPDATE ON review_gate_attempts
+        FOR EACH ROW EXECUTE FUNCTION reject_operator_gate_cancel()`);
+
+      await expect(repository.cancelRunsForPullRequest({
+        repositoryId: 123,
+        prNumber: 42,
+        cancelReason: 'operator requested cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
+      })).rejects.toThrow('operator-gate-settlement-test');
+
+      const state = await dispatchState(client, admitted.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', cancel_requested_at: null });
+      expect(state.outbox).toMatchObject({ status: 'pending', cancel_requested_at: null });
+      expect((await client.query(`SELECT desired_state, current_attempt FROM review_gate_attempts
+        WHERE run_id = $1`, [admitted.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'queued', current_attempt: true });
+    });
+  });
+
   describe('terminalizeRunsForClosedPullRequest (REL-896)', () => {
     const closedInput = (input: Parameters<PostgresReviewDispatchRepository['admit']>[0], merged: boolean, now: number) => ({
       repositoryId: input.repositoryId,

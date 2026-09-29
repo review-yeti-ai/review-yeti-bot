@@ -343,7 +343,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       async query(sql: string, params: any[] = []): Promise<{ rows: any[] }> {
         await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
 
-        if (sql.includes('SELECT run_id, attempt, status, head_sha') || sql.includes('SELECT run_id, attempt, head_sha, lease_owner, status')) {
+        if (sql.includes('SELECT run_id, attempt, status, head_sha')
+          || sql.includes('SELECT run_id, repository_id, attempt, head_sha, lease_owner, status')) {
           const owner = params[0];
           const repo = params[1];
           const prNumber = params[2];
@@ -387,12 +388,29 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       addRun(run: any) {
         this.runs.set(run.run_id, run);
       }
+
+      async cancelRunsForPullRequest(input: {
+        repositoryId: number; prNumber: number; cancelReason: string;
+      }): Promise<{ cancelledRunIds: string[] }> {
+        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
+        const matched = Array.from(this.runs.values()).filter((run) =>
+          run.repository_id === input.repositoryId
+          && run.pr_number === input.prNumber
+          && ['queued', 'running', 'publishing'].includes(run.status));
+        for (const run of matched) {
+          run.status = 'cancelled';
+          run.error_text = input.cancelReason;
+          run.lease_owner = null;
+        }
+        return { cancelledRunIds: matched.map((run) => run.run_id) };
+      }
     }
 
     it('RACE-001: Concurrent trigger_review(force: false) and cancel_review on active run resolves deterministically without exception', async () => {
       const db = new MockReviewDatabase([
         {
           run_id: 'run_active_pr_99',
+          repository_id: 123,
           owner: 'calltelemetry',
           repo: 'cisco-cdr',
           pr_number: 99,
@@ -404,7 +422,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       ]);
 
       const triggerTool = createTriggerReviewTool({ queryableDatabase: db as any });
-      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any });
+      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any, cancellationRepository: db });
 
       const triggerPromise = triggerTool.execute({
         owner: 'calltelemetry',
@@ -438,6 +456,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const db = new MockReviewDatabase([
         {
           run_id: 'run_heavy_cancel_pr_100',
+          repository_id: 123,
           owner: 'calltelemetry',
           repo: 'cisco-cdr',
           pr_number: 100,
@@ -448,7 +467,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         },
       ]);
 
-      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any });
+      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any, cancellationRepository: db });
 
       const CONCURRENCY = 20;
       const cancelPromises = Array.from({ length: CONCURRENCY }).map((_, i) =>

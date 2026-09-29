@@ -241,7 +241,8 @@ export const CancelReviewInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
   repo: z.string().trim().min(1, 'repo must not be empty').max(255),
   pull_number: z.number().int().positive('pull_number must be a positive integer').safe(),
-  reason: z.string().trim().min(1, 'reason is required for audit trail'),
+  reason: z.string().trim().min(1, 'reason is required for audit trail')
+    .max(512, 'reason must be at most 512 characters'),
 }).strict();
 
 export type CancelReviewInput = z.infer<typeof CancelReviewInputSchema>;
