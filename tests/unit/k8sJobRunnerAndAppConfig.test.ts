@@ -5,7 +5,7 @@ import { K8sJobRunner } from '../../src/infrastructure/k8sJobRunner';
 import { createGitHubAppApiRouter } from '../../src/api/githubAppApi';
 
 describe('K8s Sandbox Job Runner & GitHub App Policy Suite (Release v1.5.0)', () => {
-  it('generates valid Kubernetes batch/v1 Job manifests with default PVC workspace mounts', () => {
+  it('generates valid Kubernetes batch/v1 Job manifests with rightsized resources and emptyDir workspace', () => {
     const runner = new K8sJobRunner();
 
     const manifest = runner.generateJobManifest({
@@ -27,17 +27,18 @@ describe('K8s Sandbox Job Runner & GitHub App Policy Suite (Release v1.5.0)', ()
 
     const container = manifest.spec.template.spec.containers[0];
     expect(container.name).toBe('reviewer-agent');
-    expect(container.resources.requests.cpu).toBe('250m');
-    expect(container.resources.requests.memory).toBe('512Mi');
-    expect(container.resources.limits.cpu).toBe('500m');
-    expect(container.resources.limits.memory).toBe('1Gi');
+    expect(container.resources.requests.cpu).toBe('50m');
+    expect(container.resources.requests.memory).toBe('96Mi');
+    expect(container.resources.limits.cpu).toBeUndefined();
+    expect(container.resources.limits.memory).toBe('256Mi');
 
     const volumeMount = container.volumeMounts[0];
     expect(volumeMount.mountPath).toBe('/workspace');
     expect(volumeMount.subPath).toContain('exampleorg_example-meta_pr1450');
 
     const volume = manifest.spec.template.spec.volumes[0];
-    expect(volume.persistentVolumeClaim?.claimName).toBe('ct-review-bot-workspace-pvc');
+    expect(volume.emptyDir).toBeDefined();
+    expect(volume.persistentVolumeClaim).toBeUndefined();
   });
 
   it('dispatches job in simulation mode when outside active K8s cluster', async () => {

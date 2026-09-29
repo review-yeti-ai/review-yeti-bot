@@ -35,6 +35,8 @@ import { isReviewSuperseded } from '../review/reviewSupersession';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
+import { isPrepPhase, runPrepPhase } from '../review/prepPhase';
+import { isContinuationPhase, runContinuationPhase } from '../review/continuationPhase';
 import workerSelfTestModules from './workerSelfTestModules.json';
 
 export interface WorkerAuthConfig {
@@ -1824,7 +1826,24 @@ export async function runWorker(
       poller?.stop();
     }
   },
+  continuationRunner: (workerEnv: NodeJS.ProcessEnv) => Promise<void> = async (workerEnv) => {
+    await runContinuationPhase({ env: workerEnv, argv: process.argv, suppressExit: true });
+  },
 ): Promise<void> {
+  if (isPrepPhase(env, process.argv)) {
+    logger.info('CT_PHASE=prep detected, executing decoupled prep phase');
+    await runPrepPhase({ env, argv: process.argv, suppressExit: true });
+    await flushWorkerTelemetry();
+    process.exit(0);
+    return;
+  }
+  if (isContinuationPhase(env, process.argv)) {
+    logger.info('CT_PHASE=continuation detected, executing ephemeral continuation phase');
+    await continuationRunner(env);
+    await flushWorkerTelemetry();
+    process.exit(0);
+    return;
+  }
   if (sameHeadQualificationRequested(env)) {
     if (!isSameHeadQualificationWorker(env)) throw invalidSameHeadQualificationContract();
     await sameHeadRunner(env);

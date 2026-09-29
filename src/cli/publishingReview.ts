@@ -186,6 +186,11 @@ export interface PublishingCheckClient {
       text?: string;
     },
   ): Promise<number>;
+  findGateCheck?(
+    owner: string,
+    repo: string,
+    headSha: string,
+  ): Promise<{ id: number; status: string; conclusion?: string } | undefined>;
 }
 
 export interface PublishingReviewPersonaMetrics {
