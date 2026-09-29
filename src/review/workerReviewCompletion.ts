@@ -11,7 +11,7 @@ import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
-import { DEFAULT_MAX_TASKS, TASK_DIMENSIONS, validateTaskPlan } from '../panel/reviewTask';
+import { DEFAULT_MAX_TASKS, TASK_DIMENSIONS, validateTaskPlan } from '../reviewTaskContract';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 

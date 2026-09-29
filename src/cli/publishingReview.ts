@@ -30,7 +30,7 @@ import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
-import { isValidTaskId } from '../panel/reviewTask';
+import { isValidTaskId } from '../reviewTaskContract';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { runInSpan, getMetrics } from '../telemetry';

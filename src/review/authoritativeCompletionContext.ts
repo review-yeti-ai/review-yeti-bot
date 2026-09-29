@@ -13,7 +13,7 @@ import { verifyIncrementalClaim, type IncrementalVerificationInput } from './inc
 import { routedLanesOf, verifyVerdictCacheClaim, type VerdictCacheVerificationInput } from './verdictCache';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
-import { DEFAULT_MAX_TASKS } from '../panel/reviewTask';
+import { DEFAULT_MAX_TASKS } from '../reviewTaskContract';
 import {
   TrustedCompletionResolutionError,
   isDeterministicCompletionFailure,
