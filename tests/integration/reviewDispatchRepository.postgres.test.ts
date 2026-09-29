@@ -2413,6 +2413,49 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       }
     });
 
+    it('advances a partially persisted legacy incomplete BLOCK only with its trusted failed Gate', async () => {
+      const firstInput = { ...authoritativeAdmission('legacy-incomplete-a1'),
+        eventName: 'repository_dispatch', centralActionDispatch: true, expectedGeneration: 1 };
+      const runId = deriveReviewRunId(firstInput.identity);
+      const app = { id: 4385771, slug: 'ct-review-bot' };
+      const headSha = firstInput.identity.headSha;
+      const worker = { id: 10_001, name: 'Review Yeti', head_sha: headSha,
+        external_id: `${runId}:a1`, app, status: 'completed', conclusion: 'failure',
+        completed_at: '2026-09-29T21:00:00Z', output: { title: 'Review Yeti: BLOCK',
+          summary: `Verdict \`BLOCK\` at \`${headSha}\`.\n\nFindings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).\n\nCoverage: mode=panel; expected lanes=4; completed lanes=3; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.` } };
+      const gate = { id: 10_002, name: 'Review Yeti Gate', head_sha: headSha,
+        external_id: `review-yeti-gate:v1:${'c'.repeat(64)}`, app, status: 'completed', conclusion: 'failure',
+        completed_at: '2026-09-29T21:00:01Z', output: { title: 'Review Yeti Gate: Failed (incomplete panel)',
+          summary: 'Review Yeti Gate failed: the panel expected 4 review lane(s) but 3 completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.' } };
+      const fetchImplementation = vi.fn(async (url: string | URL | Request) => {
+        const rows = new URL(String(url)).searchParams.get('check_name') === 'Review Yeti Gate' ? [gate] : [worker];
+        return new Response(JSON.stringify({ total_count: rows.length, check_runs: rows }), { status: 200 });
+      });
+      const publisher = new GitHubInstallationClient({ token: 'ghs_test', fetchImplementation });
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled', validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery: () => publisher.readReviewGenerationRecovery({
+          owner: firstInput.identity.owner, repo: firstInput.identity.repo, headSha, runId,
+          expectedGeneration: 2, expectedAppId: app.id,
+        }),
+      }, true);
+      await repository.admit(firstInput);
+      await bindPendingGate(gateRepository);
+      await client.query("UPDATE review_runs SET status = 'publishing' WHERE run_id = $1", [runId]);
+      await client.query("UPDATE review_dispatch_outbox SET status = 'terminal', projection_name = NULL, worker_token_digest = NULL WHERE run_id = $1", [runId]);
+      const input = { ...authoritativeAdmission('legacy-incomplete-a2', 2_000),
+        eventName: 'workflow_dispatch', centralActionDispatch: true, expectedGeneration: 2,
+        retryRequested: true, retryAfterExecutionAttempt: 1 };
+      const admitted = await repository.admit(input);
+      expect(admitted.run.attempt).toBe(1);
+      expect((await dispatchState(client, runId)).outbox).toMatchObject({ status: 'pending', execution_attempt: 1 });
+      const recovered = (await client.query('SELECT title, evidence FROM review_generation_recoveries WHERE run_id = $1', [runId])).rows[0];
+      expect(recovered.title).toBe('Review Yeti: BLOCK');
+      expect(recovered.evidence.legacyIncompleteRoster.gateChecks).toEqual([gate]);
+      expect((await client.query('SELECT review_generation, current_attempt FROM review_gate_attempts ORDER BY review_generation')).rows)
+        .toEqual([{ review_generation: 0, current_attempt: false }, { review_generation: 1, current_attempt: true }]);
+    });
+
     it('reconstructs a missing durable generation only from trusted exact-head recovery evidence', async () => {
       const recovery = [{
         generation: 1,

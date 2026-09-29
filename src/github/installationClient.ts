@@ -44,6 +44,7 @@ const DELEGATED_FAILURE_REASON_SUMMARY: Record<DelegatedFailureReason, string> =
 };
 import {
   REVIEW_REFRESH_ACTION,
+  REVIEW_GATE_CHECK_NAME,
   isRecoverableFailureTitle,
   validateCheckRunTitle,
 } from '../review/reviewCheckIdentity';
@@ -347,6 +348,21 @@ export class GitHubInstallationClient {
     input: ReviewGenerationRecoveryRequest,
   ): Promise<ReviewGenerationRecoveryEvidence[]> {
     validateReviewGenerationRecoveryRequest(input);
+    const rows = await this.readRecoveryCheckInventory(input, REVIEW_WORKER_CHECK_NAME);
+    const gateChecks = rows.some((row) => {
+      const output = row !== null && typeof row === 'object'
+        ? (row as Record<string, unknown>).output : undefined;
+      return output !== null && typeof output === 'object'
+        && (output as Record<string, unknown>).title === 'Review Yeti: BLOCK';
+    })
+      ? await this.readRecoveryCheckInventory(input, REVIEW_GATE_CHECK_NAME) : [];
+    return evaluateReviewGenerationRecoveryLedger(input, rows, gateChecks);
+  }
+
+  private async readRecoveryCheckInventory(
+    input: ReviewGenerationRecoveryRequest,
+    checkName: typeof REVIEW_WORKER_CHECK_NAME | typeof REVIEW_GATE_CHECK_NAME,
+  ): Promise<unknown[]> {
     const github = createBoundedGitHubJsonClient({
       token: this.token,
       baseUrl: this.baseUrl,
@@ -358,7 +374,7 @@ export class GitHubInstallationClient {
     let expectedTotal: number | undefined;
     for (let page = 1; page <= 10; page += 1) {
       const query = new URLSearchParams({
-        check_name: REVIEW_WORKER_CHECK_NAME,
+        check_name: checkName,
         filter: 'all',
         app_id: String(input.expectedAppId),
         per_page: '100',
@@ -386,7 +402,7 @@ export class GitHubInstallationClient {
         rows.push(row);
       }
       if (rows.length === totalCount) {
-        return evaluateReviewGenerationRecoveryLedger(input, rows);
+        return rows;
       }
       if (rows.length > totalCount || result.check_runs.length < 100) {
         throw new ReviewGenerationRecoveryLedgerError();
