@@ -112,8 +112,12 @@ export async function shallowFetchHead(options: {
     return { durationMs, sha: options.headSha, success: true };
   } catch (err: any) {
     const durationMs = Date.now() - start;
+    const rawMessage = err?.message || String(err);
+    const sanitizedError = rawMessage
+      .replace(/Authorization:\s*Basic\s+\S+/g, 'Authorization: Basic [REDACTED]')
+      .replace(/http\.extraheader=\S+/g, 'http.extraheader=[REDACTED]');
     logger.warn('Shallow fetch encountered error, proceeding with diff payload', {
-      error: err?.message || String(err),
+      error: sanitizedError,
       durationMs,
     });
     return { durationMs, sha: options.headSha, success: false };

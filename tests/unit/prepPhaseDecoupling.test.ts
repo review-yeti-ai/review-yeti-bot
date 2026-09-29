@@ -36,7 +36,7 @@ describe('Milestone 2: Prep Pod Decoupling & State Storage (Requirement R3)', ()
   });
 
   describe('2. Git Shallow Fetch (<800ms) directly into /workspace', () => {
-    it('executes shallow fetch and returns execution timing and headSha', async () => {
+    it('verifies shallow fetch stub contract in test mode (< 1500ms)', async () => {
       const result = await shallowFetchHead({
         workspacePath: '/tmp/test-workspace',
         repo: 'calltelemetry/review-yeti-bot',

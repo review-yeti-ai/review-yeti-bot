@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { shallowFetchHead } from './prepPhase';
 import {
   extractFindings,
+  normalizeFinding,
   sanitizeJsonString,
   type Finding,
   type FindingSeverity,
@@ -14,8 +15,7 @@ import {
   CHECK_CONTEXT_GATE,
   GitHubInstallationClient,
 } from '../github/installationClient';
-import { createPublishingCheckClient } from '../cli/publishingReview';
-import { withGitHubRetry } from '../github/githubRetry';
+import { withGitHubRetry, githubRetryOptionsFromEnv } from '../github/githubRetry';
 import { raceWithAbort } from '../gateway/raceWithAbort';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
@@ -91,37 +91,7 @@ export function isContinuationPhase(
   return false;
 }
 
-/**
- * Normalizes a raw finding item into a structured Finding object.
- * Fails closed by mapping unrecognized or missing severity to P0.
- */
-export function normalizeFinding(item: any): Finding {
-  let severity: FindingSeverity;
-  const rawSev = String(item?.severity || '').toUpperCase().trim();
-  if (rawSev === 'P0' || rawSev.includes('BLOCKER') || rawSev.includes('CRITICAL') || rawSev.includes('HIGH')) {
-    severity = 'P0';
-  } else if (rawSev === 'P2' || rawSev.includes('NIT') || rawSev.includes('LOW')) {
-    severity = 'P2';
-  } else if (rawSev === 'P1' || rawSev.includes('WARN') || rawSev.includes('MAJOR')) {
-    severity = 'P1';
-  } else {
-    // Missing, unclassified, or unrecognized severity strictly fails closed to P0
-    severity = 'P0';
-  }
-
-  const lineNum = typeof item?.line === 'number' && !isNaN(item.line)
-    ? item.line
-    : (parseInt(String(item?.line), 10) || 1);
-
-  return {
-    severity,
-    file: String(item?.file || item?.path || item?.filename || 'unknown'),
-    line: Math.max(1, lineNum),
-    title: String(item?.title || item?.summary || item?.headline || 'Review finding'),
-    description: String(item?.description || item?.body || item?.details || item?.title || ''),
-    ...(item?.suggestedPatch ? { suggestedPatch: String(item.suggestedPatch) } : {}),
-  };
-}
+export { normalizeFinding };
 
 /**
  * Evaluates gate policy based on extracted findings.
@@ -560,7 +530,7 @@ export async function runContinuationPhase(
     }
 
     // 6b: Post / update Review Yeti Gate check run wrapped in withGitHubRetry
-    const checkClient = options.checkClient || (token ? createPublishingCheckClient(token, env) : undefined);
+    const checkClient = options.checkClient || (token ? new GitHubInstallationClient({ token, retry: githubRetryOptionsFromEnv(env) }) : undefined);
     if (checkClient) {
       gateCheckId = await withTimeoutGuard(
         withGitHubRetry(

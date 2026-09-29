@@ -374,4 +374,3 @@ func TestChallenger_PhaseSuspended_ExcludedFromAdmissionSnapshot(t *testing.T) {
 		t.Fatalf("review2 want PhaseRunning, got %s (message: %s)", checkReview2.Status.Phase, checkReview2.Status.Message)
 	}
 }
-

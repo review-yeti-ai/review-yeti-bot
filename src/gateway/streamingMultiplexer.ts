@@ -133,29 +133,33 @@ export function sanitizeJsonString(value: unknown): string {
 
 /**
  * Normalizes a raw finding item into a structured Finding object.
+ * Fails closed by mapping unrecognized or missing severity to P0.
  */
-function normalizeFinding(item: any): Finding {
-  let severity: FindingSeverity = 'P1';
-  const rawSev = String(item.severity || '').toUpperCase();
+export function normalizeFinding(item: any): Finding {
+  let severity: FindingSeverity;
+  const rawSev = String(item?.severity || '').toUpperCase().trim();
   if (rawSev === 'P0' || rawSev.includes('BLOCKER') || rawSev.includes('CRITICAL') || rawSev.includes('HIGH')) {
     severity = 'P0';
   } else if (rawSev === 'P2' || rawSev.includes('NIT') || rawSev.includes('LOW')) {
     severity = 'P2';
-  } else {
+  } else if (rawSev === 'P1' || rawSev.includes('WARN') || rawSev.includes('MAJOR')) {
     severity = 'P1';
+  } else {
+    // Missing, unclassified, or unrecognized severity strictly fails closed to P0
+    severity = 'P0';
   }
 
-  const lineNum = typeof item.line === 'number' && !isNaN(item.line)
+  const lineNum = typeof item?.line === 'number' && !isNaN(item.line)
     ? item.line
-    : (parseInt(String(item.line), 10) || 1);
+    : (parseInt(String(item?.line), 10) || 1);
 
   return {
     severity,
-    file: String(item.file || item.path || item.filename || 'unknown'),
+    file: String(item?.file || item?.path || item?.filename || 'unknown'),
     line: Math.max(1, lineNum),
-    title: String(item.title || item.summary || item.headline || 'Review finding'),
-    description: String(item.description || item.body || item.details || item.title || ''),
-    ...(item.suggestedPatch ? { suggestedPatch: String(item.suggestedPatch) } : {}),
+    title: String(item?.title || item?.summary || item?.headline || 'Review finding'),
+    description: String(item?.description || item?.body || item?.details || item?.title || ''),
+    ...(item?.suggestedPatch ? { suggestedPatch: String(item.suggestedPatch) } : {}),
   };
 }
 

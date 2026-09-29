@@ -63,16 +63,14 @@ describe('Milestone 1 Challenger 1: Resource Envelope & Boundary Stress Suite', 
 
     it('ADVERSARIAL EDGE CASE: case sensitivity of cpuLimit="None" or "NONE"', () => {
       const runner = new K8sJobRunner({ forceSimulation: true });
-      const manifestNone = runner.generateJobManifest({
-        ...baseSpec,
-        cpuLimit: 'None',
-      });
-      const container = manifestNone.spec.template.spec.containers[0];
-
-      // Note: If k8sJobRunner uses strict !== "none", "None" leaks through into limits.cpu
-      // This documents the sensitivity gap between Go EqualFold and TS strict equality.
-      const leaksNone = container.resources.limits.cpu !== undefined;
-      expect(typeof leaksNone).toBe('boolean');
+      for (const noneVariant of ['none', 'None', 'NONE', 'nOnE']) {
+        const manifest = runner.generateJobManifest({
+          ...baseSpec,
+          cpuLimit: noneVariant,
+        });
+        const container = manifest.spec.template.spec.containers[0];
+        expect(container.resources.limits.cpu).toBeUndefined();
+      }
     });
   });
 

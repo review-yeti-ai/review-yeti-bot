@@ -725,7 +725,7 @@ export class K8sJobRunner {
                     memory: spec.memoryRequest ?? '96Mi',
                   },
                   limits: {
-                    ...(spec.cpuLimit && spec.cpuLimit !== 'none' ? { cpu: spec.cpuLimit } : {}),
+                    ...(spec.cpuLimit && spec.cpuLimit.toLowerCase() !== 'none' ? { cpu: spec.cpuLimit } : {}),
                     memory: spec.memoryLimit ?? '256Mi',
                   },
                 },

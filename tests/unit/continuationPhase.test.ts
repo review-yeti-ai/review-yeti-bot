@@ -34,7 +34,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
   });
 
   describe('2. Git Shallow Fetch (<800ms) directly into /workspace', () => {
-    it('executes shallow fetch and returns headSha with duration < 1500ms', async () => {
+    it('verifies shallow fetch stub contract in test mode (< 1500ms)', async () => {
       const result = await shallowFetchHead({
         workspacePath: '/tmp/test-continuation-workspace',
         repo: 'calltelemetry/review-yeti-bot',
