@@ -435,6 +435,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       WHERE run_id = $1`, [runId]);
     expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
     await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query('UPDATE review_runs SET result_digest = $2 WHERE run_id = $1', [runId, completionDigest]);
 
     const status = await repository.getRunStatus(runId, 1);
     expect(status?.receipt).toMatchObject({

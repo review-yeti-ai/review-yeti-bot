@@ -2417,6 +2417,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            ON completion.run_id = runs.run_id
           AND completion.execution_attempt = $2
           AND runs.status = 'succeeded'
+          AND runs.result_digest = completion.content_digest
           AND EXISTS (
             SELECT 1 FROM review_gate_attempts AS gate
              WHERE gate.run_id = completion.run_id

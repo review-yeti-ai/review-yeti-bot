@@ -118,7 +118,7 @@ describe('ActionDispatchApi - GET status endpoint', () => {
       evidenceRef: 'audit://review-yeti/run_abc123/attempts/2/completion',
     };
     const { app } = createTestApp({ runStatusResult: {
-      current: false, status: 'completed', cancelRequested: false,
+      current: false, status: 'succeeded', cancelRequested: false,
       isCurrentHead: true, workerTokenDigest: tokenDigest, receipt,
     } });
 

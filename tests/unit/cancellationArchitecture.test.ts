@@ -152,6 +152,7 @@ describe('Two-Tier Cancellation Architecture', () => {
           expect(sql).toContain('gate.worker_result_digest = completion.content_digest');
           expect(sql).toContain("gate.decision->>'status' = 'success'");
           expect(sql).toContain("runs.status = 'succeeded'");
+          expect(sql).toContain('runs.result_digest = completion.content_digest');
           return { rows: [{
             run_id: 'run_receipt', status: 'completed',
             repository_id: 123, owner: 'calltelemetry', repo: 'ct-meta', pr_number: 42,
