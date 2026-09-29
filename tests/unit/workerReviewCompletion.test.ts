@@ -89,7 +89,7 @@ describe('WorkerReviewCompletion.v1', () => {
       taskPlan: [{ ...taskPlan[0], paths: ['docs/unrelated.md'] }],
     } }, trusted), /does not cover the trusted changed files/u);
     expectInvalid(derive({ ...composed, result: { ...composed.result,
-      personas: [lane('not-in-plan')],
+      personas: [{ id: 'not-in-plan', decision: 'APPROVE', findings: [] }],
     } }, trusted), /unknown persona lane/u);
   });
 
@@ -97,10 +97,11 @@ describe('WorkerReviewCompletion.v1', () => {
     const tasks = Array.from({ length: 7 }, (_, index) => ({ id: `task-${index + 1}`,
       dimension: 'architecture' as const, paths: ['src/example.ts'],
       question: 'Could this change regress behavior?', rationale: 'The source changed.' }));
-    const personas = tasks.map((task, index) => index < 3
-      ? lane(task.id, { decision: 'FINDINGS', findings: [{ severity: 'P1', path: 'src/example.ts',
-        line: index + 1, title: `Defect ${index + 1}`, body: `Distinct defect ${index + 1}.` }] })
-      : lane(task.id));
+    const personas = tasks.map((task, index) => ({ id: task.id,
+      decision: index < 3 ? 'FINDINGS' as const : 'APPROVE' as const,
+      findings: index < 3 ? [{ severity: 'P1' as const, path: 'src/example.ts',
+        line: index + 1, title: `Defect ${index + 1}`, body: `Distinct defect ${index + 1}.` }] : [],
+    }));
     const review = completion({ result: { ...completion().result, personas, taskPlan: tasks,
       verdict: undefined, findingCount: undefined, blockingFindingCount: undefined } });
     const derived = derive(review, { ...contract, reviewEngine: 'composed',
