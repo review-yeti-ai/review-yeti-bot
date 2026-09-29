@@ -26,10 +26,10 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       // Verify Container limits and requests
       const container = manifest.spec.template.spec.containers[0];
       expect(container.name).toBe('reviewer-agent');
-      expect(container.resources.limits.cpu).toBe('500m');
-      expect(container.resources.limits.memory).toBe('1Gi');
-      expect(container.resources.requests.cpu).toBe('250m');
-      expect(container.resources.requests.memory).toBe('512Mi');
+      expect(container.resources.limits.cpu).toBeUndefined();
+      expect(container.resources.limits.memory).toBe('256Mi');
+      expect(container.resources.requests.cpu).toBe('50m');
+      expect(container.resources.requests.memory).toBe('96Mi');
     });
 
     it('verifies PVC volume name and subPath mounting structure', () => {
@@ -39,6 +39,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
         repoUrl: 'calltelemetry/ct-review-bot',
         prNumber: 108,
         commitSha: '9f8e7d6c5b4a',
+        pvcClaimName: 'ct-review-bot-workspace-pvc',
       };
 
       const manifest = runner.generateJobManifest(spec);
@@ -108,9 +109,9 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
         expect(res.mode).toBe('simulation');
         expect(res.manifest.spec.ttlSecondsAfterFinished).toBe(300);
         expect(res.manifest.spec.activeDeadlineSeconds).toBe(600);
-        expect(res.manifest.spec.template.spec.containers[0].resources.limits.cpu).toBe('500m');
-        expect(res.manifest.spec.template.spec.containers[0].resources.limits.memory).toBe('1Gi');
-        expect(res.manifest.spec.template.spec.volumes[0].persistentVolumeClaim?.claimName).toBe('ct-review-bot-workspace-pvc');
+        expect(res.manifest.spec.template.spec.containers[0].resources.limits.cpu).toBeUndefined();
+        expect(res.manifest.spec.template.spec.containers[0].resources.limits.memory).toBe('256Mi');
+        expect(res.manifest.spec.template.spec.volumes[0].emptyDir).toBeDefined();
         expect(res.manifest.spec.template.spec.containers[0].volumeMounts[0].subPath).toBe(`repos/calltelemetry_repo-${i}_pr${i + 1}`);
       });
     });
