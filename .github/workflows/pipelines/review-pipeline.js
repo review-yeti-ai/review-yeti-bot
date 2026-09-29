@@ -1312,12 +1312,14 @@ const ACTION_MAX_DIFF_CAP = 10_000_000;
 // harnesses may still send an explicit max_tokens.
 const DEFAULT_MAX_OUTPUT_TOKENS = undefined;
 // OpenRouter reserves credit against the declared completion ceiling before it
-// starts generating. Omitting max_tokens makes it reserve against DeepSeek V4
-// Flash 0731's full 131,072-token model limit, which rejected otherwise-funded
-// review requests with HTTP 402. This cap applies to both direct OpenRouter and
-// OpenRouter-labelled gateway routes; direct Ollama/Fireworks transports retain
-// their separate uncapped-first-pass contract below.
-const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 8_000;
+// starts generating. Omitting max_tokens reserved the model's full 131,072-token
+// output limit and caused HTTP 402 before review. Reserve a large emergency
+// ceiling instead: reasoning and the final findings JSON share this allowance.
+// The former 8,000-token limit exhausted both attempts of an architecture lane
+// on run 36595979843 without producing any content. This applies to both direct
+// OpenRouter and OpenRouter-labelled gateway routes; direct Ollama/Fireworks
+// transports retain their separate uncapped-first-pass contract below.
+const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 65_536;
 // The digest-pinned Review Yeti gateway exposes the reviewed `pr-reviewer`
 // alias, which Bifrost resolves to the exact OpenRouter model configured by
 // GitOps. Sending OpenRouter's vendor-qualified id directly makes Bifrost
