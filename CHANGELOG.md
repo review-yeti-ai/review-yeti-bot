@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.4...v1.97.5) (2026-09-29)
+
+
+### Bug Fixes
+
+* **mcp:** settle cancellation gate atomically [REL-1188] ([5679342](https://github.com/review-yeti-ai/review-yeti-bot/commit/5679342d48d813b8542ec0e7fc0993516ca784d3))
+
 ## [1.97.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.3...v1.97.4) (2026-09-29)
 
 
