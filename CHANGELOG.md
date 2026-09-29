@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.1...v1.97.2) (2026-09-29)
+
+
+### Bug Fixes
+
+* **review:** preserve reasoning headroom in hosted reviews ([#1116](https://github.com/review-yeti-ai/review-yeti-bot/issues/1116)) ([f459929](https://github.com/review-yeti-ai/review-yeti-bot/commit/f459929a72f0391620be87ba7dfae284c6edeb85))
+
 ## [1.97.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.0...v1.97.1) (2026-09-29)
 
 
