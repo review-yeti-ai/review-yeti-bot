@@ -678,6 +678,67 @@ describe('authoritative prepared publishing worker', () => {
       expect(completion.result.failureDiagnostics).toBeUndefined();
       expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title).not.toMatch(/INCOMPLETE/u);
     });
+
+    it('publishes a fail-closed no-verdict check when a composed task ran without a verdict', async () => {
+      const f = fixture({ reviewEngine: 'composed' });
+      const taskPlan = [
+        { id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
+          question: 'Does the change preserve the contract?', rationale: 'Review the changed source.' },
+        { id: 'task-b', dimension: 'testing' as const, paths: ['src/a.ts'],
+          question: 'Are edge cases covered?', rationale: 'Review the changed source.' },
+      ];
+      f.deps.composedReviewRunner = vi.fn().mockResolvedValue({ ...f.panel,
+        taskPlan, applicablePersonaIds: ['task-a', 'task-b'],
+        personas: [{ ...f.panel.personas[0], id: 'task-a' }],
+        unreportedLanes: [{ id: 'task-b', failureClass: 'malformed_output',
+          error: 'Task task-b (testing) ran and produced no verdict' }],
+      });
+
+      const receipt = await runPublishingReviewWorker(f.env, f.deps);
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check).toMatchObject({ conclusion: 'failure', title: 'Review Yeti: review did not complete' });
+      expect(check?.summary).toContain('No review verdict');
+      expect(check?.summary).toContain('task-b');
+      expect(check?.summary).toContain('Coverage: engine=composed; planned tasks=2; expected tasks=2; completed tasks=1');
+      expect(check?.summary).not.toContain('Verdict `BLOCK`');
+      expect(isRecoverableFailureTitle(check?.title)).toBe(true);
+      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure',
+        failureClass: 'malformed_output', coverage: { rosterValid: false, fullPanelComplete: false } });
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      expect(completion.result.failureDiagnostics?.recoverableIncompletePanel).not.toBe(true);
+      const { version: _version, result: _result, ...expectedCoordinates } = completion;
+      const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+        expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+        reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
+        changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
+      });
+      expect(derived).toMatchObject({ valid: true, evidence: { quorumSatisfied: false,
+        expectedLanes: 2, completedLanes: 1 } });
+      const candidate = { repositoryId: 123, prNumber: 42, headSha: HEAD, baseSha: BASE,
+        policyDigest: f.prepared.policy.effectivePolicyDigest };
+      expect(derived.valid && evaluateReviewGate({ candidate,
+        current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }))
+        .toEqual({ status: 'failure', eligible: false, reason: 'incomplete-review' });
+    });
+
+    it.each(['finding', 'wrong unreported id', 'unreadable diff', 'no unreported evidence', 'budget exhaustion'])('does not relabel %s as a no-verdict panel', async (kind) => {
+      const f = fixture();
+      f.panel.personas = [f.panel.personas[0]];
+      f.panel.unreportedLanes = [{ id: kind === 'wrong unreported id' ? 'other-lane' : 'qual-lane',
+        failureClass: kind === 'budget exhaustion' ? 'budget_exhausted' : 'malformed_output',
+        error: 'Task ran and produced no verdict' }];
+      if (kind === 'no unreported evidence') f.panel.unreportedLanes = [];
+      if (kind === 'finding') {
+        f.panel.personas[0].decision = 'FINDINGS';
+        f.panel.personas[0].findings = [{ severity: 'P0', path: 'src/a.ts', line: 1,
+          title: 'Finding', body: 'Fix this.' } as never];
+      }
+      if (kind === 'unreadable diff') f.source.diff += 'diff --git unreadable-header\n';
+
+      const receipt = await runPublishingReviewWorker(f.env, f.deps);
+      expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure' });
+      expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title).toBe('Review Yeti: BLOCK');
+    });
   });
 
   it('forwards findings through the strict typed boundary while omitting operational metadata', async () => {
