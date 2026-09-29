@@ -907,11 +907,28 @@ async function runTaskWorkPhase(input: {
   let toolTurns = 0;
   let correctionAttempts = 0;
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining());
+  // Reserve the final two task turns for the verdict contract. Previously a task could spend
+  // every earlier turn on tools, request one more tool on the last schema-constrained turn, and
+  // exit as `malformed_output` without ever receiving a correction turn. Two bounded finalize
+  // attempts preserve fail-closed behavior while ensuring a correctable formatting/tool slip
+  // cannot make an otherwise completed panel permanently incomplete.
+  const finalizationStartsAt = Math.max(0, localMaxTurns - 2);
 
   for (let iter = 0; iter < localMaxTurns; iter++) {
     if (input.turnsRemaining() <= 0) return { type: 'exhausted', turnUsages };
     const isLastLocalTurn = iter === localMaxTurns - 1;
-    const responseFormat = isLastLocalTurn ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
+    const isFinalizationTurn = iter >= finalizationStartsAt;
+    if (iter === finalizationStartsAt) {
+      taskMessages = [...taskMessages, {
+        role: 'user',
+        content: [
+          'TASK_FINALIZE_NOW',
+          'Investigation turns are complete. Do not request another tool.',
+          `Return the final result object for task "${input.task.id}" now.`,
+        ].join('\n'),
+      }];
+    }
+    const responseFormat = isFinalizationTurn ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
     const activeMessages = compactMessageWindow(taskMessages, {
       activeTurns: TASK_COMPACTION_ACTIVE_TURNS,
       toolCalls: toolCallsLog,
@@ -935,7 +952,7 @@ async function runTaskWorkPhase(input: {
     taskMessages = [...taskMessages, { role: 'assistant', content: turn.content }];
 
     const parsed = parseNativeTurn(turn.content);
-    if (parsed?.isToolCall) {
+    if (parsed?.isToolCall && !isFinalizationTurn) {
       toolTurns += 1;
       const result = await runReadOnlyTool(parsed.tool as string, parsed.args, {
         changedFiles: input.changedFilesForTools,
@@ -954,9 +971,11 @@ async function runTaskWorkPhase(input: {
       continue;
     }
 
-    const candidate = parsed?.finalObject;
+    const candidate = parsed?.isToolCall ? undefined : parsed?.finalObject;
     let contractError: string | null = null;
-    if (!candidate) {
+    if (parsed?.isToolCall) {
+      contractError = 'tool calls are not allowed during the reserved task-finalization turns';
+    } else if (!candidate) {
       contractError = 'response was not a JSON object matching the tool-call or task-result shape';
     } else if (candidate.task !== input.task.id) {
       contractError = `"task" must equal "${input.task.id}"`;

@@ -174,7 +174,7 @@ describe('executeComposedReview', () => {
           ],
         }));
       }
-      if (text.includes('WORK TURN')) {
+      if (text.includes('WORK TURN') || text.includes('TASK_FINALIZE_NOW') || text.includes('TASK_RESULT_CORRECTION')) {
         return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
       }
       throw new Error(`unexpected turn: ${text.slice(0, 80)}`);
@@ -532,7 +532,7 @@ describe('executeComposedReview', () => {
       if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
         return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
       }
-      if (text.includes('WORK TURN')) {
+      if (text.includes('WORK TURN') || text.includes('TASK_FINALIZE_NOW') || text.includes('TASK_RESULT_CORRECTION')) {
         const taskId = threeTasks().find((task) => text.includes(`TASK`) && text.includes(task.id))?.id
           ?? threeTasks().find((task) => text.includes(task.id))?.id;
         if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
@@ -572,6 +572,48 @@ describe('executeComposedReview', () => {
     const published = projectPublishingRosterBounds(result);
     expect(published.returnedIds).not.toContain('task-2');
     expect(result.applicablePersonaIds).toContain('task-2');
+  });
+
+  it('reserves a correction turn when a task requests a tool during finalization', async () => {
+    const callsByTask = new Map<string, number>();
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      const taskId = threeTasks().find((task) => text.includes(task.id))?.id;
+      if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
+      const call = (callsByTask.get(taskId) ?? 0) + 1;
+      callsByTask.set(taskId, call);
+      if (taskId === 'task-1' && call <= 2) {
+        return fakeResponse(JSON.stringify({
+          tool: 'get_diff',
+          args: { path: 'src/auth/guard.ts' },
+        }));
+      }
+      return fakeResponse(JSON.stringify({
+        nonce,
+        task: taskId,
+        status: 'COMPLETE',
+        findings: [],
+      }));
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_per_task: 3 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(result.unreportedLanes ?? []).toEqual([]);
+    expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(result.personas.find((lane) => lane.id === 'task-1')?.toolTurns).toBe(1);
+    expect(callsByTask.get('task-1')).toBe(3);
   });
 
   it('fails closed when every planned task produces no verdict', async () => {
