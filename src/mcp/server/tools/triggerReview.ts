@@ -214,6 +214,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           centralActionDispatch: false,
           debounce: false,
           identity: resolvedIdentity,
+          dispatchPriority: priority,
           ...(review_engine ? { reviewEngine: review_engine } : {}),
           ...(resolved && authoritative ? {
             effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,

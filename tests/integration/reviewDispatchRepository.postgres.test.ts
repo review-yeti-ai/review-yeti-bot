@@ -239,6 +239,15 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
       expect(connect).not.toHaveBeenCalled();
     },
   );
+
+  it('REL-1189 rejects an invalid durable dispatch priority before persistence', async () => {
+    const { repository, connect } = repositoryThatStopsAtPersistence();
+    await expect(repository.admit({
+      ...authoritativeAdmission('invalid-dispatch-priority'),
+      dispatchPriority: 'urgent' as any,
+    })).rejects.toThrow('dispatch priority must be normal or expedited');
+    expect(connect).not.toHaveBeenCalled();
+  });
 });
 
 async function dispatchState(client: PoolClient, runId: string) {
@@ -348,6 +357,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         projection_name TEXT,
         attempt INTEGER NOT NULL DEFAULT 0,
         execution_attempt INTEGER NOT NULL DEFAULT 0,
+        dispatch_priority SMALLINT NOT NULL DEFAULT 0 CHECK (dispatch_priority IN (0, 1)),
         worker_token_digest VARCHAR(64),
         available_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
         cancel_requested_at TIMESTAMPTZ,
@@ -391,6 +401,95 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     }), () => now + 1)).toBe('published');
     return claim;
   }
+
+  it('REL-1189 claims expedited work first and keeps FIFO order within each durable priority', async () => {
+    const { repository, client } = await createRepository();
+    const normalOld = await repository.admit({
+      ...sameHeadAdmission('priority-normal-old', 1_000, { prNumber: 101 }),
+      dispatchPriority: 'normal',
+    });
+    const expeditedOld = await repository.admit({
+      ...sameHeadAdmission('priority-expedited-old', 1_100, { prNumber: 102 }),
+      dispatchPriority: 'expedited',
+    });
+    const expeditedNew = await repository.admit({
+      ...sameHeadAdmission('priority-expedited-new', 1_200, { prNumber: 103 }),
+      dispatchPriority: 'expedited',
+    });
+
+    expect((await client.query(
+      'SELECT dispatch_priority FROM review_dispatch_outbox WHERE run_id = $1', [normalOld.run.runId],
+    )).rows[0].dispatch_priority).toBe(0);
+    expect((await repository.claimNext('priority-worker-1', 2_000, 30_000))?.runId)
+      .toBe(expeditedOld.run.runId);
+    expect((await repository.claimNext('priority-worker-2', 2_000, 30_000))?.runId)
+      .toBe(expeditedNew.run.runId);
+    expect((await repository.claimNext('priority-worker-3', 2_000, 30_000))?.runId)
+      .toBe(normalOld.run.runId);
+  });
+
+  it('REL-1189 raises but never downgrades a pending same-run redelivery', async () => {
+    const { repository, client } = await createRepository();
+    const original = await repository.admit({
+      ...sameHeadAdmission('priority-original', 1_000),
+      dispatchPriority: 'normal',
+    });
+
+    await repository.admit({
+      ...sameHeadAdmission('priority-upgrade', 1_100),
+      dispatchPriority: 'expedited',
+    });
+    await repository.admit({
+      ...sameHeadAdmission('priority-no-downgrade', 1_200),
+      dispatchPriority: 'normal',
+    });
+
+    const outbox = (await client.query(
+      'SELECT status, dispatch_priority FROM review_dispatch_outbox WHERE run_id = $1', [original.run.runId],
+    )).rows[0];
+    expect(outbox).toMatchObject({ status: 'pending', dispatch_priority: 1 });
+
+    await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [original.run.runId]);
+    await client.query(
+      "UPDATE review_dispatch_outbox SET status = 'terminal', projection_name = 'retired-worker' WHERE run_id = $1",
+      [original.run.runId],
+    );
+    await repository.admit({
+      ...sameHeadAdmission('priority-normal-retry', 1_300),
+      dispatchPriority: 'normal',
+      retryRequested: true,
+      retryAfterExecutionAttempt: 1,
+    });
+    expect((await client.query(
+      'SELECT status, dispatch_priority FROM review_dispatch_outbox WHERE run_id = $1', [original.run.runId],
+    )).rows[0]).toMatchObject({ status: 'pending', dispatch_priority: 1 });
+    expect((await repository.claimNext('priority-upgrade-worker', 2_000, 30_000))?.runId)
+      .toBe(original.run.runId);
+  });
+
+  it('REL-1189 keeps concurrent claims single-owner across priority lanes', async () => {
+    const { repository } = await createRepository(trustedValidation, true);
+    const peerRepository = new PostgresReviewDispatchRepository(pool!, undefined, {
+      ...trustedValidation,
+      lifecycleEvents: 'enabled',
+    });
+    const expedited = await repository.admit({
+      ...sameHeadAdmission('priority-concurrent-expedited', 1_000, { prNumber: 111 }),
+      dispatchPriority: 'expedited',
+    });
+    const normal = await repository.admit({
+      ...sameHeadAdmission('priority-concurrent-normal', 1_000, { prNumber: 112 }),
+      dispatchPriority: 'normal',
+    });
+
+    const claims = await Promise.all([
+      repository.claimNext('priority-concurrent-a', 2_000, 30_000),
+      peerRepository.claimNext('priority-concurrent-b', 2_000, 30_000),
+    ]);
+    expect(new Set(claims.map((claim) => claim?.runId)))
+      .toEqual(new Set([expedited.run.runId, normal.run.runId]));
+    expect(new Set(claims.map((claim) => claim?.leaseOwner)).size).toBe(2);
+  });
 
   it('resolves the latest PR head by received time, even when row creation order disagrees', async () => {
     const { repository, client } = await createRepository();

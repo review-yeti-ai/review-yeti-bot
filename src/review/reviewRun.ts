@@ -106,6 +106,8 @@ export interface ReviewAdmissionInput {
   authoritativeGate?: { expectedAppId: number; prepared: PreparedPublishingPolicy };
   /** Explicit review engine selection from trigger or policy configuration. */
   reviewEngine?: 'composed' | 'panel';
+  /** Service-controlled durable dispatcher priority. Omission preserves the normal FIFO lane. */
+  dispatchPriority?: 'normal' | 'expedited';
 }
 
 export interface ReviewAdmission {
