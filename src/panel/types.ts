@@ -112,6 +112,8 @@ export interface PersonaLaneResult {
 }
 
 export interface PanelResult {
+  /** Validated composed task plan, carried to the trusted completion boundary. */
+  taskPlan?: import('./reviewTask').ReviewTask[];
   headSha: string;
   /**
    * Set when the approval came from path classification (documentation-only diff), not the

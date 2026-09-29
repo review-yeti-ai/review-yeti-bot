@@ -11,6 +11,7 @@ import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
+import { TASK_DIMENSIONS, validateTaskPlan } from '../panel/reviewTask';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -262,6 +263,13 @@ const resultSchema = z.object({
   version: z.literal(WORKER_REVIEW_RESULT_VERSION),
   completedAt: z.string().datetime({ offset: true }),
   personas: z.array(personaSchema).max(MAX_PERSONAS),
+  taskPlan: z.array(z.object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]{0,127}$/u),
+    dimension: z.enum(TASK_DIMENSIONS),
+    paths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(MAX_CHANGED_FILES),
+    question: z.string().min(1).max(400),
+    rationale: z.string().min(1).max(400),
+  }).strict()).min(1).max(8).optional(),
   coverageComplete: z.boolean(),
   quorumSatisfied: z.boolean(),
   /** Optional worker-computed summaries; consistency checks only, never eligibility authority. */
@@ -352,6 +360,10 @@ export interface TrustedReviewCoverageContract {
   expectedCoordinates: TrustedWorkerReviewCoordinates;
   /** Supplied by the service's trusted policy/config resolution, never by the worker. */
   expectedPersonaIds: readonly string[];
+  /** Service-owned engine and effective paths. Dynamic task IDs are admitted only for composed. */
+  reviewEngine?: 'panel' | 'composed' | 'shadow';
+  composedChangedPaths?: readonly string[];
+  composedMaxTasks?: number;
   /** Exact changed-file evidence already read by the service for the admitted head. */
   changedFiles: readonly ReviewChangedFile[];
   /** Trusted service-side coverage and quorum decisions. */
@@ -602,6 +614,7 @@ function arbitrateLanes(
   expectedLanes: number,
   coverageComplete: boolean,
   changedFiles: ReviewChangedFile[] | undefined,
+  composed = false,
 ): { valid: true; canonical: CanonicalArbitration } | { valid: false; message: string } {
   const lanes: ReviewLane[] = [];
   for (const persona of personas) {
@@ -617,7 +630,8 @@ function arbitrateLanes(
       findings: validation.findings as ReviewFinding[],
     });
   }
-  return { valid: true, canonical: computeAppVerdict({ lanes, expectedLanes, changedFiles, coverageComplete }) };
+  return { valid: true, canonical: computeAppVerdict({ lanes, expectedLanes, changedFiles, coverageComplete,
+    ...(composed ? { panelSize: 1 } : {}) }) };
 }
 
 /**
@@ -640,7 +654,7 @@ export function deriveStoredCompletionVerdict(
   const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
   if (new Set(gating.map((persona) => persona.id)).size !== gating.length) return null;
   const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
-    trusted.coverageComplete === true && result.coverageComplete, undefined);
+    trusted.coverageComplete === true && result.coverageComplete, undefined, Boolean(result.taskPlan));
   return arbitration.valid ? arbitration.canonical : null;
 }
 
@@ -905,7 +919,22 @@ export function deriveCanonicalWorkerReviewEvidence(
     if (mismatch) return invalidEvidence(mismatch, canonical, evidence);
     return { valid: true, canonical, evidence };
   }
-  const expected = new Set(expectedPersonaIds);
+  let requiredIds = expectedPersonaIds;
+  if (contract.reviewEngine === 'composed') {
+    if (!completion.result.taskPlan || !contract.composedChangedPaths?.length) {
+      return invalidEvidence('composed completion is missing its trusted task plan or effective paths');
+    }
+    const validatedPlan = validateTaskPlan({ tasks: completion.result.taskPlan }, {
+      changedFiles: [...contract.composedChangedPaths], maxTasks: contract.composedMaxTasks,
+    });
+    if (!validatedPlan.valid || canonicalJson(validatedPlan.tasks) !== canonicalJson(completion.result.taskPlan)) {
+      return invalidEvidence('composed task plan does not cover the trusted changed files');
+    }
+    requiredIds = validatedPlan.tasks.map((task) => task.id);
+  } else if (completion.result.taskPlan) {
+    return invalidEvidence('panel completion cannot claim a composed task plan');
+  }
+  const expected = new Set(requiredIds);
   const seen = new Set<string>();
 
   for (const persona of completion.result.personas) {
@@ -915,7 +944,8 @@ export function deriveCanonicalWorkerReviewEvidence(
   }
 
   const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
-  const arbitration = arbitrateLanes(completion.result.personas, expectedPersonaIds.length, coverageComplete, changedFiles);
+  const arbitration = arbitrateLanes(completion.result.personas, requiredIds.length, coverageComplete, changedFiles,
+    contract.reviewEngine === 'composed');
   if (!arbitration.valid) return invalidEvidence(arbitration.message);
   const { canonical } = arbitration;
   const quorumSatisfied = contract.quorumSatisfied && completion.result.quorumSatisfied && canonical.quorumSatisfied;
@@ -927,14 +957,14 @@ export function deriveCanonicalWorkerReviewEvidence(
     infrastructureFailure: completion.result.personas.some(hasInfrastructureFailure),
     p0Count: canonical.metrics.p0Count,
     p1Count: canonical.metrics.p1Count,
-    expectedLanes: expectedPersonaIds.length,
+    expectedLanes: requiredIds.length,
     completedLanes: canonical.completedPersonas,
   };
 
   const mismatch = rawFieldsMatchCanonical(completion.result, canonical);
   if (mismatch) return invalidEvidence(mismatch, canonical, evidence);
   const moderationRefusal = emptyModerationClaimRefusal(
-    completion.result, contract, expectedPersonaIds, changedFiles, coverageComplete, canonical);
+    completion.result, contract, requiredIds, changedFiles, coverageComplete, canonical);
   if (moderationRefusal) return invalidEvidence(moderationRefusal, canonical, evidence);
   return { valid: true, canonical, evidence };
 }

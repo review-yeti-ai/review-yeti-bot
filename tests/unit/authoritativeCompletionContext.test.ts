@@ -35,6 +35,14 @@ function prepared(turns = 3, personas = 'security,testing') {
   return preparePublishingPolicy(policyFile(turns, personas),
   { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
 }
+function composedPrepared() {
+  const base = policyFile();
+  const policy = JSON.parse(base.content);
+  policy.review_yeti.review_engine = 'composed';
+  const content = JSON.stringify(policy);
+  return preparePublishingPolicy({ content, source: { ...base.source, contentDigest: sha256(content) } },
+    { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
+}
 function resolution(policy = prepared()) {
   return { current: { ...current }, prepared: policy,
     identity: buildAuthoritativeReviewIdentity({ requested: target, current, policy: policy.policy }) };
@@ -160,6 +168,12 @@ describe('REL-1056 trusted-completion failure classification', () => {
 });
 
 describe('service-owned authoritative completion context', () => {
+  it('supplies the composed engine and exact effective paths from the trusted policy and diff', async () => {
+    const f = fixture({}, composedPrepared());
+    const context = await f.context(f.gate);
+    expect(context.coverage).toMatchObject({ reviewEngine: 'composed',
+      composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8 });
+  });
   beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }));
   afterEach(() => { try { expect(vi.getTimerCount()).toBe(0); } finally { vi.useRealTimers(); } });
 

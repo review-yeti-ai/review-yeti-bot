@@ -251,9 +251,15 @@ export function getPersonaEcosystemPaths(personaName: string, index?: CompiledDo
 
 const VALID_REVIEW_ENGINES: ReadonlySet<string> = new Set(['panel', 'composed', 'shadow']);
 
-/** Fail-inert, exactly like `resolveReviewEngine` in `src/cli/publishingReview.ts`: anything other
- * than one of the three known literals -- absent, a typo, the wrong type -- resolves to `'panel'`. */
-function normalizeReviewEngine(value: unknown): ReviewEngineName {
+/** DSH is a policy intent, not a worker engine yet. Its explicit fallback runs
+ * the composed reviewer. All other unknown or missing values retain the public panel default. */
+function normalizeReviewEngine(value: unknown, fallback: unknown): ReviewEngineName {
+  if (value === 'dsh' || value === 'deepseek-harness') {
+    if (fallback !== 'composed') {
+      throw new Error('DSH requires fallback_review_engine=composed until the worker supports DSH');
+    }
+    return 'composed';
+  }
   return typeof value === 'string' && VALID_REVIEW_ENGINES.has(value) ? (value as ReviewEngineName) : 'panel';
 }
 
@@ -305,7 +311,7 @@ export function resolveWorkerConfig(
       } else if (Array.isArray(policy.personas)) {
         personasList = policy.personas;
       }
-      reviewEngine = normalizeReviewEngine(policy.review_engine);
+      reviewEngine = normalizeReviewEngine(policy.review_engine, policy.fallback_review_engine);
       composed = normalizeComposedOverrides(policy.composed);
     } catch (e) {
       // A policy WAS supplied (this branch only runs when REVIEW_YETI_POLICY_JSON is present) but

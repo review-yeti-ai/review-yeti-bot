@@ -181,6 +181,18 @@ describe('publishingWorkerConfig', () => {
     expect(config.composed).not.toHaveProperty('require_security_task');
   });
 
+  it('uses composed only for an explicit DSH fallback while preserving the public panel default', () => {
+    const transport = { baseUrl: 'https://bifrost.local', apiKey: 'test', model: 'test-model' };
+    const dsh = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'dsh', fallback_review_engine: 'composed',
+    } }) }, transport);
+    expect(dsh.review_engine).toBe('composed');
+    expect(resolveWorkerConfig({}, transport).review_engine).toBe('panel');
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', review_engine: 'dsh',
+    } }) }, transport)).toThrow(/review policy could not be parsed/u);
+  });
+
   it('falls back to panel for an unrecognized review_engine value (fail-inert, not fail-open to a guess)', () => {
     const config = resolveWorkerConfig({
       REVIEW_YETI_POLICY_JSON: JSON.stringify({

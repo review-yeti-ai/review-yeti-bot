@@ -72,6 +72,43 @@ function expectInvalid(result: ReturnType<typeof derive>, message: RegExp): void
 }
 
 describe('WorkerReviewCompletion.v1', () => {
+  it('validates composed task coverage and IDs from the trusted diff', () => {
+    const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/example.ts'],
+      question: 'Could this change regress behavior?', rationale: 'The source changed.' }];
+    const composed = completion({ result: { ...completion().result,
+      personas: [lane('task-a')], taskPlan,
+    } });
+    const trusted = { ...contract, reviewEngine: 'composed' as const,
+      composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8 };
+    expect(derive(composed, trusted)).toMatchObject({ valid: true,
+      evidence: { expectedLanes: 1, completedLanes: 1, verdict: 'SHIP' } });
+    expectInvalid(derive(composed, contract), /panel completion cannot claim/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result, taskPlan: undefined } }, trusted),
+      /missing its trusted task plan/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result,
+      taskPlan: [{ ...taskPlan[0], paths: ['docs/unrelated.md'] }],
+    } }, trusted), /does not cover the trusted changed files/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result,
+      personas: [lane('not-in-plan')],
+    } }, trusted), /unknown persona lane/u);
+  });
+
+  it('treats a composed task list as one reviewer for blocking thresholds', () => {
+    const tasks = Array.from({ length: 7 }, (_, index) => ({ id: `task-${index + 1}`,
+      dimension: 'architecture' as const, paths: ['src/example.ts'],
+      question: 'Could this change regress behavior?', rationale: 'The source changed.' }));
+    const personas = tasks.map((task, index) => index < 3
+      ? lane(task.id, { decision: 'FINDINGS', findings: [{ severity: 'P1', path: 'src/example.ts',
+        line: index + 1, title: `Defect ${index + 1}`, body: `Distinct defect ${index + 1}.` }] })
+      : lane(task.id));
+    const review = completion({ result: { ...completion().result, personas, taskPlan: tasks,
+      verdict: undefined, findingCount: undefined, blockingFindingCount: undefined } });
+    const derived = derive(review, { ...contract, reviewEngine: 'composed',
+      composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8,
+      changedFiles: [{ path: 'src/example.ts', patch: '@@ -1,0 +1,3 @@\n+a\n+b\n+c\n' }],
+    });
+    expect(derived).toMatchObject({ valid: true, evidence: { verdict: 'BLOCK', expectedLanes: 7 } });
+  });
   it('derives clean evidence from complete persona findings without trusting the worker verdict', () => {
     const result = derive();
 

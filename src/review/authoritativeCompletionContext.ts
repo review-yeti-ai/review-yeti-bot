@@ -13,6 +13,7 @@ import { verifyIncrementalClaim, type IncrementalVerificationInput } from './inc
 import { routedLanesOf, verifyVerdictCacheClaim, type VerdictCacheVerificationInput } from './verdictCache';
 import { canonicalJson } from './reviewCore';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
+import { DEFAULT_MAX_TASKS } from '../panel/reviewTask';
 import {
   TrustedCompletionResolutionError,
   isDeterministicCompletionFailure,
@@ -268,6 +269,11 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       checkDeadline();
       return { current: { ...final, policyDigest }, coverage: {
         expectedPersonaIds, changedFiles: files,
+        ...(stored.config.review_engine === 'composed' ? {
+          reviewEngine: 'composed' as const,
+          composedChangedPaths: applicability.effectiveFiles.map((file) => file.path),
+          composedMaxTasks: Math.min(stored.config.composed?.max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS),
+        } : {}),
         // REL-1092: the same decision the worker's coverage reads. An analyzable
         // file whose changed text no lane could see is never counted as reviewed.
         coverageComplete: coverageComplete && applicability.omittedSourcePaths.length === 0,
