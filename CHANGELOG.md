@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.96.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.95.0...v1.96.0) (2026-09-29)
+
+
+### Features
+
+* **REL-1160:** add durable review continuation execution ([23d4b6a](https://github.com/review-yeti-ai/review-yeti-bot/commit/23d4b6a2ea097b7426918f6e0e8da006d7f3ba35))
+
 ## [1.95.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.94.1...v1.95.0) (2026-09-29)
 
 
