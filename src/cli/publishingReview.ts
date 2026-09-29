@@ -2034,6 +2034,27 @@ export async function runPublishingReviewWorker(
         : undefined;
       const silentlyMissingLanes = recoverablePanelFailure !== undefined
         && rawRoster.failedLaneCount === 0 && rawRoster.missingConfiguredLaneCount > 0;
+      // A composed task can run through its correction budget and produce no valid result.
+      // It is deliberately absent from personas/optionalFailures, so arbitration sees a
+      // missing roster member and returns BLOCK. With exact unreported-lane evidence and
+      // no findings, that is an incomplete execution, not a verdict about the diff.
+      // Malformed output is not an infrastructure outage: do not schedule an automatic retry.
+      const returnedIds = new Set(rawRoster.lanes.map((lane) => lane.id));
+      const missingIds = new Set((Array.isArray(panelResult.applicablePersonaIds)
+        ? panelResult.applicablePersonaIds : []).filter((id) => !returnedIds.has(id)));
+      const unreportedLanes = Array.isArray(panelResult.unreportedLanes) ? panelResult.unreportedLanes : [];
+      const unreportedNoVerdict = authoritative && rawRoster.mode === 'panel'
+        && rawRoster.expectedLaneCount !== null
+        && rawRoster.missingConfiguredLaneCount > 0
+        && rawRoster.malformedReturnedLaneCount === 0
+        && rawRoster.failedLaneCount === 0
+        && canonical.quorumSatisfied === false
+        && coverageGaps.length === 0 && rawFindings.length === 0
+        && unreportedLanes.length === missingIds.size
+        && missingIds.size === rawRoster.missingConfiguredLaneCount
+        && new Set(unreportedLanes.map((lane) => lane.id)).size === missingIds.size
+        && unreportedLanes.every((lane) => missingIds.has(lane.id)
+          && lane.failureClass === 'malformed_output');
       // REL-1113: the same "a lane died on the way to the model and nothing found anything"
       // shape on the AUTHORITATIVE path. `isRecoverableIncompletePanel` refuses authoritative
       // results (the service owns that verdict), so example-meta#3446 -- one of two lanes lost to a
@@ -2132,11 +2153,13 @@ export async function runPublishingReviewWorker(
       : 'documentation-only';
     const title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'
-      : documentationOnly
-        ? `Review Yeti: SHIP (${exemptionLabel})`
-        : fastShipApproved
-          ? 'Review Yeti: SHIP (fast-ship)'
-          : `Review Yeti: ${verdict}`;
+      : unreportedNoVerdict
+        ? 'Review Yeti: review did not complete'
+        : documentationOnly
+          ? `Review Yeti: SHIP (${exemptionLabel})`
+          : fastShipApproved
+            ? 'Review Yeti: SHIP (fast-ship)'
+            : `Review Yeti: ${verdict}`;
 
     const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
       ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
@@ -2170,7 +2193,9 @@ export async function runPublishingReviewWorker(
           `Repository visibility: ${repositoryVisibility}.`,
         ]
       : [
-          `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
+          unreportedNoVerdict
+            ? `No review verdict at \`${identity.headSha}\`: ${missingIds.size} configured task(s) ran without a valid result. This is not a finding about the diff; request an exact-head review after correcting the malformed output.`
+            : `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
           // REL-1139: the same shared decision the trusted completion side re-evaluates.
           ...(moderationSkipped ? [EMPTY_MODERATION_SKIP_REASON] : []),
           notApplicable
@@ -2307,7 +2332,13 @@ export async function runPublishingReviewWorker(
           // push this past `resultSchema.personas`'s own bound.
           personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
-          coverageComplete: coverageGaps.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true,
+          coverageComplete: coverageGaps.length === 0,
+          quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict,
+          ...(unreportedNoVerdict ? { failureDiagnostics: {
+            reason: 'panel_unreported_malformed_output',
+            logTail: 'A configured reviewer task ran without a valid result.',
+            recoverableIncompletePanel: false,
+          } } : {}),
           // See `resultSchema.panelWallClockMs`: the panel's own wall-clock measurement, carried
           // across the completion boundary so downstream comparisons stop relying on a summed
           // per-lane duration that overstates wall time under fan-out. Omitted (not a fabricated
@@ -2565,14 +2596,14 @@ export async function runPublishingReviewWorker(
       publicationMode: PUBLICATION_MODE_APP_GATE,
       transport: 'bifrost',
       model: transport.model,
-      // REL-1113: an infrastructure-incomplete run has no verdict; never report its canonical
-      // BLOCK (derived only from the missing lane) as one.
-      verdict: infrastructureIncomplete ? 'INCOMPLETE' : verdict,
+      // A review with an unreported malformed task has no verdict either; neither failure
+      // may report arbitration's BLOCK, which was derived only from incomplete coverage.
+      verdict: infrastructureIncomplete || unreportedNoVerdict ? 'INCOMPLETE' : verdict,
       conclusion: authoritativeInfrastructureResult ? 'failure' : conclusion,
       findingCount: findings.length,
       blockingFindingCount: blocking.length,
-      failureClass: recoverablePanelFailure
-        ?? (authoritativeInfrastructureResult ? (incompleteLanes[0]?.failureClass as WorkerTerminalFailure['failureClass'] | undefined) ?? 'transport' : null),
+      failureClass: unreportedNoVerdict ? 'malformed_output' : (recoverablePanelFailure
+        ?? (authoritativeInfrastructureResult ? (incompleteLanes[0]?.failureClass as WorkerTerminalFailure['failureClass'] | undefined) ?? 'transport' : null)),
       startedAt,
       completedAt,
       coverage,
