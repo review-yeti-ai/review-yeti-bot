@@ -15,7 +15,7 @@ import {
   CHECK_CONTEXT_GATE,
   GitHubInstallationClient,
 } from '../github/installationClient';
-import { withGitHubRetry, githubRetryOptionsFromEnv } from '../github/githubRetry';
+import { withGitHubRetry, githubRetryDeadlineFromEnv } from '../github/githubRetry';
 import { raceWithAbort } from '../gateway/raceWithAbort';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
@@ -530,7 +530,11 @@ export async function runContinuationPhase(
     }
 
     // 6b: Post / update Review Yeti Gate check run wrapped in withGitHubRetry
-    const checkClient = options.checkClient || (token ? new GitHubInstallationClient({ token, retry: githubRetryOptionsFromEnv(env) }) : undefined);
+    const deadlineAtMs = githubRetryDeadlineFromEnv(env);
+    const checkClient = options.checkClient || (token ? new GitHubInstallationClient({
+      token,
+      ...(deadlineAtMs !== undefined ? { retry: { deadlineAtMs } } : {}),
+    }) : undefined);
     if (checkClient) {
       gateCheckId = await withTimeoutGuard(
         withGitHubRetry(
