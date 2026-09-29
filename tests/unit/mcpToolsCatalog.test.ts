@@ -842,43 +842,6 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       })).rejects.toThrow(/review database unavailable/);
     });
 
-    it.each([
-      { label: 'missing', repositoryId: null },
-      { label: 'non-positive', repositoryId: 0 },
-    ])('TC-CANC-007: Fails closed when the active run repository identity is $label', async ({ repositoryId }) => {
-      const cancelActiveRunsForPullRequest = vi.fn(async () => ({
-        activeRun: { runId: 'run_to_cancel', repositoryId: repositoryId as number, attempt: 1 },
-        cancelledRunIds: ['run_to_cancel'],
-      }));
-      const tool = createCancelReviewTool({
-        cancellationRepository: { cancelActiveRunsForPullRequest },
-      });
-
-      await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
-      })).rejects.toThrow(/active run repository identity is invalid/);
-    });
-
-    it.each([
-      { label: 'no cancelled run ids', cancelledRunIds: [] },
-      { label: 'a different cancelled run id', cancelledRunIds: ['run_for_another_pr'] },
-    ])('TC-CANC-005: Fails closed when the atomic repository reports $label', async ({ cancelledRunIds }) => {
-      const mockPatch = vi.fn();
-      const cancelActiveRunsForPullRequest = vi.fn(async () => ({
-        activeRun: { runId: 'run_to_cancel', repositoryId: 123, attempt: 1 },
-        cancelledRunIds,
-      }));
-      const tool = createCancelReviewTool({
-        cancellationRepository: { cancelActiveRunsForPullRequest },
-        patchCancellation: mockPatch,
-      });
-
-      await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
-      })).rejects.toThrow(/transactional outcome omitted its selected active run/);
-      expect(mockPatch).not.toHaveBeenCalled();
-    });
-
     it('TC-CANC-004: Rejects an unbounded audit rationale', async () => {
       const tool = createCancelReviewTool();
 

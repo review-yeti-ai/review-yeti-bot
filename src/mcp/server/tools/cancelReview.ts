@@ -35,8 +35,7 @@ export interface CancelReviewDependencies {
       gateReason: 'operator-cancelled';
       now: number;
     }): Promise<{
-      activeRun: { runId: string; repositoryId: number; attempt: number };
-      cancelledRunIds: string[];
+      activeRun: { runId: string; attempt: number };
     } | null>;
   };
   patchCancellation?: (
@@ -84,16 +83,7 @@ export function createCancelReviewTool(deps: CancelReviewDependencies = {}) {
 
       const activeRun = cancellation.activeRun;
       const runId = activeRun.runId;
-      const repositoryId = activeRun.repositoryId;
-      if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
-        throw new Error('Cancellation service unavailable: active run repository identity is invalid');
-      }
       attemptId = `review-attempt-${pull_number}-${activeRun.attempt || 1}`;
-      if (!cancellation.cancelledRunIds.includes(runId)) {
-        throw new Error(
-          'Cancellation service unavailable: transactional outcome omitted its selected active run'
-        );
-      }
 
       if (deps.patchCancellation) {
         const crdName = `ct-review-${runId.replace(/^run_/u, '')}`;

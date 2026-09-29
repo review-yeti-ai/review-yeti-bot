@@ -187,6 +187,30 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
     }));
   });
 
+  it('wires cancel_review through the top-level admission repository', async () => {
+    const cancelActiveRunsForPullRequest = vi.fn(async () => ({
+      activeRun: { runId: 'run_top_level', repositoryId: 123, attempt: 2 },
+      cancelledRunIds: ['run_top_level'],
+    }));
+    const registry = createDefaultToolRegistry({
+      admissionRepository: { cancelActiveRunsForPullRequest },
+    });
+
+    const tool = registry.getTool('cancel_review');
+    expect(tool).toBeDefined();
+    const result = await tool!.execute({
+      owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 45, reason: 'Operator request',
+    }, {} as any) as any;
+
+    expect(JSON.parse((result.content[0] as any).text)).toMatchObject({
+      cancelled: true,
+      attempt_id: 'review-attempt-45-2',
+    });
+    expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith(expect.objectContaining({
+      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 45, gateReason: 'operator-cancelled',
+    }));
+  });
+
   describe('Protocol Negotiation', () => {
     it('TC-101: successfully handles initialize with protocol version 2024-11-05', async () => {
       const response = await request(app)
