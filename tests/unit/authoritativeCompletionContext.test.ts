@@ -35,10 +35,11 @@ function prepared(turns = 3, personas = 'security,testing') {
   return preparePublishingPolicy(policyFile(turns, personas),
   { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
 }
-function composedPrepared() {
+function composedPrepared(maxTasks?: number) {
   const base = policyFile();
   const policy = JSON.parse(base.content);
   policy.review_yeti.review_engine = 'composed';
+  if (maxTasks !== undefined) policy.review_yeti.composed = { max_tasks: maxTasks };
   const content = JSON.stringify(policy);
   return preparePublishingPolicy({ content, source: { ...base.source, contentDigest: sha256(content) } },
     { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
@@ -174,6 +175,13 @@ describe('service-owned authoritative completion context', () => {
     expect(context.coverage).toMatchObject({ reviewEngine: 'composed',
       composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8 });
   });
+  it.each([{ configured: 4, admitted: 4 }, { configured: 20, admitted: 8 }])(
+    'caps a configured composed plan of $configured tasks at $admitted', async ({ configured, admitted }) => {
+      const f = fixture({}, composedPrepared(configured));
+      const context = await f.context(f.gate);
+      expect(context.coverage.composedMaxTasks).toBe(admitted);
+    },
+  );
   beforeEach(() => vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] }));
   afterEach(() => { try { expect(vi.getTimerCount()).toBe(0); } finally { vi.useRealTimers(); } });
 
