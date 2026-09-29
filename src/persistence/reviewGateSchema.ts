@@ -8,18 +8,46 @@ export const REVIEW_GATE_SCHEMA_SQL = `
   -- One-time compatibility bridge for legacy App-gate successes created
   -- before action-dispatch persisted the receipt choice explicitly. This runs
   -- after authoritative_gate_app_id and terminal_receipt_digest both exist.
-  -- Runtime readers consume only the persisted receipt; they do not re-derive
-  -- this historical success predicate.
-  UPDATE review_dispatch_outbox AS outbox
-     SET terminal_receipt_digest = runs.result_digest
-    FROM review_runs AS runs
-   WHERE outbox.run_id = runs.run_id
-     AND outbox.terminal_receipt_digest IS NULL
-     AND outbox.status = 'terminal'
-     AND runs.status = 'succeeded'
-     AND runs.publication_mode = 'app-gate'
-     AND runs.authoritative_gate_app_id IS NULL
-     AND runs.result_digest ~ '^[a-f0-9]{64}$';
+  -- Some independently installed gate-store consumers do not own the dispatch
+  -- table, while narrow legacy schemas can omit the run result columns. Keep
+  -- this additive schema usable in both cases and backfill only the full
+  -- action-dispatch shape. Runtime readers consume only the persisted receipt;
+  -- they do not re-derive this historical success predicate.
+  DO $$
+  BEGIN
+    IF to_regclass('review_dispatch_outbox') IS NOT NULL THEN
+      ALTER TABLE review_dispatch_outbox
+        ADD COLUMN IF NOT EXISTS terminal_receipt_digest VARCHAR(64)
+          CHECK (terminal_receipt_digest IS NULL OR terminal_receipt_digest ~ '^[a-f0-9]{64}$');
+
+      IF EXISTS (
+        SELECT 1
+          FROM pg_attribute
+         WHERE attrelid = to_regclass('review_runs')
+           AND attname = 'publication_mode'
+           AND NOT attisdropped
+      ) AND EXISTS (
+        SELECT 1
+          FROM pg_attribute
+         WHERE attrelid = to_regclass('review_runs')
+           AND attname = 'result_digest'
+           AND NOT attisdropped
+      ) THEN
+        EXECUTE $backfill$
+          UPDATE review_dispatch_outbox AS outbox
+             SET terminal_receipt_digest = runs.result_digest
+            FROM review_runs AS runs
+           WHERE outbox.run_id = runs.run_id
+             AND outbox.terminal_receipt_digest IS NULL
+             AND outbox.status = 'terminal'
+             AND runs.status = 'succeeded'
+             AND runs.publication_mode = 'app-gate'
+             AND runs.authoritative_gate_app_id IS NULL
+             AND runs.result_digest ~ '^[a-f0-9]{64}$'
+        $backfill$;
+      END IF;
+    END IF;
+  END $$;
   CREATE TABLE IF NOT EXISTS review_gate_attempts (
     attempt_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
