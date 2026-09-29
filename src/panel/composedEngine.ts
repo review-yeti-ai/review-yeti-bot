@@ -151,9 +151,10 @@ export interface ComposedReviewOptions {
 // Turn budget -- explicit and separate from the fan-out engine's clamps
 // ---------------------------------------------------------------------------
 //
-// Production averages ~4.75 turns per fan-out lane against MAX_INVESTIGATION_TURNS (15). A
-// composed plan of DEFAULT_MAX_TASKS (8) tasks needs roughly 8 * 4.75 ~= 38 work turns plus the
-// plan phase itself. This engine does NOT reuse MAX_INVESTIGATION_TURNS or PUBLISHING_MAX_TURNS
+// Live composed reviews exhausted six task turns while still requesting read-only evidence.
+// Twelve turns per task and a 100-turn review budget cover eight tasks plus the four-turn plan,
+// with three turns per task reserved for a bound final result. This engine does NOT reuse
+// MAX_INVESTIGATION_TURNS or PUBLISHING_MAX_TURNS
 // as its cap -- both bound a single lane's OWN turn count, not a whole review's total turn spend
 // across a planned task list -- and it must never quietly raise either of them. This is its own,
 // separately named, explicitly documented budget. Overridable for operators the same way
@@ -163,11 +164,13 @@ export interface ComposedReviewOptions {
  * escape hatch cannot disagree about what "too many" means. */
 export const COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP = 200;
 
-export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 48;
+export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 100;
 /** Turns available to the PLAN phase alone (tool calls + up to one corrective retry + finalize). */
 export const COMPOSED_PLAN_MAX_TURNS = 4;
 /** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
-export const COMPOSED_TASK_MAX_TURNS = 6;
+export const COMPOSED_TASK_MAX_TURNS = 12;
+/** Keep a bounded opportunity to produce a verdict after read-only investigation. */
+const TASK_FINALIZATION_TURNS = 3;
 
 /**
  * Per-task turn ceiling. Policy NARROWS only: a value above `COMPOSED_TASK_MAX_TURNS` is ignored
@@ -907,11 +910,20 @@ async function runTaskWorkPhase(input: {
   let toolTurns = 0;
   let correctionAttempts = 0;
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining());
+  const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
 
   for (let iter = 0; iter < localMaxTurns; iter++) {
     if (input.turnsRemaining() <= 0) return { type: 'exhausted', turnUsages };
     const isLastLocalTurn = iter === localMaxTurns - 1;
-    const responseFormat = isLastLocalTurn ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
+    const finalizing = iter >= localMaxTurns - finalizationTurns;
+    if (iter === localMaxTurns - finalizationTurns) {
+      taskMessages = [...taskMessages, { role: 'user', content: [
+        'TASK_FINALIZATION',
+        'The read-only investigation phase has ended. Return the task result now; do not request another tool.',
+        'If evidence is insufficient, use BLOCKED. Preserve the task id and nonce from this task directive.',
+      ].join('\n') }];
+    }
+    const responseFormat = finalizing ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
     const activeMessages = compactMessageWindow(taskMessages, {
       activeTurns: TASK_COMPACTION_ACTIVE_TURNS,
       toolCalls: toolCallsLog,
@@ -929,13 +941,13 @@ async function runTaskWorkPhase(input: {
       jobId: input.jobId,
       signal: input.signal,
       turnNumber: turnUsages.length + 1,
-      kind: isLastLocalTurn ? 'final' : 'tool',
+      kind: finalizing ? 'final' : 'tool',
     });
     turnUsages.push(turn.usage);
     taskMessages = [...taskMessages, { role: 'assistant', content: turn.content }];
 
     const parsed = parseNativeTurn(turn.content);
-    if (parsed?.isToolCall) {
+    if (parsed?.isToolCall && !finalizing) {
       toolTurns += 1;
       const result = await runReadOnlyTool(parsed.tool as string, parsed.args, {
         changedFiles: input.changedFilesForTools,
@@ -957,7 +969,9 @@ async function runTaskWorkPhase(input: {
     const candidate = parsed?.finalObject;
     let contractError: string | null = null;
     if (!candidate) {
-      contractError = 'response was not a JSON object matching the tool-call or task-result shape';
+      contractError = parsed?.isToolCall
+        ? 'tool calls are closed; return a task result with COMPLETE or BLOCKED'
+        : 'response was not a JSON object matching the tool-call or task-result shape';
     } else if (candidate.task !== input.task.id) {
       contractError = `"task" must equal "${input.task.id}"`;
     } else if (candidate.nonce !== expectedNonce) {

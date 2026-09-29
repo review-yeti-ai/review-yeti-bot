@@ -532,9 +532,10 @@ describe('executeComposedReview', () => {
       if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
         return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
       }
-      if (text.includes('WORK TURN')) {
-        const taskId = threeTasks().find((task) => text.includes(`TASK`) && text.includes(task.id))?.id
-          ?? threeTasks().find((task) => text.includes(task.id))?.id;
+      if (text.includes('WORK TURN') || text.includes('TASK_FINALIZATION')) {
+        const workDirective = payload.messages.find((message: any) =>
+          typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+        const taskId = threeTasks().find((task) => workDirective.includes(`Task id: ${task.id}`))?.id;
         if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
         workTurns.push(taskId);
         return fakeResponse(decide(taskId, text, nonce));
