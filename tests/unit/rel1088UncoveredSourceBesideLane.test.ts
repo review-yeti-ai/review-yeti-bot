@@ -5,6 +5,7 @@ import { executePersonaPanel } from '../../src/panel/panelEngine';
 import { renderRoutedFiles } from '../../src/cli/publishingReview';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { resolveReviewApplicability, scopeFilesForPersona } from '../../src/review/personaApplicability';
+import { deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 
 /**
  * REL-1088 (found by #998, REL-972): when at least one configured persona
@@ -197,6 +198,21 @@ describe('REL-1088: uncovered source beside an applying lane is routed, never dr
     });
     expect(result.personas.map((persona) => persona.id)).toEqual(['task-sec']);
     expect(result.routedFiles).toEqual([{ path: UNCOVERED, laneIds: ['sec-lane'], reason: 'uncovered-source' }]);
+    const changedFiles = files('src/app.py', UNCOVERED);
+    const coordinates = { runId: `run_${'a'.repeat(32)}`, repositoryId: 123,
+      owner: 'r', repo: 'r', prNumber: 42, headSha: 'f'.repeat(40), baseSha: 'b'.repeat(40),
+      policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), executionAttempt: 1 };
+    const completion = { version: 'WorkerReviewCompletion.v1', ...coordinates,
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-29T12:00:00.000Z',
+        personas: result.personas.map((persona) => ({ id: persona.id, decision: persona.decision,
+          findings: persona.findings })), taskPlan: result.taskPlan,
+        coverageComplete: true, quorumSatisfied: result.quorum?.satisfied === true } };
+    const derived = deriveCanonicalWorkerReviewEvidence(completion, {
+      expectedCoordinates: coordinates, expectedPersonaIds: ['arch-lane', 'sec-lane'],
+      changedFiles, reviewEngine: 'composed', composedChangedPaths: changedFiles.map((file) => file.path),
+      composedMaxTasks: 8, coverageComplete: true, quorumSatisfied: true,
+    });
+    expect(derived).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', reviewEngine: 'composed' } });
   }, 60_000);
 });
 

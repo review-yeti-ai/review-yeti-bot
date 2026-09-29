@@ -99,7 +99,7 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import {
-  DEFAULT_MAX_TASKS,
+  resolveComposedMaxTasks,
   ReviewTask,
   validateTaskPlan,
   type TaskPlanValidationResult,
@@ -1146,9 +1146,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       preCheckEvidence,
     });
 
-    // Policy may only narrow this, never widen it past `DEFAULT_MAX_TASKS` -- `config.composed` is
+    // Policy may only narrow this, never widen it past the shared task hard cap -- `config.composed` is
     // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
-    const maxTasks = Math.max(1, Math.min(config.composed?.max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
+    const maxTasks = resolveComposedMaxTasks(config.composed?.max_tasks);
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
 
     // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
@@ -1303,6 +1303,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       headSha,
       repositoryVisibility,
       applicablePersonaIds: planOutcome.tasks.map((t) => t.id),
+      taskPlan: planOutcome.tasks,
       // REL-1088: the composed reviewer reads every effective file; files no
       // persona's paths cover are still disclosed as routed.
       ...(applicability.routedFiles.length > 0 ? { routedFiles: applicability.routedFiles } : {}),

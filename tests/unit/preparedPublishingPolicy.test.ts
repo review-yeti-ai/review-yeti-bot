@@ -13,6 +13,14 @@ function file(raw: unknown = { schema: 'exampleorg.review-policy.v1', review_yet
 }
 
 describe('trusted prepared publishing policy', () => {
+  it('resolves the private DSH policy to its explicit composed fallback without changing the panel default', () => {
+    const selected = preparePublishingPolicy(file({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', budget: { max_investigation_turns: 20 },
+      review_engine: 'dsh', fallback_review_engine: 'composed',
+    } }), transport);
+    expect(selected.config.review_engine).toBe('composed');
+    expect(preparePublishingPolicy(file(), transport).config.review_engine).toBe('panel');
+  });
   it('preserves the shared Bifrost resolver and binds normalized config independently of source credentials', () => {
     const prepared = preparePublishingPolicy(file(), transport);
     expect(prepared.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);

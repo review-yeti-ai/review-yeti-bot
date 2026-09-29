@@ -587,7 +587,12 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
       };
       const sourceLoader = vi.fn().mockResolvedValue(source);
       const panelRunner = vi.fn().mockResolvedValue(panel);
-      const composedReviewRunner = vi.fn().mockResolvedValue(panel);
+      const composedReviewRunner = vi.fn().mockResolvedValue(reviewEngine === 'composed'
+        ? { ...panel,
+          taskPlan: [{ id: 'task-a', dimension: 'architecture', paths: ['src/a.ts'],
+            question: 'Does this change preserve behavior?', rationale: 'The source changed.' }],
+          applicablePersonaIds: ['task-a'], personas: [{ ...panel.personas[0], id: 'task-a' }],
+        } : panel);
       const reportReviewResult = vi.fn<WorkerReviewCompletionAdapter['reportReviewResult']>().mockResolvedValue(undefined);
       const now = vi.fn().mockReturnValueOnce(1_000_000).mockReturnValue(1_001_000);
 
@@ -610,13 +615,13 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
       return { env, deps, panelRunner, composedReviewRunner, reportReviewResult };
     }
 
-    it('EMP-M2-WRK-01: falls back to panelRunner when review_engine is composed in authoritative mode to protect roster contract', async () => {
+    it('EMP-M2-WRK-01: uses composed tasks when explicitly configured in authoritative mode', async () => {
       const fix = createWorkerFixture('composed');
 
       await runPublishingReviewWorker(fix.env, fix.deps);
 
-      expect(fix.panelRunner).toHaveBeenCalledOnce();
-      expect(fix.composedReviewRunner).not.toHaveBeenCalled();
+      expect(fix.panelRunner).not.toHaveBeenCalled();
+      expect(fix.composedReviewRunner).toHaveBeenCalledOnce();
       expect(fix.reportReviewResult).toHaveBeenCalledOnce();
     });
 

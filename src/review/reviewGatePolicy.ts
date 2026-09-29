@@ -10,6 +10,8 @@ export interface ReviewGateCandidate {
 
 export interface ReviewGateEvidence {
   verdict: 'SHIP' | 'FIX_FIRST' | 'BLOCK';
+  /** Service-verified engine for stored prior rechecks; absent on older panel records. */
+  reviewEngine?: 'composed';
   completedAt: string;
   coverageComplete: boolean;
   quorumSatisfied: boolean;

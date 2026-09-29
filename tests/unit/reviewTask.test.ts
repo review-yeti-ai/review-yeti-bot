@@ -7,6 +7,7 @@ import {
   DEFAULT_MAX_TASKS,
   MAX_TASKS_HARD_CAP,
   MAX_TASK_TEXT_LENGTH,
+  resolveComposedMaxTasks,
   type RawReviewTaskPlan,
   type RawReviewTask,
   type ValidateTaskPlanContext,
@@ -50,6 +51,12 @@ function ctx(overrides: Partial<ValidateTaskPlanContext> = {}): ValidateTaskPlan
 }
 
 describe('validateTaskPlan', () => {
+  it('uses one task-count resolver for planning and gate admission', () => {
+    expect(resolveComposedMaxTasks(undefined)).toBe(DEFAULT_MAX_TASKS);
+    expect(resolveComposedMaxTasks(0)).toBe(DEFAULT_MAX_TASKS);
+    expect(resolveComposedMaxTasks(4)).toBe(4);
+    expect(resolveComposedMaxTasks(20)).toBe(MAX_TASKS_HARD_CAP);
+  });
   it('rejects an empty plan', () => {
     const result = validateTaskPlan(plan([]), ctx());
     expect(result.valid).toBe(false);
