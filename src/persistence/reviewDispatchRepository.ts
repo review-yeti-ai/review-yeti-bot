@@ -1585,6 +1585,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         await this.appendLifecycle(client, String(row.run_id), 'review.lifecycle.cancelled', now, {
           stage: 'cancelled',
           terminal_class: 'cancelled',
+          // The operator rationale remains in review_runs/review_dispatch_outbox. The closed
+          // lifecycle v1 contract deliberately excludes free-form text from event payloads.
           retry_class: gateReason,
         });
       }

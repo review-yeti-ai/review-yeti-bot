@@ -4084,10 +4084,12 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         decision: { status: 'cancelled', eligible: false, reason: 'operator-cancelled' },
       });
       expect(gate.published_version).toBe(gate.desired_version);
-      expect((await lifecycleEvents(client, admitted.run.runId))
-        .find((event) => event.eventKind === 'review.lifecycle.cancelled')?.data).toMatchObject({
+      const cancelledLifecycle = (await lifecycleEvents(client, admitted.run.runId))
+        .find((event) => event.eventKind === 'review.lifecycle.cancelled');
+      expect(cancelledLifecycle?.data).toMatchObject({
           stage: 'cancelled', terminal_class: 'cancelled', retry_class: 'operator-cancelled',
         });
+      expect(cancelledLifecycle?.data).not.toHaveProperty('cancel_reason');
     });
 
     it('rolls back run and outbox cancellation when protected gate settlement fails', async () => {
