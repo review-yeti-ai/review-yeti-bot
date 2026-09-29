@@ -75,6 +75,14 @@ inputs:
       request shape silently altered.
     required: false
     default: ''
+  transport-destination:
+    description: >-
+      Fail-closed destination class emitted by the trusted transport guard. The central workflow
+      uses `gateway` to translate the exact policy model to the Bifrost `pr-reviewer` wire alias;
+      ordinary action consumers should leave this empty unless their workflow performs the same
+      destination admission check.
+    required: false
+    default: ''
   model:
     description: 'Trusted workflow/base-config OpenRouter model control. Defaults to direct DeepSeek V4 Flash 0731; GLM 5.3 Flash is the explicit fallback.'
     required: false
@@ -645,6 +653,7 @@ runs:
         OPENROUTER_BASE_URL: ${{ inputs.llm-base-url }}
         OPENROUTER_MODEL: ${{ inputs.model }}
         REVIEW_TRANSPORT_COMPAT: ${{ inputs.transport-compat }}
+        REVIEW_TRANSPORT_DESTINATION: ${{ inputs.transport-destination }}
         REVIEW_LANE_TIMEOUT_MS: ${{ inputs.lane-timeout-ms }}
         REVIEW_ACTION_BUDGET_MS: ${{ inputs.action-budget-ms }}
         OLLAMA_PR_REVIEW_API_KEY: ${{ inputs.ollama-api-key || env.OLLAMA_PR_REVIEW_API_KEY || env.OLLAMA_API_KEY }}
