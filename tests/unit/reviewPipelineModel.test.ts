@@ -261,6 +261,30 @@ describe('resolveModelConfig', () => {
     });
     expect(directFetch.calls[0].body.max_tokens).toBe(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
     expect(directFetch.calls[0].body.max_tokens).toBeGreaterThan(pipeline.DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+
+    // The hosted guard rejects this route, but the request boundary must not
+    // mistake an actual OpenRouter destination for the private gateway.
+    const gatewayFlagOnOpenRouter = resolveModelConfig({
+      OPENROUTER_API_KEY: 'misrouted-test-key',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+      REVIEW_YETI_TRANSPORTS: transport(directUrl, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS),
+    });
+    const misroutedFetch = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...gatewayFlagOnOpenRouter, fetchImplementation: misroutedFetch.impl,
+    });
+    expect(misroutedFetch.calls[0].body.max_tokens).toBe(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
+
+    const nonAliasGateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'non-alias-test-key',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+      REVIEW_YETI_TRANSPORTS: transport(privateUrl, 'some/other-model'),
+    });
+    const nonAliasFetch = stubFetch(JSON.stringify({ findings: [] }));
+    await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...nonAliasGateway, fetchImplementation: nonAliasFetch.impl,
+    });
+    expect(nonAliasFetch.calls[0].body.max_tokens).toBe(pipeline.DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS);
   });
 
   it('maps the guarded gateway destination to the Bifrost model alias without changing policy', () => {
