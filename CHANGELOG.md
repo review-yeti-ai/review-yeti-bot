@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.10...v1.97.11) (2026-09-29)
+
+
+### Bug Fixes
+
+* **dispatch:** recover proven legacy incomplete review generations [UAT-1704] ([#1136](https://github.com/review-yeti-ai/review-yeti-bot/issues/1136)) ([4988953](https://github.com/review-yeti-ai/review-yeti-bot/commit/4988953285004494567482135e6cb2f6ddc8df70))
+
 ## [1.97.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.9...v1.97.10) (2026-09-29)
 
 
