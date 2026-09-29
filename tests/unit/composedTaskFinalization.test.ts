@@ -51,6 +51,45 @@ function makeClient(alwaysRequestToolOnFinal = false) {
 }
 
 describe('composed task finalization', () => {
+  it.each([1, 2])('keeps a bound finalization turn with a %i-turn task ceiling', async (ceiling) => {
+    let taskTurns = 0;
+    const complete = vi.fn(async (request: any) => {
+      const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+      const nonces = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)];
+      const nonce = nonces.at(-1)?.[1];
+      if (!nonce) throw new Error('task or plan nonce missing');
+      let body: unknown;
+      if (!prompt.includes('WORK TURN')) {
+        body = { nonce, tasks: [{ id: 'verify-change', dimension: 'architecture', paths: ['src/app.ts'], question: 'Is this change sound?', rationale: 'Review changed code.' }] };
+      } else {
+        taskTurns += 1;
+        body = ceiling === 2 && taskTurns === 1
+          ? { tool: 'read_file', args: { path: 'src/app.ts' } }
+          : { nonce, task: 'verify-change', status: 'COMPLETE', findings: [] };
+      }
+      return { model: 'pr-reviewer', content: JSON.stringify(body), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+    });
+    const narrowedConfig = ctReviewConfigV3Schema.parse({
+      ...config,
+      composed: { max_tasks: 1, max_turns_per_task: ceiling },
+    });
+    const result = await executeComposedReview({
+      config: narrowedConfig, changedFiles, repository: 'acme/app', headSha: 'c'.repeat(40), client: { complete } as never,
+    });
+    const taskCalls = complete.mock.calls.map(([request]) => request as any).filter((request) =>
+      request.messages.some((message: any) => extractMessageContentText(message.content).includes('WORK TURN')));
+    expect(taskTurns).toBe(ceiling);
+    expect(taskCalls).toHaveLength(ceiling);
+    expect(taskCalls.at(-1)?.responseFormat.json_schema.name).toBe('ct_review_task_result_v1');
+    expect(taskCalls.at(-1)?.messages.some((message: any) => extractMessageContentText(message.content).includes('TASK_FINALIZATION'))).toBe(true);
+    if (ceiling === 2) {
+      expect(taskCalls[0].responseFormat).toEqual({ type: 'json_object' });
+      expect(taskCalls[0].messages.some((message: any) => extractMessageContentText(message.content).includes('TASK_FINALIZATION'))).toBe(false);
+    }
+    expect(result.personas).toMatchObject([{ id: 'verify-change', decision: 'APPROVE', toolTurns: ceiling - 1 }]);
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
   it('accepts a bound verdict after nine read-only turns and one corrected final turn', async () => {
     const client = makeClient();
     const result = await executeComposedReview({
