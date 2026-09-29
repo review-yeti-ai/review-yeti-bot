@@ -7,6 +7,7 @@ import {
   type RunStatusResult,
 } from '../../src/persistence/reviewDispatchRepository';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+import appGateReceiptFixture from '../../k8s-operator/controllers/testdata/app_gate_receipt_success.v1.json';
 
 describe('Two-Tier Cancellation Architecture', () => {
   describe('PostgresReviewDispatchRepository cancellation methods', () => {
@@ -141,7 +142,33 @@ describe('Two-Tier Cancellation Architecture', () => {
         currentHeadSha: 'head_new',
         isCurrentHead: false,
         workerTokenDigest: 'a'.repeat(64),
+        receipt: undefined,
       });
+    });
+
+    it('maps the shared receipt fixture from a persisted completion row', async () => {
+      const expected = appGateReceiptFixture.receipt;
+      const mockQuery = vi.fn(async (sql: string) => {
+        if (sql.includes('FROM review_runs AS runs')) {
+          return { rows: [{
+            run_id: expected.runId, status: appGateReceiptFixture.status,
+            repository_id: expected.repositoryId, owner: expected.owner, repo: expected.repo,
+            pr_number: expected.prNumber,
+            head_sha: expected.headSha, base_sha: expected.baseSha,
+            effective_policy_digest: expected.policyDigest, effective_config_digest: expected.configDigest,
+            worker_token_digest: 'f'.repeat(64), completion_digest: expected.digest.slice('sha256:'.length),
+          }] };
+        }
+        return { rows: [{ head_sha: expected.headSha }] };
+      });
+      const repo = new PostgresReviewDispatchRepository(
+        { connect: vi.fn(), query: mockQuery } as any,
+        undefined,
+        { lifecycleEvents: 'disabled' },
+      );
+
+      const status = await repo.getRunStatus(expected.runId, expected.executionAttempt);
+      expect(status?.receipt).toEqual(expected);
     });
   });
 

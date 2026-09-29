@@ -1316,15 +1316,14 @@ const DEFAULT_MAX_OUTPUT_TOKENS = undefined;
 // output limit and caused HTTP 402 before review. Reserve a large emergency
 // ceiling instead: reasoning and the final findings JSON share this allowance.
 // The former 8,000-token limit exhausted both attempts of an architecture lane
-// on run 36595979843 without producing any content. This applies to both direct
-// OpenRouter and OpenRouter-labelled gateway routes; direct Ollama/Fireworks
-// transports retain their separate uncapped-first-pass contract below.
+// on run 36595979843 without producing any content. This applies to direct
+// OpenRouter and unclassified OpenRouter-labelled routes; the separately guarded
+// NeuralWatt gateway alias has its own bounded completion budget below.
 const DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS = 65_536;
 // The digest-pinned Review Yeti gateway exposes the reviewed `pr-reviewer`
-// alias, which Bifrost resolves to the exact OpenRouter model configured by
-// GitOps. Sending OpenRouter's vendor-qualified id directly makes Bifrost
-// interpret `deepseek` as a native provider and fail before OpenRouter is
-// reached. The workflow's fail-closed destination guard supplies this class;
+// alias, which Bifrost resolves to the provider/model configured by GitOps.
+// Sending a vendor-qualified id directly can make Bifrost select the wrong
+// provider. The workflow's fail-closed destination guard supplies this class;
 // keep the provider/model policy exact and translate only at the wire boundary.
 const DIGEST_PINNED_GATEWAY_MODEL_ALIAS = 'pr-reviewer';
 const DEFAULT_OPENROUTER_TTFT_TIMEOUT_MS = 30_000;
@@ -1669,6 +1668,13 @@ function resolveModelConfig(env = process.env) {
         model,
         compat: 'openrouter',
         stream: true,
+        // The private gateway's pr-reviewer alias can resolve to a reasoning
+        // model whose default 8k completion limit is spent entirely on thought.
+        // Keep the larger, bounded direct-reasoning budget on this admitted
+        // destination; do not change the OpenRouter or other compat defaults.
+        ...(env.REVIEW_TRANSPORT_DESTINATION === 'gateway'
+          ? { maxTokens: DEFAULT_DIRECT_MAX_OUTPUT_TOKENS }
+          : {}),
         timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
@@ -1746,6 +1752,7 @@ function resolveModelConfig(env = process.env) {
     model: (transports.length > 0 ? transports[0].model : model),
     maxDiffChars,
     transports,
+    guardedGatewayDestination: env.REVIEW_TRANSPORT_DESTINATION === 'gateway',
     dispatchMode: resolveDispatchMode(env.REVIEW_YETI_DISPATCH_MODE),
   };
 }
@@ -3417,8 +3424,11 @@ function normalizeMaxOutputTokens(value, fallback = DEFAULT_MAX_OUTPUT_TOKENS) {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function boundOpenRouterMaxOutputTokens(value, configuredProvider, isOpenRouterDestination = false) {
+function boundOpenRouterMaxOutputTokens(value, configuredProvider, isOpenRouterDestination = false, guardedGatewayAlias = false) {
   const normalized = normalizeMaxOutputTokens(value, undefined);
+  if (guardedGatewayAlias && !isOpenRouterDestination) {
+    return Math.min(normalized ?? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS, DEFAULT_DIRECT_MAX_OUTPUT_TOKENS);
+  }
   if (!isOpenRouterDestination && configuredProvider !== 'openrouter') return normalized;
   return Math.min(
     normalized ?? DEFAULT_OPENROUTER_MAX_OUTPUT_TOKENS,
@@ -4139,6 +4149,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
           configuredMaxOutputTokens,
           configuredProvider,
           isOpenRouterTransport,
+          options.guardedGatewayDestination === true && requestModel === DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
         ),
       );
       if (isOpenRouterTransport) {

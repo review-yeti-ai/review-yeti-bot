@@ -452,6 +452,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         cancelReason: status.cancelReason,
         currentHeadSha: status.currentHeadSha,
         isCurrentHead: status.isCurrentHead,
+        receipt: status.receipt,
       });
     } catch (err) {
       logger.error('Failed to get run status', {

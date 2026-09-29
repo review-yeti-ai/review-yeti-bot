@@ -90,6 +90,7 @@ func runOperator() error {
 	// only the immutable v1alpha2 receipt-only path may be enabled.
 	v1alpha2 := &controllers.PRReviewJobV1Alpha2Reconciler{
 		Client:            mgr.GetClient(),
+		SecretReader:      mgr.GetAPIReader(),
 		Scheme:            mgr.GetScheme(),
 		MaxConcurrentJobs: maxConcurrentJobs,
 		Publishing:        publishingConfigFromEnv(),

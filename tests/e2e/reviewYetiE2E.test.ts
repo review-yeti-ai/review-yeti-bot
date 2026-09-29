@@ -561,11 +561,10 @@ enabled: true
       expect(ingress?.spec?.ingressClassName).toBe('nginx');
       expect(JSON.stringify(ingress?.metadata?.annotations)).toContain('service.beta.kubernetes.io/do-loadbalancer');
 
-      // Operator Role check (namespace-scoped, no nodes, delete-only on secrets).
-      // REL-896: the operator holds a run-Secret cleanup finalizer on the
-      // PRReviewJob and deletes the named Secret when that resource is
-      // deleted. Delete cannot read or substitute a credential, so this is
-      // still "no read/plant access to secrets" -- just not "zero verbs".
+      // Operator Role check (namespace-scoped, no nodes, no Secret mutation).
+      // The operator reads only the exact run Secret for authenticated receipt
+      // verification and deletes it on cleanup. It cannot enumerate or plant
+      // credentials.
       const role = docs.find((d) => d.kind === 'Role');
       expect(role).toBeDefined();
       const clusterRole = docs.find((d) => d.kind === 'ClusterRole');
@@ -577,9 +576,9 @@ enabled: true
       for (const rule of secretRules) {
         expect(rule.apiGroups).toEqual(['']);
         expect(rule.resources).toEqual(['secrets']);
-        expect(rule.verbs).toEqual(['delete']);
+        expect([...(rule.verbs || [])].sort()).toEqual(['delete', 'get']);
       }
-      const forbiddenSecretVerbs = ['get', 'list', 'watch', 'create', 'update', 'patch'];
+      const forbiddenSecretVerbs = ['list', 'watch', 'create', 'update', 'patch'];
       for (const rule of secretRules) {
         for (const verb of forbiddenSecretVerbs) {
           expect(rule.verbs, `secrets rule must not grant "${verb}"`).not.toContain(verb);
