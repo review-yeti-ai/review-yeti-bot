@@ -27,6 +27,7 @@
             }
           ],
           "model": "deepseek/deepseek-v4-flash-0731",
+          "max_tokens": 8000,
           "provider": {
             "data_collection": "deny"
           },
@@ -90,6 +91,7 @@
             }
           ],
           "model": "deepseek/deepseek-v4-flash-0731",
+          "max_tokens": 8000,
           "provider": {
             "data_collection": "deny"
           },
@@ -153,6 +155,7 @@
             }
           ],
           "model": "deepseek/deepseek-v4-flash-0731",
+          "max_tokens": 8000,
           "provider": {
             "data_collection": "deny"
           },

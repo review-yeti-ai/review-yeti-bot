@@ -66,6 +66,7 @@ describe('review pipeline cassette replay', () => {
       },
       body: {
         messages: openRouterReplayMessages.testing,
+        max_tokens: '<redacted>',
         model: 'deepseek/deepseek-v4-flash-0731',
         prompt_cache_key: openRouterReplayCacheIdentity,
         session_id: openRouterReplayCacheIdentity,

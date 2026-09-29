@@ -7,6 +7,7 @@ import {
   isPublishingReviewWorker,
   openaiTransport,
   parseChangedFiles,
+  PUBLISHING_MAX_OUTPUT_TOKENS,
   publishingConclusion,
   publishingReviewIdentity,
   projectPublishingRosterBounds,
@@ -114,6 +115,53 @@ function deps(over: Record<string, unknown> = {}) {
 }
 
 describe('qualification source arguments', () => {
+  it('caps every hosted publishing model call before it reaches Bifrost', async () => {
+    const requests: Array<{ maxTokens?: number }> = [];
+    const rawClient = {
+      complete: vi.fn(async (request: { maxTokens?: number }) => {
+        requests.push(request);
+        return {
+          model: 'deepseek/deepseek-v4-flash-0731',
+          content: '{}',
+          usage: { prompt: 1, completion: 1, total: 2 },
+          costUSD: null,
+          raw: {},
+        };
+      }),
+    };
+    const panelRunner = vi.fn(async (input: { client: { complete: (request: Record<string, unknown>) => Promise<unknown> } }) => {
+      const baseRequest = { model: 'bifrost/pr-reviewer', messages: [], timeoutMs: 1 };
+      await input.client.complete(baseRequest);
+      await input.client.complete({ ...baseRequest, maxTokens: 100_000 });
+      await input.client.complete({ ...baseRequest, maxTokens: 1_024 });
+      await input.client.complete({ ...baseRequest, maxTokens: 0 });
+      await input.client.complete({ ...baseRequest, maxTokens: -1 });
+      await input.client.complete({ ...baseRequest, maxTokens: 1.5 });
+      await input.client.complete({ ...baseRequest, maxTokens: Number.NaN });
+      await input.client.complete({ ...baseRequest, maxTokens: Number.POSITIVE_INFINITY });
+      return {
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      };
+    });
+
+    await runPublishingReviewWorker(env(), deps({ client: rawClient, panelRunner }) as never);
+
+    expect(requests.map((request) => request.maxTokens)).toEqual([
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+      1_024,
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+      PUBLISHING_MAX_OUTPUT_TOKENS,
+    ]);
+  });
+
   it('passes the full owner/repo, and no owner field, to the source loader', async () => {
     // The loader's input has no `owner` key and parses the slash out of `repo`
     // itself. Passing the bare repo name made every real app-gate run die with
