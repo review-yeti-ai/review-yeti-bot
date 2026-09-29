@@ -75,6 +75,7 @@ func TestPatchWorkerSuccessTTLTransientErrorBlocksSuccessPhase(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	installValidAppGateReceipt(t, r, kube, storedReview(t, kube, req))
 
 	review := storedReview(t, kube, req)
 	if review.Status.Phase != reviewv1alpha2.PhaseRunning {
@@ -117,6 +118,7 @@ func TestPatchWorkerSuccessTTLNotFoundStillSucceeds(t *testing.T) {
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	installValidAppGateReceipt(t, r, kube, storedReview(t, kube, req))
 
 	worker := storedWorker(t, kube, req)
 	markWorkerSucceeded(t, kube, worker, metav1.NewTime(r.Now()))

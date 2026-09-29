@@ -382,6 +382,32 @@ func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
 	if review.Status.ReceiptDigest != "" && review.Status.ReceiptEvidenceRef != "" {
 		return false, nil
 	}
+	// A newly completed app-gate worker is not an authority for its own
+	// receipt. Its Job annotations can be written by the worker; the durable
+	// completion and gate match live in action-dispatch. Existing status fields
+	// from an older reconciliation remain stable, but new success evidence
+	// must come from the authenticated exact-attempt service lookup.
+	if review.Spec.PublicationMode == job.PublicationModeAppGate && worker != nil && worker.Status.Succeeded > 0 {
+		if job.IsPrepWorkerJob(worker) ||
+			(isTerminalPhase(review.Status.Phase) && !failurePublicationPending(review)) {
+			return false, nil
+		}
+		receipt, err := r.fetchAppGateReceipt(ctx, review)
+		if err != nil {
+			if errors.Is(err, errTemporaryReceiptLookup) {
+				return false, err
+			}
+			// A missing, malformed, or foreign receipt is deterministic for this
+			// attempt. Leave status empty so AssertCanPromoteToSucceeded fails
+			// closed, while terminal cleanup can still release the worker.
+			log.FromContext(ctx).Info("app-gate receipt rejected; refusing success",
+				"review", review.Name, "reason", err.Error())
+			return false, nil
+		}
+		review.Status.ReceiptDigest = receipt.Digest
+		review.Status.ReceiptEvidenceRef = receipt.EvidenceRef
+		return true, nil
+	}
 
 	// 1. If worker job or pod annotations contain genuine receipt evidence, adopt them
 	if worker != nil {
