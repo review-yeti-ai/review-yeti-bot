@@ -90,20 +90,19 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       query: vi.fn(),
     };
     mockCancellationRepository = {
-      findActiveRunForPullRequest: vi.fn(async (input: {
+      cancelActiveRunsForPullRequest: vi.fn(async (input: {
         owner: string; repo: string; prNumber: number;
       }) => {
         const result = await mockDb.query('SELECT active review run', [
           input.owner, input.repo, input.prNumber,
         ]);
         const row = result.rows[0];
-        return row ? {
-          runId: String(row.run_id),
-          repositoryId: Number(row.repository_id),
+        const activeRun = row ? {
+          runId: String(row.run_id), repositoryId: Number(row.repository_id),
           attempt: Number(row.attempt || 1),
         } : null;
+        return activeRun ? { activeRun, cancelledRunIds: [activeRun.runId] } : null;
       }),
-      cancelRunsForPullRequest: vi.fn(async () => ({ cancelledRunIds: [] })),
     };
 
     router = createRemoteMcpRouter({
@@ -375,12 +374,9 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     });
 
     it('ADV-CANC-003: Cancellation of already-finished attempt throws Not Found error', async () => {
-      const findActiveRunForPullRequest = vi.fn(async () => null);
+      const cancelActiveRunsForPullRequest = vi.fn(async () => null);
       const tool = createCancelReviewTool({
-        cancellationRepository: {
-          findActiveRunForPullRequest,
-          cancelRunsForPullRequest: vi.fn(),
-        },
+        cancellationRepository: { cancelActiveRunsForPullRequest },
       });
 
       await expect(
@@ -421,13 +417,13 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
     it('ADV-CANC-005: Valid cancellation updates DB, terminates outbox, and reaps pod', async () => {
       const mockPatch = vi.fn(async () => ({ reapedPod: 'review-worker-pod-999', success: true }));
-      const findActiveRunForPullRequest = vi.fn(async () => ({
-        runId: 'run_to_cancel_live', repositoryId: 123, attempt: 3,
+      const cancelActiveRunsForPullRequest = vi.fn(async () => ({
+        activeRun: { runId: 'run_to_cancel_live', repositoryId: 123, attempt: 3 },
+        cancelledRunIds: ['run_to_cancel_live'],
       }));
-      const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_to_cancel_live'] }));
 
       const tool = createCancelReviewTool({
-        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
+        cancellationRepository: { cancelActiveRunsForPullRequest },
         patchCancellation: mockPatch,
       });
 
@@ -442,8 +438,9 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       expect(data.cancelled).toBe(true);
       expect(data.attempt_id).toBe('review-attempt-55-3');
       expect(data.reaped_pod).toBe('review-worker-pod-999');
-      expect(cancelRunsForPullRequest).toHaveBeenCalledWith({
-        repositoryId: 123,
+      expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith({
+        owner: 'calltelemetry',
+        repo: 'cisco-cdr',
         prNumber: 55,
         cancelReason: 'Security incident: malicious code detected in PR',
         gateReason: 'operator-cancelled',

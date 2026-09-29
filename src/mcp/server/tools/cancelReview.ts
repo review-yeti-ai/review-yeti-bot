@@ -27,18 +27,17 @@ export const cancelReviewDefinition: ToolDefinition = {
 
 export interface CancelReviewDependencies {
   cancellationRepository?: {
-    findActiveRunForPullRequest(input: {
+    cancelActiveRunsForPullRequest(input: {
       owner: string;
       repo: string;
-      prNumber: number;
-    }): Promise<{ runId: string; repositoryId: number; attempt: number } | null>;
-    cancelRunsForPullRequest(input: {
-      repositoryId: number;
       prNumber: number;
       cancelReason: string;
       gateReason: 'operator-cancelled';
       now: number;
-    }): Promise<{ cancelledRunIds: string[] }>;
+    }): Promise<{
+      activeRun: { runId: string; repositoryId: number; attempt: number };
+      cancelledRunIds: string[];
+    } | null>;
   };
   patchCancellation?: (
     name: string,
@@ -73,35 +72,26 @@ export function createCancelReviewTool(deps: CancelReviewDependencies = {}) {
       let attemptId = `review-attempt-${pull_number}-1`;
       let reapedPod: string | undefined;
 
-      const activeRun = await deps.cancellationRepository.findActiveRunForPullRequest({
-        owner,
-        repo,
-        prNumber: pull_number,
+      const cancellation = await deps.cancellationRepository.cancelActiveRunsForPullRequest({
+        owner, repo, prNumber: pull_number, cancelReason: reason,
+        gateReason: 'operator-cancelled', now: nowFn(),
       });
-      if (!activeRun) {
+      if (!cancellation) {
         throw new Error(
           `Not Found: No active review run found for ${owner}/${repo} PR #${pull_number} to cancel`
         );
       }
 
+      const activeRun = cancellation.activeRun;
       const runId = activeRun.runId;
       const repositoryId = activeRun.repositoryId;
       if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
         throw new Error('Cancellation service unavailable: active run repository identity is invalid');
       }
       attemptId = `review-attempt-${pull_number}-${activeRun.attempt || 1}`;
-      const now = nowFn();
-
-      const cancelled = await deps.cancellationRepository.cancelRunsForPullRequest({
-        repositoryId,
-        prNumber: pull_number,
-        cancelReason: reason,
-        gateReason: 'operator-cancelled',
-        now,
-      });
-      if (!cancelled.cancelledRunIds.includes(runId)) {
+      if (!cancellation.cancelledRunIds.includes(runId)) {
         throw new Error(
-          `Not Found: No active review run found for ${owner}/${repo} PR #${pull_number} to cancel`
+          'Cancellation service unavailable: transactional outcome omitted its selected active run'
         );
       }
 

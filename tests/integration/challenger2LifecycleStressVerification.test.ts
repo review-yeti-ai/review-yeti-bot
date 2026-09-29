@@ -389,36 +389,35 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         this.runs.set(run.run_id, run);
       }
 
-      async findActiveRunForPullRequest(input: {
-        owner: string; repo: string; prNumber: number;
-      }): Promise<{ runId: string; repositoryId: number; attempt: number } | null> {
+      async cancelActiveRunsForPullRequest(input: {
+        owner: string; repo: string; prNumber: number; cancelReason: string;
+      }): Promise<{
+        activeRun: { runId: string; repositoryId: number; attempt: number };
+        cancelledRunIds: string[];
+      } | null> {
         await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
         const run = Array.from(this.runs.values()).find((candidate) =>
           candidate.owner === input.owner
           && candidate.repo === input.repo
           && candidate.pr_number === input.prNumber
           && ['queued', 'running', 'publishing'].includes(candidate.status));
-        return run ? {
-          runId: String(run.run_id),
-          repositoryId: Number(run.repository_id),
-          attempt: Number(run.attempt || 1),
-        } : null;
-      }
-
-      async cancelRunsForPullRequest(input: {
-        repositoryId: number; prNumber: number; cancelReason: string;
-      }): Promise<{ cancelledRunIds: string[] }> {
-        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
-        const matched = Array.from(this.runs.values()).filter((run) =>
-          run.repository_id === input.repositoryId
-          && run.pr_number === input.prNumber
-          && ['queued', 'running', 'publishing'].includes(run.status));
-        for (const run of matched) {
-          run.status = 'cancelled';
-          run.error_text = input.cancelReason;
-          run.lease_owner = null;
+        if (!run) return null;
+        const matched = Array.from(this.runs.values()).filter((candidate) =>
+          candidate.repository_id === run.repository_id
+          && candidate.pr_number === input.prNumber
+          && ['queued', 'running', 'publishing'].includes(candidate.status));
+        for (const candidate of matched) {
+          candidate.status = 'cancelled';
+          candidate.error_text = input.cancelReason;
+          candidate.lease_owner = null;
         }
-        return { cancelledRunIds: matched.map((run) => run.run_id) };
+        return {
+          activeRun: {
+            runId: String(run.run_id), repositoryId: Number(run.repository_id),
+            attempt: Number(run.attempt || 1),
+          },
+          cancelledRunIds: matched.map((candidate) => candidate.run_id),
+        };
       }
     }
 

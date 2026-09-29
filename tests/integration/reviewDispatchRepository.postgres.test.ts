@@ -4057,31 +4057,38 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
   });
 
   describe('cancelRunsForPullRequest protected gate settlement (REL-1188)', () => {
-    it('owns active-run selection for operator cancellation', async () => {
+    it('atomically returns the active run selected for operator cancellation', async () => {
       const { repository, client } = await createRepository(trustedValidation, true);
       const admitted = await repository.admit(authoritativeAdmission('operator-cancel-lookup', 1_000));
 
-      await expect(repository.findActiveRunForPullRequest({
+      await expect(repository.cancelActiveRunsForPullRequest({
         owner: admitted.run.identity.owner,
         repo: admitted.run.identity.repo,
         prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation',
+        gateReason: 'operator-cancelled',
+        now: 2_000,
       })).resolves.toEqual({
-        runId: admitted.run.runId,
-        repositoryId: 123,
-        attempt: admitted.run.attempt,
+        activeRun: {
+          runId: admitted.run.runId,
+          repositoryId: 123,
+          attempt: admitted.run.attempt,
+        },
+        cancelledRunIds: [admitted.run.runId],
       });
 
-      await client.query(`UPDATE review_runs SET status = 'completed' WHERE run_id = $1`, [
-        admitted.run.runId,
-      ]);
-      await expect(repository.findActiveRunForPullRequest({
+      await expect(repository.cancelActiveRunsForPullRequest({
         owner: admitted.run.identity.owner,
         repo: admitted.run.identity.repo,
         prNumber: admitted.run.identity.prNumber,
+        cancelReason: 'operator cancellation replay',
+        gateReason: 'operator-cancelled',
+        now: 2_500,
       })).resolves.toBeNull();
+      expect((await dispatchState(client, admitted.run.runId)).run.status).toBe('cancelled');
     });
 
-    it('selects the newest active run with a stable run-id tie-break', async () => {
+    it('selects the newest active run', async () => {
       const { repository, client } = await createRepository(trustedValidation, true);
       const older = await repository.admit(sameHeadAdmission(
         'operator-cancel-lookup-older', 1_000, { headSha: '1'.repeat(40) },
@@ -4106,20 +4113,44 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         repo: newer.run.identity.repo,
         prNumber: newer.run.identity.prNumber,
       };
-      await expect(repository.findActiveRunForPullRequest(lookup)).resolves.toEqual({
-        runId: newer.run.runId,
-        repositoryId: newer.run.repositoryId,
-        attempt: newer.run.attempt,
+      await expect(repository.cancelActiveRunsForPullRequest({
+        ...lookup, cancelReason: 'cancel newest', gateReason: 'operator-cancelled', now: 2_000,
+      })).resolves.toMatchObject({
+        activeRun: {
+          runId: newer.run.runId,
+          repositoryId: newer.run.repositoryId,
+          attempt: newer.run.attempt,
+        },
+        cancelledRunIds: expect.arrayContaining([older.run.runId, newer.run.runId]),
       });
+    });
 
-      await client.query(`UPDATE review_runs SET updated_at = to_timestamp(2)
-        WHERE run_id = ANY($1::text[])`, [[older.run.runId, newer.run.runId]]);
-      const stableWinner = [older.run, newer.run]
+    it('uses run id as the stable tie-break for equally fresh active runs', async () => {
+      const { repository, client } = await createRepository(trustedValidation, true);
+      const first = await repository.admit(sameHeadAdmission(
+        'operator-cancel-tie-first', 1_000, { headSha: '3'.repeat(40) },
+      ));
+      const second = await repository.admit(sameHeadAdmission(
+        'operator-cancel-tie-second', 1_500, { headSha: '4'.repeat(40) },
+      ));
+      await client.query(`UPDATE review_runs SET updated_at = to_timestamp(2), status = 'queued'
+        WHERE run_id = ANY($1::text[])`, [[first.run.runId, second.run.runId]]);
+      const stableWinner = [first.run, second.run]
         .sort((left, right) => left.runId < right.runId ? -1 : 1).at(0)!;
-      await expect(repository.findActiveRunForPullRequest(lookup)).resolves.toEqual({
-        runId: stableWinner.runId,
-        repositoryId: stableWinner.repositoryId,
-        attempt: stableWinner.attempt,
+      await expect(repository.cancelActiveRunsForPullRequest({
+        owner: stableWinner.identity.owner,
+        repo: stableWinner.identity.repo,
+        prNumber: stableWinner.identity.prNumber,
+        cancelReason: 'cancel stable winner',
+        gateReason: 'operator-cancelled',
+        now: 2_500,
+      })).resolves.toMatchObject({
+        activeRun: {
+          runId: stableWinner.runId,
+          repositoryId: stableWinner.repositoryId,
+          attempt: stableWinner.attempt,
+        },
+        cancelledRunIds: expect.arrayContaining([first.run.runId, second.run.runId]),
       });
     });
 

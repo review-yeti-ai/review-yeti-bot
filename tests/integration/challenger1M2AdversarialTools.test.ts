@@ -94,20 +94,19 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
       db: mockDb,
       cancelDeps: {
         cancellationRepository: {
-          findActiveRunForPullRequest: vi.fn(async (input: {
+          cancelActiveRunsForPullRequest: vi.fn(async (input: {
             owner: string; repo: string; prNumber: number;
           }) => {
             const result = await mockDb.query('SELECT active review run', [
               input.owner, input.repo, input.prNumber,
             ]);
             const row = result.rows[0];
-            return row ? {
-              runId: String(row.run_id),
-              repositoryId: Number(row.repository_id),
+            const activeRun = row ? {
+              runId: String(row.run_id), repositoryId: Number(row.repository_id),
               attempt: Number(row.attempt || 1),
             } : null;
+            return activeRun ? { activeRun, cancelledRunIds: [activeRun.runId] } : null;
           }),
-          cancelRunsForPullRequest: vi.fn(async () => ({ cancelledRunIds: [] })),
         },
       },
     });
