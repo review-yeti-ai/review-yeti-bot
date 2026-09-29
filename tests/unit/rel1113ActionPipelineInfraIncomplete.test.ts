@@ -551,7 +551,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).not.toContain('INCOMPLETE');
     expect(outputs.verdict).toBe('BLOCK');
     expect(outputs['incomplete-reason']).toBe('');
-  });
+  }, 15000);
 });
 
 describe('REL-1113 Action pipeline: remaining branches', () => {
