@@ -197,6 +197,21 @@ describe('resolveModelConfig', () => {
     expect(cfg.model).toBe('some/model');
   });
 
+  it('reserves completion budget for the admitted private gateway reasoning route', () => {
+    const gateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-test-key',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      OPENROUTER_MODEL: 'neuralwatt/glm-5.3-flash',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+    expect(gateway.transports[0].maxTokens).toBe(24_576);
+    expect(resolveModelConfig({
+      OPENROUTER_API_KEY: 'other-test-key',
+      OPENROUTER_BASE_URL: 'https://other.example/v1',
+      OPENROUTER_MODEL: 'some/model',
+    }).transports[0].maxTokens).toBeUndefined();
+  });
+
   it('keeps the direct OpenRouter pair authoritative when multiple provider keys are present', () => {
     const cfg = resolveModelConfig({
       FIREWORKS_API_KEY: 'fw-key-123',

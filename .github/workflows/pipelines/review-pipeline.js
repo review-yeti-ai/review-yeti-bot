@@ -1645,6 +1645,13 @@ function resolveModelConfig(env = process.env) {
         model,
         compat: 'openrouter',
         stream: true,
+        // The private gateway's pr-reviewer alias can resolve to a reasoning
+        // model whose default 8k completion limit is spent entirely on thought.
+        // Keep the larger, bounded direct-reasoning budget on this admitted
+        // destination; do not change the OpenRouter or other compat defaults.
+        ...(env.REVIEW_TRANSPORT_DESTINATION === 'gateway'
+          ? { maxTokens: DEFAULT_DIRECT_MAX_OUTPUT_TOKENS }
+          : {}),
         timeoutMs: AUTO_TRANSPORT_TIMEOUT_MS,
       });
     }
