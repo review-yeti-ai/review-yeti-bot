@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.2...v1.97.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **app-gate:** verify durable completion receipt before operator success ([#1109](https://github.com/review-yeti-ai/review-yeti-bot/issues/1109)) ([ae33eff](https://github.com/review-yeti-ai/review-yeti-bot/commit/ae33effd7221f47116bddd377df67f4119b13070))
+
 ## [1.97.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.1...v1.97.2) (2026-09-29)
 
 
