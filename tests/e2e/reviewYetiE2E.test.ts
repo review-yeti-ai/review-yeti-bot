@@ -576,7 +576,7 @@ enabled: true
       for (const rule of secretRules) {
         expect(rule.apiGroups).toEqual(['']);
         expect(rule.resources).toEqual(['secrets']);
-        expect(rule.verbs).toEqual(['get', 'delete']);
+        expect([...rule.verbs].sort()).toEqual(['delete', 'get']);
       }
       const forbiddenSecretVerbs = ['list', 'watch', 'create', 'update', 'patch'];
       for (const rule of secretRules) {

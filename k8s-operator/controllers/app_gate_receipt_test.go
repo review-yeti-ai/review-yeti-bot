@@ -286,3 +286,47 @@ func TestAppGateReceiptRejectsRedirectAndWrongToken(t *testing.T) {
 		})
 	}
 }
+
+func TestAppGateReceiptRejectsInsecureStatusURLs(t *testing.T) {
+	cases := []struct {
+		name string
+		url  func(string) string
+	}{
+		{"cleartext", func(base string) string {
+			return strings.Replace(base, "https://", "http://", 1) + "/api/dispatch/completion"
+		}},
+		{"empty host", func(string) string { return "https:///api/dispatch/completion" }},
+		{"userinfo", func(base string) string {
+			return strings.Replace(base, "https://", "https://person:password@", 1) + "/api/dispatch/completion"
+		}},
+		{"query", func(base string) string { return base + "/api/dispatch/completion?token=leak" }},
+		{"fragment", func(base string) string { return base + "/api/dispatch/completion#fragment" }},
+		{"wrong path", func(base string) string { return base + "/api/dispatch/other" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			review := storedReview(t, kube, req)
+			server := installAppGateReceiptEndpoint(t, r, kube, review, func(w http.ResponseWriter, request *http.Request) {
+				_ = json.NewEncoder(w).Encode(validAppGateRunStatus(review))
+			})
+			r.Publishing.CompletionURL = tc.url(server.URL)
+			worker := storedWorker(t, kube, req)
+			worker.Status.Succeeded = 1
+			worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+			if err := kube.Status().Update(context.Background(), worker); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			after := storedReview(t, kube, req)
+			if after.Status.Phase == reviewv1alpha2.PhaseSucceeded || after.Status.ReceiptDigest != "" {
+				t.Fatalf("insecure receipt URL promoted review: phase=%s digest=%q", after.Status.Phase, after.Status.ReceiptDigest)
+			}
+		})
+	}
+}
