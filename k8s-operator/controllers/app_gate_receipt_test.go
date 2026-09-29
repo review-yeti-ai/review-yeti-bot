@@ -427,3 +427,96 @@ func TestAppGateReceiptRejectsInsecureStatusURLs(t *testing.T) {
 		})
 	}
 }
+
+func TestAppGateReceiptStatusBodyBoundary(t *testing.T) {
+	const maxStatusBytes = 32 << 10
+	for _, tc := range []struct {
+		name    string
+		size    int
+		accepts bool
+	}{
+		{"at limit", maxStatusBytes, true},
+		{"one byte over limit", maxStatusBytes + 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			review := storedReview(t, kube, req)
+			status := validAppGateRunStatus(t, review)
+			status["padding"] = ""
+			base, err := json.Marshal(status)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(base) > tc.size {
+				t.Fatalf("base fixture already exceeds target size: %d > %d", len(base), tc.size)
+			}
+			status["padding"] = strings.Repeat("x", tc.size-len(base))
+			payload, err := json.Marshal(status)
+			if err != nil || len(payload) != tc.size {
+				t.Fatalf("construct exact-size valid JSON: length=%d, target=%d, err=%v", len(payload), tc.size, err)
+			}
+			installAppGateReceiptEndpoint(t, r, kube, review, func(w http.ResponseWriter, request *http.Request) {
+				_, _ = w.Write(payload)
+			})
+			worker := storedWorker(t, kube, req)
+			worker.Status.Succeeded = 1
+			worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+			if err := kube.Status().Update(context.Background(), worker); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatalf("status body boundary should not requeue: %v", err)
+			}
+			after := storedReview(t, kube, req)
+			promoted := after.Status.Phase == reviewv1alpha2.PhaseSucceeded && after.Status.ReceiptDigest != ""
+			if promoted != tc.accepts {
+				t.Fatalf("status body size %d: promoted=%t, want %t (phase=%s, digest=%q)",
+					tc.size, promoted, tc.accepts, after.Status.Phase, after.Status.ReceiptDigest)
+			}
+		})
+	}
+}
+
+func TestAppGateReceiptRejectsUnusableRunSecretToken(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token []byte
+	}{
+		{"missing", nil},
+		{"oversized", []byte(strings.Repeat("x", 4097))},
+		{"non-printable", []byte("token\nline")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatal(err)
+			}
+			review := storedReview(t, kube, req)
+			installValidAppGateReceipt(t, r, kube, review)
+			secret := &corev1.Secret{}
+			key := client.ObjectKey{Namespace: review.Namespace, Name: review.Spec.RunSecretName}
+			if err := kube.Get(context.Background(), key, secret); err != nil {
+				t.Fatal(err)
+			}
+			secret.Data["GITHUB_PUBLISH_TOKEN"] = tc.token
+			if err := kube.Update(context.Background(), secret); err != nil {
+				t.Fatal(err)
+			}
+			worker := storedWorker(t, kube, req)
+			worker.Status.Succeeded = 1
+			worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+			if err := kube.Status().Update(context.Background(), worker); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.Reconcile(context.Background(), req); err != nil {
+				t.Fatalf("unusable token must reject, not requeue: %v", err)
+			}
+			if after := storedReview(t, kube, req); after.Status.Phase == reviewv1alpha2.PhaseSucceeded || after.Status.ReceiptDigest != "" {
+				t.Fatalf("unusable token promoted review: %+v", after.Status)
+			}
+		})
+	}
+}

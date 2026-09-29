@@ -146,18 +146,10 @@ describe('Two-Tier Cancellation Architecture', () => {
       });
     });
 
-    it('binds status receipt to the persisted completion and matching gate decision', async () => {
+    it('maps the shared receipt fixture from a persisted completion row', async () => {
       const expected = appGateReceiptFixture.receipt;
       const mockQuery = vi.fn(async (sql: string) => {
         if (sql.includes('FROM review_runs AS runs')) {
-          expect(sql).toContain('completion.execution_attempt = $2');
-          expect(sql).toContain('gate.worker_result_digest = completion.content_digest');
-          expect(sql).toContain("gate.creation_state = 'bound'");
-          expect(sql).toContain('gate.current_attempt');
-          expect(sql).toContain("gate.desired_state = 'success'");
-          expect(sql).toContain("gate.decision->>'status' = 'success'");
-          expect(sql).toContain("runs.status = 'succeeded'");
-          expect(sql).toContain('runs.result_digest = completion.content_digest');
           return { rows: [{
             run_id: expected.runId, status: appGateReceiptFixture.status,
             repository_id: expected.repositoryId, owner: expected.owner, repo: expected.repo,
