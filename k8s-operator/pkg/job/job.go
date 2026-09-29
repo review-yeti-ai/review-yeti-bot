@@ -197,10 +197,10 @@ var (
 	ErrJobConfiguration = errors.New("Job configuration rejected")
 	ErrJobDeadline      = errors.New("receipt-only Job deadline is invalid")
 
-	runIDPattern       = regexp.MustCompile(`^run_[a-f0-9]{32}$`)
-	repoPattern        = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
-	shaPattern         = regexp.MustCompile(`^[a-f0-9]{40}$`)
-	digestPattern      = regexp.MustCompile(`^[a-f0-9]{64}$`)
+	runIDPattern  = regexp.MustCompile(`^run_[a-f0-9]{32}$`)
+	repoPattern   = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`)
+	shaPattern    = regexp.MustCompile(`^[a-f0-9]{40}$`)
+	digestPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
 	// Single source of truth in v1alpha2: the CRD marker and this runtime
 	// validator must describe ONE control. A private copy here silently diverged
 	// when the contract moved to digest pinning, rejecting values the CRD admits.
@@ -465,7 +465,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	runAsGroup := int64(1000)
 	fsGroup := int64(1000)
 	fsGroupChangePolicy := corev1.FSGroupChangeOnRootMismatch
-	executionAttempt, err := executionAttemptForSpec(spec)
+	executionAttempt, err := ExecutionAttemptForSpec(spec)
 	if err != nil {
 		return nil, err
 	}
@@ -847,7 +847,7 @@ func validateInput(input Input) error {
 		!workerImagePattern.MatchString(spec.WorkerImage) || !IsValidRunSecretName(spec.RunSecretName) {
 		return configErr("PRReviewJob spec failed identity validation (run/delivery/repo/PR/sha/digest/publication-mode/image/run-secret)")
 	}
-	if _, err := executionAttemptForSpec(spec); err != nil {
+	if _, err := ExecutionAttemptForSpec(spec); err != nil {
 		return err
 	}
 	if spec.PreparedReview != nil {
@@ -942,11 +942,11 @@ func utf16CodeUnits(value string) int {
 	return units
 }
 
-// executionAttemptForSpec uses the explicit CRD field whenever present. The
+// ExecutionAttemptForSpec uses the explicit CRD field whenever present. The
 // suffix path is retained only for CRs persisted before executionAttempt was
 // added; it is deliberately bounded and tied back to the run ID instead of
 // treating an arbitrary Secret suffix as trusted identity.
-func executionAttemptForSpec(spec v1alpha2.PRReviewJobSpec) (int32, error) {
+func ExecutionAttemptForSpec(spec v1alpha2.PRReviewJobSpec) (int32, error) {
 	baseSecretName := "ct-review-run-" + strings.TrimPrefix(spec.RunID, "run_")
 	if spec.ExecutionAttempt != nil {
 		attempt := *spec.ExecutionAttempt

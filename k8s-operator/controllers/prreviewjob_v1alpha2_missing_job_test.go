@@ -46,7 +46,7 @@ func missingJobFixture(t *testing.T, mode string, hooks interceptor.Funcs) (*con
 		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).
 		WithInterceptorFuncs(hooks).Build()
 	r := &controllers.PRReviewJobV1Alpha2Reconciler{
-		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+		Client: kube, SecretReader: kube, Scheme: scheme, Now: func() time.Time { return now },
 		Publishing: job.PublishingConfig{
 			GatewayBaseURL: "https://gateway.example.invalid/v1", Model: "ollama/glm-5.3-flash",
 			GatewaySecretName: "review-yeti-gateway-credentials", GatewaySecretKey: "REVIEW_YETI_BIFROST_API_KEY",
@@ -136,6 +136,7 @@ func TestTerminalWorkerFinalizerPreservesSuccessfulOutcomeAcrossTTLDeletion(t *t
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	installValidAppGateReceipt(t, r, kube, storedReview(t, kube, req))
 	worker := storedWorker(t, kube, req)
 	if !containsString(worker.Finalizers, "review-yeti.ai/terminal-outcome") {
 		t.Fatalf("worker finalizers = %v, want terminal-outcome protection", worker.Finalizers)
@@ -209,6 +210,7 @@ func TestLiveRefreshA2ShipIsDurableBeforeTTLDeletesWorker(t *testing.T) {
 		},
 	}
 	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(review)}
+	installValidAppGateReceipt(t, r, kube, review)
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
@@ -261,6 +263,7 @@ func TestSuccessfulWorkerObservedAfterFailurePendingPreservesAppShip(t *testing.
 		t.Fatal(err)
 	}
 	review := storedReview(t, kube, req)
+	installValidAppGateReceipt(t, r, kube, review)
 	r.Now = func() time.Time { return review.Spec.TerminalDeadline.Add(time.Second) }
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
@@ -343,6 +346,7 @@ func TestCompletedWorkerObservedAfterDeadlinePreservesAuthoritativeSuccess(t *te
 		t.Fatal(err)
 	}
 	review := storedReview(t, kube, req)
+	installValidAppGateReceipt(t, r, kube, review)
 	worker := storedWorker(t, kube, req)
 	attachReceiptAnnotations(worker)
 	if err := kube.Update(ctx, worker); err != nil {
@@ -466,6 +470,7 @@ func TestTerminalWorkerFromOlderOperatorIsGuardedBeforeParentStatusWrite(t *test
 	if _, err := r.Reconcile(ctx, req); err != nil {
 		t.Fatal(err)
 	}
+	installValidAppGateReceipt(t, r, kube, storedReview(t, kube, req))
 	worker := storedWorker(t, kube, req)
 	worker.Finalizers = nil
 	if err := kube.Update(ctx, worker); err != nil {
@@ -1509,6 +1514,7 @@ func TestAppGatePublicationWorkerStatusMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 	runningReview := storedReview(t, kube, req)
+	installValidAppGateReceipt(t, r, kube, runningReview)
 	ready := meta.FindStatusCondition(runningReview.Status.Conditions, "Ready")
 	if ready == nil || ready.Message != "app-gate publishing worker Job created" {
 		t.Fatalf("expected 'app-gate publishing worker Job created', got: %#v", ready)
