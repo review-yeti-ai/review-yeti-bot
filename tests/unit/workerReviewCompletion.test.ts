@@ -100,6 +100,9 @@ describe('WorkerReviewCompletion.v1', () => {
       taskPlan: [{ ...taskPlan[0], paths: ['docs/unrelated.md'] }],
     } }, trusted), /does not cover the trusted changed files/u);
     expectInvalid(derive({ ...composed, result: { ...composed.result,
+      taskPlan: Array.from({ length: 5 }, (_, index) => ({ ...taskPlan[0], id: `task-${index}` })),
+    } }, { ...trusted, composedMaxTasks: 4 }), /too_many_tasks/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result,
       personas: [{ id: 'not-in-plan', decision: 'APPROVE', findings: [] }],
     } }, trusted), /unknown persona lane/u);
   });

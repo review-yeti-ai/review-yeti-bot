@@ -11,7 +11,7 @@ import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
-import { DEFAULT_MAX_TASKS, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
+import { MAX_TASKS_HARD_CAP, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
 
 export { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 
@@ -269,7 +269,7 @@ const resultSchema = z.object({
     paths: z.array(z.string().min(1).max(MAX_PATH_CHARACTERS)).min(1).max(MAX_CHANGED_FILES),
     question: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
     rationale: z.string().min(1).max(MAX_TASK_TEXT_LENGTH),
-  }).strict()).min(1).max(DEFAULT_MAX_TASKS).optional(),
+  }).strict()).min(1).max(MAX_TASKS_HARD_CAP).optional(),
   coverageComplete: z.boolean(),
   quorumSatisfied: z.boolean(),
   /** Optional worker-computed summaries; consistency checks only, never eligibility authority. */
@@ -955,7 +955,10 @@ export function deriveCanonicalWorkerReviewEvidence(
     const validatedPlan = validateTaskPlan({ tasks: completion.result.taskPlan }, {
       changedFiles: [...contract.composedChangedPaths], maxTasks: contract.composedMaxTasks,
     });
-    if (!validatedPlan.valid || canonicalJson(validatedPlan.tasks) !== canonicalJson(completion.result.taskPlan)) {
+    if (!validatedPlan.valid) {
+      return invalidEvidence(`composed task plan invalid: ${validatedPlan.reason}`);
+    }
+    if (canonicalJson(validatedPlan.tasks) !== canonicalJson(completion.result.taskPlan)) {
       return invalidEvidence('composed task plan does not cover the trusted changed files');
     }
     const admittedIds = composedPlanLaneIds(validatedPlan.tasks, completion.result.personas, validatedPlan.tasks.length);

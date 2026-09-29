@@ -100,6 +100,7 @@ import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import {
   DEFAULT_MAX_TASKS,
+  MAX_TASKS_HARD_CAP,
   ReviewTask,
   validateTaskPlan,
   type TaskPlanValidationResult,
@@ -1148,7 +1149,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     // Policy may only narrow this, never widen it past `DEFAULT_MAX_TASKS` -- `config.composed` is
     // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
-    const maxTasks = Math.max(1, Math.min(config.composed?.max_tasks || DEFAULT_MAX_TASKS, DEFAULT_MAX_TASKS));
+    const maxTasks = Math.max(1, Math.min(config.composed?.max_tasks || DEFAULT_MAX_TASKS, MAX_TASKS_HARD_CAP));
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
 
     // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
