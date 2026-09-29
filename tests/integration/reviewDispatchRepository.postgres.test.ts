@@ -735,6 +735,29 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     await expect(repository.markWorkerSuccess(success, { workerTokenDigest }, 1_004))
       .resolves.toEqual({ runId: admitted.run.runId, status: 'succeeded' });
+    await expect(repository.getRunStatus(admitted.run.runId, claim.executionAttempt)).resolves.toMatchObject({
+      status: 'succeeded',
+      isCurrentHead: true,
+      receipt: {
+        version: 'AppGateReceipt.v1',
+        runId: admitted.run.runId,
+        executionAttempt: claim.executionAttempt,
+        repositoryId: input.repositoryId,
+        owner: input.identity.owner,
+        repo: input.identity.repo,
+        prNumber: input.identity.prNumber,
+        headSha: input.identity.headSha,
+        baseSha: input.identity.baseSha,
+        policyDigest: input.effectivePolicyDigest,
+        configDigest: input.identity.configDigest,
+        digest: `sha256:${workerTerminalSuccessDigest(success)}`,
+        evidenceRef: `audit://review-yeti/${admitted.run.runId}/attempts/${claim.executionAttempt}/completion`,
+      },
+    });
+    expect((await repository.getRunStatus(admitted.run.runId, claim.executionAttempt + 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_dispatch_outbox SET status = 'projected' WHERE run_id = $1", [admitted.run.runId]);
+    expect((await repository.getRunStatus(admitted.run.runId, claim.executionAttempt))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_dispatch_outbox SET status = 'terminal' WHERE run_id = $1", [admitted.run.runId]);
     const state = await dispatchState(client, admitted.run.runId);
     expect(state.run).toMatchObject({
       status: 'succeeded',

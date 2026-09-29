@@ -2522,10 +2522,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   async getRunStatus(runId: string, executionAttempt: number): Promise<RunStatusResult | null> {
-    // Action-dispatch owns the durable gate predicate. The operator cannot
-    // inspect PostgreSQL: it only re-verifies the versioned receipt's immutable
-    // coordinates and digest over the authenticated status channel. Both
-    // implementations consume the same v1 wire fixture in tests.
+    // Action-dispatch owns both durable success predicates. Authoritative-gate
+    // runs require the bound gate/completion digest; legacy self-published
+    // App-gate runs require the authenticated terminal outbox and lifecycle
+    // digest. The operator only re-verifies the returned immutable receipt.
     const res = await this.queryable.query(
       `SELECT runs.run_id,
               runs.status,
@@ -2543,7 +2543,16 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               outbox.worker_token_digest,
               outbox.cancel_requested_at AS outbox_cancel_requested_at,
               outbox.cancel_reason AS outbox_cancel_reason,
-              completion.content_digest AS completion_digest
+              CASE
+                WHEN runs.status = 'succeeded'
+                 AND runs.publication_mode = 'app-gate'
+                 AND runs.authoritative_gate_app_id IS NULL
+                 AND outbox.status = 'terminal'
+                 AND outbox.execution_attempt + 1 = $2
+                 AND runs.result_digest ~ '^[a-f0-9]{64}$'
+                THEN runs.result_digest
+                ELSE completion.content_digest
+              END AS receipt_digest
          FROM review_runs AS runs
          LEFT JOIN review_dispatch_outbox AS outbox
            ON outbox.run_id = runs.run_id AND outbox.execution_attempt + 1 = $2
@@ -2611,8 +2620,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       currentHeadSha,
       isCurrentHead,
       workerTokenDigest: row.worker_token_digest ? String(row.worker_token_digest) : undefined,
-      receipt: typeof row.completion_digest === 'string'
-        && /^[a-f0-9]{64}$/u.test(row.completion_digest)
+      receipt: typeof row.receipt_digest === 'string'
+        && /^[a-f0-9]{64}$/u.test(row.receipt_digest)
         && row.worker_token_digest ? {
         version: 'AppGateReceipt.v1',
         runId: String(row.run_id),
@@ -2625,7 +2634,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         baseSha: String(row.base_sha),
         policyDigest: String(row.effective_policy_digest),
         configDigest: String(row.effective_config_digest),
-        digest: `sha256:${String(row.completion_digest)}`,
+        digest: `sha256:${String(row.receipt_digest)}`,
         evidenceRef: `audit://review-yeti/${encodeURIComponent(String(row.run_id))}/attempts/${executionAttempt}/completion`,
       } : undefined,
     };

@@ -156,7 +156,7 @@ describe('Two-Tier Cancellation Architecture', () => {
             pr_number: expected.prNumber,
             head_sha: expected.headSha, base_sha: expected.baseSha,
             effective_policy_digest: expected.policyDigest, effective_config_digest: expected.configDigest,
-            worker_token_digest: 'f'.repeat(64), completion_digest: expected.digest.slice('sha256:'.length),
+            worker_token_digest: 'f'.repeat(64), receipt_digest: expected.digest.slice('sha256:'.length),
           }] };
         }
         return { rows: [{ head_sha: expected.headSha }] };
