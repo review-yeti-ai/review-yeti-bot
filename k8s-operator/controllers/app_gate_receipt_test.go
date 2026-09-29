@@ -278,6 +278,77 @@ func TestAppGateReceiptMissingUncachedReaderRetries(t *testing.T) {
 	}
 }
 
+func TestAppGateReceiptMissingRunSecretFailsClosedAndReleasesWorker(t *testing.T) {
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	installValidAppGateReceipt(t, r, kube, review)
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: review.Spec.RunSecretName, Namespace: review.Namespace}}
+	if err := kube.Delete(context.Background(), secret); err != nil {
+		t.Fatal(err)
+	}
+	worker := storedWorker(t, kube, req)
+	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := kube.Status().Update(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("absent exact run Secret must reject, not requeue: %v", err)
+	}
+	after := storedReview(t, kube, req)
+	if after.Status.Phase == reviewv1alpha2.PhaseSucceeded || after.Status.ReceiptDigest != "" {
+		t.Fatalf("absent run Secret promoted review: %+v", after.Status)
+	}
+	// Terminal evidence is retained through the parent status write and released
+	// on the next reconcile; a deterministic rejection must not strand it.
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if worker := storedWorker(t, kube, req); containsString(worker.Finalizers, "review-yeti.ai/terminal-outcome") {
+		t.Fatal("absent run Secret stranded the worker evidence finalizer")
+	}
+}
+
+func TestAppGateReceiptTransientRunSecretReadRequeues(t *testing.T) {
+	r, kube, req := missingJobFixture(t, "app-gate", interceptor.Funcs{})
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	review := storedReview(t, kube, req)
+	installValidAppGateReceipt(t, r, kube, review)
+	r.SecretReader = interceptor.NewClient(kube.(client.WithWatch), interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Secret); ok {
+				return errors.New("temporary Kubernetes API read failure")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	worker := storedWorker(t, kube, req)
+	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := kube.Status().Update(context.Background(), worker); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(context.Background(), req); err == nil {
+		t.Fatal("temporary run Secret read error must requeue")
+	}
+	if after := storedReview(t, kube, req); after.Status.Phase == reviewv1alpha2.PhaseSucceeded || after.Status.ReceiptDigest != "" {
+		t.Fatalf("temporary Secret read promoted review: %+v", after.Status)
+	}
+	// A later successful live read must still be able to promote this attempt.
+	r.SecretReader = kube
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if after := storedReview(t, kube, req); after.Status.Phase != reviewv1alpha2.PhaseSucceeded || after.Status.ReceiptDigest == "" {
+		t.Fatalf("retry after Secret API recovery failed to promote: %+v", after.Status)
+	}
+}
+
 func TestAppGateReceiptRejectsRedirectAndWrongToken(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
