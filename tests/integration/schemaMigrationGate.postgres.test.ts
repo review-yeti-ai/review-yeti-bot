@@ -99,6 +99,30 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
     expect(String(recorded.rows[0].fingerprint)).toMatch(/^[0-9a-f]{64}$/u);
   });
 
+  it('REL-1189 installs the bounded dispatch priority and matching claim index idempotently', async () => {
+    await initializeFresh();
+    await initializeFresh();
+
+    const column = await pool.query(`SELECT is_nullable, column_default
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'review_dispatch_outbox'
+        AND column_name = 'dispatch_priority'`);
+    expect(column.rows[0]).toMatchObject({ is_nullable: 'NO', column_default: '0' });
+
+    const constraint = await pool.query(`SELECT pg_get_constraintdef(oid) AS definition
+      FROM pg_constraint
+      WHERE conrelid = 'review_dispatch_outbox'::regclass
+        AND conname = 'review_dispatch_outbox_priority_check'`);
+    expect(constraint.rows[0].definition).toContain('dispatch_priority = ANY (ARRAY[0, 1])');
+
+    const index = await pool.query(`SELECT indexdef FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND tablename = 'review_dispatch_outbox'
+        AND indexname = 'review_dispatch_priority_claim_idx'`);
+    expect(index.rows[0].indexdef).toContain('dispatch_priority DESC, available_at, created_at');
+  });
+
   it('a rollout start completes promptly while a serving pod holds a live transaction on review_runs', async () => {
     await initializeFresh();
     live = await openLiveTransactionOnReviewRuns();
