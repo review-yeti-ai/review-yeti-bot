@@ -163,9 +163,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) fetchAppGateReceipt(
 		return nil, fmt.Errorf("%w: status body exceeds bound", errRejectedReceipt)
 	}
 	var status appGateRunStatus
-	if err := json.Unmarshal(payload, &status); err != nil || status.Status != "succeeded" ||
+	if err := json.Unmarshal(payload, &status); err != nil ||
+		(status.Status != "succeeded" && status.Status != "failed") ||
 		status.CancelRequested || !status.IsCurrentHead {
-		return nil, fmt.Errorf("%w: status is not current successful completion", errRejectedReceipt)
+		return nil, fmt.Errorf("%w: status is not current terminal completion", errRejectedReceipt)
 	}
 	if err := validateAppGateReceipt(status.Receipt, review, attempt); err != nil {
 		return nil, err

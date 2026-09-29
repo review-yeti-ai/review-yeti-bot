@@ -108,6 +108,11 @@ export class WorkerStatusPoller {
         this._cancelReason = body.cancelReason;
       }
 
+      if (['succeeded', 'failed'].includes(body.status)) {
+        this.stop();
+        return body;
+      }
+
       if (body.cancelRequested || !body.isCurrentHead || !body.current) {
         this.onSuperseded?.(body.cancelReason || 'superseded_by_new_head');
       }

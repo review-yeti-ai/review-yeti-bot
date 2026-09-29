@@ -513,7 +513,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
   });
 
-  it('exposes an exact-attempt receipt only for a durable matching SHIP gate', async () => {
+  it('exposes an exact-attempt receipt for durable matching SHIP and non-SHIP terminal gates', async () => {
     const { repository, client } = await createRepository();
     const admitted = await repository.admit(authoritativeAdmission('receipt-status', 1_000));
     const runId = admitted.run.runId;
@@ -564,10 +564,17 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
     await client.query("UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 98 WHERE run_id = $1", [runId]);
 
-    await client.query("UPDATE review_gate_attempts SET desired_state = 'failure' WHERE run_id = $1", [runId]);
-    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
-    await client.query("UPDATE review_gate_attempts SET desired_state = 'success' WHERE run_id = $1", [runId]);
+    // Non-SHIP gate with failed run status also exposes durable receipt
+    await client.query("UPDATE review_gate_attempts SET desired_state = 'failure', decision = '{\"status\":\"failure\"}'::jsonb WHERE run_id = $1", [runId]);
+    await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [runId]);
     expect((await repository.getRunStatus(runId, 1))?.receipt).toBeDefined();
+    expect((await repository.getRunStatus(runId, 1))?.status).toBe('failed');
+
+    // SHIP gate with succeeded run status exposes durable receipt
+    await client.query("UPDATE review_gate_attempts SET desired_state = 'success', decision = '{\"status\":\"success\"}'::jsonb WHERE run_id = $1", [runId]);
+    await client.query("UPDATE review_runs SET status = 'succeeded' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeDefined();
+    expect((await repository.getRunStatus(runId, 1))?.status).toBe('succeeded');
 
     await client.query(`UPDATE review_gate_attempts SET worker_result_digest = $2
       WHERE run_id = $1`, [runId, '0'.repeat(64)]);
