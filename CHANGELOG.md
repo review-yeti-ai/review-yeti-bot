@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.8...v1.97.9) (2026-09-29)
+
+
+### Bug Fixes
+
+* reserve composed task finalization turns ([#1131](https://github.com/review-yeti-ai/review-yeti-bot/issues/1131)) ([3fe7b7a](https://github.com/review-yeti-ai/review-yeti-bot/commit/3fe7b7a741f6a8594335740a898c72ff745e44b9))
+
 ## [1.97.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.7...v1.97.8) (2026-09-29)
 
 
