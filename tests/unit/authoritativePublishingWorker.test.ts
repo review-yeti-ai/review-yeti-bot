@@ -339,27 +339,32 @@ describe('authoritative prepared publishing worker', () => {
     });
   });
 
-  it('keeps composed policy on the deterministic admitted persona roster', async () => {
+  it('accepts composed task evidence only after the trusted gate validates the task plan', async () => {
     const f = fixture({ reviewEngine: 'composed' });
+    const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
+      question: 'Does this change preserve the contract?', rationale: 'The changed source needs review.' }];
     const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
-      .mockRejectedValue(new Error('authoritative execution must not use dynamic composed task ids'));
+      .mockResolvedValue({ ...f.panel, taskPlan, applicablePersonaIds: ['task-a'],
+        personas: [{ ...f.panel.personas[0], id: 'task-a' }] });
     f.deps.composedReviewRunner = composedReviewRunner;
 
     await runPublishingReviewWorker(f.env, f.deps);
 
-    expect(f.panelRunner).toHaveBeenCalledOnce();
-    expect(composedReviewRunner).not.toHaveBeenCalled();
+    expect(f.panelRunner).not.toHaveBeenCalled();
+    expect(composedReviewRunner).toHaveBeenCalledOnce();
     const completion = f.reportReviewResult.mock.calls[0]?.[0];
-    expect(completion?.result.personas.map((persona) => persona.id)).toEqual(f.prepared.expectedPersonaIds);
+    expect(completion?.result.personas.map((persona) => persona.id)).toEqual(['task-a']);
+    expect(completion?.result.taskPlan).toEqual(taskPlan);
     const parsedCompletion = parseWorkerReviewCompletion(completion);
     const { version: _version, result: _result, ...expectedCoordinates } = parsedCompletion;
     expect(deriveCanonicalWorkerReviewEvidence(parsedCompletion, {
       expectedCoordinates,
       expectedPersonaIds: f.prepared.expectedPersonaIds,
+      reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
       changedFiles: parseChangedFiles(DIFF).files,
       coverageComplete: true,
       quorumSatisfied: true,
-    })).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', expectedLanes: 2, completedLanes: 2 } });
+    })).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', expectedLanes: 1, completedLanes: 1 } });
   });
 
   it('executes the exact admitted config instead of mutable policy, persona, and turn environment', async () => {

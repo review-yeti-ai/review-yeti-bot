@@ -19,5 +19,6 @@ export function computeAppVerdict(options: AppVerdictOptions): CanonicalArbitrat
     coverageGaps: options.coverageGaps,
     candidateVerdict: options.candidateVerdict,
     rationale: options.rationale,
+    panelSize: options.panelSize,
   });
 }

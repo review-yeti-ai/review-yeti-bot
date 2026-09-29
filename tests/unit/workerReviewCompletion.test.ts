@@ -4,6 +4,8 @@ import {
   MAX_COMPLETION_BYTES,
   MAX_TURN_USAGES,
   deriveCanonicalWorkerReviewEvidence,
+  deriveStoredCompletionVerdict,
+  storedCompletionShipCompleteReason,
   parseWorkerReviewCompletion,
   type TrustedReviewCoverageContract,
   type WorkerReviewCompletion,
@@ -72,6 +74,68 @@ function expectInvalid(result: ReturnType<typeof derive>, message: RegExp): void
 }
 
 describe('WorkerReviewCompletion.v1', () => {
+  it('validates composed task coverage and IDs from the trusted diff', () => {
+    const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/example.ts'],
+      question: 'Could this change regress behavior?', rationale: 'The source changed.' }];
+    const composed = completion({ result: { ...completion().result,
+      personas: [lane('task-a')], taskPlan,
+    } });
+    const trusted = { ...contract, reviewEngine: 'composed' as const,
+      composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8 };
+    const derived = derive(composed, trusted);
+    expect(derived).toMatchObject({ valid: true,
+      evidence: { reviewEngine: 'composed', expectedLanes: 1, completedLanes: 1, verdict: 'SHIP' } });
+    if (!derived.valid) throw new Error('expected valid composed evidence');
+    const digest = 'a'.repeat(64);
+    const gate = { worker_result_digest: digest, evidence: derived.evidence,
+      decision: { status: 'success', eligible: true, reason: 'clean-review' } };
+    expect(storedCompletionShipCompleteReason(composed.result, gate, digest)).toBeNull();
+    expect(storedCompletionShipCompleteReason(composed.result, {
+      ...gate, evidence: { ...derived.evidence, reviewEngine: undefined },
+    }, digest)).toBe('rederived-invalid');
+    expectInvalid(derive(composed, contract), /panel completion cannot claim/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result, taskPlan: undefined } }, trusted),
+      /missing its trusted task plan/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result,
+      taskPlan: [{ ...taskPlan[0], paths: ['docs/unrelated.md'] }],
+    } }, trusted), /does not cover the trusted changed files/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result,
+      taskPlan: Array.from({ length: 5 }, (_, index) => ({ ...taskPlan[0], id: `task-${index}` })),
+    } }, { ...trusted, composedMaxTasks: 4 }), /too_many_tasks/u);
+    expectInvalid(derive({ ...composed, result: { ...composed.result,
+      personas: [{ id: 'not-in-plan', decision: 'APPROVE', findings: [] }],
+    } }, trusted), /unknown persona lane/u);
+  });
+
+  it('treats a composed task list as one reviewer for blocking thresholds', () => {
+    const tasks = Array.from({ length: 7 }, (_, index) => ({ id: `task-${index + 1}`,
+      dimension: 'architecture' as const, paths: ['src/example.ts'],
+      question: 'Could this change regress behavior?', rationale: 'The source changed.' }));
+    const personas = tasks.map((task, index) => ({ id: task.id,
+      decision: index < 3 ? 'FINDINGS' as const : 'APPROVE' as const,
+      findings: index < 3 ? [{ severity: 'P1' as const, path: 'src/example.ts',
+        line: index + 1, title: `Defect ${index + 1}`, body: `Distinct defect ${index + 1}.` }] : [],
+    }));
+    const review = completion({ result: { ...completion().result, personas, taskPlan: tasks,
+      verdict: undefined, findingCount: undefined, blockingFindingCount: undefined } });
+    const derived = derive(review, { ...contract, reviewEngine: 'composed',
+      composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8,
+      changedFiles: [{ path: 'src/example.ts', patch: '@@ -1,0 +1,3 @@\n+a\n+b\n+c\n' }],
+    });
+    expect(derived).toMatchObject({ valid: true, evidence: { verdict: 'BLOCK', expectedLanes: 7 } });
+    expect(deriveStoredCompletionVerdict(review.result, {
+      expectedLanes: 7, coverageComplete: true, reviewEngine: 'composed',
+    })?.verdict).toBe('BLOCK');
+    expect(deriveStoredCompletionVerdict(review.result, {
+      expectedLanes: 7, coverageComplete: true,
+    })).toBeNull();
+    expect(deriveStoredCompletionVerdict({ ...review.result, taskPlan: undefined }, {
+      expectedLanes: 7, coverageComplete: true,
+    })?.verdict).toBe('FIX_FIRST');
+    expect(deriveStoredCompletionVerdict(review.result, {
+      expectedLanes: 6, coverageComplete: true, reviewEngine: 'composed',
+    })).toBeNull();
+  });
   it('derives clean evidence from complete persona findings without trusting the worker verdict', () => {
     const result = derive();
 

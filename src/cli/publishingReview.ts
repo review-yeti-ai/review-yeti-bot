@@ -30,7 +30,7 @@ import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
 import { defaultZoektGrounding, removeScratchTree } from '../mcp/zoektGrounding';
 import { isFastShipPanelResult } from '../panel/fastShipResult';
-import { isValidTaskId } from '../panel/reviewTask';
+import { isValidTaskId } from '../reviewTaskContract';
 import { normalizeRepositoryVisibility, repositoryVisibilityFrom, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { resolveRepositoryVisibility } from '../github/repositoryVisibility';
 import { runInSpan, getMetrics } from '../telemetry';
@@ -1402,15 +1402,10 @@ export async function runPublishingReviewWorker(
     // Base-policy driven (see `resolveReviewEngine`'s doc comment): a PR cannot switch its own
     // review engine by setting an env var, only by what `workerConfig.review_engine` resolved to.
     //
-    // The authoritative gate admits a fixed persona roster and later re-derives eligibility from
-    // those exact ids. The composed engine invents task ids from the diff at execution time, so its
-    // otherwise-clean output cannot satisfy that immutable roster contract. Keep authoritative
-    // execution on the admitted persona panel until composed plans have their own service-owned,
-    // deterministic admission contract. Shadow mode already gates on the panel and remains safe.
+    // The trusted completion service validates a composed plan against the exact changed paths
+    // before admitting its task ids. Panel and shadow keep their existing persona-roster contract.
     const configuredReviewEngine = resolveReviewEngine(workerConfig);
-    const reviewEngine = authoritative && configuredReviewEngine === 'composed'
-      ? 'panel'
-      : configuredReviewEngine;
+    const reviewEngine = configuredReviewEngine;
     const panelRunner = reviewEngine === 'composed'
       ? (deps.composedReviewRunner || executeComposedReview)
       : (deps.panelRunner || executePersonaPanel);
@@ -2204,15 +2199,8 @@ export async function runPublishingReviewWorker(
         ];
 
     const completedAt = new Date(now()).toISOString();
-    // Resolved lazily, only where shadow evidence is actually consumed (the non-authoritative
-    // evidence branch below) -- never on the authoritative `reportReviewResult` path, which never
-    // requests `includeShadow` and so never needs to wait for it. `deriveCanonicalWorkerReviewEvidence`
-    // (the authoritative gate's server-side re-arbitration) rejects ANY persona id outside its
-    // trusted `expectedPersonaIds` roster as an "unknown persona lane" -- an invalid-evidence,
-    // published-failure outcome. A composed-engine task id was never one of the panel's configured
-    // persona ids, so a shadow lane reaching that path would not just be inert extra evidence, it
-    // would flip the authoritative decision to failure. `buildReviewResult()`'s default
-    // (`includeShadow` unset/false) is what keeps the two engines' evidence on separate rails.
+    // Shadow evidence stays outside the authoritative completion. Its extra task ids are not
+    // part of the gating panel roster; only an explicit composed run carries a validated task plan.
     let shadowOutcome: ShadowOutcome = { status: 'skipped' };
     // The persona lanes and findings behind the published check, in the shape
     // the service's completion contract accepts. Built once and reported on
@@ -2311,6 +2299,7 @@ export async function runPublishingReviewWorker(
           // caps the combined panel + shadow lane count so an oversized composed task plan cannot
           // push this past `resultSchema.personas`'s own bound.
           personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
+          ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
           coverageComplete: coverageGaps.length === 0, quorumSatisfied: panelResult.quorum?.satisfied === true,
           // See `resultSchema.panelWallClockMs`: the panel's own wall-clock measurement, carried
           // across the completion boundary so downstream comparisons stop relying on a summed
