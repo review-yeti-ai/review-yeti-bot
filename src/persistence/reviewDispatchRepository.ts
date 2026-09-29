@@ -365,6 +365,12 @@ export type AbandonedRunReconciliation =
   | { reconciled: false }
   | { reconciled: true; outcome: AbandonedRunReconciliationOutcome };
 
+export interface ActiveReviewRunForPullRequest {
+  runId: string;
+  repositoryId: number;
+  attempt: number;
+}
+
 export interface ReviewDispatchRepository {
   admit(input: ReviewAdmissionInput): Promise<ReviewAdmission>;
   claimNext(workerId: string, now: number, leaseMs: number): Promise<ReviewDispatchClaim | null>;
@@ -437,6 +443,16 @@ export interface ReviewDispatchRepository {
     headSha?: string,
     now?: number,
   ): Promise<{ advanced: boolean; runId?: string }>;
+  /**
+   * Resolve the active attempt selected by the dispatch layer for an operator
+   * cancellation. Keeping this lookup here prevents MCP tools from coupling
+   * themselves to review_runs columns or independently inventing ordering.
+   */
+  findActiveRunForPullRequest(input: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+  }): Promise<ActiveReviewRunForPullRequest | null>;
   /**
    * Cancel in-flight reviews for a pull request (e.g. converted to draft or opt-out label added).
    */
@@ -1501,6 +1517,34 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async findActiveRunForPullRequest(input: {
+    owner: string;
+    repo: string;
+    prNumber: number;
+  }): Promise<ActiveReviewRunForPullRequest | null> {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT run_id, repository_id, attempt
+           FROM review_runs
+          WHERE owner = $1 AND repo = $2 AND pr_number = $3
+            AND status IN ('queued', 'running', 'publishing')
+          ORDER BY updated_at DESC, run_id
+          LIMIT 1`,
+        [input.owner, input.repo, input.prNumber],
+      );
+      const row = result.rows[0];
+      if (!row) return null;
+      return {
+        runId: String(row.run_id),
+        repositoryId: Number(row.repository_id),
+        attempt: Number(row.attempt ?? 0),
+      };
     } finally {
       client.release();
     }

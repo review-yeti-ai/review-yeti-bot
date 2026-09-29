@@ -26,10 +26,12 @@ export const cancelReviewDefinition: ToolDefinition = {
 };
 
 export interface CancelReviewDependencies {
-  queryableDatabase?: {
-    query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
-  };
   cancellationRepository?: {
+    findActiveRunForPullRequest(input: {
+      owner: string;
+      repo: string;
+      prNumber: number;
+    }): Promise<{ runId: string; repositoryId: number; attempt: number } | null>;
     cancelRunsForPullRequest(input: {
       repositoryId: number;
       prNumber: number;
@@ -64,37 +66,28 @@ export function createCancelReviewTool(deps: CancelReviewDependencies = {}) {
       if (!reason || !reason.trim()) {
         throw new Error('owner, repo, pull_number, and a non-empty reason are required for audit logging');
       }
-      if (!deps.queryableDatabase) {
-        throw new Error('Cancellation service unavailable: review database is required');
+      if (!deps.cancellationRepository) {
+        throw new Error('Cancellation service unavailable: transactional dispatch repository is required');
       }
 
       let attemptId = `review-attempt-${pull_number}-1`;
       let reapedPod: string | undefined;
 
-      const activeRes = await deps.queryableDatabase.query(
-        `SELECT run_id, repository_id, attempt, head_sha, lease_owner, status
-           FROM review_runs
-          WHERE owner = $1 AND repo = $2 AND pr_number = $3
-            AND status IN ('queued', 'running', 'publishing')
-          ORDER BY updated_at DESC, run_id
-          LIMIT 1`,
-        [owner, repo, pull_number]
-      );
-
-      const activeRun = activeRes.rows[0];
+      const activeRun = await deps.cancellationRepository.findActiveRunForPullRequest({
+        owner,
+        repo,
+        prNumber: pull_number,
+      });
       if (!activeRun) {
         throw new Error(
           `Not Found: No active review run found for ${owner}/${repo} PR #${pull_number} to cancel`
         );
       }
 
-      const runId = String(activeRun.run_id);
-      const repositoryId = Number(activeRun.repository_id);
+      const runId = activeRun.runId;
+      const repositoryId = activeRun.repositoryId;
       if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0) {
         throw new Error('Cancellation service unavailable: active run repository identity is invalid');
-      }
-      if (!deps.cancellationRepository) {
-        throw new Error('Cancellation service unavailable: transactional dispatch repository is required');
       }
       attemptId = `review-attempt-${pull_number}-${activeRun.attempt || 1}`;
       const now = nowFn();

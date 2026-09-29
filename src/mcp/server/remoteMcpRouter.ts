@@ -169,7 +169,6 @@ export function createDefaultToolRegistry(options?: {
     ...options?.triggerDeps,
   }));
   registry.registerTool(createCancelReviewTool({
-    queryableDatabase: db,
     cancellationRepository: options?.admissionRepository ?? options?.triggerDeps?.admissionRepository,
     ...options?.cancelDeps,
   }));

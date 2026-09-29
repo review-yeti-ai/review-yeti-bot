@@ -758,31 +758,23 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
   // SUITE 7: cancel_review Tool Execution
   // =========================================================================
   describe('Suite 7: cancel_review Tool Execution', () => {
-    it('TC-CANC-008: Fails closed when the review database is unavailable', async () => {
-      const cancelRunsForPullRequest = vi.fn();
-      const tool = createCancelReviewTool({
-        cancellationRepository: { cancelRunsForPullRequest },
-      });
+    it('TC-CANC-008: Fails closed when the transactional repository is unavailable', async () => {
+      const tool = createCancelReviewTool();
 
       await expect(tool.execute({
         owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
-      })).rejects.toThrow(/review database is required/);
-      expect(cancelRunsForPullRequest).not.toHaveBeenCalled();
+      })).rejects.toThrow(/transactional dispatch repository is required/);
     });
 
     it('TC-CANC-001: Cancels active review run and signals pod reaping', async () => {
-      mockDb.query
-        .mockResolvedValueOnce({
-          rows: [{ run_id: 'run_to_cancel', repository_id: 123, attempt: 1,
-            lease_owner: 'review-worker-pr-44-xyz', status: 'running' }],
-        });
-
       const mockPatch = vi.fn(async () => ({ reapedPod: 'review-worker-pr-44-xyz', success: true }));
+      const findActiveRunForPullRequest = vi.fn(async () => ({
+        runId: 'run_to_cancel', repositoryId: 123, attempt: 1,
+      }));
       const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_to_cancel'] }));
 
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
-        cancellationRepository: { cancelRunsForPullRequest },
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
         patchCancellation: mockPatch,
       });
 
@@ -805,6 +797,9 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         gateReason: 'operator-cancelled',
         now: expect.any(Number),
       });
+      expect(findActiveRunForPullRequest).toHaveBeenCalledWith({
+        owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 44,
+      });
       expect(mockPatch).toHaveBeenCalled();
     });
 
@@ -813,17 +808,16 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       { label: 'cleanup patch throws', patchMode: 'throws' },
       { label: 'cleanup patch is unavailable', patchMode: 'unavailable' },
     ])('TC-CANC-006: Keeps cleanup queued when $label', async ({ patchMode }) => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ run_id: 'run_to_cancel', repository_id: 123, attempt: 1, status: 'running' }],
-      });
+      const findActiveRunForPullRequest = vi.fn(async () => ({
+        runId: 'run_to_cancel', repositoryId: 123, attempt: 1,
+      }));
       const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_to_cancel'] }));
       const mockPatch = vi.fn(async () => {
         if (patchMode === 'throws') throw new Error('Kubernetes API unavailable');
         return { success: false, reapedPod: 'worker-must-not-be-reported' };
       });
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
-        cancellationRepository: { cancelRunsForPullRequest },
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
         ...(patchMode === 'unavailable' ? {} : { patchCancellation: mockPatch }),
       });
 
@@ -837,30 +831,31 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       expect(mockPatch).toHaveBeenCalledTimes(patchMode === 'unavailable' ? 0 : 1);
     });
 
-    it('TC-CANC-003: Fails closed when the transactional repository is unavailable', async () => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ run_id: 'run_to_cancel', repository_id: 123, attempt: 1, status: 'running' }],
+    it('TC-CANC-003: Propagates an active-run repository lookup failure', async () => {
+      const findActiveRunForPullRequest = vi.fn(async () => {
+        throw new Error('review database unavailable');
       });
-
-      const tool = createCancelReviewTool({ queryableDatabase: mockDb });
+      const cancelRunsForPullRequest = vi.fn();
+      const tool = createCancelReviewTool({
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
+      });
 
       await expect(tool.execute({
         owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
-      })).rejects.toThrow(/transactional dispatch repository is required/);
+      })).rejects.toThrow(/review database unavailable/);
+      expect(cancelRunsForPullRequest).not.toHaveBeenCalled();
     });
 
     it.each([
       { label: 'missing', repositoryId: null },
       { label: 'non-positive', repositoryId: 0 },
     ])('TC-CANC-007: Fails closed when the active run repository identity is $label', async ({ repositoryId }) => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ run_id: 'run_to_cancel', repository_id: repositoryId, attempt: 1, status: 'running' }],
-      });
-
+      const findActiveRunForPullRequest = vi.fn(async () => ({
+        runId: 'run_to_cancel', repositoryId: repositoryId as number, attempt: 1,
+      }));
       const cancelRunsForPullRequest = vi.fn();
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
-        cancellationRepository: { cancelRunsForPullRequest },
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
       });
 
       await expect(tool.execute({
@@ -873,15 +868,13 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       { label: 'no cancelled run ids', cancelledRunIds: [] },
       { label: 'a different cancelled run id', cancelledRunIds: ['run_for_another_pr'] },
     ])('TC-CANC-005: Fails closed when the repository reports $label', async ({ cancelledRunIds }) => {
-      mockDb.query.mockResolvedValueOnce({
-        rows: [{ run_id: 'run_to_cancel', repository_id: 123, attempt: 1, status: 'running' }],
-      });
-
       const mockPatch = vi.fn();
+      const findActiveRunForPullRequest = vi.fn(async () => ({
+        runId: 'run_to_cancel', repositoryId: 123, attempt: 1,
+      }));
       const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds }));
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
-        cancellationRepository: { cancelRunsForPullRequest },
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
         patchCancellation: mockPatch,
       });
 
@@ -892,19 +885,18 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
     });
 
     it('TC-CANC-004: Rejects an unbounded audit rationale', async () => {
-      const tool = createCancelReviewTool({ queryableDatabase: mockDb });
+      const tool = createCancelReviewTool();
 
       await expect(tool.execute({
         owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'x'.repeat(513),
       })).rejects.toThrow(/reason must be at most 512 characters/);
-      expect(mockDb.query).not.toHaveBeenCalled();
     });
 
     it('TC-CANC-002: Throws error when canceling non-existent or inactive PR run', async () => {
-      mockDb.query.mockResolvedValueOnce({ rows: [] });
-
+      const findActiveRunForPullRequest = vi.fn(async () => null);
+      const cancelRunsForPullRequest = vi.fn();
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
       });
 
       await expect(
@@ -915,6 +907,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           reason: 'Cleanup',
         })
       ).rejects.toThrow(/Not Found: No active review run found/);
+      expect(cancelRunsForPullRequest).not.toHaveBeenCalled();
     });
   });
 

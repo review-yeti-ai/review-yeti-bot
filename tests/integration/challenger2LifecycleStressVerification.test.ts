@@ -389,6 +389,22 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         this.runs.set(run.run_id, run);
       }
 
+      async findActiveRunForPullRequest(input: {
+        owner: string; repo: string; prNumber: number;
+      }): Promise<{ runId: string; repositoryId: number; attempt: number } | null> {
+        await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 5) + 1));
+        const run = Array.from(this.runs.values()).find((candidate) =>
+          candidate.owner === input.owner
+          && candidate.repo === input.repo
+          && candidate.pr_number === input.prNumber
+          && ['queued', 'running', 'publishing'].includes(candidate.status));
+        return run ? {
+          runId: String(run.run_id),
+          repositoryId: Number(run.repository_id),
+          attempt: Number(run.attempt || 1),
+        } : null;
+      }
+
       async cancelRunsForPullRequest(input: {
         repositoryId: number; prNumber: number; cancelReason: string;
       }): Promise<{ cancelledRunIds: string[] }> {
@@ -422,7 +438,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       ]);
 
       const triggerTool = createTriggerReviewTool({ queryableDatabase: db as any });
-      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any, cancellationRepository: db });
+      const cancelTool = createCancelReviewTool({ cancellationRepository: db });
 
       const triggerPromise = triggerTool.execute({
         owner: 'calltelemetry',
@@ -467,7 +483,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         },
       ]);
 
-      const cancelTool = createCancelReviewTool({ queryableDatabase: db as any, cancellationRepository: db });
+      const cancelTool = createCancelReviewTool({ cancellationRepository: db });
 
       const CONCURRENCY = 20;
       const cancelPromises = Array.from({ length: CONCURRENCY }).map((_, i) =>

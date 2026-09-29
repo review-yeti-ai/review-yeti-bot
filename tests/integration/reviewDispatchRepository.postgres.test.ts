@@ -4057,6 +4057,30 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
   });
 
   describe('cancelRunsForPullRequest protected gate settlement (REL-1188)', () => {
+    it('owns active-run selection for operator cancellation', async () => {
+      const { repository, client } = await createRepository(trustedValidation, true);
+      const admitted = await repository.admit(authoritativeAdmission('operator-cancel-lookup', 1_000));
+
+      await expect(repository.findActiveRunForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+      })).resolves.toEqual({
+        runId: admitted.run.runId,
+        repositoryId: 123,
+        attempt: admitted.run.attempt,
+      });
+
+      await client.query(`UPDATE review_runs SET status = 'completed' WHERE run_id = $1`, [
+        admitted.run.runId,
+      ]);
+      await expect(repository.findActiveRunForPullRequest({
+        owner: admitted.run.identity.owner,
+        repo: admitted.run.identity.repo,
+        prNumber: admitted.run.identity.prNumber,
+      })).resolves.toBeNull();
+    });
+
     it('atomically retires the run, dispatch outbox, and protected gate', async () => {
       const { repository, client } = await createRepository({ ...trustedValidation, lifecycleEvents: 'enabled' }, true);
       const admitted = await repository.admit(authoritativeAdmission('operator-cancel', 1_000));

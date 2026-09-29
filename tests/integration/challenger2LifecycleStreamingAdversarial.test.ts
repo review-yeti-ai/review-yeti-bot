@@ -45,6 +45,7 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
   const callerIdentity = 'challenger2-reviewer';
 
   let mockDb: any;
+  let mockCancellationRepository: any;
   let app: express.Express;
   let router: RemoteMcpRouter;
   let activeServers: http.Server[] = [];
@@ -88,10 +89,27 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     mockDb = {
       query: vi.fn(),
     };
+    mockCancellationRepository = {
+      findActiveRunForPullRequest: vi.fn(async (input: {
+        owner: string; repo: string; prNumber: number;
+      }) => {
+        const result = await mockDb.query('SELECT active review run', [
+          input.owner, input.repo, input.prNumber,
+        ]);
+        const row = result.rows[0];
+        return row ? {
+          runId: String(row.run_id),
+          repositoryId: Number(row.repository_id),
+          attempt: Number(row.attempt || 1),
+        } : null;
+      }),
+      cancelRunsForPullRequest: vi.fn(async () => ({ cancelledRunIds: [] })),
+    };
 
     router = createRemoteMcpRouter({
       authenticator: createTestAuthenticator(),
       db: mockDb,
+      cancelDeps: { cancellationRepository: mockCancellationRepository },
     });
 
     app = express();
@@ -357,11 +375,12 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     });
 
     it('ADV-CANC-003: Cancellation of already-finished attempt throws Not Found error', async () => {
-      // Query returns empty because run is 'completed' (not in 'queued','running','publishing')
-      mockDb.query.mockResolvedValueOnce({ rows: [] });
-
+      const findActiveRunForPullRequest = vi.fn(async () => null);
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
+        cancellationRepository: {
+          findActiveRunForPullRequest,
+          cancelRunsForPullRequest: vi.fn(),
+        },
       });
 
       await expect(
@@ -401,29 +420,14 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
     });
 
     it('ADV-CANC-005: Valid cancellation updates DB, terminates outbox, and reaps pod', async () => {
-      mockDb.query.mockImplementation(async (sql: string, params: any[]) => {
-        if (sql.includes('review_runs') && sql.includes('SELECT')) {
-          return {
-            rows: [
-              {
-                run_id: 'run_to_cancel_live',
-                repository_id: 123,
-                attempt: 3,
-                lease_owner: 'review-worker-pod-999',
-                status: 'running',
-              },
-            ],
-          };
-        }
-        return { rows: [] };
-      });
-
       const mockPatch = vi.fn(async () => ({ reapedPod: 'review-worker-pod-999', success: true }));
+      const findActiveRunForPullRequest = vi.fn(async () => ({
+        runId: 'run_to_cancel_live', repositoryId: 123, attempt: 3,
+      }));
       const cancelRunsForPullRequest = vi.fn(async () => ({ cancelledRunIds: ['run_to_cancel_live'] }));
 
       const tool = createCancelReviewTool({
-        queryableDatabase: mockDb,
-        cancellationRepository: { cancelRunsForPullRequest },
+        cancellationRepository: { findActiveRunForPullRequest, cancelRunsForPullRequest },
         patchCancellation: mockPatch,
       });
 
