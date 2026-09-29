@@ -31,10 +31,16 @@ describe('undici fetch failures are treated as retryable transport faults', () =
   });
 
   it('unwraps undici causes that carry the real code', () => {
-    // undici often nests the errno rather than putting it in the message.
-    const wrapped = new Error('fetch failed');
-    (wrapped as any).cause = Object.assign(new Error('other'), { code: 'ECONNRESET' });
+    // The OUTER message must not match, or this passes on the first check and never
+    // exercises the recursion. Verified by plant: deleting the whole cause-unwrap
+    // block left the earlier version of this test green.
+    const wrapped = new Error('upstream request failed');
+    (wrapped as any).cause = new Error('ECONNRESET');
     expect(pipeline.isTransientSocketError(wrapped)).toBe(true);
+    // And the classifier must agree with the gate on the same object. It stringified
+    // first before this fix, so it saw no `cause` and returned `unknown` while the
+    // gate returned true -- a divergence on exactly the errors that need agreement.
+    expect(pipeline.classifyTelemetryTransportError(wrapped)).toBe('transient_socket');
   });
 
   it('does NOT widen into faults that should still quarantine', () => {
@@ -49,11 +55,17 @@ describe('undici fetch failures are treated as retryable transport faults', () =
   });
 
   it('has ONE source of truth for the pattern', () => {
-    // The retry gate and the classifier previously each carried their own copy of
-    // this list, which is exactly how one of them fell behind the other.
+    // Count a SINGLE distinctive token rather than a fixed alternation: matching
+    // `ECONNRESET|ETIMEDOUT|EPIPE` failed on a behaviour-preserving reorder AND passed
+    // when a duplicate was written in a different order. One token is order-insensitive
+    // and still catches a second list.
     const source = fs.readFileSync(path.join(root, '.github/workflows/pipelines/review-pipeline.js'), 'utf8');
-    const inlineCopies = source.match(/ECONNRESET\|ETIMEDOUT\|EPIPE/g) || [];
-    expect(inlineCopies.length).toBe(1);
+    const errnoLists = source.match(/EAI_AGAIN/g) || [];
+    expect(errnoLists.length).toBe(1);
     expect(source).toContain('const TRANSIENT_SOCKET_PATTERN');
+    // The gate and the classifier must both route through the shared predicate, so a
+    // future edit cannot reintroduce a private copy at either site.
+    expect(source).toContain('isTransientSocketError(err)');
+    expect(source).toContain('isTransientSocketError(error)');
   });
 });

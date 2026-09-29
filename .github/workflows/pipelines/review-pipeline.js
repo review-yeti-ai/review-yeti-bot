@@ -2880,10 +2880,15 @@ function isTransientSocketError(error) {
 
 function classifyTelemetryTransportError(error) {
   const message = String(error?.message || error || '');
+  // Pass the ORIGINAL error, not `message`. The transient check unwraps `cause`,
+  // and a string has no `cause` -- so stringifying first would silently disable that
+  // branch here while the retry gate (which passes the object) still used it, and the
+  // two would disagree on exactly the errors that need to agree.
+
   if (/provider_capacity_wait_timeout|capacity_wait_timeout/i.test(message)) return 'provider_capacity';
   if (/provider_capacity_wait_cancelled|review_cancelled/i.test(message)) return 'cancelled';
   if (/AbortError|aborted|timeout|deadline|stalled|inactive|inactivity|reasoning exceeded/i.test(message)) return 'timeout';
-  if (isTransientSocketError(message)) return 'transient_socket';
+  if (isTransientSocketError(error)) return 'transient_socket';
   if (/empty_sse|parse|json|findings/i.test(message)) return 'malformed_output';
   return 'unknown';
 }
