@@ -589,7 +589,7 @@ function validCompletedAt(row) {
     ? Date.parse(value) : NaN;
 }
 
-function hasCurrentInfrastructureGate(identity, gateInventory) {
+function hasCurrentFailureGate(identity, gateInventory, title, summary) {
   const gates = gateInventory?.rows;
   if (!Array.isArray(gates) || gates.length === 0
       || gates.some((row) => !Number.isFinite(validCompletedAt(row)))) return false;
@@ -605,11 +605,49 @@ function hasCurrentInfrastructureGate(identity, gateInventory) {
   const gateCompletedAt = validCompletedAt(gate);
   return gate.status === 'completed'
     && gate.conclusion === 'failure'
-    && gate.output.title === 'Review Yeti Gate: Failed'
-    && gate.output.summary === INFRASTRUCTURE_GATE_SUMMARY
+    && gate.output.title === title
+    && gate.output.summary === summary
     && Number.isFinite(workerCompletedAt)
     && Number.isFinite(gateCompletedAt)
     && gateCompletedAt >= workerCompletedAt;
+}
+
+function hasCurrentInfrastructureGate(identity, gateInventory) {
+  return hasCurrentFailureGate(
+    identity, gateInventory, 'Review Yeti Gate: Failed', INFRASTRUCTURE_GATE_SUMMARY,
+  );
+}
+
+function incompleteRosterCounts(identity, headSha) {
+  if (identity.kind !== 'worker' || identity.row.output.title !== 'Review Yeti: BLOCK') return null;
+  const lines = identity.row.output.summary.split('\n');
+  const findingsLines = lines.filter((line) => line.startsWith('Findings: '));
+  const coverageLines = lines.filter((line) => line.startsWith('Coverage: '));
+  if (lines[0] !== `Verdict \`BLOCK\` at \`${headSha}\`.`
+      || findingsLines.length !== 1
+      || findingsLines[0] !== 'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).'
+      || coverageLines.length !== 1) {
+    return null;
+  }
+  const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverageLines[0]);
+  const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverageLines[0]);
+  if (!panel && !composed) return null;
+  const [expected, completed] = (panel ? panel.slice(1) : composed.slice(2)).map(Number);
+  if (composed && Number(composed[1]) !== expected) return null;
+  return Number.isSafeInteger(expected) && expected > 0
+    && Number.isSafeInteger(completed) && completed >= 0 && completed < expected
+    ? { expected, completed } : null;
+}
+
+function isIncompleteRosterPanel(identity, headSha, gateInventory) {
+  const counts = incompleteRosterCounts(identity, headSha);
+  return counts !== null
+    && hasCurrentFailureGate(
+      identity,
+      gateInventory,
+      'Review Yeti Gate: Failed (incomplete panel)',
+      `Review Yeti Gate failed: the panel expected ${counts.expected} review lane(s) but ${counts.completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`,
+    );
 }
 
 function isRecoverableInfrastructureAttempt(identity, expectedAttempt, headSha, gateInventory) {
@@ -618,7 +656,8 @@ function isRecoverableInfrastructureAttempt(identity, expectedAttempt, headSha, 
     && RECOVERABLE_INFRASTRUCTURE_CONCLUSIONS.has(identity.row.conclusion)
     && (RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title)
       || (isFailedInfrastructurePanel(identity, headSha)
-        && hasCurrentInfrastructureGate(identity, gateInventory)));
+        && hasCurrentInfrastructureGate(identity, gateInventory))
+      || isIncompleteRosterPanel(identity, headSha, gateInventory));
 }
 
 function assertRecoverablePriorWorkers({ workers, nextGeneration, context, headSha, gateInventory }) {
@@ -951,7 +990,9 @@ export async function validateCentralDispatch({
     token: targetToken,
     fetchImpl,
   });
-  const gateInventory = reviewInventory.identities.some((identity) => isFailedInfrastructurePanel(identity, request.head_sha))
+  const gateInventory = reviewInventory.identities.some((identity) =>
+    isFailedInfrastructurePanel(identity, request.head_sha)
+    || incompleteRosterCounts(identity, request.head_sha) !== null)
     ? await listExactHeadAppChecks({
       repository: request.repository,
       headSha: request.head_sha,

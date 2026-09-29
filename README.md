@@ -306,12 +306,18 @@ immutable tuple `repository + pull request + head SHA`, with cancellation
 disabled. While it holds that lease, the validator reads the complete App-owned
 `Review Yeti` check ledger for the exact head and admits only generation `a1`,
 or bounded replacements `a2` and `a3`. Every prior generation must exist
-exactly once and be an App-owned, completed `failure` with an approved
-infrastructure/no-verdict title. `BLOCK`, `FIX_FIRST`, active checks, missing or
-duplicate generations, and attempts `a4` or later never authorize replacement.
+exactly once and be App-owned and completed with `failure` or `action_required`.
+An infrastructure/no-verdict title qualifies. A raw `BLOCK` qualifies only when
+its exact-head summary reports zero findings and an incomplete panel, and the
+newest App-owned failed `Review Yeti Gate` confirms the matching infrastructure
+failure or missing-roster lane counts. A findings `BLOCK`,
+`FIX_FIRST`, active checks, missing or duplicate generations, and attempts
+`a4` or later never authorize replacement.
 All prior worker rows must also carry the same DOKS `run_<id>` identity; rows
 from different worker identities cannot be combined into an apparent contiguous
 generation history.
+The incomplete-roster check accepts only the published `panel` lane summary or
+`composed` task summary; composed planned and expected counts must agree.
 Every row and pagination boundary is validated fail closed before that
 decision; an inventory at the 1,000-run endpoint cap is ambiguous and is
 rejected.
@@ -348,6 +354,14 @@ the rules above. A label event or newly created caller run cannot reset or
 bypass the ledger, and an empty commit creates a different head rather than a
 same-head recovery. Operators must stop after `a3`; later attempts fail closed
 and require a code or policy change with normal review.
+
+For a repository that has retired its caller workflow, use this repository's
+`repository-dispatch.yml` `workflow_dispatch` with the current exact
+`repository`, `pr_number`, `base_sha`, and `head_sha`, and set
+`refresh_requested=true`. The central run binds the request to its own run
+identity, re-reads the open PR and complete App-owned check ledger, and uses
+the same bounded generation reservation. Recheck those coordinates immediately
+before dispatch; a stale base or head fails validation.
 
 The legacy hosted/local compatibility path also publishes `Review Yeti Gate`
 alongside the raw check, including an honestly `skipped` pair during local

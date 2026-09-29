@@ -92,6 +92,24 @@ function infrastructureGateCheck(overrides = {}) {
   };
 }
 
+function incompleteRosterSummary(expected, completed, engine = 'panel') {
+  const coverage = engine === 'composed'
+    ? `engine=composed; planned tasks=${expected}; expected tasks=${expected}; completed tasks=${completed}; failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false.`
+    : `mode=panel; expected lanes=${expected}; completed lanes=${completed}; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
+  return `Verdict \`BLOCK\` at \`${headSha}\`.\n\nFindings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).\n\nCoverage: ${coverage}\n\nUnreported lanes (not on the published roster):\n- \`audit-tests\` \`malformed_output\`: Task ran and produced no verdict\n\nTransport: bifrost \`pr-reviewer\`.`;
+}
+
+function incompleteRosterGateCheck(expected, completed, overrides = {}) {
+  return infrastructureGateCheck({
+    output: {
+      title: 'Review Yeti Gate: Failed (incomplete panel)',
+      summary: `Review Yeti Gate failed: the panel expected ${expected} review lane(s) but ${completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`,
+      text: null,
+    },
+    ...overrides,
+  });
+}
+
 function historicalGateCheck(overrides = {}) {
   return infrastructureGateCheck({
     id: 98,
@@ -121,7 +139,7 @@ function page(checkRuns, totalCount = checkRuns.length) {
   return { total_count: totalCount, check_runs: checkRuns };
 }
 
-function generationFetch({ attempt, checkPages, gatePages = [page([])], calls = [] }) {
+function generationFetch({ attempt, checkPages, gatePages = [page([])], calls = [], manual = false }) {
   const runId = 9000 + attempt;
   return async (url, init) => {
     calls.push({ url, init });
@@ -130,6 +148,16 @@ function generationFetch({ attempt, checkPages, gatePages = [page([])], calls = 
         state: 'open',
         base: { sha: baseSha, repo: { full_name: TARGET_REPOSITORY, default_branch: '0.8.7-stable' } },
         head: { sha: headSha, ref: 'fix/generation-reservation' },
+      });
+    }
+    if (manual && url.endsWith(`/repos/exampleorg/example-review-actions/actions/runs/${runId}`)) {
+      return response({
+        repository: { full_name: 'exampleorg/example-review-actions' },
+        event: 'workflow_dispatch',
+        path: '.github/workflows/repository-dispatch.yml',
+        head_sha: baseSha,
+        run_attempt: attempt,
+        status: 'in_progress',
       });
     }
     if (url.endsWith(`/actions/runs/${runId}`)) {
@@ -160,15 +188,19 @@ function generationFetch({ attempt, checkPages, gatePages = [page([])], calls = 
     if (url.includes('/contents/.github/workflows/ct-review-bot.yml?ref=')) {
       return response({ encoding: 'base64', content: Buffer.from(callerWorkflow).toString('base64') });
     }
+    if (manual && url.includes('/repos/exampleorg/example-review-actions/contents/.github/workflows/repository-dispatch.yml?ref=')) {
+      return response({ encoding: 'base64', content: Buffer.from('name: Central Review Yeti Dispatch').toString('base64') });
+    }
     throw new Error(`unexpected URL ${url}`);
   };
 }
 
-async function validate({ attempt, pages, gatePages, calls = [], refreshRequested = false }) {
+async function validate({ attempt, pages, gatePages, calls = [], refreshRequested = false, manual = false }) {
   return validateCentralDispatch({
     payload: { ...payloadFor(attempt), ...(refreshRequested ? { refresh_requested: true } : {}) },
     token: 'central-app-token',
-    fetchImpl: generationFetch({ attempt, checkPages: pages, gatePages, calls }),
+    fetchImpl: generationFetch({ attempt, checkPages: pages, gatePages, calls, manual }),
+    ...(manual ? { eventName: 'workflow_dispatch', executionRunId: 9000 + attempt, executionRunAttempt: attempt } : {}),
   });
 }
 
@@ -228,6 +260,102 @@ test('completed zero-finding panel with a failed lane and exact-head infrastruct
     assert.equal(result.latest_worker_check_id, 101);
   }
   assert.ok(calls.some(({ url }) => new URL(url).searchParams.get('check_name') === 'Review Yeti Gate'));
+});
+
+test('zero-finding incomplete roster admits a bounded same-head retry for both published coverage formats', async () => {
+  for (const [expected, completed, engine] of [[6, 5, 'panel'], [4, 3, 'panel'], [6, 4, 'composed']]) {
+    const first = workerCheck({ title: 'Review Yeti: BLOCK', summary: incompleteRosterSummary(expected, completed, engine) });
+    const gates = [page([incompleteRosterGateCheck(expected, completed)])];
+    for (const refreshRequested of [true, false]) {
+      const result = await validate({
+        attempt: refreshRequested ? 1 : 2,
+        refreshRequested,
+        pages: [page([first])],
+        gatePages: gates,
+      });
+      assert.equal(result.review_generation, 2);
+      assert.equal(result.latest_worker_check_id, first.id);
+    }
+    const manualCalls = [];
+    const manual = await validate({
+      attempt: 1, refreshRequested: true, manual: true,
+      pages: [page([first])], gatePages: gates, calls: manualCalls,
+    });
+    assert.equal(manual.review_generation, 2);
+    assert.equal(manual.caller_workflow_path, '.github/workflows/repository-dispatch.yml');
+    assert.equal(manualCalls.some(({ url }) => url.includes('/contents/.github/workflows/ct-review-bot.yml')), false);
+    const second = workerCheck({
+      id: 101, attempt: 2, title: 'Review Yeti: BLOCK', summary: incompleteRosterSummary(expected, completed, engine),
+    });
+    const third = await validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page([workerCheck({ id: 100 }), second])],
+      gatePages: gates,
+    });
+    assert.equal(third.review_generation, 3);
+  }
+});
+
+test('manual dispatch without refresh admits an initial review but cannot replace an existing generation', async () => {
+  const calls = [];
+  const initial = await validate({ attempt: 1, manual: true, pages: [page([])], calls });
+  assert.equal(initial.review_generation, 1);
+  assert.equal(initial.refresh_requested, false);
+  assert.equal(initial.caller_workflow_path, '.github/workflows/repository-dispatch.yml');
+  assert.equal(calls.some(({ url }) => url.includes('/contents/.github/workflows/ct-review-bot.yml')), false);
+
+  await assert.rejects(validate({
+    attempt: 1,
+    manual: true,
+    pages: [page([workerCheck({ title: 'Review Yeti: BLOCK', summary: incompleteRosterSummary(4, 3) })])],
+    gatePages: [page([incompleteRosterGateCheck(4, 3)])],
+  }), /attempt 1 requires zero worker checks/u);
+});
+
+test('incomplete roster retry rejects findings, contradictory coverage, or mismatched Gate evidence', async () => {
+  const summary = incompleteRosterSummary(6, 5);
+  const composedSummary = incompleteRosterSummary(6, 5, 'composed');
+  const gate = incompleteRosterGateCheck(6, 5);
+  const invalidWorkers = [
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('Findings: 0', 'Findings: 1') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('blocking P0/P1: 0', 'blocking P0/P1: 1') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('0 raw persona finding(s)', '1 raw persona finding(s)') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('completed lanes=5', 'completed lanes=6') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('failed lanes=0', 'failed lanes=1') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('roster valid=false', 'roster valid=true') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('quorum satisfied=false', 'quorum satisfied=true') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('full panel complete=false', 'full panel complete=true') }),
+    workerCheck({ title: 'Review Yeti: FIX_FIRST', summary }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary, conclusion: 'success' }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: composedSummary.replace('planned tasks=6', 'planned tasks=7') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: composedSummary.replace('completed tasks=5', 'completed tasks=6') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: composedSummary.replace('failed tasks=0', 'failed tasks=1') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: composedSummary.replace('engine=composed', 'engine=unknown') }),
+    workerCheck({ title: 'Review Yeti: BLOCK', summary: composedSummary.replace('task coverage complete=false', 'task coverage complete=true') }),
+  ];
+  for (const worker of invalidWorkers) {
+    await assert.rejects(
+      validate({ attempt: 2, pages: [page([worker])], gatePages: [page([gate])] }),
+      /a1 worker is not a completed recoverable infrastructure failure/u,
+    );
+  }
+  for (const gates of [
+    [],
+    [incompleteRosterGateCheck(4, 3)],
+    [infrastructureGateCheck()],
+    [incompleteRosterGateCheck(6, 5, { conclusion: 'success' })],
+    [incompleteRosterGateCheck(6, 5, { completed_at: '2026-09-24T18:28:55Z' })],
+  ]) {
+    await assert.rejects(
+      validate({
+        attempt: 2,
+        pages: [page([workerCheck({ title: 'Review Yeti: BLOCK', summary })])],
+        gatePages: [page(gates)],
+      }),
+      /a1 worker is not a completed recoverable infrastructure failure/u,
+    );
+  }
 });
 
 test('refresh chooses the newest exact-head App Gate from historical runs regardless of API order', async () => {
