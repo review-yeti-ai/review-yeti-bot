@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.5...v1.97.6) (2026-09-29)
+
+
+### Bug Fixes
+
+* **dispatch:** honor expedited MCP priority [REL-1189] ([ec27a16](https://github.com/review-yeti-ai/review-yeti-bot/commit/ec27a16a76dcedd366ebee0a22766243a7e3f7d9))
+
 ## [1.97.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.4...v1.97.5) (2026-09-29)
 
 
