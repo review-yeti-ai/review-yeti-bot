@@ -39,6 +39,60 @@ export interface ReviewActiveWorker {
   lease_expires_at: string;
 }
 
+/**
+ * Review run timing, split into the two quantities a consumer actually needs.
+ *
+ * Every field is optional/nullable so this is a purely additive change: existing
+ * consumers that ignore `timing` keep working unchanged.
+ *
+ * HONESTY CONTRACT (read before using these numbers):
+ * - `execution_seconds` is NON-NULL ONLY for a run that is BOTH terminal in
+ *   `review_runs.status` AND carries a durable terminal lifecycle marker.
+ *   A still-running review reports null. It is never a count-up to "now": the
+ *   system did not measure a duration it has not finished, so we do not invent
+ *   one. A partial span (some sub-step finished, the rest still running) is
+ *   likewise never published as a final duration.
+ * - `queue_seconds` covers ONLY control-plane receipt -> durable worker claim.
+ *   Pod scheduling and image pull happen inside the cluster after the claim and
+ *   are invisible to Postgres, so this is NOT total time-to-first-output and
+ *   must not be presented as interchangeable with a cluster-side queue metric.
+ */
+export interface ReviewTiming {
+  /** Durable delivery receipt (`review_runs.received_at`). */
+  received_at: string | null;
+  /** Row insert (`review_runs.created_at`). */
+  created_at: string | null;
+  /** Debounce burst window open (`review_runs.burst_started_at`). */
+  burst_started_at: string | null;
+  /** A worker claimed the run for execution (`review.lifecycle.dispatched`). */
+  dispatched_at: string | null;
+  /** A worker durably began executing the run (`review.lifecycle.started`). */
+  started_at: string | null;
+  /**
+   * Run reached a terminal instant. Populated only for terminal runs: the
+   * durable `review.lifecycle.terminal` marker when present, otherwise the
+   * terminal `review_runs.updated_at` write. Null while the run is in flight.
+   */
+  completed_at: string | null;
+  /** Cancellation requested (`review_runs.cancel_requested_at`). */
+  cancel_requested_at: string | null;
+  /** Cancellation propagated (`review_runs.cancel_propagated_at`). */
+  cancel_propagated_at: string | null;
+  /** Deadline after which the run is considered abandoned. */
+  terminal_deadline: string | null;
+  /**
+   * Seconds from receipt to durable worker claim, control-plane only.
+   * Null until a claim has actually happened (never a count-up to "now").
+   */
+  queue_seconds: number | null;
+  /**
+   * Seconds from durable worker claim to terminal instant.
+   * NULL for any run that has not terminated -- including one whose sub-steps
+   * have individually finished. Derived only when both ends are durable.
+   */
+  execution_seconds: number | null;
+}
+
 export interface ReviewStatusOutput {
   found: boolean;
   verdict: 'SHIP' | 'NACK' | 'COMMENT' | 'FIX_FIRST' | 'PENDING' | 'RUNNING' | 'FAILED';
@@ -47,6 +101,8 @@ export interface ReviewStatusOutput {
   phase: 'queued' | 'evaluating_personas' | 'arbitration' | 'completed';
   check_run: ReviewCheckRun | null;
   active_worker: ReviewActiveWorker | null;
+  /** Optional so existing consumers keep working; absent when no run was found. */
+  timing?: ReviewTiming | null;
   message?: string;
 }
 
