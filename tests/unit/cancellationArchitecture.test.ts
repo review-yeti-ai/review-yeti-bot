@@ -152,6 +152,9 @@ describe('Two-Tier Cancellation Architecture', () => {
         if (sql.includes('FROM review_runs AS runs')) {
           expect(sql).toContain('completion.execution_attempt = $2');
           expect(sql).toContain('gate.worker_result_digest = completion.content_digest');
+          expect(sql).toContain("gate.creation_state = 'bound'");
+          expect(sql).toContain('gate.current_attempt');
+          expect(sql).toContain("gate.desired_state = 'success'");
           expect(sql).toContain("gate.decision->>'status' = 'success'");
           expect(sql).toContain("runs.status = 'succeeded'");
           expect(sql).toContain('runs.result_digest = completion.content_digest');

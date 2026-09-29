@@ -449,6 +449,19 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     });
     expect((await repository.getRunStatus(runId, 2))?.receipt).toBeUndefined();
 
+    await client.query('UPDATE review_gate_attempts SET current_attempt = false WHERE run_id = $1', [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query('UPDATE review_gate_attempts SET current_attempt = true WHERE run_id = $1', [runId]);
+
+    await client.query("UPDATE review_gate_attempts SET creation_state = 'creating', check_id = NULL WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_gate_attempts SET creation_state = 'bound', check_id = 98 WHERE run_id = $1", [runId]);
+
+    await client.query("UPDATE review_gate_attempts SET desired_state = 'failure' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
+    await client.query("UPDATE review_gate_attempts SET desired_state = 'success' WHERE run_id = $1", [runId]);
+    expect((await repository.getRunStatus(runId, 1))?.receipt).toBeDefined();
+
     await client.query(`UPDATE review_gate_attempts SET worker_result_digest = $2
       WHERE run_id = $1`, [runId, '0'.repeat(64)]);
     expect((await repository.getRunStatus(runId, 1))?.receipt).toBeUndefined();
