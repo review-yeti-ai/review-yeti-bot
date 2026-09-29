@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -300,6 +301,32 @@ type PublishingConfig struct {
 // EnableContinuationsEnv controls whether review continuations are enabled (REL-1160).
 const EnableContinuationsEnv = "REVIEW_YETI_ENABLE_CONTINUATIONS"
 
+// IsContinuationsEnabled reports whether streaming continuations are enabled for the repository.
+// Empty, "false", "0", or "off" disables continuations.
+// "true", "1", "on", or "all" enables continuations for all repositories.
+// A non-boolean string is interpreted as a comma- or space-separated allowlist of repository names.
+func IsContinuationsEnabled(config string, repo string) bool {
+	raw := strings.TrimSpace(strings.ToLower(config))
+	if raw == "" || raw == "false" || raw == "0" || raw == "off" {
+		return false
+	}
+	if raw == "true" || raw == "1" || raw == "on" || raw == "all" {
+		return true
+	}
+	target := strings.TrimSpace(strings.ToLower(repo))
+	if target == "" {
+		return false
+	}
+	for _, entry := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || unicode.IsSpace(r)
+	}) {
+		if entry == target {
+			return true
+		}
+	}
+	return false
+}
+
 // WorkerMetricsEndpointEnv is the worker's metrics push endpoint (REL-1104,
 // src/telemetry/metrics.ts WORKER_METRICS_ENDPOINT_ENV).
 const WorkerMetricsEndpointEnv = "REVIEW_YETI_WORKER_METRICS_ENDPOINT"
@@ -435,6 +462,11 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 	}
 	if phase == "" && review.Labels != nil {
 		phase = review.Labels[JobPhaseLabel]
+	}
+	if phase == "" && spec.PublicationMode == PublicationModeAppGate && spec.QualificationProfile == "" {
+		if IsContinuationsEnabled(input.Publishing.EnableContinuations, spec.Repo) {
+			phase = JobPhasePrep
+		}
 	}
 	if phase != "" {
 		labels[JobPhaseLabel] = phase
@@ -833,6 +865,11 @@ func validateInput(input Input) error {
 	}
 	if phase == "" && review.Labels != nil {
 		phase = review.Labels[JobPhaseLabel]
+	}
+	if phase == "" && spec.PublicationMode == PublicationModeAppGate && spec.QualificationProfile == "" {
+		if IsContinuationsEnabled(input.Publishing.EnableContinuations, spec.Repo) {
+			phase = JobPhasePrep
+		}
 	}
 	suffix := "-worker"
 	if phase == JobPhaseContinuation {
