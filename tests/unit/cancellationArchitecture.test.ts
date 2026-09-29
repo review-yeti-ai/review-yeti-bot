@@ -309,6 +309,56 @@ describe('Two-Tier Cancellation Architecture', () => {
       expect(poller.isCurrentHead()).toBe(true);
       expect(onSuperseded).not.toHaveBeenCalled();
     });
+
+    it('stops polling and does not trigger onSuperseded when run status is succeeded', async () => {
+      const onSuperseded = vi.fn();
+      const mockFetch = vi.fn(async () => ({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          current: false,
+          status: 'succeeded',
+          cancelRequested: false,
+          isCurrentHead: true,
+        }),
+      })) as any;
+
+      const poller = new WorkerStatusPoller({
+        statusUrl: 'https://dispatch.local/api/dispatch/runs/run_1/attempts/1/status',
+        bearerToken: 'token123',
+        fetch: mockFetch,
+        onSuperseded,
+      });
+
+      const body = await poller.pollOnce();
+      expect(body?.status).toBe('succeeded');
+      expect(onSuperseded).not.toHaveBeenCalled();
+    });
+
+    it('stops polling and does not trigger onSuperseded when run status is failed', async () => {
+      const onSuperseded = vi.fn();
+      const mockFetch = vi.fn(async () => ({
+        status: 200,
+        ok: true,
+        json: async () => ({
+          current: false,
+          status: 'failed',
+          cancelRequested: false,
+          isCurrentHead: true,
+        }),
+      })) as any;
+
+      const poller = new WorkerStatusPoller({
+        statusUrl: 'https://dispatch.local/api/dispatch/runs/run_1/attempts/1/status',
+        bearerToken: 'token123',
+        fetch: mockFetch,
+        onSuperseded,
+      });
+
+      const body = await poller.pollOnce();
+      expect(body?.status).toBe('failed');
+      expect(onSuperseded).not.toHaveBeenCalled();
+    });
   });
 
   describe('Publishing review worker neutral check on superseded', () => {
