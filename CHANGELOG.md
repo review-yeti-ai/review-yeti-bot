@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.95.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.94.1...v1.95.0) (2026-09-29)
+
+
+### Features
+
+* **mcp:** expose review run timing on get_review_status ([#1099](https://github.com/review-yeti-ai/review-yeti-bot/issues/1099)) ([caaf714](https://github.com/review-yeti-ai/review-yeti-bot/commit/caaf7140d7d8f36443250836cc2b4e8287da0eb9))
+
+
+### Bug Fixes
+
+* **mcp:** use shared terminal deadline for review trigger ([#1104](https://github.com/review-yeti-ai/review-yeti-bot/issues/1104)) ([e7f836f](https://github.com/review-yeti-ai/review-yeti-bot/commit/e7f836fc0a348875920a494738f5c373d7ebe74a))
+
 ## [1.94.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.94.0...v1.94.1) (2026-09-28)
 
 
