@@ -834,6 +834,26 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
     });
 
     it.each([
+      { label: 'missing', repositoryId: null },
+      { label: 'non-positive', repositoryId: 0 },
+    ])('TC-CANC-007: Fails closed when the active run repository identity is $label', async ({ repositoryId }) => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [{ run_id: 'run_to_cancel', repository_id: repositoryId, attempt: 1, status: 'running' }],
+      });
+
+      const cancelRunsForPullRequest = vi.fn();
+      const tool = createCancelReviewTool({
+        queryableDatabase: mockDb,
+        cancellationRepository: { cancelRunsForPullRequest },
+      });
+
+      await expect(tool.execute({
+        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
+      })).rejects.toThrow(/active run repository identity is invalid/);
+      expect(cancelRunsForPullRequest).not.toHaveBeenCalled();
+    });
+
+    it.each([
       { label: 'no cancelled run ids', cancelledRunIds: [] },
       { label: 'a different cancelled run id', cancelledRunIds: ['run_for_another_pr'] },
     ])('TC-CANC-005: Fails closed when the repository reports $label', async ({ cancelledRunIds }) => {
