@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.97.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.11...v1.97.12) (2026-09-29)
+
+
+### Bug Fixes
+
+* **dispatch:** expose receipts for terminal gate verdicts and reorder worker supersession check ([#1138](https://github.com/review-yeti-ai/review-yeti-bot/issues/1138)) ([40fc5da](https://github.com/review-yeti-ai/review-yeti-bot/commit/40fc5da5e56da1972a768e35abaa3a5bdfa05497))
+
 ## [1.97.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.10...v1.97.11) (2026-09-29)
 
 
