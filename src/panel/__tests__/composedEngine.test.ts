@@ -117,6 +117,40 @@ describe('executeComposedReview', () => {
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual([]);
   });
 
+
+  it.each(['read_file', 'view_file'])('REL-1204 exact-source shared composed loop uses %s on a carried file', async (tool) => {
+    const path = 'src/auth/guard.ts';
+    const source = 'CURRENT_COMPOSED_HEAD_SOURCE\nexport function guard() { return false; }\nCURRENT_COMPOSED_TAIL';
+    const readFile = vi.fn().mockResolvedValue(source);
+    let workCalls = 0;
+    let observedToolResult = '';
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: [path], question: 'Read current guard source.', rationale: 'Carried file needs exact source.' },
+      ] }));
+      workCalls += 1;
+      if (workCalls === 1) return fakeResponse(JSON.stringify({ tool, args: { path } }));
+      observedToolResult = JSON.stringify(payload.messages.filter((message: any) => String(message.content).includes('[PI_TOOL_RESULT]')));
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(),
+      changedFiles: [{ path, patch: '[carried-forward: exact-head content available via tools]' }],
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      repoFileProvider: { readFile, findFiles: vi.fn().mockResolvedValue([path]) },
+    });
+    expect({ sourceReads: readFile.mock.calls.length, observedToolResult }).toMatchObject({
+      sourceReads: 1, observedToolResult: expect.stringContaining('CURRENT_COMPOSED_HEAD_SOURCE'),
+    });
+    expect(readFile).toHaveBeenCalledExactlyOnceWith(path);
+    expect(observedToolResult).toContain('CURRENT_COMPOSED_TAIL');
+    expect(observedToolResult).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+    expect(observedToolResult).not.toContain('[carried-forward:');
+    expect(workCalls).toBe(2);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
   const toolWire = JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts', nested: { lines: [1, 2] } } });
   const toolFence = `\`\`\`json\n${toolWire}\n\`\`\``;
   it.each([

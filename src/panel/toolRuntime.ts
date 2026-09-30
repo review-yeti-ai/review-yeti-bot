@@ -1,7 +1,7 @@
 /**
  * Read-only tool execution for the persona review loop.
  *
- * Extracted verbatim from `panelEngine.ts`'s `invoke()` tool-handling block (the
+ * Originally extracted from `panelEngine.ts`'s `invoke()` tool-handling block (the
  * `if (toolCall && toolCall.tool) { ... }` branch) so a future single-context review engine can
  * execute the exact same tools with the exact same semantics as the persona fan-out. The two
  * engines must never drift on tool behaviour -- if they did, a shadow comparison between engines
@@ -50,9 +50,8 @@ export interface ToolRuntimeResult {
 /**
  * Execute one read-only tool call and return its output plus scope envelope.
  *
- * Moved as-is from `panelEngine.ts`'s `invoke()`; `toolCall` and `options`/`changedFiles` are
- * reconstructed locally from the parameters so the body below is unmodified from its original
- * form.
+ * Shared by the persona and composed loops. Source reads use the exact-head provider;
+ * get_diff and no-provider fallbacks remain explicitly changed-patch scoped.
  */
 export async function runReadOnlyTool(
   toolName: string,
@@ -64,8 +63,6 @@ export async function runReadOnlyTool(
   const changedFiles = context.changedFiles;
 
   const tName = toolCall.tool;
-  // A leading './' or '/' would make the contents API return 404 for a file that exists (REL-1102).
-  const targetPath = normalizeRepoPath(String(toolCall.args?.path || toolCall.args?.filePath || ''));
   const searchQ = toolCall.args?.query || toolCall.args?.pattern || '';
 
   // Whitelist check: Code Reading, Context Searching, Dashboard MCPs, Zoekt, Fleet MCPs
@@ -159,72 +156,7 @@ export async function runReadOnlyTool(
 
     toolOutput = `Tool '${tName}' execution result:\n`;
     if (isCodeReading) {
-      const rawStart = toolCall.args?.startLine ?? toolCall.args?.start_line;
-      const rawEnd = toolCall.args?.endLine ?? toolCall.args?.end_line;
-      const reqStart = typeof rawStart === 'number' && Number.isFinite(rawStart) && rawStart > 0 ? Math.floor(rawStart) : undefined;
-      const reqEnd = typeof rawEnd === 'number' && Number.isFinite(rawEnd) && rawEnd > 0 ? Math.floor(rawEnd) : undefined;
-
-      const sliceLines = (text: string): { content: string; start: number; end: number; total: number; sliced: boolean } => {
-        const lines = text.split('\n');
-        const total = lines.length;
-        if (reqStart === undefined && reqEnd === undefined) {
-          return { content: text, start: 1, end: total, total, sliced: false };
-        }
-        const start = Math.max(1, Math.min(total, reqStart ?? 1));
-        const end = Math.max(start, Math.min(total, reqEnd ?? total));
-        return { content: lines.slice(start - 1, end).join('\n'), start, end, total, sliced: true };
-      };
-
-      const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
-      if (matched) {
-        toolScope = 'changed-patches-only';
-        isExhaustive = false;
-        const maxChars = resolveMaxFileDiffChars();
-        if (isOversizedFileDiff(matched, maxChars)) {
-          toolOutput += `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`;
-        } else {
-          const raw = matched.patch || matched.content || 'File present in PR scope.';
-          const sliced = sliceLines(raw);
-          const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
-          const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
-          const prefixNote = sliced.sliced
-            ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
-            : '';
-          toolOutput += truncated
-            ? `${prefixNote}Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
-            : `${prefixNote}${shown}`;
-        }
-      } else if (options?.repoFileProvider) {
-        try {
-          const content = await raceWithPanelAbort(options.repoFileProvider.readFile(targetPath), options?.signal);
-          if (content !== null) {
-            toolScope = 'full-repository';
-            isExhaustive = true;
-            const sliced = sliceLines(content);
-            const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
-            const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
-            const prefixNote = sliced.sliced
-              ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
-              : '';
-            toolOutput += `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `
-              + (truncated
-                ? `${prefixNote}Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters:\n${shown}\n[... content truncated: ${sliced.content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
-                : `${prefixNote}Full current content:\n${shown}`);
-          } else {
-            toolScope = 'full-repository';
-            toolOutput += await describeUnreadablePath(targetPath, options.repoFileProvider, options?.signal)
-              .then((d) => { isExhaustive = d.exhaustive; return d.text; });
-          }
-        } catch (err: any) {
-          toolScope = 'full-repository';
-          isExhaustive = false;
-          toolOutput += `Full-repository read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
-        }
-      } else {
-        toolScope = 'changed-patches-only';
-        isExhaustive = false;
-        toolOutput += `File '${targetPath}' is not part of this PR's diff. This tool's search scope here is changed files only (no full-repository access is wired for this run); the file may still exist elsewhere in the repository. Do not report it as missing, unconfirmed, or unverifiable from this result alone.`;
-      }
+      ({ toolOutput, toolScope, isExhaustive } = await runCodeReadingTool(tName, toolCall.args, context));
     } else if (tName === 'search_code' || tName === 'grep_search') {
       const hits = changedFiles.filter((f: any) => (f.patch || f.content || '').toLowerCase().includes(searchQ.toLowerCase()));
       toolScope = 'changed-patches-only';
@@ -351,6 +283,102 @@ export async function runReadOnlyTool(
   throwIfPanelAborted(options?.signal);
 
   return { toolOutput, toolScope, isExhaustive };
+}
+
+/** Resolve a single exact path, without the substring semantics of find_files. */
+function resolveCodeReadPath(args: any): string | null {
+  const supplied = [args?.path, args?.filePath].filter((value) => value !== undefined);
+  if (supplied.length === 0 || supplied.some((value) => typeof value !== 'string')) return null;
+  const paths = supplied.map((value) => normalizeRepoPath(value));
+  const path = paths[0];
+  if (!path || paths.some((value) => value !== path)
+    || /[\u0000-\u001f\u007f\\]/u.test(path)
+    || path.split('/').some((segment) => segment === '.' || segment === '..')) return null;
+  return path;
+}
+
+/** Source line numbers are applied to source; patch fallback line numbers stay patch-scoped. */
+function sliceCodeReadLines(text: string, args: any): { content: string; start: number; end: number; total: number; sliced: boolean } {
+  const rawStart = args?.startLine ?? args?.start_line;
+  const rawEnd = args?.endLine ?? args?.end_line;
+  const reqStart = typeof rawStart === 'number' && Number.isFinite(rawStart) && rawStart > 0 ? Math.floor(rawStart) : undefined;
+  const reqEnd = typeof rawEnd === 'number' && Number.isFinite(rawEnd) && rawEnd > 0 ? Math.floor(rawEnd) : undefined;
+  const lines = text.split('\n');
+  const total = lines.length;
+  if (reqStart === undefined && reqEnd === undefined) return { content: text, start: 1, end: total, total, sliced: false };
+  const start = Math.max(1, Math.min(total, reqStart ?? 1));
+  const end = Math.max(start, Math.min(total, reqEnd ?? total));
+  return { content: lines.slice(start - 1, end).join('\n'), start, end, total, sliced: true };
+}
+
+/** Keep source reads and changed-patch reads distinct, without bypassing excluded patches. */
+async function runCodeReadingTool(tName: string, args: any, context: ToolRuntimeContext): Promise<ToolRuntimeResult> {
+  throwIfPanelAborted(context.signal);
+  const targetPath = resolveCodeReadPath(args);
+  const patchScope = { toolScope: 'changed-patches-only', isExhaustive: false };
+  if (targetPath === null) return {
+    ...patchScope,
+    toolOutput: `Tool '${tName}' execution rejected: Expected one exact repository path in 'path' or 'filePath'.`,
+  };
+  const matches = context.changedFiles.filter((file) => typeof file.path === 'string' && normalizeRepoPath(file.path) === targetPath);
+  if (matches.length > 1) return {
+    ...patchScope,
+    toolOutput: `Tool '${tName}' execution rejected: Ambiguous changed-file path '${targetPath}'; request one exact repository path.`,
+  };
+  const matched = matches[0];
+  const prefix = `Tool '${tName}' execution result:\n`;
+  const maxChars = resolveMaxFileDiffChars();
+  if (matched && isOversizedFileDiff(matched, maxChars)) return {
+    ...patchScope,
+    toolOutput: prefix + `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`,
+  };
+
+  if (tName === 'get_diff' || !context.repoFileProvider) {
+    if (!matched) return {
+      ...patchScope,
+      toolOutput: prefix + (tName === 'get_diff'
+        ? `No changed patch for '${targetPath}' is available in this PR's diff. get_diff inspects changed patches only, not current repository source; this is not evidence the file is missing.`
+        : `File '${targetPath}' is not part of this PR's diff. This tool's search scope here is changed files only (no full-repository access is wired for this run); the file may still exist elsewhere in the repository. Do not report it as missing, unconfirmed, or unverifiable from this result alone.`),
+    };
+    const sliced = sliceCodeReadLines(matched.patch || matched.content || 'File present in PR scope.', args);
+    const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+    const shown = sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS);
+    const range = sliced.sliced ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n` : '';
+    const provenance = tName === 'get_diff'
+      ? 'Changed patch only; this is not full current source.\n'
+      : 'Changed patch only (no full-repository access is wired for this run); this is not full current source.\n';
+    return { ...patchScope, toolOutput: prefix + provenance + range + (truncated
+      ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
+      : shown) };
+  }
+
+  try {
+    const content = await raceWithPanelAbort(context.repoFileProvider.readFile(targetPath), context.signal);
+    if (content === null) {
+      const description = await describeUnreadablePath(targetPath, context.repoFileProvider, context.signal);
+      return { toolOutput: prefix + description.text, toolScope: 'full-repository', isExhaustive: description.exhaustive };
+    }
+    const sliced = sliceCodeReadLines(content, args);
+    const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+    const shown = sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS);
+    const range = sliced.sliced ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n` : '';
+    const provenance = matched
+      ? `File '${targetPath}' is part of this PR's diff and exists in the repository at the reviewed head. `
+      : `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `;
+    return {
+      toolScope: 'full-repository',
+      isExhaustive: !truncated && sliced.start === 1 && sliced.end === sliced.total,
+      toolOutput: prefix + provenance + range + (truncated
+        ? `Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters:\n${shown}\n[... content truncated: ${sliced.content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
+        : `${sliced.sliced ? 'Current source lines' : 'Full current content'}:\n${shown}`),
+    };
+  } catch (err: any) {
+    throwIfPanelAborted(context.signal);
+    return {
+      toolScope: 'full-repository', isExhaustive: false,
+      toolOutput: prefix + `Full-repository read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`,
+    };
+  }
 }
 
 /**
