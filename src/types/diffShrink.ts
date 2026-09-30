@@ -44,14 +44,16 @@ export interface DiffShrinkDisclosure {
   estimatedTokensAfter: number;
   /**
    * REL-1141: changed files the lanes did NOT receive in full for reasons
-   * outside diff shrinking (hidden by the review filter, summarized, truncated,
-   * or patch unavailable), from the same applicability decision. Set by
-   * `resolveShrunkReviewApplicability`; absent when the caller had no
-   * decision. The summary claims "every change was sent in full" only when it
+   * outside diff shrinking (hidden, summarized, truncated, unavailable, or
+   * reduced by the review budget). The applicability snapshot is reconciled
+   * against actually executed budget packs; budget signatures/listings remain
+   * distinct from oversized-lockfile summaries. Absent without a decision.
+   * The summary claims "every change was sent in full" only when it
    * is present and empty.
    */
   notSentInFull?: Array<{ path: string; why: NotSentInFullReason }>;
 }
 
-export type NotSentInFullReason = 'filtered' | 'summarized' | 'truncated' | 'unavailable' | 'unreviewable';
+export type NotSentInFullReason = 'filtered' | 'summarized' | 'truncated' | 'unavailable' | 'unreviewable'
+  | 'budget-signatures' | 'budget-listed';
 

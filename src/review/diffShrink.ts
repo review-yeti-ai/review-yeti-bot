@@ -560,6 +560,8 @@ export function renderDiffShrinkSummary(disclosure: DiffShrinkDisclosure | null)
       truncated: 'truncated',
       unavailable: 'patch unavailable',
       unreviewable: 'not reviewed',
+      'budget-signatures': 'review budget: signatures only',
+      'budget-listed': 'review budget: not deeply reviewed',
     };
     lines.push(`- ${touched === 0 ? 'No file was shrunk, but not' : 'Not'} every change was sent in full `
       + `(${notSentInFull.length}): ${listed(notSentInFull, (entry) => `${code(entry.path)} (${label[entry.why]})`)}`);
