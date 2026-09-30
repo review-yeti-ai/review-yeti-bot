@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { WorkerReviewEvidence } from '../review/workerReviewCompletion';
-import { sha256 } from '../review/reviewCore';
+import { canonicalJson, sha256 } from '../review/reviewCore';
 import { deriveReviewRunId } from '../review/reviewAdmission';
 import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
 import type { RunRetryContext } from '../review/recoverablePanelRetry';
@@ -43,6 +43,7 @@ import {
 import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
 import { loadIncompleteP2RecoveryContext } from './incompleteP2Recovery';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../review/incompleteP2RecoveryLimits';
+import { isTrustedMcpStaticAdminRecoveryOrigin } from '../review/mcpStaticAdminRecoveryOrigin';
 
 interface QueryResult {
   rows: any[];
@@ -59,6 +60,81 @@ interface TransactionClient extends Queryable {
 interface ConnectionPool {
   connect(): Promise<TransactionClient>;
   query?(text: string, values?: unknown[]): Promise<QueryResult>;
+}
+
+interface McpIncompleteP2RecoverySnapshot {
+  expectedGeneration: number;
+  attempt: number;
+  runStateDigest: string;
+  outboxStateDigest: string;
+}
+
+function recoveryEvidenceMatches(existingValue: unknown, incoming: ReviewGenerationRecoveryEvidence): boolean {
+  const existing = typeof existingValue === 'string'
+    ? (() => { try { return JSON.parse(existingValue) as Record<string, any>; } catch { return null; } })()
+    : existingValue as Record<string, any> | null;
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)
+    || existing.generation !== incoming.generation || existing.checkId !== incoming.checkId
+    || existing.externalId !== incoming.externalId || existing.conclusion !== incoming.conclusion
+    || existing.title !== incoming.title) return false;
+
+  const priorRoster = existing.legacyIncompleteRoster;
+  const currentRoster = incoming.legacyIncompleteRoster;
+  if (priorRoster === undefined) return currentRoster === undefined;
+  if (!priorRoster || typeof priorRoster !== 'object' || !currentRoster
+    || priorRoster.workerSummary !== currentRoster.workerSummary
+    || priorRoster.workerCompletedAt !== currentRoster.workerCompletedAt
+    || (priorRoster.workerStartedAt !== undefined
+      && priorRoster.workerStartedAt !== currentRoster.workerStartedAt)
+    || (priorRoster.nextWorkerStartedAt !== undefined
+      && priorRoster.nextWorkerStartedAt !== currentRoster.nextWorkerStartedAt)
+    || !Array.isArray(priorRoster.gateChecks) || !Array.isArray(currentRoster.gateChecks)) return false;
+
+  // A later authoritative App read may add subsequent Gate checks and the
+  // next-worker boundary, but every previously retained Gate must remain
+  // byte-equivalent in the new evidence. The persisted receipt is never
+  // rewritten with that later evidence.
+  return priorRoster.gateChecks.every((priorGate: unknown) => {
+    const priorId = priorGate && typeof priorGate === 'object' && !Array.isArray(priorGate)
+      ? (priorGate as Record<string, unknown>).id : undefined;
+    return currentRoster.gateChecks.some((currentGate: unknown) => {
+      const currentId = currentGate && typeof currentGate === 'object' && !Array.isArray(currentGate)
+        ? (currentGate as Record<string, unknown>).id : undefined;
+      return currentId === priorId && canonicalJson(currentGate) === canonicalJson(priorGate);
+    });
+  });
+}
+
+async function persistGenerationRecoveryEvidence(
+  client: Queryable,
+  runId: string,
+  evidence: ReviewGenerationRecoveryEvidence,
+  receivedAt: number,
+  expectedGeneration: number,
+): Promise<void> {
+  const inserted = await client.query(
+    `INSERT INTO review_generation_recoveries
+       (run_id, recovered_generation, worker_check_id, external_id, conclusion, title, evidence, recovered_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, to_timestamp($8 / 1000.0))
+     ON CONFLICT (run_id, recovered_generation) DO NOTHING
+     RETURNING run_id`,
+    [runId, evidence.generation, evidence.checkId, evidence.externalId,
+      evidence.conclusion, evidence.title, JSON.stringify(evidence), receivedAt],
+  );
+  if (inserted.rows.length > 0) return;
+
+  const existing = (await client.query(
+    `SELECT worker_check_id, external_id, conclusion, title, evidence
+       FROM review_generation_recoveries
+      WHERE run_id = $1 AND recovered_generation = $2
+      FOR UPDATE`,
+    [runId, evidence.generation],
+  )).rows[0];
+  if (!existing || Number(existing.worker_check_id) !== evidence.checkId
+    || existing.external_id !== evidence.externalId || existing.conclusion !== evidence.conclusion
+    || existing.title !== evidence.title || !recoveryEvidenceMatches(existing.evidence, evidence)) {
+    throw new ReviewGenerationConflictError(expectedGeneration, evidence.generation);
+  }
 }
 
 /** Prefix for the bounded worker failure classification persisted in error_text. */
@@ -215,16 +291,33 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
     && (!Number.isSafeInteger(input.retryAfterExecutionAttempt) || input.retryAfterExecutionAttempt <= 0)) {
     throw new Error('retry-after execution attempt must be a positive integer');
   }
-  if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined) {
+  if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined
+    && input.incompleteP2RecoveryOrigin === undefined) {
     throw new Error('retry requested requires a retry-after execution attempt');
   }
+  if (input.incompleteP2RecoveryOrigin !== undefined
+    && (input.incompleteP2Recovery !== true
+      || !isTrustedMcpStaticAdminRecoveryOrigin(input.incompleteP2RecoveryOrigin)
+      || input.centralActionDispatch !== false
+      || input.eventName !== 'mcp.trigger_review'
+      || input.publicationMode !== 'app-gate'
+      || !input.authoritativeGate || input.retryRequested !== true
+      || input.expectedGeneration !== undefined || input.retryAfterExecutionAttempt !== undefined
+      || input.reviewEngine !== undefined
+      || input.incompleteP2RecoveryOrigin.authorizedOwner.toLowerCase() !== input.identity.owner.toLowerCase()
+      || input.incompleteP2RecoveryOrigin.authorizedRepo.toLowerCase() !== input.identity.repo.toLowerCase())) {
+    throw new Error('MCP incomplete P2 recovery requires verified static-admin repository admission');
+  }
   if (input.incompleteP2Recovery !== undefined && (input.incompleteP2Recovery !== true
-    || !input.centralActionDispatch || input.publicationMode !== 'app-gate'
-    || !input.authoritativeGate || input.retryRequested !== true
-    || input.expectedGeneration === undefined || input.expectedGeneration < 2
-    || input.expectedGeneration > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
-    || input.retryAfterExecutionAttempt !== input.expectedGeneration - 1)) {
+    || input.publicationMode !== 'app-gate' || !input.authoritativeGate || input.retryRequested !== true
+    || (input.incompleteP2RecoveryOrigin === undefined
+      && (!input.centralActionDispatch || input.expectedGeneration === undefined || input.expectedGeneration < 2
+        || input.expectedGeneration > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
+        || input.retryAfterExecutionAttempt !== input.expectedGeneration - 1)))) {
     throw new Error('Incomplete P2 recovery requires authoritative exact-generation admission');
+  }
+  if (input.incompleteP2RecoveryOrigin !== undefined && input.incompleteP2Recovery !== true) {
+    throw new Error('Incomplete P2 recovery origin is invalid without a recovery candidate');
   }
   if (input.availableAt !== undefined
     && (!Number.isSafeInteger(input.availableAt) || input.availableAt < input.receivedAt)) {
@@ -263,7 +356,10 @@ function generationRecoveryRequest(
   runId: string,
 ): ReviewGenerationRecoveryRequest {
   const expected = input.expectedGeneration;
-  if (!input.centralActionDispatch || input.publicationMode !== 'app-gate'
+  const trustedMcpRecovery = input.incompleteP2Recovery === true
+    && isTrustedMcpStaticAdminRecoveryOrigin(input.incompleteP2RecoveryOrigin)
+    && input.centralActionDispatch === false && input.eventName === 'mcp.trigger_review';
+  if ((!input.centralActionDispatch && !trustedMcpRecovery) || input.publicationMode !== 'app-gate'
     || !input.authoritativeGate || input.retryRequested !== true
     || expected === undefined || expected < 2
     || input.retryAfterExecutionAttempt !== expected - 1) {
@@ -696,16 +792,131 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }
   }
 
-  async admit(input: ReviewAdmissionInput): Promise<ReviewAdmission> {
-    validateAdmission(input, this.options.requireExpectedGeneration === true);
+  private async readMcpIncompleteP2RecoverySnapshot(
+    input: ReviewAdmissionInput,
+    runId: string,
+    lockRows: boolean,
+    queryable: Queryable = this.queryable,
+  ): Promise<McpIncompleteP2RecoverySnapshot> {
+    const deadline = performance.now() + this.admissionValidationTimeoutMs;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const query = queryable.query(
+        `SELECT runs.run_id, runs.identity_digest, runs.owner, runs.repo, runs.pr_number,
+                runs.publication_mode, runs.authoritative_gate_app_id, runs.attempt, runs.status,
+                runs.delivery_id, to_jsonb(runs) AS run_state,
+                outbox.delivery_id AS outbox_delivery_id,
+                outbox.execution_attempt AS outbox_execution_attempt,
+                outbox.status AS outbox_status,
+                (outbox.worker_token_digest IS NOT NULL OR outbox.projection_name IS NOT NULL)
+                  AS outbox_has_projection,
+                to_jsonb(outbox) AS outbox_state
+           FROM review_runs runs
+           JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+          WHERE runs.run_id = $1 AND runs.identity_digest = $2
+            AND runs.owner = $3 AND runs.repo = $4 AND runs.pr_number = $5
+          ${lockRows ? 'FOR UPDATE OF runs, outbox' : ''}`,
+        [runId, sha256(input.identity), input.identity.owner, input.identity.repo, input.identity.prNumber],
+      );
+      const result = await Promise.race([
+        query,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('MCP recovery snapshot unavailable')),
+            this.admissionValidationTimeoutMs);
+        }),
+      ]);
+      if (performance.now() >= deadline || result.rows.length !== 1) throw new Error('snapshot unavailable');
+      const row = result.rows[0];
+      const attempt = Number(row.attempt);
+      const expectedGeneration = attempt + 2;
+      if (row.run_id !== runId || row.identity_digest !== sha256(input.identity)
+        || row.owner !== input.identity.owner || row.repo !== input.identity.repo
+        || Number(row.pr_number) !== input.identity.prNumber
+        || row.publication_mode !== 'app-gate'
+        || Number(row.authoritative_gate_app_id) !== input.authoritativeGate?.expectedAppId
+        || row.status !== 'failed'
+        || row.outbox_status !== 'projected'
+        || Number(row.outbox_execution_attempt) !== attempt
+        || row.outbox_delivery_id !== row.delivery_id
+        || row.outbox_has_projection !== true
+        || !Number.isSafeInteger(attempt) || expectedGeneration < 2
+        || expectedGeneration > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
+        || row.run_state == null || row.outbox_state == null) {
+        throw new Error('snapshot unavailable');
+      }
+      return {
+        expectedGeneration,
+        attempt,
+        runStateDigest: sha256(row.run_state),
+        outboxStateDigest: sha256(row.outbox_state),
+      };
+    } catch {
+      throw new Error('MCP incomplete P2 recovery state is unavailable or no longer current');
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private async deriveMcpIncompleteP2RecoveryGeneration(
+    input: ReviewAdmissionInput,
+    runId: string,
+  ): Promise<{ input: ReviewAdmissionInput; snapshot: McpIncompleteP2RecoverySnapshot }> {
+    const snapshot = await this.readMcpIncompleteP2RecoverySnapshot(input, runId, false);
+    const derivedInput: ReviewAdmissionInput = {
+      ...input,
+      expectedGeneration: snapshot.expectedGeneration,
+      retryAfterExecutionAttempt: snapshot.expectedGeneration - 1,
+    };
+    generationRecoveryRequest(derivedInput, runId);
+    return { input: derivedInput, snapshot };
+  }
+
+  private async assertMcpIncompleteP2RecoverySnapshotCurrent(
+    client: Queryable,
+    input: ReviewAdmissionInput,
+    runId: string,
+    snapshot: McpIncompleteP2RecoverySnapshot,
+  ): Promise<void> {
+    // Reuse the same bounded checks while locking both durable rows. An active,
+    // superseded, or otherwise changed run/outbox can never consume the old App
+    // evidence snapshot.
+    const locked = await this.readMcpIncompleteP2RecoverySnapshot(input, runId, true,
+      { query: client.query.bind(client) });
+    if (locked.attempt !== snapshot.attempt
+      || locked.expectedGeneration !== snapshot.expectedGeneration
+      || locked.runStateDigest !== snapshot.runStateDigest
+      || locked.outboxStateDigest !== snapshot.outboxStateDigest) {
+      throw new Error('MCP incomplete P2 recovery state changed before admission');
+    }
+  }
+
+  async admit(requestedInput: ReviewAdmissionInput): Promise<ReviewAdmission> {
+    validateAdmission(requestedInput, this.options.requireExpectedGeneration === true);
+    let input = requestedInput;
     if (input.authoritativeGate && !this.options.validateAuthoritativeAdmission) {
       throw new Error('Authoritative admission validator is required');
     }
     const identityDigest = sha256(input.identity);
     const runId = deriveReviewRunId(input.identity);
     let preparedGenerationRecovery: ReviewGenerationRecoveryEvidence[] = [];
+    let mcpRecoverySnapshot: McpIncompleteP2RecoverySnapshot | undefined;
+    if (input.incompleteP2RecoveryOrigin !== undefined) {
+      // Do the network read before opening a transaction, then bind it to this
+      // exact run/outbox snapshot under the PR lock below. The expected
+      // generation is service-derived and never accepted from MCP arguments.
+      await this.validateAuthoritativeAdmission(input);
+      const derived = await this.deriveMcpIncompleteP2RecoveryGeneration(input, runId);
+      input = derived.input;
+      mcpRecoverySnapshot = derived.snapshot;
+      if (!this.options.resolveGenerationRecovery) {
+        throw new Error('Review generation recovery evidence is unavailable');
+      }
+      preparedGenerationRecovery = await this.resolveGenerationRecovery(input);
+      validateGenerationRecovery(input, runId, preparedGenerationRecovery);
+    }
     if ((input.expectedGeneration ?? 1) > 1
       && input.retryRequested === true
+      && input.incompleteP2RecoveryOrigin === undefined
       && this.options.resolveGenerationRecovery) {
       generationRecoveryRequest(input, runId);
       // A durable run row alone does not prove that the outbox/projection state
@@ -729,7 +940,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         await savePreparedPublishingPolicy(client, input.authoritativeGate.prepared);
       }
       let generationRecovery: ReviewGenerationRecoveryEvidence[] = [];
-      if ((input.expectedGeneration ?? 1) > 1 && input.retryRequested === true) {
+      if (mcpRecoverySnapshot) {
+        await this.assertMcpIncompleteP2RecoverySnapshotCurrent(client, input, runId, mcpRecoverySnapshot);
+        generationRecovery = preparedGenerationRecovery;
+      } else if ((input.expectedGeneration ?? 1) > 1 && input.retryRequested === true) {
         const existingIdentity = await client.query(
           'SELECT attempt FROM review_runs WHERE identity_digest = $1 FOR UPDATE',
           [identityDigest],
@@ -1070,13 +1284,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         [runRow.run_id, input.dispatchPriority === 'expedited' ? 1 : 0, input.receivedAt],
       );
       for (const evidence of generationRecovery) {
-        await client.query(
-          `INSERT INTO review_generation_recoveries
-             (run_id, recovered_generation, worker_check_id, external_id, conclusion, title, evidence, recovered_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, to_timestamp($8 / 1000.0))`,
-          [runRow.run_id, evidence.generation, evidence.checkId, evidence.externalId,
-            evidence.conclusion, evidence.title, JSON.stringify(evidence), input.receivedAt],
-        );
+        await persistGenerationRecoveryEvidence(client, String(runRow.run_id), evidence,
+          input.receivedAt, input.expectedGeneration ?? evidence.generation);
       }
       if (input.authoritativeGate && ['queued', 'running'].includes(runRow.status)) {
         const gate = await PostgresReviewGateRepository.reserveInTransaction(
@@ -1084,7 +1293,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         if (!gate) throw new Error('Authoritative dispatch has no durable gate reservation');
       }
       await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.admission', input.receivedAt,
-        { stage: 'admission', policy_digest: input.effectivePolicyDigest || input.identity.configDigest });
+        { stage: 'admission', policy_digest: input.effectivePolicyDigest || input.identity.configDigest,
+          ...(input.incompleteP2RecoveryOrigin ? {
+            admission_origin: input.incompleteP2RecoveryOrigin.kind,
+            actor: input.incompleteP2RecoveryOrigin.callerId,
+          } : {}) });
       if (generationRecovery.length > 0) {
         await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.generation_reconciled', input.receivedAt,
           { stage: 'admission', retry_class: 'service_state_loss_reconciled',

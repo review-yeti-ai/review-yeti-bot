@@ -458,6 +458,19 @@ export async function loadIncompleteP2RecoveryContext(
     } catch { refuse(); }
     return null;
   }
+  if (!input.recoveryEvidence) {
+    // Receipts are append-only. The first attempt was persisted before its
+    // successor existed, so its Gate window has no upper boundary in that
+    // original row. Derive the boundary from the next immutable receipt's
+    // App-validated worker start time without rewriting either receipt.
+    for (let index = 0; index < recoveryEvidence.length - 1; index += 1) {
+      const current = recoveryEvidence[index].legacyIncompleteRoster;
+      const nextStartedAt = recoveryEvidence[index + 1].legacyIncompleteRoster?.workerStartedAt;
+      if (current && current.nextWorkerStartedAt === undefined && nextStartedAt !== undefined) {
+        current.nextWorkerStartedAt = nextStartedAt;
+      }
+    }
+  }
   // A P2 recovery chain may carry a zero-finding incomplete generation, but
   // every generation must be a validated incomplete-panel BLOCK so no other
   // failure class is accidentally folded into this context.

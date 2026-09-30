@@ -419,16 +419,36 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       };
       const externalId = deriveReviewGateExternalId(coordinates);
       // Supersession is a durable publication intent, not a best-effort PATCH.
+      // Keep a same-run, fully acknowledged failure Gate immutable as recovery
+      // evidence. Progress, success, pending failure and other-run checks still
+      // need the usual cancellation so a stale publication cannot survive.
       await client.query(`UPDATE review_gate_attempts SET current_attempt = false,
-        desired_state = 'cancelled', desired_version = desired_version + 1,
+        desired_state = CASE WHEN run_id = $5 AND desired_state = 'failure'
+            AND creation_state = 'bound' AND check_id IS NOT NULL
+            AND published_version >= desired_version
+          THEN desired_state ELSE 'cancelled' END,
+        desired_version = CASE WHEN run_id = $5 AND desired_state = 'failure'
+            AND creation_state = 'bound' AND check_id IS NOT NULL
+            AND published_version >= desired_version
+          THEN desired_version ELSE desired_version + 1 END,
         -- No external create has been attempted while reserved. Tombstone
         -- that intent locally; a late cancelled check must not be created after
         -- the newer same-head gate. Creating/bound intents still reconcile.
-        published_version = CASE WHEN creation_state = 'reserved'
+        published_version = CASE WHEN run_id = $5 AND desired_state = 'failure'
+            AND creation_state = 'bound' AND check_id IS NOT NULL
+            AND published_version >= desired_version
+          THEN published_version WHEN creation_state = 'reserved'
           THEN desired_version + 1 ELSE published_version END,
-        available_at = to_timestamp($4 / 1000.0), updated_at = to_timestamp($4 / 1000.0)
+        available_at = CASE WHEN run_id = $5 AND desired_state = 'failure'
+            AND creation_state = 'bound' AND check_id IS NOT NULL
+            AND published_version >= desired_version
+          THEN available_at ELSE to_timestamp($4 / 1000.0) END,
+        updated_at = CASE WHEN run_id = $5 AND desired_state = 'failure'
+            AND creation_state = 'bound' AND check_id IS NOT NULL
+            AND published_version >= desired_version
+          THEN updated_at ELSE to_timestamp($4 / 1000.0) END
         WHERE repository_id = $1 AND pr_number = $2 AND current_attempt AND attempt_id <> $3`,
-      [coordinates.repositoryId, coordinates.prNumber, coordinates.attemptId, now]);
+      [coordinates.repositoryId, coordinates.prNumber, coordinates.attemptId, now, runId]);
       const saved = await client.query(`INSERT INTO review_gate_attempts
         (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number,
          expected_app_id, coordinates, external_id, available_at, created_at, updated_at)
