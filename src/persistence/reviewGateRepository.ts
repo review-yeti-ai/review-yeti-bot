@@ -222,6 +222,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         identity: { owner: event.owner, repo: event.repo, prNumber: event.prNumber,
           headSha: event.headSha, baseSha: event.baseSha, configDigest: event.configDigest },
         policyDigest: event.policyDigest, expectedAppId: gate.expectedAppId,
+        expectedContextDigest: retainedDigest,
       });
       const retainedFindingsValid = retainedDigest === null
         ? event.result.incompleteP2Recovery === undefined

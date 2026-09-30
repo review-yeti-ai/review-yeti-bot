@@ -693,7 +693,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     ]));
   });
 
-  async function admittedLegacySupersession(legacySupersession = true) {
+  async function admittedLegacySupersession(legacySupersession = true, omitPersistedWorkerStart = false) {
     let proof: any;
     const { repository, client, gateRepository } = await createRepository({
       lifecycleEvents: 'enabled',
@@ -711,6 +711,13 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(admission.run.attempt).toBe(1);
     const marker = (admission.run.artifacts as Record<string, unknown>).incomplete_p2_recovery_digest;
     expect(marker).toMatch(/^[a-f0-9]{64}$/u);
+    if (omitPersistedWorkerStart) {
+      // Model the immutable receipt shape admitted by the older reader, which
+      // predates persistence of the actual App-owned worker start timestamp.
+      await client.query(`UPDATE review_generation_recoveries
+        SET evidence = evidence #- '{legacyIncompleteRoster,workerStartedAt}'
+        WHERE run_id = $1 AND recovered_generation = 1`, [seeded.run.runId]);
+    }
     // Replay the deployed 1.100.1 reservation's historical supersession write.
     // Admission has already verified and persisted the failure receipt; only
     // the publication intent changes, not its decision, evidence or archive.
@@ -780,17 +787,82 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(await snapshot()).toEqual(before);
   });
 
+  it('reads a marker-bound legacy missing-start receipt through real HTTP/PG after its historical Gate was cancelled', async () => {
+    const { client, seeded, marker, token } = await admittedLegacySupersession(true, true);
+    const snapshot = async () => ({
+      gates: (await client.query('SELECT * FROM review_gate_attempts ORDER BY review_generation')).rows,
+      archives: (await client.query('SELECT * FROM review_worker_completions')).rows,
+      ledger: (await client.query('SELECT * FROM review_generation_recoveries')).rows,
+      dispatch: await dispatchState(client, seeded.run.runId),
+    });
+    const before = await snapshot();
+    expect(before.ledger[0].evidence.legacyIncompleteRoster).not.toHaveProperty('workerStartedAt');
+    expect(before.gates[0]).toMatchObject({ current_attempt: false, desired_state: 'cancelled',
+      decision: { status: 'failure', reason: 'incomplete-review' } });
+
+    const read = await readRetainedOverRealHttp(seeded.run.runId, token);
+
+    expect(read.statuses).toEqual([200]);
+    expect(read.errorBodies).toEqual([]);
+    expect(read.context?.contextDigest).toBe(marker);
+    expect(read.context?.findings).toHaveLength(1);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it.each([
+    ['missing marker', `UPDATE review_runs SET artifacts = artifacts - 'incomplete_p2_recovery_digest'`],
+    ['mismatched marker', `UPDATE review_runs SET artifacts = jsonb_set(artifacts,
+      '{incomplete_p2_recovery_digest}', to_jsonb(repeat('0', 64)))`],
+  ])('refuses a persisted missing-start receipt over real HTTP/PG with a %s', async (_label, mutation) => {
+    const { client, seeded, token } = await admittedLegacySupersession(true, true);
+    await client.query(mutation);
+    const read = await readRetainedOverRealHttp(seeded.run.runId, token);
+    expect(read.statuses).toEqual([503]);
+    expect(read.context).toBeUndefined();
+    expect(read.error).toEqual(new Error('Retained findings unavailable'));
+  });
+
+  it('keeps fresh incomplete-P2 admission strict when the App proof omits workerStartedAt', async () => {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      lifecycleEvents: 'enabled',
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+    const { workerStartedAt: _oldStart, ...legacyRoster } = seeded.proof.legacyIncompleteRoster!;
+    proof = { ...seeded.proof, legacyIncompleteRoster: legacyRoster };
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = (await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count;
+
+    await expect(repository.admit(mcpRecoveryInput(`fresh-missing-start-${randomUUID()}`))).rejects.toThrow();
+
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count)
+      .toBe(deliveriesBefore);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count)
+      .toBe(0);
+  });
+
   it.each([
     ['lost marker', `UPDATE review_runs SET artifacts = '{}'::jsonb`],
     ['lost ledger and marker', `DELETE FROM review_generation_recoveries; UPDATE review_runs SET artifacts = '{}'::jsonb`],
     ['lost ledger/marker and malformed failure decision', `DELETE FROM review_generation_recoveries; UPDATE review_runs SET artifacts = '{}'::jsonb; UPDATE review_gate_attempts SET decision = jsonb_set(decision, '{status}', '"success"'::jsonb) WHERE execution_attempt = 1`],
     ['changed worker archive', `UPDATE review_worker_completions SET payload = jsonb_set(payload, '{result,personas,0,findings,0,title}', '"Changed"'::jsonb)`],
     ['changed Gate digest', `UPDATE review_gate_attempts SET worker_result_digest = repeat('0',64) WHERE execution_attempt = 1`],
+    ['stale Gate timestamp', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,gateChecks,0,completed_at}', '"2026-09-29T11:59:59Z"'::jsonb)`],
+    ['foreign Gate head', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,gateChecks,0,head_sha}', '"ffffffffffffffffffffffffffffffffffffffff"'::jsonb)`],
+    ['malformed present worker start', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,workerStartedAt}', '"not-an-app-timestamp"'::jsonb)`],
+    ['inverted present worker interval', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,workerStartedAt}', '"2026-09-29T12:00:01Z"'::jsonb)`],
     ['actual cancellation decision', `UPDATE review_gate_attempts SET decision = '{"status":"cancelled","eligible":false,"reason":"candidate-superseded"}'::jsonb WHERE execution_attempt = 1`],
     ['still-current cancelled Gate', `UPDATE review_gate_attempts SET current_attempt = false WHERE execution_attempt = 2; UPDATE review_gate_attempts SET current_attempt = true WHERE execution_attempt = 1`],
     ['wrong App binding', `UPDATE review_gate_attempts SET expected_app_id = 7 WHERE execution_attempt = 1`],
   ])('fails closed over real HTTP/PG after legacy supersession with %s', async (_label, mutation) => {
-    const { client, seeded, token } = await admittedLegacySupersession();
+    const { client, seeded, token } = await admittedLegacySupersession(true, true);
     await client.query(mutation);
     const read = await readRetainedOverRealHttp(seeded.run.runId, token);
     expect(read.statuses).toEqual([503]);

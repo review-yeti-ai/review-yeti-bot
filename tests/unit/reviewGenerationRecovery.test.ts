@@ -237,6 +237,20 @@ describe('Review Yeti worker-generation recovery ledger', () => {
     expect(selectIncompleteRecoveryGate(candidate, secondProof)?.id).toBe(gate2.id);
   });
 
+  it('keeps the generic App-ledger validator strict when the latest P2 proof lacks workerStartedAt', () => {
+    const candidate = request({ expectedGeneration: 2, incompleteP2Recovery: true });
+    const worker = incompleteWorkerCheck(1, 4, 3, { canonical: 1, raw: 1 },
+      '2026-09-24T18:28:50Z', '2026-09-24T18:28:56Z');
+    const gate = incompleteGateCheck(2_001, 4, 3, '2026-09-24T18:28:58Z');
+    const [proof] = evaluateReviewGenerationRecoveryLedger(candidate, [worker], [gate]);
+    const { workerStartedAt: _oldStart, ...legacyRoster } = proof.legacyIncompleteRoster!;
+
+    expect(() => validateReviewGenerationRecoveryEvidence(
+      candidate,
+      [{ ...proof, legacyIncompleteRoster: legacyRoster }],
+    )).toThrow(/generation recovery ledger/u);
+  });
+
   it.each([
     ['missing earlier Gate', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [gate2]],
     ['earlier Gate completed after the next worker started', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [
