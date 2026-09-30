@@ -108,6 +108,13 @@ import {
 import { normalizeRepositoryVisibility, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { logger } from '../utils/logger';
 import { FIND_FILES_TOOL_GUIDE, READ_FILE_TOOL_GUIDE } from './pathMatch';
+import {
+  findingCorrectionForCode,
+  findingRejectionCodeForCode,
+  safePublishingRejectionCode,
+  type InternalProviderProgress,
+  type PublishingProgressReporter,
+} from '../telemetry/publishingProgress';
 import type {
   ComposedTaskFailureDiagnostics,
   LaneAggregateUsage,
@@ -127,6 +134,8 @@ export interface ComposedReviewOptions {
   branch?: string;
   prNumber?: number;
   client: ReviewModelClient;
+  /** Optional publisher-owned diagnostics context; absent for local/direct engine callers. */
+  progress?: PublishingProgressReporter;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
   isCurrentHead?: () => boolean;
@@ -351,6 +360,7 @@ async function callTurn(params: {
   signal?: AbortSignal;
   turnNumber: number;
   kind: LaneTurnUsage['kind'];
+  internalProgress?: InternalProviderProgress;
   /** Absolute epoch ms the composed run must not sleep past. Undefined means unbounded. */
   deadlineAtMs?: number;
 }): Promise<TurnCallResult> {
@@ -384,6 +394,7 @@ async function callTurn(params: {
           inactivityTimeoutMs: params.inactivityTimeoutMs,
           ...(params.signal ? { signal: params.signal } : {}),
           ...(params.jobId ? { jobId: params.jobId } : {}),
+          ...(params.internalProgress ? { internalProgress: params.internalProgress } : {}),
           responseFormat: params.responseFormat,
         })),
         params.signal,
@@ -746,16 +757,47 @@ const TASK_CONTRACT_DIAGNOSTIC_REASONS: Record<TaskContractFailure, ComposedTask
   findings_contract: 'invalid_findings',
 };
 
+function composedTaskRejectionCode(reason: ComposedTaskFailureDiagnostics['reason']): 'budget_exhausted' | 'malformed_output' | 'findings_contract_invalid' | 'invalid_task_output' {
+  switch (reason) {
+    case 'total_turn_budget_exhausted': case 'task_turn_budget_exhausted': return 'budget_exhausted';
+    case 'non_json_task_result': return 'malformed_output';
+    case 'invalid_findings': return 'findings_contract_invalid';
+    default: return 'invalid_task_output';
+  }
+}
+
+function progressUsage(turnUsages: LaneTurnUsage[]): {
+  promptTokens: number; completionTokens: number; totalTokens: number; cachedTokens: number; costUSD: number;
+} {
+  const aggregate = sumAggregateUsage(turnUsages);
+  return {
+    promptTokens: aggregate.promptTokens,
+    completionTokens: aggregate.completionTokens,
+    totalTokens: aggregate.totalTokens,
+    cachedTokens: aggregate.cachedTokens,
+    costUSD: aggregate.costUSD,
+  };
+}
+
+/** Diagnostic lane labels are server-derived; model-produced task ids stay in review contracts. */
+function composedTaskDiagnosticLane(taskIndex: number): string {
+  return `composed-task-${taskIndex + 1}`;
+}
+
 /** Only controller-owned reason codes reach failure receipts; provider text is never echoed. */
 function buildTaskFinalizationDirective(
   task: ReviewTask,
   expectedNonce: string,
-  recovery?: { kind: 'correction' | 'fresh'; reason: TaskContractFailure },
+  recovery?: { kind: 'correction' | 'fresh'; reason: TaskContractFailure; findingCorrectionCode?: string },
 ): string {
+  const findingCorrection = recovery?.findingCorrectionCode
+    ? findingCorrectionForCode(recovery.findingCorrectionCode)
+    : undefined;
   return [
     'TASK_FINALIZATION',
     ...(recovery ? [recovery.kind === 'fresh' ? 'TASK_RESULT_FRESH_RECOVERY' : 'TASK_RESULT_CORRECTION',
-      `The previous task result failed the ${recovery.reason} contract.`] : []),
+      `The previous task result failed the ${recovery.reason} contract.`,
+      ...(findingCorrection ? [`Controller-owned correction guidance: ${findingCorrection.hint}`] : [])] : []),
     'The read-only investigation phase has ended. Return the complete task result now; do not request another tool.',
     `Return exactly one JSON object with nonce "${expectedNonce}" and task "${task.id}". Do not include prose or Markdown fences.`,
     'Use status COMPLETE or BLOCKED; if evidence is insufficient use BLOCKED, never invent a finding or an approval.',
@@ -827,6 +869,7 @@ async function runPlanPhase(input: {
   turnsRemaining: () => number;
   /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
   requestCapBytes?: number;
+  progress?: PublishingProgressReporter;
 }): Promise<PlanPhaseOutcome> {
   let messages = [...input.messages];
   const turnUsages: LaneTurnUsage[] = [];
@@ -854,6 +897,9 @@ async function runPlanPhase(input: {
       signal: input.signal,
       turnNumber: turnsUsed + 1,
       kind: isLastLocalTurn ? 'final' : 'tool',
+      ...(input.progress ? { internalProgress: {
+        turn: turnsUsed + 1, task: 'composed_plan', lane: 'composed-plan',
+      } } : {}),
     });
     turnsUsed += 1;
     turnUsages.push(turn.usage);
@@ -972,8 +1018,11 @@ async function runTaskWorkPhase(input: {
   maxTurnsPerTask?: number;
   /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
   requestCapBytes?: number;
+  progress?: PublishingProgressReporter;
+  progressState?: { startedAt: number; turnUsages: LaneTurnUsage[] };
 }): Promise<TaskOutcome> {
-  const startedAt = Date.now();
+  const diagnosticLane = composedTaskDiagnosticLane(input.taskIndex);
+  const startedAt = input.progressState?.startedAt ?? Date.now();
   // Per-task nonce, retained so the finalize object can be bound to THIS task's request. Without
   // it a stale or injected object echoing an earlier turn's shape would be accepted.
   const expectedNonce = nonce();
@@ -982,7 +1031,7 @@ async function runTaskWorkPhase(input: {
     { role: 'user', content: buildTaskDirective(input.task, input.taskIndex, input.totalTasks, expectedNonce) },
   ];
   let taskMessages = [...initialTaskMessages];
-  const turnUsages: LaneTurnUsage[] = [];
+  const turnUsages = input.progressState?.turnUsages ?? [];
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
   let correctionAttempts = 0;
@@ -1022,6 +1071,9 @@ async function runTaskWorkPhase(input: {
       signal: input.signal,
       turnNumber: turnUsages.length + 1,
       kind: correctionAttempts > 0 ? 'correction' : finalizing ? 'final' : 'tool',
+      ...(input.progress ? { internalProgress: {
+        turn: turnUsages.length + 1, task: 'composed_task', lane: diagnosticLane,
+      } } : {}),
     });
     turnUsages.push(turn.usage);
     finishReason = turn.finishReason;
@@ -1067,16 +1119,28 @@ async function runTaskWorkPhase(input: {
     }
 
     let findings: PanelFinding[] = [];
+    let findingFailureCode: PanelFindingsValidationError['findingFailureCode'] | undefined;
     if (!contractFailure) {
       try {
         findings = validateFindings(candidate.findings, input.changedFilesForTools);
       } catch (err) {
         if (!(err instanceof PanelFindingsValidationError)) throw err;
+        findingFailureCode = err.findingFailureCode;
         contractFailure = 'findings_contract';
       }
     }
 
     if (contractFailure) {
+      input.progress?.emit({
+        task: 'provider_output',
+        status: 'rejected',
+        role: 'composed_task',
+        lane: diagnosticLane,
+        turn: turnUsages.length,
+        rejectionCode: findingFailureCode
+          ? findingRejectionCodeForCode(findingFailureCode)
+          : 'invalid_task_output',
+      });
       if (freshRecoveryUsed || isLastLocalTurn) {
         // Never a pass and never a forced verdict on its own: leaving this task unreported (no
         // `complete`/`blocked` outcome) makes it absent from the roster, which the caller's
@@ -1100,6 +1164,7 @@ async function runTaskWorkPhase(input: {
         role: 'user',
         content: buildTaskFinalizationDirective(input.task, expectedNonce, {
           kind: freshRecoveryUsed ? 'fresh' : 'correction', reason: contractFailure,
+          ...(findingFailureCode ? { findingCorrectionCode: findingFailureCode } : {}),
         }),
       }];
       continue;
@@ -1158,6 +1223,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     ? Date.now() + Math.max(0, options.config.reviewers.overall_timeout_s) * 1000
     : undefined;
   const panelStartedAt = Date.now();
+  options.progress?.emit({ task: 'panel', status: 'started' });
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks.
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
   // REL-1084: what the incremental scope actually carried forward, from the same call.
@@ -1292,25 +1358,46 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const remainingBudget = () => totalTurnBudget - totalTurnsUsed;
     const timeoutMs = Math.max(1, deadline.timeoutMs - (Date.now() - panelStartedAt));
 
-    const planOutcome = await runPlanPhase({
-      client,
-      model,
-      providerId,
-      messages: baseMessages,
-      effectiveFilePaths,
-      maxTasks,
-      timeoutMs,
-      inactivityTimeoutMs,
-      requestPolicy,
-      jobId,
-      signal,
-      changedFilesForTools: toolFiles,
-      expectedNonce: planNonce,
-      ...(requestCapBytes ? { requestCapBytes } : {}),
-      deadlineAtMs: composedDeadlineAtMs,
-      repoFileProvider,
-      zoektConfig,
-      turnsRemaining: remainingBudget,
+    const planStartedAt = Date.now();
+    options.progress?.emit({
+      task: 'composed_plan', status: 'started', role: 'composed_plan', lane: 'composed-plan',
+      provider: providerId, model, required: true,
+    });
+    let planOutcome: PlanPhaseOutcome;
+    try {
+      planOutcome = await runPlanPhase({
+        client,
+        model,
+        providerId,
+        messages: baseMessages,
+        effectiveFilePaths,
+        maxTasks,
+        timeoutMs,
+        inactivityTimeoutMs,
+        requestPolicy,
+        jobId,
+        signal,
+        changedFilesForTools: toolFiles,
+        expectedNonce: planNonce,
+        ...(requestCapBytes ? { requestCapBytes } : {}),
+        deadlineAtMs: composedDeadlineAtMs,
+        repoFileProvider,
+        zoektConfig,
+        turnsRemaining: remainingBudget,
+        progress: options.progress,
+      });
+    } catch (error) {
+      options.progress?.emit({
+        task: 'composed_plan', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_plan', lane: 'composed-plan',
+        provider: providerId, model, required: true, durationMs: Date.now() - planStartedAt,
+        rejectionCode: safePublishingRejectionCode(error, signal),
+      });
+      throw error;
+    }
+    options.progress?.emit({
+      task: 'composed_plan', status: 'completed', role: 'composed_plan', lane: 'composed-plan',
+      provider: providerId, model, required: true, durationMs: Date.now() - planStartedAt, turn: planOutcome.turnsUsed,
+      usage: progressUsage(planOutcome.turnUsages),
     });
     totalTurnsUsed += planOutcome.turnsUsed;
     span.setAttribute('review_yeti.composed.task_count', planOutcome.tasks.length);
@@ -1333,31 +1420,65 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     for (let i = 0; i < planOutcome.tasks.length; i++) {
       const task = planOutcome.tasks[i];
+      const diagnosticLane = composedTaskDiagnosticLane(i);
       if (remainingBudget() <= 0) {
         // Never started. Record the reason off the published roster and keep walking.
+        options.progress?.emit({
+          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
+          provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
+        });
         unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
         continue;
       }
-      const outcome = await runTaskWorkPhase({
-        maxTurnsPerTask: config.composed?.max_turns_per_task,
-        deadlineAtMs: composedDeadlineAtMs,
-        task,
-        taskIndex: i,
-        totalTasks: planOutcome.tasks.length,
-        client,
-        model,
-        providerId,
-        baseMessages: persistentMessages,
-        changedFilesForTools: toolFiles,
-        ...(requestCapBytes ? { requestCapBytes } : {}),
-        timeoutMs,
-        inactivityTimeoutMs,
-        requestPolicy,
-        jobId,
-        signal,
-        repoFileProvider,
-        zoektConfig,
-        turnsRemaining: remainingBudget,
+      const taskStartedAt = Date.now();
+      options.progress?.emit({
+        task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
+        provider: providerId, model, required: true,
+      });
+      const taskTurnUsages: LaneTurnUsage[] = [];
+      let outcome: TaskOutcome;
+      try {
+        outcome = await runTaskWorkPhase({
+          maxTurnsPerTask: config.composed?.max_turns_per_task,
+          deadlineAtMs: composedDeadlineAtMs,
+          task,
+          taskIndex: i,
+          totalTasks: planOutcome.tasks.length,
+          client,
+          model,
+          providerId,
+          baseMessages: persistentMessages,
+          changedFilesForTools: toolFiles,
+          ...(requestCapBytes ? { requestCapBytes } : {}),
+          timeoutMs,
+          inactivityTimeoutMs,
+          requestPolicy,
+          jobId,
+          signal,
+          repoFileProvider,
+          zoektConfig,
+          turnsRemaining: remainingBudget,
+          progress: options.progress,
+          progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
+        });
+      } catch (error) {
+        options.progress?.emit({
+          task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
+          provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
+          turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
+          usage: progressUsage(taskTurnUsages),
+        });
+        throw error;
+      }
+      const taskUsage = progressUsage(outcome.turnUsages);
+      options.progress?.emit({
+        task: 'composed_task',
+        status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
+        role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
+        durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
+        turn: outcome.turnUsages.length,
+        ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
+        usage: taskUsage,
       });
       totalTurnsUsed += outcome.turnUsages.length;
 
@@ -1465,5 +1586,17 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan))
     .then((result) => attachMapReduceDisclosure(result, mapReducePlan, new Map()))
+    .then((result) => {
+      options.progress?.emit({ task: 'panel', status: 'completed', durationMs: Date.now() - panelStartedAt });
+      return result;
+    }, (error: unknown) => {
+      options.progress?.emit({
+        task: 'panel',
+        status: deadline.signal.aborted ? 'aborted' : 'failed',
+        durationMs: Date.now() - panelStartedAt,
+        rejectionCode: safePublishingRejectionCode(error, deadline.signal),
+      });
+      throw error;
+    })
     .finally(deadline.cleanup);
 }

@@ -6,10 +6,12 @@ import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
 import { OpenRouterConnectionError, OpenRouterResponseError } from '../../gateway/openRouterClient';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
+import { createPublishingProgress } from '../../telemetry/publishingProgress';
 import * as panelEngine from '../panelEngine';
 import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
+import { TokenLedger, meterModelClient } from '../../telemetry/tokenLedger';
 
 const mockYaml = `
 version: 3
@@ -314,6 +316,8 @@ describe('executeComposedReview', () => {
   });
 
   it('plans once, executes each task with an engine-owned cursor, and produces one lane per COMPLETE task', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-composed-success', executionAttempt: 1 }, { sink: (event) => events.push(event) });
     const complete = vi.fn(async (payload: any) => {
       const text = lastText(payload.messages);
       const nonce = nonceFrom(text);
@@ -336,7 +340,8 @@ describe('executeComposedReview', () => {
       changedFiles: CODE_FILES,
       repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
-      client: { complete },
+      client: progress.instrument({ complete }),
+      progress,
     });
 
     expect(result.zeroLaneNonEvidence).toBe(false);
@@ -344,6 +349,91 @@ describe('executeComposedReview', () => {
     expect(result.personas).toHaveLength(1);
     expect(result.personas[0]).toMatchObject({ id: 'task-sec', decision: 'APPROVE', findings: [] });
     expect(result.optionalFailures).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ task: 'composed_plan', status: 'completed', role: 'composed_plan', lane: 'composed-plan' }));
+    expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', status: 'completed', role: 'composed_task', lane: 'composed-task-1', model: 'codex/gpt-5.6-sol-high' }));
+    expect(events.filter((event) => event.task === 'provider_call' && event.status === 'started')).toMatchObject([
+      { role: 'composed_plan', lane: 'composed-plan', turn: 1 },
+      { role: 'composed_task', lane: 'composed-task-1', turn: 1 },
+    ]);
+  });
+
+  it('keeps model-produced task ids and response model names out of publishing progress and token labels', async () => {
+    const taskId = 'ghp_fixture_credential_shaped_12345';
+    const responseModel = 'ghp_fixture_response_model_67890';
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-diagnostic-redaction', executionAttempt: 1 }, { sink: (event) => events.push(event) });
+    const ledger = new TokenLedger();
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        return { ...fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [{ id: taskId, dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Check auth.', rationale: 'Security path.' }],
+        })), model: responseModel };
+      }
+      return { ...fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] })), model: responseModel };
+    });
+
+    const result = await executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), client: meterModelClient(progress.instrument({ complete }), ledger), progress,
+    });
+
+    expect(result.applicablePersonaIds).toEqual([taskId]);
+    expect(result.personas[0].id).toBe(taskId);
+    const serializedDiagnostics = JSON.stringify(events);
+    const serializedLedger = JSON.stringify(ledger.snapshot());
+    expect(serializedDiagnostics).not.toContain(taskId);
+    expect(serializedDiagnostics).not.toContain(responseModel);
+    expect(serializedLedger).not.toContain(taskId);
+    expect(serializedLedger).not.toContain(responseModel);
+    expect(ledger.snapshot().byLane).toHaveProperty('composed-task-1');
+    const providerCalls = events.filter((event) => event.task === 'provider_call' && event.status === 'started');
+    expect(providerCalls).toHaveLength(2);
+    expect(providerCalls.every((event) => event.model === 'codex/gpt-5.6-sol-high')).toBe(true);
+  });
+
+  it('records an aborted composed provider call by run and server-derived task lane without changing its request', async () => {
+    const controller = new AbortController();
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-composed-abort', executionAttempt: 2 }, { sink: (event) => events.push(event) });
+    let taskStarted!: () => void;
+    const taskCallStarted = new Promise<void>((resolve) => { taskStarted = resolve; });
+    let releaseTask!: (response: OpenRouterResponse) => void;
+    const forwarded: any[] = [];
+    const raw = {
+      complete: vi.fn((request: any) => {
+        forwarded.push(request);
+        const text = lastText(request.messages);
+        if (text.includes('PLAN TURN')) {
+          const nonce = issuedNonce(request.messages);
+          return Promise.resolve(fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] })));
+        }
+        taskStarted();
+        return new Promise<OpenRouterResponse>((resolve) => { releaseTask = resolve; });
+      }),
+    };
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), signal: controller.signal, progress,
+      client: progress.instrument(raw),
+    });
+
+    await taskCallStarted;
+    controller.abort(new Error('private cancellation text'));
+    await expect(run).rejects.toBeDefined();
+    releaseTask(fakeResponse('{}'));
+    await Promise.resolve();
+
+    expect(forwarded).toHaveLength(2);
+    expect(forwarded.every((request) => !Object.hasOwn(request, 'internalProgress'))).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ task: 'provider_call', status: 'aborted', role: 'composed_task', lane: 'composed-task-1', turn: 1 }),
+      expect.objectContaining({ task: 'composed_task', status: 'aborted', lane: 'composed-task-1', rejectionCode: 'aborted' }),
+      expect.objectContaining({ task: 'panel', status: 'aborted', rejectionCode: 'aborted' }),
+    ]));
+    expect(JSON.stringify(events)).not.toContain('private cancellation text');
   });
 
   it('feeds bounded full reviewed-head source for a changed path and records the truthful scope', async () => {
@@ -628,6 +718,8 @@ describe('executeComposedReview', () => {
 
   it('immediately finalizes a malformed finding with the complete strict schema and does not normalize severity', async () => {
     let workCalls = 0;
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-findings-recovery', executionAttempt: 1 }, { sink: (event) => events.push(event) });
     const complete = vi.fn(async (payload: any) => {
       const nonce = issuedNonce(payload.messages);
       if (lastText(payload.messages).includes('PLAN TURN')) {
@@ -649,17 +741,50 @@ describe('executeComposedReview', () => {
       const correction = lastText(payload.messages);
       expect(correction).toContain('TASK_RESULT_CORRECTION');
       expect(correction).toContain('findings_contract');
+      expect(correction).toContain('Use exactly one declared severity value: P0, P1, or P2. Do not relabel or infer severity.');
       expect(correction).toContain('Binding task-result schema:');
       expect(correction).toContain('"enum":["P0","P1","P2"]');
       expect(correction).toContain('do not request another tool');
       return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'BLOCKED', findings: [] }));
     });
     const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
-      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: progress.instrument({ complete }), progress });
     expect(workCalls).toBe(2);
     expect(result.personas).toEqual([]);
     expect(result.optionalFailures).toMatchObject([{ id: 'task-sec' }]);
     expect(result.unreportedLanes).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ task: 'provider_output', status: 'rejected', lane: 'composed-task-1', rejectionCode: 'finding_severity_invalid' }));
+    expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', status: 'blocked', lane: 'composed-task-1' }));
+  });
+
+  it('keeps added-line validation fail-closed after the existing correction and fresh-recovery turns', async () => {
+    let workCalls = 0;
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-invalid-anchor', executionAttempt: 1 }, { sink: (event) => events.push(event) });
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      workCalls += 1;
+      if (workCalls > 1) {
+        const correction = lastText(payload.messages);
+        expect(correction).toContain('Correct the finding line to an added line in the supplied changed-file diff, or remove the finding if it cannot be anchored.');
+      }
+      return fakeResponse(JSON.stringify({
+        nonce, task: 'task-sec', status: 'COMPLETE',
+        findings: [{ severity: 'P1', path: 'src/auth/guard.ts', line: 99, title: 'Synthetic', body: 'Synthetic.' }],
+      }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), client: progress.instrument({ complete }), progress,
+    });
+
+    expect(workCalls).toBe(3);
+    expect(result.personas).toEqual([]);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-sec', failureClass: 'malformed_output', diagnostics: { reason: 'invalid_findings', correctionAttempts: 2 } }]);
+    expect(events.filter((event) => event.task === 'provider_output' && event.status === 'rejected'))
+      .toMatchObject([{ rejectionCode: 'finding_line_not_added' }, { rejectionCode: 'finding_line_not_added' }, { rejectionCode: 'finding_line_not_added' }]);
   });
 
   it('uses at most one fresh strict recovery, retaining read-only evidence but not malformed replies', async () => {
