@@ -170,14 +170,18 @@ export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 100;
 export const COMPOSED_PLAN_MAX_TURNS = 4;
 /** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
 export const COMPOSED_TASK_MAX_TURNS = 12;
+/** Hard cap on dynamic per-task turns even for multi-path tasks. */
+export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
 
 /**
- * Per-task turn ceiling. Policy NARROWS only: a value above `COMPOSED_TASK_MAX_TURNS` is ignored
+ * Per-task turn ceiling. Policy NARROWS only: a value above the dynamic engine ceiling is ignored
  * rather than honoured, so central policy can tighten a budget it does not own but never widen it.
  * Non-positive and non-integer values fall back to the engine constant rather than clamping to
  * zero, which would make every task exhaust on its first turn.
+ *
+ * Tasks with multiple paths scale up by 2 turns per additional path up to COMPOSED_TASK_MAX_TURNS_HARD_CAP.
  *
  * Exported and pure so it can be tested directly. Inlining this arithmetic in the caller made an
  * earlier test reimplement it, which meant the test passed against its own copy of the rule and a
@@ -186,11 +190,16 @@ const TASK_FINALIZATION_TURNS = 3;
 export function resolveTaskTurnCeiling(
   policyMaxTurnsPerTask: number | undefined,
   turnsRemaining: number,
+  taskPathCount = 1,
 ): number {
+  const dynamicCeiling = Math.min(
+    COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+    COMPOSED_TASK_MAX_TURNS + Math.max(0, Math.min(6, (taskPathCount - 1) * 2)),
+  );
   const policyCeiling = Number.isInteger(policyMaxTurnsPerTask) && (policyMaxTurnsPerTask as number) > 0
     ? (policyMaxTurnsPerTask as number)
-    : COMPOSED_TASK_MAX_TURNS;
-  return Math.min(COMPOSED_TASK_MAX_TURNS, policyCeiling, Math.max(1, turnsRemaining));
+    : dynamicCeiling;
+  return Math.min(dynamicCeiling, policyCeiling, Math.max(1, turnsRemaining));
 }
 /** Turn-window compaction threshold inside one task's own branched sub-conversation. */
 const TASK_COMPACTION_ACTIVE_TURNS = 2;
@@ -670,7 +679,7 @@ export function buildPlanDirective(
   return [
     `=== PLAN TURN ===`,
     ...personaCharterLines,
-    `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task).`,
+    `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task). Do not propose independent review tasks solely for binary files or compressed archives (e.g. .gz, .tar, .zip, images, binaries) whose patch text is unavailable; binary assets are handled by routed lanes and do not consume task slots.`,
     // Ids are specified with positive examples ONLY. This line used to read
     // '(for example "security-auth", not "T1")'. Naming the rejected form
     // inside the instruction primes it: models emitted exactly `T1`..`T7`,
@@ -678,7 +687,7 @@ export function buildPlanDirective(
     // after its single corrective turn. Describe the shape wanted and show
     // conforming ids; never quote a non-conforming one.
     `Each task names an id matching [a-z][a-z0-9_-]* -- a short lowercase kebab-case slug naming what the task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape". Each task also names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
-    `Use at most ${maxTasks} tasks. Every non-documentation changed file must be covered by at least one task.`,
+    `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
     // The security floor is enforced against `classifyPathByHeuristic`, a
     // deterministic model-independent classification of the real changed
     // paths, and a miss fails the whole plan closed with NO corrective turn
@@ -941,7 +950,7 @@ async function runTaskWorkPhase(input: {
     type: 'exhausted', turnUsages,
     diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
   });
-  const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining());
+  const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
 
   for (let iter = 0; iter < localMaxTurns; iter++) {

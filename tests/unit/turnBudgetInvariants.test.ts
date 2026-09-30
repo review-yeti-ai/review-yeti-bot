@@ -6,6 +6,7 @@ import {
   COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS,
   COMPOSED_PLAN_MAX_TURNS,
   COMPOSED_TASK_MAX_TURNS,
+  COMPOSED_TASK_MAX_TURNS_HARD_CAP,
   resolveTaskTurnCeiling,
   COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP,
   resolveComposedEngineMaxTurns,
@@ -74,6 +75,17 @@ describe('composed engine turn budget resolution (own, separate ceilings)', () =
     expect(resolve(undefined)).toBe(COMPOSED_TASK_MAX_TURNS);
     expect(resolve(0)).toBe(COMPOSED_TASK_MAX_TURNS);
     expect(resolve(-4)).toBe(COMPOSED_TASK_MAX_TURNS);
+  });
+
+  it('scales per-task turn ceiling dynamically for multi-path tasks up to hard cap', () => {
+    expect(resolveTaskTurnCeiling(undefined, 999, 1)).toBe(COMPOSED_TASK_MAX_TURNS);
+    expect(resolveTaskTurnCeiling(undefined, 999, 2)).toBe(COMPOSED_TASK_MAX_TURNS + 2);
+    expect(resolveTaskTurnCeiling(undefined, 999, 4)).toBe(COMPOSED_TASK_MAX_TURNS_HARD_CAP);
+    expect(resolveTaskTurnCeiling(undefined, 999, 10)).toBe(COMPOSED_TASK_MAX_TURNS_HARD_CAP);
+    // Respects tighter policy ceiling even when multi-path
+    expect(resolveTaskTurnCeiling(14, 999, 4)).toBe(14);
+    // Clamps to remaining review budget
+    expect(resolveTaskTurnCeiling(undefined, 8, 4)).toBe(8);
   });
 
   // The security floor is not an operator toggle. Exposing it as a boolean offers exactly one
