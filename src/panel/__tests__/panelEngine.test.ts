@@ -18,6 +18,7 @@ import { parseAndValidateConfig } from '../../config/configLoader';
 import { dashboardStore } from '../../persistence/dashboardStore';
 import { CtReviewConfigV3 } from '../../config/schema';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
+import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 
 const mockYaml = `
 version: 3
@@ -332,6 +333,11 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       expect(manifest).toContain('- docs/architecture.md [docs_assets] (+1, -0 lines)');
       expect(manifest).toContain('=== SWARM EXPLORATION & TARGETED PULL PROTOCOL ===');
       expect(manifest).toContain('Zero raw diff hunks are pre-rendered in this prompt');
+      expect(manifest).toContain(READ_FILE_TOOL_GUIDE);
+      expect(READ_FILE_TOOL_GUIDE).toContain('same-repository read-only provider');
+      expect(READ_FILE_TOOL_GUIDE).toContain('source-file lines');
+      expect(READ_FILE_TOOL_GUIDE).toContain('patch/change-payload-only');
+      expect(READ_FILE_TOOL_GUIDE).toContain('not full-file coverage');
     });
 
     it('highlights persona lane affinity with (★ YOUR LANE) for sec-lane', () => {
@@ -468,16 +474,22 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
         'line 3: edge case',
         'line 4: footer',
       ].join('\n');
+      const repoFileProvider = {
+        findFiles: vi.fn().mockResolvedValue(['src/auth/multi.ts']),
+        readFile: vi.fn().mockResolvedValue(multilineContent),
+      };
 
       const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
       await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth/multi.ts', patch: multilineContent }],
+        repoFileProvider,
         repository: 'test/repo',
         headSha: 'abc1234',
         client: mockClient as any,
       });
 
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
       expect(capturedToolResult).toContain("Lines 2-3 of 4 for 'src/auth/multi.ts':");
       expect(capturedToolResult).toContain('line 2: important logic\nline 3: edge case');
       expect(capturedToolResult).not.toContain('line 1: header');

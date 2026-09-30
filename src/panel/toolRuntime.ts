@@ -176,25 +176,51 @@ export async function runReadOnlyTool(
       };
 
       const matched = changedFiles.find((f: any) => f.path === targetPath || f.path.includes(targetPath));
-      if (matched) {
+      const appendChangedPatch = (leadIn = '') => {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
         const maxChars = resolveMaxFileDiffChars();
-        if (isOversizedFileDiff(matched, maxChars)) {
-          toolOutput += `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`;
+        if (tName === 'get_diff' && typeof matched.patch !== 'string') {
+          toolOutput += `${leadIn}No PR diff patch text is available for '${targetPath}'. get_diff does not return current source content.`;
+        } else if (isOversizedFileDiff(matched, maxChars)) {
+          toolOutput += `${leadIn}SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`;
         } else {
-          const raw = matched.patch || matched.content || 'File present in PR scope.';
-          const sliced = sliceLines(raw);
-          const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
-          const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
-          const prefixNote = sliced.sliced
-            ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
-            : '';
-          toolOutput += truncated
-            ? `${prefixNote}Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
-            : `${prefixNote}${shown}`;
+          const raw = tName === 'get_diff'
+            ? matched.patch
+            : matched.patch || matched.content || 'File present in PR scope.';
+          if (tName === 'read_file') {
+            const truncated = raw.length > REPO_READ_FILE_MAX_CHARS;
+            const shown = truncated ? raw.slice(0, REPO_READ_FILE_MAX_CHARS) : raw;
+            const rangeNote = reqStart !== undefined || reqEnd !== undefined
+              ? ' Requested source-line ranges cannot be applied to patch hunks without a full source read.'
+              : '';
+            const payloadLabel = typeof matched.patch === 'string'
+              ? 'Only the PR patch is available'
+              : 'Only a changed-file review payload is available';
+            toolOutput += `${leadIn}Full current file content at the reviewed head is unavailable. ${payloadLabel} for '${targetPath}'; it is not verified complete source context.${rangeNote}\n`
+              + (truncated
+                ? `Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${raw.length} characters. Request a smaller diff or another file; do not ask for the whole PR.\n${shown}`
+                : shown);
+          } else {
+            const sliced = sliceLines(raw);
+            const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
+            const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+            const prefixNote = sliced.sliced
+              ? `${tName === 'get_diff' ? 'Patch lines' : 'Lines'} ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
+              : '';
+            toolOutput += `${leadIn}${tName === 'get_diff' ? `PR diff patch for '${targetPath}':\n` : ''}`
+              + (truncated
+                ? `${prefixNote}Patch for '${targetPath}' truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters. Request a smaller range or another file; do not ask for the whole PR.\n${shown}`
+                : `${prefixNote}${shown}`);
+          }
         }
-      } else if (options?.repoFileProvider) {
+      };
+
+      if (tName === 'get_diff' && !matched) {
+        toolScope = 'changed-patches-only';
+        isExhaustive = false;
+        toolOutput += `No PR diff patch is available for '${targetPath}'. get_diff is limited to changed-file patch content; use read_file for current file content when the repository provider is available.`;
+      } else if (options?.repoFileProvider && (tName === 'read_file' || !matched)) {
         try {
           const content = await raceWithPanelAbort(options.repoFileProvider.readFile(targetPath), options?.signal);
           if (content !== null) {
@@ -206,20 +232,31 @@ export async function runReadOnlyTool(
             const prefixNote = sliced.sliced
               ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
               : '';
-            toolOutput += `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `
+            const sourceNote = matched
+              ? `File '${targetPath}' is changed in this PR; reading the current file at the reviewed head, not the patch. `
+              : `File '${targetPath}' is not part of this PR's diff, but it exists in the repository at the reviewed head. `;
+            const contentLabel = sliced.sliced ? '' : 'Full current content:\n';
+            toolOutput += sourceNote
               + (truncated
                 ? `${prefixNote}Content truncated to the first ${REPO_READ_FILE_MAX_CHARS} of ${sliced.content.length} characters:\n${shown}\n[... content truncated: ${sliced.content.length - REPO_READ_FILE_MAX_CHARS} more characters not shown]`
-                : `${prefixNote}Full current content:\n${shown}`);
+                : `${prefixNote}${contentLabel}${shown}`);
           } else {
             toolScope = 'full-repository';
             toolOutput += await describeUnreadablePath(targetPath, options.repoFileProvider, options?.signal)
               .then((d) => { isExhaustive = d.exhaustive; return d.text; });
           }
         } catch (err: any) {
-          toolScope = 'full-repository';
-          isExhaustive = false;
-          toolOutput += `Full-repository read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
+          if (matched) {
+            const failure = `Full current source read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis. `;
+            appendChangedPatch(failure);
+          } else {
+            toolScope = 'full-repository';
+            isExhaustive = false;
+            toolOutput += `Full-repository read of '${targetPath}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`;
+          }
         }
+      } else if (matched) {
+        appendChangedPatch();
       } else {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
