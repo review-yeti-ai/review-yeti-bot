@@ -9,6 +9,9 @@ permissions:
 
 jobs:
   dispatch:
+    # A draft must not consume a durable review identity that the worker
+    # immediately retires; ready_for_review admits that head normally later.
+    if: ${{ github.event.pull_request.state == 'open' && !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - name: Mint Review Yeti dispatch token
