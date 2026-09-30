@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { isNativeJsonObject, nativeJsonContent, parseNativeToolCall } from './nativeTurnProtocol';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
 import { workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
@@ -988,40 +989,6 @@ function parseFenced<T>(content: string, expectedNonce: string): T {
   }
 }
 
-type NativeToolCall = {
-  tool: string;
-  args: Record<string, unknown>;
-};
-
-/**
- * Native investigation turns use the provider's generic JSON-object mode. Parse the complete
- * response before trying the final-result parser so nested tool arguments cannot be truncated by
- * the legacy fenced-output regex. A tool envelope is deliberately nonce-free and exact: an object
- * that mixes a tool with a verdict/final nonce is not an exploration request and must fail closed
- * as a malformed final result instead of being executed.
- */
-function parseNativeToolCall(content: string): NativeToolCall | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(nativeJsonContent(content));
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-
-  const candidate = parsed as Record<string, unknown>;
-  const keys = Object.keys(candidate);
-  if (keys.some((key) => key !== 'tool' && key !== 'args')) return null;
-  if (typeof candidate.tool !== 'string' || !candidate.tool.trim()) return null;
-  if (!Object.prototype.hasOwnProperty.call(candidate, 'args')) return null;
-  if (!candidate.args || typeof candidate.args !== 'object' || Array.isArray(candidate.args)) return null;
-
-  return {
-    tool: candidate.tool,
-    args: candidate.args as Record<string, unknown>,
-  };
-}
-
 function withNativeTurnDirective(messages: OpenRouterMessage[], directive: string): OpenRouterMessage[] {
   const last = messages.at(-1);
   if (!last || last.role !== 'user') {
@@ -1034,16 +1001,6 @@ function withNativeTurnDirective(messages: OpenRouterMessage[], directive: strin
   return [...messages.slice(0, -1), { ...last, content }];
 }
 
-function nativeJsonContent(content: string): string {
-  const trimmed = content.trim();
-  // Some OpenAI-compatible gateways preserve a model's single Markdown JSON
-  // fence even when response_format requests native JSON. Accept only a fence
-  // that wraps the entire response; prose, multiple fences, and embedded JSON
-  // remain malformed and fail closed below.
-  const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
-  return fenced ? fenced[1].trim() : trimmed;
-}
-
 function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
   let parsed: unknown;
   try {
@@ -1051,7 +1008,7 @@ function parseNativeJsonObject<T>(content: string, expectedNonce: string): T {
   } catch {
     throw new PanelStructuredOutputError('invalid native JSON response object');
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+  if (!isNativeJsonObject(parsed)) {
     throw new PanelStructuredOutputError('native JSON response must be an object');
   }
   const candidate = parsed as Record<string, unknown>;
