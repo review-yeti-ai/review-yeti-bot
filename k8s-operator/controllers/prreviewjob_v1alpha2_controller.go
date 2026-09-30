@@ -2280,6 +2280,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) failClosedFencing(
 // SetupWithManager registers only the v1alpha2 projection and its owned Jobs.
 // PVCs are intentionally not owned because their lifecycle is PR-scoped.
 func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.Add(&workerMetricsCollector{reader: mgr.GetClient()}); err != nil {
+		return err
+	}
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}

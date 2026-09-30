@@ -157,7 +157,7 @@ describe('get_review_status timing: every query branch selects the timing column
     }
   });
 
-  it('drives each branch exactly once and reads the lifecycle ledger by run_id only', async () => {
+  it('drives each branch exactly once and reads the lifecycle ledger', async () => {
     // Guards the harness itself: if a branch silently stopped being reachable,
     // the assertions above would pass without proving anything.
     for (const branch of branches) {
@@ -167,6 +167,42 @@ describe('get_review_status timing: every query branch selects the timing column
       const expected = branch.failGateJoin ? 2 : 1;
       expect(captured.statements.length, branch.name).toBe(expected + 1);
     }
+  });
+});
+
+describe('get_review_status timing: retries cannot inherit earlier execution markers', () => {
+  it('binds the current attempt when the run id is reused', async () => {
+    const events = [
+      { attempt_id: 'attempt-42-1', event_kind: 'review.lifecycle.started', occurred_at: '2026-09-28T18:00:00.000Z' },
+      { attempt_id: 'attempt-42-1', event_kind: 'review.lifecycle.terminal', occurred_at: '2026-09-28T18:30:00.000Z' },
+      { attempt_id: 'attempt-42-2', event_kind: 'review.lifecycle.started', occurred_at: T2 },
+      { attempt_id: 'attempt-42-2', event_kind: 'review.lifecycle.terminal', occurred_at: T3 },
+    ];
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (!sql.includes('review_event_outbox')) return { rows: [baseRow({ attempt_id: 'attempt-42-2', run_status: 'failed' })] };
+      // Emulate the ledger predicate: the old run-only query sees both attempts.
+      const scoped = sql.includes("payload->>'attempt_id'") ? events.filter(e => e.attempt_id === values?.[2]) : events;
+      const first = new Map<string, typeof events[number]>();
+      for (const event of scoped) if (!first.has(event.event_kind)) first.set(event.event_kind, event);
+      return { rows: [...first.values()] };
+    });
+    const result = await createGetReviewStatusTool({ query }).execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data.attempt_id).toBe('attempt-42-2');
+    expect(data.timing.started_at).toBe(T2);
+    expect(data.timing.completed_at).toBe(T3);
+    expect(data.timing.queue_seconds).toBe(20);
+    expect(data.timing.execution_seconds).toBe(150);
+    expect(query.mock.calls[1][1]?.[2]).toBe('attempt-42-2');
+  });
+
+  it('limits unkeyed legacy markers to the current receipt window', async () => {
+    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('review_event_outbox') ? [] : [baseRow({ attempt_id: null })] }));
+    await createGetReviewStatusTool({ query }).execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+    const markerCall = query.mock.calls[1] as unknown as [string, unknown[]];
+    expect(markerCall[0]).toContain("payload->>'attempt_id' IS NULL");
+    expect(markerCall[0]).toContain('occurred_at >= $4::timestamptz');
+    expect(markerCall[1].slice(2)).toEqual([null, T0]);
   });
 });
 
