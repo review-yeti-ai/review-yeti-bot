@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.7...v1.100.8) (2026-09-30)
+
+
+### Bug Fixes
+
+* **mcp:** isolate webhook parsing from bounded API routes ([#1167](https://github.com/review-yeti-ai/review-yeti-bot/issues/1167)) ([592f8db](https://github.com/review-yeti-ai/review-yeti-bot/commit/592f8dbc1add65c4bf68f95d58840a466982ec0e))
+
 ## [1.100.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.6...v1.100.7) (2026-09-30)
 
 
