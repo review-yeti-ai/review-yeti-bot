@@ -46,8 +46,18 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	recent := worker("recent", job.ReceiptOnlyWorkerComponent, now.Add(-time.Minute))
 	old := worker("old", job.PublishingWorkerComponent, now.Add(-time.Hour))
 	foreign := worker("foreign", "unrelated", now.Add(-time.Minute))
+	resuming := review("resuming", now.Add(time.Minute))
+	resuming.Status.Phase = reviewv1alpha2.PhaseAwaitingResumption
+	resuming.Status.JobName = "resuming-worker"
+	resuming.Annotations = map[string]string{"review-yeti.ai/resumed": "true"}
+	running := review("running", now.Add(time.Minute))
+	running.Status.Phase = reviewv1alpha2.PhaseRunning
+	running.Status.JobName = "running-worker"
+	unrequested := review("unrequested-resumption", now.Add(time.Minute))
+	unrequested.Status.Phase = reviewv1alpha2.PhaseAwaitingResumption
+	unrequested.Status.JobName = "unrequested-worker"
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(active, recent, old, foreign,
-		review("queued", now.Add(time.Minute)), review("expired", now.Add(-time.Minute))).Build()
+		resuming, running, unrequested, review("queued", now.Add(time.Minute)), review("expired", now.Add(-time.Minute))).Build()
 	c := &workerMetricsCollector{reader: kube}
 	for i := 0; i < 2; i++ {
 		if err := c.collect(context.Background(), now); err != nil {
@@ -56,7 +66,7 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 		if got := testutil.ToFloat64(operatorMetrics.ActiveJobs); got != 1 {
 			t.Fatalf("active=%v", got)
 		}
-		if got := testutil.ToFloat64(operatorMetrics.QueuedJobs); got != 1 {
+		if got := testutil.ToFloat64(operatorMetrics.QueuedJobs); got != 2 {
 			t.Fatalf("queued=%v", got)
 		}
 		if got := testutil.ToFloat64(operatorMetrics.RecentFailedJobs); got != 1 {
@@ -64,6 +74,9 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 		}
 	}
 	if err := kube.Delete(context.Background(), active); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Delete(context.Background(), resuming); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.collect(context.Background(), now.Add(11*time.Minute)); err != nil {
