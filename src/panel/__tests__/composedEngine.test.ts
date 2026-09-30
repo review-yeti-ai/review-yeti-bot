@@ -6,6 +6,7 @@ import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
 import { OpenRouterConnectionError, OpenRouterResponseError } from '../../gateway/openRouterClient';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
+import * as panelEngine from '../panelEngine';
 
 const mockYaml = `
 version: 3
@@ -527,6 +528,51 @@ describe('executeComposedReview', () => {
     expect(result.unreportedLanes?.[0].error).not.toContain('wrong-');
     expect(result.unreportedLanes?.[0].error).not.toContain('not-changed');
     expect(result.unreportedLanes?.[0].error).not.toContain('Synthetic');
+  });
+
+  it('rejects tools requested during correction and retains their exact redacted diagnostic', async () => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' },
+      ] }));
+      workCalls += 1;
+      if (workCalls === 1) return fakeResponse('not a result');
+      expect(lastText(payload.messages)).toContain('TASK_FINALIZATION');
+      return fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(3);
+    expect(result.personas).toEqual([]);
+    expect(result.unreportedLanes?.[0]).toMatchObject({ failureClass: 'malformed_output',
+      error: expect.stringContaining('tool_after_finalization'), diagnostics: {
+        reason: 'tool_requested_during_finalization', lastToolOutcome: 'requested_after_finalization',
+        toolTurns: 0, turnsUsed: 3, correctionAttempts: 2,
+      } });
+  });
+
+  it('propagates unexpected findings-validator errors without consuming malformed-output recovery', async () => {
+    const unexpected = new TypeError('synthetic internal validator defect');
+    const validate = vi.spyOn(panelEngine, 'validateFindings').mockImplementation(() => { throw unexpected; });
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' },
+      ] }));
+      workCalls += 1;
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    try {
+      await expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } })).rejects.toBe(unexpected);
+      expect(workCalls).toBe(1);
+      expect(validate).toHaveBeenCalledOnce();
+    } finally {
+      validate.mockRestore();
+    }
   });
 
   it.each([[100, 1], [100, 2], [2, 12], [3, 12]])('does not enlarge total/task caps %i/%i for recovery', async (totalCap, taskCap) => {
