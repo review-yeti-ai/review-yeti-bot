@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.9...v1.100.10) (2026-09-30)
+
+
+### Bug Fixes
+
+* scope review status timing to the current gate attempt ([#1163](https://github.com/review-yeti-ai/review-yeti-bot/issues/1163)) ([bb197df](https://github.com/review-yeti-ai/review-yeti-bot/commit/bb197df31604bd02257f71585d944302162b7b67))
+
 ## [1.100.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.8...v1.100.9) (2026-09-30)
 
 
