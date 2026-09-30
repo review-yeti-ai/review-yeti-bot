@@ -43,6 +43,11 @@ on:
         required: false
         default: 1
         type: number
+      recovery_kind:
+        description: Recovery classification emitted by the central exact-head validator.
+        required: false
+        default: ''
+        type: string
       passthrough:
         description: Deliver SKIPPED passthrough semantics without LLM evaluation; DOKS remains blocked.
         required: false
@@ -296,6 +301,18 @@ jobs:
             {"request_id":"${{ inputs.request_id }}","repository":"${{ inputs.repository }}","pr_number":${{ inputs.pr_number }},"base_sha":"${{ inputs.base_sha }}","head_sha":"${{ inputs.head_sha }}","refresh_requested":${{ inputs.refresh_requested && 'true' || 'false' }}}
         run: node .exampleorg-review-actions/scripts/validate-central-dispatch.mjs
 
+      - name: Verify central recovery classification
+        if: ${{ inputs.central_execution }}
+        env:
+          REQUEST_RECOVERY_KIND: ${{ inputs.recovery_kind }}
+          VALIDATED_RECOVERY_KIND: ${{ steps.central_validation.outputs.recovery_kind }}
+        run: |
+          set -euo pipefail
+          if [[ "${REQUEST_RECOVERY_KIND}" != "${VALIDATED_RECOVERY_KIND}" ]]; then
+            echo "::error::central recovery classification changed between admission and execution"
+            exit 1
+          fi
+
       - name: Validate immutable review request
         env:
           GH_TOKEN: ${{ steps.target_token_exampleorg.outputs.token || steps.target_token_public.outputs.token }}
@@ -494,6 +511,7 @@ jobs:
           execution-backend: ${{ env.TRUSTED_EXECUTION_BACKEND }}
           refresh-requested: ${{ inputs.refresh_requested }}
           refresh-execution-attempt: ${{ inputs.refresh_requested && inputs.refresh_execution_attempt || '' }}
+          incomplete-p2-recovery: ${{ inputs.central_execution && inputs.recovery_kind == 'incomplete_p2' }}
           doks-dispatch-url: https://review-bot.example.com/api/dispatch/action
           doks-publish-mode: ${{ steps.policy.outputs.doks_publish_mode }}
           honcho-api-key: ${{ secrets.HONCHO_API_KEY }}

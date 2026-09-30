@@ -583,26 +583,79 @@ function isFailedInfrastructurePanel(identity, headSha) {
     && Number.isSafeInteger(completed + failed) && completed + failed === expected;
 }
 
+// Preserve legacy zero-finding retry parsing; P2 worker and Gate timelines
+// additionally require canonical real-calendar timestamps through
+// validWorkerTimestamp.
 function validCompletedAt(row) {
   const value = row?.completed_at;
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)
     ? Date.parse(value) : NaN;
 }
 
-function hasCurrentFailureGate(identity, gateInventory, title, summary) {
+function validWorkerTimestamp(row, field) {
+  const value = row?.[field];
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) return NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().replace('.000Z', 'Z') === value ? parsed : NaN;
+}
+
+function gateDecisionPayload(row) {
+  return JSON.stringify([
+    row.head_sha,
+    row.app.id,
+    row.app.slug,
+    row.external_id,
+    row.status,
+    row.conclusion,
+    row.output.title,
+    row.output.summary,
+  ]);
+}
+
+function latestGateAtSameCompletion(gates, readCompletedAt) {
+  const latestCompletedAt = Math.max(...gates.map(readCompletedAt));
+  const tied = gates.filter((row) => readCompletedAt(row) === latestCompletedAt);
+  if (new Set(tied.map(gateDecisionPayload)).size !== 1) return null;
+  return tied.reduce((latest, row) => row.id > latest.id ? row : latest);
+}
+
+function hasCurrentFailureGate(identity, gateInventory, title, summary, { nextWorker, rejectAmbiguousTies = false } = {}) {
   const gates = gateInventory?.rows;
+  const readCompletedAt = rejectAmbiguousTies
+    ? (row) => validWorkerTimestamp(row, 'completed_at')
+    : validCompletedAt;
   if (!Array.isArray(gates) || gates.length === 0
-      || gates.some((row) => !Number.isFinite(validCompletedAt(row)))) return false;
-  // GitHub retains older Gate runs for the same head. Select the newest
-  // completed result from the full App-owned inventory, independent of API order.
-  const gate = gates.reduce((latest, row) => {
-    const completedAt = validCompletedAt(row);
-    const latestCompletedAt = validCompletedAt(latest);
-    return completedAt > latestCompletedAt
-      || (completedAt === latestCompletedAt && row.id > latest.id) ? row : latest;
-  });
+      || gates.some((row) => !Number.isFinite(readCompletedAt(row)))) return false;
   const workerCompletedAt = validCompletedAt(identity.row);
-  const gateCompletedAt = validCompletedAt(gate);
+  let candidates = gates;
+  if (nextWorker) {
+    const nextWorkerStartedAt = validWorkerTimestamp(nextWorker.row, 'started_at');
+    if (!Number.isFinite(workerCompletedAt)
+        || !Number.isFinite(nextWorkerStartedAt)
+        || nextWorkerStartedAt <= workerCompletedAt) return false;
+    // Bind this older worker to the latest completed App Gate that could have
+    // followed it and finished before the next worker began. Gate.started_at
+    // may predate the worker because GitHub creates the pending check early.
+    candidates = gates.filter((row) => {
+      const completedAt = readCompletedAt(row);
+      return completedAt >= workerCompletedAt && completedAt < nextWorkerStartedAt;
+    });
+  }
+  if (candidates.length === 0) return false;
+  // GitHub retains older Gate runs for the same head. Select the newest
+  // completed result in the applicable window, independent of API order. If
+  // same-time results disagree, the ledger cannot identify the authoritative
+  // outcome and admission fails closed.
+  const gate = rejectAmbiguousTies
+    ? latestGateAtSameCompletion(candidates, readCompletedAt)
+    : candidates.reduce((latest, row) => {
+      const completedAt = readCompletedAt(row);
+      const latestCompletedAt = readCompletedAt(latest);
+      return completedAt > latestCompletedAt
+        || (completedAt === latestCompletedAt && row.id > latest.id) ? row : latest;
+    });
+  if (!gate) return false;
+  const gateCompletedAt = readCompletedAt(gate);
   return gate.status === 'completed'
     && gate.conclusion === 'failure'
     && gate.output.title === title
@@ -612,23 +665,45 @@ function hasCurrentFailureGate(identity, gateInventory, title, summary) {
     && gateCompletedAt >= workerCompletedAt;
 }
 
-function hasCurrentInfrastructureGate(identity, gateInventory) {
+function hasCurrentInfrastructureGate(identity, gateInventory, options) {
   return hasCurrentFailureGate(
-    identity, gateInventory, 'Review Yeti Gate: Failed', INFRASTRUCTURE_GATE_SUMMARY,
+    identity, gateInventory, 'Review Yeti Gate: Failed', INFRASTRUCTURE_GATE_SUMMARY, options,
   );
 }
 
 function incompleteRosterCounts(identity, headSha) {
-  if (identity.kind !== 'worker' || identity.row.output.title !== 'Review Yeti: BLOCK') return null;
-  const lines = identity.row.output.summary.split('\n');
+  if (identity.kind !== 'worker' || identity.row.output?.title !== 'Review Yeti: BLOCK') return null;
+  const summary = identity.row.output.summary;
+  if (typeof summary !== 'string') return null;
+  const lines = summary.split('\n');
   const findingsLines = lines.filter((line) => line.startsWith('Findings: '));
   const coverageLines = lines.filter((line) => line.startsWith('Coverage: '));
+  const findings = /^Findings: ([0-9]+) \(blocking P0\/P1: ([0-9]+); ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u.exec(findingsLines[0] ?? '');
   if (lines[0] !== `Verdict \`BLOCK\` at \`${headSha}\`.`
       || findingsLines.length !== 1
-      || findingsLines[0] !== 'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).'
+      || !findings
       || coverageLines.length !== 1) {
     return null;
   }
+  const [findingCount, blockingFindingCount, rawFindingCount] = findings.slice(1).map(Number);
+  if (!Number.isSafeInteger(findingCount)
+      || !Number.isSafeInteger(blockingFindingCount)
+      || !Number.isSafeInteger(rawFindingCount)
+      || blockingFindingCount !== 0
+      // Canonical findings are produced by clustering raw persona findings;
+      // clustering cannot create more findings than its input contains.
+      || findingCount > rawFindingCount) {
+    return null;
+  }
+  // A nonzero/no-blocker summary is only a candidate signal. The DOKS service
+  // must verify the durable prior finding archive and prove every retained
+  // finding is P2 before it reserves or executes the next generation.
+  const recoveryKind = findingCount === 0 && rawFindingCount === 0
+    ? undefined
+    : findingCount > 0 && rawFindingCount > 0
+      ? 'incomplete_p2'
+      : null;
+  if (recoveryKind === null) return null;
   const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverageLines[0]);
   const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverageLines[0]);
   if (!panel && !composed) return null;
@@ -636,28 +711,49 @@ function incompleteRosterCounts(identity, headSha) {
   if (composed && Number(composed[1]) !== expected) return null;
   return Number.isSafeInteger(expected) && expected > 0
     && Number.isSafeInteger(completed) && completed >= 0 && completed < expected
-    ? { expected, completed } : null;
+    ? { expected, completed, ...(recoveryKind ? { recoveryKind } : {}) } : null;
 }
 
-function isIncompleteRosterPanel(identity, headSha, gateInventory) {
+function validatedIncompleteRosterCounts(identity, headSha, gateInventory, options) {
   const counts = incompleteRosterCounts(identity, headSha);
-  return counts !== null
-    && hasCurrentFailureGate(
-      identity,
-      gateInventory,
-      'Review Yeti Gate: Failed (incomplete panel)',
-      `Review Yeti Gate failed: the panel expected ${counts.expected} review lane(s) but ${counts.completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`,
-    );
+  if (counts === null
+      || !hasCurrentFailureGate(
+        identity,
+        gateInventory,
+        'Review Yeti Gate: Failed (incomplete panel)',
+        `Review Yeti Gate failed: the panel expected ${counts.expected} review lane(s) but ${counts.completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`,
+        options,
+      )) {
+    return null;
+  }
+  return counts;
 }
 
-function isRecoverableInfrastructureAttempt(identity, expectedAttempt, headSha, gateInventory) {
+function isIncompleteRosterPanel(identity, headSha, gateInventory, options) {
+  return validatedIncompleteRosterCounts(identity, headSha, gateInventory, options) !== null;
+}
+
+function isRecoverableInfrastructureAttempt(identity, expectedAttempt, headSha, gateInventory, options) {
   return identity.attempt === expectedAttempt
     && identity.row.status === 'completed'
     && RECOVERABLE_INFRASTRUCTURE_CONCLUSIONS.has(identity.row.conclusion)
     && (RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title)
       || (isFailedInfrastructurePanel(identity, headSha)
-        && hasCurrentInfrastructureGate(identity, gateInventory))
-      || isIncompleteRosterPanel(identity, headSha, gateInventory));
+        && hasCurrentInfrastructureGate(identity, gateInventory, options))
+      || isIncompleteRosterPanel(identity, headSha, gateInventory, options));
+}
+
+function assertOrderedP2WorkerTimeline(workers) {
+  let previousCompletedAt = null;
+  for (const worker of workers) {
+    const startedAt = validWorkerTimestamp(worker.row, 'started_at');
+    const completedAt = validWorkerTimestamp(worker.row, 'completed_at');
+    if (!Number.isFinite(startedAt) || !Number.isFinite(completedAt) || startedAt > completedAt
+        || (previousCompletedAt !== null && startedAt <= previousCompletedAt)) {
+      throw new Error('P2 recovery requires valid, strictly ordered prior worker started_at/completed_at timestamps');
+    }
+    previousCompletedAt = completedAt;
+  }
 }
 
 function assertRecoverablePriorWorkers({ workers, nextGeneration, context, headSha, gateInventory }) {
@@ -680,22 +776,42 @@ function assertRecoverablePriorWorkers({ workers, nextGeneration, context, headS
     throw new Error('prior worker generations must share one DOKS run identity');
   }
 
-  let latestWorker;
-  for (let expectedAttempt = 1; expectedAttempt < nextGeneration; expectedAttempt += 1) {
-    const matches = workers.filter((identity) => identity.attempt === expectedAttempt);
+  const orderedWorkers = Array.from({ length: expectedPriorWorkers }, (_, index) => {
+    const attempt = index + 1;
+    const matches = workers.filter((identity) => identity.attempt === attempt);
     if (matches.length !== 1) {
-      throw new Error(
-        `${context} requires exactly one worker a${expectedAttempt}; found ${matches.length}`,
-      );
+      throw new Error(`${context} requires exactly one worker a${attempt}; found ${matches.length}`);
     }
-    const [worker] = matches;
-    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt, headSha, gateInventory)) {
+    return matches[0];
+  });
+  const hasP2RecoveryCandidate = orderedWorkers.some((identity) =>
+    incompleteRosterCounts(identity, headSha)?.recoveryKind === 'incomplete_p2');
+  if (hasP2RecoveryCandidate) assertOrderedP2WorkerTimeline(orderedWorkers);
+
+  let latestWorker;
+  let recoveryKind;
+  for (let expectedAttempt = 1; expectedAttempt < nextGeneration; expectedAttempt += 1) {
+    const worker = orderedWorkers[expectedAttempt - 1];
+    const options = hasP2RecoveryCandidate
+      ? {
+        rejectAmbiguousTies: true,
+        ...(expectedAttempt < nextGeneration - 1 ? { nextWorker: orderedWorkers[expectedAttempt] } : {}),
+      }
+      : undefined;
+    const validatedCounts = validatedIncompleteRosterCounts(worker, headSha, gateInventory, options);
+    if (hasP2RecoveryCandidate && validatedCounts === null) {
+      throw new Error(`P2 recovery requires every prior worker to be a validated incomplete BLOCK; a${expectedAttempt} is not a validated incomplete BLOCK`);
+    }
+    if (!isRecoverableInfrastructureAttempt(worker, expectedAttempt, headSha, gateInventory, options)) {
       const prefix = context === 'refresh' ? 'refresh ' : '';
       throw new Error(`${prefix}a${expectedAttempt} worker is not a completed recoverable infrastructure failure`);
     }
+    if (validatedCounts?.recoveryKind === 'incomplete_p2') {
+      recoveryKind = 'incomplete_p2';
+    }
     latestWorker = worker;
   }
-  return latestWorker;
+  return { latestWorker, recoveryKind };
 }
 
 export function assertReviewGeneration({ callerRunAttempt, inventory, gateInventory, refreshRequested = false }) {
@@ -725,7 +841,7 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, gateInvent
       );
     }
     const nextGeneration = workers.length + 1;
-    const latestWorker = assertRecoverablePriorWorkers({
+    const { latestWorker, recoveryKind } = assertRecoverablePriorWorkers({
       workers,
       nextGeneration,
       context: 'refresh',
@@ -741,6 +857,7 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, gateInvent
       worker_check_count: workers.length,
       latest_worker_check_id: latestWorker.row.id,
       refresh_requested: true,
+      ...(recoveryKind ? { recovery_kind: recoveryKind } : {}),
     };
   }
   if (callerRunAttempt === 1) {
@@ -756,19 +873,23 @@ export function assertReviewGeneration({ callerRunAttempt, inventory, gateInvent
     };
   }
 
-  const latestWorker = assertRecoverablePriorWorkers({
+  const { latestWorker, recoveryKind } = assertRecoverablePriorWorkers({
     workers,
     nextGeneration: callerRunAttempt,
     context: `caller attempt ${callerRunAttempt}`,
     headSha: inventory.headSha,
     gateInventory,
   });
+  if (recoveryKind === 'incomplete_p2') {
+    throw new Error('P2 recovery requires an explicit refresh request');
+  }
   return {
     review_generation: callerRunAttempt,
     review_check_count: inventory.rows.length,
     worker_check_count: workers.length,
     latest_worker_check_id: latestWorker.row.id,
     refresh_requested: false,
+    ...(recoveryKind ? { recovery_kind: recoveryKind } : {}),
   };
 }
 
@@ -1046,7 +1167,7 @@ export async function validateCentralDispatch({
   };
 }
 
-function writeOutputs(result, outputPath) {
+export function writeOutputs(result, outputPath) {
   if (!outputPath) return;
   for (const [key, value] of Object.entries(result)) {
     appendFileSync(outputPath, `${key}=${value}\n`);

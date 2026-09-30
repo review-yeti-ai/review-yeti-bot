@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   DISPATCH_EVENT_TYPE,
   REQUIRED_REVIEW_APP_ID,
   REQUIRED_REVIEW_CONTEXT,
   TARGET_REPOSITORY,
+  assertReviewGeneration,
   validateCentralDispatch,
+  writeOutputs,
 } from './validate-central-dispatch.mjs';
 
 const baseSha = 'a'.repeat(40);
@@ -46,6 +51,7 @@ function workerCheck({
   title = 'Review Yeti: review did not complete',
   externalId = `run_${'1'.repeat(32)}:a${attempt}`,
   summary = 'generation reservation fixture',
+  startedAt = '2026-09-24T18:28:55Z',
   completedAt = '2026-09-24T18:28:56Z',
 } = {}) {
   return {
@@ -54,6 +60,7 @@ function workerCheck({
     head_sha: headSha,
     status,
     conclusion,
+    started_at: startedAt,
     completed_at: completedAt,
     external_id: externalId,
     app: { id: REQUIRED_REVIEW_APP_ID, slug: 'ct-review-bot' },
@@ -97,6 +104,13 @@ function incompleteRosterSummary(expected, completed, engine = 'panel') {
     ? `engine=composed; planned tasks=${expected}; expected tasks=${expected}; completed tasks=${completed}; failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false.`
     : `mode=panel; expected lanes=${expected}; completed lanes=${completed}; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
   return `Verdict \`BLOCK\` at \`${headSha}\`.\n\nFindings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).\n\nCoverage: ${coverage}\n\nUnreported lanes (not on the published roster):\n- \`audit-tests\` \`malformed_output\`: Task ran and produced no verdict\n\nTransport: bifrost \`pr-reviewer\`.`;
+}
+
+function incompleteP2CandidateSummary(expected, completed, engine = 'panel', canonicalCount = 2, rawCount = 3) {
+  return incompleteRosterSummary(expected, completed, engine).replace(
+    'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).',
+    `Findings: ${canonicalCount} (blocking P0/P1: 0; ${rawCount} raw persona finding(s) before clustering).`,
+  );
 }
 
 function incompleteRosterGateCheck(expected, completed, overrides = {}) {
@@ -275,6 +289,7 @@ test('zero-finding incomplete roster admits a bounded same-head retry for both p
       });
       assert.equal(result.review_generation, 2);
       assert.equal(result.latest_worker_check_id, first.id);
+      assert.equal(Object.hasOwn(result, 'recovery_kind'), false);
     }
     const manualCalls = [];
     const manual = await validate({
@@ -282,6 +297,7 @@ test('zero-finding incomplete roster admits a bounded same-head retry for both p
       pages: [page([first])], gatePages: gates, calls: manualCalls,
     });
     assert.equal(manual.review_generation, 2);
+    assert.equal(Object.hasOwn(manual, 'recovery_kind'), false);
     assert.equal(manual.caller_workflow_path, '.github/workflows/repository-dispatch.yml');
     assert.equal(manualCalls.some(({ url }) => url.includes('/contents/.github/workflows/ct-review-bot.yml')), false);
     const second = workerCheck({
@@ -294,6 +310,124 @@ test('zero-finding incomplete roster admits a bounded same-head retry for both p
       gatePages: gates,
     });
     assert.equal(third.review_generation, 3);
+    assert.equal(Object.hasOwn(third, 'recovery_kind'), false);
+  }
+});
+
+test('zero-only recovery keeps the existing max-check-id rule for tied Gate timestamps', async () => {
+  const worker = workerCheck({ title: 'Review Yeti: BLOCK', summary: incompleteRosterSummary(6, 5) });
+  const laterIdFailure = incompleteRosterGateCheck(6, 5, { id: 201 });
+  const lowerIdSuccess = historicalGateCheck({
+    id: 200,
+    completed_at: laterIdFailure.completed_at,
+    conclusion: 'success',
+  });
+  const result = await validate({
+    attempt: 2,
+    pages: [page([worker])],
+    gatePages: [page([lowerIdSuccess, laterIdFailure])],
+  });
+  assert.equal(result.review_generation, 2);
+  assert.equal(Object.hasOwn(result, 'recovery_kind'), false);
+});
+
+test('nonzero no-blocker incomplete panels emit a P2 recovery candidate for service validation', async () => {
+  for (const [expected, completed, engine] of [[6, 5, 'panel'], [6, 4, 'composed']]) {
+    const summary = incompleteP2CandidateSummary(expected, completed, engine, 2, 3);
+    const first = workerCheck({
+      title: 'Review Yeti: BLOCK', summary,
+      startedAt: '2026-09-24T18:28:55Z', completedAt: '2026-09-24T18:28:56Z',
+    });
+    const gates = [page([incompleteRosterGateCheck(expected, completed, { completed_at: '2026-09-24T18:28:57Z' })])];
+    await assert.rejects(
+      validate({
+        attempt: 2,
+        pages: [page([first])],
+        gatePages: gates,
+      }),
+      /P2 recovery requires an explicit refresh request/u,
+    );
+    const retry = await validate({
+      attempt: 2,
+      refreshRequested: true,
+      pages: [page([first])],
+      gatePages: gates,
+    });
+
+    assert.equal(retry.review_generation, 2);
+    assert.equal(retry.refresh_requested, true);
+    assert.equal(retry.recovery_kind, 'incomplete_p2');
+
+    // A P2 candidate cannot mask an earlier infrastructure/no-verdict worker:
+    // the service archive contract requires every prior generation to be an
+    // incomplete BLOCK (zero-finding incomplete BLOCKs remain eligible).
+    await assert.rejects(validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page([
+        workerCheck({ id: 100, attempt: 1 }),
+        workerCheck({
+          id: 101, attempt: 2, title: 'Review Yeti: BLOCK', summary,
+          startedAt: '2026-09-24T18:29:00Z', completedAt: '2026-09-24T18:29:56Z',
+        }),
+      ])],
+      gatePages: [page([incompleteRosterGateCheck(expected, completed, { completed_at: '2026-09-24T18:30:00Z' })])],
+    }), /P2 recovery requires every prior worker to be a validated incomplete BLOCK; a1 is not a validated incomplete BLOCK/u);
+  }
+});
+
+test('P2 recovery rejects canonical finding counts greater than the raw pre-clustering count', async () => {
+  const worker = workerCheck({
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteP2CandidateSummary(6, 5, 'panel', 3, 1),
+    startedAt: '2026-09-24T18:28:55Z',
+    completedAt: '2026-09-24T18:28:56Z',
+  });
+
+  await assert.rejects(validate({
+    attempt: 2,
+    refreshRequested: true,
+    pages: [page([worker])],
+    gatePages: [page([incompleteRosterGateCheck(6, 5, { completed_at: '2026-09-24T18:28:57Z' })])],
+  }), /refresh a1 worker is not a completed recoverable infrastructure failure/u);
+});
+
+test('P2 candidate classification safely rejects missing or non-string worker summaries', () => {
+  const second = workerCheck({
+    id: 101,
+    attempt: 2,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteP2CandidateSummary(4, 3, 'panel', 2, 3),
+    startedAt: '2026-09-24T18:29:00Z',
+    completedAt: '2026-09-24T18:29:56Z',
+  });
+  const invalidOutputs = [
+    { title: 'Review Yeti: BLOCK', summary: undefined, text: null },
+    { title: 'Review Yeti: BLOCK', summary: 42, text: null },
+    { title: 'Review Yeti: BLOCK', text: null },
+  ];
+
+  for (const output of invalidOutputs) {
+    const first = workerCheck({
+      id: 100,
+      attempt: 1,
+      title: 'Review Yeti: BLOCK',
+      startedAt: '2026-09-24T18:28:50Z',
+      completedAt: '2026-09-24T18:28:56Z',
+    });
+    first.output = output;
+    assert.throws(() => assertReviewGeneration({
+      callerRunAttempt: 1,
+      inventory: {
+        headSha,
+        identities: [
+          { row: first, kind: 'worker', attempt: 1, runId: '1'.repeat(32) },
+          { row: second, kind: 'worker', attempt: 2, runId: '1'.repeat(32) },
+        ],
+      },
+      gateInventory: { rows: [] },
+      refreshRequested: true,
+    }), /P2 recovery requires every prior worker to be a validated incomplete BLOCK; a1 is not a validated incomplete BLOCK/u);
   }
 });
 
@@ -345,6 +479,18 @@ test('incomplete roster retry rejects findings, contradictory coverage, or misma
   const gate = incompleteRosterGateCheck(6, 5);
   const invalidWorkers = [
     workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('Findings: 0', 'Findings: 1') }),
+    workerCheck({
+      title: 'Review Yeti: BLOCK',
+      summary: incompleteP2CandidateSummary(6, 5).replace('blocking P0/P1: 0', 'blocking P0/P1: 1'),
+    }),
+    workerCheck({
+      title: 'Review Yeti: BLOCK',
+      summary: incompleteP2CandidateSummary(6, 5, 'panel', 2, 0),
+    }),
+    workerCheck({
+      title: 'Review Yeti: BLOCK',
+      summary: incompleteP2CandidateSummary(6, 5, 'panel', 0, 2),
+    }),
     workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('blocking P0/P1: 0', 'blocking P0/P1: 1') }),
     workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('0 raw persona finding(s)', '1 raw persona finding(s)') }),
     workerCheck({ title: 'Review Yeti: BLOCK', summary: summary.replace('completed lanes=5', 'completed lanes=6') }),
@@ -381,6 +527,248 @@ test('incomplete roster retry rejects findings, contradictory coverage, or misma
       }),
       /a1 worker is not a completed recoverable infrastructure failure/u,
     );
+  }
+});
+
+test('P2 recovery candidate still requires the newest exact-head App-owned incomplete-panel Gate', async () => {
+  const summary = incompleteP2CandidateSummary(6, 5);
+  const worker = workerCheck({ title: 'Review Yeti: BLOCK', summary });
+  const invalidGates = [
+    [],
+    [incompleteRosterGateCheck(4, 3)],
+    [infrastructureGateCheck()],
+    [incompleteRosterGateCheck(6, 5, { app: { id: 1, slug: 'other' } })],
+    [incompleteRosterGateCheck(6, 5, { conclusion: 'success' })],
+    [incompleteRosterGateCheck(6, 5, { completed_at: '2026-09-24T18:28:55Z' })],
+    [incompleteRosterGateCheck(6, 5), historicalGateCheck({ completed_at: '2026-09-24T18:29:00Z' })],
+  ];
+
+  for (const gateRuns of invalidGates) {
+    await assert.rejects(
+      validate({ attempt: 2, pages: [page([worker])], gatePages: [page(gateRuns)] }),
+      /P2 recovery requires every prior worker to be a validated incomplete BLOCK|a1 worker is not a completed recoverable infrastructure failure|Review Yeti Gate check is not an exact-head App-owned gate/u,
+    );
+  }
+});
+
+test('a3 P2 recovery binds each older BLOCK to the latest Gate in its worker window', async () => {
+  const first = workerCheck({
+    id: 100,
+    attempt: 1,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteP2CandidateSummary(6, 5, 'panel', 2, 3),
+    startedAt: '2026-09-24T18:28:50Z',
+    completedAt: '2026-09-24T18:28:56Z',
+  });
+  const second = workerCheck({
+    id: 101,
+    attempt: 2,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteRosterSummary(4, 3),
+    startedAt: '2026-09-24T18:29:00Z',
+    completedAt: '2026-09-24T18:29:56Z',
+  });
+  const gate1 = incompleteRosterGateCheck(6, 5, { id: 102, completed_at: '2026-09-24T18:28:58Z' });
+  const gate2 = incompleteRosterGateCheck(4, 3, { id: 103, completed_at: '2026-09-24T18:30:00Z' });
+  const admitted = await validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([first, second])],
+    gatePages: [page([gate1, gate2])],
+  });
+  assert.equal(admitted.review_generation, 3);
+  assert.equal(admitted.latest_worker_check_id, 101);
+  assert.equal(admitted.recovery_kind, 'incomplete_p2');
+
+  const conflictingSameTime = historicalGateCheck({
+    id: 104,
+    completed_at: '2026-09-24T18:28:58Z',
+  });
+  const invalidCases = [
+    { gates: [gate2], workers: [first, second] },
+    {
+      gates: [incompleteRosterGateCheck(6, 5, { id: 102, completed_at: '2026-09-24T18:29:01Z' }), gate2],
+      workers: [first, second],
+    },
+    {
+      gates: [gate1, incompleteRosterGateCheck(4, 3, {
+        id: 103,
+        status: 'completed',
+        conclusion: 'success',
+        completed_at: '2026-09-24T18:30:00Z',
+        output: { title: 'Review Yeti Gate: Passed', summary: 'Review Yeti Gate passed.', text: null },
+      })],
+      workers: [first, second],
+    },
+    { gates: [gate1, gate2, conflictingSameTime], workers: [first, second] },
+    {
+      gates: [gate1, gate2, historicalGateCheck({ id: 106, completed_at: gate2.completed_at })],
+      workers: [first, second],
+    },
+    {
+      gates: [gate1, gate2],
+      workers: [first, { ...second, started_at: '2026-09-24T18:28:56Z' }],
+      timelineError: true,
+    },
+    {
+      gates: [gate1, gate2],
+      workers: [first, { ...second, started_at: undefined }],
+      timelineError: true,
+    },
+  ];
+  for (const { gates, workers, timelineError } of invalidCases) {
+    await assert.rejects(
+      validate({ attempt: 1, refreshRequested: true, pages: [page(workers)], gatePages: [page(gates)] }),
+      timelineError
+        ? /P2 recovery requires valid, strictly ordered prior worker started_at\/completed_at timestamps/u
+        : /P2 recovery requires every prior worker to be a validated incomplete BLOCK|refresh a[12] worker is not a completed recoverable infrastructure failure/u,
+    );
+  }
+
+  const duplicateEquivalentGate = { ...gate1, id: 105 };
+  const equivalentTie = await validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([first, second])],
+    gatePages: [page([gate1, duplicateEquivalentGate, gate2])],
+  });
+  assert.equal(equivalentTie.review_generation, 3);
+  assert.equal(equivalentTie.recovery_kind, 'incomplete_p2');
+});
+
+test('P2 recovery requires canonical Gate timestamps while legacy zero-finding retries retain their parser', async () => {
+  const first = workerCheck({
+    id: 100,
+    attempt: 1,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteP2CandidateSummary(6, 5, 'panel', 2, 3),
+    startedAt: '2026-03-01T00:00:50Z',
+    completedAt: '2026-03-01T00:00:56Z',
+  });
+  const second = workerCheck({
+    id: 101,
+    attempt: 2,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteRosterSummary(4, 3),
+    startedAt: '2026-03-01T00:01:00Z',
+    completedAt: '2026-03-01T00:01:56Z',
+  });
+  const canonicalGate1 = incompleteRosterGateCheck(6, 5, {
+    id: 102,
+    completed_at: '2026-03-01T00:00:58Z',
+  });
+  const gate2 = incompleteRosterGateCheck(4, 3, {
+    id: 103,
+    completed_at: '2026-03-01T00:02:00Z',
+  });
+  const canonical = await validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([first, second])],
+    gatePages: [page([canonicalGate1, gate2])],
+  });
+  assert.equal(canonical.review_generation, 3);
+  assert.equal(canonical.recovery_kind, 'incomplete_p2');
+
+  // Date.parse rolls this well-shaped but impossible date forward to
+  // 2026-03-01T00:00:58Z, inside a1's Gate window. P2 validation must reject it.
+  const rolloverGate = incompleteRosterGateCheck(6, 5, {
+    id: 104,
+    completed_at: '2026-02-29T00:00:58Z',
+  });
+  await assert.rejects(validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([first, second])],
+    gatePages: [page([rolloverGate, gate2])],
+  }), /P2 recovery requires every prior worker to be a validated incomplete BLOCK/u);
+
+  const legacyZeroWorker = workerCheck({
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteRosterSummary(6, 5),
+    startedAt: '2026-03-01T00:00:50Z',
+    completedAt: '2026-03-01T00:00:56Z',
+  });
+  const legacyZero = await validate({
+    attempt: 2,
+    pages: [page([legacyZeroWorker])],
+    gatePages: [page([rolloverGate])],
+  });
+  assert.equal(legacyZero.review_generation, 2);
+  assert.equal(Object.hasOwn(legacyZero, 'recovery_kind'), false);
+});
+
+test('P2 recovery rejects conflicting same-time App Gate checks for the final or sole worker', async () => {
+  const worker = workerCheck({
+    id: 100,
+    attempt: 1,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteP2CandidateSummary(6, 5, 'panel', 2, 3),
+    startedAt: '2026-09-24T18:28:50Z',
+    completedAt: '2026-09-24T18:28:56Z',
+  });
+  const gate = incompleteRosterGateCheck(6, 5, { id: 102, completed_at: '2026-09-24T18:28:58Z' });
+  const conflictingGate = historicalGateCheck({ id: 104, completed_at: gate.completed_at });
+
+  await assert.rejects(validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([worker])],
+    gatePages: [page([gate, conflictingGate])],
+  }), /P2 recovery requires every prior worker to be a validated incomplete BLOCK/u);
+});
+
+test('P2 recovery rejects negative durations and noncanonical or impossible prior-worker timestamps', async (t) => {
+  const first = workerCheck({
+    id: 100,
+    attempt: 1,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteP2CandidateSummary(6, 5, 'panel', 2, 3),
+    startedAt: '2026-09-24T18:28:50Z',
+    completedAt: '2026-09-24T18:28:56Z',
+  });
+  const second = workerCheck({
+    id: 101,
+    attempt: 2,
+    title: 'Review Yeti: BLOCK',
+    summary: incompleteRosterSummary(4, 3),
+    startedAt: '2026-09-24T18:29:00Z',
+    completedAt: '2026-09-24T18:29:56Z',
+  });
+  const gates = [
+    incompleteRosterGateCheck(6, 5, { id: 102, completed_at: '2026-09-24T18:28:58Z' }),
+    incompleteRosterGateCheck(4, 3, { id: 103, completed_at: '2026-09-24T18:30:00Z' }),
+  ];
+  const invalidCases = [
+    {
+      name: 'rejects a negative duration on the first worker',
+      workers: [{ ...first, started_at: '2026-09-24T18:28:57Z' }, second],
+    },
+    {
+      name: 'rejects a negative duration on the second worker',
+      workers: [first, { ...second, started_at: '2026-09-24T18:29:57Z' }],
+    },
+    {
+      name: 'rejects millisecond precision on the first worker',
+      workers: [{ ...first, started_at: '2026-09-24T18:28:50.000Z' }, second],
+    },
+    {
+      name: 'rejects a space-separated timestamp on the first worker',
+      workers: [{ ...first, started_at: '2026-09-24 18:28:50Z' }, second],
+    },
+    {
+      name: 'rejects an impossible calendar date on the first worker',
+      workers: [{ ...first, started_at: '2026-02-30T18:28:50Z' }, second],
+    },
+  ];
+
+  for (const invalidCase of invalidCases) {
+    await t.test(invalidCase.name, async () => {
+      await assert.rejects(
+        validate({ attempt: 1, refreshRequested: true, pages: [page(invalidCase.workers)], gatePages: [page(gates)] }),
+        /P2 recovery requires valid, strictly ordered prior worker started_at\/completed_at timestamps/u,
+      );
+    });
   }
 });
 
@@ -800,4 +1188,27 @@ test('pagination accepts a complete multi-page inventory and reconciles the flat
   });
   assert.equal(result.worker_check_count, 0);
   assert.equal(result.review_check_count, 101);
+});
+
+
+test('validated recovery classification reaches the GitHub step output file', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'central-recovery-output-'));
+  try {
+    for (const p2 of [true, false]) {
+      const result = await validate({ attempt: 1, refreshRequested: true,
+        pages: [page([workerCheck({ title: 'Review Yeti: BLOCK',
+          summary: p2 ? incompleteP2CandidateSummary(6, 5) : incompleteRosterSummary(6, 5) })])],
+        gatePages: [page([incompleteRosterGateCheck(6, 5)])],
+      });
+      const outputPath = join(directory, p2 ? 'p2-output' : 'ordinary-output');
+      writeOutputs(result, outputPath);
+      const outputs = Object.fromEntries(readFileSync(outputPath, 'utf8').trimEnd().split('\n')
+        .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+      assert.equal(outputs.review_generation, '2');
+      assert.equal(outputs.refresh_execution_attempt, '1');
+      assert.equal(outputs.recovery_kind, p2 ? 'incomplete_p2' : undefined);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

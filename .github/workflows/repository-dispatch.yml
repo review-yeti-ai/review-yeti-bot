@@ -62,6 +62,7 @@ jobs:
       base_sha: ${{ steps.request.outputs.base_sha }}
       head_sha: ${{ steps.request.outputs.head_sha }}
       review_generation: ${{ steps.request.outputs.review_generation }}
+      recovery_kind: ${{ steps.request.outputs.recovery_kind }}
       refresh_execution_attempt: ${{ steps.request.outputs.refresh_execution_attempt }}
       caller_workflow_sha256: ${{ steps.request.outputs.caller_workflow_sha256 }}
       refresh_requested: ${{ steps.request.outputs.refresh_requested }}
@@ -243,6 +244,7 @@ jobs:
       pr_number: ${{ fromJSON(needs.validate.outputs.pr_number) }}
       base_sha: ${{ needs.validate.outputs.base_sha }}
       head_sha: ${{ needs.validate.outputs.head_sha }}
+      recovery_kind: ${{ needs.validate.outputs.recovery_kind }}
       refresh_requested: ${{ needs.validate.outputs.refresh_requested == 'true' }}
       refresh_execution_attempt: ${{ fromJSON(needs.validate.outputs.refresh_execution_attempt) }}
       expected_generation: ${{ fromJSON(needs.validate.outputs.review_generation) }}

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import {
   evaluateExactCheckRuns,
@@ -10,6 +11,22 @@ const head = 'a'.repeat(40);
 const checks = [
   { id: 11, name: 'Review Yeti', app: { id: 4385771, slug: 'ct-review-bot' }, head_sha: head, status: 'completed', conclusion: 'success' },
 ];
+
+test('publication documentation separates worker verdict, service recovery receipt and repository-specific protection', async () => {
+  const readme = await readFile(new URL('../README.md', import.meta.url), 'utf8');
+  const section = readme.split('### Check Publication Contract\n')[1]?.split('\n### ')[0].replace(/\s+/gu, ' ');
+  assert.ok(section, 'the publication contract must remain explicit');
+  assert.match(section, /central action writes zero checks/u);
+  assert.match(section, /worker publishes only the raw `Review Yeti` check/u);
+  assert.match(section, /DOKS service owns the separate App-published `Review Yeti Gate`/u);
+  assert.match(section, /recovery evidence, not an approval check/u);
+  assert.match(section, /Required-check names remain repository-specific/u);
+  assert.match(section, /cannot replace a protected required check/u);
+  assert.match(section, /same exact head and authoritative worker generation/u);
+  assert.match(section, /Pending, failed, timed-out or incomplete review evidence never authorizes a merge/u);
+  assert.match(section, /DOKS passthrough does not dispatch a worker or synthesize an approval/u);
+  assert.match(section, /`SHIP` review verdict does not itself trigger CI, merge, deployment or release activity/u);
+});
 
 test('shares only the qualifying merge-queue state policy', () => {
   assert.deepEqual(QUALIFYING_MERGE_QUEUE_STATES, ['QUEUED', 'AWAITING_CHECKS', 'SPECULATIVE', 'BUILT']);

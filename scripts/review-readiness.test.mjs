@@ -797,13 +797,16 @@ test('documentation labels generic callers and distinguishes constituent checks 
   }
 });
 
-test('README scopes dual check publication to legacy local execution and keeps DOKS raw-only', () => {
+test('README separates the DOKS recovery receipt from legacy compatibility publication and protected checks', () => {
   const source = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   assert.match(source, /DOKS central action writes zero checks/u);
   assert.match(source, /worker publishes only the raw `Review Yeti` check/u);
   assert.match(source, /legacy hosted\/local compatibility path/u);
   assert.match(source, /also publishes `Review Yeti Gate`/u);
-  assert.match(source, /must not\s+be required for governed DOKS repositories/u);
+  assert.match(source, /DOKS service owns\s+the separate App-published `Review Yeti Gate` receipt used to validate recovery\s+history/u);
+  assert.match(source, /Required-check names remain repository-specific/u);
+  assert.match(source, /central branch protection requires the raw `Review Yeti` check/u);
+  assert.doesNotMatch(source, /reserved there for the future service-owned gate/u);
 });
 
 test('accepts a thin consumer shim only when it pins and binds the central verifier action', () => {

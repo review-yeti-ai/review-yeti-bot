@@ -135,9 +135,11 @@ must mint one owner-scoped token per installation as described above.
 The central `example-review-actions` repository follows the same rule for its own
 pull requests: its base-owned `.github/workflows/ct-review-bot.yml` dispatches
 to the promoted `v1` receiver, and branch protection trusts only the exact-head
-`Review Yeti` check published by the `ct-review-bot` App. The distinct
-`Review Yeti Gate` name is not part of the deployed DOKS contract; it remains
-reserved there for the future service-owned gate. Central self-review must not
+`Review Yeti` check published by the `ct-review-bot` App. The DOKS service owns
+the separate App-published `Review Yeti Gate` receipt used to validate recovery
+history; it is not an approval check and does not replace a protected required
+check. Required-check names remain repository-specific. Central branch
+protection requires the raw `Review Yeti` check. Central self-review must not
 call the development-line reusable workflow directly.
 
 ```yaml
@@ -293,11 +295,21 @@ available to non-central/manual workflows.
 ### Check Publication Contract
 
 The deployed DOKS central action writes zero checks. For a reviewed DOKS run,
-the worker publishes only the raw `Review Yeti` check. Governed branch
-protection and promotion therefore bind `Review Yeti` to the official
-`ct-review-bot` App (integration `4385771`). DOKS passthrough does not dispatch
+the worker publishes only the raw `Review Yeti` check. The DOKS service owns
+the separate App-published `Review Yeti Gate` receipt. These are different
+publishers: the service receipt is recovery evidence, not an approval check,
+and cannot replace a protected required check. Recovery validation binds the
+receipt to the same exact head and authoritative worker generation; a green
+receipt from another head or attempt is not a substitute.
+
+Required-check names remain repository-specific. Central branch protection
+and promotion bind the raw `Review Yeti` check to the official `ct-review-bot`
+App (integration `4385771`); this documentation does not add or waive a
+required check in any repository. Pending, failed, timed-out or incomplete
+review evidence never authorizes a merge. DOKS passthrough does not dispatch
 a worker or synthesize an approval; it leaves the protected raw check
-unsatisfied.
+unsatisfied. A `SHIP` review verdict does not itself trigger CI, merge,
+deployment or release activity.
 
 ### Atomic Worker-Generation Reservation
 
@@ -307,12 +319,15 @@ disabled. While it holds that lease, the validator reads the complete App-owned
 `Review Yeti` check ledger for the exact head and admits only generation `a1`,
 or bounded replacements `a2` and `a3`. Every prior generation must exist
 exactly once and be App-owned and completed with `failure` or `action_required`.
-An infrastructure/no-verdict title qualifies. A raw `BLOCK` qualifies only when
-its exact-head summary reports zero findings and an incomplete panel, and the
-newest App-owned failed `Review Yeti Gate` confirms the matching infrastructure
-failure or missing-roster lane counts. A findings `BLOCK`,
-`FIX_FIRST`, active checks, missing or duplicate generations, and attempts
-`a4` or later never authorize replacement.
+An infrastructure/no-verdict title qualifies. The legacy zero-finding `BLOCK`
+path qualifies only when its exact-head summary reports zero canonical and raw
+findings plus an incomplete panel, and the newest App-owned failed
+`Review Yeti Gate` confirms the matching infrastructure failure or missing-roster
+lane counts. A nonzero P2-only incomplete-panel summary can produce a P2
+recovery candidate only under the additional contract below; it does not
+authorize a replacement by itself. A findings-bearing `BLOCK`, `FIX_FIRST`,
+active checks, missing or duplicate generations, and attempts `a4` or later
+never authorize replacement.
 All prior worker rows must also carry the same DOKS `run_<id>` identity; rows
 from different worker identities cannot be combined into an apparent contiguous
 generation history.
@@ -333,6 +348,35 @@ reservation boundary: after a recovery dispatch reserves its next generation,
 a queued duplicate revalidates against that new generation and is rejected.
 Consumer or central repository variables cannot downgrade this path to local
 execution.
+
+### Bounded P2 Incomplete-Panel Recovery
+
+The central validator's `incomplete_p2` output is only a candidate for service
+validation. Central emits it only for an explicit refresh of the same exact
+head when the incomplete-panel `BLOCK` summary reports positive, internally
+consistent raw and canonical finding counts and no P0/P1 findings. The central
+summary alone never authorizes a retry.
+
+While holding the same repository/PR/head dispatch lease, the DOKS service must
+load the durable prior finding archive, verify its digest, and bind it to the
+exact prior worker generations and App-owned `Review Yeti Gate` receipt. It
+revalidates every raw persona finding and canonical finding as P2 before it
+allocates a replacement. The archive is limited to 100 findings and 64 KiB of
+recovery context; the published Check Run receipt must stay within 65,000 bytes.
+Missing or mismatched archive, digest, Gate, or coordinates fail closed before
+generation allocation. Caller-supplied findings or digests are never accepted
+as archive evidence.
+
+Each admitted replacement runs a fresh full review with cache reuse and
+incremental review disabled. There is no P2 exemption or finding suppression:
+the normal complete review and protected `Review Yeti` check still decide the
+outcome. The ledger permits at most two prior worker generations and three
+attempts total (`a1` through `a3`).
+
+Deploy compatible DOKS service and Action versions before promoting a central
+validator that emits `incomplete_p2` through `v1`. This section documents the
+required protocol and rollout order; it is not evidence that any environment
+has enabled the feature.
 
 To recover a same-head provider outage, apply the `review-yeti/refresh` label to
 the pull request. The base-owned caller sends a signed Boolean refresh request;
@@ -365,9 +409,11 @@ before dispatch; a stale base or head fails validation.
 
 The legacy hosted/local compatibility path also publishes `Review Yeti Gate`
 alongside the raw check, including an honestly `skipped` pair during local
-passthrough. That alias preserves existing non-DOKS consumers only. It must not
-be required for governed DOKS repositories and does not represent the future
-service-owned gate.
+passthrough. That dual publication preserves existing non-DOKS consumers. For
+DOKS recovery, the service-owned `Review Yeti Gate` receipt validates the prior
+worker history; it is not itself an approval or a branch-protection check.
+Required-check names remain repository-specific, and central branch protection
+requires the raw `Review Yeti` check published by the `ct-review-bot` App.
 
 For deep-dive setup and deployment instructions, see [Kubernetes & DOKS Execution Mode](docs/kubernetes-mode.md).
 
@@ -484,6 +530,6 @@ approval evidence boundary exists.
 Changes to Review Yeti are developed on `main` and promoted to the immutable `@v1` channel via the atomic release promotion workflow:
 
 1. Changes pass rigorous test suites on `main` (`scripts/validate-central-dispatch.mjs`, transport telemetry, and schema validation).
-2. Promotion requires the exact PR head's App-owned `Review Yeti` check. The App ID binding distinguishes it from similarly named Actions jobs; the legacy hosted/local `Review Yeti Gate` alias is not part of DOKS promotion and remains reserved there for the future service-owned gate.
+2. Promotion requires the exact PR head's App-owned `Review Yeti` check. The App ID binding distinguishes it from similarly named Actions jobs. The service-owned `Review Yeti Gate` is recovery evidence, not a promotion or approval check. Required-check names remain repository-specific; central branch protection requires the raw `Review Yeti` check.
 3. The `promote-v1.yml` workflow performs an atomic fast-forward push to the `v1` branch and generates an immutable SHA receipt.
 4. All consumer repositories referencing `@v1` immediately receive updated policies and features without repository-side commits.

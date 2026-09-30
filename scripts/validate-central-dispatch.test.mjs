@@ -204,6 +204,8 @@ test('accepts only the sanitized Cisco dispatch identity contract', () => {
     { ...payload, request_id: `example-api:4528:${headSha}:${callerRunId}:${callerRunAttempt}` },
     { ...payload, provider: 'ollama' },
     { ...payload, ollama_api_key: 'secret' },
+    { ...payload, recovery_kind: 'incomplete_p2' },
+    { ...payload, incompleteP2Recovery: true },
     { ...payload, refresh_requested: 'true' },
   ]) {
     assert.throws(() => validateDispatchPayload(invalid));
@@ -596,6 +598,8 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(normalizationBlock, /RAW_CENTRAL_DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload \|\| inputs\) \}\}/u);
   assert.match(receiver, /CENTRAL_DISPATCH_PAYLOAD: \$\{\{ steps\.payload\.outputs\.payload \}\}/u);
   assert.doesNotMatch(receiver, /^\s{10}CENTRAL_DISPATCH_PAYLOAD: \$\{\{ toJSON\(github\.event\.client_payload \|\| inputs\) \}\}$/mu);
+  assert.match(receiver, /recovery_kind: \$\{\{ steps\.request\.outputs\.recovery_kind \}\}/u);
+  assert.match(receiver, /recovery_kind: \$\{\{ needs\.validate\.outputs\.recovery_kind \}\}/u);
   const validationTokenStep = receiver.match(/- name: Mint Review Yeti App token for exampleorg target validation[\s\S]*?(?=\n\s+- name: Mint Review Yeti App token for exact public target validation)/u)?.[0] ?? '';
   const scopedPermissions = [...validationTokenStep.matchAll(/^\s+permission-([a-z-]+):\s*(\w+)\s*$/gmu)]
     .map((match) => `${match[1]}:${match[2]}`).sort();
@@ -617,6 +621,17 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(reusable, /REVIEW_YETI_DOKS_PUBLISH_MODE:\s*\$\{\{ inputs\.central_execution && 'app-gate' \|\| vars\.REVIEW_YETI_DOKS_PUBLISH_MODE \|\| 'disabled' \}\}/u);
   assert.match(reusable, /expected_generation:\s*[\s\S]*?default:\s*1[\s\S]*?type:\s*number/u);
   assert.match(reusable, /expected-generation:\s*\$\{\{ inputs\.expected_generation \}\}/u);
+  assert.match(reusable, /recovery_kind:\s*[\s\S]*?default:\s*''[\s\S]*?type:\s*string/u);
+  assert.match(reusable, /REQUEST_RECOVERY_KIND: \$\{\{ inputs\.recovery_kind \}\}/u);
+  assert.match(reusable, /VALIDATED_RECOVERY_KIND: \$\{\{ steps\.central_validation\.outputs\.recovery_kind \}\}/u);
+  const centralValidationStep = workflowStepBlock(reusable, 'Validate central dispatch boundary');
+  assert.match(centralValidationStep, /^\s+id: central_validation$/mu);
+  assert.match(centralValidationStep, /^\s+run: node \.exampleorg-review-actions\/scripts\/validate-central-dispatch\.mjs$/mu);
+  const recoveryClassificationStep = workflowStepBlock(reusable, 'Verify central recovery classification');
+  assert.match(recoveryClassificationStep, /if: \$\{\{ inputs\.central_execution \}\}/u);
+  assert.match(recoveryClassificationStep, /REQUEST_RECOVERY_KIND/u);
+  assert.match(recoveryClassificationStep, /VALIDATED_RECOVERY_KIND/u);
+  assert.match(reusable, /incomplete-p2-recovery: \$\{\{ inputs\.central_execution && inputs\.recovery_kind == 'incomplete_p2' \}\}/u);
   assert.match(reusable, /group:\s*exampleorg-review-yeti-[^\n]*inputs\.head_sha/u);
   assert.doesNotMatch(reusable, /secrets\.CROSS_REPO_TOKEN/u);
   assert.doesNotMatch(reusable, /workflow_call:[\s\S]{0,1200}OLLAMA_PR_REVIEW_API_KEY/u);
@@ -626,6 +641,44 @@ test('workflow contract delegates promoted v1 bytes and keeps provider secrets i
   assert.match(reusable, /refresh-requested:\s*\$\{\{ inputs\.refresh_requested \}\}/u);
   assert.match(reusable, /refresh-execution-attempt:\s*\$\{\{ inputs\.refresh_requested && inputs\.refresh_execution_attempt \|\| '' \}\}/u);
   assert.equal((reusable.match(/^\s+max-file-diff-chars:/gmu) || []).length, 1);
+});
+
+test('the central recovery-classification step accepts only the validator result', () => {
+  const classificationScript = workflowStepRun(reusableWorkflow, 'Verify central recovery classification');
+  const execute = (requestKind, validatedKind) => spawnSync('bash', ['-c', classificationScript], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      REQUEST_RECOVERY_KIND: requestKind,
+      VALIDATED_RECOVERY_KIND: validatedKind,
+    },
+  });
+
+  for (const [requestKind, validatedKind] of [
+    ['', ''],
+    ['incomplete_p2', 'incomplete_p2'],
+  ]) {
+    const result = execute(requestKind, validatedKind);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, '');
+  }
+
+  for (const [requestKind, validatedKind] of [
+    ['', 'incomplete_p2'],
+    ['incomplete_p2', ''],
+    ['unexpected', 'incomplete_p2'],
+  ]) {
+    const result = execute(requestKind, validatedKind);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stdout, /central recovery classification changed between admission and execution/u);
+  }
+
+  const missingRequestKind = spawnSync('bash', ['-c', classificationScript], {
+    encoding: 'utf8',
+    env: { ...process.env, VALIDATED_RECOVERY_KIND: 'incomplete_p2' },
+  });
+  assert.equal(missingRequestKind.status, 1);
+  assert.match(missingRequestKind.stderr, /REQUEST_RECOVERY_KIND/u);
 });
 
 test('receiver scopes internal and public target Apps independently', () => {
