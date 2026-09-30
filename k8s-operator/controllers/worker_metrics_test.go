@@ -100,27 +100,39 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	}
 }
 
-type failedMetricsReader struct{ client.Reader }
+type failedMetricsReader struct {
+	client.Reader
+	failReviewsOnly bool
+}
 
-func (failedMetricsReader) List(context.Context, client.ObjectList, ...client.ListOption) error {
+func (r failedMetricsReader) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
+	if _, jobs := list.(*batchv1.JobList); jobs && r.failReviewsOnly {
+		return nil
+	}
 	return errors.New("cache unavailable")
 }
 
 func TestWorkerMetricsReadFailureDoesNotReportAnEmptyQueue(t *testing.T) {
-	operatorMetrics.UpdateQueueMetrics(10, 2)
-	operatorMetrics.SnapshotTimestamp.Set(123)
-	c := &workerMetricsCollector{reader: failedMetricsReader{}}
-	if err := c.collect(context.Background(), time.Now()); err == nil {
-		t.Fatal("expected failure")
-	}
-	if got := testutil.ToFloat64(operatorMetrics.ActiveJobs); got != 10 {
-		t.Fatalf("active=%v", got)
-	}
-	if got := testutil.ToFloat64(operatorMetrics.QueuedJobs); got != 2 {
-		t.Fatalf("queued=%v", got)
-	}
-	if got := testutil.ToFloat64(operatorMetrics.SnapshotTimestamp); got != 123 {
-		t.Fatalf("timestamp=%v", got)
+	for _, failReviewsOnly := range []bool{false, true} {
+		operatorMetrics.UpdateQueueMetrics(10, 2)
+		operatorMetrics.RecentFailedJobs.Set(3)
+		operatorMetrics.SnapshotTimestamp.Set(123)
+		c := &workerMetricsCollector{reader: failedMetricsReader{failReviewsOnly: failReviewsOnly}}
+		if err := c.collect(context.Background(), time.Now()); err == nil {
+			t.Fatal("expected failure")
+		}
+		if got := testutil.ToFloat64(operatorMetrics.ActiveJobs); got != 10 {
+			t.Fatalf("active=%v", got)
+		}
+		if got := testutil.ToFloat64(operatorMetrics.QueuedJobs); got != 2 {
+			t.Fatalf("queued=%v", got)
+		}
+		if got := testutil.ToFloat64(operatorMetrics.RecentFailedJobs); got != 3 {
+			t.Fatalf("recent failures=%v", got)
+		}
+		if got := testutil.ToFloat64(operatorMetrics.SnapshotTimestamp); got != 123 {
+			t.Fatalf("timestamp=%v", got)
+		}
 	}
 }
 
