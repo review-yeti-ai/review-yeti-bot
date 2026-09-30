@@ -38,7 +38,7 @@ function enrolledStateRow() {
     creation_state: 'bound', desired_state: 'pending', desired_version: 1, published_version: 0,
     current_attempt: true, worker_token_digest: 'f'.repeat(64), current_execution: 1,
     run_status: 'queued', outbox_status: 'pending', effective_config_digest: event.configDigest,
-    current_generation: 2, authoritative_gate_app_id: 77,
+    current_generation: 2, authoritative_gate_app_id: 77, artifacts: {},
     received_at: '2026-09-09T11:59:00.000Z', terminal_deadline: '2026-09-09T12:10:00.000Z',
   };
 }
@@ -189,6 +189,18 @@ describe('worker completion persistence diagnostics', () => {
         if (sql.startsWith('SELECT repository_id, pr_number')) return { rows: [{ repository_id: 123, pr_number: 42 }] };
         if (sql.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
         if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [state] };
+        // Ordinary attempt 2 has no retained-finding archive or incomplete Gate.
+        if (sql.includes('FROM review_runs') && (sql.includes('SELECT repository_id, owner')
+          || sql.includes('SELECT run_id, repository_id'))) {
+          const event = completion();
+          return { rows: [{ run_id: event.runId, repository_id: event.repositoryId,
+            owner: event.owner, repo: event.repo, pr_number: event.prNumber,
+            head_sha: event.headSha, base_sha: event.baseSha,
+            effective_policy_digest: event.policyDigest, effective_config_digest: event.configDigest,
+            authoritative_gate_app_id: 77, publication_mode: 'app-gate' }] };
+        }
+        if (sql.includes('FROM review_generation_recoveries')
+          || sql.includes('incomplete P2 recovery loss guard')) return { rows: [] };
         if (sql.startsWith('UPDATE review_gate_attempts') || sql.startsWith('INSERT INTO review_worker_completions')
           || sql.startsWith('UPDATE review_dispatch_outbox') || sql.startsWith('UPDATE review_runs')) return { rows: [] };
         throw new Error(`unexpected query: ${sql}`);
