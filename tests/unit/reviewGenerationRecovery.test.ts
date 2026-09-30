@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { renderIncompleteInfrastructureTitle } from '../../src/review/publicationFailurePolicy';
-import { validateReviewGenerationRecoveryEvidence } from '../../src/review/reviewGenerationRecovery';
+import {
+  evaluateReviewGenerationRecoveryLedger,
+  selectIncompleteRecoveryGate,
+  validateReviewGenerationRecoveryEvidence,
+} from '../../src/review/reviewGenerationRecovery';
 
 const headSha = 'a'.repeat(40);
 const runId = `run_${'b'.repeat(32)}`;
@@ -39,6 +43,51 @@ function request(overrides: Record<string, unknown> = {}) {
   return {
     owner: 'calltelemetry', repo: 'cisco-cdr', headSha, runId,
     expectedGeneration: 2, expectedAppId: 4_385_771,
+    ...overrides,
+  };
+}
+
+function incompleteWorkerCheck(
+  generation: number,
+  expected: number,
+  completed: number,
+  findingCounts: { canonical: number; raw: number },
+  startedAt: string,
+  completedAt: string,
+) {
+  const coverage = `Coverage: mode=panel; expected lanes=${expected}; completed lanes=${completed}; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
+  return workerCheck(generation, {
+    started_at: startedAt,
+    completed_at: completedAt,
+    output: {
+      title: 'Review Yeti: BLOCK',
+      summary: `Verdict \`BLOCK\` at \`${headSha}\`.\n\nFindings: ${findingCounts.canonical} (blocking P0/P1: 0; ${findingCounts.raw} raw persona finding(s) before clustering).\n\n${coverage}`,
+      text: null,
+    },
+  });
+}
+
+function incompleteGateCheck(
+  id: number,
+  expected: number,
+  completed: number,
+  completedAt: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    name: 'Review Yeti Gate',
+    head_sha: headSha,
+    external_id: `review-yeti-gate:v1:${String(id).padStart(64, '0')}`,
+    status: 'completed',
+    conclusion: 'failure',
+    app: { id: 4_385_771, slug: 'ct-review-bot' },
+    completed_at: completedAt,
+    output: {
+      title: 'Review Yeti Gate: Failed (incomplete panel)',
+      summary: `Review Yeti Gate failed: the panel expected ${expected} review lane(s) but ${completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`,
+      text: null,
+    },
     ...overrides,
   };
 }
@@ -166,6 +215,145 @@ describe('Review Yeti worker-generation recovery ledger', () => {
         expect.objectContaining({ generation: 1, checkId: 1_001, externalId: `${runId}:a1` }),
         expect.objectContaining({ generation: 2, checkId: 1_002, externalId: `${runId}:a2` }),
       ]);
+  });
+
+  it('matches an older P2 Gate by its worker window and the newest incomplete Gate globally', () => {
+    const first = incompleteWorkerCheck(1, 6, 5, { canonical: 2, raw: 3 },
+      '2026-09-24T18:28:50Z', '2026-09-24T18:28:56Z');
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 0, raw: 0 },
+      '2026-09-24T18:29:00Z', '2026-09-24T18:29:56Z');
+    const gate1 = incompleteGateCheck(2_001, 6, 5, '2026-09-24T18:28:58Z');
+    const gate2 = incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:30:00Z');
+    const candidate = request({ expectedGeneration: 3, incompleteP2Recovery: true });
+    const evidence = evaluateReviewGenerationRecoveryLedger(candidate, [second, first], [gate2, gate1]);
+
+    expect(evidence).toHaveLength(2);
+    const firstProof = evidence[0].legacyIncompleteRoster!;
+    const secondProof = evidence[1].legacyIncompleteRoster!;
+    expect(firstProof.nextWorkerStartedAt).toBe('2026-09-24T18:29:00Z');
+    expect(selectIncompleteRecoveryGate(candidate, firstProof)?.id).toBe(gate1.id);
+    expect(secondProof.nextWorkerStartedAt).toBeUndefined();
+    expect(selectIncompleteRecoveryGate(candidate, secondProof)?.id).toBe(gate2.id);
+  });
+
+  it.each([
+    ['missing earlier Gate', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [gate2]],
+    ['earlier Gate completed after the next worker started', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [
+      { ...gate1, completed_at: '2026-09-24T18:29:01Z' }, gate2,
+    ]],
+    ['latest Gate is a successful verdict', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [
+      gate1,
+      { ...gate2, conclusion: 'success', output: { title: 'Review Yeti Gate: Passed', summary: 'Passed.', text: null } },
+    ]],
+    ['conflicting same-time earlier Gates', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [
+      gate1,
+      { ...gate1, id: 2_003, external_id: `review-yeti-gate:v1:${'d'.repeat(64)}`, output: { title: 'Review Yeti Gate: Failed', summary: 'Different same-time result.', text: null } },
+      gate2,
+    ]],
+    ['conflicting same-time newest Gates', (gate1: ReturnType<typeof incompleteGateCheck>, gate2: ReturnType<typeof incompleteGateCheck>) => [
+      gate1,
+      gate2,
+      { ...gate2, id: 2_004, external_id: `review-yeti-gate:v1:${'e'.repeat(64)}`, conclusion: 'success' },
+    ]],
+  ])('refuses P2 a3 recovery with %s', (_label, makeGates) => {
+    const first = incompleteWorkerCheck(1, 6, 5, { canonical: 2, raw: 3 },
+      '2026-09-24T18:28:50Z', '2026-09-24T18:28:56Z');
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 0, raw: 0 },
+      '2026-09-24T18:29:00Z', '2026-09-24T18:29:56Z');
+    const gate1 = incompleteGateCheck(2_001, 6, 5, '2026-09-24T18:28:58Z');
+    const gate2 = incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:30:00Z');
+    expect(() => evaluateReviewGenerationRecoveryLedger(
+      request({ expectedGeneration: 3, incompleteP2Recovery: true }),
+      [first, second],
+      makeGates(gate1, gate2),
+    )).toThrow(/generation recovery ledger/u);
+  });
+
+  it('chooses the maximum check id for identical same-time Gates in a P2 window', () => {
+    const first = incompleteWorkerCheck(1, 6, 5, { canonical: 2, raw: 3 },
+      '2026-09-24T18:28:50Z', '2026-09-24T18:28:56Z');
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 0, raw: 0 },
+      '2026-09-24T18:29:00Z', '2026-09-24T18:29:56Z');
+    const gate1 = incompleteGateCheck(2_001, 6, 5, '2026-09-24T18:28:58Z');
+    const tiedGate1 = { ...gate1, id: 2_005 };
+    const gate2 = incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:30:00Z');
+    const candidate = request({ expectedGeneration: 3, incompleteP2Recovery: true });
+    const evidence = evaluateReviewGenerationRecoveryLedger(candidate, [first, second], [gate1, tiedGate1, gate2]);
+    expect(selectIncompleteRecoveryGate(candidate, evidence[0].legacyIncompleteRoster!)?.id).toBe(tiedGate1.id);
+  });
+
+  it('keeps zero-only tied Gate recovery on the previous maximum check-id behavior', () => {
+    const worker = incompleteWorkerCheck(1, 4, 3, { canonical: 0, raw: 0 },
+      '2026-09-24T18:28:50Z', '2026-09-24T18:28:56Z');
+    const failed = incompleteGateCheck(2_101, 4, 3, '2026-09-24T18:28:58Z');
+    const lowerIdSuccess = { ...failed, id: 2_100, conclusion: 'success' };
+    const evidence = evaluateReviewGenerationRecoveryLedger(request(), [worker], [lowerIdSuccess, failed]);
+    expect(evidence).toHaveLength(1);
+    expect(selectIncompleteRecoveryGate(request(), evidence[0].legacyIncompleteRoster!)?.id).toBe(failed.id);
+  });
+
+  it('checks ambiguity only at the latest Gate timestamp, independently of inventory order', () => {
+    const worker = incompleteWorkerCheck(1, 4, 3, { canonical: 1, raw: 1 },
+      '2026-09-24T18:28:50Z', '2026-09-24T18:28:56Z');
+    const older = incompleteGateCheck(2_100, 4, 3, '2026-09-24T18:28:57Z');
+    const olderConflict = { ...older, id: 2_101, conclusion: 'success' };
+    const latest = incompleteGateCheck(2_102, 4, 3, '2026-09-24T18:28:58Z');
+    const candidate = request({ incompleteP2Recovery: true });
+    for (const gates of [[older, olderConflict, latest], [latest, olderConflict, older]]) {
+      const evidence = evaluateReviewGenerationRecoveryLedger(candidate, [worker], gates);
+      expect(selectIncompleteRecoveryGate(candidate, evidence[0].legacyIncompleteRoster!)?.id).toBe(latest.id);
+    }
+  });
+
+  it('rejects invalid calendar timestamps in a P2 recovery timeline', () => {
+    const first = incompleteWorkerCheck(1, 6, 5, { canonical: 2, raw: 3 },
+      '2026-02-30T18:28:50Z', '2026-09-24T18:28:56Z');
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 0, raw: 0 },
+      '2026-09-24T18:29:00Z', '2026-09-24T18:29:56Z');
+    const gates = [
+      incompleteGateCheck(2_001, 6, 5, '2026-09-24T18:28:58Z'),
+      incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:30:00Z'),
+    ];
+    expect(() => evaluateReviewGenerationRecoveryLedger(
+      request({ expectedGeneration: 3, incompleteP2Recovery: true }), [first, second], gates,
+    )).toThrow(/generation recovery ledger/u);
+  });
+
+  it('rejects an inverted worker interval while its P2 Gates otherwise match', () => {
+    const first = incompleteWorkerCheck(1, 6, 5, { canonical: 2, raw: 3 },
+      '2026-09-24T18:28:58Z', '2026-09-24T18:28:56Z');
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 1, raw: 1 },
+      '2026-09-24T18:29:00Z', '2026-09-24T18:29:06Z');
+    const gates = [
+      incompleteGateCheck(2_001, 6, 5, '2026-09-24T18:28:58Z'),
+      incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:29:08Z'),
+    ];
+
+    expect(() => evaluateReviewGenerationRecoveryLedger(
+      request({ expectedGeneration: 3, incompleteP2Recovery: true }), [first, second], gates,
+    )).toThrow(/generation recovery ledger/u);
+  });
+
+  it.each([
+    ['overlapping workers', '2026-09-24T18:28:59Z'],
+    ['workers meeting exactly at the boundary', '2026-09-24T18:29:00Z'],
+  ])('rejects %s in P2 recovery while the newest Gate otherwise matches', (_label, secondStartedAt) => {
+    // Keep the first row as a recognized infrastructure-incomplete failure so
+    // the overlap guard is the only thing rejecting this otherwise-valid
+    // ledger. The candidate is still evaluated with incomplete-P2 recovery
+    // enabled, and the newest P2 row has an exact matching canonical Gate.
+    const first = workerCheck(1, {
+      started_at: '2026-09-24T18:28:50Z',
+      completed_at: '2026-09-24T18:29:00Z',
+      output: { title: exhaustedIncomplete, summary: 'infra', text: null },
+    });
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 1, raw: 1 },
+      secondStartedAt, '2026-09-24T18:29:06Z');
+    const matchingLatestGate = incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:29:08Z');
+
+    expect(() => evaluateReviewGenerationRecoveryLedger(
+      request({ expectedGeneration: 3, incompleteP2Recovery: true }), [first, second], [matchingLatestGate],
+    )).toThrow(/generation recovery ledger/u);
   });
 
   it('refuses recovery beyond the bounded a3 generation without calling GitHub', async () => {

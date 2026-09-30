@@ -105,6 +105,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         runId: deriveReviewRunId(input.identity),
         expectedGeneration: input.expectedGeneration,
         expectedAppId: input.authoritativeGate.expectedAppId,
+        ...(input.incompleteP2Recovery === true ? { incompleteP2Recovery: true as const } : {}),
       });
     } } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,
@@ -202,6 +203,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       evidence: new PostgresWorkerCompletionStore(pool),
     },
     incrementalBase: new PostgresIncrementalBaseLookup(pool, { maxAgeMs: incrementalMaxAgeMs }),
+    incompleteP2Recovery: pool,
     verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(

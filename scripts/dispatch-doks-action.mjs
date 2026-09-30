@@ -100,6 +100,17 @@ export function buildDispatchRequest(environment) {
     throw new Error('REFRESH_EXECUTION_ATTEMPT is required for a central refresh dispatch');
   }
   const expectedGeneration = parseExpectedGeneration(environment);
+  const incompleteP2Raw = String(environment.INCOMPLETE_P2_RECOVERY ?? '').trim();
+  if (!['', 'false', 'true'].includes(incompleteP2Raw)) throw new Error('INCOMPLETE_P2_RECOVERY must be true or false');
+  const incompleteP2Recovery = incompleteP2Raw === 'true';
+  // Standalone Action script: keep this 2..3 window aligned with
+  // src/review/incompleteP2RecoveryLimits.ts; actionDoksDispatch tests verify parity.
+  if (incompleteP2Recovery && (!refreshRequested || publishMode !== 'app-gate'
+    || !['repository_dispatch', 'workflow_dispatch'].includes(eventName)
+    || expectedGeneration === undefined || expectedGeneration < 2 || expectedGeneration > 3
+    || refreshExecutionAttempt !== expectedGeneration - 1)) {
+    throw new Error('Incomplete P2 recovery requires a bounded exact-generation refresh');
+  }
 
   const repositoryId = positiveInteger(environment, 'REPOSITORY_ID');
   const prNumber = positiveInteger(environment, 'PR_NUMBER');
@@ -196,6 +207,7 @@ export function buildDispatchRequest(environment) {
       ...(refreshExecutionAttempt === undefined ? {} : { refreshExecutionAttempt }),
     } : {}),
     ...(expectedGeneration === undefined ? {} : { expectedGeneration }),
+    ...(incompleteP2Recovery ? { incompleteP2Recovery: true } : {}),
     requestedAt: new Date().toISOString(),
     caller: {
       runId,

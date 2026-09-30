@@ -1304,6 +1304,9 @@ const DEFAULT_PERSONA_IDS = PERSONA_CHARTERS.filter((p) => p.defaultEnabled).map
 
 const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 410_400;
+// Keep each guarded `pr-reviewer` gateway request bounded while the SHA partitioner preserves
+// full patch coverage. This is a conservative input-size budget, not a provider context limit.
+const GUARDED_GATEWAY_MAX_DIFF_CHARS = 80_000;
 const ACTION_MAX_DIFF_CAP = 10_000_000;
 // Do not put a completion-token ceiling on the live panel. A 24,576 cap plus high-effort
 // reasoning caused Ollama to spend the entire 90s total deadline on thought tokens and
@@ -1876,6 +1879,17 @@ function resolveActionReviewRuntime(localConfig = null, env = process.env) {
     modelConfig,
     notes,
   };
+}
+
+function resolveSafeDiffCapacity(modelConfig = {}) {
+  const configuredCapacity = modelConfig.maxDiffChars
+    || calculateSafeDiffCapacity(modelConfig.model || DEFAULT_MODEL)
+    || DEFAULT_MAX_DIFF_CHARS;
+  const isBoundGuardedGateway = modelConfig.guardedGatewayDestination === true
+    && modelConfig.model === DIGEST_PINNED_GATEWAY_MODEL_ALIAS;
+  return isBoundGuardedGateway
+    ? Math.min(configuredCapacity, GUARDED_GATEWAY_MAX_DIFF_CHARS)
+    : configuredCapacity;
 }
 
 /**
@@ -7944,8 +7958,11 @@ async function main() {
   const customCount = enabledPersonas.filter(p => !PERSONA_CHARTERS.some(b => b.id === p.id)).length;
   console.log(`[Personas] Loaded ${enabledPersonas.length} enabled persona(s) with model ${DEFAULT_MODEL}${customCount ? ` (${customCount} repository-defined)` : ''}...`);
 
-  const modelConfig = actionRuntime.modelConfig;
-  const safeDiffCapacityChars = modelConfig.maxDiffChars || calculateSafeDiffCapacity(modelConfig.model || DEFAULT_MODEL) || DEFAULT_MAX_DIFF_CHARS;
+  const modelConfig = {
+    ...actionRuntime.modelConfig,
+    maxDiffChars: resolveSafeDiffCapacity(actionRuntime.modelConfig),
+  };
+  const safeDiffCapacityChars = modelConfig.maxDiffChars;
   const syntheticVitestRun = process.env.GITHUB_ACTIONS !== 'true'
     && process.env.VITEST === 'true'
     && process.env.PR_DIFF
@@ -8568,6 +8585,8 @@ module.exports = {
   resolveModelConfig,
   resolveActionReviewRuntime,
   resolveActionReviewPolicy,
+  resolveSafeDiffCapacity,
+  GUARDED_GATEWAY_MAX_DIFF_CHARS,
   applyActionSubmodulePolicy,
   parseActionSubmoduleUrls,
   fetchActionSubmoduleUrlsAtRef,
