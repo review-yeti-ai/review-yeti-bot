@@ -11,6 +11,10 @@ import {
   type ReviewStatusOutput,
   type ReviewTiming,
 } from './schemas';
+import {
+  projectReviewStatusPhase,
+  projectReviewStatusVerdict,
+} from '../reviewStatusVerdict';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
@@ -257,48 +261,16 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       const row = result.rows[0];
       const now = Date.now();
 
-      // Phase resolution
-      let phase: 'queued' | 'evaluating_personas' | 'arbitration' | 'completed' = 'queued';
-      if (row.run_status === 'queued') {
-        phase = 'queued';
-      } else if (row.run_status === 'running' || row.run_status === 'publishing') {
-        phase = ['arbitration', 'publish'].includes(row.run_stage) ? 'arbitration' : 'evaluating_personas';
-      } else {
-        phase = 'completed';
-      }
-
-      // Verdict resolution
-      let verdict: 'SHIP' | 'NACK' | 'COMMENT' | 'FIX_FIRST' | 'PENDING' | 'RUNNING' | 'FAILED' = 'PENDING';
-      let decisionObj: any = null;
-      if (typeof row.decision === 'string') {
-        try {
-          decisionObj = JSON.parse(row.decision);
-        } catch {
-          decisionObj = null;
-        }
-      } else if (row.decision && typeof row.decision === 'object') {
-        decisionObj = row.decision;
-      }
-
-      if (decisionObj?.verdict) {
-        const v = String(decisionObj.verdict).toUpperCase();
-        if (v === 'SHIP') verdict = 'SHIP';
-        else if (v === 'FIX_FIRST') verdict = 'FIX_FIRST';
-        else if (v === 'BLOCK') verdict = 'NACK';
-        else if (v === 'COMMENT') verdict = 'COMMENT';
-        else verdict = 'SHIP';
-      } else if (row.desired_state) {
-        if (row.desired_state === 'success') verdict = 'SHIP';
-        else if (row.desired_state === 'failure') verdict = 'FIX_FIRST';
-        else if (['cancelled', 'timed_out'].includes(row.desired_state)) verdict = 'FAILED';
-        else if (row.desired_state === 'queued') verdict = 'PENDING';
-        else if (row.desired_state === 'in_progress') verdict = 'RUNNING';
-      } else {
-        if (row.run_status === 'queued') verdict = 'PENDING';
-        else if (row.run_status === 'running' || row.run_status === 'publishing') verdict = 'RUNNING';
-        else if (row.run_status === 'succeeded' || row.run_status === 'complete') verdict = 'SHIP';
-        else verdict = 'FAILED';
-      }
+      const phase = projectReviewStatusPhase({
+        desiredState: row.desired_state,
+        runStatus: row.run_status,
+        runStage: row.run_stage,
+      });
+      const verdict = projectReviewStatusVerdict({
+        decision: row.decision,
+        desiredState: row.desired_state,
+        runStatus: row.run_status,
+      });
 
       const attemptId = row.attempt_id || (row.run_id ? `review-attempt-${pull_number}-${row.attempt || 1}` : null);
       const checkId = row.check_id ? Number(row.check_id) : null;
