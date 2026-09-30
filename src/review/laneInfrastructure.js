@@ -34,6 +34,9 @@ function classifyWorkerFailureMessage(error) {
   // interrupted stream ("terminated") -- is transport. This is the single source the lane
   // retry predicate (`isTransientLaneTransportError`) and the published class both read.
   if (/ENOTFOUND|ECONNREFUSED|ECONNRESET|ECONNABORTED|EPIPE|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CLOSED|fetch failed|socket hang up|other side closed|\bterminated\b/iu.test(message)) return 'transport';
+  // A completed model call with no parseable findings is malformed review
+  // output, even though the upstream error text contains the word "Model".
+  if (message === 'Model response contained no parseable findings JSON.') return 'malformed_output';
   if (/invalid (?:or missing )?(?:native )?JSON|native JSON response must be an object|invalid findings contract|invalid .*response contract|cannot contain findings|requires at least one finding|nonce-fenced structured output|reported INCOMPLETE without a completed review|optional reviewer did not complete/iu.test(message)) {
     return 'malformed_output';
   }
