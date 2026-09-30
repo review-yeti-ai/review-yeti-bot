@@ -1105,15 +1105,20 @@ describe('executeComposedReview', () => {
 
   it('uses the inherited admitted clock and cutoff instead of minting a composed retry window', async () => {
     vi.useFakeTimers();
-    let currentMs = 10_000;
+    // Keep the cutoff in the future according to Date.now(), but advance only the admitted
+    // clock to it. If callTurn accidentally consults Date.now() again, it will see retry budget
+    // and make another provider call; using the admitted clock must suppress that retry.
+    const wallClockMs = Date.now();
+    let currentMs = wallClockMs;
     const now = () => currentMs;
+    const deadlineAtMs = wallClockMs + 5_000;
     const cancellation = new AbortController();
     const admitted = panelEngine.createPanelDeadlineSignal(1_800, cancellation.signal,
-      { deadlineAtMs: 15_000, timeoutMs: 5_000, terminalBound: true }, now);
+      { deadlineAtMs, timeoutMs: 5_000, terminalBound: true }, now);
     let calls = 0;
     const complete = vi.fn(async () => {
       calls += 1;
-      currentMs = 15_000;
+      currentMs = deadlineAtMs;
       throw new OpenRouterResponseError('provider returned empty completion content', 200);
     });
     const settled = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
@@ -1121,6 +1126,7 @@ describe('executeComposedReview', () => {
       signal: admitted.signal, deadlineBudget: admitted.budget, deadlineNow: admitted.now }).catch((error) => error);
 
     try {
+      expect(Date.now()).toBeLessThan(deadlineAtMs);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(calls).toBe(1);
       expect(await settled).toBeInstanceOf(OpenRouterResponseError);
