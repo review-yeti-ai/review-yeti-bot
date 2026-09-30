@@ -119,13 +119,15 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
     });
 
     it('1.6: Correctly resolves verdicts from decision JSON, desired_state, and run_status', async () => {
-      // Decision JSON overrides
+      // Known explicit decisions override state, but unknown decisions fail
+      // closed. Counterfactually, the old catch-all branch turned `other` into
+      // SHIP even though it supplied no recognized review verdict.
       const decisionCases = [
         { decision: JSON.stringify({ verdict: 'SHIP' }), expectedVerdict: 'SHIP' },
         { decision: JSON.stringify({ verdict: 'FIX_FIRST' }), expectedVerdict: 'FIX_FIRST' },
         { decision: JSON.stringify({ verdict: 'BLOCK' }), expectedVerdict: 'NACK' },
         { decision: JSON.stringify({ verdict: 'COMMENT' }), expectedVerdict: 'COMMENT' },
-        { decision: JSON.stringify({ verdict: 'other' }), expectedVerdict: 'SHIP' },
+        { decision: JSON.stringify({ verdict: 'other' }), expectedVerdict: 'FAILED' },
       ];
 
       for (const dc of decisionCases) {
@@ -148,9 +150,12 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
       }
 
       // desired_state fallback
+      // A generic gate failure also covers incomplete coverage and infrastructure
+      // failure. Without an explicit findings verdict, FIX_FIRST would invent
+      // completed findings from the check conclusion alone.
       const desiredStateCases = [
         { desired_state: 'success', expectedVerdict: 'SHIP' },
-        { desired_state: 'failure', expectedVerdict: 'FIX_FIRST' },
+        { desired_state: 'failure', expectedVerdict: 'FAILED' },
         { desired_state: 'cancelled', expectedVerdict: 'FAILED' },
         { desired_state: 'timed_out', expectedVerdict: 'FAILED' },
         { desired_state: 'queued', expectedVerdict: 'PENDING' },
