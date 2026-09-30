@@ -54,6 +54,58 @@ const verdictProjectionCases: Array<{
   expected: string;
   expectedPhase?: string;
 }> = [
+  ...[null, undefined, ''].flatMap((desiredState) => [
+    {
+      name: `absent gate ${String(desiredState)} preserves explicit completed legacy approval`,
+      row: baseRow({ desired_state: desiredState, run_status: 'completed', decision: { verdict: 'SHIP' } }),
+      expected: 'SHIP',
+    },
+    {
+      name: `absent gate ${String(desiredState)} does not invent completed legacy approval`,
+      row: baseRow({ desired_state: desiredState, run_status: 'completed', decision: null }),
+      expected: 'FAILED',
+    },
+  ]),
+  ...[0, false].map((desiredState) => ({
+    name: `invalid gate ${String(desiredState)} cannot conceal a native pending state`,
+    row: baseRow({ desired_state: desiredState, decision: { status: 'pending', eligible: false, reason: 'review-pending' } }),
+    expected: 'FAILED',
+  })),
+  {
+    name: 'unknown gate preserves explicit FIX_FIRST findings',
+    row: baseRow({ desired_state: 'future-state', decision: { verdict: 'FIX_FIRST' } }),
+    expected: 'FIX_FIRST',
+  },
+  {
+    name: 'unknown gate state cannot conceal a failed run without a decision',
+    row: baseRow({ desired_state: 'future-state', run_status: 'failed', decision: null }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'unknown gate state cannot approve an explicit SHIP',
+    row: baseRow({ desired_state: 'future-state', decision: { verdict: 'SHIP' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'unknown gate state cannot approve a native clean-review decision',
+    row: baseRow({ desired_state: 'future-state', decision: { status: 'success', eligible: true, reason: 'clean-review' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'unknown gate state cannot remain pending with a native pending decision',
+    row: baseRow({ desired_state: 'future-state', decision: { status: 'pending', eligible: false, reason: 'review-pending' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'numeric zero gate state is invalid rather than an absent gate',
+    row: baseRow({ desired_state: 0, decision: { verdict: 'SHIP' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'boolean false gate state is invalid rather than an absent gate',
+    row: baseRow({ desired_state: false, decision: null }),
+    expected: 'FAILED',
+  },
   {
     name: 'native success cannot accept an incomplete-review failure reason',
     row: baseRow({ desired_state: 'success', decision: { status: 'success', eligible: true, reason: 'incomplete-review' } }),

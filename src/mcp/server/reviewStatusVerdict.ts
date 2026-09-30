@@ -119,12 +119,16 @@ function verdictForRunStatus(status: unknown): ReviewStatusVerdict {
 }
 
 function fallbackVerdict(desiredState: unknown, runStatus: unknown): ReviewStatusVerdict {
-  if (desiredState) return verdictForGateState(desiredState) ?? 'PENDING';
+  if (hasGateState(desiredState)) return verdictForGateState(desiredState) ?? 'FAILED';
   return verdictForRunStatus(runStatus);
 }
 
+function hasGateState(desiredState: unknown): boolean {
+  return desiredState !== null && desiredState !== undefined && desiredState !== '';
+}
+
 function guardExplicitShip(desiredState: unknown, runStatus: unknown): ReviewStatusVerdict {
-  if (desiredState) return verdictForGateState(desiredState) ?? 'PENDING';
+  if (hasGateState(desiredState)) return verdictForGateState(desiredState) ?? 'FAILED';
 
   // An explicit verdict without a gate row remains compatible with older
   // records that lack run status, but a known (or unknown nonempty) status must
@@ -156,7 +160,9 @@ export function projectReviewStatusVerdict(input: {
       return 'FAILED';
     }
     if (decision.status === 'pending') {
-      const stateVerdict = verdictForGateState(input.desiredState);
+      const stateVerdict = hasGateState(input.desiredState)
+        ? verdictForGateState(input.desiredState) ?? 'FAILED'
+        : undefined;
       return stateVerdict === 'FAILED' ? 'FAILED' : stateVerdict === 'RUNNING' ? 'RUNNING' : 'PENDING';
     }
     return guardExplicitShip(input.desiredState, input.runStatus);
