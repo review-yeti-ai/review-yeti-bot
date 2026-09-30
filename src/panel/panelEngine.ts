@@ -3684,6 +3684,7 @@ export async function executePersonaPanel(options: {
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
     options.deadlineBudget ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s));
+  const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => {
     deadline.check();
     return deadline.budget.deadlineAtMs - Date.now();
