@@ -3,7 +3,7 @@ import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchRouter } from '../../src/api/actionDispatchApi';
 import { createIncompleteP2RecoveryHandler } from '../../src/api/incompleteP2RecoveryRoute';
-import type { IncompleteP2RecoveryQueryable } from '../../src/persistence/incompleteP2Recovery';
+import type { IncompleteP2RecoveryQueryable } from '../../src/api/incompleteP2RecoveryRoute';
 import { createIncompleteP2RecoveryContext, parseIncompleteP2RecoveryContext } from '../../src/review/incompleteP2Recovery';
 import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2RecoveryHttp';
 import { deriveReviewGateExternalId } from '../../src/review/reviewCheckIdentity';
