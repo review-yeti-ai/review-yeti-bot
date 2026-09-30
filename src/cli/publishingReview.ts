@@ -1693,7 +1693,7 @@ export async function runPublishingReviewWorker(
         const buildStart = deps.now ? deps.now() : Date.now();
         let result: { indexDir?: string; scratchDir?: string; reason?: string };
         try {
-          result = await raceWithPanelAbort(zoektGrounding({
+          result = await raceWithPanelAbort<{ indexDir?: string; scratchDir?: string; reason?: string }>(zoektGrounding({
             repository: identity.repo,
             headSha: identity.headSha,
             token: value(env, 'GH_TOKEN'),
