@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runReadOnlyTool, type ToolRuntimeContext } from '../toolRuntime';
-import type { RepoFileProvider } from '../panelEngine';
+import { REPO_READ_FILE_MAX_CHARS, type RepoFileProvider } from '../panelEngine';
 
 vi.mock('../../mcp/mcpFleetManager', () => ({
   mcpFleetManager: {
@@ -19,6 +19,7 @@ import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 describe('runReadOnlyTool', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   const baseContext = (overrides: Partial<ToolRuntimeContext> = {}): ToolRuntimeContext => ({
@@ -41,7 +42,7 @@ describe('runReadOnlyTool', () => {
     it('returns changed-patches-only scope for a file present in the diff', async () => {
       const result = await runReadOnlyTool('read_file', { path: 'src/auth/multi.ts' }, baseContext());
       expect(result).toEqual({
-        toolOutput: "Tool 'read_file' execution result:\nexport function login() {}\n",
+        toolOutput: "Tool 'read_file' execution result:\nChanged patch only (no full-repository access is wired for this run); this is not full current source.\nexport function login() {}\n",
         toolScope: 'changed-patches-only',
         isExhaustive: false,
       });
@@ -57,7 +58,7 @@ describe('runReadOnlyTool', () => {
       expect(result.toolScope).toBe('changed-patches-only');
       expect(result.isExhaustive).toBe(false);
       expect(result.toolOutput).toBe(
-        "Tool 'read_file' execution result:\nLines 2-3 of 4 for 'src/auth/multi.ts':\nline 2: important logic\nline 3: edge case",
+        "Tool 'read_file' execution result:\nChanged patch only (no full-repository access is wired for this run); this is not full current source.\nLines 2-3 of 4 for 'src/auth/multi.ts':\nline 2: important logic\nline 3: edge case",
       );
     });
 
@@ -79,9 +80,9 @@ describe('runReadOnlyTool', () => {
         findFiles: vi.fn(),
         readFile: vi.fn().mockResolvedValue(null),
       };
-      const result = await runReadOnlyTool('get_diff', { path: 'src/missing.ts' }, baseContext({ repoFileProvider }));
+      const result = await runReadOnlyTool('read_file', { path: 'src/missing.ts' }, baseContext({ repoFileProvider }));
       expect(result).toEqual({
-        toolOutput: "Tool 'get_diff' execution result:\nFile 'src/missing.ts' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).",
+        toolOutput: "Tool 'read_file' execution result:\nFile 'src/missing.ts' does not exist in the repository at the reviewed head (checked the full repository tree, not just the diff).",
         toolScope: 'full-repository',
         isExhaustive: true,
       });
@@ -107,6 +108,221 @@ describe('runReadOnlyTool', () => {
         toolScope: 'changed-patches-only',
         isExhaustive: false,
       });
+    });
+  });
+
+
+  describe('REL-1204 exact-source code reads', () => {
+    const source = ['CURRENT_SOURCE_HEADER', 'export const current = true;', 'CURRENT_SOURCE_TAIL'].join('\n');
+    const provider = (overrides: Partial<RepoFileProvider> = {}): RepoFileProvider => ({
+      readFile: vi.fn().mockResolvedValue(source), findFiles: vi.fn().mockResolvedValue([]), ...overrides,
+    });
+
+    it.each(['read_file', 'view_file'])('REL-1204 exact-source carried placeholder via %s reads current source once', async (tool) => {
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts' }, baseContext({
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: '[carried-forward: exact-head content available via tools]' }], repoFileProvider,
+      }));
+      expect({ sourceReads: vi.mocked(repoFileProvider.readFile).mock.calls.length, output: result.toolOutput }).toEqual({
+        sourceReads: 1,
+        output: "Tool '" + tool + "' execution result:\nFile 'src/auth/multi.ts' is part of this PR's diff and exists in the repository at the reviewed head. Full current content:\n" + source,
+      });
+      expect(repoFileProvider.readFile).toHaveBeenCalledWith('src/auth/multi.ts');
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: true });
+    });
+
+    it.each(['read_file', 'view_file'])('REL-1204 exact-source ordinary changed patch via %s is not source', async (tool) => {
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider }));
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
+      expect(result.toolOutput).toContain(source);
+      expect(result.toolOutput).not.toContain('export function login()');
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: true });
+    });
+
+    it.each([
+      [{ path: './src/auth/multi.ts' }], [{ filePath: '/src/auth/multi.ts' }],
+      [{ path: ' ./src/auth/multi.ts ', filePath: '/src/auth/multi.ts' }],
+    ])('accepts normalized exact path aliases %j', async (args) => {
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool('read_file', args, baseContext({ repoFileProvider }));
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
+      expect(result.toolOutput).toContain(source);
+    });
+
+    it.each([
+      {}, { path: '' }, { path: ' /./ ' }, { path: 42 }, { path: null }, { path: {} },
+      { filePath: false }, { path: 'src/a.ts', filePath: 'src/b.ts' },
+      { path: '', filePath: 'src/auth/multi.ts' }, { path: '../src/auth/multi.ts' },
+      { path: 'src/../auth/multi.ts' }, { path: 'src\\auth\\multi.ts' }, { path: 'src/\u0000multi.ts' },
+    ])('rejects malformed or ambiguous path %j without reading any file', async (args) => {
+      const repoFileProvider = provider();
+      for (const tool of ['read_file', 'view_file', 'get_diff']) {
+        const result = await runReadOnlyTool(tool, args, baseContext({ repoFileProvider }));
+        expect(result.toolOutput).toContain('execution rejected: Expected one exact repository path');
+        expect(result.toolOutput).not.toContain('export function login()');
+        expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+      }
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+    });
+
+    it('rejects duplicate normalized changed paths rather than selecting the first', async () => {
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool('read_file', { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'FIRST' }, { path: './src/auth/multi.ts', patch: 'SECOND' }],
+      }));
+      expect(result.toolOutput).toContain('Ambiguous changed-file path');
+      expect(result.toolOutput).not.toContain('FIRST');
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+    });
+
+    it.each(['multi.ts', 'src/auth/multi', 'src/auth', 'src/wrong.ts'])('never substring-selects changed source for %s', async (path) => {
+      const repoFileProvider = provider({ readFile: vi.fn().mockResolvedValue(null) });
+      const result = await runReadOnlyTool('read_file', { path }, baseContext({ repoFileProvider }));
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith(path);
+      expect(result.toolOutput).not.toContain('export function login()');
+      const fallback = await runReadOnlyTool('view_file', { path }, baseContext());
+      expect(fallback.toolOutput).toContain('may still exist elsewhere');
+      expect(fallback.toolOutput).not.toContain('export function login()');
+    });
+
+    it('keeps literal bracket paths exact, not glob-selected', async () => {
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool('read_file', { path: './app/[id]/page.tsx' }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'app/[id]/page.tsx', patch: 'PATCH' }],
+      }));
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('app/[id]/page.tsx');
+      expect(result.toolOutput).toContain(source);
+    });
+
+    it.each([
+      [{ startLine: 2, endLine: 2 }, 'Lines 2-2 of 3', 'export const current = true;', false],
+      [{ start_line: 2 }, 'Lines 2-3 of 3', 'export const current = true;\nCURRENT_SOURCE_TAIL', false],
+      [{ end_line: 2 }, 'Lines 1-2 of 3', 'CURRENT_SOURCE_HEADER\nexport const current = true;', false],
+      [{ startLine: 99, endLine: 1 }, 'Lines 3-3 of 3', 'CURRENT_SOURCE_TAIL', false],
+      [{ startLine: 0.5, endLine: 99 }, 'Lines 1-3 of 3', source, true],
+    ] as const)('slices current source lines and discloses completeness %j', async (range, note, shown, exhaustive) => {
+      const result = await runReadOnlyTool('read_file', { path: 'src/auth/multi.ts', ...range }, baseContext({ repoFileProvider: provider() }));
+      expect(result.toolOutput).toContain(note + " for 'src/auth/multi.ts':\nCurrent source lines:\n" + shown);
+      expect(result.toolOutput).not.toContain('Full current content');
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: exhaustive });
+    });
+
+    it('ignores invalid numeric ranges and accepts an empty current source', async () => {
+      const result = await runReadOnlyTool('view_file', { path: 'src/auth/multi.ts', startLine: NaN, endLine: '2' }, baseContext({ repoFileProvider: provider({ readFile: vi.fn().mockResolvedValue('') }) }));
+      expect(result.toolOutput).toContain('Full current content:\n');
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: true });
+    });
+
+    it('caps changed current source honestly, and a smaller source range is still available', async () => {
+      const oversizedSource = 'a'.repeat(REPO_READ_FILE_MAX_CHARS + 10) + '\nTAIL_SOURCE';
+      const repoFileProvider = provider({ readFile: vi.fn().mockResolvedValue(oversizedSource) });
+      const capped = await runReadOnlyTool('read_file', { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider }));
+      expect(capped).toMatchObject({ toolScope: 'full-repository', isExhaustive: false });
+      expect(capped.toolOutput).toContain('Content truncated to the first ' + REPO_READ_FILE_MAX_CHARS);
+      expect(capped.toolOutput).toContain('[... content truncated: 22 more characters not shown]');
+      expect(capped.toolOutput).not.toContain('Full current content');
+      expect(capped.toolOutput).not.toContain('TAIL_SOURCE');
+      const range = await runReadOnlyTool('view_file', { path: 'src/auth/multi.ts', startLine: 2, endLine: 2 }, baseContext({ repoFileProvider }));
+      expect(range.toolOutput).toContain('Current source lines:\nTAIL_SOURCE');
+      expect(range.isExhaustive).toBe(false);
+    });
+
+    it.each(['read_file', 'view_file', 'get_diff'])('preserves changed oversized exclusion before any provider call for %s', async (tool) => {
+      vi.stubEnv('MAX_FILE_DIFF_CHARS', '20');
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts', startLine: 2, endLine: 2 }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'small placeholder', originalPatchLength: 21 }],
+      }));
+      expect(result.toolOutput).toContain("SKIPPED 'src/auth/multi.ts': patch is 21 characters, over max-file-diff-chars 20");
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+    });
+
+    it('get_diff remains patch-only with a provider and applies patch ranges', async () => {
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool('get_diff', { filePath: './src/auth/multi.ts', start_line: 2, end_line: 2 }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'PATCH_HEADER\n+PATCH_CHANGE\nPATCH_TAIL' }],
+      }));
+      expect(result.toolOutput).toContain("Changed patch only; this is not full current source.\nLines 2-2 of 3 for 'src/auth/multi.ts':\n+PATCH_CHANGE");
+      expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+    });
+
+    it('get_diff outside the exact changed path never reads source or claims repository absence', async () => {
+      const repoFileProvider = provider();
+      for (const path of ['multi.ts', 'src/other.ts']) {
+        const result = await runReadOnlyTool('get_diff', { path }, baseContext({ repoFileProvider }));
+        expect(result.toolOutput).toContain('No changed patch');
+        expect(result.toolOutput).toContain('not evidence the file is missing');
+        expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+      }
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+    });
+
+    it('retains no-provider content/placeholder fallback as explicitly patch-scoped', async () => {
+      for (const file of [{ path: 'src/a.ts', content: 'PATCH_CONTENT' }, { path: 'src/a.ts' }]) {
+        const result = await runReadOnlyTool('read_file', { path: 'src/a.ts' }, baseContext({ changedFiles: [file] }));
+        expect(result.toolOutput).toContain('no full-repository access is wired');
+        expect(result.toolOutput).toContain(file.content || 'File present in PR scope.');
+        expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+      }
+    });
+
+    it('caps patch fallback without allowing a larger patch to bypass the source cap', async () => {
+      vi.stubEnv('MAX_FILE_DIFF_CHARS', String(REPO_READ_FILE_MAX_CHARS + 10));
+      const result = await runReadOnlyTool('get_diff', { path: 'src/a.ts' }, baseContext({ changedFiles: [{ path: 'src/a.ts', patch: 'p'.repeat(REPO_READ_FILE_MAX_CHARS + 1) }] }));
+      expect(result.toolOutput).toContain('Patch for');
+      expect(result.toolOutput).toContain('truncated to the first ' + REPO_READ_FILE_MAX_CHARS);
+      expect(result.isExhaustive).toBe(false);
+    });
+
+    it.each([
+      [[], false, 'does not exist in the repository', true],
+      [['src/auth/multi.ts'], false, 'EXISTS in the repository tree', false],
+      [[], true, 'tree was truncated', false],
+    ] as const)('does not reuse deleted/unreadable patches after provider null: %j', async (hits, truncated, message, exhaustive) => {
+      const repoFileProvider = provider({ readFile: vi.fn().mockResolvedValue(null), findFiles: vi.fn().mockResolvedValue(hits), treeTruncated: vi.fn().mockResolvedValue(truncated) });
+      const result = await runReadOnlyTool('read_file', { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider }));
+      expect(result.toolOutput).toContain(message);
+      expect(result.toolOutput).not.toContain('export function login()');
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: exhaustive });
+    });
+
+    it('preserves directory/pattern and failed-tree honesty after a null source read', async () => {
+      for (const [path, hits, message] of [
+        ['src/auth', ['src/auth/multi.ts'], 'is a directory'],
+        ['src/*.ts', ['src/auth/multi.ts'], 'is a pattern'],
+        ['src/*.ts', [], 'Use find_files'],
+      ] as const) {
+        const result = await runReadOnlyTool('read_file', { path }, baseContext({ repoFileProvider: provider({ readFile: vi.fn().mockResolvedValue(null), findFiles: vi.fn().mockResolvedValue(hits) }) }));
+        expect(result.toolOutput).toContain(message);
+        expect(result.toolOutput).not.toContain('export function login()');
+      }
+      const failure = await runReadOnlyTool('view_file', { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider: provider({ readFile: vi.fn().mockResolvedValue(null), findFiles: vi.fn().mockRejectedValue(new Error('tree failed')) }) }));
+      expect(failure.toolOutput).toContain('cross-check failed');
+      expect(failure.isExhaustive).toBe(false);
+    });
+
+    it.each([new Error('source failed'), 'source unavailable'])('does not fall back to a changed patch on provider error %s', async (error) => {
+      const result = await runReadOnlyTool('view_file', { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider: provider({ readFile: vi.fn().mockRejectedValue(error) }) }));
+      expect(result.toolOutput).toContain('lookup failure, not confirmation');
+      expect(result.toolOutput).not.toContain('export function login()');
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: false });
+    });
+
+    it('cancels source reads, including pre-aborted calls, without reporting absence', async () => {
+      const controller = new AbortController();
+      const repoFileProvider = provider({ readFile: vi.fn(() => new Promise<string>(() => undefined)) });
+      const read = runReadOnlyTool('read_file', { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider, signal: controller.signal }));
+      controller.abort();
+      await expect(read).rejects.toMatchObject({ name: 'PanelCancellationError' });
+      expect(repoFileProvider.readFile).toHaveBeenCalledTimes(1);
+      await expect(runReadOnlyTool('get_diff', {}, baseContext({ repoFileProvider, signal: controller.signal }))).rejects.toMatchObject({ name: 'PanelCancellationError' });
+      expect(repoFileProvider.readFile).toHaveBeenCalledTimes(1);
     });
   });
 
