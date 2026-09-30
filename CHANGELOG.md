@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.99.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.99.0...v1.99.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **mcp:** fail closed across review status projections ([#1147](https://github.com/review-yeti-ai/review-yeti-bot/issues/1147)) ([87e1492](https://github.com/review-yeti-ai/review-yeti-bot/commit/87e149240d28d4ee43fc9dbd23e87fe03928eb5a))
+
 ## [1.99.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.98.1...v1.99.0) (2026-09-30)
 
 
