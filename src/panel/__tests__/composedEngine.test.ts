@@ -312,6 +312,51 @@ describe('executeComposedReview', () => {
     expect(result.optionalFailures).toEqual([]);
   });
 
+  it('feeds bounded full reviewed-head source for a changed path and records the truthful scope', async () => {
+    let workCalls = 0;
+    let systemPrompt = '';
+    const source = [
+      'line 1: module header',
+      'line 2: changed entrypoint',
+      'line 3: unchanged caller contract',
+      'line 4: strict-case allowlist',
+    ].join('\n');
+    const repoFileProvider = {
+      findFiles: vi.fn(),
+      readFile: vi.fn().mockResolvedValue(source),
+    };
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        systemPrompt = String(payload.messages.find((message: any) => message.role === 'system')?.content || '');
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) {
+        return fakeResponse(JSON.stringify({ tool: 'read_file', args: { path: 'src/auth/guard.ts', startLine: 3, endLine: 4 } }));
+      }
+      const transcript = JSON.stringify(payload.messages);
+      expect(transcript).toContain('unchanged caller contract');
+      expect(transcript).toContain('strict-case allowlist');
+      expect(transcript).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+      repoFileProvider,
+    });
+
+    expect(systemPrompt).toContain('read_file retrieves the current file at the reviewed head');
+    expect(systemPrompt).toContain('get_diff and text search remain limited to PR diff content');
+    expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/guard.ts');
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
+  });
+
   // --- Mutation target 3: "make a BLOCKED task count as a pass" must go red -------------------
   it('records a BLOCKED task as a failed lane, never a pass', async () => {
     const complete = vi.fn(async (payload: any) => {

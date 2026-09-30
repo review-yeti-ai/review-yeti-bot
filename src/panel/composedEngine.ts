@@ -656,6 +656,7 @@ function buildSystemPrompt(repository: string): string {
     ``,
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
     `- Code Reading: view_file, read_file, get_diff`,
+    `read_file retrieves the current file at the reviewed head through the existing same-repository read-only provider, including a file changed by this PR; source line ranges apply to that file. get_diff and text search remain limited to PR diff content. If the provider is unavailable or fails, the tool result explicitly reports patch/change-payload-only fallback or unavailable context and is not full-file coverage.`,
     `- AST & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
     `- ${FIND_FILES_TOOL_GUIDE}`,
     `- Documentation: fetch_docs, context7_search`,

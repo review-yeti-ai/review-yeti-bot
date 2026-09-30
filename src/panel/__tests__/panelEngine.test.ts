@@ -468,16 +468,22 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
         'line 3: edge case',
         'line 4: footer',
       ].join('\n');
+      const repoFileProvider = {
+        findFiles: vi.fn().mockResolvedValue(['src/auth/multi.ts']),
+        readFile: vi.fn().mockResolvedValue(multilineContent),
+      };
 
       const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
       await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth/multi.ts', patch: multilineContent }],
+        repoFileProvider,
         repository: 'test/repo',
         headSha: 'abc1234',
         client: mockClient as any,
       });
 
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
       expect(capturedToolResult).toContain("Lines 2-3 of 4 for 'src/auth/multi.ts':");
       expect(capturedToolResult).toContain('line 2: important logic\nline 3: edge case');
       expect(capturedToolResult).not.toContain('line 1: header');
