@@ -2677,7 +2677,12 @@ describe('REL-1211 absolute publishing budget', () => {
     // clock so neither a live deadline nor a 1s JEV flush can hide in this check.
     await vi.advanceTimersByTimeAsync(0);
     expect(Date.now()).toBe(start + 50);
-    expect(vi.getTimerCount()).toBe(0);
+    const pendingBeforeTicks = vi.getTimerCount();
+    vi.runAllTicks();
+    expect(Date.now()).toBe(start + 50);
+    expect(vi.getTimerCount(), JSON.stringify({ pendingBeforeTicks,
+      timers: scheduled.mock.calls.map(([, ms], index) => ({ ms,
+        cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })) })).toBe(0);
   });
 
   it('forwards real enabled shrinking to both deferred engines without changing their shared admitted cutoff', async () => {
