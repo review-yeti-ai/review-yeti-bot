@@ -2690,7 +2690,7 @@ describe('REL-1211 absolute publishing budget', () => {
     vi.runAllTicks();
     expect(Date.now()).toBe(start + 50);
     const cleanup = { pendingBeforeTicks, pendingAfterTicks: vi.getTimerCount(), at: Date.now(),
-      timers: scheduled.mock.calls.map(([, ms], index) => ({ ms, origin: timeoutOrigins[index],
+      timers: scheduled.mock.calls.map(([callback, ms], index) => ({ ms, origin: timeoutOrigins[index], callback: callback.toString(),
         cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })),
       intervals: intervals.mock.calls.map(([, ms], index) => ({ ms,
         cleared: clearedIntervals.mock.calls.some(([handle]) => handle === intervals.mock.results[index].value) })),
@@ -2702,7 +2702,7 @@ describe('REL-1211 absolute publishing budget', () => {
     for (const [index, record] of cleanup.timers.entries()) {
       if (record.cleared) continue;
       expect(record.ms, JSON.stringify(cleanup)).toBe(0);
-      expect(record.origin).toContain('InMemorySpanExporter.export');
+      expect(record.origin, JSON.stringify(cleanup)).toContain('InMemorySpanExporter.export');
       const acknowledgement = scheduled.mock.calls[index][0];
       expect(acknowledgement.toString()).toContain('resultCallback');
       acknowledgement();
