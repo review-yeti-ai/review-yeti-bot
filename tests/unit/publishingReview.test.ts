@@ -2658,6 +2658,10 @@ describe('REL-1211 absolute publishing budget', () => {
   it('cuts off a real never-settling grounding await and publishes timeout without starting models', async () => {
     const scheduled = vi.spyOn(globalThis, 'setTimeout');
     const cleared = vi.spyOn(globalThis, 'clearTimeout');
+    const intervals = vi.spyOn(globalThis, 'setInterval');
+    const clearedIntervals = vi.spyOn(globalThis, 'clearInterval');
+    const ticks = vi.spyOn(process, 'nextTick');
+    const microtasks = vi.spyOn(globalThis, 'queueMicrotask');
     let signal!: AbortSignal;
     const grounding = vi.fn(({ signal: current }: { signal: AbortSignal }) => { signal = current; return new Promise(() => {}); });
     const completion = { reportTerminalFailure: vi.fn(async (_event: unknown) => undefined) };
@@ -2680,9 +2684,24 @@ describe('REL-1211 absolute publishing budget', () => {
     const pendingBeforeTicks = vi.getTimerCount();
     vi.runAllTicks();
     expect(Date.now()).toBe(start + 50);
-    expect(vi.getTimerCount(), JSON.stringify({ pendingBeforeTicks,
+    const cleanup = { pendingBeforeTicks, pendingAfterTicks: vi.getTimerCount(), at: Date.now(),
       timers: scheduled.mock.calls.map(([, ms], index) => ({ ms,
-        cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })) })).toBe(0);
+        cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })),
+      intervals: intervals.mock.calls.map(([, ms], index) => ({ ms,
+        cleared: clearedIntervals.mock.calls.some(([handle]) => handle === intervals.mock.results[index].value) })),
+      ticks: ticks.mock.calls.map(([callback]) => callback.name), microtasks: microtasks.mock.calls.length };
+    console.info('REL-1211 same-clock grounding cleanup', JSON.stringify(cleanup));
+    expect(cleanup.pendingAfterTicks, JSON.stringify(cleanup)).toBe(0);
+    // A same-clock queued-job drain must leave real future timers observable.
+    const futureDeadline = vi.fn(); const futureFlush = vi.fn();
+    const futureDeadlineHandle = setTimeout(futureDeadline, 50);
+    const futureFlushHandle = setTimeout(futureFlush, 1_000);
+    vi.runAllTicks();
+    expect(Date.now()).toBe(start + 50);
+    expect(futureDeadline).not.toHaveBeenCalled(); expect(futureFlush).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2);
+    clearTimeout(futureDeadlineHandle); clearTimeout(futureFlushHandle);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('forwards real enabled shrinking to both deferred engines without changing their shared admitted cutoff', async () => {
