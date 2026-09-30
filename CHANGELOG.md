@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.3...v1.100.4) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** read admitted legacy retained findings after supersession ([#1158](https://github.com/review-yeti-ai/review-yeti-bot/issues/1158)) ([9e1cacd](https://github.com/review-yeti-ai/review-yeti-bot/commit/9e1cacd17825085154591bfd05a80e83ae531eaf))
+
 ## [1.100.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.2...v1.100.3) (2026-09-30)
 
 
