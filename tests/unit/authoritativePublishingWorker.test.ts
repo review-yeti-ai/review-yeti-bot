@@ -159,10 +159,13 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
         const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
         expect(event.result.coverageComplete).toBe(false);
         expect(event.result.quorumSatisfied).toBe(false);
+        expect(event.result.personas.length).toBeGreaterThan(0);
+        expect(event.result.personas.map((persona) => persona.id)).toEqual(f.prepared.expectedPersonaIds);
         expect(event.result.personas.every((p) => p.status === 'ERROR' && p.errorClass === 'timeout')).toBe(true);
         expect(event.executionAttempt).toBe(2);
         expect(event.headSha).toBe(HEAD);
         expect(f.env.REVIEW_PREPARED_CONFIG_JSON).toBe(configBefore);
+        expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
         expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
         expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
       } finally {
@@ -225,6 +228,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       await vi.advanceTimersByTimeAsync(1);
       expect(f.reportReviewResult.mock.calls).toEqual(receiptBeforeLateResult);
       expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
       expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
@@ -271,6 +275,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       expect(groundingSignal?.aborted).toBe(true);
       expect(f.reportReviewResult).toHaveBeenCalledOnce();
       expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
       expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
 
@@ -282,6 +287,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       expect(removeScratchTree.mock.calls.filter(([scratchDir]) => scratchDir === lateScratch)).toHaveLength(1);
       expect(removeScratchTree).toHaveBeenCalledOnce();
       expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
       expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
     } finally {
       // On the intentionally red baseline, release the fake dependency so the test

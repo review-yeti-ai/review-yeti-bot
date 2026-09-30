@@ -23,7 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
-import { workerPanelTimeoutMs } from '../config/workerTerminalDeadline';
+import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelTimeoutMs } from '../config/workerTerminalDeadline';
 import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
 import { executeComposedReview } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
@@ -1064,7 +1064,7 @@ function createPublishingPanelDeadline(
   now: () => number,
 ): ReturnType<typeof createPanelDeadlineSignal> {
   const timeoutMs = workerPanelTimeoutMs(overallTimeoutSeconds, env,
-    value(env, 'REVIEW_TERMINAL_DEADLINE') ? now() : 0);
+    value(env, WORKER_TERMINAL_DEADLINE_ENV) ? now() : 0);
   if (timeoutMs <= 0) throw new PanelDeadlineExceededError(0);
   return createPanelDeadlineSignal(timeoutMs / 1_000, parentSignal);
 }
