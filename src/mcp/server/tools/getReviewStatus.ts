@@ -62,7 +62,7 @@ const LIFECYCLE_MARKER_KINDS = [
  * failure mode is a null duration rather than an invented one.
  */
 const TERMINAL_RUN_STATUSES = new Set([
-  'succeeded', 'complete', 'failed', 'cancelled', 'superseded', 'terminal',
+  'succeeded', 'complete', 'completed', 'failed', 'cancelled', 'superseded', 'terminal',
 ]);
 
 function isoOrNull(value: unknown): string | null {

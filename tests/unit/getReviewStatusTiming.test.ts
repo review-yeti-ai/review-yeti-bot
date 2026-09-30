@@ -239,6 +239,22 @@ describe('get_review_status timing: an unfinished run never reports a duration',
 });
 
 describe('get_review_status timing: a terminal run reports both spans', () => {
+  it('treats legacy completed as terminal without changing the fail-closed gate verdict', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'completed',
+      run_stage: 'continuation_completed',
+      updated_at: T3,
+      desired_state: 'failure',
+      decision: { verdict: 'SHIP' },
+    }), {
+      'review.lifecycle.started': T2,
+    });
+
+    expect(data.verdict).toBe('FAILED');
+    expect(data.timing.completed_at).toBe(T3);
+    expect(data.timing.execution_seconds).toBeCloseTo(150, 5);
+  });
+
   it('derives execution_seconds only when both ends are durable', async () => {
     const { data } = await runTimingCase(baseRow({ run_status: 'succeeded' }), {
       'review.lifecycle.dispatched': T1,

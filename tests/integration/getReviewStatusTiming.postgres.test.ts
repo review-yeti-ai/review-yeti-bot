@@ -121,6 +121,19 @@ describeWithPostgres('get_review_status attempt-bound timing on real PostgreSQL'
     expect(data.timing.execution_seconds).toBeNull();
   });
 
+  it('treats legacy completed as terminal without allowing SHIP over gate failure', async () => {
+    await pool.query("UPDATE review_runs SET status = 'completed', stage = 'continuation_completed', updated_at = $2 WHERE run_id = $1",
+      [RUN, COMPLETED]);
+    await pool.query('UPDATE review_gate_attempts SET decision = $1::jsonb WHERE current_attempt = true',
+      [JSON.stringify({ verdict: 'SHIP' })]);
+    await marker(CURRENT, 'started', STARTED);
+
+    const data = await status();
+    expect(data.verdict).toBe('FAILED');
+    expect(data.timing.completed_at).toBe(COMPLETED);
+    expect(data.timing.execution_seconds).toBe(30);
+  });
+
   it('keeps timing unknown when no durable current-attempt identity exists', async () => {
     await pool.query('DELETE FROM review_gate_attempts');
     const data = await status();
