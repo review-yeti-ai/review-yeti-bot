@@ -516,6 +516,14 @@ describe('executeComposedReview', () => {
     expect(workCalls).toBe(3);
     expect(result.personas).toEqual([]);
     expect(result.unreportedLanes).toMatchObject([{ failureClass: 'malformed_output', error: expect.stringContaining(reason) }]);
+    const diagnosticReason = {
+      nonce_mismatch: 'nonce_mismatch', task_mismatch: 'task_id_mismatch',
+      status_enum: 'invalid_status', result_fields: 'invalid_result_fields',
+      findings_contract: 'invalid_findings',
+    }[reason];
+    expect(result.unreportedLanes?.[0].diagnostics).toMatchObject({
+      reason: diagnosticReason, turnsUsed: 3, correctionAttempts: 2,
+    });
     expect(result.unreportedLanes?.[0].error).not.toContain('wrong-');
     expect(result.unreportedLanes?.[0].error).not.toContain('not-changed');
     expect(result.unreportedLanes?.[0].error).not.toContain('Synthetic');
