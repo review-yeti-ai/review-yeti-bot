@@ -1065,9 +1065,8 @@ function createPublishingPanelDeadline(
   parentSignal: AbortSignal | undefined,
   now: () => number,
 ): ReturnType<typeof createPanelDeadlineSignal> {
-  const budget = workerPanelDeadlineBudget(overallTimeoutSeconds, env,
-    value(env, WORKER_TERMINAL_DEADLINE_ENV) ? now() : Date.now());
-  return createPanelDeadlineSignal(overallTimeoutSeconds, parentSignal, budget);
+  const budget = workerPanelDeadlineBudget(overallTimeoutSeconds, env, now());
+  return createPanelDeadlineSignal(overallTimeoutSeconds, parentSignal, budget, now);
 }
 
 /**
@@ -1694,7 +1693,7 @@ export async function runPublishingReviewWorker(
     const abortJevShadow = () => jevShadow?.abort();
     try {
       panelDeadline.check();
-      const remainingWorkMs = panelDeadline.budget.deadlineAtMs - Date.now();
+      const remainingWorkMs = panelDeadline.budget.deadlineAtMs - panelDeadline.now();
       const jevLimits = { ...DEFAULT_JEV_TRIAGE_SHADOW_LIMITS, ...deps.jevTriageShadow?.limits };
       jevShadow = startJevTriageShadow({
       env,

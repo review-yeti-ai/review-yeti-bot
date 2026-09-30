@@ -2482,6 +2482,24 @@ describe('REL-1211 absolute panel deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('uses one injected clock for admission, synchronous checks, and nested deadlines', () => {
+    let currentMs = 10_000;
+    const now = () => currentMs;
+    const budget = workerPanelDeadlineBudget(5, {}, now());
+    const main = createPanelDeadlineSignal(5, undefined, budget, now);
+    currentMs += 4_999;
+    main.check();
+    const nested = createPanelDeadlineSignal(1_800, main.signal);
+    expect(nested.timeoutMs).toBe(1);
+    currentMs += 1;
+    expect(() => nested.check()).toThrow(PanelDeadlineExceededError);
+    expect(nested.signal.reason).toMatchObject({ failureReason: 'worker_deadline_exceeded' });
+    expect(() => main.check()).toThrow(PanelDeadlineExceededError);
+    expect(main.signal.reason).toMatchObject({ failureReason: 'worker_deadline_exceeded' });
+    nested.cleanup(); main.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('REL-1211 inherits the original remaining cutoff without a new relative engine window', async () => {
     const main = createPanelDeadlineSignal(5);
     let nested: ReturnType<typeof createPanelDeadlineSignal> | undefined;

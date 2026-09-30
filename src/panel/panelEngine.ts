@@ -512,7 +512,12 @@ export function throwIfPanelAborted(signal?: AbortSignal): void {
 }
 
 // Internal cancellation context, not serialized reviewer input or service evidence.
-const panelDeadlineBudgets = new WeakMap<AbortSignal, WorkerPanelDeadlineBudget>();
+interface PanelDeadlineContext {
+  readonly budget: WorkerPanelDeadlineBudget;
+  readonly now: () => number;
+}
+
+const panelDeadlineContexts = new WeakMap<AbortSignal, PanelDeadlineContext>();
 
 /**
  * Link a caller cancellation signal to the configured panel deadline. Both the
@@ -522,20 +527,24 @@ const panelDeadlineBudgets = new WeakMap<AbortSignal, WorkerPanelDeadlineBudget>
 export function createPanelDeadlineSignal(
   overallTimeoutSeconds: number,
   parentSignal?: AbortSignal,
-  budget = (parentSignal ? panelDeadlineBudgets.get(parentSignal) : undefined)
-    ?? workerPanelDeadlineBudget(overallTimeoutSeconds, {}),
-): { signal: AbortSignal; cleanup: () => void; check: () => void; timeoutMs: number; budget: WorkerPanelDeadlineBudget } {
+  requestedBudget?: WorkerPanelDeadlineBudget,
+  requestedNow?: () => number,
+): { signal: AbortSignal; cleanup: () => void; check: () => void; timeoutMs: number; budget: WorkerPanelDeadlineBudget; now: () => number } {
+  const inherited = parentSignal ? panelDeadlineContexts.get(parentSignal) : undefined;
+  const now = requestedNow ?? inherited?.now ?? Date.now;
+  let budget = requestedBudget ?? inherited?.budget
+    ?? workerPanelDeadlineBudget(overallTimeoutSeconds, {}, now());
   budget = Object.freeze({ ...budget });
-  const timeoutMs = Math.max(0, budget.deadlineAtMs - Date.now());
+  const timeoutMs = Math.max(0, budget.deadlineAtMs - now());
   const controller = new AbortController();
-  panelDeadlineBudgets.set(controller.signal, budget);
+  panelDeadlineContexts.set(controller.signal, { budget, now });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expire = () => {
     if (!controller.signal.aborted) controller.abort(new PanelDeadlineExceededError(timeoutMs, budget.terminalBound));
   };
   const check = () => {
     // A blocked event loop or a deferred invocation cannot turn an expired budget into a 1ms call.
-    if (Date.now() >= budget.deadlineAtMs) expire();
+    if (now() >= budget.deadlineAtMs) expire();
     throwIfPanelAborted(controller.signal);
   };
   const onParentAbort = () => {
@@ -555,6 +564,7 @@ export function createPanelDeadlineSignal(
     signal: controller.signal,
     timeoutMs,
     budget,
+    now,
     check,
     cleanup: () => {
       if (timer !== undefined) clearTimeout(timer);
@@ -3707,6 +3717,8 @@ export async function executePersonaPanel(options: {
   signal?: AbortSignal;
   /** Fixed caller cutoff; nested panel setup must not restart the worker's budget. */
   deadlineBudget?: WorkerPanelDeadlineBudget;
+  /** Clock paired with `deadlineBudget`; inherited from `signal` for nested engines. */
+  deadlineNow?: () => number;
   workspaceRoot?: string;
   /** Service-authoritative runs use only immutable prepared config and exact
    * path applicability; mutable dashboard overrides and model pruning cannot
@@ -3731,17 +3743,17 @@ export async function executePersonaPanel(options: {
   /** REL-1139: diff headers the caller could not read (files never sent here); any makes the skip ineligible. */
   unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
-  const admittedBudget = options.deadlineBudget
-    ?? (options.signal ? panelDeadlineBudgets.get(options.signal) : undefined);
+  const inheritedDeadline = options.signal ? panelDeadlineContexts.get(options.signal) : undefined;
+  const admittedBudget = options.deadlineBudget ?? inheritedDeadline?.budget;
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
-    admittedBudget ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s, {}));
+    admittedBudget, options.deadlineNow ?? inheritedDeadline?.now);
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => {
     // Only an admitted worker context adds synchronous absolute expiry. Standalone
     // callers retain their existing local timer and transport-backoff contracts.
     if (admittedBudget) deadline.check();
     else throwIfPanelAborted(deadline.signal);
-    return deadline.budget.deadlineAtMs - Date.now();
+    return deadline.budget.deadlineAtMs - deadline.now();
   };
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and
   // attached to whichever result this run returns.
@@ -4371,7 +4383,7 @@ export async function executePersonaPanel(options: {
                 plan: chunkPlan,
                 limiter: chunkLimiter,
                 concurrency: mapReducePlan.concurrency,
-                deadlineAtMs: Math.min(Date.now() + remainingPanelTimeoutMs(), mapReducePlan.deadlineAtMs ?? Infinity),
+                deadlineAtMs: Math.min(deadline.budget.deadlineAtMs, mapReducePlan.deadlineAtMs ?? Infinity),
                 sharingLanes: mapReducePlan.lanes.size,
                 signal,
                 runChunk: async (chunk) => (await runLane(chunk.pack)) as PersonaLaneResult,

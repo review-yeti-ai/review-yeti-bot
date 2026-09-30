@@ -28,19 +28,24 @@ export interface WorkerPanelDeadlineBudget {
   readonly terminalBound: boolean;
 }
 
+function configuredPanelTimeoutMs(overallTimeoutSeconds: number): number {
+  return Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
+    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
+    : 900_000;
+}
+
 /** A fixed work cutoff, never a fresh timeout when passed to a nested engine. */
 export function workerPanelDeadlineBudget(
   overallTimeoutSeconds: number,
   env: Readonly<Record<string, string | undefined>> = process.env,
   nowMs = Date.now(),
 ): WorkerPanelDeadlineBudget {
-  // Preserve upstream's explicit lifecycle validation before admitting any work.
-  workerPanelTimeoutMs(overallTimeoutSeconds, env, nowMs);
   if (!Number.isFinite(nowMs)) throw new Error('Worker lifecycle deadline is invalid');
-  const configuredMs = Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
-    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
-    : 900_000;
+  const configuredMs = configuredPanelTimeoutMs(overallTimeoutSeconds);
   const terminalAt = workerTerminalDeadlineAtMs(env);
+  if (String(env[WORKER_TERMINAL_DEADLINE_ENV] ?? '').trim() && terminalAt === undefined) {
+    throw new Error('Worker lifecycle deadline is invalid');
+  }
   const terminalCutoff = terminalAt === undefined ? Infinity
     : terminalAt - WORKER_PANEL_RESERVE_MS - WORKER_DEADLINE_FLOOR_MARGIN_MS;
   const deadlineAtMs = Math.min(nowMs + configuredMs, terminalCutoff);
@@ -66,8 +71,7 @@ export function workerPanelTimeoutMs(
   env: Readonly<Record<string, string | undefined>>,
   nowMs: number,
 ): number {
-  const policyMs = Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
-    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000)) : 900_000;
+  const policyMs = configuredPanelTimeoutMs(overallTimeoutSeconds);
   if (!String(env[WORKER_TERMINAL_DEADLINE_ENV] ?? '').trim()) return policyMs;
   const deadline = workerTerminalDeadlineAtMs(env);
   if (deadline === undefined || !Number.isFinite(nowMs)) throw new Error('Worker lifecycle deadline is invalid');

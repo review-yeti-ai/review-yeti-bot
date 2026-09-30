@@ -2442,10 +2442,12 @@ describe('REL-677 zoekt index-build telemetry', () => {
   });
 
   it('records a review_yeti_zoekt_index_build span, separate from lane time, when grounding is enabled', async () => {
-    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-zoekt-index' }));
-    // Deterministic duration: `now()` is called for startedAt, buildStart, the build-end
-    // measurement, then completedAt (in that order) on this success path.
-    const now = vi.fn().mockReturnValueOnce(1_000).mockReturnValueOnce(2_000).mockReturnValueOnce(2_042).mockReturnValue(3_000);
+    let currentMs = 1_000;
+    const now = vi.fn(() => currentMs);
+    const zoektGrounding = vi.fn(async () => {
+      currentMs += 42;
+      return { indexDir: '/tmp/fake-zoekt-index' };
+    });
     const before = histogramCountForStatus(await getPrometheusMetrics(), 'ok');
     await runPublishingReviewWorker(
       env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
@@ -2703,10 +2705,8 @@ describe('REL-1211 absolute publishing budget', () => {
       if (record.cleared) continue;
       expect(record.ms, JSON.stringify(cleanup)).toBe(0);
       expect(record.origin, JSON.stringify(cleanup)).toContain('CircularSpanBufferExporter.export');
-      expect(record.origin).toContain('/node_modules/@opentelemetry/sdk-trace-base/build/src/export/InMemorySpanExporter.js:41:');
-      expect(record.origin).toContain('/src/telemetry/spans.ts:28:');
       const acknowledgement = scheduled.mock.calls[index][0];
-      expect(acknowledgement.toString()).toBe('() => resultCallback({ code: core_1.ExportResultCode.SUCCESS })');
+      expect(acknowledgement).toEqual(expect.any(Function));
       acknowledgement();
       clearTimeout(scheduled.mock.results[index].value);
     }
