@@ -26,6 +26,10 @@ export interface McpExecutionContext {
   sessionId?: string;
   caller?: McpAuthenticatedCaller;
   identity?: string;
+  /** True only when the configured MCP authenticator returned a verified caller. */
+  authenticatedByConfiguredAuthenticator?: boolean;
+  /** Exact repository coordinates that passed this request's router RBAC check. */
+  authorizedRepository?: { owner: string; repo: string };
   emitProgress?: (progress: number, total?: number, message?: string) => void;
 }
 

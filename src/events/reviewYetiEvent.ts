@@ -58,6 +58,8 @@ export const EVENT_ENVELOPE_FIELD_INVENTORY = [
 
 export const LIFECYCLE_DATA_FIELD_INVENTORY = [
   'stage',
+  'admission_origin',
+  'actor',
   'terminal_class',
   'result_digest',
   'policy_digest',
@@ -100,6 +102,8 @@ const lifecycleTimingSchema = z.object({
 
 export const lifecycleDataSchema = z.object({
   stage: boundedIdentifier(128).optional(),
+  admission_origin: z.literal('mcp_static_admin').optional(),
+  actor: z.string().regex(/^admin:[a-f0-9]{12}$/u).optional(),
   terminal_class: boundedIdentifier(128).optional(),
   result_digest: digest.optional(),
   policy_digest: digest.optional(),
@@ -107,7 +111,12 @@ export const lifecycleDataSchema = z.object({
   retry_class: boundedIdentifier(128).optional(),
   evidence_pointers: z.array(boundedIdentifier(512)).max(32).optional(),
   timing: lifecycleTimingSchema.optional(),
-}).strict();
+}).strict().superRefine((data, context) => {
+  if ((data.admission_origin === undefined) !== (data.actor === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['admission_origin'],
+      message: 'MCP admission origin and actor must be recorded together' });
+  }
+});
 
 const progressStatus = z.enum(['pending', 'in_progress', 'completed', 'failed']);
 

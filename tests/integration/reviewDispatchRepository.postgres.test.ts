@@ -12,6 +12,7 @@ import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/revi
 import { sha256 } from '../../src/review/reviewCore';
 import type { ReviewDispatchClaim } from '../../src/review/reviewRun';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import type { GatePublicationObservation } from '../../src/review/reviewGateContracts';
 import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
 import { PREPARED_REVIEW_SCHEMA_SQL } from '../../src/persistence/preparedReviewRepository';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
@@ -20,9 +21,13 @@ import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritative
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { createHash, randomBytes } from 'node:crypto';
 import { REVIEW_GATE_CHECK_NAME } from '../../src/github/reviewGateClient';
+import { formatIncompleteRosterGateSummary } from '../../src/review/incompleteRosterSummary';
+import { createMcpStaticAdminRecoveryOrigin } from '../../src/review/mcpStaticAdminRecoveryOrigin';
+import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } from '../../src/persistence/incompleteP2Recovery';
+import { incompleteP2RecoveryClaimFor } from '../../src/review/incompleteP2Recovery';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
-import type { WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
+import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
 import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS } from '../../src/review/publicationFailurePolicy';
@@ -248,6 +253,22 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
     })).rejects.toThrow('dispatch priority must be normal or expedited');
     expect(connect).not.toHaveBeenCalled();
   });
+
+  it('rejects a structurally valid but caller-constructed MCP origin before persistence', async () => {
+    const { repository, connect } = repositoryThatStopsAtPersistence();
+    await expect(repository.admit({
+      ...authoritativeAdmission('mcp-origin-spoof'),
+      eventName: 'mcp.trigger_review',
+      centralActionDispatch: false,
+      retryRequested: true,
+      incompleteP2Recovery: true,
+      incompleteP2RecoveryOrigin: {
+        kind: 'mcp_static_admin', callerId: `admin:${'a'.repeat(12)}`,
+        authorizedOwner: 'exampleorg', authorizedRepo: 'example-api',
+      },
+    } as any)).rejects.toThrow(/verified static-admin repository admission/u);
+    expect(connect).not.toHaveBeenCalled();
+  });
 });
 
 async function dispatchState(client: PoolClient, runId: string) {
@@ -395,13 +416,568 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
   async function bindPendingGate(gates: PostgresReviewGateRepository, now = 1_001) {
     const claim = (await gates.claimPublication('gate-publisher', now))!;
     expect(claim).not.toBeNull();
-    expect(await gates.publishLocked(claim, async (gate) => ({
-      id: now, name: REVIEW_GATE_CHECK_NAME, appId: gate.expectedAppId,
+    const progress = claim.desiredState === 'queued' || claim.desiredState === 'in_progress';
+    const check = (gate: any): GatePublicationObservation => ({
+      id: gate.checkId ?? now, name: REVIEW_GATE_CHECK_NAME, appId: gate.expectedAppId,
       headSha: gate.coordinates.headSha, externalId: gate.externalId,
-      status: 'queued', conclusion: null,
-    }), () => now + 1)).toBe('published');
+      status: (progress ? claim.desiredState : 'completed') as GatePublicationObservation['status'],
+      conclusion: progress ? null : claim.desiredState,
+    });
+    expect(await gates.publishLocked(claim, async (gate) => check(gate), () => now + 1)).toBe('published');
     return claim;
   }
+
+  function mcpRecoveryInput(deliveryId: string, receivedAt = 1_790_000_100_000) {
+    const caller = {
+      authType: 'static_token' as const,
+      tokenDigest: 'a'.repeat(12),
+      isAdmin: true,
+      allowedRepositories: null,
+      callerId: `admin:${'a'.repeat(12)}`,
+    };
+    return {
+      ...authoritativeAdmission(deliveryId, receivedAt),
+      eventName: 'mcp.trigger_review',
+      centralActionDispatch: false,
+      debounce: false,
+      retryRequested: true,
+      incompleteP2Recovery: true as const,
+      incompleteP2RecoveryOrigin: createMcpStaticAdminRecoveryOrigin(caller, {
+        owner: 'exampleorg', repo: 'example-api',
+      }),
+    };
+  }
+
+  async function seedMcpIncompleteAttempt(
+    repository: PostgresReviewDispatchRepository,
+    database: PoolClient,
+    gates: PostgresReviewGateRepository,
+    mode: 'p2' | 'zero' | 'p1' | 'tampered' = 'p2',
+  ) {
+    const receivedAt = 1_790_000_000_000;
+    const firstInput = authoritativeAdmission(`mcp-seed-${randomUUID()}`, receivedAt);
+    const first = await repository.admit(firstInput);
+    await bindPendingGate(gates, receivedAt + 10);
+    const run = first.run;
+    const gate = (await database.query('SELECT * FROM review_gate_attempts WHERE run_id = $1', [run.runId])).rows[0];
+    const completedAt = '2026-09-29T12:00:00Z';
+    const gateCompletedAt = '2026-09-29T12:00:02Z';
+    const severity = mode === 'p1' ? 'P1' : 'P2';
+    const blockingCount = mode === 'p1' ? 1 : 0;
+    const finding = { severity, path: 'src/recovery-example.ts', line: 12,
+      title: 'Retained advisory', body: 'This prior finding remains immutable recovery context.' };
+    const personas = mode === 'zero'
+      ? [{ id: 'security', decision: 'APPROVE', findings: [] }]
+      : [{ id: 'security', decision: 'FINDINGS', findings: [finding] }];
+    const findingCount = mode === 'zero' ? 0 : 1;
+    const completion = {
+      version: 'WorkerReviewCompletion.v1',
+      runId: run.runId,
+      repositoryId: firstInput.repositoryId,
+      owner: run.identity.owner,
+      repo: run.identity.repo,
+      prNumber: run.identity.prNumber,
+      headSha: run.identity.headSha,
+      baseSha: run.identity.baseSha,
+      policyDigest: firstInput.effectivePolicyDigest,
+      configDigest: run.identity.configDigest,
+      executionAttempt: 1,
+      result: {
+        version: 'WorkerReviewResult.v1',
+        completedAt: '2026-09-29T12:00:00.000Z',
+        personas,
+        coverageComplete: true,
+        quorumSatisfied: true,
+        findingCount,
+        blockingFindingCount: blockingCount,
+      },
+    } as unknown as WorkerReviewCompletion;
+    const digest = workerReviewCompletionDigest(completion);
+    const payload = JSON.stringify(completion);
+    await database.query(`INSERT INTO review_worker_completions
+      (run_id, execution_attempt, content_digest, payload, byte_length)
+      VALUES ($1, 1, $2, $3::jsonb, $4)`,
+    [run.runId, digest, payload, Buffer.byteLength(payload, 'utf8')]);
+    const expectedLanes = 2;
+    const completedLanes = 1;
+    const gateEvidence = {
+      verdict: 'BLOCK', completedAt: gateCompletedAt, coverageComplete: true,
+      quorumSatisfied: false, infrastructureFailure: false, p0Count: 0, p1Count: blockingCount,
+      expectedLanes, completedLanes,
+    };
+    const gateDecision = { status: 'failure', eligible: false, reason: 'incomplete-review' };
+    await database.query(`UPDATE review_gate_attempts
+      SET desired_state = 'failure', desired_version = desired_version + 1,
+          published_version = desired_version + 1, evidence = $2::jsonb,
+          decision = $3::jsonb, worker_result_digest = $4
+      WHERE run_id = $1`, [run.runId, JSON.stringify(gateEvidence), JSON.stringify(gateDecision), digest]);
+    await database.query(`UPDATE review_dispatch_outbox SET status = 'projected',
+      projection_name = 'review-job-mcp-recovery-fixture', worker_token_digest = $2 WHERE run_id = $1`,
+    [run.runId, 'f'.repeat(64)]);
+    await database.query(`UPDATE review_runs SET status = 'failed', stage = 'publish',
+      result_digest = $2, error_text = 'review gate: incomplete-review' WHERE run_id = $1`, [run.runId, digest]);
+    if (mode === 'tampered') {
+      await database.query(`UPDATE review_worker_completions
+        SET payload = jsonb_set(payload, '{result,personas,0,findings,0,title}', '"Changed after persistence"'::jsonb)
+        WHERE run_id = $1 AND execution_attempt = 1`, [run.runId]);
+    }
+
+    const canonicalCount = findingCount;
+    const workerSummary = `Verdict \`BLOCK\` at \`${run.identity.headSha}\`.\n\n`
+      + `Findings: ${canonicalCount} (blocking P0/P1: ${blockingCount}; ${canonicalCount} raw persona finding(s) before clustering).\n\n`
+      + `Coverage: mode=panel; expected lanes=${expectedLanes}; completed lanes=${completedLanes}; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
+    const proof = {
+      generation: 1,
+      checkId: 10_001,
+      externalId: `${run.runId}:a1`,
+      conclusion: 'failure' as const,
+      title: 'Review Yeti: BLOCK',
+      legacyIncompleteRoster: {
+        workerSummary,
+        workerCompletedAt: completedAt,
+        workerStartedAt: '2026-09-29T11:59:58Z',
+        gateChecks: [{
+          id: Number(gate.check_id), name: REVIEW_GATE_CHECK_NAME, head_sha: run.identity.headSha,
+          app: { id: firstInput.authoritativeGate!.expectedAppId, slug: 'ct-review-bot' },
+          status: 'completed', conclusion: 'failure', external_id: gate.external_id,
+          started_at: completedAt, completed_at: gateCompletedAt,
+          output: {
+            title: 'Review Yeti Gate: Failed (incomplete panel)',
+            summary: formatIncompleteRosterGateSummary(expectedLanes, completedLanes),
+          },
+        }],
+      },
+    };
+    return { run, proof, completion, digest };
+  }
+
+  async function seedZeroFindingIncompleteSecondAttempt(
+    database: PoolClient,
+    gates: PostgresReviewGateRepository,
+    seeded: Awaited<ReturnType<typeof seedMcpIncompleteAttempt>>,
+  ) {
+    const workerStartedAt = '2026-09-29T12:00:03Z';
+    const workerCompletedAt = '2026-09-29T12:00:04Z';
+    const gateCompletedAt = '2026-09-29T12:00:06Z';
+    // A2 admission uses receivedAt=1_790_000_100_000, so the publication
+    // claim must happen after that persisted availability time. Acknowledged
+    // a1 failure remains terminal and is not republished as a cancellation.
+    const secondAttemptGate = await bindPendingGate(gates, 1_790_000_120_000);
+    expect(secondAttemptGate.desiredState).toBe('queued');
+    expect(secondAttemptGate.coordinates.executionAttempt).toBe(2);
+    const gateRow = (await database.query(`SELECT * FROM review_gate_attempts
+      WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0];
+    expect(gateRow).toBeDefined();
+
+    const completion = {
+      version: 'WorkerReviewCompletion.v1',
+      runId: seeded.run.runId,
+      repositoryId: seeded.run.repositoryId,
+      owner: seeded.run.identity.owner,
+      repo: seeded.run.identity.repo,
+      prNumber: seeded.run.identity.prNumber,
+      headSha: seeded.run.identity.headSha,
+      baseSha: seeded.run.identity.baseSha,
+      policyDigest: seeded.run.effectivePolicyDigest,
+      configDigest: seeded.run.identity.configDigest,
+      executionAttempt: 2,
+      result: {
+        version: 'WorkerReviewResult.v1', completedAt: '2026-09-29T12:00:04.000Z',
+        personas: [{ id: 'security', decision: 'APPROVE', findings: [] }],
+        coverageComplete: true, quorumSatisfied: true, findingCount: 0, blockingFindingCount: 0,
+      },
+    } as unknown as WorkerReviewCompletion;
+    const digest = workerReviewCompletionDigest(completion);
+    const payload = JSON.stringify(completion);
+    await database.query(`INSERT INTO review_worker_completions
+      (run_id, execution_attempt, content_digest, payload, byte_length)
+      VALUES ($1, 2, $2, $3::jsonb, $4)`,
+    [seeded.run.runId, digest, payload, Buffer.byteLength(payload, 'utf8')]);
+    const gateEvidence = {
+      verdict: 'BLOCK', completedAt: gateCompletedAt, coverageComplete: true,
+      quorumSatisfied: false, infrastructureFailure: false, p0Count: 0, p1Count: 0,
+      expectedLanes: 2, completedLanes: 1,
+    };
+    await database.query(`UPDATE review_gate_attempts
+      SET desired_state = 'failure', desired_version = desired_version + 1,
+          published_version = desired_version + 1, evidence = $2::jsonb,
+          decision = $3::jsonb, worker_result_digest = $4
+      WHERE run_id = $1 AND execution_attempt = 2`,
+    [seeded.run.runId, JSON.stringify(gateEvidence), JSON.stringify({ status: 'failure', eligible: false, reason: 'incomplete-review' }), digest]);
+    await database.query(`UPDATE review_dispatch_outbox
+      SET status = 'projected', projection_name = 'review-job-second-incomplete-fixture',
+          worker_token_digest = $2 WHERE run_id = $1`, [seeded.run.runId, 'e'.repeat(64)]);
+    await database.query(`UPDATE review_runs
+      SET status = 'failed', stage = 'publish', result_digest = $2,
+          error_text = 'review gate: incomplete-review' WHERE run_id = $1`, [seeded.run.runId, digest]);
+
+    const gateCheck = {
+      id: Number(gateRow.check_id), name: REVIEW_GATE_CHECK_NAME,
+      head_sha: seeded.run.identity.headSha, external_id: gateRow.external_id,
+      app: { id: 4385771, slug: 'ct-review-bot' }, status: 'completed', conclusion: 'failure',
+      started_at: '2026-09-29T12:00:05Z', completed_at: gateCompletedAt,
+      output: { title: 'Review Yeti Gate: Failed (incomplete panel)',
+        summary: formatIncompleteRosterGateSummary(2, 1) },
+    };
+    const priorProof = {
+      ...seeded.proof,
+      legacyIncompleteRoster: {
+        ...seeded.proof.legacyIncompleteRoster!,
+        nextWorkerStartedAt: workerStartedAt,
+        gateChecks: [...seeded.proof.legacyIncompleteRoster!.gateChecks, gateCheck],
+      },
+    };
+    const workerSummary = `Verdict \`BLOCK\` at \`${seeded.run.identity.headSha}\`.\n\n`
+      + 'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).\n\n'
+      + 'Coverage: mode=panel; expected lanes=2; completed lanes=1; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.';
+    const followupProof = {
+      generation: 2, checkId: 10_002, externalId: `${seeded.run.runId}:a2`,
+      conclusion: 'failure' as const, title: 'Review Yeti: BLOCK',
+      legacyIncompleteRoster: {
+        workerSummary, workerCompletedAt, workerStartedAt,
+        gateChecks: [...seeded.proof.legacyIncompleteRoster!.gateChecks, gateCheck],
+      },
+    };
+    return { priorProof, followupProof, completion, digest };
+  }
+
+  it('admits one authenticated MCP a2 after a fresh App ledger read and a matching locked SQL snapshot', async () => {
+    let unblockEvidence!: () => void;
+    const bothEvidenceReads = new Promise<void>((resolve) => { unblockEvidence = resolve; });
+    let evidenceReads = 0;
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async (input: any) => {
+      expect(input.expectedGeneration).toBe(2);
+      expect(input.retryAfterExecutionAttempt).toBe(1);
+      evidenceReads += 1;
+      if (evidenceReads === 2) unblockEvidence();
+      await bothEvidenceReads;
+      return [proof];
+    });
+    const { repository, client, gateRepository } = await createRepository({
+      lifecycleEvents: 'enabled',
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+    proof = seeded.proof;
+
+    const retries = await Promise.allSettled([
+      repository.admit(mcpRecoveryInput(`mcp-recovery-a2-${randomUUID()}`)),
+      repository.admit(mcpRecoveryInput(`mcp-recovery-race-a2-${randomUUID()}`)),
+    ]);
+    const accepted = retries.filter((result): result is PromiseFulfilledResult<any> => result.status === 'fulfilled');
+    const refused = retries.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(resolveGenerationRecovery).toHaveBeenCalledTimes(2);
+    expect(accepted, JSON.stringify(retries.map((result) => result.status === 'rejected' ? String(result.reason) : 'accepted')))
+      .toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(String(refused[0].reason)).toMatch(/state is unavailable or no longer current|state changed before admission/u);
+    expect(accepted[0].value.run.attempt).toBe(1);
+    expect(accepted[0].value.run.artifacts.incomplete_p2_recovery_digest).toMatch(/^[a-f0-9]{64}$/u);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_runs')).rows[0].count).toBe(1);
+    expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(2);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count).toBe(1);
+    expect((await client.query('SELECT status, execution_attempt FROM review_dispatch_outbox WHERE run_id = $1', [seeded.run.runId])).rows)
+      .toEqual([{ status: 'pending', execution_attempt: 1 }]);
+    expect((await client.query('SELECT review_generation, execution_attempt FROM review_gate_attempts ORDER BY review_generation')).rows)
+      .toEqual([{ review_generation: 0, execution_attempt: 1 }, { review_generation: 1, execution_attempt: 2 }]);
+    expect(await lifecycleEvents(client, seeded.run.runId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ eventKind: 'review.lifecycle.admission', data: expect.objectContaining({
+        admission_origin: 'mcp_static_admin', actor: `admin:${'a'.repeat(12)}`,
+      }) }),
+    ]));
+  });
+
+  it.each(['central', 'mcp'] as const)(
+    'reuses immutable a1 P2 receipt through sequential a2→a3 and reloads the zero-finding a2 boundary for %s',
+    async (admissionMode) => {
+      let evidence: any[] = [];
+      const resolveGenerationRecovery = vi.fn(async (input: any) => {
+        expect(input.expectedGeneration).toBeGreaterThanOrEqual(2);
+        return evidence.slice(0, input.expectedGeneration - 1);
+      });
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+      evidence = [seeded.proof];
+
+      // Simulate an immutable receipt written by the already-deployed a2
+      // admission before workerStartedAt was added to the trusted proof.
+      const { workerStartedAt: _oldStart, ...oldRoster } = seeded.proof.legacyIncompleteRoster!;
+      const oldA1Evidence = { ...seeded.proof, legacyIncompleteRoster: oldRoster };
+      await client.query(`INSERT INTO review_generation_recoveries
+        (run_id, recovered_generation, worker_check_id, external_id, conclusion, title, evidence, recovered_at)
+        VALUES ($1, 1, $2, $3, $4, $5, $6::jsonb, to_timestamp($7 / 1000.0))`,
+      [seeded.run.runId, seeded.proof.checkId, seeded.proof.externalId, seeded.proof.conclusion,
+        seeded.proof.title, JSON.stringify(oldA1Evidence), 1_790_000_100_000]);
+      const originalA1Evidence = (await client.query(`SELECT evidence FROM review_generation_recoveries
+        WHERE run_id = $1 AND recovered_generation = 1`, [seeded.run.runId])).rows[0].evidence;
+
+      const centralRetry = (deliveryId: string, generation: number, receivedAt: number) => ({
+        ...authoritativeAdmission(deliveryId, receivedAt),
+        eventName: 'workflow_dispatch', centralActionDispatch: true,
+        expectedGeneration: generation, retryRequested: true,
+        retryAfterExecutionAttempt: generation - 1, incompleteP2Recovery: true as const,
+      });
+      const a2Input = admissionMode === 'mcp'
+        ? mcpRecoveryInput(`sequential-${admissionMode}-a2-${randomUUID()}`, 1_790_000_100_000)
+        : centralRetry(`sequential-${admissionMode}-a2-${randomUUID()}`, 2, 1_790_000_100_000);
+      const originalA1Gate = (await client.query(`SELECT * FROM review_gate_attempts
+        WHERE run_id = $1 AND execution_attempt = 1`, [seeded.run.runId])).rows[0];
+      const a2 = await repository.admit(a2Input);
+      expect(a2.run.attempt).toBe(1);
+      const demotedA1Gate = (await client.query(`SELECT * FROM review_gate_attempts
+        WHERE run_id = $1 AND execution_attempt = 1`, [seeded.run.runId])).rows[0];
+      expect(demotedA1Gate).toEqual({ ...originalA1Gate, current_attempt: false });
+      expect((await client.query('SELECT recovered_generation, evidence FROM review_generation_recoveries WHERE run_id = $1',
+        [seeded.run.runId])).rows).toHaveLength(1);
+      expect((await client.query(`SELECT evidence FROM review_generation_recoveries
+        WHERE run_id = $1 AND recovered_generation = 1`, [seeded.run.runId])).rows[0].evidence)
+        .toEqual(originalA1Evidence);
+
+      const next = await seedZeroFindingIncompleteSecondAttempt(client, gateRepository, seeded);
+      const gateDigests = await client.query(`SELECT gate.execution_attempt, gate.worker_result_digest,
+          completions.content_digest FROM review_gate_attempts gate
+        JOIN review_worker_completions completions
+          ON completions.run_id = gate.run_id AND completions.execution_attempt = gate.execution_attempt
+        WHERE gate.run_id = $1 ORDER BY gate.execution_attempt`, [seeded.run.runId]);
+      expect(gateDigests.rows).toEqual([
+        { execution_attempt: 1, worker_result_digest: seeded.digest, content_digest: seeded.digest },
+        { execution_attempt: 2, worker_result_digest: next.digest, content_digest: next.digest },
+      ]);
+      evidence = [next.priorProof, next.followupProof];
+      const a3Input = admissionMode === 'mcp'
+        ? mcpRecoveryInput(`sequential-${admissionMode}-a3-${randomUUID()}`, 1_790_000_300_000)
+        : centralRetry(`sequential-${admissionMode}-a3-${randomUUID()}`, 3, 1_790_000_300_000);
+      const a3 = await repository.admit(a3Input);
+
+      expect(a3.run.attempt).toBe(2);
+      const artifacts = a3.run.artifacts as unknown as Record<string, unknown>;
+      const retainedDigest = artifacts.incomplete_p2_recovery_digest;
+      expect(retainedDigest).toMatch(/^[a-f0-9]{64}$/u);
+      expect((await client.query(`SELECT recovered_generation, worker_check_id, evidence
+        FROM review_generation_recoveries WHERE run_id = $1 ORDER BY recovered_generation`,
+      [seeded.run.runId])).rows.map((row) => row.recovered_generation)).toEqual([1, 2]);
+      const persistedEvidence = (await client.query(`SELECT evidence FROM review_generation_recoveries
+        WHERE run_id = $1 AND recovered_generation = 1`, [seeded.run.runId])).rows[0].evidence;
+      expect(persistedEvidence).toEqual(originalA1Evidence);
+      expect(persistedEvidence.legacyIncompleteRoster.nextWorkerStartedAt).toBeUndefined();
+      expect((await client.query(`SELECT evidence FROM review_generation_recoveries
+        WHERE run_id = $1 AND recovered_generation = 2`, [seeded.run.runId])).rows[0].evidence.legacyIncompleteRoster.workerStartedAt)
+        .toBe('2026-09-29T12:00:03Z');
+
+      // The exact a3 worker-claim path reloads the persisted receipts. It must
+      // derive a1's upper Gate bound from the next immutable a2 receipt.
+      await expect(requiredIncompleteP2RecoveryDigest(client, seeded.run.runId, 3, artifacts))
+        .resolves.toBe(retainedDigest);
+      const retainedContext = await loadIncompleteP2RecoveryContext(client, {
+        runId: seeded.run.runId, executionAttempt: 3, repositoryId: seeded.completion.repositoryId,
+        identity: { owner: seeded.run.identity.owner, repo: seeded.run.identity.repo,
+          prNumber: seeded.run.identity.prNumber, headSha: seeded.run.identity.headSha,
+          baseSha: seeded.run.identity.baseSha, configDigest: seeded.run.identity.configDigest },
+        policyDigest: seeded.run.effectivePolicyDigest, expectedAppId: a3Input.authoritativeGate!.expectedAppId,
+      });
+      expect(retainedContext?.sources.map((source) => source.executionAttempt)).toEqual([1, 2]);
+
+      await client.query("UPDATE review_runs SET status = 'failed', error_text = 'review gate: incomplete-review' WHERE run_id = $1", [seeded.run.runId]);
+      await client.query(`UPDATE review_dispatch_outbox
+        SET status = 'projected', projection_name = 'review-job-a3-incomplete-fixture',
+            worker_token_digest = $2 WHERE run_id = $1`, [seeded.run.runId, 'd'.repeat(64)]);
+      const beforeFourth = await dispatchState(client, seeded.run.runId);
+      const deliveryCount = (await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count;
+      const receiptCount = (await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count;
+      const a4Input = admissionMode === 'mcp'
+        ? mcpRecoveryInput(`sequential-${admissionMode}-a4-${randomUUID()}`, 1_790_000_400_000)
+        : centralRetry(`sequential-${admissionMode}-a4-${randomUUID()}`, 4, 1_790_000_400_000);
+      await expect(repository.admit(a4Input)).rejects.toThrow();
+      expect(await dispatchState(client, seeded.run.runId)).toEqual(beforeFourth);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(deliveryCount);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count).toBe(receiptCount);
+      expect(resolveGenerationRecovery).toHaveBeenCalledTimes(2);
+
+      // Restore the accepted a3 run to its pre-worker state, bind its actual
+      // Gate attempt and submit a full clean SHIP completion carrying the
+      // exact claim generated from the service-retained P2 context.
+      await client.query("UPDATE review_runs SET status = 'queued', error_text = NULL WHERE run_id = $1", [seeded.run.runId]);
+      await client.query(`UPDATE review_dispatch_outbox SET status = 'pending', projection_name = NULL,
+        worker_token_digest = NULL WHERE run_id = $1`, [seeded.run.runId]);
+      await bindPendingGate(gateRepository, 1_790_000_350_000);
+      const workerTokenDigest = 'b'.repeat(64);
+      await client.query(`UPDATE review_dispatch_outbox SET status = 'claimed', worker_token_digest = $2,
+        lease_owner = 'sequential-a3-worker', lease_expires_at = to_timestamp($3 / 1000.0)
+        WHERE run_id = $1`, [seeded.run.runId, workerTokenDigest, 1_790_000_460_000]);
+      const gateNow = 1_790_000_400_000;
+      const completion = {
+        version: 'WorkerReviewCompletion.v1', runId: seeded.run.runId,
+        repositoryId: seeded.run.repositoryId, owner: seeded.run.identity.owner,
+        repo: seeded.run.identity.repo, prNumber: seeded.run.identity.prNumber,
+        headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha,
+        policyDigest: seeded.run.effectivePolicyDigest, configDigest: seeded.run.identity.configDigest,
+        executionAttempt: 3,
+        result: {
+          version: 'WorkerReviewResult.v1', completedAt: new Date(gateNow - 1_000).toISOString(),
+          personas: [
+            { id: 'security', decision: 'APPROVE', findings: [] },
+            { id: 'architecture', decision: 'APPROVE', findings: [] },
+          ],
+          coverageComplete: true, quorumSatisfied: true, findingCount: 0, blockingFindingCount: 0,
+          incompleteP2Recovery: incompleteP2RecoveryClaimFor(retainedContext!),
+        },
+      } as unknown as WorkerReviewCompletion;
+      const trusted = {
+        current: {
+        repositoryId: seeded.completion.repositoryId, prNumber: seeded.run.identity.prNumber,
+          headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha,
+          policyDigest: seeded.run.effectivePolicyDigest, open: true, draft: false,
+        },
+        coverage: {
+          expectedPersonaIds: ['security', 'architecture'],
+          changedFiles: [{ path: 'src/recovery-example.ts', patch: '@@ -0,0 +1 @@\n+const freshReview = true;\n' }],
+          coverageComplete: true, quorumSatisfied: true,
+        },
+      };
+      await expect(gateRepository.recordWorkerResult(completion, { workerTokenDigest },
+        async () => trusted, gateNow)).resolves.toBe('recorded');
+      expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
+        .toBe('succeeded');
+      expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
+        WHERE run_id = $1 AND execution_attempt = 3`, [seeded.run.runId])).rows[0])
+        .toMatchObject({ desired_state: 'success', decision: { status: 'success', reason: 'clean-review' } });
+    },
+  );
+
+  it.each([
+    ['App worker check identity', `UPDATE review_generation_recoveries SET worker_check_id = 10099 WHERE run_id = $1 AND recovered_generation = 1`],
+    ['worker completion timestamp', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,workerCompletedAt}', '"2026-09-29T11:59:59Z"'::jsonb)
+      WHERE run_id = $1 AND recovered_generation = 1`],
+    ['retained Gate check', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,gateChecks,0,output,summary}', '"Changed Gate receipt"'::jsonb)
+      WHERE run_id = $1 AND recovered_generation = 1`],
+    ['worker summary', `UPDATE review_generation_recoveries SET evidence = jsonb_set(evidence,
+      '{legacyIncompleteRoster,workerSummary}', '"Changed worker summary"'::jsonb)
+      WHERE run_id = $1 AND recovered_generation = 1`],
+  ] as const)(
+    'refuses to replace an existing recovery receipt after its %s changes',
+    async (_label, corruptReceipt) => {
+      let evidence: any[] = [];
+      const resolveGenerationRecovery = vi.fn(async () => evidence);
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+      evidence = [seeded.proof];
+      const a2Input = {
+        ...authoritativeAdmission(`immutable-conflict-a2-${randomUUID()}`, 1_790_000_100_000),
+        eventName: 'workflow_dispatch', centralActionDispatch: true,
+        expectedGeneration: 2, retryRequested: true, retryAfterExecutionAttempt: 1,
+        incompleteP2Recovery: true as const,
+      };
+      await repository.admit(a2Input);
+      const second = await seedZeroFindingIncompleteSecondAttempt(client, gateRepository, seeded);
+      evidence = [second.priorProof, second.followupProof];
+      await client.query(corruptReceipt, [seeded.run.runId]);
+      const before = await dispatchState(client, seeded.run.runId);
+      const corruptEvidence = (await client.query(`SELECT worker_check_id, external_id, evidence
+        FROM review_generation_recoveries WHERE run_id = $1 AND recovered_generation = 1`, [seeded.run.runId])).rows[0];
+      const deliveryCount = (await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count;
+
+      await expect(repository.admit({
+        ...authoritativeAdmission(`immutable-conflict-a3-${randomUUID()}`, 1_790_000_300_000),
+        eventName: 'workflow_dispatch', centralActionDispatch: true,
+        expectedGeneration: 3, retryRequested: true, retryAfterExecutionAttempt: 2,
+        incompleteP2Recovery: true as const,
+      })).rejects.toThrow(/next durable generation is 1/u);
+
+      expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+      expect((await client.query(`SELECT worker_check_id, external_id, evidence
+        FROM review_generation_recoveries WHERE run_id = $1 AND recovered_generation = 1`, [seeded.run.runId])).rows[0])
+        .toEqual(corruptEvidence);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(deliveryCount);
+      expect((await client.query(`SELECT count(*)::int AS count FROM review_generation_recoveries
+        WHERE run_id = $1`, [seeded.run.runId])).rows[0].count).toBe(1);
+    },
+  );
+
+  it.each(['zero', 'p1', 'tampered'] as const)(
+    'rolls back MCP recovery when the real durable completion archive is %s', async (mode) => {
+      const resolveGenerationRecovery = vi.fn(async () => [] as any[]);
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository, mode);
+      resolveGenerationRecovery.mockResolvedValue([seeded.proof] as any);
+      const before = {
+        run: (await client.query('SELECT status, attempt, delivery_id, artifacts FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0],
+        outbox: (await client.query('SELECT status, execution_attempt, delivery_id FROM review_dispatch_outbox WHERE run_id = $1', [seeded.run.runId])).rows[0],
+        gates: (await client.query('SELECT review_generation, execution_attempt, current_attempt, desired_state FROM review_gate_attempts ORDER BY review_generation')).rows,
+      };
+
+      await expect(repository.admit(mcpRecoveryInput(`mcp-recovery-invalid-${mode}-${randomUUID()}`))).rejects.toThrow();
+
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+      expect((await client.query('SELECT status, attempt, delivery_id, artifacts FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0]).toEqual(before.run);
+      expect((await client.query('SELECT status, execution_attempt, delivery_id FROM review_dispatch_outbox WHERE run_id = $1', [seeded.run.runId])).rows[0]).toEqual(before.outbox);
+      expect((await client.query('SELECT review_generation, execution_attempt, current_attempt, desired_state FROM review_gate_attempts ORDER BY review_generation')).rows).toEqual(before.gates);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count).toBe(0);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(1);
+    },
+  );
+
+  it.each(['running', 'superseded'] as const)(
+    'refuses an MCP recovery from a %s predecessor before any allocation', async (status) => {
+      const resolveGenerationRecovery = vi.fn(async () => [] as any[]);
+      const { repository, client, gateRepository } = await createRepository({
+        lifecycleEvents: 'enabled',
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+      await client.query('UPDATE review_runs SET status = $2 WHERE run_id = $1', [seeded.run.runId, status]);
+      const before = await dispatchState(client, seeded.run.runId);
+
+      await expect(repository.admit(mcpRecoveryInput(`mcp-recovery-${status}-${randomUUID()}`)))
+        .rejects.toThrow(/state is unavailable or no longer current/u);
+
+      expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+      expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(1);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count).toBe(0);
+    },
+  );
+
+  it('refuses missing attempt-one history and a fourth recovery attempt without allocating rows', async () => {
+    const resolveGenerationRecovery = vi.fn(async () => [] as any[]);
+    const { repository, client, gateRepository } = await createRepository({
+      lifecycleEvents: 'enabled',
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+
+    await expect(repository.admit(mcpRecoveryInput(`mcp-recovery-missing-a1-${randomUUID()}`)))
+      .rejects.toThrow(/state is unavailable or no longer current/u);
+    expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(0);
+    expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+
+    const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+    await client.query('UPDATE review_runs SET status = \'failed\', attempt = 2 WHERE run_id = $1', [seeded.run.runId]);
+    await client.query('UPDATE review_dispatch_outbox SET status = \'projected\', execution_attempt = 2 WHERE run_id = $1', [seeded.run.runId]);
+    const before = await dispatchState(client, seeded.run.runId);
+    await expect(repository.admit(mcpRecoveryInput(`mcp-recovery-fourth-${randomUUID()}`)))
+      .rejects.toThrow(/state is unavailable or no longer current/u);
+    expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count).toBe(1);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries')).rows[0].count).toBe(0);
+  });
 
   it('REL-1189 claims expedited work first and keeps FIFO order within each durable priority', async () => {
     const { repository, client } = await createRepository();

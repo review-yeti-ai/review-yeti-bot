@@ -140,6 +140,11 @@ export type RemoteMcpRouter = Router & {
   notifyResourceUpdated(uri: string, payload?: any): number;
 };
 
+interface ResolvedMcpCaller {
+  caller: McpAuthenticatedCaller;
+  authenticatedByConfiguredAuthenticator: boolean;
+}
+
 export function createDefaultToolRegistry(options?: {
   db?: any;
   admissionRepository?: any;
@@ -355,9 +360,12 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
   };
 
   // Authentication helper
-  async function resolveCaller(req: Request): Promise<McpAuthenticatedCaller> {
-    if (req.mcpCaller) {
-      return req.mcpCaller;
+  async function resolveCaller(req: Request): Promise<ResolvedMcpCaller> {
+    if (req.mcpCaller && !options.authenticator) {
+      // The legacy/in-process fallback is available only without a configured
+      // authenticator. Configured routes require a bearer token verified on
+      // this request; recovery also requires that direct verified result.
+      return { caller: req.mcpCaller, authenticatedByConfiguredAuthenticator: false };
     }
 
     const token = extractBearerToken(req);
@@ -379,7 +387,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
 
       if (authResult && typeof authResult === 'object') {
         if ('authType' in authResult) {
-          return authResult as McpAuthenticatedCaller;
+          return { caller: authResult as McpAuthenticatedCaller, authenticatedByConfiguredAuthenticator: true };
         }
         if (authResult.authenticated === true) {
           const caller: McpAuthenticatedCaller = {
@@ -389,7 +397,9 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
             allowedRepositories: null,
             callerId: authResult.identity || 'authenticated-caller',
           };
-          return caller;
+          // This compatibility adapter synthesizes static-admin fields. It is
+          // retained for ordinary MCP traffic but cannot authorize recovery.
+          return { caller, authenticatedByConfiguredAuthenticator: false };
         }
         throw new McpAuthError(authResult.error || 'Invalid Bearer token');
       }
@@ -397,11 +407,14 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
 
     // Default permissive if no authenticator configured in options
     return {
-      authType: 'static_token',
-      tokenDigest: token.slice(0, 12),
-      isAdmin: true,
-      allowedRepositories: null,
-      callerId: 'test-caller',
+      caller: {
+        authType: 'static_token',
+        tokenDigest: token.slice(0, 12),
+        isAdmin: true,
+        allowedRepositories: null,
+        callerId: 'test-caller',
+      },
+      authenticatedByConfiguredAuthenticator: false,
     };
   }
 
@@ -427,6 +440,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
   async function dispatchJsonRpc(
     msg: any,
     caller: McpAuthenticatedCaller,
+    authenticatedByConfiguredAuthenticator: boolean,
     req: Request,
     res: Response,
     explicitSession?: McpSessionState
@@ -524,6 +538,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
         let toolArgs = (args || {}) as Record<string, unknown>;
         let targetOwner = typeof toolArgs.owner === 'string' ? toolArgs.owner.trim() : undefined;
         let targetRepo = typeof toolArgs.repo === 'string' ? toolArgs.repo.trim() : undefined;
+        let authorizedRepository: { owner: string; repo: string } | undefined;
 
         // Support single string parameter "owner/repo" format (e.g. preflight_diff_review)
         if (!targetOwner && targetRepo && targetRepo.includes('/')) {
@@ -560,6 +575,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
               responseBody: formatRbacErrorResponse(new McpRbacError(targetOwner || '', targetRepo || '')),
             };
           }
+          authorizedRepository = { owner: targetOwner || '', repo: targetRepo || '' };
         }
 
         // Runtime input validation via schema if defined on handler
@@ -584,6 +600,8 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
             sessionId: explicitSession?.id,
             caller,
             identity: caller.callerId,
+            authenticatedByConfiguredAuthenticator,
+            ...(authorizedRepository ? { authorizedRepository } : {}),
           };
           const toolResult = await handler.execute(toolArgs, context);
           let normalizedResult: ToolResult;
@@ -770,15 +788,16 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
 
   // 1. POST / (Streamable HTTP JSON-RPC endpoint)
   router.post('/', async (req: Request, res: Response) => {
-    let caller: McpAuthenticatedCaller;
+    let resolvedCaller: ResolvedMcpCaller;
     try {
-      caller = await resolveCaller(req);
+      resolvedCaller = await resolveCaller(req);
     } catch {
       res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token", error_description="Missing or invalid Bearer token"');
       return res.status(401).json(
         buildJsonRpcError(null, MCP_ERRORS.UNAUTHORIZED, 'Unauthorized: Missing or invalid Bearer token')
       );
     }
+    const { caller, authenticatedByConfiguredAuthenticator } = resolvedCaller;
 
     const sessionIdHeader = req.header('mcp-session-id') || (req.headers['mcp-session-id'] as string | undefined);
     let session: McpSessionState | undefined;
@@ -803,7 +822,9 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
 
       const results = [];
       for (const item of req.body) {
-        const { responseBody } = await dispatchJsonRpc(item, caller, req, res, session);
+        const { responseBody } = await dispatchJsonRpc(
+          item, caller, authenticatedByConfiguredAuthenticator, req, res, session,
+        );
         if (responseBody) results.push(responseBody);
       }
       return res.status(200).json(results);
@@ -812,6 +833,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
     const { statusCode, responseBody, newSessionId } = await dispatchJsonRpc(
       req.body,
       caller,
+      authenticatedByConfiguredAuthenticator,
       req,
       res,
       session
@@ -832,14 +854,15 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
 
   // 2. GET /sse (HTTP+SSE Transport)
   router.get('/sse', async (req: Request, res: Response) => {
-    let caller: McpAuthenticatedCaller;
+    let resolvedCaller: ResolvedMcpCaller;
     try {
-      caller = await resolveCaller(req);
+      resolvedCaller = await resolveCaller(req);
     } catch {
       return res.status(401).json(
         buildJsonRpcError(null, MCP_ERRORS.UNAUTHORIZED, 'Unauthorized: Missing or invalid Bearer token')
       );
     }
+    const { caller } = resolvedCaller;
 
     if (sessionManager.activeSessionCount() >= maxSessions) {
       return res.status(429).json({ error: 'Maximum concurrent MCP sessions exceeded' });
@@ -897,14 +920,15 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
       return res.status(404).json({ error: 'Active SSE session not found' });
     }
 
-    let caller: McpAuthenticatedCaller;
+    let resolvedCaller: ResolvedMcpCaller;
     try {
-      caller = await resolveCaller(req);
+      resolvedCaller = await resolveCaller(req);
     } catch {
       return res.status(401).json(
         buildJsonRpcError(null, MCP_ERRORS.UNAUTHORIZED, 'Unauthorized: Missing or invalid Bearer token')
       );
     }
+    const { caller, authenticatedByConfiguredAuthenticator } = resolvedCaller;
 
     sessionManager.touchSession(sessionId);
 
@@ -914,7 +938,9 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
     // Asynchronously dispatch and stream result back to SSE channel
     void (async () => {
       try {
-        const { responseBody } = await dispatchJsonRpc(req.body, caller, req, res, session);
+        const { responseBody } = await dispatchJsonRpc(
+          req.body, caller, authenticatedByConfiguredAuthenticator, req, res, session,
+        );
         if (responseBody && session.sseResponse && !session.sseResponse.writableEnded) {
           session.sseResponse.write(`event: message\ndata: ${JSON.stringify(responseBody)}\n\n`);
         }

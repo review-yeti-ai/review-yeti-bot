@@ -458,13 +458,34 @@ export async function loadIncompleteP2RecoveryContext(
     } catch { refuse(); }
     return null;
   }
+  const recoveryEvidenceForValidation = input.recoveryEvidence
+    ? recoveryEvidence
+    : recoveryEvidence.map((proof) => ({
+      ...proof,
+      ...(proof.legacyIncompleteRoster
+        ? { legacyIncompleteRoster: { ...proof.legacyIncompleteRoster } }
+        : {}),
+    }));
+  if (!input.recoveryEvidence) {
+    // Receipts are append-only. The first attempt was persisted before its
+    // successor existed, so its Gate window has no upper boundary in that
+    // original row. Derive the boundary from the next immutable receipt's
+    // App-validated worker start time without rewriting either receipt.
+    for (let index = 0; index < recoveryEvidenceForValidation.length - 1; index += 1) {
+      const current = recoveryEvidenceForValidation[index].legacyIncompleteRoster;
+      const nextStartedAt = recoveryEvidenceForValidation[index + 1].legacyIncompleteRoster?.workerStartedAt;
+      if (current && current.nextWorkerStartedAt === undefined && nextStartedAt !== undefined) {
+        current.nextWorkerStartedAt = nextStartedAt;
+      }
+    }
+  }
   // A P2 recovery chain may carry a zero-finding incomplete generation, but
   // every generation must be a validated incomplete-panel BLOCK so no other
   // failure class is accidentally folded into this context.
-  if (recoveryEvidence.some((proof, index) => !p2ProofFlags[index]
+  if (recoveryEvidenceForValidation.some((proof, index) => !p2ProofFlags[index]
     && (proof.title !== 'Review Yeti: BLOCK'
       || !isZeroFindingIncompleteSummary(proof.legacyIncompleteRoster?.workerSummary, identity.headSha)))) refuse();
-  try { validateReviewGenerationRecoveryEvidence(recoveryRequest(input, true), recoveryEvidence); } catch { refuse(); }
+  try { validateReviewGenerationRecoveryEvidence(recoveryRequest(input, true), recoveryEvidenceForValidation); } catch { refuse(); }
 
   const sourceRows = await queryable.query(`
     SELECT runs.run_id, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
@@ -498,7 +519,7 @@ export async function loadIncompleteP2RecoveryContext(
   for (let index = 0; index < sourceRows.rows.length; index += 1) {
     const row = sourceRows.rows[index];
     const sourceAttempt = index + 1;
-    const proof = recoveryEvidence[index];
+    const proof = recoveryEvidenceForValidation[index];
     if (Number(row.source_execution_attempt) !== sourceAttempt
       || proof.generation !== sourceAttempt || proof.title !== 'Review Yeti: BLOCK'
       || proof.conclusion !== 'failure' || proof.externalId !== `${input.runId}:a${sourceAttempt}`) refuse();

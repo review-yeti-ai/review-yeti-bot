@@ -222,6 +222,7 @@ export const TriggerReviewInputSchema = z.object({
   force: z.boolean().default(false).optional(),
   priority: ReviewPrioritySchema.default('normal').optional(),
   review_engine: ReviewEngineParamSchema.optional(),
+  incomplete_p2_recovery: z.literal(true).optional(),
 }).strict();
 
 export type TriggerReviewInput = z.infer<typeof TriggerReviewInputSchema>;
