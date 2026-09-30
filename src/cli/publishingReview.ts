@@ -1693,15 +1693,17 @@ export async function runPublishingReviewWorker(
         const buildStart = deps.now ? deps.now() : Date.now();
         let result: { indexDir?: string; scratchDir?: string; reason?: string };
         try {
-          result = await zoektGrounding({
+          result = await raceWithPanelAbort(zoektGrounding({
             repository: identity.repo,
             headSha: identity.headSha,
             token: value(env, 'GH_TOKEN'),
             enabled: zoektGroundingEnabled,
-            signal: deps.signal,
+            signal: panelDeadline.signal,
             zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
-          });
+          }), panelDeadline.signal);
         } catch (groundingError: any) {
+          // Ordinary enrichment failure stays fail-soft; an exhausted work budget does not.
+          panelDeadline.check();
           result = { reason: groundingError?.message || 'zoekt_grounding_error' };
         }
         span.setAttribute('review_yeti.zoekt_index_build.enabled', zoektGroundingEnabled);

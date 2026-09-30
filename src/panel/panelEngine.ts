@@ -3688,12 +3688,16 @@ export async function executePersonaPanel(options: {
   /** REL-1139: diff headers the caller could not read (files never sent here); any makes the skip ineligible. */
   unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
+  const admittedBudget = options.deadlineBudget
+    ?? (options.signal ? panelDeadlineBudgets.get(options.signal) : undefined);
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
-    options.deadlineBudget ?? (options.signal ? panelDeadlineBudgets.get(options.signal) : undefined)
-      ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s));
+    admittedBudget ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s, {}));
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => {
-    deadline.check();
+    // Only an admitted worker context adds synchronous absolute expiry. Standalone
+    // callers retain their existing local timer and transport-backoff contracts.
+    if (admittedBudget) deadline.check();
+    else throwIfPanelAborted(deadline.signal);
     return deadline.budget.deadlineAtMs - Date.now();
   };
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and

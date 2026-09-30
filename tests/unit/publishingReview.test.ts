@@ -2639,7 +2639,7 @@ describe('REL-1211 absolute publishing budget', () => {
   });
 
   it('includes elapsed grounding and setup in the cutoff, rather than restarting nested panel work', async () => {
-    const grounding = vi.fn(async () => { vi.setSystemTime(start + 40); return {}; });
+    const grounding = vi.fn(async () => { await new Promise(resolve => setTimeout(resolve, 40)); return {}; });
     let observed!: { signal: AbortSignal };
     const panelRunner = vi.fn((options: typeof observed) => { observed = options; return new Promise(() => {}); });
     const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
@@ -2652,6 +2652,22 @@ describe('REL-1211 absolute publishing budget', () => {
     nested.cleanup();
     expect(observed.signal.aborted).toBe(true);
     expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cuts off a real never-settling grounding await and publishes timeout without starting models', async () => {
+    let signal!: AbortSignal;
+    const grounding = vi.fn(({ signal: current }: { signal: AbortSignal }) => { signal = current; return new Promise(() => {}); });
+    const completion = { reportTerminalFailure: vi.fn(async (_event: unknown) => undefined) };
+    const client = { complete: vi.fn() };
+    const d = deps({ completion, client, zoektGrounding: grounding });
+    const promise = runPublishingReviewWorker(env(deadlineEnv(50)), d as never);
+    const failure = expect(promise).rejects.toMatchObject({ name: 'PanelDeadlineExceededError', failureReason: 'worker_terminal_deadline_exceeded' });
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    expect(Date.now()).toBe(start + 50);
+    expect(grounding).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(true);
+    expect(d.panelRunner).not.toHaveBeenCalled(); expect(client.complete).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'timeout' }));
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -2762,6 +2778,10 @@ describe('REL-1211 absolute publishing budget', () => {
     await expect(runPublishingReviewWorker(env({ ...jevEnv, ...deadlineEnv(50) }), d as never)).rejects.toMatchObject({ name: 'PanelCancellationError' });
     expect(d.panelRunner).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    // Drain already-settled cleanup callbacks at the same clock; a live deadline
+    // or finish-flush timer would remain and still fail the zero-handle assertion.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Date.now()).toBe(start);
     expect(vi.getTimerCount()).toBe(0);
   });
 });
