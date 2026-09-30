@@ -156,7 +156,7 @@ describe('REL-1198 retained P2 worker boundary', () => {
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].text).toContain(JSON.stringify(context.findings[0].finding));
   });
 
-  it('fails closed when valid retained P2 context would exceed the complete Checks text bound', async () => {
+  it('publishes a valid retained P2 context below the complete Checks text bound without truncation', async () => {
     const f = fixture();
     const source = { executionAttempt: 1, workerResultDigest: 'd'.repeat(64), workerCheckId: 5001,
       gateCheckId: 6001, rawFindingCount: 4, canonicalFindingCount: 4 };
@@ -187,8 +187,67 @@ describe('REL-1198 retained P2 worker boundary', () => {
 
     expect(contextBytes).toBeLessThanOrEqual(MAX_INCOMPLETE_P2_RECOVERY_BYTES);
     expect(contextBytes).toBeGreaterThan(64_000);
+    expect(contextBytes).toBe(65_535);
     expect(renderedRetainedText).toContain(context.findings[3].finding.body);
     expect(Buffer.byteLength(renderedRetainedText, 'utf8')).toBeGreaterThan(64_000);
+    expect(Buffer.byteLength(renderedRetainedText, 'utf8')).toBe(64_796);
+    expect(Buffer.byteLength(renderedRetainedText, 'utf8')).toBeLessThanOrEqual(65_000);
+
+    const read = vi.fn().mockResolvedValue(context);
+    f.deps.incompleteP2Recovery = { read };
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(f.panelRunner).toHaveBeenCalledOnce();
+    expect(f.reportReviewResult).toHaveBeenCalledOnce();
+    const terminalCompletion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(terminalCompletion.result.incompleteP2Recovery).toEqual(incompleteP2RecoveryClaimFor(context));
+    expect(terminalCompletion.result.personas.every((persona) => persona.status === 'COMPLETE')).toBe(true);
+    expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
+    const publishedCheck = f.checkClient.completeCheck.mock.calls[0]?.[0];
+    expect(publishedCheck?.conclusion).toBe('success');
+    expect(publishedCheck?.text).toBe(renderedRetainedText);
+    expect(Buffer.byteLength(publishedCheck?.text ?? '', 'utf8')).toBe(Buffer.byteLength(renderedRetainedText, 'utf8'));
+    expect(context.findings.every((entry) => publishedCheck?.text?.includes(JSON.stringify(entry.finding)))).toBe(true);
+    expect(context.findings).toHaveLength(4);
+    expect(context.findings.every((entry) => entry.finding.body === 'x'.repeat(15_882))).toBe(true);
+  });
+
+  it('fails closed without truncation when fresh and retained evidence exceed 65,000 bytes', async () => {
+    const f = fixture();
+    const source = { executionAttempt: 1, workerResultDigest: 'd'.repeat(64), workerCheckId: 5001,
+      gateCheckId: 6001, rawFindingCount: 4, canonicalFindingCount: 4 };
+    const findings = Array.from({ length: 4 }, (_, findingIndex) => ({
+      sourceExecutionAttempt: 1,
+      sourceWorkerResultDigest: source.workerResultDigest,
+      sourceWorkerCheckId: source.workerCheckId,
+      sourceGateCheckId: source.gateCheckId,
+      personaId: 'sec-lane',
+      findingIndex,
+      finding: { severity: 'P2' as const, path: 'src/a.ts', line: 1,
+        title: `Prior advisory ${findingIndex}`, body: 'x'.repeat(15_882) },
+    }));
+    const context = retainedContext(f, { sources: [source], findings });
+    const freshFinding = { severity: 'P2' as const, path: 'src/a.ts', line: 1,
+      title: 'Fresh advisory', body: 'y'.repeat(1_000) };
+    f.panel.personas[0]!.decision = 'FINDINGS';
+    f.panel.personas[0]!.findings.push(freshFinding);
+    const combinedCheckText = [
+      renderFindingsMarkdown([freshFinding], 0),
+      '### Retained P2 observations (original evidence)',
+      'These original observations remain advisory and were supplied to the full review above. Their source records are immutable; this section does not attribute them to a new reviewer.',
+      ...context.findings.map((entry) => [
+        `Attempt ${entry.sourceExecutionAttempt}, App check ${entry.sourceWorkerCheckId}, Gate ${entry.sourceGateCheckId}, persona ${entry.personaId}, finding ${entry.findingIndex}, worker result ${entry.sourceWorkerResultDigest}:`,
+        '',
+        `${'`'.repeat(4)}json`,
+        JSON.stringify(entry.finding),
+        '`'.repeat(4),
+      ].join('\n')),
+    ].join('\n\n');
+
+    expect(Buffer.byteLength(JSON.stringify(context), 'utf8')).toBeLessThanOrEqual(MAX_INCOMPLETE_P2_RECOVERY_BYTES);
+    expect(Buffer.byteLength(combinedCheckText, 'utf8')).toBeGreaterThan(65_000);
+    expect(Buffer.byteLength(combinedCheckText, 'utf8')).toBeGreaterThan(65_535);
 
     const read = vi.fn().mockResolvedValue(context);
     f.deps.incompleteP2Recovery = { read };
@@ -209,6 +268,7 @@ describe('REL-1198 retained P2 worker boundary', () => {
     expect(failureCheck?.summary).not.toContain('Retained P2 observations');
     expect(context.findings).toHaveLength(4);
     expect(context.findings.every((entry) => entry.finding.body === 'x'.repeat(15_882))).toBe(true);
+    expect(f.panel.personas[0]!.findings[0]?.body).toBe('y'.repeat(1_000));
   });
 
   it('stops before model execution when the mandatory retained context read fails', async () => {

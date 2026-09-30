@@ -2268,8 +2268,11 @@ export async function runPublishingReviewWorker(
           `Attempt ${entry.sourceExecutionAttempt}, App check ${entry.sourceWorkerCheckId}, Gate ${entry.sourceGateCheckId}, persona ${entry.personaId}, finding ${entry.findingIndex}, worker result ${entry.sourceWorkerResultDigest}:\n\n\`\`\`\`json\n${JSON.stringify(entry.finding)}\n\`\`\`\``),
       ] : []),
     ].join('\n\n');
-    // Never let the Checks client's display cap silently lose a retained finding.
-    if (p2RecoveryContext && Buffer.byteLength(checkText, 'utf8') > 64_000) {
+    // GitHub rejects Check output fields above 65,535 UTF-8 bytes, and the
+    // InstallationClient slices them to 65,000 UTF-16 code units. UTF-8 byte
+    // length is at least the UTF-16 code-unit length, so this shared 65,000
+    // byte ceiling avoids both API rejection and silent client-side truncation.
+    if (p2RecoveryContext && Buffer.byteLength(checkText, 'utf8') > 65_000) {
       throw new Error('Retained findings and fresh findings exceed the complete publication bound');
     }
     const completedAt = new Date(now()).toISOString();
