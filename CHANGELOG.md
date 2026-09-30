@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.99.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.99.1...v1.99.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* recover composed verdict contracts and retain release record patches ([#1144](https://github.com/review-yeti-ai/review-yeti-bot/issues/1144)) ([d7dad81](https://github.com/review-yeti-ai/review-yeti-bot/commit/d7dad818d656d8664e4083a80983c2ab7c64b362))
+
 ## [1.99.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.99.0...v1.99.1) (2026-09-30)
 
 
