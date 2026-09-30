@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.6...v1.100.7) (2026-09-30)
+
+
+### Bug Fixes
+
+* **operator:** protect publishing workers from autoscaler scale-down ([#1166](https://github.com/review-yeti-ai/review-yeti-bot/issues/1166)) ([5589843](https://github.com/review-yeti-ai/review-yeti-bot/commit/5589843b5086b3a7bacc4a121373da96b84352b0))
+
 ## [1.100.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.5...v1.100.6) (2026-09-30)
 
 
