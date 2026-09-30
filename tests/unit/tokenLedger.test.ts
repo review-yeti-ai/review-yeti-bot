@@ -32,6 +32,8 @@ describe('usageOfResponse', () => {
     });
     expect(usageOfResponse({ usage: { prompt_tokens: 7, completion_tokens: 3 } as never, costUSD: null }))
       .toMatchObject({ promptTokens: 7, completionTokens: 3, totalTokens: 10, costUSD: 0 });
+    expect(usageOfResponse({ usage: { prompt: 9, completion: 1, cache_read_input_tokens: 6 } as never, costUSD: null }))
+      .toMatchObject({ promptTokens: 9, completionTokens: 1, totalTokens: 10, cachedTokens: 6 });
     // A call with no usage still counts as a call, with zero tokens -- never NaN.
     expect(usageOfResponse({ usage: null, costUSD: null })).toEqual({
       calls: 1, promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0,
@@ -49,6 +51,14 @@ describe('attributeRequest', () => {
     expect(attributeRequest(request(undefined))).toEqual({ role: 'other', key: 'unattributed' });
     // A forced label wins over whatever the caller set (the composed shadow engine).
     expect(attributeRequest(request('persona', 'arch-lane'), 'composed-shadow')).toEqual({ role: 'other', key: 'composed-shadow' });
+    expect(attributeRequest({ ...request(undefined), internalProgress: { turn: 1, task: 'composed_plan' } }))
+      .toEqual({ role: 'other', key: 'composed-plan' });
+    expect(attributeRequest({ ...request(undefined), internalProgress: { turn: 1, task: 'composed_task', lane: 'composed-task-1' } }))
+      .toEqual({ role: 'lanes', key: 'composed-task-1' });
+    for (const lane of ['SECRET lane', 'task-sec', 'composed-task-0', 'composed-task-01', 'composed-task-9', 'composed-task-999999999999999999999999']) {
+      expect(attributeRequest({ ...request(undefined), internalProgress: { turn: 1, task: 'composed_task', lane } }))
+        .toEqual({ role: 'lanes', key: 'unattributed' });
+    }
   });
 });
 
@@ -101,6 +111,32 @@ describe('TokenLedger + meterModelClient', () => {
     const res = response(1, 1);
     const client = meterModelClient({ complete: vi.fn().mockResolvedValue(res) } as never, ledger);
     await expect(client.complete(request('persona', 'a') as never)).resolves.toBe(res);
+  });
+
+  it('attributes composed calls before the diagnostics wrapper strips their private marker', async () => {
+    const { createPublishingProgress } = await import('../../src/telemetry/publishingProgress');
+    const ledger = new TokenLedger();
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-composed', executionAttempt: 1 }, { sink: (event) => events.push(event) });
+    const forwarded: any[] = [];
+    const client = meterModelClient(progress.instrument({
+      complete: vi.fn(async (req: any) => {
+        forwarded.push(req);
+        return response(4, 3);
+      }),
+    } as never), ledger);
+
+    await client.complete({ ...request(undefined), internalProgress: { turn: 1, task: 'composed_plan', lane: 'composed-plan' } } as never);
+    await client.complete({ ...request(undefined), internalProgress: { turn: 2, task: 'composed_task', lane: 'composed-task-1' } } as never);
+
+    expect(ledger.snapshot()).toMatchObject({
+      byOther: { 'composed-plan': { calls: 1, totalTokens: 7 } },
+      byLane: { 'composed-task-1': { calls: 1, totalTokens: 7 } },
+    });
+    expect(forwarded).toHaveLength(2);
+    expect(forwarded.every((req) => !Object.hasOwn(req, 'internalProgress'))).toBe(true);
+    expect(events.filter((event) => event.task === 'provider_call' && event.status === 'started'))
+      .toMatchObject([{ role: 'composed_plan', lane: 'composed-plan', turn: 1 }, { role: 'composed_task', lane: 'composed-task-1', turn: 2 }]);
   });
 
   it('bounds the breakdown maps against a caller that labels every call uniquely', () => {
