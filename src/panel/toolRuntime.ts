@@ -311,7 +311,7 @@ function sliceCodeReadLines(text: string, args: any): { content: string; start: 
   return { content: lines.slice(start - 1, end).join('\n'), start, end, total, sliced: true };
 }
 
-/** Keep source reads and changed-patch reads distinct, without bypassing excluded patches. */
+/** Keep source reads and changed-patch reads distinct; patch limits only govern patch payloads. */
 async function runCodeReadingTool(tName: string, args: any, context: ToolRuntimeContext): Promise<ToolRuntimeResult> {
   throwIfPanelAborted(context.signal);
   const targetPath = resolveCodeReadPath(args);
@@ -327,13 +327,12 @@ async function runCodeReadingTool(tName: string, args: any, context: ToolRuntime
   };
   const matched = matches[0];
   const prefix = `Tool '${tName}' execution result:\n`;
-  const maxChars = resolveMaxFileDiffChars();
-  if (matched && isOversizedFileDiff(matched, maxChars)) return {
-    ...patchScope,
-    toolOutput: prefix + `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`,
-  };
-
   if (tName === 'get_diff' || !context.repoFileProvider) {
+    const maxChars = resolveMaxFileDiffChars();
+    if (matched && isOversizedFileDiff(matched, maxChars)) return {
+      ...patchScope,
+      toolOutput: prefix + `SKIPPED '${targetPath}': patch is ${filePatchChars(matched)} characters, over max-file-diff-chars ${maxChars}. Do not request this payload.`,
+    };
     if (!matched) return {
       ...patchScope,
       toolOutput: prefix + (tName === 'get_diff'
