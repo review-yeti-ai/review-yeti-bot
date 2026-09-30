@@ -1,5 +1,5 @@
 import type { ReviewStatusOutput } from './tools/schemas';
-import type { ReviewGateDecision } from '../../review/reviewGatePolicy';
+import { reviewGateStatusForReason, type ReviewGateDecision } from '../../review/reviewGatePolicy';
 
 export type ReviewStatusVerdict = ReviewStatusOutput['verdict'];
 export type ReviewStatusPhase = ReviewStatusOutput['phase'];
@@ -17,25 +17,6 @@ const VERDICT_MAP: Readonly<Record<string, ReviewStatusVerdict>> = {
   FIX_FIRST: 'FIX_FIRST',
   BLOCK: 'NACK',
   COMMENT: 'COMMENT',
-};
-
-// Projection validation only: native policy remains the authority. Exhaustive
-// keys keep a new durable reason from silently compiling into this parser.
-const GATE_REASON_STATUS: Record<ReviewGateDecision['reason'], NativeGateStatus> = {
-  'review-pending': 'pending',
-  'review-deadline-exceeded': 'timed_out',
-  'candidate-superseded': 'cancelled',
-  'pull-request-closed': 'cancelled',
-  'pull-request-draft': 'cancelled',
-  'review-opted-out': 'cancelled',
-  'operator-cancelled': 'cancelled',
-  'invalid-evidence': 'failure',
-  'infrastructure-failure': 'failure',
-  'incomplete-review': 'failure',
-  'blocking-findings': 'failure',
-  'clean-review': 'success',
-  'central-exemption': 'success',
-  'human-accepted-risk': 'success',
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -84,9 +65,9 @@ function parseDecision(value: unknown): ParsedDecision {
 
   const status = parsed.status;
   const reason = parsed.reason;
+  const expectedStatus = reviewGateStatusForReason(reason);
   if (typeof status === 'string'
-    && typeof reason === 'string' && hasOwn(GATE_REASON_STATUS, reason)
-    && GATE_REASON_STATUS[reason as ReviewGateDecision['reason']] === status
+    && expectedStatus !== undefined && expectedStatus === status
     && parsed.eligible === (status === 'success')
     && (reason !== 'human-accepted-risk' || validRiskAudit(parsed.audit))) {
     return { kind: 'gate', status: status as NativeGateStatus };

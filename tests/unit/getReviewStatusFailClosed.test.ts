@@ -5,6 +5,14 @@ import {
 } from '../../src/mcp/server/tools/getReviewStatus';
 import { fetchRunResource } from '../../src/mcp/server/resources/runResource';
 import type { ResourceDbClient } from '../../src/mcp/server/resources/resourceTypes';
+import {
+  evaluateReviewGate,
+  REVIEW_GATE_REASONS,
+  REVIEW_GATE_CANCELLATION_REASONS,
+  reviewGateStatusForReason,
+  type ReviewGateEvidence,
+  type ReviewRiskAcceptance,
+} from '../../src/review/reviewGatePolicy';
 
 function baseRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -54,6 +62,62 @@ const verdictProjectionCases: Array<{
   expected: string;
   expectedPhase?: string;
 }> = [
+  ...[
+    { actorPermission: 'read' },
+    { actorLogin: 'reviewer bot' },
+    { eventId: 0 },
+    { eventId: Number.MAX_SAFE_INTEGER + 1 },
+    { appliedAt: '2026-09-29T12:01:00' },
+    { reviewedAt: 'invalid' },
+  ].map((auditPatch) => ({
+    name: `accepted-risk rejects malformed field ${JSON.stringify(auditPatch)}`,
+    row: baseRow({ desired_state: 'success', decision: { status: 'success', eligible: true, reason: 'human-accepted-risk', audit: {
+      eventId: 1, actorLogin: 'reviewer', actorPermission: 'write',
+      appliedAt: '2026-09-29T12:01:00Z', reviewedAt: '2026-09-29T12:00:00Z', ...auditPatch,
+    } } }),
+    expected: 'FAILED',
+  })),
+  ...[
+    { desired_state: 'queued', run_status: 'queued', expected: 'PENDING' },
+    { desired_state: 'in_progress', run_status: 'running', expected: 'RUNNING' },
+    { desired_state: 'failure', run_status: 'failed', expected: 'FAILED' },
+  ].map(({ expected, ...state }) => ({
+    name: `native pending decision projects ${state.desired_state}`,
+    row: baseRow({ ...state, decision: { status: 'pending', eligible: false, reason: 'review-pending' } }),
+    expected,
+  })),
+  {
+    name: 'native cancellation reason stays failed',
+    row: baseRow({ desired_state: 'cancelled', decision: { status: 'cancelled', eligible: false, reason: 'operator-cancelled' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'native timeout reason stays failed',
+    row: baseRow({ desired_state: 'timed_out', decision: { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'native success requires eligibility true',
+    row: baseRow({ desired_state: 'success', decision: { status: 'success', eligible: false, reason: 'clean-review' } }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'native failure requires eligibility false',
+    row: baseRow({ desired_state: 'failure', decision: { status: 'failure', eligible: true, reason: 'incomplete-review' } }),
+    expected: 'FAILED',
+  },
+  ...['running', 'publishing'].flatMap((runStatus) => [
+    ...['arbitration', 'publish'].map((runStage) => ({
+      name: `${runStatus} at ${runStage} projects arbitration phase`,
+      row: baseRow({ run_status: runStatus, run_stage: runStage }),
+      expected: 'RUNNING', expectedPhase: 'arbitration',
+    })),
+    {
+      name: `${runStatus} at evaluate projects evaluating phase`,
+      row: baseRow({ run_status: runStatus, run_stage: 'evaluate' }),
+      expected: 'RUNNING', expectedPhase: 'evaluating_personas',
+    },
+  ]),
   ...[null, undefined, ''].flatMap((desiredState) => [
     {
       name: `absent gate ${String(desiredState)} preserves explicit completed legacy approval`,
@@ -321,4 +385,62 @@ describe('MCP run status surfaces share a fail-closed verdict projection', () =>
       expect(resourceStatus.phase).toBe(expectedPhase);
     }
   });
+});
+
+describe('MCP status validation uses the native policy vocabulary', () => {
+  const candidate = { repositoryId: 123, prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64) };
+  const current = { ...candidate, open: true, draft: false };
+  const clean: ReviewGateEvidence = {
+    verdict: 'SHIP', completedAt: '2026-09-29T12:00:00Z', coverageComplete: true,
+    quorumSatisfied: true, infrastructureFailure: false, p0Count: 0, p1Count: 0,
+    expectedLanes: 4, completedLanes: 4,
+  };
+  const acceptance: ReviewRiskAcceptance = {
+    label: 'review-yeti/accepted-risk', labelPresent: true, eventId: 99,
+    actorLogin: 'reviewer', actorType: 'User', actorPermission: 'write', appliedAt: '2026-09-29T12:01:00Z',
+  };
+  const fixtures = [
+    { name: 'pending', input: { candidate, current } },
+    { name: 'superseded', input: { candidate, current: { ...current, headSha: 'd'.repeat(40) }, evidence: clean } },
+    { name: 'closed', input: { candidate, current: { ...current, open: false }, evidence: clean } },
+    { name: 'invalid evidence', input: { candidate, current, evidence: { ...clean, completedAt: 'invalid' } } },
+    { name: 'infrastructure failure', input: { candidate, current, evidence: { ...clean, infrastructureFailure: true } } },
+    { name: 'incomplete review', input: { candidate, current, evidence: { ...clean, coverageComplete: false } } },
+    { name: 'blocking findings', input: { candidate, current, evidence: { ...clean, verdict: 'FIX_FIRST' as const, p1Count: 1 } } },
+    { name: 'clean review', input: { candidate, current, evidence: clean } },
+    { name: 'exemption', input: { candidate, current, evidence: { ...clean, expectedLanes: 0, completedLanes: 0,
+      exemption: { kind: 'recap-only' as const, auditDigest: 'd'.repeat(64) } } } },
+    { name: 'accepted risk', input: { candidate, current, evidence: { ...clean, verdict: 'FIX_FIRST' as const, p1Count: 1 }, acceptance } },
+  ];
+
+  it.each(fixtures)('matches the actual evaluator decision for $name', async ({ input }) => {
+    const decision = evaluateReviewGate(input);
+    expect(reviewGateStatusForReason(decision.reason)).toBe(decision.status);
+    const expected = decision.status === 'success' ? 'SHIP' : decision.status === 'pending' ? 'PENDING' : 'FAILED';
+    for (const value of [decision, JSON.stringify(decision)]) {
+      const row = baseRow({ desired_state: decision.status === 'pending' ? 'queued' : decision.status, decision: value });
+      const [tool, resource] = await Promise.all([getStatus(row), getResourceStatus(row)]);
+      expect(tool.verdict).toBe(expected);
+      expect(resource.verdict).toBe(expected);
+    }
+  });
+
+  it('recognizes every unique canonical reason without a projection-owned mirror', () => {
+    expect(new Set(REVIEW_GATE_REASONS).size).toBe(REVIEW_GATE_REASONS.length);
+    for (const reason of REVIEW_GATE_REASONS) expect(reviewGateStatusForReason(reason)).toBeDefined();
+  });
+
+  it.each(REVIEW_GATE_CANCELLATION_REASONS)('preserves lifecycle cancellation %s', (reason) => {
+    expect(reviewGateStatusForReason(reason)).toBe('cancelled');
+  });
+
+  it('preserves the lifecycle deadline status', () => {
+    expect(reviewGateStatusForReason('review-deadline-exceeded')).toBe('timed_out');
+  });
+
+  it.each(['future-reason', ' clean-review', 'CLEAN-REVIEW', '__proto__', 'constructor', 'toString', null, undefined, 0, false, {}])(
+    'does not coerce or normalize unknown reason %j', (reason) => {
+      expect(reviewGateStatusForReason(reason)).toBeUndefined();
+    },
+  );
 });
