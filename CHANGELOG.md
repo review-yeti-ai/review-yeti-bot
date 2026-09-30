@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.1...v1.100.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **REL-1198:** authorize bounded MCP recovery and preserve review history ([#1154](https://github.com/review-yeti-ai/review-yeti-bot/issues/1154)) ([d23ac03](https://github.com/review-yeti-ai/review-yeti-bot/commit/d23ac03473a8d8230f295afde73d2ab4c329129f))
+
 ## [1.100.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.0...v1.100.1) (2026-09-30)
 
 
