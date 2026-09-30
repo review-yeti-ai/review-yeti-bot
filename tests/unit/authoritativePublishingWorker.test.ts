@@ -924,6 +924,12 @@ describe('authoritative prepared publishing worker', () => {
       client: { complete: expect.any(Function) },
       jobId: f.env.REVIEW_RUN_ID, baseSha: BASE, prNumber: 42,
       signal: expect.any(AbortSignal),
+      deadlineBudget: expect.objectContaining({
+        deadlineAtMs: expect.any(Number),
+        timeoutMs: expect.any(Number),
+        terminalBound: expect.any(Boolean),
+      }),
+      deadlineNow: expect.any(Function),
       // This fixture's GH_TOKEN is a real `ghs_`-shaped read token and no
       // repoFileProviderFactory is injected, so the worker wires the default
       // full-repository grounding provider (REL- full-repo grounding): a
