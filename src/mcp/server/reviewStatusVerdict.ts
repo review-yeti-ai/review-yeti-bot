@@ -130,6 +130,10 @@ function guardExplicitShip(desiredState: unknown, runStatus: unknown): ReviewSta
   // records that lack run status, but a known (or unknown nonempty) status must
   // not turn a queued, active, or failed execution into completed approval.
   if (runStatus === null || runStatus === undefined || runStatus === '') return 'SHIP';
+  // The legacy continuation producer persists `completed`, outside the newer
+  // run-state vocabulary. Preserve its explicit approval, but do not make this
+  // status alone sufficient in the missing-decision fallback.
+  if (runStatus === 'completed') return 'SHIP';
   return verdictForRunStatus(runStatus);
 }
 

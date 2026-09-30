@@ -236,6 +236,21 @@ const verdictProjectionCases: Array<{
     row: baseRow({ run_status: 'complete', decision: null }),
     expected: 'SHIP',
   },
+  {
+    name: 'legacy continuation completed status preserves explicit SHIP',
+    row: baseRow({ run_status: 'completed', decision: { verdict: 'SHIP' } }),
+    expected: 'SHIP',
+  },
+  {
+    name: 'legacy completed status alone is not evidence of SHIP',
+    row: baseRow({ run_status: 'completed', decision: null }),
+    expected: 'FAILED',
+  },
+  {
+    name: 'unknown nonempty run status cannot approve explicit SHIP',
+    row: baseRow({ run_status: 'future-status', decision: { verdict: 'SHIP' } }),
+    expected: 'FAILED',
+  },
 ];
 
 describe('MCP run status surfaces share a fail-closed verdict projection', () => {
