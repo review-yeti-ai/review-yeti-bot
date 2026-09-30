@@ -260,23 +260,23 @@ describe('panelEngine symbol_search — scope-qualified miss', () => {
   });
 });
 
-describe('panelEngine — a diff hit always wins over the repository provider', () => {
-  // Every earlier case targets a path outside the diff, so the branch ordering was
-  // never exercised. Reordering the provider lookup ahead of the diff match would
-  // answer a read_file on a changed file with its head content and "not part of
-  // this PR's diff", instead of the patch under review.
+describe('panelEngine — changed-file source reads and full-tree searches', () => {
+  // A changed-file read_file must fetch exact-head source, not the changed patch.
+  // Its provenance must still identify the path as part of this PR's diff.
   const spy = () => ({
     findFiles: vi.fn(async () => ['src/ledger/writer.ts', 'src/other/writer.ts']),
     readFile: vi.fn(async () => 'HEAD CONTENT, NOT THE PATCH'),
   });
 
-  it('read_file on a changed file returns the patch and never consults the provider', async () => {
+  it('read_file on a changed file returns exact-head source and consults the provider once', async () => {
     const provider = spy();
     const out = await runFindFilesScenario(provider, { tool: 'read_file', args: { path: 'src/ledger/writer.ts' } });
-    expect(out).toContain('import { checkEvidence }');
-    expect(out).not.toContain('HEAD CONTENT');
+    expect(out).toContain('HEAD CONTENT, NOT THE PATCH');
+    expect(out).not.toContain('import { checkEvidence }');
+    expect(out).toContain('exists in the repository at the reviewed head');
+    expect(out).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
     expect(out).not.toContain("not part of this PR's diff");
-    expect(provider.readFile).not.toHaveBeenCalled();
+    expect(provider.readFile).toHaveBeenCalledExactlyOnceWith('src/ledger/writer.ts');
   });
 
   it('find_files with a diff hit still searches the full tree, so files outside the diff are not hidden (REL-1102)', async () => {
