@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.100.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.8...v1.100.9) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** preserve admitted worker deadline through grounding ([#1171](https://github.com/review-yeti-ai/review-yeti-bot/issues/1171)) ([d5357c2](https://github.com/review-yeti-ai/review-yeti-bot/commit/d5357c2c215e47488312d4c570ce2ce3f5cd9c88))
+* **test:** own suite and run scratch lifecycle (REL-1209) ([#1168](https://github.com/review-yeti-ai/review-yeti-bot/issues/1168)) ([67f3678](https://github.com/review-yeti-ai/review-yeti-bot/commit/67f3678f9605c28e2e9a7759a0fdf7c9bb610967))
+
 ## [1.100.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.7...v1.100.8) (2026-09-30)
 
 
