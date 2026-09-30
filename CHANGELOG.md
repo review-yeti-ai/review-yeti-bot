@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.98.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.12...v1.98.0) (2026-09-30)
+
+
+### Features
+
+* **operator:** add configurable reconciler concurrency and panel persona task composition ([#1140](https://github.com/review-yeti-ai/review-yeti-bot/issues/1140)) ([46bfc20](https://github.com/review-yeti-ai/review-yeti-bot/commit/46bfc200f2a515c0fa9e8a7a20c5864cf9f65b08))
+
 ## [1.97.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.11...v1.97.12) (2026-09-29)
 
 
