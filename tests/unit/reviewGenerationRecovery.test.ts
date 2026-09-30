@@ -231,6 +231,7 @@ describe('Review Yeti worker-generation recovery ledger', () => {
     const firstProof = evidence[0].legacyIncompleteRoster!;
     const secondProof = evidence[1].legacyIncompleteRoster!;
     expect(firstProof.nextWorkerStartedAt).toBe('2026-09-24T18:29:00Z');
+    expect(firstProof.workerStartedAt).toBe('2026-09-24T18:28:50Z');
     expect(selectIncompleteRecoveryGate(candidate, firstProof)?.id).toBe(gate1.id);
     expect(secondProof.nextWorkerStartedAt).toBeUndefined();
     expect(selectIncompleteRecoveryGate(candidate, secondProof)?.id).toBe(gate2.id);

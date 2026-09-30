@@ -560,6 +560,12 @@ runs:
     # consumer workspace. The lockfile is the two-package graph baked by
     # Dockerfile.legacy-runtime in CI. Installing into GITHUB_ACTION_PATH reifies
     # the application package.json and is the ~800 Mi review-job spike.
+    - name: Set up Node.js 24 for the legacy pipeline
+      if: ${{ inputs.execution-backend == 'local' && inputs.review-engine == 'legacy' }}
+      uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      with:
+        node-version: '24'
+
     - name: Install pipeline dependencies
       if: ${{ inputs.execution-backend == 'local' }}
       shell: bash

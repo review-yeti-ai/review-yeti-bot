@@ -101,7 +101,8 @@ function incompleteArchiveFixture(options: {
   };
   const recovery = {
     generation: 1, checkId: 1001, externalId: `${RUN}:a1`, conclusion: 'failure', title: 'Review Yeti: BLOCK',
-    legacyIncompleteRoster: { workerSummary: INCOMPLETE_SUMMARY, workerCompletedAt: COMPLETED_AT, gateChecks: [gateCheck] },
+    legacyIncompleteRoster: { workerSummary: INCOMPLETE_SUMMARY, workerStartedAt: '2026-09-29T11:59:58Z',
+      workerCompletedAt: COMPLETED_AT, gateChecks: [gateCheck] },
   };
   const runRow = {
     run_id: RUN, repository_id: 123, owner: 'example', repo: 'candidate', pr_number: 42,

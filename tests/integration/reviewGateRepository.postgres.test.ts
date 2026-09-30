@@ -373,6 +373,60 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     ]);
   });
 
+  it.each([
+    ['a pending failure', 'failure', 1, 0],
+    ['a progress check', 'in_progress', 1, 1],
+    ['a published success', 'success', 1, 1],
+  ] as const)('continues to cancel %s when a same-run generation is reserved', async (_label, state, version, published) => {
+    const id = runId(40 + randomInt(100_000));
+    await insertRun(id);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
+    const first = await repository.reserve(id, APP_ID, RECEIVED_AT + 1_000);
+    const checkId = 5_000_000 + randomInt(100_000);
+    await pool!.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = $2,
+        desired_state = $3, desired_version = $4, published_version = $5,
+        evidence = $6::jsonb, decision = $7::jsonb, worker_result_digest = $8
+      WHERE attempt_id = $1`, [first!.coordinates.attemptId, checkId, state, version, published,
+      JSON.stringify({ retained: 'evidence' }), JSON.stringify({ retained: 'decision' }), 'a'.repeat(64)]);
+    await pool!.query('UPDATE review_runs SET attempt = 1 WHERE run_id = $1', [id]);
+    await pool!.query('UPDATE review_dispatch_outbox SET execution_attempt = 1 WHERE run_id = $1', [id]);
+
+    const before = (await pool!.query(`SELECT creation_state, check_id, desired_state, desired_version,
+        published_version, evidence, decision, worker_result_digest FROM review_gate_attempts
+      WHERE attempt_id = $1`, [first!.coordinates.attemptId])).rows[0];
+    await repository.reserve(id, APP_ID, RECEIVED_AT + 2_000);
+    const after = (await pool!.query(`SELECT current_attempt, creation_state, check_id, desired_state, desired_version,
+        published_version, evidence, decision, worker_result_digest FROM review_gate_attempts
+      WHERE attempt_id = $1`, [first!.coordinates.attemptId])).rows[0];
+
+    expect(after).toEqual({ ...before, current_attempt: false, desired_state: 'cancelled',
+      desired_version: String(Number(before.desired_version) + 1) });
+  });
+
+  it('does not preserve a published failure Gate from a different run on the same PR', async () => {
+    const failedRun = runId(241);
+    const nextRun = runId(242);
+    await insertRun(failedRun);
+    await insertRun(nextRun);
+    const repository = new PostgresReviewGateRepository(pool!, ENABLED_LIFECYCLE_EVENTS);
+    const first = await repository.reserve(failedRun, APP_ID, RECEIVED_AT + 1_000);
+    const checkId = 5_100_001;
+    await pool!.query(`UPDATE review_gate_attempts SET creation_state = 'bound', check_id = $2,
+        desired_state = 'failure', desired_version = 1, published_version = 1,
+        evidence = $3::jsonb, decision = $4::jsonb, worker_result_digest = $5
+      WHERE attempt_id = $1`, [first!.coordinates.attemptId, checkId,
+      JSON.stringify({ retained: 'old-run-evidence' }), JSON.stringify({ retained: 'old-run-decision' }), 'b'.repeat(64)]);
+
+    await repository.reserve(nextRun, APP_ID, RECEIVED_AT + 2_000);
+    const old = (await pool!.query(`SELECT current_attempt, creation_state, check_id, desired_state,
+        desired_version, published_version, evidence, decision, worker_result_digest
+      FROM review_gate_attempts WHERE attempt_id = $1`, [first!.coordinates.attemptId])).rows[0];
+    expect(old).toMatchObject({ current_attempt: false, creation_state: 'bound', check_id: String(checkId),
+      desired_state: 'cancelled', desired_version: '2', published_version: '1',
+      evidence: { retained: 'old-run-evidence' }, decision: { retained: 'old-run-decision' },
+      worker_result_digest: 'b'.repeat(64) });
+  });
+
   it('does not claim superseded reserved gates after two same-PR supersessions', async () => {
     const firstRun = runId(12);
     const secondRun = runId(13);

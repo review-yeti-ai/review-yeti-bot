@@ -30,6 +30,9 @@ export interface ReviewGenerationRecoveryEvidence {
   legacyIncompleteRoster?: {
     workerSummary: string;
     workerCompletedAt: string;
+    /** The actual App-owned worker start time, retained so later retries can
+     * derive adjacent worker windows without rewriting earlier receipts. */
+    workerStartedAt?: string;
     /** The next actual worker bounds older Gate history; absent for the latest worker. */
     nextWorkerStartedAt?: string;
     gateChecks: unknown[];
@@ -148,15 +151,22 @@ export function validateReviewGenerationRecoveryEvidence(
   for (let index = 0; index < evidence.length; index += 1) {
     const entry = evidence[index];
     const generation = index + 1;
+    const recoverableFailure = isRecoverableFailureTitle(entry?.title)
+      || (entry?.title === 'Review Yeti: BLOCK'
+        && (request.incompleteP2Recovery !== true || generation === request.expectedGeneration - 1
+          || entry.legacyIncompleteRoster?.nextWorkerStartedAt !== undefined)
+        && hasLegacyIncompleteRosterProof(request, entry.legacyIncompleteRoster));
+    const p2WorkerIntervalValid = request.incompleteP2Recovery !== true
+      || entry?.title !== 'Review Yeti: BLOCK'
+      || generation < request.expectedGeneration - 1
+      || (Number.isFinite(completedAt(entry.legacyIncompleteRoster?.workerStartedAt))
+        && completedAt(entry.legacyIncompleteRoster?.workerStartedAt)
+          <= completedAt(entry.legacyIncompleteRoster?.workerCompletedAt));
     if (entry?.generation !== generation
       || !Number.isSafeInteger(entry.checkId) || entry.checkId <= 0
       || entry.externalId !== `${request.runId}:a${generation}`
       || !RECOVERABLE_WORKER_CONCLUSIONS.has(entry.conclusion)
-      || !(isRecoverableFailureTitle(entry.title)
-        || (entry.title === 'Review Yeti: BLOCK'
-          && (request.incompleteP2Recovery !== true || generation === request.expectedGeneration - 1
-            || entry.legacyIncompleteRoster?.nextWorkerStartedAt !== undefined)
-          && hasLegacyIncompleteRosterProof(request, entry.legacyIncompleteRoster)))) refuse();
+      || !recoverableFailure || !p2WorkerIntervalValid) refuse();
   }
   return evidence;
 }
@@ -220,6 +230,10 @@ export function evaluateReviewGenerationRecoveryLedger(
         const next = orderedRows.map(record).find((candidate) => candidate?.external_id === `${request.runId}:a${generation + 1}`);
         if (!next || !Number.isFinite(completedAt(next.started_at))) refuse();
         entry.legacyIncompleteRoster.nextWorkerStartedAt = String(next.started_at);
+      }
+      if (request.incompleteP2Recovery === true) {
+        if (!Number.isFinite(completedAt(row.started_at))) refuse();
+        entry.legacyIncompleteRoster.workerStartedAt = String(row.started_at);
       }
     }
     evidence.push(entry);
