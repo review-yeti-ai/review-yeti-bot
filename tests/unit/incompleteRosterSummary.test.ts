@@ -16,6 +16,7 @@ function evidence(gateSummary = EXPECTED_GATE_SUMMARY) {
     title: 'Review Yeti: BLOCK',
     legacyIncompleteRoster: {
       workerSummary: WORKER_SUMMARY,
+      workerStartedAt: '2026-09-29T11:59:58Z',
       workerCompletedAt: '2026-09-29T12:00:00Z',
       gateChecks: [{
         id: 201,
