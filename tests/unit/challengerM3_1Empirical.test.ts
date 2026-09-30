@@ -702,7 +702,7 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       expect(latestText).toContain('- oldApi()');
     });
 
-    it('fallback get_diff with startLine and endLine slices diff lines for INDEXED files', async () => {
+    it('fallback get_diff labels line slicing as patch lines for INDEXED files', async () => {
       const capturedRequests: any[] = [];
       let turn = 0;
 
@@ -785,7 +785,8 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       const latestMessage = turn2Messages[turn2Messages.length - 1];
       const latestText = extractMessageContentText(latestMessage.content);
 
-      expect(latestText).toContain("Lines 2-3 of 4 for 'src/security/indexed_multiline.ts':");
+      expect(latestText).toContain("PR diff patch for 'src/security/indexed_multiline.ts':");
+      expect(latestText).toContain("Patch lines 2-3 of 4 for 'src/security/indexed_multiline.ts':");
       expect(latestText).toContain('Line 2: - remove line');
       expect(latestText).toContain('Line 3: + add line');
       expect(latestText).not.toContain('Line 1: @@ header @@');
@@ -1114,7 +1115,7 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       expect(latestText).toContain('+ inlinedDiffCode();');
     });
 
-    it('fallback get_diff on non-existent file returns graceful missing message', async () => {
+    it('fallback get_diff with no patch states its scope without claiming repository absence', async () => {
       const capturedRequests: any[] = [];
       let turn = 0;
 
@@ -1190,7 +1191,9 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       const latestText = extractMessageContentText(latestMessage.content);
 
       expect(latestText).toContain("Tool 'get_diff' execution result:");
-      expect(latestText).toContain("File 'src/does_not_exist_at_all.ts' is not part of this PR's diff");
+      expect(latestText).toContain("No PR diff patch is available for 'src/does_not_exist_at_all.ts'");
+      expect(latestText).toContain('get_diff is limited to changed-file patch content');
+      expect(latestText).not.toContain('does not exist in the repository');
     });
   });
 });
