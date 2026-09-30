@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildComposedTaskExhaustion, executeComposedReview, unreportedLaneFailure } from '../composedEngine';
+import { executeComposedReview, unreportedLaneFailure } from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -74,27 +74,47 @@ describe('executeComposedReview', () => {
   const exhaustionTask = { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' } as const;
 
   it.each(['total_turn_budget_exhausted', 'task_turn_budget_exhausted'] as const)(
-    'does not attribute %s to a stale contract rejection', (reason) => {
-      // Exercise the pure terminal constructor, not a claimed live mid-task budget path.
-      const outcome = buildComposedTaskExhaustion(reason, exhaustionContext, [], 'result_fields');
-      expect(Object.hasOwn(outcome, 'contractFailure')).toBe(false);
-      const failure = unreportedLaneFailure({ ...exhaustionTask, paths: [...exhaustionTask.paths] }, 'exhausted', outcome.diagnostics);
+    'classifies and formats defensive %s diagnostics', (reason) => {
+      // Classification/formatting only: this does not establish public mid-task budget reachability.
+      const failure = unreportedLaneFailure({ ...exhaustionTask, paths: [...exhaustionTask.paths] }, 'exhausted', {
+        ...exhaustionContext, reason,
+      });
       expect(failure).toMatchObject({ failureClass: 'budget_exhausted', diagnostics: { reason } });
       expect(failure.error).toContain(`[reason=${reason};`);
       expect(failure.error).not.toContain('result_fields');
       expect(failure.error).not.toContain('contract rejected');
     });
 
-  it('binds a terminal contract rejection only to its matching canonical reason', () => {
-    const matching = buildComposedTaskExhaustion('invalid_result_fields', exhaustionContext, [], 'result_fields');
-    expect(matching.contractFailure).toBe('result_fields');
-    const mismatch = buildComposedTaskExhaustion('nonce_mismatch', exhaustionContext, [], 'result_fields');
-    expect(Object.hasOwn(mismatch, 'contractFailure')).toBe(false);
-    const failure = unreportedLaneFailure({ ...exhaustionTask, paths: [...exhaustionTask.paths] }, 'exhausted', matching.diagnostics);
-    expect(failure).toMatchObject({ failureClass: 'malformed_output', diagnostics: { reason: 'invalid_result_fields' } });
-    expect(failure.error).toContain('[reason=invalid_result_fields;');
-    expect(failure.error).not.toContain(': result_fields');
-    expect(failure.error).not.toContain('contract rejected');
+  it('reports the terminal canonical reason after distinct rejection causes, without earlier or raw tokens', async () => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      return fakeResponse(JSON.stringify({
+        nonce: workCalls === 1 ? 'RAW_NONCE_SHOULD_NOT_LEAK' : nonce,
+        task: workCalls === 2 ? 'RAW_TASK_SHOULD_NOT_LEAK' : 'task-sec',
+        status: workCalls === 3 ? 'RAW_STATUS_SHOULD_NOT_LEAK' : 'COMPLETE',
+        findings: [],
+      }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(3);
+    expect(result.personas).toEqual([]);
+    expect(result.optionalFailures).toEqual([]);
+    expect(result.unreportedLanes).toHaveLength(1);
+    expect(result.unreportedLanes?.[0]).toMatchObject({ id: 'task-sec', failureClass: 'malformed_output',
+      diagnostics: { reason: 'invalid_status', turnsUsed: 3, correctionAttempts: 2, toolTurns: 0 } });
+    const error = result.unreportedLanes?.[0].error;
+    expect(error).toContain('[reason=invalid_status;');
+    for (const token of ['nonce_mismatch', 'task_id_mismatch', 'status_enum', 'RAW_NONCE_SHOULD_NOT_LEAK',
+      'RAW_TASK_SHOULD_NOT_LEAK', 'RAW_STATUS_SHOULD_NOT_LEAK', 'contract rejected']) {
+      expect(error).not.toContain(token);
+    }
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual([]);
   });
 
   const toolWire = JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts', nested: { lines: [1, 2] } } });

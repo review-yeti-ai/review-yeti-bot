@@ -944,23 +944,7 @@ async function runPlanPhase(input: {
 type TaskOutcome =
   | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
   | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; contractFailure?: TaskContractFailure };
-
-/** Bind only the terminal cause, never a sticky rejection from an earlier recovery turn. */
-export function buildComposedTaskExhaustion(
-  reason: ComposedTaskFailureDiagnostics['reason'],
-  diagnostics: Omit<ComposedTaskFailureDiagnostics, 'reason'>,
-  turnUsages: LaneTurnUsage[],
-  terminalContractFailure?: TaskContractFailure,
-): Extract<TaskOutcome, { type: 'exhausted' }> {
-  const contractFailure = terminalContractFailure
-    && TASK_CONTRACT_DIAGNOSTIC_REASONS[terminalContractFailure] === reason
-    ? terminalContractFailure : undefined;
-  return {
-    type: 'exhausted', turnUsages, diagnostics: { ...diagnostics, reason },
-    ...(contractFailure ? { contractFailure } : {}),
-  };
-}
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics };
 
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
@@ -1002,10 +986,10 @@ async function runTaskWorkPhase(input: {
   let freshRecoveryUsed = false;
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
-  const exhausted = (reason: ComposedTaskFailureDiagnostics['reason'], terminalContractFailure?: TaskContractFailure): TaskOutcome =>
-    buildComposedTaskExhaustion(reason,
-      { turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
-      turnUsages, terminalContractFailure);
+  const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
+    type: 'exhausted', turnUsages,
+    diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
+  });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
 
@@ -1096,7 +1080,7 @@ async function runTaskWorkPhase(input: {
         // `applicablePersonaIds` vs. returned-lane-ids check already turns into an incomplete,
         // BLOCK-by-roster-invalidity review -- exactly the same mechanism a genuine turn-budget
         // exhaustion below uses. A malformed task result that never resolves is not evidence.
-        return exhausted(TASK_CONTRACT_DIAGNOSTIC_REASONS[contractFailure], contractFailure);
+        return exhausted(TASK_CONTRACT_DIAGNOSTIC_REASONS[contractFailure]);
       }
       if (correctionAttempts > 0) {
         freshRecoveryUsed = true;
