@@ -1811,7 +1811,8 @@ export async function runPublishingReviewWorker(
         throw error;
       }
       shadowDeadline = isShadow
-        ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, panelDeadline.signal, panelDeadline.budget)
+        ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, panelDeadline.signal,
+          panelDeadline.budget, panelDeadline.now)
         : undefined;
       // TOTAL, never rejects: a composed-engine throw, timeout, or abort must never propagate out
       // of this run and must never be added to the panel's own `optionalFailures`/`failedLanes` --
@@ -1842,6 +1843,8 @@ export async function runPublishingReviewWorker(
               client: shadowClient,
               jobId: identity.runId,
               signal: activeShadowDeadline.signal,
+              deadlineBudget: activeShadowDeadline.budget,
+              deadlineNow: activeShadowDeadline.now,
               repoFileProvider,
               isCurrentHead: deps.isCurrentHead,
               ...(diffShrink ? { diffShrink } : {}),
@@ -1884,6 +1887,8 @@ export async function runPublishingReviewWorker(
           progress,
           jobId: identity.runId,
           signal: panelDeadline.signal,
+          deadlineBudget: panelDeadline.budget,
+          deadlineNow: panelDeadline.now,
           repoFileProvider,
           isCurrentHead: deps.isCurrentHead,
           ...(authoritative ? { deterministicRoster: true } : {}),

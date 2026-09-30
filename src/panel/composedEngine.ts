@@ -25,6 +25,7 @@
  */
 import { buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
+import type { WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { resolvePreChecksConfig } from '../config/schema';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, PreCheckSummary } from '../sandbox/analyzerRunner';
@@ -142,6 +143,10 @@ export interface ComposedReviewOptions {
   repoFileProvider?: RepoFileProvider;
   repositoryVisibility?: RepositoryVisibility;
   signal?: AbortSignal;
+  /** Fixed caller cutoff; nested composed setup must not restart the worker's budget. */
+  deadlineBudget?: WorkerPanelDeadlineBudget;
+  /** Clock paired with `deadlineBudget`. */
+  deadlineNow?: () => number;
   workspaceRoot?: string;
   /** REL-1079: deterministic diff shrinking (`REVIEW_YETI_DIFF_SHRINK`); absent or disabled sends every change in full. */
   diffShrink?: DiffShrinkInput;
@@ -1219,7 +1224,8 @@ export function unreportedLaneFailure(
 // ---------------------------------------------------------------------------
 
 export async function executeComposedReview(options: ComposedReviewOptions): Promise<PanelResult> {
-  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
+  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
+    options.deadlineBudget, options.deadlineNow);
   // Absolute wall-clock bound for this run, derived from the SAME timeout the abort signal uses.
   // Forwarded into every provider call so a retry backoff cannot sleep past it. The abort signal
   // already stops the run, but a backoff that overshoots converts a precise transport failure into

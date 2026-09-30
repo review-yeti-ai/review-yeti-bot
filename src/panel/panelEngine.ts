@@ -511,14 +511,6 @@ export function throwIfPanelAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw panelAbortError(signal);
 }
 
-// Internal cancellation context, not serialized reviewer input or service evidence.
-interface PanelDeadlineContext {
-  readonly budget: WorkerPanelDeadlineBudget;
-  readonly now: () => number;
-}
-
-const panelDeadlineContexts = new WeakMap<AbortSignal, PanelDeadlineContext>();
-
 /**
  * Link a caller cancellation signal to the configured panel deadline. Both the
  * timer and the parent listener are removed on completion so a healthy panel
@@ -530,14 +522,11 @@ export function createPanelDeadlineSignal(
   requestedBudget?: WorkerPanelDeadlineBudget,
   requestedNow?: () => number,
 ): { signal: AbortSignal; cleanup: () => void; check: () => void; timeoutMs: number; budget: WorkerPanelDeadlineBudget; now: () => number } {
-  const inherited = parentSignal ? panelDeadlineContexts.get(parentSignal) : undefined;
-  const now = requestedNow ?? inherited?.now ?? Date.now;
-  let budget = requestedBudget ?? inherited?.budget
-    ?? workerPanelDeadlineBudget(overallTimeoutSeconds, {}, now());
+  const now = requestedNow ?? Date.now;
+  let budget = requestedBudget ?? workerPanelDeadlineBudget(overallTimeoutSeconds, {}, now());
   budget = Object.freeze({ ...budget });
   const timeoutMs = Math.max(0, budget.deadlineAtMs - now());
   const controller = new AbortController();
-  panelDeadlineContexts.set(controller.signal, { budget, now });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expire = () => {
     if (!controller.signal.aborted) controller.abort(new PanelDeadlineExceededError(timeoutMs, budget.terminalBound));
@@ -3743,10 +3732,9 @@ export async function executePersonaPanel(options: {
   /** REL-1139: diff headers the caller could not read (files never sent here); any makes the skip ineligible. */
   unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
-  const inheritedDeadline = options.signal ? panelDeadlineContexts.get(options.signal) : undefined;
-  const admittedBudget = options.deadlineBudget ?? inheritedDeadline?.budget;
+  const admittedBudget = options.deadlineBudget;
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
-    admittedBudget, options.deadlineNow ?? inheritedDeadline?.now);
+    admittedBudget, options.deadlineNow);
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => {
     // Only an admitted worker context adds synchronous absolute expiry. Standalone

@@ -1111,7 +1111,7 @@ describe('executeComposedReview', () => {
     });
     const settled = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
       repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete },
-      signal: admitted.signal }).catch((error) => error);
+      signal: admitted.signal, deadlineBudget: admitted.budget, deadlineNow: admitted.now }).catch((error) => error);
 
     try {
       await vi.advanceTimersByTimeAsync(1_000);

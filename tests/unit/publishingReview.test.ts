@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createPanelDeadlineSignal, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import type { WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
@@ -2642,14 +2643,23 @@ describe('REL-1211 absolute publishing budget', () => {
 
   it('includes elapsed grounding and setup in the cutoff, rather than restarting nested panel work', async () => {
     const grounding = vi.fn(async () => { await new Promise(resolve => setTimeout(resolve, 40)); return {}; });
-    let observed!: { signal: AbortSignal };
+    let observed!: {
+      signal: AbortSignal;
+      deadlineBudget: WorkerPanelDeadlineBudget;
+      deadlineNow: () => number;
+    };
     const panelRunner = vi.fn((options: typeof observed) => { observed = options; return new Promise(() => {}); });
     const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
     const d = deps({ panelRunner, completion, zoektGrounding: grounding });
     const promise = runPublishingReviewWorker(env(deadlineEnv(50)), d as never);
     const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
     await vi.advanceTimersByTimeAsync(50); await failure;
-    const nested = createPanelDeadlineSignal(1_800, observed.signal);
+    const nested = createPanelDeadlineSignal(
+      1_800,
+      observed.signal,
+      observed.deadlineBudget,
+      observed.deadlineNow,
+    );
     expect(nested.budget.deadlineAtMs).toBe(start + 50);
     nested.cleanup();
     expect(observed.signal.aborted).toBe(true);
@@ -2727,7 +2737,12 @@ describe('REL-1211 absolute publishing budget', () => {
   });
 
   it('forwards real enabled shrinking to both deferred engines without changing their shared admitted cutoff', async () => {
-    let main!: { signal: AbortSignal; diffShrink?: unknown };
+    let main!: {
+      signal: AbortSignal;
+      diffShrink?: unknown;
+      deadlineBudget: WorkerPanelDeadlineBudget;
+      deadlineNow: () => number;
+    };
     let shadow!: typeof main;
     const provider = { readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) };
     const d = deps({ repoFileProviderFactory: vi.fn(() => provider), zoektGrounding: vi.fn(async () => ({})),
@@ -2739,10 +2754,15 @@ describe('REL-1211 absolute publishing budget', () => {
     expect(main.diffShrink).toMatchObject({ enabled: true });
     expect(shadow.diffShrink).toBe(main.diffShrink);
     expect(main.signal).not.toBe(shadow.signal);
-    for (const signal of [main.signal, shadow.signal]) {
-      const inherited = createPanelDeadlineSignal(1_800, signal);
-      expect(inherited.budget.deadlineAtMs).toBe(start + 50);
-      inherited.cleanup();
+    for (const context of [main, shadow]) {
+      const nested = createPanelDeadlineSignal(
+        1_800,
+        context.signal,
+        context.deadlineBudget,
+        context.deadlineNow,
+      );
+      expect(nested.budget.deadlineAtMs).toBe(start + 50);
+      nested.cleanup();
     }
     await vi.advanceTimersByTimeAsync(0);
     expect(Date.now()).toBe(start);

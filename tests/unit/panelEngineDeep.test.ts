@@ -2471,7 +2471,7 @@ describe('REL-1211 absolute panel deadline', () => {
     const budget = workerPanelDeadlineBudget(5, {});
     const main = createPanelDeadlineSignal(5, undefined, budget);
     await vi.advanceTimersByTimeAsync(3_000);
-    const shadow = createPanelDeadlineSignal(5, main.signal);
+    const shadow = createPanelDeadlineSignal(5, main.signal, main.budget, main.now);
     expect(main.signal).not.toBe(shadow.signal);
     expect(shadow.timeoutMs).toBe(2_000);
     shadow.check();
@@ -2489,7 +2489,7 @@ describe('REL-1211 absolute panel deadline', () => {
     const main = createPanelDeadlineSignal(5, undefined, budget, now);
     currentMs += 4_999;
     main.check();
-    const nested = createPanelDeadlineSignal(1_800, main.signal);
+    const nested = createPanelDeadlineSignal(1_800, main.signal, main.budget, main.now);
     expect(nested.timeoutMs).toBe(1);
     currentMs += 1;
     expect(() => nested.check()).toThrow(PanelDeadlineExceededError);
@@ -2505,7 +2505,7 @@ describe('REL-1211 absolute panel deadline', () => {
     let nested: ReturnType<typeof createPanelDeadlineSignal> | undefined;
     try {
       await vi.advanceTimersByTimeAsync(3_000);
-      nested = createPanelDeadlineSignal(1_800, main.signal);
+      nested = createPanelDeadlineSignal(1_800, main.signal, main.budget, main.now);
       expect(nested.timeoutMs).toBe(2_000);
       expect(nested.signal).not.toBe(main.signal);
       await vi.advanceTimersByTimeAsync(2_000);
@@ -2571,15 +2571,16 @@ describe('REL-1211 absolute panel deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('inherits an exhausted admitted cutoff through only the caller signal without starting a provider', async () => {
+  it('honors an explicitly forwarded exhausted cutoff without starting a provider', async () => {
     const client = { complete: vi.fn() };
     const main = createPanelDeadlineSignal(1_800, undefined,
       { deadlineAtMs: Date.now() + 50, timeoutMs: 50, terminalBound: true });
     // Simulate deferred invocation before the timer callback can run. Admission
-    // must use the signal's source-bound budget, not restart a relative window.
+    // must use the explicitly forwarded admitted budget, not restart a relative window.
     vi.setSystemTime(Date.now() + 50);
     await expect(executePersonaPanel({ config: buildDeepConfig(), changedFiles: [{ path: 'src/security/auth.ts', patch: '+new' }],
-      repository: 'example/project', headSha: 'expired-inherited-cutoff', client: client as never, signal: main.signal }))
+      repository: 'example/project', headSha: 'expired-inherited-cutoff', client: client as never, signal: main.signal,
+      deadlineBudget: main.budget, deadlineNow: main.now }))
       .rejects.toMatchObject({ name: 'PanelDeadlineExceededError', failureReason: 'worker_terminal_deadline_exceeded' });
     expect(client.complete).not.toHaveBeenCalled();
     expect(getActivePersonaCallCount()).toBe(0);
