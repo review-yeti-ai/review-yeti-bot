@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.4...v1.100.5) (2026-09-30)
+
+
+### Bug Fixes
+
+* read marker-bound legacy P2 receipts without inventing timestamps ([#1160](https://github.com/review-yeti-ai/review-yeti-bot/issues/1160)) ([be04746](https://github.com/review-yeti-ai/review-yeti-bot/commit/be047466313483dd3f7b58460dc32b76a76f644f))
+
 ## [1.100.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.3...v1.100.4) (2026-09-30)
 
 
