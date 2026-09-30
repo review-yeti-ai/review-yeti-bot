@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildWorkerFailureDiagnostics, type WorkerCompletionAdapter } from '../../src/review/workerCompletion';
 import {
   PUBLISHING_MAX_OUTPUT_TOKENS,
+  renderFindingsMarkdown,
   runPublishingReviewWorker,
   type PublishingCheckClient,
   type PublishingReviewDeps,
@@ -22,7 +23,11 @@ import * as panelEngine from '../../src/panel/panelEngine';
 import * as qualificationReader from '../../src/github/qualificationReader';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { logger } from '../../src/utils/logger';
-import { createIncompleteP2RecoveryContext, incompleteP2RecoveryClaimFor } from '../../src/review/incompleteP2Recovery';
+import {
+  createIncompleteP2RecoveryContext,
+  incompleteP2RecoveryClaimFor,
+  MAX_INCOMPLETE_P2_RECOVERY_BYTES,
+} from '../../src/review/incompleteP2Recovery';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -149,6 +154,61 @@ describe('REL-1198 retained P2 worker boundary', () => {
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].summary).toContain(context.contextDigest);
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].summary).toContain('check_run_id=5001');
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].text).toContain(JSON.stringify(context.findings[0].finding));
+  });
+
+  it('fails closed when valid retained P2 context would exceed the complete Checks text bound', async () => {
+    const f = fixture();
+    const source = { executionAttempt: 1, workerResultDigest: 'd'.repeat(64), workerCheckId: 5001,
+      gateCheckId: 6001, rawFindingCount: 4, canonicalFindingCount: 4 };
+    const findings = Array.from({ length: 4 }, (_, findingIndex) => ({
+      sourceExecutionAttempt: 1,
+      sourceWorkerResultDigest: source.workerResultDigest,
+      sourceWorkerCheckId: source.workerCheckId,
+      sourceGateCheckId: source.gateCheckId,
+      personaId: 'sec-lane',
+      findingIndex,
+      finding: { severity: 'P2' as const, path: 'src/a.ts', line: 1,
+        title: `Prior advisory ${findingIndex}`, body: 'x'.repeat(15_882) },
+    }));
+    const context = retainedContext(f, { sources: [source], findings });
+    const contextBytes = Buffer.byteLength(JSON.stringify(context), 'utf8');
+    const renderedRetainedText = [
+      renderFindingsMarkdown([], 0),
+      '### Retained P2 observations (original evidence)',
+      'These original observations remain advisory and were supplied to the full review above. Their source records are immutable; this section does not attribute them to a new reviewer.',
+      ...context.findings.map((entry) => [
+        `Attempt ${entry.sourceExecutionAttempt}, App check ${entry.sourceWorkerCheckId}, Gate ${entry.sourceGateCheckId}, persona ${entry.personaId}, finding ${entry.findingIndex}, worker result ${entry.sourceWorkerResultDigest}:`,
+        '',
+        `${'`'.repeat(4)}json`,
+        JSON.stringify(entry.finding),
+        '`'.repeat(4),
+      ].join('\n')),
+    ].join('\n\n');
+
+    expect(contextBytes).toBeLessThanOrEqual(MAX_INCOMPLETE_P2_RECOVERY_BYTES);
+    expect(contextBytes).toBeGreaterThan(64_000);
+    expect(renderedRetainedText).toContain(context.findings[3].finding.body);
+    expect(Buffer.byteLength(renderedRetainedText, 'utf8')).toBeGreaterThan(64_000);
+
+    const read = vi.fn().mockResolvedValue(context);
+    f.deps.incompleteP2Recovery = { read };
+    await expect(runPublishingReviewWorker(f.env, f.deps))
+      .rejects.toThrow('Retained findings and fresh findings exceed the complete publication bound');
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(f.panelRunner).toHaveBeenCalledOnce();
+    expect(f.reportReviewResult).toHaveBeenCalledOnce();
+    const terminalCompletion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(terminalCompletion.result.incompleteP2Recovery).toBeUndefined();
+    expect(terminalCompletion.result.personas.every((persona) =>
+      persona.status === 'ERROR' && persona.findings.length === 0)).toBe(true);
+    expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
+    const failureCheck = f.checkClient.completeCheck.mock.calls[0]?.[0];
+    expect(failureCheck).toMatchObject({ conclusion: 'failure', title: 'Review Yeti: review did not complete' });
+    expect(failureCheck).not.toHaveProperty('text');
+    expect(failureCheck?.summary).not.toContain('Retained P2 observations');
+    expect(context.findings).toHaveLength(4);
+    expect(context.findings.every((entry) => entry.finding.body === 'x'.repeat(15_882))).toBe(true);
   });
 
   it('stops before model execution when the mandatory retained context read fails', async () => {
