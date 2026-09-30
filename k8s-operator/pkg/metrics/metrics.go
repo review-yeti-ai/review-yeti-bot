@@ -37,6 +37,16 @@ var (
 		Help: "Number of currently queued PR review jobs waiting for concurrency slots.",
 	})
 
+	// Snapshot gauges survive repeated reconciliation without double-counting.
+	RecentFailedJobs = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "review_yeti_operator_recent_failed_jobs",
+		Help: "Worker Jobs that reached failure in the last ten minutes (retained Jobs only).",
+	})
+	SnapshotTimestamp = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "review_yeti_operator_snapshot_timestamp_seconds",
+		Help: "Unix time of the last successful v1alpha2 worker and queue snapshot.",
+	})
+
 	// JobDurationSeconds tracks the total duration of PR review jobs in seconds.
 	JobDurationSeconds = prometheus.NewHistogram(prometheus.HistogramOpts{
 		Name:    "review_yeti_operator_job_duration_seconds",
@@ -88,6 +98,8 @@ func RegisterMetrics() {
 		crmetrics.Registry.MustRegister(
 			ActiveJobs,
 			QueuedJobs,
+			RecentFailedJobs,
+			SnapshotTimestamp,
 			JobDurationSeconds,
 			WebhookToJobDurationSeconds,
 			WebhookToCompletionDurationSeconds,
