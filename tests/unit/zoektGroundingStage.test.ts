@@ -64,6 +64,55 @@ describe('createZoektGroundingStage (REL-677)', () => {
     expect(result.indexDir).toBeUndefined();
   });
 
+  it('does not start indexing when materialization resolves after lifecycle cancellation', async () => {
+    const { fs } = fakeFs();
+    const controller = new AbortController();
+    let releaseMaterialization!: (result: { status: string }) => void;
+    const materialize = vi.fn((input: { signal?: AbortSignal }) => {
+      expect(input.signal).toBe(controller.signal);
+      return new Promise<{ status: string }>((resolve) => { releaseMaterialization = resolve; });
+    });
+    const build = vi.fn();
+    const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: build });
+    const pending = stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't', signal: controller.signal });
+
+    controller.abort();
+    releaseMaterialization({ status: 'ok' });
+    const result = await pending;
+    expect(result).toMatchObject({ indexDir: undefined, scratchDir: expect.any(String), reason: 'cancelled' });
+    expect(build).not.toHaveBeenCalled();
+  });
+
+  it('forwards cancellation to indexing and discards a late successful index receipt', async () => {
+    const { fs } = fakeFs();
+    const controller = new AbortController();
+    let releaseBuild!: (result: { status: string; shardCount: number }) => void;
+    let buildSignal: AbortSignal | undefined;
+    let buildStarted!: () => void;
+    const started = new Promise<void>((resolve) => { buildStarted = resolve; });
+    const materialize = vi.fn(async () => ({ status: 'ok' }));
+    const build = vi.fn((input: { signal?: AbortSignal }) => {
+      buildSignal = input.signal;
+      buildStarted();
+      return new Promise<{ status: string; shardCount: number }>((resolve) => { releaseBuild = resolve; });
+    });
+    const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: build });
+    const pending = stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't', signal: controller.signal });
+
+    try {
+      await started;
+      expect(buildSignal).toBe(controller.signal);
+      controller.abort();
+      releaseBuild({ status: 'ok', shardCount: 1 });
+      const result = await pending;
+      expect(result).toMatchObject({ indexDir: undefined, scratchDir: expect.any(String), reason: 'cancelled' });
+    } finally {
+      controller.abort();
+      releaseBuild?.({ status: 'ok', shardCount: 1 });
+      await pending;
+    }
+  });
+
   it('retains scratchDir on the build-failure receipt so the caller can clean it up', async () => {
     const { fs } = fakeFs();
     const materialize = vi.fn(async () => ({ status: 'ok' }));
