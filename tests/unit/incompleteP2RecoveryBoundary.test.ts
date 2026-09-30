@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createActionDispatchRouter } from '../../src/api/actionDispatchApi';
 import { createIncompleteP2RecoveryHandler } from '../../src/api/incompleteP2RecoveryRoute';
 import type { IncompleteP2RecoveryQueryable } from '../../src/persistence/incompleteP2Recovery';
-import { createIncompleteP2RecoveryContext } from '../../src/review/incompleteP2Recovery';
+import { createIncompleteP2RecoveryContext, parseIncompleteP2RecoveryContext } from '../../src/review/incompleteP2Recovery';
 import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2RecoveryHttp';
 import { deriveReviewGateExternalId } from '../../src/review/reviewCheckIdentity';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
@@ -208,12 +208,32 @@ describe('incomplete P2 recovery HTTP source', () => {
     ['wrong execution identity', async () => new Response(JSON.stringify({
       version: 'IncompleteP2RecoveryResponse.v1', runId: `run_${'9'.repeat(32)}`, executionAttempt: 2, context: null,
     }), { status: 200 })],
-    ['oversized response', async () => new Response('x'.repeat(80_001), { status: 200 })],
   ])('fails closed on %s instead of treating it as an empty archive', async (_reason, response) => {
     const source = new HttpIncompleteP2RecoverySource({ token: TOKEN,
       completionEndpoint: 'https://service.example/api/dispatch/completion', runId: RUN,
       executionAttempt: 2, fetchImplementation: vi.fn<typeof fetch>(response) });
     await expect(source.read()).rejects.toThrow();
+  });
+
+  it('enforces the 80 KB HTTP read cap on a valid response carrying a valid context', async () => {
+    const context = minimalContext();
+    expect(Buffer.byteLength(JSON.stringify(context), 'utf8')).toBeLessThan(64 * 1024);
+    const responseBody = JSON.stringify({
+      version: 'IncompleteP2RecoveryResponse.v1', runId: RUN, executionAttempt: 2, context,
+    }).padEnd(80_001, ' ');
+    const parsedBody = JSON.parse(responseBody);
+    expect(Buffer.byteLength(responseBody, 'utf8')).toBeGreaterThan(80_000);
+    expect(parsedBody).toMatchObject({
+      version: 'IncompleteP2RecoveryResponse.v1', runId: RUN, executionAttempt: 2,
+    });
+    expect(() => parseIncompleteP2RecoveryContext(parsedBody.context)).not.toThrow();
+
+    const source = new HttpIncompleteP2RecoverySource({ token: TOKEN,
+      completionEndpoint: 'https://service.example/api/dispatch/completion', runId: RUN,
+      executionAttempt: 2, fetchImplementation: vi.fn<typeof fetch>(async () => new Response(responseBody, {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })) });
+    await expect(source.read()).rejects.toThrow(/exceeds its bound/u);
   });
 
   it('fails closed when the archive transport rejects', async () => {
@@ -233,6 +253,34 @@ describe('authenticated incomplete P2 recovery route', () => {
     expect(response.body.context.contextDigest).toBe(fixture.context.contextDigest);
     expect(response.body.runId).toBe(RUN);
     expect(response.body.executionAttempt).toBe(2);
+  });
+
+  it.each([
+    ['no bearer', undefined],
+    ['malformed bearer', 'Bearer not-an-installation-token'],
+  ])('returns 401 for %s before querying the database', async (_reason, authorization) => {
+    const fixture = incompleteArchiveFixture({ marker: 'valid' });
+    let pending = request(routeApp(fixture.queryable)).post('/api/dispatch/incomplete-p2-recovery');
+    if (authorization) pending = pending.set('Authorization', authorization);
+    const response = await pending.send(recoveryRequest);
+
+    expect(response.status).toBe(401);
+    expect(fixture.queryable.query).not.toHaveBeenCalled();
+    expect(fixture.calls).toEqual([]);
+  });
+
+  it.each([
+    ['malformed run identity', { ...recoveryRequest, runId: 'not-a-run' }],
+    ['unsupported attempt', { ...recoveryRequest, executionAttempt: 1 }],
+    ['non-integer attempt', { ...recoveryRequest, executionAttempt: 2.5 }],
+  ])('returns 400 for %s before querying the database', async (_reason, body) => {
+    const fixture = incompleteArchiveFixture({ marker: 'valid' });
+    const response = await request(routeApp(fixture.queryable)).post('/api/dispatch/incomplete-p2-recovery')
+      .set('Authorization', `Bearer ${TOKEN}`).send(body);
+
+    expect(response.status).toBe(400);
+    expect(fixture.queryable.query).not.toHaveBeenCalled();
+    expect(fixture.calls).toEqual([]);
   });
 
   it('rejects a stale worker bearer before reading review identity or archive rows', async () => {
