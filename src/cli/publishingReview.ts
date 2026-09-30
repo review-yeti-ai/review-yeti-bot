@@ -22,7 +22,8 @@
  *    deliberate: a `neutral` check does not block a merge, so an outage that
  *    published `neutral` would silently stop enforcing.
  */
-import { createPanelDeadlineSignal, executePersonaPanel, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { createPanelDeadlineSignal, executePersonaPanel, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelTimeoutMs } from '../config/workerTerminalDeadline';
 import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
 import { executeComposedReview } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
@@ -1056,6 +1057,18 @@ export function githubRetryOptionsFromEnv(env: Readonly<Record<string, string | 
   return deadlineAtMs === undefined ? {} : { deadlineAtMs };
 }
 
+function createPublishingPanelDeadline(
+  overallTimeoutSeconds: number,
+  env: NodeJS.ProcessEnv,
+  parentSignal: AbortSignal | undefined,
+  now: () => number,
+): ReturnType<typeof createPanelDeadlineSignal> {
+  const timeoutMs = workerPanelTimeoutMs(overallTimeoutSeconds, env,
+    value(env, WORKER_TERMINAL_DEADLINE_ENV) ? now() : 0);
+  if (timeoutMs <= 0) throw new PanelDeadlineExceededError(0);
+  return createPanelDeadlineSignal(timeoutMs / 1_000, parentSignal);
+}
+
 /**
  * REL-1103: the publishing worker's check client. Check create/update retry
  * transient GitHub responses, never past the worker's terminal deadline.
@@ -1635,12 +1648,25 @@ export async function runPublishingReviewWorker(
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run. Grounding
-    // runs BEFORE the panel deadline starts — its own stage budgets bound the tarball
-    // fetch and index build, so grounding never eats the panel's timeout.
+    // has its own stage budgets, but all setup must still fit the admitted lifecycle window.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
     const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
-    const panelDeadline = createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal);
+    const panelDeadline = createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now);
     let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
+    // Receipt ownership cannot depend on which continuation wins the abort race:
+    // the producer can resolve before cancellation while delivery still loses.
+    let resolvedGroundingReceipt: typeof zoektScratchRoot | undefined;
+    let groundingAbandoned = false;
+    let groundingScratchCleanup: Promise<void> | undefined;
+    const cleanupGroundingScratch = (): Promise<void> => {
+      const scratchDir = resolvedGroundingReceipt?.scratchDir;
+      if (!groundingScratchCleanup && scratchDir) {
+        // Claim once before invoking deletion; late/catch/finally callers join
+        // this same cleanup, never race separate recursive removals.
+        groundingScratchCleanup = Promise.resolve().then(() => removeScratchTree(scratchDir));
+      }
+      return groundingScratchCleanup || Promise.resolve();
+    };
     // REL-677: index-build duration is fixed setup cost paid on every grounded review, separate
     // from persona lane time -- the trade-off the REL-677 latency claim rests on (setup cost vs.
     // turns saved by grounded lookups) is unfalsifiable without measuring it on its own span.
@@ -1679,16 +1705,31 @@ export async function runPublishingReviewWorker(
         const buildStart = deps.now ? deps.now() : Date.now();
         let result: { indexDir?: string; scratchDir?: string; reason?: string };
         try {
-          result = await zoektGrounding({
+          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string }>(() => zoektGrounding({
             repository: identity.repo,
             headSha: identity.headSha,
             token: value(env, 'GH_TOKEN'),
             enabled: zoektGroundingEnabled,
-            signal: deps.signal,
+            signal: panelDeadline.signal,
             zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
+          })).then(async (groundingResult) => {
+            resolvedGroundingReceipt = groundingResult;
+            // Production grounding cooperatively stops its materializer/indexer on this signal.
+            // An injected or future implementation may still settle successfully after the worker
+            // has already finalized; its scratch tree then belongs to this late-result handler.
+            if (groundingAbandoned || panelDeadline.signal.aborted) {
+              await cleanupGroundingScratch();
+            }
+            return groundingResult;
           });
+          result = await raceWithPanelAbort(groundingOperation, panelDeadline.signal);
         } catch (groundingError: any) {
-          result = { reason: groundingError?.message || 'zoekt_grounding_error' };
+          groundingAbandoned = true;
+          // Join only an already-resolved receipt's cleanup, not the producer:
+          // a stalled producer must never delay fail-closed finalization.
+          await cleanupGroundingScratch();
+          result = { reason: panelDeadline.signal.aborted
+            ? 'lifecycle_deadline' : (groundingError?.message || 'zoekt_grounding_error') };
         }
         span.setAttribute('review_yeti.zoekt_index_build.enabled', zoektGroundingEnabled);
         // A disabled run performs no materialize/build work, so it has no build cost to
@@ -1706,6 +1747,9 @@ export async function runPublishingReviewWorker(
         }
         return result;
       });
+      // Grounding is optional evidence, but it cannot keep setup alive past the admitted
+      // panel boundary or let a late setup result proceed to PR verification/model execution.
+      throwIfPanelAborted(panelDeadline.signal);
       // Single-surface injection: the panel (panelEngine) owns the zoekt
       // lookup policy and propagates evidence.zoekt.indexDir to every internal
       // consumer (symbol pre-check + on-demand code_search_zoekt tool). The
@@ -1725,8 +1769,9 @@ export async function runPublishingReviewWorker(
             },
           }
         : workerConfig;
-      // Shadow evidence: its OWN independent deadline derived from the same `overall_timeout_s`
-      // (`createPanelDeadlineSignal` mints a fresh timer each call), so a hung composed run times
+      // Shadow evidence: its OWN signal, with the same absolute admitted deadline and policy
+      // ceiling. Recompute remaining time here, so grounding cannot restart its lifecycle clock.
+      // A hung composed run times
       // out on its own schedule and can never extend this job past the panel's deadline below.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is
       // max(panel, composed), never the sum. The panel holds up to `MAX_CONCURRENT_PERSONAS` (4)
@@ -1749,7 +1794,7 @@ export async function runPublishingReviewWorker(
         throw error;
       }
       shadowDeadline = isShadow
-        ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, deps.signal)
+        ? createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now)
         : undefined;
       // TOTAL, never rejects: a composed-engine throw, timeout, or abort must never propagate out
       // of this run and must never be added to the panel's own `optionalFailures`/`failedLanes` --
@@ -2687,7 +2732,8 @@ export async function runPublishingReviewWorker(
       logTokenAccounting();
       // One shared deletion contract (async, fail-soft) — the worker must not
       // hand-roll its own rm for the scratch tree.
-      await removeScratchTree(zoektScratchRoot.scratchDir);
+      groundingAbandoned = true;
+      await cleanupGroundingScratch();
     }
   } catch (error) {
     // REL-1057: the run-status poller is the service's own verdict that this
