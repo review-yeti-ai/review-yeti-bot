@@ -397,4 +397,10 @@ describe('buildPlanDirective -- panel persona task composition', () => {
     expect(directive).toContain('=== PLAN TURN ===');
     expect(directive).toContain('CT_REVIEW_NONCE:test-nonce-123');
   });
+
+  it('instructs model not to propose tasks solely for binary files or compressed archives', () => {
+    const directive = buildPlanDirective(6, dummyFiles, nonce);
+    expect(directive).toContain('Do not propose independent review tasks solely for binary files or compressed archives');
+    expect(directive).toContain('Every non-documentation, non-binary changed file must be covered by at least one task');
+  });
 });
