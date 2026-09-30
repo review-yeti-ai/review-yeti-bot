@@ -461,7 +461,7 @@ describe('guarded gateway input budgeting', () => {
     expect(evidence.omittedFilesCount).toBe(0);
   });
 
-  it('fails before guarded provider dispatch when lossless partitioning is unavailable or incomplete', () => {
+  it('rejects unavailable or incomplete lossless partition plans', () => {
     const { inputFiles } = createCurrentSizedGatewayDiffFixture();
     const requestConfig = {
       files: inputFiles,
@@ -470,24 +470,23 @@ describe('guarded gateway input budgeting', () => {
       safeDiffCapacityChars: 80_000,
       modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
     };
-    let providerDispatches = 0;
-    const dispatchAfterPlanning = (partitionManager: any) => {
-      const plan = pipeline.createReviewPartitionPlan({ ...requestConfig, partitionManager });
-      providerDispatches += 1;
-      return plan;
-    };
 
-    expect(() => dispatchAfterPlanning(null)).toThrow(/partition manager is unavailable/u);
-    expect(() => dispatchAfterPlanning({
-      createPartitionPlan: () => ({
-        totalFiles: inputFiles.length,
-        coveragePercent: 100,
-        omittedFilesCount: 0,
-        fileManifest: inputFiles.map((file) => ({ path: file.path })),
-        partitions: [{ totalChars: 238_397, files: inputFiles.map((file) => ({ ...file })) }],
-      }),
+    expect(() => pipeline.createReviewPartitionPlan({
+      ...requestConfig,
+      partitionManager: null,
+    })).toThrow(/partition manager is unavailable/u);
+    expect(() => pipeline.createReviewPartitionPlan({
+      ...requestConfig,
+      partitionManager: {
+        createPartitionPlan: () => ({
+          totalFiles: inputFiles.length,
+          coveragePercent: 100,
+          omittedFilesCount: 0,
+          fileManifest: inputFiles.map((file) => ({ path: file.path })),
+          partitions: [{ totalChars: 238_397, files: inputFiles.map((file) => ({ ...file })) }],
+        }),
+      },
     })).toThrow(/complete, bounded file and hunk coverage/u);
-    expect(providerDispatches).toBe(0);
   });
 
   it('rejects a lossless partition plan whose split-file copies are reordered', () => {
