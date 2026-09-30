@@ -67,6 +67,39 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it.each(['plan', 'work'] as const)('cancels the active %s provider request when the review aborts', async (phase) => {
+    const controller = new AbortController();
+    let transportCancelled = false;
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+    const complete = vi.fn(async (request: any) => {
+      const planning = lastText(request.messages).includes('PLAN TURN');
+      if (phase === 'work' && planning) {
+        return fakeResponse(JSON.stringify({
+          nonce: issuedNonce(request.messages),
+          tasks: [{ id: 'auth-guard', dimension: 'security', paths: ['src/auth/guard.ts'],
+            question: 'Is the guard safe?', rationale: 'Changed authentication guard.' }],
+        }));
+      }
+      started();
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        request.signal?.addEventListener('abort', () => {
+          transportCancelled = true;
+          reject(new Error('provider request cancelled'));
+        }, { once: true });
+      });
+    });
+    const review = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      signal: controller.signal });
+    const rejected = expect(review).rejects.toThrow();
+    await requestStarted;
+    controller.abort();
+    await rejected;
+    expect(transportCancelled).toBe(true);
+    expect(complete).toHaveBeenCalledTimes(phase === 'plan' ? 1 : 2);
+  });
+
   const exhaustionContext = {
     turnsUsed: 2, correctionAttempts: 1, toolTurns: 0,
     finishReason: 'stop', lastToolOutcome: 'none',

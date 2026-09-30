@@ -382,6 +382,7 @@ async function callTurn(params: {
           messages: params.messages,
           timeoutMs: params.timeoutMs,
           inactivityTimeoutMs: params.inactivityTimeoutMs,
+          ...(params.signal ? { signal: params.signal } : {}),
           ...(params.jobId ? { jobId: params.jobId } : {}),
           responseFormat: params.responseFormat,
         })),
