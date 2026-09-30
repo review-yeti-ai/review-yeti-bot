@@ -86,6 +86,24 @@ describe('publishing progress diagnostics', () => {
     expect(JSON.stringify(events)).not.toContain('private prompt content');
   });
 
+  it('maps an unknown failureClass to a fixed code without emitting the caller-controlled value', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const privateFailureClass = 'ghp_private_failure_class_123456';
+    const failure = Object.assign(new Error('private failure detail'), { failureClass: privateFailureClass });
+    const raw: ReviewModelClient = { complete: vi.fn(async () => { throw failure; }) };
+    const progress = createPublishingProgress({ runId: 'run-unknown-failure', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+
+    await expect(progress.instrument(raw).complete(request())).rejects.toBe(failure);
+
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({ task: 'provider_call', status: 'failed', rejectionCode: 'unknown' });
+    expect(events[1]).not.toHaveProperty('failureClass');
+    expect(JSON.stringify(events)).not.toContain(privateFailureClass);
+    expect(JSON.stringify(events)).not.toContain('private failure detail');
+  });
+
   it('handles unmarked classic calls and retains finite worker failure classes', async () => {
     const events: Array<Record<string, unknown>> = [];
     const forwarded: OpenRouterRequest[] = [];
