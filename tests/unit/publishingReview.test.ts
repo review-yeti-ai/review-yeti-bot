@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import { createPanelDeadlineSignal, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
+import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
 import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   classifyFailure,
@@ -2614,17 +2615,22 @@ describe('REL-1211 absolute publishing budget', () => {
   const clean = () => ({ applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
     quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } });
   const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 121_000 + remaining).toISOString() });
+  const jevEnv = { REVIEW_YETI_JEV_SHADOW: 'true', TYPESAFE_BASE_URL: 'https://api.typesafe.example/v1/systemone',
+    TYPESAFE_MODEL: 'jev-latest', TYPESAFE_API_KEY: 'ts-test-key', TYPESAFE_MODEL_PIN: 'jev-1.13.0' };
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(start); });
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
   it.each([0, -100])('REL-1211 refuses exhausted admission before main or shadow invocation: %s', async (remaining) => {
-    const completion = { reportTerminalFailure: vi.fn(async (_event: { diagnostics?: unknown }) => undefined) };
+    const completion = { reportTerminalFailure: vi.fn(async (_event: { diagnostics?: unknown }) => undefined),
+      reportTerminalSuccess: vi.fn(async () => undefined), reportReviewEvidence: vi.fn(async () => undefined) };
     const shadow = vi.fn();
-    const d = deps({ completion, composedReviewRunner: shadow, zoektGrounding: vi.fn(async () => ({})) });
-    const input = env({ ...deadlineEnv(remaining), REVIEW_EXECUTION_ATTEMPT: '2',
+    const ask = vi.fn();
+    const d = deps({ completion, composedReviewRunner: shadow, zoektGrounding: vi.fn(async () => ({})), jevTriageShadow: { asker: { ask } } });
+    const input = env({ ...jevEnv, ...deadlineEnv(remaining), REVIEW_EXECUTION_ATTEMPT: '2',
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) });
     await expect(runPublishingReviewWorker(input, d as never)).rejects.toMatchObject({ name: 'PanelDeadlineExceededError' });
     expect(d.panelRunner).not.toHaveBeenCalled(); expect(shadow).not.toHaveBeenCalled();
+    expect(ask).not.toHaveBeenCalled();
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
     expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ executionAttempt: 2,
       failureClass: 'timeout', diagnostics: expect.objectContaining({ reason: 'worker_terminal_deadline_exceeded' }) }));
@@ -2634,14 +2640,16 @@ describe('REL-1211 absolute publishing budget', () => {
 
   it('includes elapsed grounding and setup in the cutoff, rather than restarting nested panel work', async () => {
     const grounding = vi.fn(async () => { vi.setSystemTime(start + 40); return {}; });
-    let observed!: { signal: AbortSignal; deadlineBudget: { deadlineAtMs: number } };
+    let observed!: { signal: AbortSignal };
     const panelRunner = vi.fn((options: typeof observed) => { observed = options; return new Promise(() => {}); });
     const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
     const d = deps({ panelRunner, completion, zoektGrounding: grounding });
     const promise = runPublishingReviewWorker(env(deadlineEnv(50)), d as never);
     const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
     await vi.advanceTimersByTimeAsync(50); await failure;
-    expect(observed.deadlineBudget.deadlineAtMs).toBe(start + 50);
+    const nested = createPanelDeadlineSignal(1_800, observed.signal);
+    expect(nested.budget.deadlineAtMs).toBe(start + 50);
+    nested.cleanup();
     expect(observed.signal.aborted).toBe(true);
     expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
@@ -2719,5 +2727,41 @@ describe('REL-1211 absolute publishing budget', () => {
   it('classifies both admitted and local typed panel deadlines as timeout without retry markers', () => {
     expect(classifyFailure(new PanelDeadlineExceededError(10, true))).toBe('timeout');
     expect(classifyFailure(new PanelDeadlineExceededError(10))).toBe('timeout');
+  });
+
+  it('aborts enabled hung JEV model work at the cutoff and refuses new or late decisions', async () => {
+    let signal!: AbortSignal;
+    let late!: (result: JevOutcome<string>) => void;
+    const ask = vi.fn((request: JevAskRequest<string>) => { signal = request.signal!; return new Promise<JevOutcome<string>>(resolve => { late = resolve; }); });
+    const d = deps({ panelRunner: vi.fn(() => new Promise(() => {})), zoektGrounding: vi.fn(async () => ({})), jevTriageShadow: { asker: { ask } } });
+    const promise = runPublishingReviewWorker(env({ ...jevEnv, ...deadlineEnv(50) }), d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(ask).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(true);
+    late({ status: 'unavailable', reason: 'timeout', durationMs: 50 });
+    await vi.advanceTimersByTimeAsync(1_000); await failure;
+    expect(ask).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(d.checkClient.completeCheck).not.toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'success' }));
+  });
+
+  it('links JEV to an earlier caller cancellation synchronously without turning SIGTERM into supersession', async () => {
+    const parent = new AbortController();
+    let signal!: AbortSignal;
+    let late!: (result: JevOutcome<string>) => void;
+    const ask = vi.fn((request: JevAskRequest<string>) => { signal = request.signal!; return new Promise<JevOutcome<string>>(resolve => { late = resolve; }); });
+    const grounding = vi.fn(async () => {
+      parent.abort(new Error('SIGTERM'));
+      expect(signal.aborted).toBe(true);
+      late({ status: 'unavailable', reason: 'timeout', durationMs: 0 });
+      return {};
+    });
+    const completion = { reportTerminalFailure: vi.fn(async (_event: unknown) => undefined) };
+    const d = deps({ signal: parent.signal, pullRequestIdentityReader: vi.fn(async () => ({ headSha: HEAD })), completion,
+      zoektGrounding: grounding, jevTriageShadow: { asker: { ask } } });
+    await expect(runPublishingReviewWorker(env({ ...jevEnv, ...deadlineEnv(50) }), d as never)).rejects.toMatchObject({ name: 'PanelCancellationError' });
+    expect(d.panelRunner).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

@@ -22,9 +22,9 @@ export const WORKER_RECEIPT_RESERVE_MS = 60_000;
 export const WORKER_DEADLINE_FLOOR_MARGIN_MS = 1_000;
 
 export interface WorkerPanelDeadlineBudget {
-  deadlineAtMs: number;
-  timeoutMs: number;
-  terminalBound: boolean;
+  readonly deadlineAtMs: number;
+  readonly timeoutMs: number;
+  readonly terminalBound: boolean;
 }
 
 /** A fixed work cutoff, never a fresh timeout when passed to a nested engine. */

@@ -508,6 +508,9 @@ export function throwIfPanelAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw panelAbortError(signal);
 }
 
+// Internal cancellation context, not serialized reviewer input or service evidence.
+const panelDeadlineBudgets = new WeakMap<AbortSignal, WorkerPanelDeadlineBudget>();
+
 /**
  * Link a caller cancellation signal to the configured panel deadline. Both the
  * timer and the parent listener are removed on completion so a healthy panel
@@ -516,10 +519,13 @@ export function throwIfPanelAborted(signal?: AbortSignal): void {
 export function createPanelDeadlineSignal(
   overallTimeoutSeconds: number,
   parentSignal?: AbortSignal,
-  budget = workerPanelDeadlineBudget(overallTimeoutSeconds, {}),
+  budget = (parentSignal ? panelDeadlineBudgets.get(parentSignal) : undefined)
+    ?? workerPanelDeadlineBudget(overallTimeoutSeconds, {}),
 ): { signal: AbortSignal; cleanup: () => void; check: () => void; timeoutMs: number; budget: WorkerPanelDeadlineBudget } {
+  budget = Object.freeze({ ...budget });
   const timeoutMs = Math.max(0, budget.deadlineAtMs - Date.now());
   const controller = new AbortController();
+  panelDeadlineBudgets.set(controller.signal, budget);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const expire = () => {
     if (!controller.signal.aborted) controller.abort(new PanelDeadlineExceededError(timeoutMs, budget.terminalBound));
@@ -3683,7 +3689,8 @@ export async function executePersonaPanel(options: {
   unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
-    options.deadlineBudget ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s));
+    options.deadlineBudget ?? (options.signal ? panelDeadlineBudgets.get(options.signal) : undefined)
+      ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s));
   const panelStartedAt = Date.now();
   const remainingPanelTimeoutMs = () => {
     deadline.check();

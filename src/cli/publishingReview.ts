@@ -108,7 +108,7 @@ import { loadMapReduceInput, renderMapReduceSummary } from '../review/mapReduceR
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
-import { startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
+import { DEFAULT_JEV_TRIAGE_SHADOW_LIMITS, startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
 import {
   markThrownByPanel,
   thrownInfrastructureDiagnostics,
@@ -1663,8 +1663,11 @@ export async function runPublishingReviewWorker(
     // and TYPESAFE_* are set, runs concurrently with the panel, and receives snapshots only --
     // nothing it produces flows back into this run. Joined after every outcome-visible action.
     let jevShadow: ReturnType<typeof startJevTriageShadow> | undefined;
+    const abortJevShadow = () => jevShadow?.abort();
     try {
       panelDeadline.check();
+      const remainingWorkMs = panelDeadline.budget.deadlineAtMs - Date.now();
+      const jevLimits = { ...DEFAULT_JEV_TRIAGE_SHADOW_LIMITS, ...deps.jevTriageShadow?.limits };
       jevShadow = startJevTriageShadow({
       env,
       repository: identity.repo,
@@ -1675,8 +1678,15 @@ export async function runPublishingReviewWorker(
       personas: workerConfig.personas.filter((persona) => persona.enabled)
         .map((persona) => ({ id: persona.id, charter: persona.charter })),
       ...(deps.jevTriageShadow?.asker ? { asker: deps.jevTriageShadow.asker } : {}),
-      ...(deps.jevTriageShadow?.limits ? { limits: deps.jevTriageShadow.limits } : {}),
+      limits: { ...jevLimits,
+        hardTimeoutMs: Math.min(jevLimits.hardTimeoutMs, remainingWorkMs),
+        stageBudgetMs: Math.min(jevLimits.stageBudgetMs, remainingWorkMs),
+        perCallCapMs: Math.min(jevLimits.perCallCapMs, remainingWorkMs),
+      },
       });
+      if (panelDeadline.signal.aborted) abortJevShadow();
+      else panelDeadline.signal.addEventListener('abort', abortJevShadow, { once: true });
+      panelDeadline.check();
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
       zoektScratchRoot = await runInSpan('review_yeti_zoekt_index_build', async (span) => {
@@ -1824,7 +1834,6 @@ export async function runPublishingReviewWorker(
           client,
           jobId: identity.runId,
           signal: panelDeadline.signal,
-          deadlineBudget: panelDeadline.budget,
           repoFileProvider,
           isCurrentHead: deps.isCurrentHead,
           ...(authoritative ? { deterministicRoster: true } : {}),
@@ -2685,6 +2694,7 @@ export async function runPublishingReviewWorker(
       // decision lines, summary lines and the Jev cost metric count the same calls. Bounded by
       // FINISH_FLUSH_MS and total (never throws).
       await jevShadow?.finish();
+      panelDeadline.signal.removeEventListener('abort', abortJevShadow);
       panelDeadline.cleanup();
       // Bounded by the shadow run's own deadline (already elapsed on every path that reached
       // evidence-building above, where it is awaited explicitly -- this is a no-op there). On an

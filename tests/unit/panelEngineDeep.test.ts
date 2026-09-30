@@ -2457,11 +2457,21 @@ describe('REL-1211 absolute panel deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('snapshots the fixed cutoff so mutation of a caller-owned budget cannot restart it', () => {
+    const budget = { deadlineAtMs: Date.now() + 50, timeoutMs: 50, terminalBound: true };
+    const deadline = createPanelDeadlineSignal(1_800, undefined, budget);
+    budget.deadlineAtMs += 10_000;
+    vi.setSystemTime(Date.now() + 50);
+    expect(Object.isFrozen(deadline.budget)).toBe(true);
+    expect(() => deadline.check()).toThrow(PanelDeadlineExceededError);
+    deadline.cleanup();
+  });
+
   it('links distinct signals to a shared cutoff without restarting the elapsed budget', async () => {
     const budget = workerPanelDeadlineBudget(5, {});
     const main = createPanelDeadlineSignal(5, undefined, budget);
     await vi.advanceTimersByTimeAsync(3_000);
-    const shadow = createPanelDeadlineSignal(5, main.signal, main.budget);
+    const shadow = createPanelDeadlineSignal(5, main.signal);
     expect(main.signal).not.toBe(shadow.signal);
     expect(shadow.timeoutMs).toBe(2_000);
     shadow.check();
