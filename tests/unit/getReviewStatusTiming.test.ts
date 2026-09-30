@@ -157,6 +157,9 @@ describe('get_review_status timing: every query branch selects the timing column
       for (const column of TIMING_COLUMNS) {
         expect(sql, `${branch.name} must select r.${column}`).toContain(`r.${column}`);
       }
+      if (branch.failGateJoin && !sql.includes('review_gate_attempts')) {
+        expect(sql).toMatch(/r\.artifacts\s*,\s*r\.received_at/u);
+      }
     }
   });
 

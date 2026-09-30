@@ -232,6 +232,33 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
       expect(data.timing.execution_seconds).toBeNull();
     });
 
+    it.each([true, false])('returns the real run and unknown identified-attempt timing when the gate table is absent (head filter=%s)', async (head) => {
+      await marker(CURRENT, 'started', STARTED);
+      await marker(CURRENT, 'terminal', COMPLETED);
+      await pool.query(`UPDATE review_runs
+        SET cancel_requested_at = $2, cancel_propagated_at = $3 WHERE run_id = $1`,
+      [RUN, '2026-09-30T13:13:08.000Z', '2026-09-30T13:13:09.000Z']);
+      await pool.query('DROP TABLE review_gate_attempts');
+      try {
+        const data = await status(head);
+        expect(data.found).toBe(true);
+        expect(data.head_sha).toBe(HEAD);
+        expect(data.verdict).toBe('FAILED');
+        expect(data.check_run).toBeNull();
+        expect(data.timing).toEqual({
+          received_at: RECEIVED, created_at: CREATED, burst_started_at: CREATED,
+          dispatched_at: null, started_at: null, completed_at: COMPLETED,
+          cancel_requested_at: '2026-09-30T13:13:08.000Z',
+          cancel_propagated_at: '2026-09-30T13:13:09.000Z',
+          terminal_deadline: '2026-09-30T13:42:51.000Z',
+          queue_seconds: null, execution_seconds: null,
+        });
+      } finally {
+        // Reinstall only this owned schema's canonical gate tables, even RED.
+        await pool.query(REVIEW_GATE_SCHEMA_SQL);
+      }
+    });
+
     if (shape === 'payload-only legacy') {
       it.each([true, false])('uses only unkeyed markers after this receipt when current identity is absent (head filter=%s)', async (head) => {
         await pool.query('DELETE FROM review_gate_attempts');
@@ -248,6 +275,29 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
         expect(data.timing.completed_at).toBe(COMPLETED);
         expect(data.timing.queue_seconds).toBe(12);
         expect(data.timing.execution_seconds).toBe(30);
+      });
+
+      it.each([true, false])('retains the unkeyed receipt window when the gate table is absent (head filter=%s)', async (head) => {
+        await marker(OLD, 'started', '2026-09-30T11:14:09.000Z', true);
+        await marker(OLD, 'terminal', '2026-09-30T11:42:07.000Z', true);
+        await marker(OLD, 'started', DISPATCHED); // Foreign identified row after receipt.
+        await marker(CURRENT, 'dispatched', DISPATCHED, true);
+        await marker(CURRENT, 'started', STARTED, true);
+        await marker(CURRENT, 'terminal', COMPLETED, true);
+        await pool.query('DROP TABLE review_gate_attempts');
+        try {
+          const data = await status(head);
+          expect(data.found).toBe(true);
+          expect(data.verdict).toBe('FAILED');
+          expect(data.check_run).toBeNull();
+          expect(data.timing.dispatched_at).toBe(DISPATCHED);
+          expect(data.timing.started_at).toBe(STARTED);
+          expect(data.timing.completed_at).toBe(COMPLETED);
+          expect(data.timing.queue_seconds).toBe(12);
+          expect(data.timing.execution_seconds).toBe(30);
+        } finally {
+          await pool.query(REVIEW_GATE_SCHEMA_SQL);
+        }
       });
     }
   });

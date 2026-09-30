@@ -1665,10 +1665,10 @@ func TestBuildWorkerJobRefusesVerdictCacheWithLineBreak(t *testing.T) {
 	}
 }
 
-// REL-1083: REVIEW_YETI_MAP_REDUCE must reach the app-gate worker verbatim when
-// configured, together with the review's terminal deadline, stay absent (both)
-// when not, and never reach the receipt-only lane.
-func TestBuildWorkerJobForwardsMapReduceAndDeadlineOnlyWhenSet(t *testing.T) {
+// App-gate workers always receive the admitted terminal deadline. The optional
+// REL-1083 map/reduce flag is forwarded only when configured; neither value
+// reaches the receipt-only lane.
+func TestBuildWorkerJobAlwaysForwardsPublishingDeadlineAndOptionalMapReduce(t *testing.T) {
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 	review := reviewFixture(now)
 	review.Spec.PublicationMode = "app-gate"
@@ -1686,10 +1686,11 @@ func TestBuildWorkerJobForwardsMapReduceAndDeadlineOnlyWhenSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build baseline app-gate job: %v", err)
 	}
-	for _, name := range []string{job.MapReduceEnv, job.TerminalDeadlineEnv} {
-		if hasEnv(baseline.Spec.Template.Spec.Containers[0], name) {
-			t.Fatalf("unset operator config must not reach the worker as %s", name)
-		}
+	if hasEnv(baseline.Spec.Template.Spec.Containers[0], job.MapReduceEnv) {
+		t.Fatal("unset map-reduce config must not reach the worker")
+	}
+	if got := envValue(baseline.Spec.Template.Spec.Containers[0], job.TerminalDeadlineEnv); got != review.Spec.TerminalDeadline.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("all publishing workers need the immutable deadline, got %q", got)
 	}
 
 	want := review.Spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)
