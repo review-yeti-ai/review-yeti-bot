@@ -577,3 +577,40 @@ describe('REL-1204 surviving exact-source safety', () => {
     expect(result.isExhaustive).toBe(false);
   });
 });
+
+describe('REL-1204 exact-source remaining branch regressions', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+  it('ignores malformed changed-file path entries without treating them as exact matches', async () => {
+    const readFile = vi.fn().mockResolvedValue('EXACT_GOOD_SOURCE');
+    const result = await runReadOnlyTool('view_file', { path: 'src/good.ts' }, {
+      changedFiles: [{ path: null, patch: 'BAD_NULL' }, { path: 42, patch: 'BAD_NUMBER' },
+        { path: 'src/good.ts.backup', patch: 'BAD_PARTIAL' }, { path: './src/good.ts', patch: 'EXACT_PATCH' }],
+      repoFileProvider: { readFile, findFiles: vi.fn().mockResolvedValue([]) },
+    });
+    expect(readFile).toHaveBeenCalledExactlyOnceWith('src/good.ts');
+    expect(result.toolOutput).toContain('EXACT_GOOD_SOURCE');
+    expect(result.toolOutput).not.toContain('BAD_');
+    expect(result.toolOutput).not.toContain('EXACT_PATCH');
+  });
+
+  it.each(['read_file', 'view_file', 'get_diff'])('caps honest no-provider %s fallback after preserving the separate patch ceiling', async (tool) => {
+    vi.stubEnv('MAX_FILE_DIFF_CHARS', String(REPO_READ_FILE_MAX_CHARS + 10));
+    const result = await runReadOnlyTool(tool, { path: 'src/a.ts' }, {
+      changedFiles: [{ path: 'src/a.ts', patch: 'p'.repeat(REPO_READ_FILE_MAX_CHARS + 1) }],
+    });
+    expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+    expect(result.toolOutput).toContain('Patch for');
+    expect(result.toolOutput).toContain('truncated to the first ' + REPO_READ_FILE_MAX_CHARS);
+    expect(result.toolOutput.length).toBeLessThan(REPO_READ_FILE_MAX_CHARS + 1000);
+  });
+
+  it.each([{ path: 'src/a.ts', content: 'ONLY_REVIEW_PAYLOAD' }, { path: 'src/a.ts' }])
+  ('labels no-provider nonpatch payload %j as unverified context', async (file) => {
+    const result = await runReadOnlyTool('view_file', { path: file.path }, { changedFiles: [file] });
+    expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+    expect(result.toolOutput).toContain('Only a changed-file review payload is available');
+    expect(result.toolOutput).toContain('not verified complete source context');
+    expect(result.toolOutput).toContain(file.content || 'File present in PR scope.');
+  });
+});
