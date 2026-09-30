@@ -586,7 +586,7 @@ describe('attachReviewBudgetDisclosure', () => {
       expect(result.diffShrink.notSentInFull).toEqual([{ path, why }]);
     });
 
-  it.each(['cut', 'signatures', 'listed', 'missing-entry', 'missing-lane', 'fallback', 'keep'])(
+  it.each(['cut', 'signatures', 'listed', 'missing-entry', 'missing-disclosure', 'mismatched-text', 'missing-lane', 'fallback', 'keep'])(
     'API-3375 retains genuine or ambiguous cuts: %s', (mode) => {
       const path = 'ova/versions/1.2.3.yaml';
       const full = packLaneBudget('release', [cutCandidate(path, 30_000)]);
@@ -599,6 +599,8 @@ describe('attachReviewBudgetDisclosure', () => {
         partial.disclosure.files[0] = { ...partial.disclosure.files[0], depth };
       }
       if (mode === 'missing-entry') partial.entries.delete(path);
+      if (mode === 'missing-disclosure') partial.disclosure.files = [];
+      if (mode === 'mismatched-text') partial.entries.get(path)!.toolPatch = 'not the full prompt';
       const packs = new Map([['release', full]]);
       if (!['missing-lane', 'fallback', 'keep'].includes(mode)) packs.set('other', partial);
       const fallbacks = mode === 'fallback' ? new Map([['other', { laneId: 'other', budgetChars: 1,
@@ -624,6 +626,8 @@ describe('attachReviewBudgetDisclosure', () => {
     expect(summary).toContain('not every change was sent in full');
     expect(summary).not.toContain('oversized lockfile');
     expect(original.diffShrink.notSentInFull).toEqual([]);
+    expect(attachReviewBudgetDisclosure(result, { scope: 'per-lane', packs: new Map([['release', lane]]) }).diffShrink.notSentInFull)
+      .toEqual(result.diffShrink.notSentInFull);
   });
 
   it('API-3375 refuses composed/off/unrun/fast-ship restoration without an executed lane', () => {
@@ -637,6 +641,8 @@ describe('attachReviewBudgetDisclosure', () => {
     expect(attachReviewBudgetDisclosure(original, { scope: 'whole-diff', packs: new Map() })).toBe(original);
     const withoutSnapshot = attachReviewBudgetDisclosure({ personas: [{ id: 'task' }] }, plan);
     expect(withoutSnapshot).not.toHaveProperty('diffShrink');
+    const rawShrink = planDiffShrink([], { enabled: true }).disclosure;
+    expect(attachReviewBudgetDisclosure({ personas: [{ id: 'task' }], diffShrink: rawShrink }, plan).diffShrink).toBe(rawShrink);
   });
 
   const pack = packLaneBudget('sec-lane', [cutCandidate('src/big.ts', 30_000)]);
@@ -654,6 +660,23 @@ describe('attachReviewBudgetDisclosure', () => {
     const result = attachReviewBudgetDisclosure(base, plan) as any;
     expect(result.reviewBudget.lanes.map((lane: any) => lane.laneId)).toEqual(['sec-lane']);
     expect(result.truncatedFiles.map((file: any) => file.path)).toEqual(['src/other.ts']);
+  });
+
+  it('API-3375 preserves hard caps and nearby ordinary Markdown, with real listing disclosure', () => {
+    const exact = cutCandidate('release-notes/internal/1.2.3-rc4.md', MAX_PACKED_DIFF_CHARS + 5_000, 'notes');
+    const ordinary = cutCandidate('docs/1.2.3-rc4.md', 30_000, 'docs');
+    const bounded = packLaneBudget('release', [exact, ordinary], { budgetChars: 25_000 });
+    expect(bounded.entries.get(exact.path)?.depth).toBe('truncated');
+    expect(bounded.entries.get(ordinary.path)?.depth).toBe('signatures');
+    expect(bounded.disclosure.packedChars).toBeLessThanOrEqual(MAX_PACKED_DIFF_CHARS);
+    const crowded = packLaneBudget('release', [...Array.from({ length: 3 }, (_, i) => candidate('src/auth/key' + i + '.ts', 50_000)),
+      ...Array.from({ length: 80 }, (_, i) => candidate('docs/page' + i + '.md', 18_000))]);
+    const listed = crowded.disclosure.files.find(file => file.depth === 'not-deeply-reviewed')!;
+    expect(listed).toBeDefined();
+    const result = attachReviewBudgetDisclosure({ personas: [{ id: 'release' }],
+      diffShrink: { ...snapshot('unused'), notSentInFull: [] } }, { scope: 'per-lane', packs: new Map([['release', crowded]]) });
+    expect(result.diffShrink.notSentInFull).toContainEqual({ path: listed.path, why: 'budget-listed' });
+    expect(renderDiffShrinkSummary(result.diffShrink).join('\n')).not.toContain('; every change was sent in full.');
   });
 
   it('keeps a security-sensitive file the lane got only as the 20k cut in the truncation disclosure, and names it', () => {

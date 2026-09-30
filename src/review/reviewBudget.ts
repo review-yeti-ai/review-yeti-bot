@@ -591,15 +591,18 @@ export function attachReviewBudgetDisclosure<T extends object>(
   const lanes = packs.map((pack) => pack.disclosure).concat(fallbacks);
   if (lanes.length === 0) return result;
 
-  const ambiguous = fallbacks.length > 0 || (plan.scope === 'per-lane'
+  const ambiguous = lanes.some((lane) => lane.fallback) || (plan.scope === 'per-lane'
     && [...ran].some((id) => !plan.packs.has(id) && !plan.fallbacks?.has(id)));
   const depths = new Map<string, BudgetDepth[]>();
   for (const pack of packs) {
-    for (const file of pack.disclosure.files) {
-      // Entries are what execution applied, not just a proposed disclosure.
-      const entry = pack.entries.get(file.path);
-      const depth = entry?.depth === file.depth ? file.depth : 'truncated';
-      depths.set(file.path, [...(depths.get(file.path) ?? []), depth]);
+    const disclosed = new Map(pack.disclosure.files.map((file) => [file.path, file]));
+    for (const path of new Set([...disclosed.keys(), ...pack.entries.keys()])) {
+      // Both executed text and disclosure must agree before claiming full depth.
+      const file = disclosed.get(path);
+      const entry = pack.entries.get(path);
+      const depth = entry && file && entry.depth === file.depth
+        && (entry.depth !== 'full' || entry.promptPatch === entry.toolPatch) ? entry.depth : 'truncated';
+      depths.set(path, [...(depths.get(path) ?? []), depth]);
     }
   }
   const restored = (path: string) => !ambiguous && keepTruncated?.has(path) !== true
