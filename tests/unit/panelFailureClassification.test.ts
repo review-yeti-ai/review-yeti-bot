@@ -43,6 +43,7 @@ describe('classifyPersonaAttemptFailure', () => {
     ['ENOTFOUND api.example.invalid', 'transport'],
     ['fetch failed', 'transport'],
     ['invalid findings contract at index 0', 'malformed_output'],
+    ['Model response contained no parseable findings JSON.', 'malformed_output'],
     ['nonce-fenced structured output rejected', 'malformed_output'],
     ['gateway returned an unexpected payload', 'provider_error'],
     ['unexpected invariant violation', 'internal_error'],

@@ -324,6 +324,7 @@ describe('REL-1113 Action pipeline: real verdicts are unchanged', () => {
   it.each([
     ['a lane reported a finding (findings BLOCK stays BLOCK)', [lane('security', { decision: 'FINDINGS', findings: [FINDING] }), lane('testing', { decision: 'ERROR', error: TERMINATED })], true],
     ['the lane failure is malformed output, not infrastructure', [lane('security'), lane('testing', { decision: 'ERROR', error: 'invalid findings contract: missing findings array' })], true],
+    ['the model returned no parseable findings JSON', [lane('security'), lane('testing', { decision: 'ERROR', error: 'Model response contained no parseable findings JSON.' })], true],
     ['the lane failure is credentials (HTTP 401)', [lane('security'), lane('testing', { decision: 'ERROR', error: 'HTTP 401: unauthorized', responseStatus: 401 })], true],
     ['a changed file was omitted from review', [lane('security'), lane('testing', { decision: 'ERROR', error: TERMINATED })], false],
     ['every lane completed', [lane('security'), lane('testing')], true],
