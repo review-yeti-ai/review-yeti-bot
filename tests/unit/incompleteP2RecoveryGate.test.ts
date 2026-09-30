@@ -17,6 +17,7 @@ import { WorkerCompletionPersistenceError } from '../../src/review/workerComplet
 import {
   createIncompleteP2RecoveryContext,
   incompleteP2RecoveryClaimFor,
+  incompleteP2RecoveryClaimSchema,
 } from '../../src/review/incompleteP2Recovery';
 import type { IncompleteP2RecoveryContext } from '../../src/review/incompleteP2Recovery';
 
@@ -32,7 +33,7 @@ const NOW = Date.parse('2026-09-29T12:01:00.000Z');
 const COMPLETED_AT = '2026-09-29T12:00:00.000Z';
 const SOURCE_DIGEST = 'e'.repeat(64);
 
-function context(): IncompleteP2RecoveryContext {
+function context(executionAttempt = 2): IncompleteP2RecoveryContext {
   return createIncompleteP2RecoveryContext({
     version: 'IncompleteP2RecoveryContext.v1',
     runId: RUN,
@@ -45,27 +46,28 @@ function context(): IncompleteP2RecoveryContext {
     policyDigest: POLICY,
     configDigest: CONFIG,
     expectedAppId: APP_ID,
-    executionAttempt: 2,
-    sources: [{
-      executionAttempt: 1,
-      workerResultDigest: SOURCE_DIGEST,
-      workerCheckId: 1001,
-      gateCheckId: 2001,
+    executionAttempt,
+    sources: Array.from({ length: executionAttempt - 1 }, (_, index) => ({
+      executionAttempt: index + 1,
+      workerResultDigest: index === 0 ? SOURCE_DIGEST : 'f'.repeat(64),
+      workerCheckId: 1001 + index,
+      gateCheckId: 2001 + index,
       rawFindingCount: 1,
       canonicalFindingCount: 1,
-    }],
-    findings: [{
-      sourceExecutionAttempt: 1,
-      sourceWorkerResultDigest: SOURCE_DIGEST,
-      sourceWorkerCheckId: 1001,
-      sourceGateCheckId: 2001,
-      personaId: 'security',
+    })),
+    findings: Array.from({ length: executionAttempt - 1 }, (_, index) => ({
+      sourceExecutionAttempt: index + 1,
+      sourceWorkerResultDigest: index === 0 ? SOURCE_DIGEST : 'f'.repeat(64),
+      sourceWorkerCheckId: 1001 + index,
+      sourceGateCheckId: 2001 + index,
+      personaId: index === 0 ? 'security' : 'reviewer',
       findingIndex: 0,
       finding: {
-        severity: 'P2', path: 'src/example.ts', line: 7,
-        title: 'Prior advisory', body: 'Verify the earlier observation against current source.',
+        severity: 'P2', path: index === 0 ? 'src/example.ts' : 'src/other.ts', line: 7,
+        title: index === 0 ? 'Prior advisory' : 'Second prior advisory',
+        body: 'Verify the earlier observation against current source.',
       },
-    }],
+    })),
   });
 }
 
@@ -87,7 +89,7 @@ function completion(recoveryContext: IncompleteP2RecoveryContext, options: {
     baseSha: BASE,
     policyDigest: POLICY,
     configDigest: CONFIG,
-    executionAttempt: 2,
+    executionAttempt: recoveryContext.executionAttempt,
     result: {
       version: 'WorkerReviewResult.v1',
       completedAt: COMPLETED_AT,
@@ -103,15 +105,15 @@ function completion(recoveryContext: IncompleteP2RecoveryContext, options: {
   };
 }
 
-function stateRow() {
+function stateRow(executionAttempt = 2) {
   const coordinates = {
     runId: RUN, repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42,
     headSha: HEAD, baseSha: BASE, policyDigest: POLICY,
-    executionAttempt: 2, attemptId: `${RUN}-g1-e2`,
+    executionAttempt, attemptId: `${RUN}-g${executionAttempt - 1}-e${executionAttempt}`,
   };
   return {
     coordinates,
-    review_generation: 1,
+    review_generation: executionAttempt - 1,
     expected_app_id: APP_ID,
     external_id: deriveReviewGateExternalId(coordinates),
     check_id: 88,
@@ -121,18 +123,18 @@ function stateRow() {
     published_version: 0,
     current_attempt: true,
     worker_token_digest: WORKER_TOKEN_DIGEST,
-    current_execution: 1,
+    current_execution: executionAttempt - 1,
     run_status: 'queued',
     outbox_status: 'pending',
     effective_config_digest: CONFIG,
-    current_generation: 1,
+    current_generation: executionAttempt - 1,
     authoritative_gate_app_id: APP_ID,
     received_at: '2026-09-29T11:59:00.000Z',
     terminal_deadline: '2026-09-29T12:10:00.000Z',
   };
 }
 
-function repositoryFixture() {
+function repositoryFixture(executionAttempt = 2) {
   const calls: Array<{ sql: string; values?: unknown[] }> = [];
   const client = {
     query: vi.fn(async (sql: string, values?: unknown[]) => {
@@ -142,7 +144,7 @@ function repositoryFixture() {
         return { rows: [{ repository_id: 123, pr_number: 42 }] };
       }
       if (sql.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
-      if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [stateRow()] };
+      if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [stateRow(executionAttempt)] };
       if (sql.startsWith('SELECT repository_id, pr_number, received_at, authoritative_gate_app_id')) {
         return { rows: [{ repository_id: 123, pr_number: 42, received_at: '2026-09-29T11:59:00.000Z', authoritative_gate_app_id: APP_ID }] };
       }
@@ -234,6 +236,52 @@ describe('incomplete P2 recovery Gate enforcement', () => {
 
     expect(gateDecision(fixture.calls)).toEqual({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
     expect(fixture.calls.some(({ sql }) => sql === 'COMMIT')).toBe(true);
+  });
+
+  it.each([
+    ['executionAttempt', { executionAttempt: 2 }],
+    ['workerResultDigest', { workerResultDigest: '0'.repeat(64) }],
+    ['workerCheckId', { workerCheckId: 1002 }],
+    ['gateCheckId', { gateCheckId: 2002 }],
+  ])('rejects a correct-digest Gate claim with altered %s metadata', async (_field, change) => {
+    const recoveryContext = context();
+    const original = incompleteP2RecoveryClaimFor(recoveryContext);
+    const claim = {
+      ...original,
+      sources: original.sources.map((source, index) => index === 0 ? { ...source, ...change } : source),
+    };
+    expect(claim.contextDigest).toBe(recoveryContext.contextDigest);
+    expect(incompleteP2RecoveryClaimSchema.safeParse(claim).success).toBe(true);
+
+    const fixture = repositoryFixture();
+    await fixture.repository.recordWorkerResult(
+      completion(recoveryContext, { claim }),
+      { workerTokenDigest: WORKER_TOKEN_DIGEST },
+      trustedCompletion(),
+      NOW,
+    );
+
+    expect(gateDecision(fixture.calls)).toEqual({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
+  });
+
+  it('rejects a correct-digest Gate claim whose two archived sources are reordered', async () => {
+    const recoveryContext = context(3);
+    recoveryMocks.requiredDigest.mockResolvedValue(recoveryContext.contextDigest);
+    recoveryMocks.load.mockResolvedValue(recoveryContext);
+    const original = incompleteP2RecoveryClaimFor(recoveryContext);
+    const claim = { ...original, sources: [...original.sources].reverse() };
+    expect(claim.contextDigest).toBe(recoveryContext.contextDigest);
+    expect(incompleteP2RecoveryClaimSchema.safeParse(claim).success).toBe(true);
+
+    const fixture = repositoryFixture(3);
+    await fixture.repository.recordWorkerResult(
+      completion(recoveryContext, { claim }),
+      { workerTokenDigest: WORKER_TOKEN_DIGEST },
+      trustedCompletion(),
+      NOW,
+    );
+
+    expect(gateDecision(fixture.calls)).toEqual({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
   });
 
   it.each([

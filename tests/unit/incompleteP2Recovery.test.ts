@@ -4,6 +4,7 @@ import {
   createIncompleteP2RecoveryContext,
   incompleteP2RecoveryClaimFor,
   incompleteP2RecoveryClaimMatches,
+  incompleteP2RecoveryClaimSchema,
   parseIncompleteP2RecoveryContext,
 } from '../../src/review/incompleteP2Recovery';
 import {
@@ -348,6 +349,65 @@ describe('incomplete P2 recovery context', () => {
     expect(() => parseIncompleteP2RecoveryContext({ ...context,
       findings: [{ ...context.findings[0], finding: { ...context.findings[0].finding, body: 'altered' } }],
     })).toThrow();
+  });
+
+  it.each([
+    ['executionAttempt', { executionAttempt: 2 }],
+    ['workerResultDigest', { workerResultDigest: '0'.repeat(64) }],
+    ['workerCheckId', { workerCheckId: 11 }],
+    ['gateCheckId', { gateCheckId: 21 }],
+  ])('rejects a schema-valid claim with the correct digest but altered %s', (_field, change) => {
+    const context = contextFixture();
+    const original = incompleteP2RecoveryClaimFor(context);
+    const changed = {
+      ...original,
+      sources: original.sources.map((source, index) => index === 0 ? { ...source, ...change } : source),
+    };
+
+    expect(changed.contextDigest).toBe(context.contextDigest);
+    expect(incompleteP2RecoveryClaimSchema.safeParse(changed).success).toBe(true);
+    expect(incompleteP2RecoveryClaimMatches(context, changed)).toBe(false);
+  });
+
+  it('rejects a schema-valid reordered two-source claim while its context digest stays correct', () => {
+    const firstDigest = '1'.repeat(64);
+    const secondDigest = '2'.repeat(64);
+    const context = createIncompleteP2RecoveryContext({
+      version: 'IncompleteP2RecoveryContext.v1',
+      runId,
+      repositoryId,
+      owner,
+      repo,
+      prNumber,
+      headSha,
+      baseSha,
+      policyDigest,
+      configDigest,
+      expectedAppId: appId,
+      executionAttempt: 3,
+      sources: [
+        { executionAttempt: 1, workerResultDigest: firstDigest, workerCheckId: 10, gateCheckId: 20,
+          rawFindingCount: 1, canonicalFindingCount: 1 },
+        { executionAttempt: 2, workerResultDigest: secondDigest, workerCheckId: 11, gateCheckId: 21,
+          rawFindingCount: 1, canonicalFindingCount: 1 },
+      ],
+      findings: [
+        { sourceExecutionAttempt: 1, sourceWorkerResultDigest: firstDigest, sourceWorkerCheckId: 10,
+          sourceGateCheckId: 20, personaId: 'security', findingIndex: 0,
+          finding: { severity: 'P2', path: 'src/first.ts', line: 1,
+            title: 'First source', body: 'The first archived source stays ordered.' } },
+        { sourceExecutionAttempt: 2, sourceWorkerResultDigest: secondDigest, sourceWorkerCheckId: 11,
+          sourceGateCheckId: 21, personaId: 'reviewer', findingIndex: 0,
+          finding: { severity: 'P2', path: 'src/second.ts', line: 1,
+            title: 'Second source', body: 'The second archived source stays ordered.' } },
+      ],
+    });
+    const original = incompleteP2RecoveryClaimFor(context);
+    const reordered = { ...original, sources: [...original.sources].reverse() };
+
+    expect(reordered.contextDigest).toBe(context.contextDigest);
+    expect(incompleteP2RecoveryClaimSchema.safeParse(reordered).success).toBe(true);
+    expect(incompleteP2RecoveryClaimMatches(context, reordered)).toBe(false);
   });
 
   it('accepts service-owned Gate evidence when the worker reports true coverage and quorum flags', async () => {
