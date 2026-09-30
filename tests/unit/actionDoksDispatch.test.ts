@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../../src/review/incompleteP2RecoveryLimits';
 
 const modulePath = path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs');
 
@@ -30,6 +31,18 @@ function environment(overrides: Record<string, string> = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe('DOKS Action dispatch client', () => {
+  it('keeps the standalone recovery window aligned with the service contract', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const recoveryEnvironment = (attempt: number) => environment({
+      GITHUB_EVENT_NAME: 'repository_dispatch', DOKS_PUBLISH_MODE: 'app-gate',
+      EXPECTED_GENERATION: String(attempt), REFRESH_REQUESTED: 'true',
+      REFRESH_EXECUTION_ATTEMPT: String(attempt - 1), INCOMPLETE_P2_RECOVERY: 'true',
+    });
+    expect(buildDispatchRequest(recoveryEnvironment(MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT)))
+      .toMatchObject({ incompleteP2Recovery: true, expectedGeneration: MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT });
+    expect(() => buildDispatchRequest(recoveryEnvironment(MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT + 1)))
+      .toThrow(/bounded exact-generation/);
+  });
   it('emits the new candidate flag only for an explicit bounded central refresh', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     const request = buildDispatchRequest(environment({ GITHUB_EVENT_NAME: 'repository_dispatch',
