@@ -18,12 +18,14 @@
  * declarations, node-version guards) stay in tests/unit/reviewActionPackaging.test.ts and still
  * run on every pull request; they cost about 100ms combined.
  */
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { execFileSync } from 'child_process';
 import yaml from 'js-yaml';
+import { createScratchOwner, requiredSuiteScratchRoot, type ScratchOwner } from '../support/scratch-lifecycle';
+import { copyReleaseCommitFixture } from '../support/release-fixture-copy';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
   ? path.resolve(__dirname, '../..')
@@ -33,21 +35,35 @@ const actionPath = path.join(rootRepoDir, 'action.yml');
 const nodeVersionGuard = require(path.join(rootRepoDir, 'scripts/nodeVersionGuard.js'));
 const { isBoundedDirectory } = require(path.join(rootRepoDir, 'scripts/boundedDirectoryGuard.js'));
 
+const fixtureScratchOwners: ScratchOwner[] = [];
+
+function createFixtureScratch(prefix: string): string {
+  const parentDir = requiredSuiteScratchRoot();
+  const owner = createScratchOwner({ parentDir, prefix, kind: 'release-fixture' });
+  fixtureScratchOwners.push(owner);
+  return owner.path;
+}
+
+afterEach(() => {
+  const errors: unknown[] = [];
+  for (const owner of fixtureScratchOwners.splice(0)) {
+    try {
+      owner.cleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) throw new AggregateError(errors, 'Release fixture scratch cleanup failed');
+});
 
 describe('Pi runtime packaging closure (release contract)', () => {
   it('packs from a clean exact commit and an empty consumer resolves and attests the nested Pi closure', () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-clean-pack-'));
+    const tempDir = createFixtureScratch('review-yeti-clean-pack-');
     const releaseDir = path.join(tempDir, 'release');
     const packDir = path.join(tempDir, 'pack');
     const consumerDir = path.join(tempDir, 'consumer');
-    fs.cpSync(rootRepoDir, releaseDir, {
-      recursive: true,
-      filter(source) {
-        const relative = path.relative(rootRepoDir, source);
-        const top = relative.split(path.sep)[0];
-        return !['.git', 'node_modules', 'dist'].includes(top);
-      },
-    });
+    const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: rootRepoDir, encoding: 'utf8' }).trim();
+    copyReleaseCommitFixture(rootRepoDir, releaseDir, sourceCommit);
     fs.mkdirSync(packDir, { recursive: true });
     fs.mkdirSync(consumerDir, { recursive: true });
     execFileSync('git', ['init', '-q'], { cwd: releaseDir });
@@ -136,7 +152,7 @@ describe('Pi runtime packaging closure (release contract)', () => {
   }, 360_000);
 
   it('installs the lock-backed Pi runtime from an empty bounded prefix', () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-pi-action-install-'));
+    const tempDir = createFixtureScratch('review-yeti-pi-action-install-');
     const actionDir = path.join(tempDir, 'action');
     const prefixDir = path.join(tempDir, 'prefix');
     fs.mkdirSync(actionDir, { recursive: true });
