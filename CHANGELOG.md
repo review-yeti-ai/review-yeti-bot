@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.5...v1.100.6) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** scope retry timing and restore operator snapshots ([#1164](https://github.com/review-yeti-ai/review-yeti-bot/issues/1164)) ([7b6eb34](https://github.com/review-yeti-ai/review-yeti-bot/commit/7b6eb3481fc7c484e62b9b56deb487e32bfc8d9a))
+
 ## [1.100.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.4...v1.100.5) (2026-09-30)
 
 
