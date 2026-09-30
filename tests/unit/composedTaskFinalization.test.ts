@@ -112,5 +112,46 @@ describe('composed task finalization', () => {
     expect(client.getTaskTurns()).toBe(12);
     expect(result.personas).toEqual([]);
     expect(result.unreportedLanes).toMatchObject([{ id: 'verify-change', failureClass: 'malformed_output' }]);
+    expect(result.unreportedLanes?.[0]).toMatchObject({
+      diagnostics: {
+        reason: 'tool_requested_during_finalization', turnsUsed: 12,
+        correctionAttempts: 2, toolTurns: 9, lastToolOutcome: 'requested_after_finalization',
+      },
+    });
+  });
+
+  it.each([
+    ['non_json_task_result', 'not-json'],
+    ['task_id_mismatch', 'wrong-task'],
+    ['nonce_mismatch', 'wrong-nonce'],
+    ['invalid_status', 'wrong-status'],
+    ['invalid_findings', 'wrong-findings'],
+    ['invalid_status', 'unknown-finish-reason'],
+  ])('retains only the coded %s rejection, never the rejected provider payload', async (reason, variant) => {
+    const complete = vi.fn(async (request: any) => {
+      const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+      const nonce = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+      const work = prompt.includes('WORK TURN');
+      const result: any = { nonce, task: 'verify-change', status: 'COMPLETE', findings: [] };
+      if (variant === 'wrong-task') result.task = 'SENSITIVE_PROVIDER_PAYLOAD';
+      if (variant === 'wrong-nonce') result.nonce = 'SENSITIVE_PROVIDER_PAYLOAD';
+      if (variant === 'wrong-status' || variant === 'unknown-finish-reason') result.status = 'SENSITIVE_PROVIDER_PAYLOAD';
+      if (variant === 'wrong-findings') result.findings = 'SENSITIVE_PROVIDER_PAYLOAD';
+      const content = !work
+        ? JSON.stringify({ nonce, tasks: [{ id: 'verify-change', dimension: 'architecture', paths: ['src/app.ts'], question: 'Is this sound?', rationale: 'Review.' }] })
+        : variant === 'not-json' ? 'SENSITIVE_PROVIDER_PAYLOAD' : JSON.stringify(result);
+      return { model: 'pr-reviewer', content, usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0,
+        raw: { choices: [{ finish_reason: variant === 'unknown-finish-reason' ? 'SENSITIVE_PROVIDER_PAYLOAD' : 'length' }], private: 'SENSITIVE_PROVIDER_PAYLOAD' } };
+    });
+    const narrowedConfig = ctReviewConfigV3Schema.parse({ ...config, composed: { max_tasks: 1, max_turns_per_task: 1 } });
+    const result = await executeComposedReview({ config: narrowedConfig, changedFiles, repository: 'acme/app', headSha: 'd'.repeat(40), client: { complete } as never });
+    expect(result.personas).toEqual([]);
+    expect(result.applicablePersonaIds).toEqual(['verify-change']);
+    expect(result.unreportedLanes?.[0]).toMatchObject({ failureClass: 'malformed_output', diagnostics: {
+      reason, turnsUsed: 1, correctionAttempts: 0, toolTurns: 0,
+      finishReason: variant === 'unknown-finish-reason' ? 'unrecognized' : 'length', lastToolOutcome: 'none',
+    } });
+    expect(result.unreportedLanes?.[0]?.error).toContain(`reason=${reason}`);
+    expect(JSON.stringify(result)).not.toContain('SENSITIVE_PROVIDER_PAYLOAD');
   });
 });
