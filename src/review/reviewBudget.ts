@@ -153,6 +153,9 @@ const CI_IAC_PATTERNS: readonly RegExp[] = [
   /(^|\/)kustomization\.ya?ml$/iu,
   /(^|\/)dockerfile[^/]*$/iu,
   /(^|\/)docker-compose[^/]*\.ya?ml$/iu,
+  // Versioned deployment records are packaging/compose provenance, not generic data config.
+  // Anchor the exact repository-root layout and basename; nested/arbitrary config stays rank 2.
+  /^ova\/versions\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.(?:env|ya?ml|changelog\.json)$/iu,
 ];
 
 const TEST_PATTERNS: readonly RegExp[] = [
