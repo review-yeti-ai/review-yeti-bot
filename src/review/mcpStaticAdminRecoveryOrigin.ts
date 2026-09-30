@@ -1,18 +1,38 @@
-import type { McpAuthenticatedCaller } from '../mcp/server/mcpTypes';
 import type { McpStaticAdminRecoveryOrigin } from './reviewRun';
 
 const trustedOrigins = new WeakSet<object>();
+
+interface McpStaticAdminRecoveryCallerFields {
+  readonly authType: unknown;
+  readonly isAdmin: unknown;
+  readonly tokenDigest: unknown;
+  readonly callerId: unknown;
+}
+
+interface McpStaticAdminRecoveryCaller extends McpStaticAdminRecoveryCallerFields {
+  readonly authType: 'static_token';
+  readonly isAdmin: true;
+  readonly tokenDigest: string;
+  readonly callerId: string;
+}
+
+/** The exact four-field static-admin shape used by both MCP admission and origin minting. */
+export function isMcpStaticAdminRecoveryCaller(value: unknown): value is McpStaticAdminRecoveryCaller {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const caller = value as McpStaticAdminRecoveryCallerFields;
+  return caller.authType === 'static_token' && caller.isAdmin === true
+    && typeof caller.tokenDigest === 'string' && /^[a-f0-9]{12}$/u.test(caller.tokenDigest)
+    && caller.callerId === `admin:${caller.tokenDigest}`;
+}
 
 /** Create an in-process origin only after the MCP router has authenticated and
  * authorized the exact repository. Plain request/repository objects cannot
  * assert this provenance. */
 export function createMcpStaticAdminRecoveryOrigin(
-  caller: McpAuthenticatedCaller,
+  caller: unknown,
   authorizedRepository: { owner: string; repo: string },
 ): McpStaticAdminRecoveryOrigin {
-  if (caller.authType !== 'static_token' || caller.isAdmin !== true
-    || !/^[a-f0-9]{12}$/u.test(caller.tokenDigest)
-    || caller.callerId !== `admin:${caller.tokenDigest}`
+  if (!isMcpStaticAdminRecoveryCaller(caller)
     || !authorizedRepository.owner.trim() || !authorizedRepository.repo.trim()) {
     throw new Error('MCP recovery origin requires a verified static-token admin');
   }

@@ -362,9 +362,9 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions = {}): Rem
   // Authentication helper
   async function resolveCaller(req: Request): Promise<ResolvedMcpCaller> {
     if (req.mcpCaller && !options.authenticator) {
-      // Request augmentation may come from legacy middleware or in-process
-      // callers. It is sufficient for ordinary MCP tools, but recovery requires
-      // the configured authenticator's direct verified result below.
+      // The legacy/in-process fallback is available only without a configured
+      // authenticator. Configured routes require a bearer token verified on
+      // this request; recovery also requires that direct verified result.
       return { caller: req.mcpCaller, authenticatedByConfiguredAuthenticator: false };
     }
 

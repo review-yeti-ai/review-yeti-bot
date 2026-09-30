@@ -316,9 +316,6 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
         || input.retryAfterExecutionAttempt !== input.expectedGeneration - 1)))) {
     throw new Error('Incomplete P2 recovery requires authoritative exact-generation admission');
   }
-  if (input.incompleteP2RecoveryOrigin !== undefined && input.incompleteP2Recovery !== true) {
-    throw new Error('Incomplete P2 recovery origin is invalid without a recovery candidate');
-  }
   if (input.availableAt !== undefined
     && (!Number.isSafeInteger(input.availableAt) || input.availableAt < input.receivedAt)) {
     throw new Error('available-at must be a safe integer at or after receivedAt');

@@ -490,6 +490,25 @@ describe('guarded gateway input budgeting', () => {
     expect(providerDispatches).toBe(0);
   });
 
+  it('rejects a lossless partition plan whose split-file copies are reordered', () => {
+    const { inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const partitionManager = {
+      createPartitionPlan: (...args: any[]) => {
+        const plan = shaPartitionManager.createPartitionPlan(...args);
+        return { ...plan, partitions: [...plan.partitions].reverse() };
+      },
+    };
+
+    expect(() => pipeline.createReviewPartitionPlan({
+      files: inputFiles,
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars: 80_000,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+      partitionManager,
+    })).toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
 });
 
 describe('REL-556: an oversized diff never reaches a direct-reasoning transport intact', () => {

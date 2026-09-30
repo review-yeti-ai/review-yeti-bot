@@ -1943,9 +1943,15 @@ function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
   }
 
   const plannedFiles = plan.partitions.flatMap((partition) => Array.isArray(partition.files) ? partition.files : []);
+  const plannedCopiesByPath = new Map();
+  for (const planned of plannedFiles) {
+    const copies = plannedCopiesByPath.get(planned.path);
+    if (copies) copies.push(planned);
+    else plannedCopiesByPath.set(planned.path, [planned]);
+  }
   return files.every((file) => {
     const sourcePatch = String(file.patch || file.content || '');
-    const plannedCopies = plannedFiles.filter((planned) => planned.path === file.path);
+    const plannedCopies = plannedCopiesByPath.get(file.path) || [];
     if (plannedCopies.length === 0) return false;
     if (plannedCopies.length === 1) {
       return String(plannedCopies[0].patch || '').replace(/\n+$/u, '') === sourcePatch.replace(/\n+$/u, '');

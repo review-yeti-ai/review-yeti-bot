@@ -22,7 +22,10 @@ import {
 import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import type { ReviewDispatchRepository } from '../../../persistence/reviewDispatchRepository';
-import { createMcpStaticAdminRecoveryOrigin } from '../../../review/mcpStaticAdminRecoveryOrigin';
+import {
+  createMcpStaticAdminRecoveryOrigin,
+  isMcpStaticAdminRecoveryCaller,
+} from '../../../review/mcpStaticAdminRecoveryOrigin';
 
 export const triggerReviewDefinition: ToolDefinition = {
   name: 'trigger_review',
@@ -98,9 +101,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         const caller = context?.caller;
         const authorizedRepository = context?.authorizedRepository;
         if (context?.authenticatedByConfiguredAuthenticator !== true
-          || caller?.authType !== 'static_token' || caller.isAdmin !== true
-          || !/^[a-f0-9]{12}$/u.test(caller.tokenDigest)
-          || caller.callerId !== `admin:${caller.tokenDigest}` || !authorizedRepository
+          || !isMcpStaticAdminRecoveryCaller(caller) || !authorizedRepository
           || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
           || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
           throw new Error('Incomplete P2 recovery requires verified static-token admin authentication and exact repository authorization');

@@ -50,6 +50,10 @@ interface Pool extends Queryable { connect(): Promise<Client> }
 export const UNPUBLISHED_SUCCESS_GATE_SQL =
   "gate.current_attempt AND gate.desired_state = 'success' AND gate.published_version < gate.desired_version";
 
+const PRESERVE_ACKNOWLEDGED_SAME_RUN_FAILURE_SQL = `run_id = $5 AND desired_state = 'failure'
+            AND creation_state = 'bound' AND check_id IS NOT NULL
+            AND published_version >= desired_version`;
+
 export function gateAttemptId(runId: string, generation: number, executionAttempt: number): string {
   if (!/^run_[a-f0-9]{32}$/u.test(runId)
     || !Number.isSafeInteger(generation) || generation < 0
@@ -423,29 +427,19 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       // evidence. Progress, success, pending failure and other-run checks still
       // need the usual cancellation so a stale publication cannot survive.
       await client.query(`UPDATE review_gate_attempts SET current_attempt = false,
-        desired_state = CASE WHEN run_id = $5 AND desired_state = 'failure'
-            AND creation_state = 'bound' AND check_id IS NOT NULL
-            AND published_version >= desired_version
+        desired_state = CASE WHEN ${PRESERVE_ACKNOWLEDGED_SAME_RUN_FAILURE_SQL}
           THEN desired_state ELSE 'cancelled' END,
-        desired_version = CASE WHEN run_id = $5 AND desired_state = 'failure'
-            AND creation_state = 'bound' AND check_id IS NOT NULL
-            AND published_version >= desired_version
+        desired_version = CASE WHEN ${PRESERVE_ACKNOWLEDGED_SAME_RUN_FAILURE_SQL}
           THEN desired_version ELSE desired_version + 1 END,
         -- No external create has been attempted while reserved. Tombstone
         -- that intent locally; a late cancelled check must not be created after
         -- the newer same-head gate. Creating/bound intents still reconcile.
-        published_version = CASE WHEN run_id = $5 AND desired_state = 'failure'
-            AND creation_state = 'bound' AND check_id IS NOT NULL
-            AND published_version >= desired_version
+        published_version = CASE WHEN ${PRESERVE_ACKNOWLEDGED_SAME_RUN_FAILURE_SQL}
           THEN published_version WHEN creation_state = 'reserved'
           THEN desired_version + 1 ELSE published_version END,
-        available_at = CASE WHEN run_id = $5 AND desired_state = 'failure'
-            AND creation_state = 'bound' AND check_id IS NOT NULL
-            AND published_version >= desired_version
+        available_at = CASE WHEN ${PRESERVE_ACKNOWLEDGED_SAME_RUN_FAILURE_SQL}
           THEN available_at ELSE to_timestamp($4 / 1000.0) END,
-        updated_at = CASE WHEN run_id = $5 AND desired_state = 'failure'
-            AND creation_state = 'bound' AND check_id IS NOT NULL
-            AND published_version >= desired_version
+        updated_at = CASE WHEN ${PRESERVE_ACKNOWLEDGED_SAME_RUN_FAILURE_SQL}
           THEN updated_at ELSE to_timestamp($4 / 1000.0) END
         WHERE repository_id = $1 AND pr_number = $2 AND current_attempt AND attempt_id <> $3`,
       [coordinates.repositoryId, coordinates.prNumber, coordinates.attemptId, now, runId]);
