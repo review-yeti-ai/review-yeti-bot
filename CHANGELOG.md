@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.98.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.98.0...v1.98.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** retain sanitized task finalization diagnostics ([#1142](https://github.com/review-yeti-ai/review-yeti-bot/issues/1142)) ([e5215f8](https://github.com/review-yeti-ai/review-yeti-bot/commit/e5215f82be617ea05f5df65f230b543e0d719eb2))
+
 ## [1.98.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.97.12...v1.98.0) (2026-09-30)
 
 
