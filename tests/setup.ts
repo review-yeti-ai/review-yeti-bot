@@ -3,10 +3,8 @@
 // the supported one for a Vitest project and registers the same matchers.
 import '@testing-library/jest-dom/vitest';
 import * as matchers from '@testing-library/jest-dom/matchers';
-import { expect, beforeEach, afterEach, vi } from 'vitest';
+import { expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { dashboardStore } from '../src/persistence/dashboardStore';
 import { postgresStore } from '../src/persistence/postgresStore';
@@ -14,6 +12,12 @@ import { providerPool } from '../src/gateway/providerPool';
 import { inMemorySpanExporter } from '../src/telemetry/spans';
 import http from 'node:http';
 import { authService } from '../src/dashboard/authService';
+import {
+  closeResourcesAndCleanupScratch,
+  cleanupSuiteStoreFile,
+  createScratchOwner,
+  readScratchOwnerMetadata,
+} from './support/scratch-lifecycle';
 
 expect.extend(matchers);
 
@@ -65,7 +69,7 @@ const origHttpRequest = http.request;
 // Set standard test environment variables
 const testStoreId = `${process.pid}_${Math.random().toString(36).substring(2)}`;
 
-// REL-560: give every worker its own disposable state root, and delete it on exit.
+// REL-560 / REL-1209: give every Vitest test file its own run-owned disposable state root.
 //
 // Two separate bugs lived in the old fixed `/tmp/ct-review-bot` paths:
 //
@@ -75,22 +79,29 @@ const testStoreId = `${process.pid}_${Math.random().toString(36).substring(2)}`;
 //    failed 2-13 tests per run with a different failing set each time; moving that one file
 //    aside took it to 1. CI never saw it because a fresh runner starts with the file absent.
 // 2. The reset below assigns a fresh `REVIEW_YETI_DASHBOARD_STORE` path per test and only ever unlinks
-//    the previous one, so the last store of every fork survived. That leaked ~200 files per
-//    worker, forever: this machine had 374,719 files and 17 GB under /tmp/ct-review-bot.
+//    the previous one, so the final store from each test-file suite survived. A prior local
+//    inventory found 374,719 files and 17 GB under /tmp/ct-review-bot.
 //
-// Both are fixed by rooting all of it in one per-worker mkdtemp directory that is removed when
-// the worker exits. This is also what makes `fileParallelism` safe -- workers can no longer
+// Both are fixed by rooting all of it in one per-test-file mkdtemp directory that is removed by
+// that suite's afterAll hook. This is also what makes `fileParallelism` safe -- test files can no longer
 // read or clobber each other's run store.
-const workerStateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-bot-test-'));
-process.on('exit', () => {
-  try {
-    fs.rmSync(workerStateRoot, { recursive: true, force: true });
-  } catch {}
+const runScratchRoot = process.env.CT_REVIEW_TEST_SCRATCH_ROOT;
+if (!runScratchRoot) {
+  throw new Error('tests/globalSetup.ts must establish CT_REVIEW_TEST_SCRATCH_ROOT before test setup');
+}
+const runScratchMetadata = readScratchOwnerMetadata(runScratchRoot);
+const suiteScratch = createScratchOwner({
+  parentDir: runScratchRoot,
+  prefix: `ct-review-yeti-suite-${process.pid}-`,
+  kind: 'vitest-suite',
+  runId: runScratchMetadata.runId,
+  parentOwnerId: runScratchMetadata.ownerId,
 });
+const suiteStateRoot = suiteScratch.path;
 
-process.env.CT_REVIEW_RUN_STORE = path.join(workerStateRoot, 'review-runs.json');
-process.env.CT_REVIEW_DATA_DIR = workerStateRoot;
-process.env.REVIEW_YETI_DASHBOARD_STORE = path.join(workerStateRoot, `test_store_${testStoreId}.json`);
+process.env.CT_REVIEW_RUN_STORE = path.join(suiteStateRoot, 'review-runs.json');
+process.env.CT_REVIEW_DATA_DIR = suiteStateRoot;
+process.env.REVIEW_YETI_DASHBOARD_STORE = path.join(suiteStateRoot, `test_store_${testStoreId}.json`);
 process.env.CT_REVIEW_PLATFORM_DB = process.env.CT_REVIEW_PLATFORM_DB || ':memory:';
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'test_webhook_secret';
 process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
@@ -118,7 +129,10 @@ process.env.no_proxy = '*';
 // Capture baseline process.env after initializing test environment variables
 const initialEnv = { ...process.env };
 
-function resetAllGlobalState() {
+export function resetAllGlobalState() {
+  // Capture the actual previous store before restoring the baseline env. The
+  // baseline path is not the randomly assigned store used by the last test.
+  const previousStore = process.env.REVIEW_YETI_DASHBOARD_STORE;
   // 1. Restore process.env
   for (const key of Object.keys(process.env)) {
     if (!(key in initialEnv)) {
@@ -136,19 +150,13 @@ function resetAllGlobalState() {
   process.env.NO_PROXY = '*';
   process.env.no_proxy = '*';
 
-  // 1.5. Clean and assign a fresh store file inside this worker's own state root.
+  // 1.5. Clean and assign a fresh store file inside this test file's suite root.
   // REL-560: the guard used to be `startsWith('/tmp/')`, which never matches on macOS because
   // os.tmpdir() is /var/folders/..., so the per-test cleanup silently did nothing there. Anchor
-  // it to workerStateRoot instead, which is correct on every platform.
-  if (process.env.REVIEW_YETI_DASHBOARD_STORE && process.env.REVIEW_YETI_DASHBOARD_STORE.startsWith(workerStateRoot)) {
-    try {
-      if (fs.existsSync(process.env.REVIEW_YETI_DASHBOARD_STORE)) {
-        fs.unlinkSync(process.env.REVIEW_YETI_DASHBOARD_STORE);
-      }
-    } catch {}
-  }
+  // it to suiteStateRoot instead, which is correct on every platform.
+  cleanupSuiteStoreFile(previousStore, suiteStateRoot);
   const resetStoreId = `${process.pid}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
-  process.env.REVIEW_YETI_DASHBOARD_STORE = path.join(workerStateRoot, `test_store_${resetStoreId}.json`);
+  process.env.REVIEW_YETI_DASHBOARD_STORE = path.join(suiteStateRoot, `test_store_${resetStoreId}.json`);
 
   // 2. Reset Singleton Stores
   if (typeof dashboardStore.reset === 'function') {
@@ -188,6 +196,13 @@ beforeEach(() => {
 afterEach(() => {
   resetAllGlobalState();
 });
+
+// Vitest executes afterAll hooks in reverse registration order, so this runs after hooks from
+// the test file. Close DOM/store/database resources before deleting files they may still own.
+afterAll(() => closeResourcesAndCleanupScratch(suiteScratch, [
+  () => resetAllGlobalState(),
+  () => postgresStore.close(),
+]));
 
 // Global ResizeObserver, IntersectionObserver, and matchMedia mocks for jsdom tests (ReactFlow, Recharts, Radix UI)
 const MockResizeObserver = class ResizeObserver {
