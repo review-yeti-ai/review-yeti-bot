@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { buildWorkerFailureDiagnostics, type WorkerCompletionAdapter } from '../../src/review/workerCompletion';
 import {
@@ -23,6 +26,7 @@ import * as panelEngine from '../../src/panel/panelEngine';
 import * as qualificationReader from '../../src/github/qualificationReader';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { logger } from '../../src/utils/logger';
+import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
 import {
   createIncompleteP2RecoveryContext,
   incompleteP2RecoveryClaimFor,
@@ -127,6 +131,270 @@ function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string
     }], ...overrides,
   } as Parameters<typeof createIncompleteP2RecoveryContext>[0]);
 }
+
+describe('REL-1198 publishing panel respects the admitted lifecycle window', () => {
+  it.each(['panel', 'composed', 'shadow'] as const)(
+    'stops %s before the Job deadline and persists only a fail-closed receipt', async (reviewEngine) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(START);
+      const f = fixture({ reviewEngine });
+      f.deps.now = Date.now;
+      // Simulate queue/startup/setup consuming all but three minutes. No map-reduce flag.
+      f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+      const configBefore = f.env.REVIEW_PREPARED_CONFIG_JSON;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      f.panelRunner.mockImplementation(async () => { entered(); return new Promise<PanelResult>(() => {}); });
+      f.deps.composedReviewRunner = f.panelRunner;
+      const pending = runPublishingReviewWorker(f.env, f.deps).then(
+        () => new Error('A timed-out panel must not succeed'), (error: unknown) => error,
+      );
+      try {
+        await started;
+        await vi.advanceTimersByTimeAsync(59_999);
+        expect(f.reportReviewResult).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+        // Must leave the existing 60s worker receipt reserve AND 60s gate reserve.
+        expect(f.reportReviewResult).toHaveBeenCalledOnce();
+        const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+        expect(event.result.coverageComplete).toBe(false);
+        expect(event.result.quorumSatisfied).toBe(false);
+        expect(event.result.personas.every((p) => p.status === 'ERROR' && p.errorClass === 'timeout')).toBe(true);
+        expect(event.executionAttempt).toBe(2);
+        expect(event.headSha).toBe(HEAD);
+        expect(f.env.REVIEW_PREPARED_CONFIG_JSON).toBe(configBefore);
+        expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
+        expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+      } finally {
+        // Consume the old implementation's timer too, so RED runs do not leak work.
+        await vi.runAllTimersAsync();
+        await pending;
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([new Date(START + 120_000).toISOString(), new Date(START - 1).toISOString(), 'invalid'])
+  ('refuses exhausted or malformed lifecycle deadline %s before entering the panel', async (deadline) => {
+    const f = fixture();
+    f.deps.now = () => START;
+    f.env.REVIEW_TERMINAL_DEADLINE = deadline;
+    const result = await runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(f.panelRunner).not.toHaveBeenCalled();
+    expect(f.reportReviewResult).toHaveBeenCalledOnce();
+    const receipt = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+    expect(receipt.result.coverageComplete).toBe(false);
+    expect(receipt.result.quorumSatisfied).toBe(false);
+    expect(f.client.complete).not.toHaveBeenCalled();
+  });
+
+  it('does not restart the shadow clock after grounding or accept a late clean panel', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(START);
+    const f = fixture({ reviewEngine: 'shadow' });
+    const cleanup = new AbortController();
+    f.deps.signal = cleanup.signal;
+    f.deps.now = Date.now;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    f.env.ZOEKT_GROUNDING_ENABLED = 'true';
+    f.deps.zoektGrounding = vi.fn(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+      return {};
+    });
+    let release!: (panel: PanelResult) => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.panelRunner.mockImplementation(async () => { entered(); return new Promise<PanelResult>((resolve) => { release = resolve; }); });
+    const shadow = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>(
+      async () => new Promise<PanelResult>(() => {}),
+    );
+    f.deps.composedReviewRunner = shadow;
+    const pending = runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(49_999);
+      expect(f.reportReviewResult).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+      expect(f.panelRunner.mock.calls[0][0].signal?.aborted).toBe(true);
+      expect(shadow.mock.calls[0][0].signal?.aborted).toBe(true);
+      expect(shadow.mock.calls[0][0].signal).not.toBe(f.panelRunner.mock.calls[0][0].signal);
+      const receiptBeforeLateResult = structuredClone(f.reportReviewResult.mock.calls);
+      release(f.panel);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.reportReviewResult.mock.calls).toEqual(receiptBeforeLateResult);
+      expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      try {
+        cleanup.abort();
+        release?.(f.panel);
+        await vi.advanceTimersByTimeAsync(0);
+        await pending;
+      } finally { vi.useRealTimers(); }
+    }
+  });
+
+  it('finalizes at the lifecycle cutoff while grounding stalls, then removes a late scratch result', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(START);
+    const f = fixture();
+    f.deps.now = Date.now;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    let groundingSignal: AbortSignal | undefined;
+    let releaseGrounding!: (result: { indexDir: string; scratchDir: string }) => void;
+    let started!: () => void;
+    const groundingStarted = new Promise<void>((resolve) => { started = resolve; });
+    f.deps.zoektGrounding = vi.fn(((input: { signal?: AbortSignal }) => {
+      groundingSignal = input.signal;
+      started();
+      return new Promise((resolve) => { releaseGrounding = resolve; });
+    }) as NonNullable<PublishingReviewDeps['zoektGrounding']>);
+    const originalRemoveScratchTree = zoektGroundingModule.removeScratchTree;
+    let lateScratchRemoved!: () => void;
+    const lateCleanup = new Promise<void>((resolve) => { lateScratchRemoved = resolve; });
+    const removeScratchTree = vi.spyOn(zoektGroundingModule, 'removeScratchTree').mockImplementation(async (scratchDir) => {
+      await originalRemoveScratchTree(scratchDir);
+      if (lateScratch && scratchDir === lateScratch) lateScratchRemoved();
+    });
+    const pending = runPublishingReviewWorker(f.env, f.deps).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    let lateScratch: string | undefined;
+    try {
+      await groundingStarted;
+      // The absolute deadline is 180s away; the panel cutoff is 120s earlier.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(groundingSignal?.aborted).toBe(true);
+      expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
+      expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+
+      lateScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-late-grounding-'));
+      fs.writeFileSync(path.join(lateScratch, 'late-result'), 'must be removed');
+      releaseGrounding({ indexDir: `${lateScratch}/index`, scratchDir: lateScratch });
+      await lateCleanup;
+      expect(fs.existsSync(lateScratch)).toBe(false);
+      expect(removeScratchTree.mock.calls.filter(([scratchDir]) => scratchDir === lateScratch)).toHaveLength(1);
+      expect(removeScratchTree).toHaveBeenCalledOnce();
+      expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(f.checkClient.completeCheck.mock.calls.every(([check]) => check.conclusion === 'failure')).toBe(true);
+    } finally {
+      // On the intentionally red baseline, release the fake dependency so the test
+      // leaves no pending worker or temporary fixture behind.
+      const cleanupScratch = lateScratch || fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-late-grounding-cleanup-'));
+      releaseGrounding?.({ indexDir: path.join(cleanupScratch, 'index'), scratchDir: cleanupScratch });
+      await vi.runAllTimersAsync();
+      await pending;
+      await originalRemoveScratchTree(cleanupScratch);
+      removeScratchTree.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('owns a producer-resolved scratch receipt when queued abort wins delivery, and removes it exactly once', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(START);
+    const f = fixture();
+    const controller = new AbortController();
+    f.deps.signal = controller.signal;
+    f.deps.now = Date.now;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    f.env.ZOEKT_GROUNDING_ENABLED = 'true';
+    const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-grounding-receipt-race-'));
+    fs.writeFileSync(path.join(scratchDir, 'producer-result'), 'must have one cleanup owner');
+    let releaseGrounding!: (result: { indexDir: string; scratchDir: string }) => void;
+    let started!: () => void;
+    const groundingStarted = new Promise<void>((resolve) => { started = resolve; });
+    f.deps.zoektGrounding = vi.fn(() => {
+      started();
+      return new Promise((resolve) => { releaseGrounding = resolve; });
+    }) as NonNullable<PublishingReviewDeps['zoektGrounding']>;
+    const originalRemoveScratchTree = zoektGroundingModule.removeScratchTree;
+    const removeScratchTree = vi.spyOn(zoektGroundingModule, 'removeScratchTree')
+      .mockImplementation(originalRemoveScratchTree);
+    const order: string[] = [];
+    const pending = runPublishingReviewWorker(f.env, f.deps).then(
+      () => new Error('A cancelled grounding race must not succeed'), (error: unknown) => error,
+    );
+    try {
+      await groundingStarted;
+      order.push('producer-resolved');
+      releaseGrounding({ indexDir: path.join(scratchDir, 'index'), scratchDir });
+      // Let the producer receipt observer run with a live signal, then abort before
+      // the observer's async result is delivered to raceWithPanelAbort's consumer.
+      queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => {
+        order.push('abort');
+        controller.abort();
+      })));
+      expect(await pending).toBeInstanceOf(panelEngine.PanelCancellationError);
+      expect(order).toEqual(['producer-resolved', 'abort']);
+      expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(f.client.complete).not.toHaveBeenCalled();
+      expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+      expect(event.result.coverageComplete).toBe(false);
+      expect(event.result.quorumSatisfied).toBe(false);
+      expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
+      expect(f.checkClient.completeCheck.mock.calls[0][0].conclusion).toBe('failure');
+      expect(removeScratchTree.mock.calls.filter(([ownedDir]) => ownedDir === scratchDir)).toHaveLength(1);
+      expect(removeScratchTree).toHaveBeenCalledOnce();
+      expect(fs.existsSync(scratchDir)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      controller.abort();
+      releaseGrounding?.({ indexDir: path.join(scratchDir, 'index'), scratchDir });
+      await pending;
+      await originalRemoveScratchTree(scratchDir);
+      removeScratchTree.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('finalizes at the unchanged cutoff without awaiting a never-settling grounding producer', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(START);
+    const f = fixture();
+    f.deps.now = Date.now;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    let groundingSignal: AbortSignal | undefined;
+    let started!: () => void;
+    const groundingStarted = new Promise<void>((resolve) => { started = resolve; });
+    f.deps.zoektGrounding = vi.fn(((input: { signal?: AbortSignal }) => {
+      groundingSignal = input.signal;
+      started();
+      return new Promise(() => {});
+    }) as NonNullable<PublishingReviewDeps['zoektGrounding']>);
+    const pending = runPublishingReviewWorker(f.env, f.deps).then(
+      () => new Error('A never-settling grounding producer must not succeed'), (error: unknown) => error,
+    );
+    try {
+      await groundingStarted;
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(f.reportReviewResult).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+      expect(groundingSignal?.aborted).toBe(true);
+      expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(f.client.complete).not.toHaveBeenCalled();
+      expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+      expect(event.result.coverageComplete).toBe(false);
+      expect(event.result.quorumSatisfied).toBe(false);
+      expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
+      expect(f.checkClient.completeCheck.mock.calls[0][0].conclusion).toBe('failure');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await vi.runAllTimersAsync();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('REL-1198 retained P2 worker boundary', () => {
   it('supplies full retained evidence, disables reuse, and publishes its exact provenance receipt', async () => {
