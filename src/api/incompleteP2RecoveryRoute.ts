@@ -34,6 +34,7 @@ export function createIncompleteP2RecoveryHandler(queryable: IncompleteP2Recover
         runId: input.runId, executionAttempt: input.executionAttempt, repositoryId: Number(row.repository_id),
         identity,
         policyDigest: row.effective_policy_digest, expectedAppId: Number(row.authoritative_gate_app_id),
+        expectedContextDigest: requiredDigest,
       });
       if (requiredDigest !== null && context?.contextDigest !== requiredDigest) throw new Error('Retained findings digest mismatch');
       return response.status(200).json({ version: 'IncompleteP2RecoveryResponse.v1',

@@ -17,6 +17,7 @@ import {
 import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from '../review/incompleteRosterSummary';
 import {
   REVIEW_WORKER_APP_SLUG,
+  validatePersistedLegacyIncompleteP2RecoveryEvidence,
   validateReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryRequest,
@@ -46,6 +47,9 @@ export interface IncompleteP2RecoveryLookupInput {
   recoveryEvidence?: ReviewGenerationRecoveryEvidence[];
   /** Distinguishes an explicit candidate from ordinary fail-closed probing. */
   incompleteP2Recovery?: true;
+  /** Stored admission marker. Required only for the narrowly scoped persisted
+   * legacy receipt path when the latest P2 proof lacks workerStartedAt. */
+  expectedContextDigest?: string;
 }
 
 const RUN_ID = /^run_[a-f0-9]{32}$/u;
@@ -442,13 +446,15 @@ export async function loadIncompleteP2RecoveryContext(
   queryable: IncompleteP2RecoveryQueryable,
   input: IncompleteP2RecoveryLookupInput,
 ): Promise<IncompleteP2RecoveryContext | null> {
+  if (input.expectedContextDigest !== undefined
+    && (!DIGEST.test(input.expectedContextDigest) || input.recoveryEvidence !== undefined)) refuse();
   if (input.executionAttempt === 1) return null;
   if (!Number.isSafeInteger(input.executionAttempt) || input.executionAttempt < 2
     || input.executionAttempt > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT) refuse();
   const runResult = await queryable.query(`
     SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
            effective_policy_digest, effective_config_digest, authoritative_gate_app_id,
-           publication_mode
+           publication_mode, artifacts
       FROM review_runs
      WHERE run_id = $1`, [input.runId]);
   const run = runResult.rows[0];
@@ -501,7 +507,31 @@ export async function loadIncompleteP2RecoveryContext(
   if (recoveryEvidenceForValidation.some((proof, index) => !p2ProofFlags[index]
     && (proof.title !== 'Review Yeti: BLOCK'
       || !isZeroFindingIncompleteSummary(proof.legacyIncompleteRoster?.workerSummary, identity.headSha)))) refuse();
-  try { validateReviewGenerationRecoveryEvidence(recoveryRequest(input, true), recoveryEvidenceForValidation); } catch { refuse(); }
+  const latestProofIndex = recoveryEvidenceForValidation.length - 1;
+  const latestProof = recoveryEvidenceForValidation[latestProofIndex];
+  const markerBoundLegacyStartOmission = input.recoveryEvidence === undefined
+    && input.expectedContextDigest !== undefined
+    && p2ProofFlags[latestProofIndex] === true
+    && latestProof.legacyIncompleteRoster?.workerStartedAt === undefined;
+  if (markerBoundLegacyStartOmission) {
+    // Do not let a caller-supplied digest stand in for durable admission. The
+    // reader verifies the marker on the exact bound run before using legacy
+    // compatibility, then matches the reconstructed archive below.
+    const artifacts = jsonValue(run.artifacts);
+    const storedMarker = isRecord(artifacts) ? artifacts.incomplete_p2_recovery_digest : undefined;
+    if (typeof storedMarker !== 'string' || !DIGEST.test(storedMarker)
+      || !constantTimeDigestEqual(storedMarker, input.expectedContextDigest!)) refuse();
+  }
+  try {
+    const request = recoveryRequest(input, true);
+    if (markerBoundLegacyStartOmission) {
+      validatePersistedLegacyIncompleteP2RecoveryEvidence(
+        request, recoveryEvidenceForValidation, input.expectedContextDigest!,
+      );
+    } else {
+      validateReviewGenerationRecoveryEvidence(request, recoveryEvidenceForValidation);
+    }
+  } catch { refuse(); }
 
   const sourceRows = await queryable.query(`
     SELECT runs.run_id, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
@@ -588,6 +618,8 @@ export async function loadIncompleteP2RecoveryContext(
       findings,
     });
     if (Buffer.byteLength(JSON.stringify(context), 'utf8') > MAX_INCOMPLETE_P2_RECOVERY_BYTES) refuse();
+    if (markerBoundLegacyStartOmission
+      && !constantTimeDigestEqual(context.contextDigest, input.expectedContextDigest!)) refuse();
     return parseIncompleteP2RecoveryContext(context);
   } catch { refuse(); }
 }
@@ -629,6 +661,7 @@ export async function requiredIncompleteP2RecoveryDigest(
     },
     policyDigest: row.effective_policy_digest,
     expectedAppId: Number(row.authoritative_gate_app_id),
+    ...(typeof marker === 'string' && DIGEST.test(marker) ? { expectedContextDigest: marker } : {}),
   });
   if (!context) {
     if (marker !== undefined) refuse();
