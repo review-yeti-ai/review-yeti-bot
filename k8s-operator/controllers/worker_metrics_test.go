@@ -47,6 +47,13 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	recent := worker("recent", job.ReceiptOnlyWorkerComponent, now.Add(-time.Minute))
 	old := worker("old", job.PublishingWorkerComponent, now.Add(-time.Hour))
 	foreign := worker("foreign", "unrelated", now.Add(-time.Minute))
+	future := worker("future", job.PublishingWorkerComponent, now.Add(time.Minute))
+	falseFailure := worker("false-failure", job.PublishingWorkerComponent, now.Add(-time.Minute))
+	falseFailure.Status.Conditions[0].Status = corev1.ConditionFalse
+	succeeded := worker("succeeded", job.PublishingWorkerComponent, time.Time{})
+	succeeded.Status.Succeeded = 1
+	foreignNamespace := worker("foreign-namespace", job.PublishingWorkerComponent, now.Add(-time.Minute))
+	foreignNamespace.Namespace = "unrelated"
 	resuming := review("resuming", now.Add(time.Minute))
 	resuming.Status.Phase = reviewv1alpha2.PhaseAwaitingResumption
 	resuming.Status.JobName = "resuming-worker"
@@ -57,7 +64,7 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	unrequested := review("unrequested-resumption", now.Add(time.Minute))
 	unrequested.Status.Phase = reviewv1alpha2.PhaseAwaitingResumption
 	unrequested.Status.JobName = "unrequested-worker"
-	kube := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&reviewv1alpha2.PRReviewJob{}, queueMetricsCandidateField, queueMetricsCandidateValues).WithObjects(active, recent, old, foreign,
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&reviewv1alpha2.PRReviewJob{}, queueMetricsCandidateField, queueMetricsCandidateValues).WithObjects(active, recent, old, foreign, future, falseFailure, succeeded, foreignNamespace,
 		resuming, running, unrequested, review("queued", now.Add(time.Minute)), review("expired", now.Add(-time.Minute))).Build()
 	c := &workerMetricsCollector{reader: kube}
 	for i := 0; i < 2; i++ {
