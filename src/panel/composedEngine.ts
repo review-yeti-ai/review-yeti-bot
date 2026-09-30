@@ -251,7 +251,7 @@ function configuredInactivityTimeoutMs(value: unknown, fallbackMs: number): numb
  * cross-engine surface for no caller outside this file. `findings` reuses the exact same item
  * shape `buildPanelResponseFormat` already emits so the two stay visually consistent; the
  * authoritative validator for both is the same `validateFindings` either way. */
-function buildTaskResultResponseFormat(): Record<string, unknown> {
+function buildTaskResultResponseFormat() {
   return {
     type: 'json_schema',
     json_schema: {
@@ -288,6 +288,12 @@ function buildTaskResultResponseFormat(): Record<string, unknown> {
     },
   };
 }
+
+// Admit only fields declared by the same schema sent to the provider. Compute this once,
+// rather than maintaining a second literal contract or rebuilding the set on every turn.
+const TASK_RESULT_FIELDS: ReadonlySet<string> = new Set(
+  Object.keys(buildTaskResultResponseFormat().json_schema.schema.properties),
+);
 
 /** Loose native turn envelope: either a read-only tool request or a role-shaped final object. */
 const NATIVE_TURN_RESPONSE_FORMAT = { type: 'json_object' } as const;
@@ -1052,7 +1058,7 @@ async function runTaskWorkPhase(input: {
     if (!candidate) {
       contractFailure = parsed?.isToolCall ? 'tool_after_finalization' : 'response_shape';
       if (parsed?.isToolCall) lastToolOutcome = 'requested_after_finalization';
-    } else if (Object.keys(candidate).some((key) => !['nonce', 'task', 'status', 'findings'].includes(key))) {
+    } else if (Object.keys(candidate).some((key) => !TASK_RESULT_FIELDS.has(key))) {
       contractFailure = 'result_fields';
     } else if (candidate.task !== input.task.id) {
       contractFailure = 'task_mismatch';

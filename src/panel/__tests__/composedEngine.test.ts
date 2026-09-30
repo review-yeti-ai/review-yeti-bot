@@ -7,6 +7,7 @@ import type { OpenRouterResponse } from '../../gateway/openRouterClient';
 import { OpenRouterConnectionError, OpenRouterResponseError } from '../../gateway/openRouterClient';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import * as panelEngine from '../panelEngine';
+import * as toolRuntime from '../toolRuntime';
 
 const mockYaml = `
 version: 3
@@ -528,6 +529,73 @@ describe('executeComposedReview', () => {
     expect(result.unreportedLanes?.[0].error).not.toContain('wrong-');
     expect(result.unreportedLanes?.[0].error).not.toContain('not-changed');
     expect(result.unreportedLanes?.[0].error).not.toContain('Synthetic');
+  });
+
+  it.each([
+    ['missing args', { tool: 'get_diff' }],
+    ['array args', { tool: 'get_diff', args: [{ path: 'src/auth/guard.ts' }] }],
+  ] as const)('rejects a tool envelope with %s as result_fields without executing a tool', async (_shape, envelope) => {
+    const runTool = vi.spyOn(toolRuntime, 'runReadOnlyTool');
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' },
+      ] }));
+      workCalls += 1;
+      return fakeResponse(JSON.stringify(envelope));
+    });
+    try {
+      const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+      expect(runTool).not.toHaveBeenCalled();
+      expect(workCalls).toBe(3);
+      expect(result.personas).toEqual([]);
+      expect(projectPublishingRosterBounds(result).returnedIds).toEqual([]);
+      expect(result.unreportedLanes?.[0]).toMatchObject({ failureClass: 'malformed_output',
+        error: expect.stringContaining('result_fields'), diagnostics: {
+          reason: 'invalid_result_fields', lastToolOutcome: 'none',
+          toolTurns: 0, turnsUsed: 3, correctionAttempts: 2,
+        } });
+    } finally {
+      runTool.mockRestore();
+    }
+  });
+
+  it('aligns task-result admission with the exact provider schema and still rejects undeclared fields', async () => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' },
+      ] }));
+      workCalls += 1;
+      const values: Record<string, unknown> = { nonce, task: 'task-sec', status: 'COMPLETE', findings: [] };
+      if (workCalls === 1) return fakeResponse(JSON.stringify({ ...values, undeclaredContractField: 'must reject' }));
+      const format = payload.responseFormat;
+      const schema = format.json_schema.schema;
+      expect(format.json_schema.name).toBe('ct_review_task_result_v1');
+      expect(format.json_schema.strict).toBe(true);
+      expect(schema.additionalProperties).toBe(false);
+      expect(Object.keys(schema.properties).sort()).toEqual([...schema.required].sort());
+      expect(lastText(payload.messages)).toContain('result_fields');
+      expect(lastText(payload.messages)).toContain(`Binding task-result schema: ${JSON.stringify(format.json_schema)}`);
+      // Populate every declared property from the real provider schema. An additive string
+      // field must be admitted without another hand-maintained allowlist being updated here.
+      const candidate = Object.fromEntries(Object.entries(schema.properties).map(([field, property]) => {
+        if (Object.hasOwn(values, field)) return [field, values[field]];
+        expect(property).toMatchObject({ type: 'string' });
+        return [field, 'schema-declared-fixture'];
+      }));
+      expect(Object.keys(candidate).sort()).toEqual(Object.keys(schema.properties).sort());
+      return fakeResponse(JSON.stringify(candidate));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(2);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 0, turnsCount: 2 }]);
+    expect(result.unreportedLanes).toEqual([]);
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-sec']);
   });
 
   it('rejects tools requested during correction and retains their exact redacted diagnostic', async () => {
