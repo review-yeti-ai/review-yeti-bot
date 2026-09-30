@@ -85,6 +85,22 @@ export type ReviewGateDecision =
     eventId: number; actorLogin: string; actorPermission: string; appliedAt: string; reviewedAt: string;
   } };
 
+/** Validate persisted status/reason pairs from the policy's own vocabulary. */
+export function reviewGateStatusForReason(reason: unknown): ReviewGateDecision['status'] | undefined {
+  if (typeof reason !== 'string') return undefined;
+  for (const [reasons, status] of [
+    [REVIEW_GATE_PENDING_REASONS, 'pending'],
+    [REVIEW_GATE_TIMEOUT_REASONS, 'timed_out'],
+    [REVIEW_GATE_CANCELLATION_REASONS, 'cancelled'],
+    [REVIEW_GATE_FAILURE_REASONS, 'failure'],
+    [REVIEW_GATE_AUTOMATIC_SUCCESS_REASONS, 'success'],
+    [REVIEW_GATE_ACCEPTED_RISK_REASONS, 'success'],
+  ] as const) {
+    if ((reasons as readonly string[]).includes(reason)) return status;
+  }
+  return undefined;
+}
+
 /**
  * REL-1113: the durable `review_runs.error_text` a terminal gate decision records. The ONE
  * definition of that convention: the gate repository writes it and the authoritative
