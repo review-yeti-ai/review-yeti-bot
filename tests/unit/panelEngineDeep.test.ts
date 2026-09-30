@@ -2535,4 +2535,20 @@ describe('REL-1211 absolute panel deadline', () => {
     expect(client.complete).toHaveBeenCalledTimes(starts);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('inherits an exhausted admitted cutoff through only the caller signal without starting a provider', async () => {
+    const client = { complete: vi.fn() };
+    const main = createPanelDeadlineSignal(1_800, undefined,
+      { deadlineAtMs: Date.now() + 50, timeoutMs: 50, terminalBound: true });
+    // Simulate deferred invocation before the timer callback can run. Admission
+    // must use the signal's source-bound budget, not restart a relative window.
+    vi.setSystemTime(Date.now() + 50);
+    await expect(executePersonaPanel({ config: buildDeepConfig(), changedFiles: [{ path: 'src/security/auth.ts', patch: '+new' }],
+      repository: 'example/project', headSha: 'expired-inherited-cutoff', client: client as never, signal: main.signal }))
+      .rejects.toMatchObject({ name: 'PanelDeadlineExceededError', failureReason: 'worker_terminal_deadline_exceeded' });
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(getActivePersonaCallCount()).toBe(0);
+    main.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
