@@ -1,5 +1,5 @@
 import { isRecoverableFailureTitle, REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
-import { parseIncompleteRosterSummary } from './incompleteRosterSummary';
+import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from './incompleteRosterSummary';
 
 export const MAX_RECOVERABLE_REVIEW_GENERATION = 3;
 export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
@@ -81,7 +81,7 @@ function hasLegacyIncompleteRosterProof(
   const output = record(newest?.output);
   return newest?.conclusion === 'failure'
     && output?.title === 'Review Yeti Gate: Failed (incomplete panel)'
-    && output.summary === `Review Yeti Gate failed: the panel expected ${counts.expectedLanes} review lane(s) but ${counts.completedLanes} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
+    && output.summary === formatIncompleteRosterGateSummary(counts.expectedLanes, counts.completedLanes);
 }
 
 /** The latest real Gate within the exact worker's lifetime boundary. Never search

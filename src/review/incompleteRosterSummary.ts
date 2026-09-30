@@ -8,6 +8,11 @@ export interface IncompleteRosterSummaryCounts {
   completedLanes: number;
 }
 
+/** Render the exact Gate summary used to describe an incomplete review roster. */
+export function formatIncompleteRosterGateSummary(expectedLanes: number, completedLanes: number): string {
+  return `Review Yeti Gate failed: the panel expected ${expectedLanes} review lane(s) but ${completedLanes} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
+}
+
 /** Parse the worker's incomplete-roster summary without imposing consumer-specific
  * finding-count limits. The persistence layer applies its own archive bounds; the
  * recovery validator retains the older summary contract for zero-finding retries. */

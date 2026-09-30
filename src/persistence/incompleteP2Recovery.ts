@@ -14,7 +14,7 @@ import {
 import {
   MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT,
 } from '../review/incompleteP2RecoveryLimits';
-import { parseIncompleteRosterSummary } from '../review/incompleteRosterSummary';
+import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from '../review/incompleteRosterSummary';
 import {
   REVIEW_WORKER_APP_SLUG,
   validateReviewGenerationRecoveryEvidence,
@@ -377,7 +377,7 @@ function gateRecordForSource(
     || Number(gateEvidence.completedLanes) !== counts.completed
     || Number(gateEvidence.p0Count) !== 0 || Number(gateEvidence.p1Count) !== 0
     || Number(gateEvidence.expectedLanes) <= Number(gateEvidence.completedLanes)) refuse();
-  const gateSummary = `Review Yeti Gate failed: the panel expected ${counts.expected} review lane(s) but ${counts.completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
+  const gateSummary = formatIncompleteRosterGateSummary(counts.expected, counts.completed);
   if (gateCheck.output?.summary !== gateSummary) refuse();
   return { checkId, evidence: gateEvidence };
 }
