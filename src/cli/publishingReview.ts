@@ -23,7 +23,7 @@
  *    published `neutral` would silently stop enforcing.
  */
 import { createPanelDeadlineSignal, executePersonaPanel, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
-import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelTimeoutMs } from '../config/workerTerminalDeadline';
+import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
 import { executeComposedReview } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
@@ -108,7 +108,7 @@ import { loadMapReduceInput, renderMapReduceSummary } from '../review/mapReduceR
 import { matchOne } from '../pipeline/domainIndex';
 import { renderWorkerLogLocator } from './workerLogLocator';
 import { workerLargeDiffSourceOptions } from '../github/largeDiffSourceWiring';
-import { startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
+import { DEFAULT_JEV_TRIAGE_SHADOW_LIMITS, startJevTriageShadow, type JevTriageShadowLimits } from '../review/jevTriageShadow';
 import {
   markThrownByPanel,
   thrownInfrastructureDiagnostics,
@@ -781,6 +781,7 @@ export function isGithubDiffNotRenderableError(error: unknown): boolean {
  * into `workerCompletion.ts`.
  */
 export function classifyFailure(error: unknown): WorkerTerminalFailure['failureClass'] {
+  if (error instanceof PanelDeadlineExceededError) return 'timeout';
   if (error instanceof OpenRouterTimeoutError) return 'timeout';
   if (error instanceof UpstreamCapacityRejectionError) return 'rate_limit';
   if (error instanceof OpenRouterConnectionError) return 'transport';
@@ -1064,10 +1065,8 @@ function createPublishingPanelDeadline(
   parentSignal: AbortSignal | undefined,
   now: () => number,
 ): ReturnType<typeof createPanelDeadlineSignal> {
-  const timeoutMs = workerPanelTimeoutMs(overallTimeoutSeconds, env,
-    value(env, WORKER_TERMINAL_DEADLINE_ENV) ? now() : 0);
-  if (timeoutMs <= 0) throw new PanelDeadlineExceededError(0);
-  return createPanelDeadlineSignal(timeoutMs / 1_000, parentSignal);
+  const budget = workerPanelDeadlineBudget(overallTimeoutSeconds, env, now());
+  return createPanelDeadlineSignal(overallTimeoutSeconds, parentSignal, budget, now);
 }
 
 /**
@@ -1652,7 +1651,7 @@ export async function runPublishingReviewWorker(
     // REL-677 / ADR 0329: index-at-review-time zoekt grounding. Strictly fail-soft: any
     // failure leaves the panel byte-identical to a run without zoekt. The scratch tree is
     // removed in the finally below; the index never outlives this review run. Grounding
-    // has its own stage budgets, but all setup must still fit the admitted lifecycle window.
+    // has its own stage budgets, but may not restart or extend the fixed model-work cutoff.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
     const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
     const panelDeadline = createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now);
@@ -1690,7 +1689,13 @@ export async function runPublishingReviewWorker(
     // REL-1081: shadow-only Jev triage. Total (never throws), inert unless REVIEW_YETI_JEV_SHADOW
     // and TYPESAFE_* are set, runs concurrently with the panel, and receives snapshots only --
     // nothing it produces flows back into this run. Joined after every outcome-visible action.
-    const jevShadow = startJevTriageShadow({
+    let jevShadow: ReturnType<typeof startJevTriageShadow> | undefined;
+    const abortJevShadow = () => jevShadow?.abort();
+    try {
+      panelDeadline.check();
+      const remainingWorkMs = panelDeadline.budget.deadlineAtMs - panelDeadline.now();
+      const jevLimits = { ...DEFAULT_JEV_TRIAGE_SHADOW_LIMITS, ...deps.jevTriageShadow?.limits };
+      jevShadow = startJevTriageShadow({
       env,
       repository: identity.repo,
       runId: identity.runId,
@@ -1700,23 +1705,32 @@ export async function runPublishingReviewWorker(
       personas: workerConfig.personas.filter((persona) => persona.enabled)
         .map((persona) => ({ id: persona.id, charter: persona.charter })),
       ...(deps.jevTriageShadow?.asker ? { asker: deps.jevTriageShadow.asker } : {}),
-      ...(deps.jevTriageShadow?.limits ? { limits: deps.jevTriageShadow.limits } : {}),
-    });
-    try {
+      limits: { ...jevLimits,
+        hardTimeoutMs: Math.min(jevLimits.hardTimeoutMs, remainingWorkMs),
+        stageBudgetMs: Math.min(jevLimits.stageBudgetMs, remainingWorkMs),
+        perCallCapMs: Math.min(jevLimits.perCallCapMs, remainingWorkMs),
+      },
+      });
+      if (panelDeadline.signal.aborted) abortJevShadow();
+      else panelDeadline.signal.addEventListener('abort', abortJevShadow, { once: true });
+      panelDeadline.check();
       // A throwing grounding dep still fails soft: grounding is evidence
       // enrichment, never a precondition of the review.
       zoektScratchRoot = await runInSpan('review_yeti_zoekt_index_build', async (span) => {
         const buildStart = deps.now ? deps.now() : Date.now();
         let result: { indexDir?: string; scratchDir?: string; reason?: string };
         try {
-          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string }>(() => zoektGrounding({
+          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string }>(() => {
+            panelDeadline.check();
+            return zoektGrounding({
             repository: identity.repo,
             headSha: identity.headSha,
             token: value(env, 'GH_TOKEN'),
             enabled: zoektGroundingEnabled,
             signal: panelDeadline.signal,
             zoektIndexBinaryPath: value(env, 'ZOEKT_INDEX_BIN') || undefined,
-          })).then(async (groundingResult) => {
+            });
+          }).then(async (groundingResult) => {
             resolvedGroundingReceipt = groundingResult;
             // Production grounding cooperatively stops its materializer/indexer on this signal.
             // An injected or future implementation may still settle successfully after the worker
@@ -1732,8 +1746,9 @@ export async function runPublishingReviewWorker(
           // Join only an already-resolved receipt's cleanup, not the producer:
           // a stalled producer must never delay fail-closed finalization.
           await cleanupGroundingScratch();
-          result = { reason: panelDeadline.signal.aborted
-            ? 'lifecycle_deadline' : (groundingError?.message || 'zoekt_grounding_error') };
+          // Ordinary enrichment failure stays fail-soft; exhausted work does not.
+          panelDeadline.check();
+          result = { reason: groundingError?.message || 'zoekt_grounding_error' };
         }
         span.setAttribute('review_yeti.zoekt_index_build.enabled', zoektGroundingEnabled);
         // A disabled run performs no materialize/build work, so it has no build cost to
@@ -1753,7 +1768,7 @@ export async function runPublishingReviewWorker(
       });
       // Grounding is optional evidence, but it cannot keep setup alive past the admitted
       // panel boundary or let a late setup result proceed to PR verification/model execution.
-      throwIfPanelAborted(panelDeadline.signal);
+      panelDeadline.check();
       // Single-surface injection: the panel (panelEngine) owns the zoekt
       // lookup policy and propagates evidence.zoekt.indexDir to every internal
       // consumer (symbol pre-check + on-demand code_search_zoekt tool). The
@@ -1773,10 +1788,8 @@ export async function runPublishingReviewWorker(
             },
           }
         : workerConfig;
-      // Shadow evidence: its OWN signal, with the same absolute admitted deadline and policy
-      // ceiling. Recompute remaining time here, so grounding cannot restart its lifecycle clock.
-      // A hung composed run times
-      // out on its own schedule and can never extend this job past the panel's deadline below.
+      // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
+      // cutoff. Late setup cannot mint another relative window for either engine.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is
       // max(panel, composed), never the sum. The panel holds up to `MAX_CONCURRENT_PERSONAS` (4)
       // provider slots and the composed run holds 1; both fitting inside the account's ceiling of
@@ -1798,7 +1811,8 @@ export async function runPublishingReviewWorker(
         throw error;
       }
       shadowDeadline = isShadow
-        ? createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now)
+        ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, panelDeadline.signal,
+          panelDeadline.budget, panelDeadline.now)
         : undefined;
       // TOTAL, never rejects: a composed-engine throw, timeout, or abort must never propagate out
       // of this run and must never be added to the panel's own `optionalFailures`/`failedLanes` --
@@ -1813,8 +1827,12 @@ export async function runPublishingReviewWorker(
       const activeShadowDeadline = shadowDeadline;
       shadowOutcomePromise = isShadow && activeShadowDeadline
         ? Promise.resolve()
-          .then(() => raceWithPanelAbort(
-            Promise.resolve().then(() => shadowRunner({
+          .then(() => {
+            activeShadowDeadline.check();
+            return raceWithPanelAbort(
+            Promise.resolve().then(() => {
+              activeShadowDeadline.check();
+              return shadowRunner({
               config: groundedConfig,
               changedFiles,
               repository: identity.repo,
@@ -1825,6 +1843,8 @@ export async function runPublishingReviewWorker(
               client: shadowClient,
               jobId: identity.runId,
               signal: activeShadowDeadline.signal,
+              deadlineBudget: activeShadowDeadline.budget,
+              deadlineNow: activeShadowDeadline.now,
               repoFileProvider,
               isCurrentHead: deps.isCurrentHead,
               ...(diffShrink ? { diffShrink } : {}),
@@ -1834,9 +1854,11 @@ export async function runPublishingReviewWorker(
               ...(mapReduce ? { mapReduce } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
-            } as Parameters<typeof executeComposedReview>[0])),
+            } as Parameters<typeof executeComposedReview>[0]);
+            }),
             activeShadowDeadline.signal,
-          ))
+            );
+          })
           .then((result): ShadowOutcome => ({ status: 'settled', result }))
           .catch((error): ShadowOutcome => {
             logger.warn('Shadow composed review lane failed; recorded as non-gating evidence only, panel verdict unaffected', {
@@ -1849,8 +1871,11 @@ export async function runPublishingReviewWorker(
         : Promise.resolve({ status: 'skipped' });
       prePanelCoverageComplete = unreadable.length === 0
         && omittedSourcePathsOf(unavailablePatchFilesOf(changedFiles)).length === 0;
+      panelDeadline.check();
       const panelResult = await raceWithPanelAbort(
-        Promise.resolve().then(() => panelRunner({
+        Promise.resolve().then(() => {
+          panelDeadline.check();
+          return panelRunner({
           config: groundedConfig,
           changedFiles,
           repository: identity.repo,
@@ -1862,6 +1887,8 @@ export async function runPublishingReviewWorker(
           progress,
           jobId: identity.runId,
           signal: panelDeadline.signal,
+          deadlineBudget: panelDeadline.budget,
+          deadlineNow: panelDeadline.now,
           repoFileProvider,
           isCurrentHead: deps.isCurrentHead,
           ...(authoritative ? { deterministicRoster: true } : {}),
@@ -1877,13 +1904,14 @@ export async function runPublishingReviewWorker(
           // Keep the upstream production Bifrost native JSON contract while
           // enforcing the worker's overall cancellation boundary.
           requestPolicy: { responseFormat: { type: 'json_object' } },
-        } as Parameters<typeof executePersonaPanel>[0]))
+        } as Parameters<typeof executePersonaPanel>[0]);
+        })
           // REL-1124: only a rejection of the panel runner itself may be read as a reviewer lane
           // lost to the gateway; a source read or publication failure never is.
           .catch((error: unknown) => { throw markThrownByPanel(error); }),
         panelDeadline.signal,
       );
-      throwIfPanelAborted(panelDeadline.signal);
+      panelDeadline.check();
       const diffShrinkDisclosure = panelResult.diffShrink ?? null;
       if (diffShrinkDisclosure) {
         logger.info('Diff shrinking applied before review', {
@@ -2720,7 +2748,8 @@ export async function runPublishingReviewWorker(
       // return) still log the in-flight calls' decision lines and a `joined: false` summary, so
       // decision lines, summary lines and the Jev cost metric count the same calls. Bounded by
       // FINISH_FLUSH_MS and total (never throws).
-      await jevShadow.finish();
+      await jevShadow?.finish();
+      panelDeadline.signal.removeEventListener('abort', abortJevShadow);
       panelDeadline.cleanup();
       // Bounded by the shadow run's own deadline (already elapsed on every path that reached
       // evidence-building above, where it is awaited explicitly -- this is a no-op there). On an

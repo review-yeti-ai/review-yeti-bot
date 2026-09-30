@@ -1196,7 +1196,7 @@ describe('publishing worker wiring', () => {
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker(env, {
       checkClient,
-      now: () => Date.parse('2026-09-24T12:00:00Z'),
+      now: Date.now,
       currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: addedFile('src/app.ts', 10, 'a'), githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
@@ -1208,13 +1208,14 @@ describe('publishing worker wiring', () => {
   }
 
   it('passes nothing to the engines and discloses nothing when the flag is off', async () => {
-    const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_TERMINAL_DEADLINE: '2026-09-24T12:30:00Z' }));
+    const at = new Date(Date.now() + 30 * 60_000).toISOString();
+    const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_TERMINAL_DEADLINE: at }));
     expect(panelOptions).not.toHaveProperty('mapReduce');
     expect(summary).not.toContain('Map-reduce review');
   });
 
   it('passes the input with the forwarded deadline and publishes the engine\'s disclosure', async () => {
-    const at = '2026-09-24T12:30:00.000Z';
+    const at = new Date(Date.now() + 30 * 60_000).toISOString();
     const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_YETI_MAP_REDUCE: 'exampleorg/example-meta', REVIEW_TERMINAL_DEADLINE: at }));
     expect(panelOptions.mapReduce).toEqual({ enabled: true, concurrency: 3, minChars: DEFAULT_MAP_REDUCE_MIN_CHARS, deadlineAtMs: Date.parse(at) - WORKER_PUBLISH_RESERVE_MS });
     expect(summary).toContain('Map-reduce review');

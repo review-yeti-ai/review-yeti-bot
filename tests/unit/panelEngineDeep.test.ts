@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { executePersonaPanel, PanelCancellationError, PanelConfigurationError, PanelDeadlineExceededError, extractMessageContentText, getActivePersonaCallCount, mapConcurrentSettled, MAX_CONCURRENT_PERSONAS, EMPTY_COMPLETION_MAX_ATTEMPTS, INCOMPLETE_REVIEW_MAX_ATTEMPTS, TRANSPORT_MAX_RETRIES, TRANSPORT_RETRY_BASE_DELAY_MS, TRANSPORT_RETRY_MAX_DELAY_MS, TRANSPORT_RETRY_WINDOW_MS, transportRetryDelayMs, isTransientLaneTransportError, remainingTerminalDeadlineMs, classifyPersonaAttemptFailure } from '../../src/panel/panelEngine';
 import { QUEUED_LANE_MIN_WAIT_MS } from '../../src/panel/panelPhaseTiming';
+import { createPanelDeadlineSignal } from '../../src/panel/panelEngine';
+import { workerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
 import { INFRASTRUCTURE_LANE_FAILURE_CLASSES } from '../../src/review/publicationFailurePolicy';
 import { CtReviewConfigV3, ctReviewConfigV3Schema } from '../../src/config/schema';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
@@ -2427,4 +2429,162 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     // must give up at or below the generic cap rather than burn all 4 attempts.
     expect(bifrostAttempts).toBeLessThan(TRANSPORT_MAX_RETRIES + 1);
   }, 60_000);
+});
+
+describe('REL-1211 absolute panel deadline', () => {
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(1_000_000); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('expires synchronously without a timer or a one-millisecond grace call', () => {
+    const budget = workerPanelDeadlineBudget(1_800, { REVIEW_TERMINAL_DEADLINE: new Date(Date.now() + 121_000).toISOString() });
+    const deadline = createPanelDeadlineSignal(1_800, undefined, budget);
+    expect(deadline.timeoutMs).toBe(0);
+    expect(deadline.signal.reason).toMatchObject({ name: 'PanelDeadlineExceededError', failureClass: 'timeout', failureReason: 'worker_terminal_deadline_exceeded' });
+    expect(() => deadline.check()).toThrow(PanelDeadlineExceededError);
+    deadline.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('catches elapsed time synchronously even before an overdue timer gets an event-loop turn', () => {
+    const parent = new AbortController();
+    const remove = vi.spyOn(parent.signal, 'removeEventListener');
+    const deadline = createPanelDeadlineSignal(5, parent.signal);
+    vi.setSystemTime(Date.now() + 5_000);
+    expect(() => deadline.check()).toThrow('overall timeout of 5s');
+    expect(deadline.signal.reason.failureReason).toBe('worker_deadline_exceeded');
+    deadline.cleanup();
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('snapshots the fixed cutoff so mutation of a caller-owned budget cannot restart it', () => {
+    const budget = { deadlineAtMs: Date.now() + 50, timeoutMs: 50, terminalBound: true };
+    const deadline = createPanelDeadlineSignal(1_800, undefined, budget);
+    budget.deadlineAtMs += 10_000;
+    vi.setSystemTime(Date.now() + 50);
+    expect(Object.isFrozen(deadline.budget)).toBe(true);
+    expect(() => deadline.check()).toThrow(PanelDeadlineExceededError);
+    deadline.cleanup();
+  });
+
+  it('links distinct signals to a shared cutoff without restarting the elapsed budget', async () => {
+    const budget = workerPanelDeadlineBudget(5, {});
+    const main = createPanelDeadlineSignal(5, undefined, budget);
+    await vi.advanceTimersByTimeAsync(3_000);
+    const shadow = createPanelDeadlineSignal(5, main.signal, main.budget, main.now);
+    expect(main.signal).not.toBe(shadow.signal);
+    expect(shadow.timeoutMs).toBe(2_000);
+    shadow.check();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(main.signal.aborted).toBe(true);
+    expect(shadow.signal.reason).toBe(main.signal.reason);
+    main.cleanup(); shadow.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('uses one injected clock for admission, synchronous checks, and nested deadlines', () => {
+    let currentMs = 10_000;
+    const now = () => currentMs;
+    const budget = workerPanelDeadlineBudget(5, {}, now());
+    const main = createPanelDeadlineSignal(5, undefined, budget, now);
+    currentMs += 4_999;
+    main.check();
+    const nested = createPanelDeadlineSignal(1_800, main.signal, main.budget, main.now);
+    expect(nested.timeoutMs).toBe(1);
+    currentMs += 1;
+    expect(() => nested.check()).toThrow(PanelDeadlineExceededError);
+    expect(nested.signal.reason).toMatchObject({ failureReason: 'worker_deadline_exceeded' });
+    expect(() => main.check()).toThrow(PanelDeadlineExceededError);
+    expect(main.signal.reason).toMatchObject({ failureReason: 'worker_deadline_exceeded' });
+    nested.cleanup(); main.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('REL-1211 inherits the original remaining cutoff without a new relative engine window', async () => {
+    const main = createPanelDeadlineSignal(5);
+    let nested: ReturnType<typeof createPanelDeadlineSignal> | undefined;
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      nested = createPanelDeadlineSignal(1_800, main.signal, main.budget, main.now);
+      expect(nested.timeoutMs).toBe(2_000);
+      expect(nested.signal).not.toBe(main.signal);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(main.signal.aborted).toBe(true);
+      expect(nested.signal.reason).toBe(main.signal.reason);
+    } finally {
+      nested?.cleanup(); main.cleanup();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([true, false])('preserves ordinary caller cancellation before/after creation: %s', (alreadyAborted) => {
+    const parent = new AbortController();
+    if (alreadyAborted) parent.abort(new Error('SIGTERM'));
+    const deadline = createPanelDeadlineSignal(5, parent.signal);
+    if (!alreadyAborted) parent.abort(new Error('SIGTERM'));
+    expect(() => deadline.check()).toThrow(PanelCancellationError);
+    expect(deadline.signal.reason).not.toBeInstanceOf(PanelDeadlineExceededError);
+    deadline.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cleans an unexpired timer and listener on healthy completion', async () => {
+    const parent = new AbortController();
+    const remove = vi.spyOn(parent.signal, 'removeEventListener');
+    const deadline = createPanelDeadlineSignal(NaN, parent.signal);
+    expect(deadline.timeoutMs).toBe(900_000);
+    deadline.check(); deadline.cleanup();
+    await vi.advanceTimersByTimeAsync(900_000);
+    parent.abort();
+    expect(deadline.signal.aborted).toBe(false);
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+  });
+
+  it('starts no real panel provider when the passed caller cutoff is exhausted', async () => {
+    const client = { complete: vi.fn() };
+    await expect(executePersonaPanel({ config: buildDeepConfig(), changedFiles: [{ path: 'src/security/auth.ts', patch: '+new' }],
+      repository: 'example/project', headSha: 'expired-fixed-cutoff', client: client as never,
+      deadlineBudget: { deadlineAtMs: Date.now(), timeoutMs: 0, terminalBound: true } }))
+      .rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(getActivePersonaCallCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('aborts a real hung panel at the passed remaining cutoff, releasing queued permits and refusing late responses', async () => {
+    const base = buildDeepConfig();
+    const config = { ...base, personas: Array.from({ length: MAX_CONCURRENT_PERSONAS + 2 }, (_, i) => ({ ...base.personas[0], id: `absolute-${i}` })) };
+    const late: Array<(value: unknown) => void> = [];
+    const client = { complete: vi.fn(() => new Promise(resolve => late.push(resolve))) };
+    const deadlineBudget = { deadlineAtMs: Date.now() + 50, timeoutMs: 50, terminalBound: true };
+    const promise = executePersonaPanel({ config, changedFiles: [{ path: 'src/security/auth.ts', patch: '+new' }],
+      repository: 'example/project', headSha: 'absolute-queued-hang', client: client as never, deadlineBudget });
+    const failure = expect(promise).rejects.toMatchObject({ name: 'PanelDeadlineExceededError', failureReason: 'worker_terminal_deadline_exceeded' });
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    expect(client.complete.mock.calls.length).toBeLessThanOrEqual(MAX_CONCURRENT_PERSONAS);
+    expect(client.complete.mock.calls.length).toBeGreaterThan(0);
+    expect(getActivePersonaCallCount()).toBe(0);
+    const starts = client.complete.mock.calls.length;
+    late.forEach(resolve => resolve({ content: 'late is not evidence' }));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.complete).toHaveBeenCalledTimes(starts);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('honors an explicitly forwarded exhausted cutoff without starting a provider', async () => {
+    const client = { complete: vi.fn() };
+    const main = createPanelDeadlineSignal(1_800, undefined,
+      { deadlineAtMs: Date.now() + 50, timeoutMs: 50, terminalBound: true });
+    // Simulate deferred invocation before the timer callback can run. Admission
+    // must use the explicitly forwarded admitted budget, not restart a relative window.
+    vi.setSystemTime(Date.now() + 50);
+    await expect(executePersonaPanel({ config: buildDeepConfig(), changedFiles: [{ path: 'src/security/auth.ts', patch: '+new' }],
+      repository: 'example/project', headSha: 'expired-inherited-cutoff', client: client as never, signal: main.signal,
+      deadlineBudget: main.budget, deadlineNow: main.now }))
+      .rejects.toMatchObject({ name: 'PanelDeadlineExceededError', failureReason: 'worker_terminal_deadline_exceeded' });
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(getActivePersonaCallCount()).toBe(0);
+    main.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

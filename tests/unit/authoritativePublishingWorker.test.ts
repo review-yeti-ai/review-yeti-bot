@@ -152,7 +152,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       );
       try {
         await started;
-        await vi.advanceTimersByTimeAsync(59_999);
+        await vi.advanceTimersByTimeAsync(58_999);
         expect(f.reportReviewResult).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(1);
         // Must leave the existing 60s worker receipt reserve AND 60s gate reserve.
@@ -217,7 +217,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     const pending = runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
     try {
       await started;
-      await vi.advanceTimersByTimeAsync(49_999);
+      await vi.advanceTimersByTimeAsync(48_999);
       expect(f.reportReviewResult).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
@@ -271,8 +271,8 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     let lateScratch: string | undefined;
     try {
       await groundingStarted;
-      // The absolute deadline is 180s away; the panel cutoff is 120s earlier.
-      await vi.advanceTimersByTimeAsync(60_000);
+      // The absolute deadline is 180s away; both reserves plus the Go floor leave 59s.
+      await vi.advanceTimersByTimeAsync(59_000);
       expect(groundingSignal?.aborted).toBe(true);
       expect(f.reportReviewResult).toHaveBeenCalledOnce();
       expect(f.panelRunner).not.toHaveBeenCalled();
@@ -381,7 +381,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     );
     try {
       await groundingStarted;
-      await vi.advanceTimersByTimeAsync(59_999);
+      await vi.advanceTimersByTimeAsync(58_999);
       expect(f.reportReviewResult).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
@@ -924,6 +924,12 @@ describe('authoritative prepared publishing worker', () => {
       client: { complete: expect.any(Function) },
       jobId: f.env.REVIEW_RUN_ID, baseSha: BASE, prNumber: 42,
       signal: expect.any(AbortSignal),
+      deadlineBudget: expect.objectContaining({
+        deadlineAtMs: expect.any(Number),
+        timeoutMs: expect.any(Number),
+        terminalBound: expect.any(Boolean),
+      }),
+      deadlineNow: expect.any(Function),
       // This fixture's GH_TOKEN is a real `ghs_`-shaped read token and no
       // repoFileProviderFactory is injected, so the worker wires the default
       // full-repository grounding provider (REL- full-repo grounding): a
