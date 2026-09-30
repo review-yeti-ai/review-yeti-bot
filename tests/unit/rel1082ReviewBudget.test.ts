@@ -165,6 +165,17 @@ describe('deterministic category order', () => {
     ['src/app.spec.ts', 'test'],
     ['docs/guide.md', 'docs'],
     ['config/app.json', 'config'],
+    ['ova/versions/1.2.3.env', 'ci-iac'],
+    ['ova/versions/1.2.3-rc4.yaml', 'ci-iac'],
+    ['ova/versions/1.2.3-beta.4.yml', 'ci-iac'],
+    ['ova/versions/1.2.3.changelog.json', 'ci-iac'],
+    ['ova/versions/1.2.3-rc4.changelog.json', 'ci-iac'],
+    ['ova/versions/1.2.3.json', 'config'],
+    ['ova/versions/settings.yaml', 'config'],
+    ['ova/versions/1.2.yaml', 'config'],
+    ['ova/versions/archive/1.2.3.yaml', 'config'],
+    ['examples/ova/versions/1.2.3.yaml', 'config'],
+    ['ova/versions/1.2.3.changelog.md', 'docs'],
   ])('%s is %s', (path, category) => {
     expect(classifyBudgetCategory(path)).toBe(category);
   });
@@ -803,6 +814,114 @@ describe('composed engine wiring', () => {
     expect(text).toContain('core_TAIL_MARKER');
     expect(text).toContain('signatures only');
     expect(text).not.toContain('tests_TAIL_MARKER');
+  });
+
+  /** Synthetic deployment metadata only: no private release rows, addresses or provider text. */
+  function releaseRecord(path: string, kind: 'json' | 'yaml') {
+    const rows = Array.from({ length: 320 }, (_, index) => kind === 'json'
+      ? `  {"ordinal":${index},"source":"${'a'.repeat(40)}","merged_pr":${index + 1}}${index < 319 ? ',' : ''}`
+      : `  synthetic_${index}: {image: "example.invalid/image:${'b'.repeat(40)}"}`);
+    const body = kind === 'json'
+      ? ['{"commits":[', ...rows, '],"tail":"RELEASE_JSON_TAIL"}']
+      : ['services:', ...rows, '# RELEASE_YAML_TAIL'];
+    const diff = [`diff --git a/${path} b/${path}`, 'new file mode 100644', 'index 0000000..1111111',
+      '--- /dev/null', `+++ b/${path}`, `@@ -0,0 +1,${body.length} @@`, ...body.map((line) => `+${line}`), ''].join('\n');
+    return { diff, tailLine: body.length, tail: kind === 'json' ? 'RELEASE_JSON_TAIL' : 'RELEASE_YAML_TAIL' };
+  }
+
+  it('keeps release-record JSON/YAML tails in the prompt, get_diff and findings anchors past the old cut', async () => {
+    const jsonPath = 'ova/versions/1.2.3-rc4.changelog.json';
+    const yamlPath = 'ova/versions/1.2.3-rc4.yaml';
+    const records = [releaseRecord(jsonPath, 'json'), releaseRecord(yamlPath, 'yaml')];
+    const otherPath = 'src/compile.ts';
+    // A higher-ranked source file exhausts the soft budget if release records are mistaken
+    // for ordinary config. Full-depth CI/IaC records must win, up to the unchanged hard cap.
+    const changedFiles = files(records.map((record) => record.diff).join('') + addedFile(otherPath, 600, 'compiler'));
+    for (const file of changedFiles.filter((file) => file.path !== otherPath)) {
+      expect(file.patch!.length).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
+      expect(file.patch!.length).toBeLessThan(35_000);
+    }
+    let workCalls = 0;
+    const requests: string[] = [];
+    const complete = vi.fn(async (request: any) => {
+      const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+      requests.push(JSON.stringify(request.messages));
+      const nonce = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+      if (!prompt.includes('WORK TURN')) return { model: 'm', content: JSON.stringify({ nonce, tasks: [
+        { id: 'release-provenance', dimension: 'contract', paths: [jsonPath, yamlPath, otherPath], question: 'Are synthetic release records consistent?', rationale: 'Deployment provenance.' },
+      ] }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+      workCalls += 1;
+      if (workCalls <= 2) {
+        if (workCalls === 2) expect(extractMessageContentText(request.messages.at(-1).content)).toContain(records[0].tail);
+        return { model: 'm', content: JSON.stringify({ tool: 'get_diff', args: { path: workCalls === 1 ? jsonPath : yamlPath } }),
+          usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+      }
+      const toolEvidence = request.messages.filter((message: any) =>
+        extractMessageContentText(message.content).startsWith('[PI_TOOL_RESULT]'));
+      expect(extractMessageContentText(toolEvidence.at(-1).content)).toContain(records[1].tail);
+      return { model: 'm', content: JSON.stringify({ nonce, task: 'release-provenance', status: 'COMPLETE', findings:
+        records.map((record, index) => ({ severity: 'P2', path: index === 0 ? jsonPath : yamlPath, line: record.tailLine,
+          startLine: null, title: 'Synthetic tail marker', body: 'The synthetic terminal record warrants checking.',
+          suggestion: null, replacementCode: null })) }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+    });
+    const cfg = COMPOSED_CONFIG();
+    cfg.composed = { max_tasks: 1, max_turns_total: 6, max_turns_per_task: 6 } as typeof cfg.composed;
+    const result = await executeComposedReview({ config: cfg, changedFiles, repository: 'acme/release-fixture',
+      headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON });
+    for (const record of records) expect(requests[0]).toContain(record.tail);
+    for (const request of requests) expect(Buffer.byteLength(request)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
+    expect(result.personas).toHaveLength(1);
+    expect(result.personas[0].findings.map((finding) => finding.line)).toEqual(records.map((record) => record.tailLine));
+    expect(result.unreportedLanes).toEqual([]);
+    expect(result.truncatedFiles ?? []).toEqual([]);
+    expect(result.reviewBudget?.lanes[0].files).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: jsonPath, category: 'ci-iac', depth: 'full', pastPerFileCut: true }),
+      expect.objectContaining({ path: yamlPath, category: 'ci-iac', depth: 'full', pastPerFileCut: true }),
+    ]));
+  });
+
+  it('does not bypass hard caps or turn nearby config paths into full-depth release records', () => {
+    const exact = cutCandidate('ova/versions/1.2.3-rc4.yaml', MAX_PACKED_DIFF_CHARS + 10_000, 'release');
+    const ordinary = cutCandidate('ova/versions/arbitrary.yaml', 30_000, 'ordinary');
+    const nested = cutCandidate('examples/ova/versions/1.2.3.yaml', 30_000, 'nested');
+    const pack = packLaneBudget(COMPOSED_BUDGET_LANE_ID, [exact, ordinary, nested], { budgetChars: 25_000 });
+    expect(pack.disclosure.packedChars).toBeLessThanOrEqual(MAX_PACKED_DIFF_CHARS);
+    expect(pack.entries.get(exact.path)?.depth).toBe('truncated');
+    expect(pack.entries.get(exact.path)?.toolPatch).not.toContain('release_TAIL_MARKER');
+    for (const file of [ordinary, nested]) {
+      expect(classifyBudgetCategory(file.path)).toBe('config');
+      expect(pack.entries.get(file.path)?.depth).toBe('signatures');
+    }
+    expect(pack.disclosure.files.find((file) => file.path === exact.path)).toMatchObject({ category: 'ci-iac', depth: 'truncated' });
+  });
+
+  it('keeps schema correction and fresh recovery under the whole-request cap after a large read-only result', async () => {
+    const requests: string[] = [];
+    let workCalls = 0;
+    const complete = vi.fn(async (request: any) => {
+      requests.push(JSON.stringify(request.messages));
+      const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+      const nonce = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+      let body: unknown;
+      if (!prompt.includes('WORK TURN')) {
+        body = { nonce, tasks: [{ id: 'check-core', dimension: 'testing', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'Is the synthetic core covered?', rationale: 'Test fixture.' }] };
+      } else {
+        workCalls += 1;
+        if (workCalls === 1) body = { tool: 'read_file', args: { path: 'vendor/huge.txt' } };
+        else if (workCalls < 4) return { model: 'm', content: 'SYNTHETIC_MALFORMED', usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+        else body = { nonce, task: 'check-core', status: 'COMPLETE', findings: [] };
+      }
+      return { model: 'm', content: JSON.stringify(body), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+    });
+    const cfg = COMPOSED_CONFIG();
+    cfg.composed = { max_tasks: 1, max_turns_total: 8, max_turns_per_task: 8 } as typeof cfg.composed;
+    const result = await executeComposedReview({ config: cfg, changedFiles: files(BIG_DIFF),
+      repository: 'acme/reviewer-fixture', headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
+      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never });
+    expect(workCalls).toBe(4);
+    expect(requests.some((request) => request.includes('TASK_RESULT_FRESH_RECOVERY'))).toBe(true);
+    for (const request of requests) expect(Buffer.byteLength(request)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
+    expect(result.personas).toMatchObject([{ id: 'check-core', toolTurns: 1, decision: 'APPROVE' }]);
   });
 
   // Two ~512 KiB read_file results in the plan phase and two in a task's work phase.
