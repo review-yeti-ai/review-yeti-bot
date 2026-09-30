@@ -35,6 +35,13 @@ function queryBarrier(pool: Pool, matches: (sql: string) => boolean, before = fa
   return { wrapped, reached, release };
 }
 
+/** Both waits use bound parameters; the second provides the test's explicit
+ * post-cutoff margin without mixing delay arithmetic into a SQL expression. */
+async function waitPastDeadline(pool: Pool, deadline: string): Promise<void> {
+  await pool.query('SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - clock_timestamp()))))', [deadline]);
+  await pool.query('SELECT pg_sleep($1::double precision)', [0.03]);
+}
+
 describeWithPostgres('composed task ledger — real PostgreSQL, retention only', () => {
   let pool: Pool;
   let schema = '';
@@ -278,7 +285,7 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
       resultOf(planOf().digest), fixture.proof);
     try {
       await barrier.reached;
-      await pool.query(`SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.03)`, [deadline]);
+      await waitPastDeadline(pool, deadline);
       barrier.release();
       await expect(writer).rejects.toMatchObject({ code: 'fence-expired' });
       expect((await counts()).outcomes).toBe(0);
@@ -295,7 +302,7 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
       resultOf(planOf().digest), fixture.proof);
     try {
       await barrier.reached;
-      await pool.query(`SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.03)`, [deadline]);
+      await waitPastDeadline(pool, deadline);
       barrier.release();
       expect((await writer).status).toBe('stale');
       expect((await counts()).outcomes).toBe(1);
@@ -312,7 +319,7 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
       resultOf(planOf().digest), fixture.proof);
     try {
       await barrier.reached;
-      await pool.query(`SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.03)`, [deadline]);
+      await waitPastDeadline(pool, deadline);
       barrier.release();
       await expect(writer).rejects.toMatchObject({ code: 'fence-expired' });
       expect((await counts()).outcomes).toBe(0);
