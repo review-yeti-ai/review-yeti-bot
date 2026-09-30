@@ -1,5 +1,6 @@
 import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../gateway/openRouterClient';
 import { resolveCachedTokens } from '../gateway/openRouterClient';
+import type { WorkerFailureClass } from '../types/workerFailure';
 import { logger } from '../utils/logger';
 
 export type PublishingProgressRole = 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task' | 'other';
@@ -50,17 +51,49 @@ export interface PublishingProgressReporter {
 
 type ProgressSink = (fields: Record<string, unknown>) => void;
 
-const SAFE_REJECTION_CODES = new Set<PublishingProgressRejectionCode>([
-  'aborted', 'timeout', 'rate_limit', 'transport', 'provider_error', 'malformed_output',
-  'configuration', 'budget_exhausted', 'internal_error', 'contract', 'auth', 'unknown', 'invalid_task_output',
-  'findings_contract_invalid', 'finding_path_invalid', 'finding_path_not_changed', 'finding_line_invalid',
-  'finding_line_not_added', 'finding_line_unanchorable', 'finding_severity_invalid',
-]);
+const SAFE_REJECTION_CODES: Readonly<Record<PublishingProgressRejectionCode, true>> = {
+  aborted: true,
+  timeout: true,
+  rate_limit: true,
+  transport: true,
+  provider_error: true,
+  malformed_output: true,
+  configuration: true,
+  budget_exhausted: true,
+  internal_error: true,
+  contract: true,
+  auth: true,
+  unknown: true,
+  invalid_task_output: true,
+  findings_contract_invalid: true,
+  finding_path_invalid: true,
+  finding_path_not_changed: true,
+  finding_line_invalid: true,
+  finding_line_not_added: true,
+  finding_line_unanchorable: true,
+  finding_severity_invalid: true,
+};
 
-const SAFE_FAILURE_CLASSES = new Set([
-  'contract', 'timeout', 'budget_exhausted', 'auth', 'rate_limit', 'transport',
-  'provider_error', 'malformed_output', 'internal_error',
-]);
+const SAFE_FAILURE_REJECTION_CODES: Readonly<Record<WorkerFailureClass, PublishingProgressRejectionCode>> = {
+  contract: 'contract',
+  timeout: 'timeout',
+  budget_exhausted: 'budget_exhausted',
+  auth: 'auth',
+  rate_limit: 'rate_limit',
+  transport: 'transport',
+  provider_error: 'provider_error',
+  malformed_output: 'malformed_output',
+  internal_error: 'internal_error',
+};
+
+function isSafePublishingRejectionCode(value: unknown): value is PublishingProgressRejectionCode {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(SAFE_REJECTION_CODES, value);
+}
+
+function workerFailureRejectionCode(value: unknown): PublishingProgressRejectionCode | undefined {
+  if (typeof value !== 'string' || !Object.prototype.hasOwnProperty.call(SAFE_FAILURE_REJECTION_CODES, value)) return undefined;
+  return SAFE_FAILURE_REJECTION_CODES[value as WorkerFailureClass];
+}
 
 function safeIdentifier(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.length < 1 || value.length > 128) return undefined;
@@ -132,19 +165,8 @@ export function safePublishingRejectionCode(error: unknown, signal?: AbortSignal
   if (signal?.aborted) return 'aborted';
   if (error && typeof error === 'object') {
     const typedFailureClass = (error as { failureClass?: unknown }).failureClass;
-    if (typeof typedFailureClass === 'string' && SAFE_FAILURE_CLASSES.has(typedFailureClass)) {
-      switch (typedFailureClass) {
-        case 'contract': return 'contract';
-        case 'timeout': return 'timeout';
-        case 'budget_exhausted': return 'budget_exhausted';
-        case 'auth': return 'auth';
-        case 'rate_limit': return 'rate_limit';
-        case 'transport': return 'transport';
-        case 'provider_error': return 'provider_error';
-        case 'malformed_output': return 'malformed_output';
-        case 'internal_error': return 'internal_error';
-      }
-    }
+    const failureRejectionCode = workerFailureRejectionCode(typedFailureClass);
+    if (failureRejectionCode) return failureRejectionCode;
     const name = (error as { name?: unknown }).name;
     switch (name) {
       case 'AbortError': return 'aborted';
@@ -206,16 +228,7 @@ export function findingCorrectionForCode(code: unknown): {
 
 /** Finite subtype mapping for validator diagnostics; values never include provider text. */
 export function findingRejectionCodeForCode(code: unknown): PublishingProgressRejectionCode {
-  switch (code) {
-    case 'path_invalid': return 'finding_path_invalid';
-    case 'path_not_changed': return 'finding_path_not_changed';
-    case 'line_invalid': return 'finding_line_invalid';
-    case 'line_not_added': return 'finding_line_not_added';
-    case 'line_unanchorable': return 'finding_line_unanchorable';
-    case 'severity_invalid': return 'finding_severity_invalid';
-    case 'contract_invalid':
-    default: return 'findings_contract_invalid';
-  }
+  return findingCorrectionForCode(code)?.rejectionCode ?? 'findings_contract_invalid';
 }
 
 /**
@@ -248,7 +261,7 @@ export function createPublishingProgress(
       ...(safeCount(event.turn) !== undefined ? { turn: safeCount(event.turn) } : {}),
       ...(safeCount(event.callSequence) !== undefined ? { callSequence: safeCount(event.callSequence) } : {}),
       ...(safeDuration(event.durationMs) !== undefined ? { durationMs: safeDuration(event.durationMs) } : {}),
-      ...(event.rejectionCode && SAFE_REJECTION_CODES.has(event.rejectionCode) ? { rejectionCode: event.rejectionCode } : {}),
+      ...(isSafePublishingRejectionCode(event.rejectionCode) ? { rejectionCode: event.rejectionCode } : {}),
       ...(typeof event.required === 'boolean' ? { required: event.required } : {}),
       ...(event.usage ? { usage: {
         ...(safeCount(event.usage.promptTokens) !== undefined ? { promptTokens: safeCount(event.usage.promptTokens) } : {}),

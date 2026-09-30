@@ -104,6 +104,21 @@ describe('publishing progress diagnostics', () => {
     expect(JSON.stringify(events)).not.toContain('private failure detail');
   });
 
+  it.each(['__proto__', 'constructor'])('omits inherited-name rejection code %s from emitted events', (untrustedCode) => {
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-untrusted-code', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+
+    const untrustedEvent = { task: 'provider_output', status: 'rejected', rejectionCode: untrustedCode };
+    progress.emit(untrustedEvent as unknown as Parameters<typeof progress.emit>[0]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ task: 'provider_output', status: 'rejected' });
+    expect(events[0]).not.toHaveProperty('rejectionCode');
+    expect(JSON.stringify(events)).not.toContain(untrustedCode);
+  });
+
   it('handles unmarked classic calls and retains finite worker failure classes', async () => {
     const events: Array<Record<string, unknown>> = [];
     const forwarded: OpenRouterRequest[] = [];
