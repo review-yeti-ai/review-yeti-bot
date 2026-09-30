@@ -1306,7 +1306,7 @@ const SEVERITIES = ['P0', 'P1', 'P2'];
 const DEFAULT_MAX_DIFF_CHARS = 410_400;
 // Keep each guarded `pr-reviewer` gateway request bounded while the SHA partitioner preserves
 // full patch coverage. This is a conservative input-size budget, not a provider context limit.
-const GUARDED_GATEWAY_MAX_DIFF_CHARS = 64_000;
+const GUARDED_GATEWAY_MAX_DIFF_CHARS = 80_000;
 const ACTION_MAX_DIFF_CAP = 10_000_000;
 // Do not put a completion-token ceiling on the live panel. A 24,576 cap plus high-effort
 // reasoning caused Ollama to spend the entire 90s total deadline on thought tokens and

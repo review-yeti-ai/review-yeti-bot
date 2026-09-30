@@ -34,6 +34,43 @@ const file = (p: string, size: number) => ({
   deletedLines: [],
 });
 
+function createCurrentSizedGatewayDiffFixture() {
+  const largePath = 'src/oversized-module.ts';
+  const largeFileHeader = `diff --git a/${largePath} b/${largePath}\nindex 0000000..1111111 100644\n--- a/${largePath}\n+++ b/${largePath}\n`;
+  const firstHunkPrefix = '@@ -1,0 +1,1 @@\n+';
+  const secondHunkPrefix = '@@ -2,0 +2,1 @@\n+';
+  const largeFileChars = 90_000;
+  const payloadChars = largeFileChars
+    - largeFileHeader.length
+    - firstHunkPrefix.length
+    - secondHunkPrefix.length
+    - 1;
+  const firstPayloadChars = Math.floor(payloadChars / 2);
+  const secondPayloadChars = payloadChars - firstPayloadChars;
+  const firstHunk = `${firstHunkPrefix}${'a'.repeat(firstPayloadChars)}`;
+  const secondHunk = `${secondHunkPrefix}${'b'.repeat(secondPayloadChars)}`;
+  const oversizedPatch = `${largeFileHeader}${firstHunk}\n${secondHunk}`;
+  const otherFiles = Array.from({ length: 32 }, (_unused, index) => {
+    const filePath = `src/module-${String(index).padStart(2, '0')}.ts`;
+    const size = index === 31 ? 4_650 : 4_637;
+    const prefix = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,1 +1,1 @@\n+`;
+    return {
+      path: filePath,
+      patch: `${prefix}${'x'.repeat(size - prefix.length)}`,
+      status: 'modified',
+    };
+  });
+  return {
+    largePath,
+    firstHunk,
+    secondHunk,
+    inputFiles: [
+      { path: largePath, patch: oversizedPatch, status: 'modified' },
+      ...otherFiles,
+    ],
+  };
+}
+
 describe('planDiffBudget', () => {
   it('reviews everything when the diff fits', () => {
     const plan = planDiffBudget([file('a.ts', 100), file('b.ts', 100)], 10_000);
@@ -196,12 +233,12 @@ describe('calculateLaneDiffBudget', () => {
 
 describe('guarded gateway input budgeting', () => {
   it('caps only the explicitly guarded pr-reviewer gateway alias and preserves tighter configured budgets', () => {
-    expect(GUARDED_GATEWAY_MAX_DIFF_CHARS).toBe(64_000);
+    expect(GUARDED_GATEWAY_MAX_DIFF_CHARS).toBe(80_000);
     expect(resolveSafeDiffCapacity({
       guardedGatewayDestination: true,
       model: 'pr-reviewer',
       maxDiffChars: 410_400,
-    })).toBe(64_000);
+    })).toBe(80_000);
     expect(resolveSafeDiffCapacity({
       guardedGatewayDestination: true,
       model: 'pr-reviewer',
@@ -216,7 +253,7 @@ describe('guarded gateway input budgeting', () => {
     });
     expect(guardedRuntime.guardedGatewayDestination).toBe(true);
     expect(guardedRuntime.model).toBe('pr-reviewer');
-    expect(resolveSafeDiffCapacity(guardedRuntime)).toBe(64_000);
+    expect(resolveSafeDiffCapacity(guardedRuntime)).toBe(80_000);
   });
 
   it('leaves an unguarded destination or a different gateway model at its configured budget', () => {
@@ -253,39 +290,11 @@ describe('guarded gateway input budgeting', () => {
       model: 'pr-reviewer',
       maxDiffChars: 410_400,
     });
-    const largePath = 'src/oversized-module.ts';
-    const largeFileHeader = `diff --git a/${largePath} b/${largePath}\nindex 0000000..1111111 100644\n--- a/${largePath}\n+++ b/${largePath}\n`;
-    const firstHunkPrefix = '@@ -1,0 +1,1 @@\n+';
-    const secondHunkPrefix = '@@ -2,0 +2,1 @@\n+';
-    const largeFileChars = 70_000;
-    const payloadChars = largeFileChars
-      - largeFileHeader.length
-      - firstHunkPrefix.length
-      - secondHunkPrefix.length
-      - 1;
-    const firstPayloadChars = Math.floor(payloadChars / 2);
-    const secondPayloadChars = payloadChars - firstPayloadChars;
-    const firstHunk = `${firstHunkPrefix}${'a'.repeat(firstPayloadChars)}`;
-    const secondHunk = `${secondHunkPrefix}${'b'.repeat(secondPayloadChars)}`;
-    const oversizedPatch = `${largeFileHeader}${firstHunk}\n${secondHunk}`;
-    expect(oversizedPatch).toHaveLength(largeFileChars);
-
-    const otherFiles = Array.from({ length: 32 }, (_, index) => {
-      const filePath = `src/module-${String(index).padStart(2, '0')}.ts`;
-      const size = index === 31 ? 4_650 : 4_637;
-      const prefix = `diff --git a/${filePath} b/${filePath}\n@@ -1,1 +1,1 @@\n+`;
-      return {
-        path: filePath,
-        patch: `${prefix}${'x'.repeat(size - prefix.length)}`,
-        status: 'modified',
-      };
-    });
-    const inputFiles = [
-      { path: largePath, patch: oversizedPatch, status: 'modified' },
-      ...otherFiles,
-    ];
+    const { largePath, firstHunk, secondHunk, inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const otherFiles = inputFiles.slice(1);
+    expect(inputFiles[0].patch).toHaveLength(90_000);
     const totalInputChars = inputFiles.reduce((sum, item) => sum + item.patch.length, 0);
-    expect(totalInputChars).toBe(218_397);
+    expect(totalInputChars).toBe(238_397);
 
     const plan = shaPartitionManager.createPartitionPlan(
       inputFiles,
@@ -388,6 +397,7 @@ describe('guarded gateway input budgeting', () => {
       expect(personaPrompt).toContain(secondHunk);
     }
   });
+
 });
 
 describe('REL-556: an oversized diff never reaches a direct-reasoning transport intact', () => {
