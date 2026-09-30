@@ -1,4 +1,10 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import { createPanelDeadlineSignal, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import type { WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
+import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
 import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   classifyFailure,
@@ -2437,10 +2443,12 @@ describe('REL-677 zoekt index-build telemetry', () => {
   });
 
   it('records a review_yeti_zoekt_index_build span, separate from lane time, when grounding is enabled', async () => {
-    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-zoekt-index' }));
-    // Deterministic duration: `now()` is called for startedAt, buildStart, the build-end
-    // measurement, then completedAt (in that order) on this success path.
-    const now = vi.fn().mockReturnValueOnce(1_000).mockReturnValueOnce(2_000).mockReturnValueOnce(2_042).mockReturnValue(3_000);
+    let currentMs = 1_000;
+    const now = vi.fn(() => currentMs);
+    const zoektGrounding = vi.fn(async () => {
+      currentMs += 42;
+      return { indexDir: '/tmp/fake-zoekt-index' };
+    });
     const before = histogramCountForStatus(await getPrometheusMetrics(), 'ok');
     await runPublishingReviewWorker(
       env({ ZOEKT_GROUNDING_ENABLED: 'true' }),
@@ -2602,5 +2610,268 @@ describe('isGithubDiffNotRenderableError', () => {
     const error = new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 1, 406);
     expect(classifyFailure(error)).toBe('contract');
     expect(isGithubDiffNotRenderableError(error)).toBe(true);
+  });
+});
+
+describe('REL-1211 absolute publishing budget', () => {
+  const start = Date.parse('2026-09-30T16:00:50Z');
+  const clean = () => ({ applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
+    quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } });
+  const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 121_000 + remaining).toISOString() });
+  const jevEnv = { REVIEW_YETI_JEV_SHADOW: 'true', TYPESAFE_BASE_URL: 'https://api.typesafe.example/v1/systemone',
+    TYPESAFE_MODEL: 'jev-latest', TYPESAFE_API_KEY: 'ts-test-key', TYPESAFE_MODEL_PIN: 'jev-1.13.0' };
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(start); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it.each([0, -100])('REL-1211 refuses exhausted admission before main or shadow invocation: %s', async (remaining) => {
+    const completion = { reportTerminalFailure: vi.fn(async (_event: { diagnostics?: unknown }) => undefined),
+      reportTerminalSuccess: vi.fn(async () => undefined), reportReviewEvidence: vi.fn(async () => undefined) };
+    const shadow = vi.fn();
+    const ask = vi.fn();
+    const d = deps({ completion, composedReviewRunner: shadow, zoektGrounding: vi.fn(async () => ({})), jevTriageShadow: { asker: { ask } } });
+    const input = env({ ...jevEnv, ...deadlineEnv(remaining), REVIEW_EXECUTION_ATTEMPT: '2',
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) });
+    await expect(runPublishingReviewWorker(input, d as never)).rejects.toMatchObject({ name: 'PanelDeadlineExceededError' });
+    expect(d.panelRunner).not.toHaveBeenCalled(); expect(shadow).not.toHaveBeenCalled();
+    expect(ask).not.toHaveBeenCalled();
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+    expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ executionAttempt: 2,
+      failureClass: 'timeout', diagnostics: expect.objectContaining({ reason: 'worker_terminal_deadline_exceeded' }) }));
+    expect(completion.reportTerminalFailure.mock.calls[0][0].diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('includes elapsed grounding and setup in the cutoff, rather than restarting nested panel work', async () => {
+    const grounding = vi.fn(async () => { await new Promise(resolve => setTimeout(resolve, 40)); return {}; });
+    let observed!: {
+      signal: AbortSignal;
+      deadlineBudget: WorkerPanelDeadlineBudget;
+      deadlineNow: () => number;
+    };
+    const panelRunner = vi.fn((options: typeof observed) => { observed = options; return new Promise(() => {}); });
+    const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
+    const d = deps({ panelRunner, completion, zoektGrounding: grounding });
+    const promise = runPublishingReviewWorker(env(deadlineEnv(50)), d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    const nested = createPanelDeadlineSignal(
+      1_800,
+      observed.signal,
+      observed.deadlineBudget,
+      observed.deadlineNow,
+    );
+    expect(nested.budget.deadlineAtMs).toBe(start + 50);
+    nested.cleanup();
+    expect(observed.signal.aborted).toBe(true);
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cuts off a real never-settling grounding await and publishes timeout without starting models', async () => {
+    const scheduled = vi.spyOn(globalThis, 'setTimeout');
+    const cleared = vi.spyOn(globalThis, 'clearTimeout');
+    const intervals = vi.spyOn(globalThis, 'setInterval');
+    const clearedIntervals = vi.spyOn(globalThis, 'clearInterval');
+    const ticks = vi.spyOn(process, 'nextTick');
+    const microtasks = vi.spyOn(globalThis, 'queueMicrotask');
+    let signal!: AbortSignal;
+    const grounding = vi.fn(({ signal: current }: { signal: AbortSignal }) => { signal = current; return new Promise(() => {}); });
+    const completion = { reportTerminalFailure: vi.fn(async (_event: unknown) => undefined) };
+    const client = { complete: vi.fn() };
+    const d = deps({ completion, client, zoektGrounding: grounding });
+    const promise = runPublishingReviewWorker(env(deadlineEnv(50)), d as never);
+    const failure = expect(promise).rejects.toMatchObject({ name: 'PanelDeadlineExceededError', failureReason: 'worker_terminal_deadline_exceeded' });
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    expect(Date.now()).toBe(start + 50);
+    expect(grounding).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(true);
+    expect(d.panelRunner).not.toHaveBeenCalled(); expect(client.complete).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'timeout' }));
+    const deadlineTimerIndex = scheduled.mock.calls.findIndex(([, ms]) => ms === 50);
+    expect(deadlineTimerIndex).toBeGreaterThanOrEqual(0);
+    expect(cleared).toHaveBeenCalledWith(scheduled.mock.results[deadlineTimerIndex].value);
+    // The expired timer was disarmed; flush already-settled cleanup at the same
+    // clock so neither a live deadline nor a 1s JEV flush can hide in this check.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Date.now()).toBe(start + 50);
+    const pendingBeforeTicks = vi.getTimerCount();
+    vi.runAllTicks();
+    expect(Date.now()).toBe(start + 50);
+    const cleanup = { pendingBeforeTicks, pendingAfterTicks: vi.getTimerCount(), at: Date.now(),
+      timers: scheduled.mock.calls.map(([, ms], index) => ({ ms,
+        cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })),
+      intervals: intervals.mock.calls.map(([, ms], index) => ({ ms,
+        cleared: clearedIntervals.mock.calls.some(([handle]) => handle === intervals.mock.results[index].value) })),
+      ticks: ticks.mock.calls.map(([callback]) => callback.name), microtasks: microtasks.mock.calls.length };
+    // Settle only zero-delay acknowledgements at this exact clock, never an arbitrary
+    // model/transport/deadline callback or a future timer.
+    for (const [index, record] of cleanup.timers.entries()) {
+      if (record.cleared) continue;
+      expect(record.ms, JSON.stringify(cleanup)).toBe(0);
+      const acknowledgement = scheduled.mock.calls[index][0];
+      expect(acknowledgement).toEqual(expect.any(Function));
+      acknowledgement();
+      clearTimeout(scheduled.mock.results[index].value);
+    }
+    const pendingAfterAcknowledgement = vi.getTimerCount();
+    console.info('REL-1211 same-clock grounding cleanup', JSON.stringify({ ...cleanup, pendingAfterAcknowledgement }));
+    expect(Date.now()).toBe(start + 50);
+    expect(pendingAfterAcknowledgement, JSON.stringify(cleanup)).toBe(0);
+    // A same-clock queued-job drain must leave real future timers observable.
+    const futureDeadline = vi.fn(); const futureFlush = vi.fn();
+    const futureDeadlineHandle = setTimeout(futureDeadline, 50);
+    const futureFlushHandle = setTimeout(futureFlush, 1_000);
+    vi.runAllTicks();
+    expect(Date.now()).toBe(start + 50);
+    expect(futureDeadline).not.toHaveBeenCalled(); expect(futureFlush).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2);
+    clearTimeout(futureDeadlineHandle); clearTimeout(futureFlushHandle);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('forwards real enabled shrinking to both deferred engines without changing their shared admitted cutoff', async () => {
+    let main!: {
+      signal: AbortSignal;
+      diffShrink?: unknown;
+      deadlineBudget: WorkerPanelDeadlineBudget;
+      deadlineNow: () => number;
+    };
+    let shadow!: typeof main;
+    const provider = { readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) };
+    const d = deps({ repoFileProviderFactory: vi.fn(() => provider), zoektGrounding: vi.fn(async () => ({})),
+      panelRunner: vi.fn(async (input: typeof main) => { main = input; return clean(); }),
+      composedReviewRunner: vi.fn(async (input: typeof main) => { shadow = input; return clean(); }) });
+    await runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_DIFF_SHRINK: 'all',
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never);
+    expect(provider.readFile).toHaveBeenCalledWith('.gitattributes');
+    expect(main.diffShrink).toMatchObject({ enabled: true });
+    expect(shadow.diffShrink).toBe(main.diffShrink);
+    expect(main.signal).not.toBe(shadow.signal);
+    for (const context of [main, shadow]) {
+      const nested = createPanelDeadlineSignal(
+        1_800,
+        context.signal,
+        context.deadlineBudget,
+        context.deadlineNow,
+      );
+      expect(nested.budget.deadlineAtMs).toBe(start + 50);
+      nested.cleanup();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Date.now()).toBe(start);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds hung main and shadow by the same cutoff and refuses late model success', async () => {
+    let mainSignal!: AbortSignal; let shadowSignal!: AbortSignal;
+    let lateMain!: (result: unknown) => void; let lateShadow!: (result: unknown) => void;
+    const panelRunner = vi.fn(({ signal }: { signal: AbortSignal }) => { mainSignal = signal; return new Promise(resolve => { lateMain = resolve; }); });
+    const composedReviewRunner = vi.fn(({ signal }: { signal: AbortSignal }) => { shadowSignal = signal; return new Promise(resolve => { lateShadow = resolve; }); });
+    const d = deps({ panelRunner, composedReviewRunner, zoektGrounding: vi.fn(async () => ({})) });
+    const promise = runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    expect(panelRunner).toHaveBeenCalledOnce(); expect(composedReviewRunner).toHaveBeenCalledOnce();
+    expect(mainSignal).not.toBe(shadowSignal);
+    expect(mainSignal.aborted).toBe(true); expect(shadowSignal.reason).toBe(mainSignal.reason);
+    lateMain(clean()); lateShadow(clean());
+    await vi.advanceTimersByTimeAsync(1);
+    expect(d.checkClient.completeCheck).not.toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'success' }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('checks the deferred shadow invocation after a synchronous main callback crosses the cutoff', async () => {
+    const composedReviewRunner = vi.fn();
+    const panelRunner = vi.fn(async () => { vi.setSystemTime(start + 50); return clean(); });
+    const d = deps({ panelRunner, composedReviewRunner, zoektGrounding: vi.fn(async () => ({})) });
+    await expect(runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never))
+      .rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    expect(panelRunner).toHaveBeenCalledOnce();
+    expect(composedReviewRunner).not.toHaveBeenCalled();
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+  });
+
+  it('preserves a typed terminal timeout in authoritative exact-attempt evidence and leaves the receipt interval usable', async () => {
+    const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 1 } } });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const prepared = preparePublishingPolicy({ content, source: { repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+      contentDigest: createHash('sha256').update(content).digest('hex') } }, transport);
+    const input = env({ ...deadlineEnv(50), REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_EXECUTION_ATTEMPT: '3',
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl,
+      GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE' });
+    let deliveredAt = 0; let delivered!: Record<string, any>;
+    const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      delivered = JSON.parse(String(init.body));
+      await new Promise(resolve => setTimeout(resolve, 30_000));
+      deliveredAt = Date.now();
+      return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1', runId: input.REVIEW_RUN_ID, status: 'recorded' }));
+    });
+    // The real transport retains its 30s total budget; delivery resolves shortly before it.
+    fetch.mockImplementationOnce(async (_url, init) => {
+      delivered = JSON.parse(String(init.body));
+      await new Promise(resolve => setTimeout(resolve, 29_000));
+      deliveredAt = Date.now(); return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1', runId: input.REVIEW_RUN_ID, status: 'recorded' }));
+    });
+    const reviewCompletion = new HttpWorkerReviewCompletionAdapter({ endpoint: input.REVIEW_COMPLETION_URL!, token: 'ghs_Synthetic-Worker.header_segment.signature-with-dash', fetchImplementation: fetch as never });
+    const d = deps({ panelRunner: vi.fn(() => new Promise(() => {})), reviewCompletion, zoektGrounding: vi.fn(async () => ({})),
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) });
+    const promise = runPublishingReviewWorker(input, d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(29_050); await failure;
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delivered).toMatchObject({ runId: input.REVIEW_RUN_ID, headSha: HEAD, executionAttempt: 3,
+      result: { coverageComplete: false, quorumSatisfied: false, failureDiagnostics: { reason: 'worker_terminal_deadline_exceeded' } } });
+    expect(delivered.result.failureDiagnostics).not.toHaveProperty('recoverableIncompletePanel');
+    expect(delivered.result.personas.every((persona: any) => persona.status === 'ERROR' && persona.errorClass === 'timeout')).toBe(true);
+    const terminal = Date.parse(input.REVIEW_TERMINAL_DEADLINE!);
+    const hardStop = start + (Math.floor((terminal - start) / 1_000) - 60) * 1_000;
+    expect(deliveredAt).toBeLessThan(hardStop);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('classifies both admitted and local typed panel deadlines as timeout without retry markers', () => {
+    expect(classifyFailure(new PanelDeadlineExceededError(10, true))).toBe('timeout');
+    expect(classifyFailure(new PanelDeadlineExceededError(10))).toBe('timeout');
+  });
+
+  it('aborts enabled hung JEV model work at the cutoff and refuses new or late decisions', async () => {
+    let signal!: AbortSignal;
+    let late!: (result: JevOutcome<string>) => void;
+    const ask = vi.fn((request: JevAskRequest<string>) => { signal = request.signal!; return new Promise<JevOutcome<string>>(resolve => { late = resolve; }); });
+    const d = deps({ panelRunner: vi.fn(() => new Promise(() => {})), zoektGrounding: vi.fn(async () => ({})), jevTriageShadow: { asker: { ask } } });
+    const promise = runPublishingReviewWorker(env({ ...jevEnv, ...deadlineEnv(50) }), d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(ask).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(true);
+    late({ status: 'unavailable', reason: 'timeout', durationMs: 50 });
+    await vi.advanceTimersByTimeAsync(1_000); await failure;
+    expect(ask).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(d.checkClient.completeCheck).not.toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'success' }));
+  });
+
+  it('links JEV to an earlier caller cancellation synchronously without turning SIGTERM into supersession', async () => {
+    const parent = new AbortController();
+    let signal!: AbortSignal;
+    let late!: (result: JevOutcome<string>) => void;
+    const ask = vi.fn((request: JevAskRequest<string>) => { signal = request.signal!; return new Promise<JevOutcome<string>>(resolve => { late = resolve; }); });
+    const grounding = vi.fn(async () => {
+      parent.abort(new Error('SIGTERM'));
+      expect(signal.aborted).toBe(true);
+      late({ status: 'unavailable', reason: 'timeout', durationMs: 0 });
+      return {};
+    });
+    const completion = { reportTerminalFailure: vi.fn(async (_event: unknown) => undefined) };
+    const d = deps({ signal: parent.signal, pullRequestIdentityReader: vi.fn(async () => ({ headSha: HEAD })), completion,
+      zoektGrounding: grounding, jevTriageShadow: { asker: { ask } } });
+    await expect(runPublishingReviewWorker(env({ ...jevEnv, ...deadlineEnv(50) }), d as never)).rejects.toMatchObject({ name: 'PanelCancellationError' });
+    expect(d.panelRunner).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    // Drain already-settled cleanup callbacks at the same clock; a live deadline
+    // or finish-flush timer would remain and still fail the zero-handle assertion.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Date.now()).toBe(start);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
