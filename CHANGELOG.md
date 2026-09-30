@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.13](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.12...v1.100.13) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** attribute publishing panel progress ([#1178](https://github.com/review-yeti-ai/review-yeti-bot/issues/1178)) ([afbc4b4](https://github.com/review-yeti-ai/review-yeti-bot/commit/afbc4b45724d7330fa6854f9dee53b3e4688b9be))
+
 ## [1.100.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.11...v1.100.12) (2026-09-30)
 
 
