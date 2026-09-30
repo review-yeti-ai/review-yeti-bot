@@ -1,4 +1,5 @@
 import { isRecoverableFailureTitle, REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
+import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from './incompleteRosterSummary';
 
 export const MAX_RECOVERABLE_REVIEW_GENERATION = 3;
 export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
@@ -15,6 +16,8 @@ export interface ReviewGenerationRecoveryRequest {
   runId: string;
   expectedGeneration: number;
   expectedAppId: number;
+  /** Candidate classification only; durable findings are checked before admission. */
+  incompleteP2Recovery?: true;
 }
 
 export interface ReviewGenerationRecoveryEvidence {
@@ -27,6 +30,8 @@ export interface ReviewGenerationRecoveryEvidence {
   legacyIncompleteRoster?: {
     workerSummary: string;
     workerCompletedAt: string;
+    /** The next actual worker bounds older Gate history; absent for the latest worker. */
+    nextWorkerStartedAt?: string;
     gateChecks: unknown[];
   };
 }
@@ -49,8 +54,9 @@ function refuse(): never {
 }
 
 function completedAt(value: unknown): number {
-  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)
-    ? Date.parse(value) : NaN;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) return NaN;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().replace('.000Z', 'Z') === value ? parsed : NaN;
 }
 
 /** Compatibility with the central caller's strict old-publisher no-verdict recovery contract. */
@@ -62,21 +68,34 @@ function hasLegacyIncompleteRosterProof(
     || !Number.isFinite(completedAt(proof.workerCompletedAt))
     || !Array.isArray(proof.gateChecks) || proof.gateChecks.length === 0
     || proof.gateChecks.length >= 1_000) return false;
-  const lines = proof.workerSummary.split('\n');
-  const findings = lines.filter((line) => line.startsWith('Findings: '));
-  const coverage = lines.filter((line) => line.startsWith('Coverage: '));
-  if (lines[0] !== `Verdict \`BLOCK\` at \`${request.headSha}\`.`
-    || findings.length !== 1
-    || findings[0] !== 'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).'
-    || coverage.length !== 1) return false;
-  const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverage[0]);
-  const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverage[0]);
-  if (!panel && !composed) return false;
-  const [expected, completed] = (panel ? panel.slice(1) : composed!.slice(2)).map(Number);
-  if (!Number.isSafeInteger(expected) || expected <= 0 || !Number.isSafeInteger(completed)
-    || completed < 0 || completed >= expected || (composed && Number(composed[1]) !== expected)) return false;
+  const counts = parseIncompleteRosterSummary(proof.workerSummary, request.headSha);
+  if (!counts) return false;
+  const isZeroFindingSummary = counts.canonicalFindingCountText === '0'
+    && counts.rawFindingCountText === '0';
+  const isP2FindingSummary = request.incompleteP2Recovery === true
+    && /^[1-9][0-9]*$/u.test(counts.canonicalFindingCountText)
+    && /^[1-9][0-9]*$/u.test(counts.rawFindingCountText);
+  if (!isZeroFindingSummary && !isP2FindingSummary) return false;
 
+  const newest = selectIncompleteRecoveryGate(request, proof);
+  const output = record(newest?.output);
+  return newest?.conclusion === 'failure'
+    && output?.title === 'Review Yeti Gate: Failed (incomplete panel)'
+    && output.summary === formatIncompleteRosterGateSummary(counts.expectedLanes, counts.completedLanes);
+}
+
+/** The latest real Gate within the exact worker's lifetime boundary. Never search
+ * backwards past a newer conflicting result to find a convenient failure. */
+export function selectIncompleteRecoveryGate(
+  request: ReviewGenerationRecoveryRequest,
+  proof: NonNullable<ReviewGenerationRecoveryEvidence['legacyIncompleteRoster']>,
+): Record<string, unknown> | undefined {
+  const lower = completedAt(proof.workerCompletedAt);
+  const upper = proof.nextWorkerStartedAt === undefined ? Infinity : completedAt(proof.nextWorkerStartedAt);
+  if (!Number.isFinite(lower) || !(upper > lower)
+    || !Array.isArray(proof.gateChecks) || proof.gateChecks.length === 0 || proof.gateChecks.length >= 1_000) return undefined;
   let newest: Record<string, unknown> | undefined;
+  const candidates: Record<string, unknown>[] = [];
   const seen = new Set<number>();
   for (const value of proof.gateChecks) {
     const gate = record(value);
@@ -87,16 +106,24 @@ function hasLegacyIncompleteRosterProof(
       || app?.id !== request.expectedAppId || app.slug !== REVIEW_WORKER_APP_SLUG
       || typeof gate.external_id !== 'string'
       || !/^review-yeti-gate:v1:[a-f0-9]{64}$/u.test(gate.external_id)
-      || gate.status !== 'completed' || !Number.isFinite(completedAt(gate.completed_at))) return false;
+      || gate.status !== 'completed' || !Number.isFinite(completedAt(gate.completed_at))) return undefined;
     seen.add(id as number);
+    const time = completedAt(gate.completed_at);
+    if (time < lower || time >= upper) continue;
+    candidates.push(gate);
     if (!newest || completedAt(gate.completed_at) > completedAt(newest.completed_at)
       || (completedAt(gate.completed_at) === completedAt(newest.completed_at) && (id as number) > (newest.id as number))) newest = gate;
   }
-  const output = record(newest?.output);
-  return newest?.conclusion === 'failure'
-    && completedAt(newest.completed_at) >= completedAt(proof.workerCompletedAt)
-    && output?.title === 'Review Yeti Gate: Failed (incomplete panel)'
-    && output.summary === `Review Yeti Gate failed: the panel expected ${expected} review lane(s) but ${completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
+  if (request.incompleteP2Recovery === true && newest) {
+    const decisionFields = (value: Record<string, unknown>) => {
+      const output = record(value.output);
+      return JSON.stringify([value.external_id, value.status, value.conclusion, output?.title, output?.summary]);
+    };
+    const latestDecisions = new Set(candidates.filter((gate) =>
+      completedAt(gate.completed_at) === completedAt(newest!.completed_at)).map(decisionFields));
+    if (latestDecisions.size !== 1) return undefined;
+  }
+  return newest;
 }
 
 export function validateReviewGenerationRecoveryRequest(
@@ -126,7 +153,10 @@ export function validateReviewGenerationRecoveryEvidence(
       || entry.externalId !== `${request.runId}:a${generation}`
       || !RECOVERABLE_WORKER_CONCLUSIONS.has(entry.conclusion)
       || !(isRecoverableFailureTitle(entry.title)
-        || (entry.title === 'Review Yeti: BLOCK' && hasLegacyIncompleteRosterProof(request, entry.legacyIncompleteRoster)))) refuse();
+        || (entry.title === 'Review Yeti: BLOCK'
+          && (request.incompleteP2Recovery !== true || generation === request.expectedGeneration - 1
+            || entry.legacyIncompleteRoster?.nextWorkerStartedAt !== undefined)
+          && hasLegacyIncompleteRosterProof(request, entry.legacyIncompleteRoster)))) refuse();
   }
   return evidence;
 }
@@ -141,7 +171,21 @@ export function evaluateReviewGenerationRecoveryLedger(
 
   const evidence: ReviewGenerationRecoveryEvidence[] = [];
   const seenIds = new Set<number>();
-  for (const value of rows) {
+  const orderedRows = [...rows].sort((left, right) => {
+    const generation = (value: unknown) => Number(/:a([1-9][0-9]*)$/u.exec(String(record(value)?.external_id))?.[1] ?? 0);
+    return generation(left) - generation(right);
+  });
+  if (request.incompleteP2Recovery === true) {
+    const workers = orderedRows.map(record).filter((row) => row?.external_id !== `merge-group:${request.headSha}`);
+    let previousCompleted = -Infinity;
+    for (const worker of workers) {
+      const start = completedAt(worker?.started_at);
+      const end = completedAt(worker?.completed_at);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || previousCompleted >= start) refuse();
+      previousCompleted = end;
+    }
+  }
+  for (const value of orderedRows) {
     const row = record(value);
     const app = record(row?.app);
     const output = record(row?.output);
@@ -172,6 +216,11 @@ export function evaluateReviewGenerationRecoveryLedger(
       entry.legacyIncompleteRoster = {
         workerSummary: output.summary, workerCompletedAt: row.completed_at, gateChecks,
       };
+      if (request.incompleteP2Recovery === true && generation < request.expectedGeneration - 1) {
+        const next = orderedRows.map(record).find((candidate) => candidate?.external_id === `${request.runId}:a${generation + 1}`);
+        if (!next || !Number.isFinite(completedAt(next.started_at))) refuse();
+        entry.legacyIncompleteRoster.nextWorkerStartedAt = String(next.started_at);
+      }
     }
     evidence.push(entry);
   }

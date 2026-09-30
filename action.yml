@@ -138,6 +138,12 @@ inputs:
       state; verified direct repository dispatches remain compatible without it.
     required: false
     default: ''
+  incomplete-p2-recovery:
+    description: >-
+      Central nomination for a bounded incomplete P2-only panel replacement. The service
+      must validate its own immutable findings archive before accepting the request.
+    required: false
+    default: 'false'
   openrouter-allowed-models:
     description: >-
       Trusted workflow/base-config OpenRouter model allowlist, as comma-separated model IDs.
@@ -501,6 +507,7 @@ runs:
         DOKS_PUBLISH_MODE: ${{ inputs.doks-publish-mode }}
         REFRESH_REQUESTED: ${{ inputs.refresh-requested }}
         REFRESH_EXECUTION_ATTEMPT: ${{ inputs.refresh-execution-attempt }}
+        INCOMPLETE_P2_RECOVERY: ${{ inputs.incomplete-p2-recovery }}
         EXPECTED_GENERATION: ${{ inputs.expected-generation }}
         ACTION_SHA: ${{ inputs.action-sha }}
         REPOSITORY_ID: ${{ steps.target.outputs.repository-id }}

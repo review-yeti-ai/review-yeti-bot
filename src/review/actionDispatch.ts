@@ -4,6 +4,7 @@ import {
   CENTRAL_REVIEW_REPOSITORY,
   isCentralReviewDispatchIdentity,
 } from './reviewCheckIdentity';
+import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from './incompleteP2RecoveryLimits';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -24,6 +25,8 @@ export const actionDispatchRequestSchema = z.object({
   /** One-based worker generation proven by the central check ledger. */
   refreshExecutionAttempt: positiveInteger.optional(),
   expectedGeneration: positiveInteger.optional(),
+  /** REL-1198: candidate only; the service requires its own retained finding archive. */
+  incompleteP2Recovery: z.literal(true).optional(),
   checkId: positiveInteger.optional(),
   requestedAt: z.string().datetime({ offset: true }),
   caller: z.object({
@@ -45,6 +48,14 @@ export const actionDispatchRequestSchema = z.object({
     retroAnalysis: z.union([z.string(), z.record(z.unknown())]).optional(),
   }).strict().optional(),
 }).strict().superRefine((request, context) => {
+  if (request.incompleteP2Recovery === true && (request.refreshRequested !== true
+    || request.expectedGeneration === undefined || request.expectedGeneration < 2
+    || request.expectedGeneration > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
+    || request.refreshExecutionAttempt !== request.expectedGeneration - 1)) {
+    context.addIssue({ code: z.ZodIssueCode.custom,
+      message: 'incomplete P2 recovery requires a bounded exact-generation refresh',
+      path: ['incompleteP2Recovery'] });
+  }
   if (request.refreshRequested === true && request.refreshExecutionAttempt === undefined) {
     context.addIssue({ code: z.ZodIssueCode.custom,
       message: 'refresh execution attempt is required for an explicit retry',

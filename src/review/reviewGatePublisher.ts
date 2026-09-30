@@ -1,6 +1,7 @@
 import type { GitHubReviewGateClient } from '../github/reviewGateClient';
 import { isGateProgressState, type ReviewGateRepository, type StoredReviewGate } from './reviewGateContracts';
 import { coverageContractGateDetailOf, coverageContractGateMetadata } from './coverageContractGate';
+import { formatIncompleteRosterGateSummary } from './incompleteRosterSummary';
 
 export interface ReviewGatePublisherOptions {
   repository: ReviewGateRepository;
@@ -113,9 +114,7 @@ function gateFailureMetadata(gate: StoredReviewGate): { title?: string; summary?
   if (skew) {
     return {
       title: 'Review Yeti Gate: Failed (incomplete panel)',
-      summary: `Review Yeti Gate failed: the panel expected ${gate.expectedLanes} review lane(s) `
-        + `but ${gate.completedLanes} completed. This is an incomplete review, not a findings verdict; `
-        + 're-dispatch the review for this head.',
+      summary: formatIncompleteRosterGateSummary(gate.expectedLanes!, gate.completedLanes!),
     };
   }
   return {

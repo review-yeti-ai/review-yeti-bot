@@ -6,6 +6,7 @@ const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.
   ? path.resolve(__dirname, '../..')
   : path.resolve(__dirname, '../../..');
 const pipeline = require(path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js'));
+const { assessReviewAssignmentBudget } = require(path.join(rootRepoDir, '.github/workflows/pipelines/incremental-review-scope.js'));
 
 const {
   planDiffBudget,
@@ -18,6 +19,10 @@ const {
   DIRECT_REASONING_SAFE_PROMPT_TOKENS,
   reviewWithModel,
   PERSONA_CHARTERS,
+  DEFAULT_PERSONA_IDS,
+  resolveSafeDiffCapacity,
+  GUARDED_GATEWAY_MAX_DIFF_CHARS,
+  shaPartitionManager,
 } = pipeline;
 
 const securityPersona = PERSONA_CHARTERS.find((p: any) => p.id === 'security');
@@ -28,6 +33,43 @@ const file = (p: string, size: number) => ({
   addedLines: [],
   deletedLines: [],
 });
+
+function createCurrentSizedGatewayDiffFixture() {
+  const largePath = 'src/oversized-module.ts';
+  const largeFileHeader = `diff --git a/${largePath} b/${largePath}\nindex 0000000..1111111 100644\n--- a/${largePath}\n+++ b/${largePath}\n`;
+  const firstHunkPrefix = '@@ -1,0 +1,1 @@\n+';
+  const secondHunkPrefix = '@@ -2,0 +2,1 @@\n+';
+  const largeFileChars = 90_000;
+  const payloadChars = largeFileChars
+    - largeFileHeader.length
+    - firstHunkPrefix.length
+    - secondHunkPrefix.length
+    - 1;
+  const firstPayloadChars = Math.floor(payloadChars / 2);
+  const secondPayloadChars = payloadChars - firstPayloadChars;
+  const firstHunk = `${firstHunkPrefix}${'a'.repeat(firstPayloadChars)}`;
+  const secondHunk = `${secondHunkPrefix}${'b'.repeat(secondPayloadChars)}`;
+  const oversizedPatch = `${largeFileHeader}${firstHunk}\n${secondHunk}`;
+  const otherFiles = Array.from({ length: 32 }, (_unused, index) => {
+    const filePath = `src/module-${String(index).padStart(2, '0')}.ts`;
+    const size = index === 31 ? 4_650 : 4_637;
+    const prefix = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n@@ -1,1 +1,1 @@\n+`;
+    return {
+      path: filePath,
+      patch: `${prefix}${'x'.repeat(size - prefix.length)}`,
+      status: 'modified',
+    };
+  });
+  return {
+    largePath,
+    firstHunk,
+    secondHunk,
+    inputFiles: [
+      { path: largePath, patch: oversizedPatch, status: 'modified' },
+      ...otherFiles,
+    ],
+  };
+}
 
 describe('planDiffBudget', () => {
   it('reviews everything when the diff fits', () => {
@@ -187,6 +229,175 @@ describe('calculateLaneDiffBudget', () => {
     const budget = calculateLaneDiffBudget([ollamaTransport], 1);
     expect(budget).toBeGreaterThanOrEqual(1);
   });
+});
+
+describe('guarded gateway input budgeting', () => {
+  it('caps only the explicitly guarded pr-reviewer gateway alias and preserves tighter configured budgets', () => {
+    expect(GUARDED_GATEWAY_MAX_DIFF_CHARS).toBe(80_000);
+    expect(resolveSafeDiffCapacity({
+      guardedGatewayDestination: true,
+      model: 'pr-reviewer',
+      maxDiffChars: 410_400,
+    })).toBe(80_000);
+    expect(resolveSafeDiffCapacity({
+      guardedGatewayDestination: true,
+      model: 'pr-reviewer',
+      maxDiffChars: 32_000,
+    })).toBe(32_000);
+
+    const guardedRuntime = pipeline.resolveModelConfig({
+      OPENROUTER_API_KEY: 'test-only',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      OPENROUTER_MODEL: 'neuralwatt/glm-5.3-flash',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+    expect(guardedRuntime.guardedGatewayDestination).toBe(true);
+    expect(guardedRuntime.model).toBe('pr-reviewer');
+    expect(resolveSafeDiffCapacity(guardedRuntime)).toBe(80_000);
+  });
+
+  it('leaves an unguarded destination or a different gateway model at its configured budget', () => {
+    expect(resolveSafeDiffCapacity({
+      guardedGatewayDestination: false,
+      model: 'pr-reviewer',
+      maxDiffChars: 410_400,
+    })).toBe(410_400);
+    expect(resolveSafeDiffCapacity({
+      guardedGatewayDestination: true,
+      model: 'z-ai/glm-5.3-flash',
+      maxDiffChars: 410_400,
+    })).toBe(410_400);
+
+    const directOpenRouter = pipeline.resolveModelConfig({
+      OPENROUTER_API_KEY: 'test-only',
+      OPENROUTER_BASE_URL: 'https://openrouter.ai/api/v1',
+      OPENROUTER_MODEL: 'z-ai/glm-5.3-flash',
+    });
+    expect(resolveSafeDiffCapacity(directOpenRouter)).toBe(410_400);
+    const unclassifiedGateway = pipeline.resolveModelConfig({
+      OPENROUTER_API_KEY: 'test-only',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      OPENROUTER_MODEL: 'neuralwatt/glm-5.3-flash',
+    });
+    expect(unclassifiedGateway.guardedGatewayDestination).toBe(false);
+    expect(unclassifiedGateway.model).toBe('neuralwatt/glm-5.3-flash');
+    expect(resolveSafeDiffCapacity(unclassifiedGateway)).toBe(410_400);
+  });
+
+  it('partitions a current-sized full diff into admitted, lossless persona assignments', async () => {
+    const gatewayDiffBudget = resolveSafeDiffCapacity({
+      guardedGatewayDestination: true,
+      model: 'pr-reviewer',
+      maxDiffChars: 410_400,
+    });
+    const { largePath, firstHunk, secondHunk, inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const otherFiles = inputFiles.slice(1);
+    expect(inputFiles[0].patch).toHaveLength(90_000);
+    const totalInputChars = inputFiles.reduce((sum, item) => sum + item.patch.length, 0);
+    expect(totalInputChars).toBe(238_397);
+
+    const plan = shaPartitionManager.createPartitionPlan(
+      inputFiles,
+      '0123456789abcdef0123456789abcdef01234567',
+      'fedcba9876543210fedcba9876543210fedcba98',
+      gatewayDiffBudget,
+    );
+
+    expect(plan.partitions).toHaveLength(4);
+    expect(plan.coveragePercent).toBe(100);
+    expect(plan.omittedFilesCount).toBe(0);
+    expect(plan.totalOriginalChars).toBe(totalInputChars);
+    expect(plan.fileManifest).toHaveLength(inputFiles.length);
+    expect(plan.partitions.every((partition: any) => partition.totalChars <= gatewayDiffBudget)).toBe(true);
+
+    const partitionFiles = plan.partitions.flatMap((partition: any) => partition.files);
+    for (const originalFile of otherFiles) {
+      const reviewedCopies = partitionFiles.filter((part: any) => part.path === originalFile.path);
+      expect(reviewedCopies).toHaveLength(1);
+      expect(reviewedCopies[0].patch).toBe(originalFile.patch);
+    }
+    const oversizedChunks = partitionFiles.filter((part: any) => part.path === largePath);
+    expect(oversizedChunks).toHaveLength(2);
+    expect(oversizedChunks.every((part: any) => part.patch.length <= gatewayDiffBudget)).toBe(true);
+    expect(oversizedChunks.filter((part: any) => part.patch.includes(firstHunk))).toHaveLength(1);
+    expect(oversizedChunks.filter((part: any) => part.patch.includes(secondHunk))).toHaveLength(1);
+
+    const assignmentBudget = assessReviewAssignmentBudget(
+      plan.partitions.length,
+      DEFAULT_PERSONA_IDS.length,
+      24,
+    );
+    expect(DEFAULT_PERSONA_IDS).toHaveLength(5);
+    expect(assignmentBudget).toEqual({ planned: 20, maximum: 24, admitted: true });
+
+    const requests: Array<{ personaId: string; url: string; body: any }> = [];
+    const fetchImplementationFor = (personaId: string) => async (input: string | URL | Request, init: RequestInit = {}) => {
+      const body = JSON.parse(String(init.body));
+      requests.push({ personaId, url: input instanceof Request ? input.url : String(input), body });
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"findings":[]}' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 1, completion_tokens: 1 },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    };
+    const partitionResults = await Promise.all(plan.partitions.flatMap((partition: any) =>
+      DEFAULT_PERSONA_IDS.map(async (personaId: string) => {
+        const persona = PERSONA_CHARTERS.find((candidate: any) => candidate.id === personaId);
+        const result = await reviewWithModel(
+          persona,
+          partition.files,
+          { repo: 'example/review-fixture', prNumber: '1', baseSha: plan.baseSha, headSha: plan.headSha },
+          null,
+          {
+            model: 'pr-reviewer',
+            maxDiffChars: gatewayDiffBudget,
+            guardedGatewayDestination: true,
+            partition,
+            partitionPlan: plan,
+            fetchImplementation: fetchImplementationFor(personaId),
+            circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+            transports: [{
+              name: 'openrouter',
+              baseUrl: 'https://gateway.example.invalid/v1',
+              apiKey: 'test-only',
+              model: 'pr-reviewer',
+              provider: 'openrouter',
+              maxTokens: 24_576,
+              stream: false,
+            }],
+          },
+        );
+        return { personaId, partitionIndex: partition.partitionIndex, result };
+      }),
+    ));
+
+    expect(partitionResults).toHaveLength(20);
+    expect(requests).toHaveLength(20);
+    expect(partitionResults.every(({ result }) => result.decision === 'APPROVE')).toBe(true);
+    expect(partitionResults.every(({ result }) => result.coverage.truncated.length === 0 && result.coverage.omitted.length === 0)).toBe(true);
+    expect(requests.every(({ url, body }) =>
+      url === 'https://gateway.example.invalid/v1/chat/completions'
+      && body.model === 'pr-reviewer'
+      && body.max_tokens === 24_576
+    )).toBe(true);
+
+    for (const personaId of DEFAULT_PERSONA_IDS) {
+      const personaRuns = partitionResults.filter((run) => run.personaId === personaId);
+      expect(personaRuns.map((run) => run.partitionIndex).sort()).toEqual([0, 1, 2, 3]);
+      const reviewedPaths = new Set(personaRuns.flatMap((run) => run.result.coverage.reviewed));
+      expect([...reviewedPaths].sort()).toEqual(inputFiles.map((item) => item.path).sort());
+      const personaPrompt = requests
+        .filter((request) => request.personaId === personaId)
+        .map((request) => request.body.messages[1].content)
+        .join('\n');
+      for (const originalFile of otherFiles) expect(personaPrompt).toContain(originalFile.patch);
+      expect(personaPrompt).toContain(firstHunk);
+      expect(personaPrompt).toContain(secondHunk);
+    }
+  });
+
 });
 
 describe('REL-556: an oversized diff never reaches a direct-reasoning transport intact', () => {

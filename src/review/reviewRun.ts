@@ -81,6 +81,8 @@ export interface ReviewAdmissionInput {
   indexEpoch?: number;
   /** Service-controlled same-head recovery; never decoded from an unverified request. */
   retryRequested?: boolean;
+  /** OIDC-authorized candidate; durable service-owned provenance remains mandatory. */
+  incompleteP2Recovery?: true;
   /**
    * One-based worker execution generation that the trusted recovery request
    * is allowed to replace. The durable outbox must still be immediately before

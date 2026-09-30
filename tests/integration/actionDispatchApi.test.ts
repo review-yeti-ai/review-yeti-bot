@@ -614,6 +614,40 @@ describe('POST /api/dispatch/action', () => {
     }));
   });
 
+  it('forwards P2 recovery only through an enrolled authoritative central refresh', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ allowAppGate: true, authoritativePublishing: publishing.authoritativePublishing,
+      verifier: { verify: vi.fn(async () => centralManualClaims),
+        policy: { workflowRefs: new Set([CENTRAL_REVIEW_WORKFLOW_REF]) } } });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token').send({
+        ...body, publishMode: 'app-gate', refreshRequested: true, refreshExecutionAttempt: 1,
+        expectedGeneration: 2, incompleteP2Recovery: true,
+        caller: { ...body.caller, workflowRef: centralManualClaims.workflow_ref,
+          workflowSha: centralManualClaims.workflow_sha },
+      });
+    expect(response.status).toBe(202);
+    expect(fixture.admission.admit).toHaveBeenCalledWith(expect.objectContaining({
+      incompleteP2Recovery: true, retryRequested: true, retryAfterExecutionAttempt: 1,
+      expectedGeneration: 2, centralActionDispatch: true,
+      authoritativeGate: expect.objectContaining({ expectedAppId: 789 }),
+    }));
+  });
+
+  it('rejects P2 recovery from an otherwise valid direct repository caller', async () => {
+    const publishing = publishingFixture();
+    const fixture = app({ allowAppGate: true, authoritativePublishing: publishing.authoritativePublishing,
+      verifier: { policy: { workflowRefs: new Set([body.caller.workflowRef]) } } });
+    const response = await request(fixture.instance).post('/api/dispatch/action')
+      .set('Authorization', 'Bearer signed-oidc-token').send({
+        ...body, publishMode: 'app-gate', refreshRequested: true, refreshExecutionAttempt: 1,
+        expectedGeneration: 2, incompleteP2Recovery: true,
+      });
+    expect(response.status).toBe(403);
+    expect(response.body.error).toBe('Incomplete P2 recovery requires authoritative central admission');
+    expect(fixture.admission.admit).not.toHaveBeenCalled();
+  });
+
   it('forwards refresh from the exact manual central recovery workflow', async () => {
     const centralVerified = {
       repository: 'exampleorg/example-review-actions', repository_id: '99999', repository_owner_id: '99',

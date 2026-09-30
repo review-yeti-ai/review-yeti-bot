@@ -121,6 +121,7 @@ describeWithPostgres('verdict cache source selection (real SQL)', () => {
           repository_id BIGINT NOT NULL, effective_config_digest VARCHAR(64) NOT NULL,
           received_at TIMESTAMPTZ NOT NULL, terminal_deadline TIMESTAMPTZ,
           stage TEXT NOT NULL DEFAULT 'admission', result_digest VARCHAR(64), error_text TEXT,
+          artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb, lease_owner TEXT, lease_expires_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );

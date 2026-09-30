@@ -24,6 +24,7 @@ import {
 } from '../../src/persistence/reviewGateRepository';
 import { reviewDispatchPrLockKey } from '../../src/persistence/reviewCiPersistence';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
 import { REVIEW_CI_SCHEMA_SQL } from '../../src/persistence/reviewCiSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import { enqueueReviewCiCompletionInTransaction } from '../../src/persistence/reviewCiRepository';
@@ -172,6 +173,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           result_digest VARCHAR(64),
           error_text TEXT,
           failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
+          artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           lease_owner TEXT,
           lease_expires_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -187,6 +189,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         );
       `);
       await client.query(REVIEW_GATE_SCHEMA_SQL);
+      await client.query(REVIEW_GENERATION_RECOVERY_SCHEMA_SQL);
       await client.query(REVIEW_EVENT_SCHEMA_SQL);
     } finally {
       client.release();

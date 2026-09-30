@@ -8,6 +8,7 @@ import { isNoReviewableContentFile } from './reviewableContent';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import { incrementalReviewClaimSchema } from './incrementalReviewClaim';
 import { verdictCacheClaimSchema } from './verdictCacheClaim';
+import { incompleteP2RecoveryClaimSchema } from './incompleteP2RecoveryClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
@@ -297,6 +298,8 @@ const resultSchema = z.object({
    * or `deriveCanonicalWorkerReviewEvidence` refuses the completion.
    */
   incremental: incrementalReviewClaimSchema.optional(),
+  /** REL-1198: receipt for the exact service-owned retained advisory context. */
+  incompleteP2Recovery: incompleteP2RecoveryClaimSchema.optional(),
   /**
    * OPTIONAL, additive (REL-1085, `REVIEW_YETI_VERDICT_CACHE`): this run's clean per-file lane
    * results for later runs, and any files it served from a named earlier record instead of
