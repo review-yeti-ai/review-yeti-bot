@@ -71,6 +71,7 @@ function createZoektGroundingStage(overrides = {}) {
 
   return async function groundingStage(input = {}) {
     if (!input.enabled || !input.token) return { reason: 'disabled_or_unauthenticated' };
+    if (input.signal?.aborted) return { indexDir: undefined, reason: 'cancelled' };
     let scratchDir;
     try {
       scratchDir = fsImpl.mkdtempSync(pathImpl.join(osImpl.tmpdir(), 'review-yeti-zoekt-'));
@@ -83,6 +84,9 @@ function createZoektGroundingStage(overrides = {}) {
         destDir: workdir,
         signal: input.signal,
       });
+      // A custom materializer can ignore AbortSignal and resolve successfully after the
+      // lifecycle ended. Never start a new index process from that late result.
+      if (input.signal?.aborted) return { indexDir: undefined, scratchDir, reason: 'cancelled' };
       if (!materialized || materialized.status !== 'ok') {
         return { indexDir: undefined, scratchDir, reason: `materialize_${materialized?.status || 'unknown'}` };
       }
@@ -90,7 +94,10 @@ function createZoektGroundingStage(overrides = {}) {
         workdir,
         indexDir,
         config: { zoektIndexBinaryPath: input.zoektIndexBinaryPath || indexBinaryPath },
+        signal: input.signal,
       });
+      // An injected indexer can also settle late; cancellation owns the result even if it says ok.
+      if (input.signal?.aborted) return { indexDir: undefined, scratchDir, reason: 'cancelled' };
       if (!built || built.status !== 'ok') {
         return { indexDir: undefined, scratchDir, reason: `build_${built?.status || 'unknown'}` };
       }

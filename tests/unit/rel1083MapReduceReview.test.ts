@@ -1196,6 +1196,7 @@ describe('publishing worker wiring', () => {
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker(env, {
       checkClient,
+      now: () => Date.parse('2026-09-24T12:00:00Z'),
       currentPullRequestVerifier: vi.fn(async () => undefined),
       sourceLoader: vi.fn(async () => ({ diff: addedFile('src/app.ts', 10, 'a'), githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const),
