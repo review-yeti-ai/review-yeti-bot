@@ -2482,6 +2482,23 @@ describe('REL-1211 absolute panel deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('REL-1211 inherits the original remaining cutoff without a new relative engine window', async () => {
+    const main = createPanelDeadlineSignal(5);
+    let nested: ReturnType<typeof createPanelDeadlineSignal> | undefined;
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      nested = createPanelDeadlineSignal(1_800, main.signal);
+      expect(nested.timeoutMs).toBe(2_000);
+      expect(nested.signal).not.toBe(main.signal);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(main.signal.aborted).toBe(true);
+      expect(nested.signal.reason).toBe(main.signal.reason);
+    } finally {
+      nested?.cleanup(); main.cleanup();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([true, false])('preserves ordinary caller cancellation before/after creation: %s', (alreadyAborted) => {
     const parent = new AbortController();
     if (alreadyAborted) parent.abort(new Error('SIGTERM'));
