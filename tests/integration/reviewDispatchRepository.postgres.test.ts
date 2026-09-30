@@ -34,6 +34,10 @@ import { RECOVERABLE_PANEL_AUTO_RETRY_CAP, RECOVERABLE_PANEL_AUTO_RETRY_DELAY_MS
 import { AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT, requeueAuthoritativeInfrastructureIncomplete, requeueRecoverableIncompletePanelFailure } from '../../src/review/recoverablePanelRetry';
 import { logger } from '../../src/utils/logger';
 import { ReviewGenerationRecoveryLedgerError } from '../../src/review/reviewGenerationRecovery';
+import express from 'express';
+import { once } from 'node:events';
+import { createIncompleteP2RecoveryHandler } from '../../src/api/incompleteP2RecoveryRoute';
+import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2RecoveryHttp';
 
 import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -687,6 +691,129 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         admission_origin: 'mcp_static_admin', actor: `admin:${'a'.repeat(12)}`,
       }) }),
     ]));
+  });
+
+  async function admittedLegacySupersession(legacySupersession = true) {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      lifecycleEvents: 'enabled',
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository);
+    proof = seeded.proof;
+    const admission = await repository.admit({
+      ...authoritativeAdmission(`legacy-http-a2-${randomUUID()}`, 1_790_000_100_000),
+      eventName: 'workflow_dispatch', centralActionDispatch: true,
+      expectedGeneration: 2, retryRequested: true, retryAfterExecutionAttempt: 1,
+      incompleteP2Recovery: true,
+    });
+    expect(admission.run.attempt).toBe(1);
+    const marker = (admission.run.artifacts as Record<string, unknown>).incomplete_p2_recovery_digest;
+    expect(marker).toMatch(/^[a-f0-9]{64}$/u);
+    // Replay the deployed 1.100.1 reservation's historical supersession write.
+    // Admission has already verified and persisted the failure receipt; only
+    // the publication intent changes, not its decision, evidence or archive.
+    if (legacySupersession) {
+      await client.query(`UPDATE review_gate_attempts SET current_attempt = false,
+        desired_state = 'cancelled', desired_version = desired_version + 1
+        WHERE run_id = $1 AND execution_attempt = 1`, [seeded.run.runId]);
+    }
+    const token = 'ghs_rel1198_owned_test_worker';
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'claimed',
+      worker_token_digest = $2 WHERE run_id = $1`, [seeded.run.runId, sha256(token)]);
+    return { client, seeded, admission, marker, token };
+  }
+
+  async function readRetainedOverRealHttp(runId: string, token: string, executionAttempt = 2) {
+    const app = express();
+    app.use(express.json());
+    app.post('/api/dispatch/incomplete-p2-recovery', createIncompleteP2RecoveryHandler(pool!));
+    const server = app.listen(0, '127.0.0.1');
+    const statuses: number[] = [];
+    const errorBodies: unknown[] = [];
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing owned HTTP listener');
+      const source = new HttpIncompleteP2RecoverySource({ token, runId, executionAttempt,
+        completionEndpoint: 'https://owned-test.example/api/dispatch/completion',
+        // Only the test wire address is adapted. The worker still validates its
+        // HTTPS endpoint, sends a real HTTP request, and parses the real route's
+        // response backed by PostgreSQL; no fetch/SQL result is mocked.
+        fetchImplementation: async (input, init) => {
+          expect(String(input)).toBe('https://owned-test.example/api/dispatch/incomplete-p2-recovery');
+          const response = await fetch(`http://127.0.0.1:${address.port}/api/dispatch/incomplete-p2-recovery`, init);
+          statuses.push(response.status);
+          if (response.status >= 400) errorBodies.push(await response.clone().json());
+          return response;
+        },
+      });
+      return { context: await source.read(), statuses, errorBodies };
+    } catch (error) {
+      return { error, statuses, errorBodies };
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }
+
+  it.each(['cancelled', 'failure'] as const)('reads every retained P2 through real HTTP/PG after supersession to %s, without rewriting history', async (state) => {
+    const { client, seeded, marker, token } = await admittedLegacySupersession(state === 'cancelled');
+    const snapshot = async () => ({
+      gates: (await client.query('SELECT * FROM review_gate_attempts ORDER BY review_generation')).rows,
+      archives: (await client.query('SELECT * FROM review_worker_completions')).rows,
+      ledger: (await client.query('SELECT * FROM review_generation_recoveries')).rows,
+      dispatch: await dispatchState(client, seeded.run.runId),
+    });
+    const before = await snapshot();
+    expect(before.gates[0]).toMatchObject({ current_attempt: false, desired_state: state,
+      decision: { status: 'failure', reason: 'incomplete-review' } });
+    const read = await readRetainedOverRealHttp(seeded.run.runId, token);
+    expect(read.statuses).toEqual([200]);
+    expect(read.errorBodies).toEqual([]);
+    expect(read.context?.contextDigest).toBe(marker);
+    expect(read.context?.sources).toEqual([expect.objectContaining({ executionAttempt: 1,
+      workerResultDigest: seeded.digest, workerCheckId: seeded.proof.checkId })]);
+    expect(read.context?.findings.map((entry) => entry.finding)).toEqual(seeded.completion.result.personas[0].findings);
+    expect(read.context?.findings).toHaveLength(1);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it.each([
+    ['lost marker', `UPDATE review_runs SET artifacts = '{}'::jsonb`],
+    ['lost ledger and marker', `DELETE FROM review_generation_recoveries; UPDATE review_runs SET artifacts = '{}'::jsonb`],
+    ['lost ledger/marker and malformed failure decision', `DELETE FROM review_generation_recoveries; UPDATE review_runs SET artifacts = '{}'::jsonb; UPDATE review_gate_attempts SET decision = jsonb_set(decision, '{status}', '"success"'::jsonb) WHERE execution_attempt = 1`],
+    ['changed worker archive', `UPDATE review_worker_completions SET payload = jsonb_set(payload, '{result,personas,0,findings,0,title}', '"Changed"'::jsonb)`],
+    ['changed Gate digest', `UPDATE review_gate_attempts SET worker_result_digest = repeat('0',64) WHERE execution_attempt = 1`],
+    ['actual cancellation decision', `UPDATE review_gate_attempts SET decision = '{"status":"cancelled","eligible":false,"reason":"candidate-superseded"}'::jsonb WHERE execution_attempt = 1`],
+    ['still-current cancelled Gate', `UPDATE review_gate_attempts SET current_attempt = false WHERE execution_attempt = 2; UPDATE review_gate_attempts SET current_attempt = true WHERE execution_attempt = 1`],
+    ['wrong App binding', `UPDATE review_gate_attempts SET expected_app_id = 7 WHERE execution_attempt = 1`],
+  ])('fails closed over real HTTP/PG after legacy supersession with %s', async (_label, mutation) => {
+    const { client, seeded, token } = await admittedLegacySupersession();
+    await client.query(mutation);
+    const read = await readRetainedOverRealHttp(seeded.run.runId, token);
+    expect(read.statuses).toEqual([503]);
+    expect(read.errorBodies).toEqual([{ error: 'Retained findings are temporarily unavailable' }]);
+    expect(read.context).toBeUndefined();
+    expect(read.error).toEqual(new Error('Retained findings unavailable'));
+  });
+
+  it.each(['stale bearer', 'wrong execution'] as const)('refuses %s over real HTTP/PG before returning historical P2', async (invalid) => {
+    const { seeded, token } = await admittedLegacySupersession();
+    const read = await readRetainedOverRealHttp(seeded.run.runId,
+      invalid === 'stale bearer' ? 'ghs_old_owned_test_worker' : token, invalid === 'wrong execution' ? 3 : 2);
+    expect(read.statuses).toEqual([403]);
+    expect(read.context).toBeUndefined();
+  });
+
+  it.each([true, false])('does not use a cancelled Gate as fresh admission evidence (supplied proof: %s)', async (supplied) => {
+    const { client, seeded } = await admittedLegacySupersession();
+    await expect(loadIncompleteP2RecoveryContext(client, {
+      runId: seeded.run.runId, executionAttempt: 2, repositoryId: seeded.completion.repositoryId,
+      identity: seeded.run.identity, policyDigest: seeded.run.effectivePolicyDigest, expectedAppId: 4385771,
+      incompleteP2Recovery: true, ...(supplied ? { recoveryEvidence: [seeded.proof] } : {}),
+    })).rejects.toThrow('Incomplete P2 recovery context');
   });
 
   it.each(['central', 'mcp'] as const)(
