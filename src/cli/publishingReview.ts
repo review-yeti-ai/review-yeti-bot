@@ -119,6 +119,7 @@ import {
 import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAvailability';
 import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
+import { createPublishingProgress } from '../telemetry/publishingProgress';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -1507,7 +1508,10 @@ export async function runPublishingReviewWorker(
     );
     // REL-1132: every call the engines make is metered into this run's ledger. The composed shadow
     // engine gets its own label so its cost never reads as panel cost.
-    const client = meterModelClient(modelClient, tokenLedger);
+    // Phase events describe only this gating publisher execution. Shadow review remains separate
+    // non-gating evidence; the existing token ledger continues to account for its provider spend.
+    const progress = createPublishingProgress(identity);
+    const client = meterModelClient(progress.instrument(modelClient), tokenLedger);
     const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });
 
     // Full-repository grounding for persona find_files/read_file tools (see
@@ -1878,6 +1882,7 @@ export async function runPublishingReviewWorker(
           prNumber: identity.prNumber,
           repositoryVisibility,
           client,
+          progress,
           jobId: identity.runId,
           signal: panelDeadline.signal,
           repoFileProvider,
