@@ -230,15 +230,76 @@ describe('runReadOnlyTool', () => {
       expect(range.isExhaustive).toBe(false);
     });
 
-    it.each(['read_file', 'view_file', 'get_diff'])('preserves changed oversized exclusion before any provider call for %s', async (tool) => {
+    it('get_diff preserves changed oversized exclusion before any provider call', async () => {
       vi.stubEnv('MAX_FILE_DIFF_CHARS', '20');
       const repoFileProvider = provider();
-      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts', startLine: 2, endLine: 2 }, baseContext({ repoFileProvider,
+      const result = await runReadOnlyTool('get_diff', { path: 'src/auth/multi.ts', startLine: 2, endLine: 2 }, baseContext({ repoFileProvider,
         changedFiles: [{ path: 'src/auth/multi.ts', patch: 'small placeholder', originalPatchLength: 21 }],
       }));
       expect(result.toolOutput).toContain("SKIPPED 'src/auth/multi.ts': patch is 21 characters, over max-file-diff-chars 20");
       expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
       expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+    });
+
+    it.each(['read_file', 'view_file'])('no-provider %s preserves changed oversized exclusion even for a narrow range', async (tool) => {
+      vi.stubEnv('MAX_FILE_DIFF_CHARS', '20');
+      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts', startLine: 2, endLine: 2 }, baseContext({
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'small placeholder', originalPatchLength: 21 }],
+      }));
+      expect(result.toolOutput).toContain("SKIPPED 'src/auth/multi.ts': patch is 21 characters, over max-file-diff-chars 20");
+      expect(result).toMatchObject({ toolScope: 'changed-patches-only', isExhaustive: false });
+    });
+
+    it.each(['read_file', 'view_file'])('REL-1204 oversized-patch provider source small via %s is independently readable', async (tool) => {
+      vi.stubEnv('MAX_FILE_DIFF_CHARS', '20');
+      const repoFileProvider = provider();
+      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'PATCH_SENTINEL', originalPatchLength: 2000000 }],
+      }));
+      const observed = { sourceReads: vi.mocked(repoFileProvider.readFile).mock.calls.length, ...result };
+      expect(observed, JSON.stringify(observed)).toEqual({
+        sourceReads: 1, toolScope: 'full-repository', isExhaustive: true,
+        toolOutput: "Tool '" + tool + "' execution result:\nFile 'src/auth/multi.ts' is part of this PR's diff and exists in the repository at the reviewed head. Full current content:\n" + source,
+      });
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+      expect(result.toolOutput).not.toContain('PATCH_SENTINEL');
+    });
+
+    it.each(['read_file', 'view_file'])('REL-1204 oversized-patch provider source capped via %s retains the independent source limit', async (tool) => {
+      vi.stubEnv('MAX_FILE_DIFF_CHARS', '20');
+      const oversizedSource = 'a'.repeat(REPO_READ_FILE_MAX_CHARS + 10) + '\nTAIL_SOURCE';
+      const repoFileProvider = provider({ readFile: vi.fn().mockResolvedValue(oversizedSource) });
+      const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts' }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'PATCH_SENTINEL', originalPatchLength: 2000000 }],
+      }));
+      const observed = { sourceReads: vi.mocked(repoFileProvider.readFile).mock.calls.length, ...result };
+      expect(observed, JSON.stringify(observed)).toMatchObject({ sourceReads: 1, toolScope: 'full-repository', isExhaustive: false });
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
+      expect(result.toolOutput).toBe("Tool '" + tool + "' execution result:\nFile 'src/auth/multi.ts' is part of this PR's diff and exists in the repository at the reviewed head. Content truncated to the first " + REPO_READ_FILE_MAX_CHARS + ' of ' + oversizedSource.length + ' characters:\n' + 'a'.repeat(REPO_READ_FILE_MAX_CHARS) + '\n[... content truncated: 22 more characters not shown]');
+      expect(result.toolOutput).not.toContain('TAIL_SOURCE');
+      expect(result.toolOutput).not.toContain('PATCH_SENTINEL');
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+    });
+
+    it.each(['read_file', 'view_file'])('REL-1204 oversized-patch provider source range via %s slices the large current source', async (tool) => {
+      vi.stubEnv('MAX_FILE_DIFF_CHARS', '20');
+      const oversizedSource = 'a'.repeat(REPO_READ_FILE_MAX_CHARS + 10) + '\nTARGET_SOURCE_LINE\nTAIL_SOURCE';
+      const repoFileProvider = provider({ readFile: vi.fn().mockResolvedValue(oversizedSource) });
+      const result = await runReadOnlyTool(tool, { filePath: './src/auth/multi.ts', start_line: 2, end_line: 2 }, baseContext({ repoFileProvider,
+        changedFiles: [{ path: 'src/auth/multi.ts', patch: 'PATCH_SENTINEL', originalPatchLength: 2000000 }],
+      }));
+      const observed = { sourceReads: vi.mocked(repoFileProvider.readFile).mock.calls.length, ...result };
+      expect(observed, JSON.stringify(observed)).toEqual({
+        sourceReads: 1, toolScope: 'full-repository', isExhaustive: false,
+        toolOutput: "Tool '" + tool + "' execution result:\nFile 'src/auth/multi.ts' is part of this PR's diff and exists in the repository at the reviewed head. Lines 2-2 of 3 for 'src/auth/multi.ts':\nCurrent source lines:\nTARGET_SOURCE_LINE",
+      });
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/multi.ts');
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+      expect(result.toolOutput).not.toContain('Content truncated');
+      expect(result.toolOutput).not.toContain('PATCH_SENTINEL');
+      expect(result.toolOutput).not.toContain('TAIL_SOURCE');
     });
 
     it('get_diff remains patch-only with a provider and applies patch ranges', async () => {
