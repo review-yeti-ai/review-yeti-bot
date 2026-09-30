@@ -267,6 +267,14 @@ function fromRow(row: any): ReviewRun {
   };
 }
 
+function isTrustedMcpRecoveryInput(input: ReviewAdmissionInput): boolean {
+  return input.incompleteP2Recovery === true
+    && input.incompleteP2RecoveryOrigin !== undefined
+    && isTrustedMcpStaticAdminRecoveryOrigin(input.incompleteP2RecoveryOrigin)
+    && input.centralActionDispatch === false
+    && input.eventName === 'mcp.trigger_review';
+}
+
 function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneration: boolean): void {
   if (!input.deliveryId.trim()) throw new Error('delivery id is required');
   if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) throw new Error('repository id must be positive');
@@ -296,10 +304,7 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
     throw new Error('retry requested requires a retry-after execution attempt');
   }
   if (input.incompleteP2RecoveryOrigin !== undefined
-    && (input.incompleteP2Recovery !== true
-      || !isTrustedMcpStaticAdminRecoveryOrigin(input.incompleteP2RecoveryOrigin)
-      || input.centralActionDispatch !== false
-      || input.eventName !== 'mcp.trigger_review'
+    && (!isTrustedMcpRecoveryInput(input)
       || input.publicationMode !== 'app-gate'
       || !input.authoritativeGate || input.retryRequested !== true
       || input.expectedGeneration !== undefined || input.retryAfterExecutionAttempt !== undefined
@@ -353,9 +358,7 @@ function generationRecoveryRequest(
   runId: string,
 ): ReviewGenerationRecoveryRequest {
   const expected = input.expectedGeneration;
-  const trustedMcpRecovery = input.incompleteP2Recovery === true
-    && isTrustedMcpStaticAdminRecoveryOrigin(input.incompleteP2RecoveryOrigin)
-    && input.centralActionDispatch === false && input.eventName === 'mcp.trigger_review';
+  const trustedMcpRecovery = isTrustedMcpRecoveryInput(input);
   if ((!input.centralActionDispatch && !trustedMcpRecovery) || input.publicationMode !== 'app-gate'
     || !input.authoritativeGate || input.retryRequested !== true
     || expected === undefined || expected < 2

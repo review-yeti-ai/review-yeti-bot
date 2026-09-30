@@ -103,14 +103,25 @@ describe('MCP retained-P2 recovery admission', () => {
     const { tool, admit } = toolSetup();
     const registry = new DefaultMcpToolRegistry();
     registry.registerTool(tool as any);
+    const authenticator = new McpAuthenticator({ staticAuthToken: token });
     const router = createRemoteMcpRouter({
-      authenticator: new McpAuthenticator({ staticAuthToken: token }),
+      authenticator,
       toolRegistry: registry,
     });
     routers.push(router);
 
     const app = express();
     app.use(express.json());
+    app.use((req: Request, _res, next) => {
+      req.mcpCaller = {
+        authType: 'static_token',
+        tokenDigest: 'f'.repeat(12),
+        isAdmin: false,
+        allowedRepositories: new Set(['other/unauthorized-repo']),
+        callerId: 'static:untrusted-middleware-caller',
+      };
+      next();
+    });
     app.use('/mcp', router);
     const response = await request(app).post('/mcp')
       .set('Authorization', `Bearer ${token}`)
@@ -119,7 +130,15 @@ describe('MCP retained-P2 recovery admission', () => {
     expect(response.status).toBe(200);
     expect(response.body.error).toBeUndefined();
     expect(admit).toHaveBeenCalledOnce();
-    expect((admit.mock.calls[0] as any[])[0].incompleteP2RecoveryOrigin.authorizedRepo).toBe(identity.repo);
+    const authenticatedCaller = await authenticator.authenticateToken(token);
+    expect((admit.mock.calls[0] as any[])[0].incompleteP2RecoveryOrigin).toMatchObject({
+      kind: 'mcp_static_admin',
+      callerId: authenticatedCaller.callerId,
+      authorizedOwner: identity.owner,
+      authorizedRepo: identity.repo,
+    });
+    expect((admit.mock.calls[0] as any[])[0].incompleteP2RecoveryOrigin.callerId)
+      .not.toBe('static:untrusted-middleware-caller');
   });
 
   it('does not trust a pre-populated Express caller when configured authentication rejects the bearer', async () => {
