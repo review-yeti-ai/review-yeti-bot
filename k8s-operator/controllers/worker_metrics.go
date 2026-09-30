@@ -16,6 +16,18 @@ import (
 	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
 )
 
+// Cache-only index; eligibility that depends on the clock is checked at collect
+// time, not when indexing. Terminal and already running reviews need no copy.
+const queueMetricsCandidateField = "review-yeti.ai/queue-metrics-candidate"
+
+func queueMetricsCandidateValues(object client.Object) []string {
+	review, ok := object.(*reviewv1alpha2.PRReviewJob)
+	if !ok || isTerminalPhase(review.Status.Phase) || (workerCreationWasAttempted(review) && !isAwaitingResumption(review)) {
+		return nil
+	}
+	return []string{"true"}
+}
+
 // Use the manager cache independently of admission. A full queue short-circuits
 // admission's review list; terminal-only traffic must also refresh the gauges.
 // This process watches the one namespace accepted by the worker contract.
@@ -50,7 +62,7 @@ func (c *workerMetricsCollector) collect(ctx context.Context, now time.Time) err
 		return err
 	}
 	var reviews reviewv1alpha2.PRReviewJobList
-	if err := c.reader.List(ctx, &reviews, client.InNamespace(job.Namespace)); err != nil {
+	if err := c.reader.List(ctx, &reviews, client.InNamespace(job.Namespace), client.MatchingFields{queueMetricsCandidateField: "true"}); err != nil {
 		return err
 	}
 	active, queued, failed := 0, 0, 0

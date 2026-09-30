@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	unrequested := review("unrequested-resumption", now.Add(time.Minute))
 	unrequested.Status.Phase = reviewv1alpha2.PhaseAwaitingResumption
 	unrequested.Status.JobName = "unrequested-worker"
-	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(active, recent, old, foreign,
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&reviewv1alpha2.PRReviewJob{}, queueMetricsCandidateField, queueMetricsCandidateValues).WithObjects(active, recent, old, foreign,
 		resuming, running, unrequested, review("queued", now.Add(time.Minute)), review("expired", now.Add(-time.Minute))).Build()
 	c := &workerMetricsCollector{reader: kube}
 	for i := 0; i < 2; i++ {
@@ -72,6 +73,9 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 		if got := testutil.ToFloat64(operatorMetrics.RecentFailedJobs); got != 1 {
 			t.Fatalf("recent failures=%v", got)
 		}
+		if got := testutil.ToFloat64(operatorMetrics.SnapshotTimestamp); got != float64(now.Unix()) {
+			t.Fatalf("snapshot timestamp=%v", got)
+		}
 	}
 	if err := kube.Delete(context.Background(), active); err != nil {
 		t.Fatal(err)
@@ -81,6 +85,9 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	}
 	if err := c.collect(context.Background(), now.Add(11*time.Minute)); err != nil {
 		t.Fatal(err)
+	}
+	if got := testutil.ToFloat64(operatorMetrics.SnapshotTimestamp); got != float64(now.Add(11*time.Minute).Unix()) {
+		t.Fatalf("updated snapshot timestamp=%v", got)
 	}
 	if got := testutil.ToFloat64(operatorMetrics.ActiveJobs); got != 0 {
 		t.Fatalf("active after deletion=%v", got)
@@ -114,5 +121,33 @@ func TestWorkerMetricsReadFailureDoesNotReportAnEmptyQueue(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(operatorMetrics.SnapshotTimestamp); got != 123 {
 		t.Fatalf("timestamp=%v", got)
+	}
+}
+
+func TestQueueMetricsIndexExcludesRetainedAndRunningReviews(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := reviewv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithIndex(&reviewv1alpha2.PRReviewJob{}, queueMetricsCandidateField, queueMetricsCandidateValues).Build()
+	for i := 0; i < 100; i++ {
+		review := &reviewv1alpha2.PRReviewJob{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("terminal-%d", i), Namespace: job.Namespace}, Status: reviewv1alpha2.PRReviewJobStatus{Phase: reviewv1alpha2.PhaseFailed}}
+		if err := kube.Create(context.Background(), review); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queued := &reviewv1alpha2.PRReviewJob{ObjectMeta: metav1.ObjectMeta{Name: "queued", Namespace: job.Namespace}, Status: reviewv1alpha2.PRReviewJobStatus{Phase: reviewv1alpha2.PhaseQueued}}
+	running := &reviewv1alpha2.PRReviewJob{ObjectMeta: metav1.ObjectMeta{Name: "running", Namespace: job.Namespace}, Status: reviewv1alpha2.PRReviewJobStatus{Phase: reviewv1alpha2.PhaseRunning, JobName: "running-worker"}}
+	for _, review := range []*reviewv1alpha2.PRReviewJob{queued, running} {
+		if err := kube.Create(context.Background(), review); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var candidates reviewv1alpha2.PRReviewJobList
+	if err := kube.List(context.Background(), &candidates, client.InNamespace(job.Namespace), client.MatchingFields{queueMetricsCandidateField: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates.Items) != 1 || candidates.Items[0].Name != "queued" {
+		t.Fatalf("expected only queued candidate, got %d", len(candidates.Items))
 	}
 }
