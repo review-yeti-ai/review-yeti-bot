@@ -1178,13 +1178,23 @@ describe('executeComposedReview', () => {
 });
 
 describe('REL-1204 surviving composed exact-source authority', () => {
+  function issuedSourceSafetyNonce(messages: any[]): string {
+    const text = messages.map((message) => {
+      if (typeof message?.content === 'string') return message.content;
+      if (Array.isArray(message?.content)) return message.content.map((block: any) => block.text || '').join('\n');
+      return '';
+    }).join('\n');
+    const matches = [...text.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/g)];
+    return matches.length ? matches[matches.length - 1][1] : 'nonce';
+  }
+
   it('REL-1204 latest-base view_file shared composed loop reads carried current source once', async () => {
     const path = 'src/auth/guard.ts';
     const source = 'LATEST_COMPOSED_SOURCE\nexport function guard() { return false; }\nLATEST_COMPOSED_TAIL';
     const readFile = vi.fn().mockResolvedValue(source);
     let workCalls = 0; let observedToolResult = '';
     const complete = vi.fn(async (payload: any) => {
-      const nonce = issuedNonce(payload.messages);
+      const nonce = issuedSourceSafetyNonce(payload.messages);
       if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
         { id: 'task-sec', dimension: 'security', paths: [path], question: 'Read exact guard source.', rationale: 'Carried file needs exact source.' },
       ] }));
