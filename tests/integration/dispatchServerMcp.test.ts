@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHmac } from 'node:crypto';
 import request from 'supertest';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createActionDispatchApp, type ActionDispatchAppOptions } from '../../src/dispatchServer';
@@ -6,9 +7,11 @@ import { McpAuthenticator } from '../../src/mcp/server/mcpAuthenticator';
 import { SlidingWindowRateLimiter } from '../../src/mcp/server/mcpRateLimiter';
 import { createRemoteMcpRouter, type RemoteMcpRouter } from '../../src/mcp/server/remoteMcpRouter';
 import { MCP_ERRORS } from '../../src/mcp/server/mcpTypes';
+import type { GitHubWebhookAdmissionEvent } from '../../src/review/githubWebhookAdmission';
 
 describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServerMcp.test.ts)', () => {
   const TEST_STATIC_AUTH_TOKEN = 'yeti_integration_test_token_secret_777';
+  const TEST_WEBHOOK_SECRET = 'webhook-stack-test-secret-at-least-32-bytes';
   let clockTime: number;
   let activeRouters: RemoteMcpRouter[] = [];
   let activeLimiters: SlidingWindowRateLimiter[] = [];
@@ -33,6 +36,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
     rateLimitWindowMs?: number;
     oidcClaims?: any;
     useCustomClock?: boolean;
+    webhookEnabled?: boolean;
   }
 
   function buildApp(opts: BuildAppOptions = {}) {
@@ -63,6 +67,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
       staticAuthToken: authToken,
       oidcVerifier: verifier,
     });
+    const webhookOnEvent = vi.fn(async (_event: GitHubWebhookAdmissionEvent) => ({ status: 'accepted' }));
 
     const rateLimiter = new SlidingWindowRateLimiter({
       windowMs: opts.rateLimitWindowMs ?? 60_000,
@@ -126,10 +131,13 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
       mcpRouter: router,
       mcpAuthenticator: authenticator,
       mcpRateLimiter: rateLimiter,
+      ...(opts.webhookEnabled ? {
+        githubWebhook: { secret: TEST_WEBHOOK_SECRET, onEvent: webhookOnEvent },
+      } : {}),
     };
 
     const app = createActionDispatchApp(appOptions);
-    return { app, router, rateLimiter, verifier, authToken };
+    return { app, router, rateLimiter, verifier, authToken, authenticator, webhookOnEvent };
   }
 
   describe('Suite 1: Feature Flag Toggling & Route Seams', () => {
@@ -410,6 +418,170 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
 
       expect(res.status).toBe(400);
       expect(res.body).toEqual({ error: 'Invalid JSON body' });
+    });
+  });
+
+  describe('REL-1198: composed webhook/MCP parser isolation', () => {
+    const diffHeader = 'diff --git a/src/example.ts b/src/example.ts\n'
+      + '--- a/src/example.ts\n+++ b/src/example.ts\n@@ -0,0 +1 @@\n+// ';
+
+    function preflightPayload(diffBytes = 134_073) {
+      return {
+        jsonrpc: '2.0', id: 1, method: 'tools/call',
+        params: {
+          name: 'preflight_diff_review',
+          arguments: {
+            owner: 'calltelemetry', repo: 'ct-uat', target_branch: 'main',
+            diff: diffHeader + 'x'.repeat(diffBytes - Buffer.byteLength(diffHeader)),
+          },
+        },
+      };
+    }
+
+    function sizedPreflight(bytes: number) {
+      const payload = preflightPayload(Buffer.byteLength(diffHeader));
+      payload.params.arguments.diff += 'x'.repeat(bytes - Buffer.byteLength(JSON.stringify(payload)));
+      const raw = JSON.stringify(payload);
+      expect(Buffer.byteLength(raw)).toBe(bytes);
+      return raw;
+    }
+
+    function sizedWebhook(bytes: number) {
+      const prefix = JSON.stringify({ action: 'opened', preserve: 'raw whitespace' }, null, 2);
+      return prefix + ' '.repeat(bytes - Buffer.byteLength(prefix));
+    }
+
+    it.each([false, true])('passes the complete 134073-byte diff through the real tool (chunked=%s)', async (chunked) => {
+      const f = buildApp({ webhookEnabled: true });
+      const tool = f.router.toolRegistry.getTool('preflight_diff_review')!;
+      const execute = vi.spyOn(tool, 'execute');
+      const payload = preflightPayload();
+      const raw = JSON.stringify(payload);
+      expect(Buffer.byteLength(payload.params.arguments.diff)).toBe(134_073);
+      expect(Buffer.byteLength(raw)).toBeGreaterThan(100 * 1024);
+      expect(Buffer.byteLength(raw)).toBeLessThan(512 * 1024);
+      const pending = request(f.app).post('/api/mcp')
+        .set('Authorization', `Bearer ${f.authToken}`)
+        .set('Content-Type', 'application/json')
+        .set('Accept', 'application/json,text/event-stream');
+      if (chunked) {
+        pending.write(raw.slice(0, 60_000));
+        pending.write(raw.slice(60_000));
+      } else {
+        pending.send(raw);
+      }
+      const res = await pending;
+      expect(res.status).toBe(200);
+      expect(res.body.error).toBeUndefined();
+      expect(res.body.result.isError).not.toBe(true);
+      expect(execute).toHaveBeenCalledExactlyOnceWith(payload.params.arguments, expect.objectContaining({
+        authenticatedByConfiguredAuthenticator: true,
+        authorizedRepository: { owner: 'calltelemetry', repo: 'ct-uat' },
+      }));
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
+    });
+
+    it.each([512 * 1024, 512 * 1024 + 1])('retains the preflight wire limit at %i bytes with webhook enabled', async (bytes) => {
+      const f = buildApp({ webhookEnabled: true });
+      const execute = vi.spyOn(f.router.toolRegistry.getTool('preflight_diff_review')!, 'execute');
+      const authenticate = vi.spyOn(f.authenticator, 'authenticate');
+      const raw = sizedPreflight(bytes);
+      const res = await request(f.app).post('/api/mcp')
+        .set('Authorization', `Bearer ${f.authToken}`)
+        .set('Content-Type', 'application/json').send(raw);
+      expect(res.status).toBe(bytes === 512 * 1024 ? 200 : 413);
+      if (bytes === 512 * 1024) {
+        expect(res.body.error).toBeUndefined();
+        expect(execute).toHaveBeenCalledExactlyOnceWith(JSON.parse(raw).params.arguments, expect.objectContaining({
+          authenticatedByConfiguredAuthenticator: true,
+          authorizedRepository: { owner: 'calltelemetry', repo: 'ct-uat' },
+        }));
+      } else {
+        expect(res.body).toEqual({ error: 'Request body exceeds its permitted size' });
+        expect(authenticate).not.toHaveBeenCalled();
+        expect(execute).not.toHaveBeenCalled();
+      }
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, 'invalid-mcp-token'])('refuses a large preflight without valid authentication (%s)', async (token) => {
+      const f = buildApp({ webhookEnabled: true });
+      const execute = vi.spyOn(f.router.toolRegistry.getTool('preflight_diff_review')!, 'execute');
+      const pending = request(f.app).post('/api/mcp');
+      if (token) pending.set('Authorization', `Bearer ${token}`);
+      const res = await pending.send(preflightPayload());
+      expect(res.status).toBe(401);
+      expect(res.body.error.code).toBe(MCP_ERRORS.UNAUTHORIZED);
+      expect(execute).not.toHaveBeenCalled();
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
+    });
+
+    it.each([64 * 1024, 64 * 1024 + 1])('retains the standard MCP limit at %i bytes with webhook enabled', async (bytes) => {
+      const f = buildApp({ webhookEnabled: true });
+      const authenticate = vi.spyOn(f.authenticator, 'authenticate');
+      const payload = { jsonrpc: '2.0', id: 1, method: 'ping', padding: '' };
+      payload.padding = 'x'.repeat(bytes - Buffer.byteLength(JSON.stringify(payload)));
+      const raw = JSON.stringify(payload);
+      expect(Buffer.byteLength(raw)).toBe(bytes);
+      const res = await request(f.app).post('/api/mcp')
+        .set('Authorization', `Bearer ${f.authToken}`)
+        .set('Content-Type', 'application/json').send(raw);
+      expect(res.status).toBe(bytes === 64 * 1024 ? 200 : 413);
+      if (bytes > 64 * 1024) {
+        expect(res.body).toEqual({ error: 'Request body exceeds its permitted size' });
+        expect(authenticate).not.toHaveBeenCalled();
+      }
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
+    });
+
+    it('does not let the webhook parser consume an unrelated body before the generic 64KiB limit', async () => {
+      const f = buildApp({ webhookEnabled: true });
+      const res = await request(f.app).post('/not-a-webhook')
+        .send({ padding: 'x'.repeat(66_000) });
+      expect(res.status).toBe(413);
+      expect(res.body).toEqual({ error: 'Request body exceeds its permitted size' });
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
+    });
+
+    it.each(['/api/webhooks/github', '/api/webhook/github', '/webhook', '/API/WEBHOOKS/GITHUB/'])
+    ('retains exact raw HMAC bytes and the 100KiB webhook bound on %s', async (path) => {
+      const f = buildApp({ webhookEnabled: true });
+      const raw = sizedWebhook(100 * 1024);
+      const signature = `sha256=${createHmac('sha256', TEST_WEBHOOK_SECRET).update(raw).digest('hex')}`;
+      const res = await request(f.app).post(path)
+        .set('Content-Type', 'application/json').set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', signature).send(raw);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: 'accepted' });
+      expect(f.webhookOnEvent).toHaveBeenCalledTimes(1);
+      const webhookEvent = f.webhookOnEvent.mock.calls[0][0];
+      expect(webhookEvent.rawBody.equals(Buffer.from(raw))).toBe(true);
+      expect(webhookEvent.body).toEqual(JSON.parse(raw));
+    });
+
+    it.each(['/api/webhooks/github', '/api/webhook/github', '/webhook'])
+    ('still rejects a webhook above 100KiB on %s', async (path) => {
+      const f = buildApp({ webhookEnabled: true });
+      const raw = sizedWebhook(100 * 1024 + 1);
+      const res = await request(f.app).post(path)
+        .set('Content-Type', 'application/json').set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', `sha256=${createHmac('sha256', TEST_WEBHOOK_SECRET).update(raw).digest('hex')}`)
+        .send(raw);
+      expect(res.status).toBe(413);
+      expect(res.body).toEqual({ error: 'Request body exceeds its permitted size' });
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
+    });
+
+    it('refuses a webhook signature over normalized JSON rather than the actual raw bytes', async () => {
+      const f = buildApp({ webhookEnabled: true });
+      const raw = sizedWebhook(100 * 1024);
+      const signature = `sha256=${createHmac('sha256', TEST_WEBHOOK_SECRET)
+        .update(JSON.stringify(JSON.parse(raw))).digest('hex')}`;
+      const res = await request(f.app).post('/api/webhooks/github')
+        .set('Content-Type', 'application/json').set('X-GitHub-Event', 'pull_request')
+        .set('X-Hub-Signature-256', signature).send(raw);
+      expect(res.status).toBe(401);
+      expect(f.webhookOnEvent).not.toHaveBeenCalled();
     });
   });
 
