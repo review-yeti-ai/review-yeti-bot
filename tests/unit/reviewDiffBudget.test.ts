@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 
@@ -296,12 +297,14 @@ describe('guarded gateway input budgeting', () => {
     const totalInputChars = inputFiles.reduce((sum, item) => sum + item.patch.length, 0);
     expect(totalInputChars).toBe(238_397);
 
-    const plan = shaPartitionManager.createPartitionPlan(
-      inputFiles,
-      '0123456789abcdef0123456789abcdef01234567',
-      'fedcba9876543210fedcba9876543210fedcba98',
-      gatewayDiffBudget,
-    );
+    const plan = pipeline.createReviewPartitionPlan({
+      files: inputFiles,
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars: gatewayDiffBudget,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+      partitionManager: shaPartitionManager,
+    });
 
     expect(plan.partitions).toHaveLength(4);
     expect(plan.coveragePercent).toBe(100);
@@ -396,6 +399,95 @@ describe('guarded gateway input budgeting', () => {
       expect(personaPrompt).toContain(firstHunk);
       expect(personaPrompt).toContain(secondHunk);
     }
+  });
+
+  it('loads and partitions through the bare Action path without dist or ts-node', () => {
+    const { inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
+    const script = `
+      const fs = require('node:fs');
+      const Module = require('node:module');
+      if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node 24+ is required');
+      const originalLoad = Module._load;
+      Module._load = function guardedLoad(request, parent, isMain) {
+        const target = String(request).replace(/\\\\/g, '/');
+        if (target.includes('/dist/pipeline/shaPartitionManager')) throw new Error('dist fallback is unavailable in this Action test');
+        if (target === 'ts-node' || target.startsWith('ts-node/')) throw new Error('ts-node is unavailable in this Action test');
+        return originalLoad.call(this, request, parent, isMain);
+      };
+      const pipeline = require(process.argv[1]);
+      const managerPath = Object.keys(require.cache).find((file) => file.replace(/\\\\/g, '/').endsWith('/src/pipeline/shaPartitionManager.ts'));
+      if (!managerPath || !pipeline.shaPartitionManager) throw new Error('native source partition manager did not load');
+      if (Object.keys(require.cache).some((file) => file.includes('/dist/pipeline/shaPartitionManager'))) throw new Error('dist partition manager was loaded');
+      const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+      const plan = pipeline.createReviewPartitionPlan({
+        files: input.files,
+        baseSha: input.baseSha,
+        headSha: input.headSha,
+        safeDiffCapacityChars: 80000,
+        modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+      });
+      process.stdout.write(JSON.stringify({
+        managerPath,
+        partitionChars: plan.partitions.map((partition) => partition.totalChars),
+        files: plan.fileManifest.length,
+        coveragePercent: plan.coveragePercent,
+        omittedFilesCount: plan.omittedFilesCount,
+      }));
+    `;
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_OPTIONS;
+    delete childEnv.NODE_PATH;
+    for (const key of Object.keys(childEnv)) if (key.startsWith('TS_NODE_')) delete childEnv[key];
+    const result = spawnSync(process.execPath, ['-e', script, pipelinePath], {
+      cwd: rootRepoDir,
+      env: childEnv,
+      input: JSON.stringify({
+        files: inputFiles,
+        baseSha: '0123456789abcdef0123456789abcdef01234567',
+        headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      }),
+      encoding: 'utf8',
+      maxBuffer: 2 * 1024 * 1024,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(result.stdout);
+    expect(evidence.managerPath.replace(/\\\\/g, '/')).toMatch(/\/src\/pipeline\/shaPartitionManager\.ts$/u);
+    expect(evidence.partitionChars).toHaveLength(4);
+    expect(evidence.partitionChars.every((chars: number) => chars <= 80_000)).toBe(true);
+    expect(evidence.files).toBe(33);
+    expect(evidence.coveragePercent).toBe(100);
+    expect(evidence.omittedFilesCount).toBe(0);
+  });
+
+  it('fails before guarded provider dispatch when lossless partitioning is unavailable or incomplete', () => {
+    const { inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const requestConfig = {
+      files: inputFiles,
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars: 80_000,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    };
+    let providerDispatches = 0;
+    const dispatchAfterPlanning = (partitionManager: any) => {
+      const plan = pipeline.createReviewPartitionPlan({ ...requestConfig, partitionManager });
+      providerDispatches += 1;
+      return plan;
+    };
+
+    expect(() => dispatchAfterPlanning(null)).toThrow(/partition manager is unavailable/u);
+    expect(() => dispatchAfterPlanning({
+      createPartitionPlan: () => ({
+        totalFiles: inputFiles.length,
+        coveragePercent: 100,
+        omittedFilesCount: 0,
+        fileManifest: inputFiles.map((file) => ({ path: file.path })),
+        partitions: [{ totalChars: 238_397, files: inputFiles.map((file) => ({ ...file })) }],
+      }),
+    })).toThrow(/complete, bounded file and hunk coverage/u);
+    expect(providerDispatches).toBe(0);
   });
 
 });

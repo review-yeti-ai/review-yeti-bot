@@ -115,8 +115,14 @@ try {
     shaPartitionManager = require('../../src/pipeline/shaPartitionManager');
   } catch (_) {
     try {
-      shaPartitionManager = require('../../../dist/pipeline/shaPartitionManager');
-    } catch (_) {}
+      // Node 24 is the Action minimum and can strip this type-only TS module natively. The
+      // legacy-runtime install intentionally has no TypeScript compiler or application dist.
+      shaPartitionManager = require('../../../src/pipeline/shaPartitionManager.ts');
+    } catch (_) {
+      try {
+        shaPartitionManager = require('../../../dist/pipeline/shaPartitionManager');
+      } catch (_) {}
+    }
   }
 }
 
@@ -1890,6 +1896,98 @@ function resolveSafeDiffCapacity(modelConfig = {}) {
   return isBoundGuardedGateway
     ? Math.min(configuredCapacity, GUARDED_GATEWAY_MAX_DIFF_CHARS)
     : configuredCapacity;
+}
+
+function requiresGuardedGatewayPartitionPlan(modelConfig = {}) {
+  return modelConfig.guardedGatewayDestination === true
+    && modelConfig.model === DIGEST_PINNED_GATEWAY_MODEL_ALIAS;
+}
+
+function splitDiffPatchForCoverage(patch) {
+  const lines = String(patch || '').split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const header = [];
+  const hunks = [];
+  let currentHunk = null;
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      if (currentHunk) hunks.push(currentHunk.join('\n'));
+      currentHunk = [line];
+    } else if (currentHunk) {
+      currentHunk.push(line);
+    } else {
+      header.push(line);
+    }
+  }
+  if (currentHunk) hunks.push(currentHunk.join('\n'));
+  return { header: header.join('\n'), hunks };
+}
+
+function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
+  if (!plan || !Array.isArray(plan.partitions) || plan.partitions.length < 2
+    || plan.coveragePercent !== 100 || plan.omittedFilesCount !== 0
+    || plan.totalFiles !== files.length
+    || plan.partitions.some((partition) => !Array.isArray(partition.files)
+      || !Number.isFinite(partition.totalChars)
+      || partition.totalChars > maxChars
+      || partition.files.reduce((sum, file) => sum + String(file.patch || '').length, 0) !== partition.totalChars)) {
+    return false;
+  }
+
+  const expectedPaths = new Set(files.map((file) => file.path));
+  const manifest = Array.isArray(plan.fileManifest) ? plan.fileManifest : [];
+  const manifestPaths = new Set(manifest.map((file) => file.path));
+  if (manifest.length !== expectedPaths.size || manifestPaths.size !== expectedPaths.size
+    || [...expectedPaths].some((filePath) => !manifestPaths.has(filePath))) {
+    return false;
+  }
+
+  const plannedFiles = plan.partitions.flatMap((partition) => Array.isArray(partition.files) ? partition.files : []);
+  return files.every((file) => {
+    const sourcePatch = String(file.patch || file.content || '');
+    const plannedCopies = plannedFiles.filter((planned) => planned.path === file.path);
+    if (plannedCopies.length === 0) return false;
+    if (plannedCopies.length === 1) {
+      return String(plannedCopies[0].patch || '').replace(/\n+$/u, '') === sourcePatch.replace(/\n+$/u, '');
+    }
+
+    const sourceParts = splitDiffPatchForCoverage(sourcePatch);
+    if (sourceParts.hunks.length === 0) return false;
+    const plannedParts = plannedCopies.map((planned) => splitDiffPatchForCoverage(planned.patch));
+    return plannedParts.every((parts) => parts.header === sourceParts.header)
+      && plannedParts.flatMap((parts) => parts.hunks).length === sourceParts.hunks.length
+      && plannedParts.flatMap((parts) => parts.hunks).every((hunk, index) => hunk === sourceParts.hunks[index]);
+  });
+}
+
+/**
+ * Shared main-path planner seam. Guarded gateway calls must never degrade to the truncating
+ * single-prompt planner when the lossless SHA partitioner is missing or cannot cover the diff.
+ */
+function createReviewPartitionPlan({
+  files,
+  baseSha,
+  headSha,
+  safeDiffCapacityChars,
+  modelConfig = {},
+  partitionManager = shaPartitionManager,
+}) {
+  const inputFiles = Array.isArray(files) ? files : [];
+  const maxChars = Number(safeDiffCapacityChars);
+  const totalDiffChars = inputFiles.reduce((sum, file) => sum + String(file.patch || file.content || '').length, 0);
+  if (inputFiles.length === 0 || totalDiffChars <= maxChars) return null;
+
+  const mustBeLossless = requiresGuardedGatewayPartitionPlan(modelConfig);
+  if (!partitionManager || typeof partitionManager.createPartitionPlan !== 'function') {
+    if (mustBeLossless) throw new Error('lossless partition manager is unavailable');
+    return null;
+  }
+
+  const plan = partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars);
+  if (mustBeLossless && !isLosslessBoundedPartitionPlan(inputFiles, plan, maxChars)) {
+    throw new Error('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  }
+  return plan;
 }
 
 /**
@@ -8143,13 +8241,24 @@ async function main() {
   const totalDiffChars = reviewDiffFiles.reduce((sum, file) => sum + String(file.patch || '').length, 0);
 
   let partitionPlan = null;
-  if (shaPartitionManager && reviewDiffFiles.length > 0 && totalDiffChars > safeDiffCapacityChars) {
-    const baseSha = prContext.baseSha || 'HEAD~1';
-    const headSha = prContext.headSha || 'HEAD';
+  if (reviewDiffFiles.length > 0 && totalDiffChars > safeDiffCapacityChars) {
     try {
-      partitionPlan = shaPartitionManager.createPartitionPlan(reviewDiffFiles, baseSha, headSha, safeDiffCapacityChars);
-      console.log(`[Partitioning] Total diff size (${totalDiffChars.toLocaleString()} chars) exceeds safe budget (${safeDiffCapacityChars.toLocaleString()} chars). Partitioned into ${partitionPlan.partitions.length} parallel review lanes (100% file coverage guarantee, 0 omitted).`);
+      partitionPlan = createReviewPartitionPlan({
+        files: reviewDiffFiles,
+        baseSha: prContext.baseSha || 'HEAD~1',
+        headSha: prContext.headSha || 'HEAD',
+        safeDiffCapacityChars,
+        modelConfig,
+      });
+      if (partitionPlan) {
+        console.log(`[Partitioning] Total diff size (${totalDiffChars.toLocaleString()} chars) exceeds safe budget (${safeDiffCapacityChars.toLocaleString()} chars). Partitioned into ${partitionPlan.partitions.length} parallel review lanes (100% file coverage guarantee, 0 omitted).`);
+      }
     } catch (err) {
+      if (requiresGuardedGatewayPartitionPlan(modelConfig)) {
+        console.error(`[Partitioning] Required lossless partition plan unavailable: ${err.message}`);
+        process.exitCode = 1;
+        return;
+      }
       console.warn(`[Partitioning] Failed to create partition plan: ${err.message}`);
     }
   }
@@ -8586,6 +8695,8 @@ module.exports = {
   resolveActionReviewRuntime,
   resolveActionReviewPolicy,
   resolveSafeDiffCapacity,
+  requiresGuardedGatewayPartitionPlan,
+  createReviewPartitionPlan,
   GUARDED_GATEWAY_MAX_DIFF_CHARS,
   applyActionSubmodulePolicy,
   parseActionSubmoduleUrls,
