@@ -25,6 +25,7 @@
  */
 import { buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
+import type { WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { resolvePreChecksConfig } from '../config/schema';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, PreCheckSummary } from '../sandbox/analyzerRunner';
@@ -142,6 +143,10 @@ export interface ComposedReviewOptions {
   repoFileProvider?: RepoFileProvider;
   repositoryVisibility?: RepositoryVisibility;
   signal?: AbortSignal;
+  /** Fixed caller cutoff; nested composed setup must not restart the worker's budget. */
+  deadlineBudget?: WorkerPanelDeadlineBudget;
+  /** Clock paired with `deadlineBudget`. */
+  deadlineNow?: () => number;
   workspaceRoot?: string;
   /** REL-1079: deterministic diff shrinking (`REVIEW_YETI_DIFF_SHRINK`); absent or disabled sends every change in full. */
   diffShrink?: DiffShrinkInput;
@@ -363,6 +368,8 @@ async function callTurn(params: {
   internalProgress?: InternalProviderProgress;
   /** Absolute epoch ms the composed run must not sleep past. Undefined means unbounded. */
   deadlineAtMs?: number;
+  /** Clock paired with `deadlineAtMs`; inherited from the panel deadline context. */
+  now?: () => number;
 }): Promise<TurnCallResult> {
   throwIfPanelAborted(params.signal);
   const startedAt = Date.now();
@@ -405,7 +412,7 @@ async function callTurn(params: {
       throwIfPanelAborted(params.signal);
 
       const budgetLeftMs = params.deadlineAtMs !== undefined
-        ? params.deadlineAtMs - Date.now()
+        ? params.deadlineAtMs - (params.now ?? Date.now)()
         : Infinity;
 
       if (isEmptyCompletionError(error) && emptyCompletionAttempts < EMPTY_COMPLETION_MAX_ATTEMPTS - 1
@@ -864,6 +871,7 @@ async function runPlanPhase(input: {
   expectedNonce: string;
   /** Absolute epoch ms this run must not sleep past; forwarded to every provider call. */
   deadlineAtMs?: number;
+  now?: () => number;
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: unknown;
   turnsRemaining: () => number;
@@ -892,6 +900,7 @@ async function runPlanPhase(input: {
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
       deadlineAtMs: input.deadlineAtMs,
+      now: input.now,
       responseFormat,
       jobId: input.jobId,
       signal: input.signal,
@@ -1014,6 +1023,7 @@ async function runTaskWorkPhase(input: {
   turnsRemaining: () => number;
   /** Absolute epoch ms this run must not sleep past; forwarded to every provider call. */
   deadlineAtMs?: number;
+  now?: () => number;
   /** Policy may LOWER this task's turn ceiling, never raise it past `COMPOSED_TASK_MAX_TURNS`. */
   maxTurnsPerTask?: number;
   /** REL-1082: whole-request cap for a budgeted review; tool results are clipped to it. */
@@ -1066,6 +1076,7 @@ async function runTaskWorkPhase(input: {
       inactivityTimeoutMs: input.inactivityTimeoutMs,
       requestPolicy: input.requestPolicy,
       deadlineAtMs: input.deadlineAtMs,
+      now: input.now,
       responseFormat,
       jobId: input.jobId,
       signal: input.signal,
@@ -1213,15 +1224,14 @@ export function unreportedLaneFailure(
 // ---------------------------------------------------------------------------
 
 export async function executeComposedReview(options: ComposedReviewOptions): Promise<PanelResult> {
-  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
-  // Absolute wall-clock bound for this run, derived from the SAME timeout the abort signal uses.
+  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
+    options.deadlineBudget, options.deadlineNow);
+  // Absolute wall-clock bound for this run, taken from the admitted budget the abort signal uses.
   // Forwarded into every provider call so a retry backoff cannot sleep past it. The abort signal
   // already stops the run, but a backoff that overshoots converts a precise transport failure into
   // a generic timeout, which is strictly worse to operate on -- that is the whole point of the
   // budget check, and until this was wired the check compared against Infinity and did nothing.
-  const composedDeadlineAtMs = Number.isFinite(options.config.reviewers.overall_timeout_s)
-    ? Date.now() + Math.max(0, options.config.reviewers.overall_timeout_s) * 1000
-    : undefined;
+  const composedDeadlineAtMs = deadline.budget.deadlineAtMs;
   const panelStartedAt = Date.now();
   options.progress?.emit({ task: 'panel', status: 'started' });
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks.
@@ -1381,6 +1391,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         expectedNonce: planNonce,
         ...(requestCapBytes ? { requestCapBytes } : {}),
         deadlineAtMs: composedDeadlineAtMs,
+        now: deadline.now,
         repoFileProvider,
         zoektConfig,
         turnsRemaining: remainingBudget,
@@ -1441,6 +1452,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         outcome = await runTaskWorkPhase({
           maxTurnsPerTask: config.composed?.max_turns_per_task,
           deadlineAtMs: composedDeadlineAtMs,
+          now: deadline.now,
           task,
           taskIndex: i,
           totalTasks: planOutcome.tasks.length,

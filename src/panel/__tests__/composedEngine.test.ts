@@ -1073,9 +1073,10 @@ describe('executeComposedReview', () => {
   // The retry ladders check their backoff against the run's remaining budget. That check compared
   // against Infinity until the deadline was actually threaded from the orchestrator into
   // `callTurn` -- the guard existed, was described as "budget-aware" in its own commit message,
-  // and could not fire. This pins that it is reachable: with no budget left, a retryable error is
-  // NOT retried, so exactly one provider call is made.
-  it('does not retry when the remaining budget cannot fit the backoff', async () => {
+  // and could not fire. A non-positive configured setting uses the shared 900s fallback, rather
+  // than an inline zero cutoff that disagrees with the abort signal's admitted budget.
+  it('uses the shared configured fallback when the timeout setting is non-positive', async () => {
+    vi.useFakeTimers();
     let calls = 0;
     const complete = vi.fn(async () => {
       calls += 1;
@@ -1085,7 +1086,7 @@ describe('executeComposedReview', () => {
     const cfg: any = config();
     cfg.reviewers = { ...cfg.reviewers, overall_timeout_s: 0 };
 
-    await executeComposedReview({
+    const settled = executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
       repository: 'calltelemetry/ct-meta',
@@ -1093,7 +1094,47 @@ describe('executeComposedReview', () => {
       client: { complete },
     }).catch(() => undefined);
 
-    expect(calls).toBe(1);
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settled;
+      expect(calls).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the inherited admitted clock and cutoff instead of minting a composed retry window', async () => {
+    vi.useFakeTimers();
+    // Keep the cutoff in the future according to Date.now(), but advance only the admitted
+    // clock to it. If callTurn accidentally consults Date.now() again, it will see retry budget
+    // and make another provider call; using the admitted clock must suppress that retry.
+    const wallClockMs = Date.now();
+    let currentMs = wallClockMs;
+    const now = () => currentMs;
+    const deadlineAtMs = wallClockMs + 5_000;
+    const cancellation = new AbortController();
+    const admitted = panelEngine.createPanelDeadlineSignal(1_800, cancellation.signal,
+      { deadlineAtMs, timeoutMs: 5_000, terminalBound: true }, now);
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      calls += 1;
+      currentMs = deadlineAtMs;
+      throw new OpenRouterResponseError('provider returned empty completion content', 200);
+    });
+    const settled = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete },
+      signal: admitted.signal, deadlineBudget: admitted.budget, deadlineNow: admitted.now }).catch((error) => error);
+
+    try {
+      expect(Date.now()).toBeLessThan(deadlineAtMs);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toBe(1);
+      expect(await settled).toBeInstanceOf(OpenRouterResponseError);
+    } finally {
+      cancellation.abort();
+      admitted.cleanup();
+      vi.useRealTimers();
+    }
   });
 
   function threeTasks() {
