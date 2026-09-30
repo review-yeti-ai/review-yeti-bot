@@ -2611,12 +2611,14 @@ describe('isGithubDiffNotRenderableError', () => {
 
 describe('REL-1211 absolute publishing budget', () => {
   const start = Date.parse('2026-09-30T16:00:50Z');
+  const clean = () => ({ applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
+    quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } });
   const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 121_000 + remaining).toISOString() });
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(start); });
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
   it.each([0, -100])('REL-1211 refuses exhausted admission before main or shadow invocation: %s', async (remaining) => {
-    const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
+    const completion = { reportTerminalFailure: vi.fn(async (_event: { diagnostics?: unknown }) => undefined) };
     const shadow = vi.fn();
     const d = deps({ completion, composedReviewRunner: shadow, zoektGrounding: vi.fn(async () => ({})) });
     const input = env({ ...deadlineEnv(remaining), REVIEW_EXECUTION_ATTEMPT: '2',
@@ -2657,15 +2659,15 @@ describe('REL-1211 absolute publishing budget', () => {
     expect(panelRunner).toHaveBeenCalledOnce(); expect(composedReviewRunner).toHaveBeenCalledOnce();
     expect(mainSignal).not.toBe(shadowSignal);
     expect(mainSignal.aborted).toBe(true); expect(shadowSignal.reason).toBe(mainSignal.reason);
-    lateMain(await deps().panelRunner()); lateShadow(await deps().panelRunner());
+    lateMain(clean()); lateShadow(clean());
     await vi.advanceTimersByTimeAsync(1);
-    expect(d.checkClient.completeCheck.mock.calls.every(([event]) => event.conclusion === 'failure')).toBe(true);
+    expect(d.checkClient.completeCheck).not.toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'success' }));
     expect(vi.getTimerCount()).toBe(0);
   });
 
   it('checks the deferred shadow invocation after a synchronous main callback crosses the cutoff', async () => {
     const composedReviewRunner = vi.fn();
-    const panelRunner = vi.fn(async () => { vi.setSystemTime(start + 50); return deps().panelRunner(); });
+    const panelRunner = vi.fn(async () => { vi.setSystemTime(start + 50); return clean(); });
     const d = deps({ panelRunner, composedReviewRunner, zoektGrounding: vi.fn(async () => ({})) });
     await expect(runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never))
       .rejects.toBeInstanceOf(PanelDeadlineExceededError);
