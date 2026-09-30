@@ -74,14 +74,21 @@ function apiOrigin(apiBaseUrl) {
  * binary, stripping the single top-level directory every GitHub tarball
  * wraps its contents in.
  */
-function extractTarball({ archivePath, destDir, tarBinaryPath }) {
+function extractTarball({ archivePath, destDir, tarBinaryPath, signal }) {
   return new Promise((resolve) => {
     let settled = false;
+    let terminationRequested = false;
+    let onAbort = () => {};
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      signal?.removeEventListener?.('abort', onAbort);
       resolve(result);
     };
+    if (signal?.aborted) {
+      finish({ ok: false, reason: 'cancelled' });
+      return;
+    }
     let child;
     try {
       child = spawn(tarBinaryPath, ['-xzf', archivePath, '-C', destDir, '--strip-components=1'], {
@@ -96,16 +103,30 @@ function extractTarball({ archivePath, destDir, tarBinaryPath }) {
     child.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
     });
+    onAbort = () => {
+      if (settled || terminationRequested) return;
+      terminationRequested = true;
+      try { child.kill('SIGKILL'); } catch (_error) { /* close remains the cleanup barrier */ }
+    };
     child.once('error', (error) => {
+      if (terminationRequested) return;
       finish({ ok: false, reason: error?.code === 'ENOENT' ? 'tar_binary_missing' : 'tar_spawn_failed' });
     });
-    child.once('exit', (code) => {
+    child.once('close', (code) => {
+      if (terminationRequested) {
+        finish({ ok: false, reason: 'cancelled' });
+        return;
+      }
       if (code !== 0) {
         finish({ ok: false, reason: 'tar_extract_failed', exitCode: code, stderrTail });
         return;
       }
       finish({ ok: true });
     });
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    // A lifecycle abort between the initial check and listener installation
+    // must not leave an extraction running without an owner.
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -124,7 +145,29 @@ async function streamResponseToFile({ response, archivePath, maxBytes, signal })
   }
   const reader = response.body.getReader();
   const fileStream = fs.createWriteStream(archivePath);
+  // write callbacks still report errors; this listener prevents destroy-on-abort
+  // from surfacing as an unhandled stream error before the callback is observed.
+  fileStream.on('error', () => {});
   let written = 0;
+  let discardPromise;
+  const discardPartialArchive = () => {
+    if (!discardPromise) {
+      discardPromise = (async () => {
+        try { await reader.cancel(); } catch (_error) { /* already closed */ }
+        fileStream.destroy();
+        if (!fileStream.closed) {
+          await new Promise((resolve) => {
+            if (fileStream.closed) resolve();
+            else fileStream.once('close', resolve);
+          });
+        }
+        try { fs.unlinkSync(archivePath); } catch (_error) { /* best effort */ }
+      })();
+    }
+    return discardPromise;
+  };
+  const onAbort = () => { void discardPartialArchive(); };
+  signal?.addEventListener?.('abort', onAbort, { once: true });
   try {
     for (;;) {
       if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -132,9 +175,7 @@ async function streamResponseToFile({ response, archivePath, maxBytes, signal })
       if (done) break;
       written += value.byteLength;
       if (written > maxBytes) {
-        try { await reader.cancel(); } catch (_error) { /* already closed */ }
-        fileStream.close();
-        try { fs.unlinkSync(archivePath); } catch (_error) { /* best effort */ }
+        await discardPartialArchive();
         return { ok: false, reason: 'archive_too_large' };
       }
       await new Promise((resolve, reject) => {
@@ -142,11 +183,18 @@ async function streamResponseToFile({ response, archivePath, maxBytes, signal })
       });
     }
     await new Promise((resolve, reject) => fileStream.end((error) => (error ? reject(error) : resolve())));
+    if (!fileStream.closed) {
+      await new Promise((resolve) => {
+        if (fileStream.closed) resolve();
+        else fileStream.once('close', resolve);
+      });
+    }
     return { ok: true };
   } catch (error) {
-    try { fileStream.close(); } catch (_closeError) { /* already closed */ }
-    try { fs.unlinkSync(archivePath); } catch (_unlinkError) { /* best effort */ }
+    await discardPartialArchive();
     return { ok: false, reason: signal?.aborted ? 'request_timeout' : 'tarball_write_failed' };
+  } finally {
+    signal?.removeEventListener?.('abort', onAbort);
   }
 }
 
@@ -167,6 +215,9 @@ async function materializeReviewWorkdir({
   tarBinaryPath = 'tar',
 } = {}) {
   const started = Date.now();
+  if (signal?.aborted) {
+    return { status: 'unavailable', reason: 'cancelled', elapsedMs: Date.now() - started };
+  }
   if (!validRepository(repository) || !SHA.test(String(headSha || ''))) {
     return { status: 'unavailable', reason: 'invalid_identity', elapsedMs: Date.now() - started };
   }
@@ -197,6 +248,11 @@ async function materializeReviewWorkdir({
   const onExternalAbort = () => controller.abort();
   signal?.addEventListener?.('abort', onExternalAbort, { once: true });
   const timer = setTimeout(() => controller.abort(), resolved.timeoutMs);
+  if (controller.signal.aborted) {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', onExternalAbort);
+    return { status: 'unavailable', reason: signal?.aborted ? 'cancelled' : 'request_timeout', elapsedMs: Date.now() - started };
+  }
 
   let response;
   try {
@@ -225,7 +281,13 @@ async function materializeReviewWorkdir({
     return { status: 'unavailable', reason: streamResult.reason, elapsedMs: Date.now() - started };
   }
 
-  const extraction = await extractTarball({ archivePath, destDir, tarBinaryPath });
+  // Do not start tar after a cutoff that raced with stream completion. extractTarball
+  // also subscribes to this signal and joins the child on cancellation.
+  if (signal?.aborted) {
+    try { fs.unlinkSync(archivePath); } catch (_error) { /* best effort cleanup */ }
+    return { status: 'unavailable', reason: 'cancelled', elapsedMs: Date.now() - started };
+  }
+  const extraction = await extractTarball({ archivePath, destDir, tarBinaryPath, signal });
   try { fs.unlinkSync(archivePath); } catch (_error) { /* best effort cleanup */ }
   if (!extraction.ok) {
     return { status: 'unavailable', reason: extraction.reason, elapsedMs: Date.now() - started };

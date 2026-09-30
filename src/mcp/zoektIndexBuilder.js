@@ -59,8 +59,9 @@ function resolveBuildConfig(config = {}) {
  * only reads `workdir` and writes shard files under `indexDir`. Never
  * touches the network, never receives model-controlled arguments.
  */
-async function buildZoektIndex({ workdir, indexDir, config = {} } = {}) {
+async function buildZoektIndex({ workdir, indexDir, config = {}, signal } = {}) {
   const started = Date.now();
+  if (signal?.aborted) return { status: 'unavailable', reason: 'cancelled', elapsedMs: Date.now() - started };
   if (typeof workdir !== 'string' || !workdir || !fs.existsSync(workdir)) {
     return { status: 'unavailable', reason: 'workdir_missing', elapsedMs: Date.now() - started };
   }
@@ -83,9 +84,14 @@ async function buildZoektIndex({ workdir, indexDir, config = {} } = {}) {
   ];
   return await new Promise((resolve) => {
     let settled = false;
+    let timer;
+    let terminationReason;
+    let onAbort = () => {};
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener?.('abort', onAbort);
       resolve({ ...result, elapsedMs: Date.now() - started });
     };
     let child;
@@ -103,16 +109,23 @@ async function buildZoektIndex({ workdir, indexDir, config = {} } = {}) {
     child.stderr?.on('data', (chunk) => {
       stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
     });
-    const timer = setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch (_) { /* already exited */ }
-      finish({ status: 'unavailable', reason: 'index_build_timeout' });
-    }, resolved.timeoutMs);
+    const terminate = (reason) => {
+      if (settled || terminationReason) return;
+      terminationReason = reason;
+      try { child.kill('SIGKILL'); } catch (_) { /* close event remains the cleanup barrier */ }
+    };
+    onAbort = () => terminate('cancelled');
     child.once('error', (error) => {
-      clearTimeout(timer);
+      // Once termination was requested, wait for `close` before allowing the
+      // caller to remove indexDir. This prevents a late child write racing cleanup.
+      if (terminationReason) return;
       finish({ status: 'unavailable', reason: error?.code === 'ENOENT' ? 'zoekt_index_binary_missing' : 'zoekt_index_spawn_failed' });
     });
-    child.once('exit', (code) => {
-      clearTimeout(timer);
+    child.once('close', (code) => {
+      if (terminationReason) {
+        finish({ status: 'unavailable', reason: terminationReason === 'cancelled' ? 'cancelled' : 'index_build_timeout' });
+        return;
+      }
       if (settled) return;
       if (code !== 0) {
         finish({ status: 'unavailable', reason: 'zoekt_index_build_failed', exitCode: code, stderrTail });
@@ -124,6 +137,10 @@ async function buildZoektIndex({ workdir, indexDir, config = {} } = {}) {
       } catch (_) { /* leave shardCount at 0, still report ok */ }
       finish({ status: 'ok', indexDir, shardCount });
     });
+    timer = setTimeout(() => terminate('index_build_timeout'), resolved.timeoutMs);
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+    // Close the check/listener race without starting work for an already-aborted caller.
+    if (signal?.aborted) onAbort();
   });
 }
 
