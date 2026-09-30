@@ -107,7 +107,7 @@ import {
 } from './reviewTask';
 import { normalizeRepositoryVisibility, type RepositoryVisibility } from '../review/repositoryVisibility';
 import { logger } from '../utils/logger';
-import { FIND_FILES_TOOL_GUIDE } from './pathMatch';
+import { FIND_FILES_TOOL_GUIDE, READ_FILE_TOOL_GUIDE } from './pathMatch';
 import type {
   ComposedTaskFailureDiagnostics,
   LaneAggregateUsage,
@@ -657,6 +657,8 @@ function buildSystemPrompt(repository: string): string {
     ``,
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
     `- Code Reading: view_file, read_file, get_diff`,
+    `- ${READ_FILE_TOOL_GUIDE}`,
+    `get_diff and text search remain limited to PR diff content.`,
     `- AST & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
     `- ${FIND_FILES_TOOL_GUIDE}`,
     `- Documentation: fetch_docs, context7_search`,

@@ -480,24 +480,36 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
     });
 
     it('TC-T5-RUN-04: line slicing boundaries: handles inverted range, floats, negative lines, and out-of-bounds', async () => {
-      const fileContent = ['line 1', 'line 2', 'line 3', 'line 4', 'line 5'].join('\n');
+      const fileContent = ['current line 1', 'current line 2', 'current line 3', 'current line 4', 'current line 5'].join('\n');
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn().mockResolvedValue(['src/calc.ts']),
+        readFile: vi.fn(async (path: string) => path === 'src/calc.ts' ? fileContent : null),
+      };
       const ctx = baseContext({
-        changedFiles: [{ path: 'src/calc.ts', patch: fileContent }],
+        changedFiles: [{ path: 'src/calc.ts', patch: '@@ -4 +4 @@\n-old line 4\n+patch hunk line' }],
+        repoFileProvider,
       });
 
-      // Inverted range: startLine: 4, endLine: 2 -> end clamped to start -> returns line 4
+      // Changed paths are read from exact-head source when the provider is present;
+      // patch hunks are never represented as complete source for line slicing.
+      // Inverted range: startLine: 4, endLine: 2 -> end clamped to start -> returns source line 4.
       const rInverted = await runReadOnlyTool('read_file', { path: 'src/calc.ts', startLine: 4, endLine: 2 }, ctx);
       expect(rInverted.toolOutput).toContain('Lines 4-4 of 5');
-      expect(rInverted.toolOutput).toContain('line 4');
+      expect(rInverted.toolOutput).toContain('current line 4');
+      expect(rInverted.toolOutput).toContain('reading the current file at the reviewed head, not the patch');
+      expect(rInverted.toolOutput).not.toContain('patch hunk line');
+      expect(rInverted.toolScope).toBe('full-repository');
+      expect(rInverted.isExhaustive).toBe(true);
 
       // Float line numbers: startLine: 2.7 -> Math.floor -> 2
       const rFloat = await runReadOnlyTool('read_file', { path: 'src/calc.ts', startLine: 2.7, endLine: 3.9 }, ctx);
       expect(rFloat.toolOutput).toContain('Lines 2-3 of 5');
-      expect(rFloat.toolOutput).toContain('line 2\nline 3');
+      expect(rFloat.toolOutput).toContain('current line 2\ncurrent line 3');
 
       // Negative or zero lines: treated as undefined/fallback
       const rZero = await runReadOnlyTool('read_file', { path: 'src/calc.ts', startLine: -5, endLine: 0 }, ctx);
-      expect(rZero.toolOutput).toContain('line 1\nline 2\nline 3\nline 4\nline 5');
+      expect(rZero.toolOutput).toContain('current line 1\ncurrent line 2\ncurrent line 3\ncurrent line 4\ncurrent line 5');
+      expect(repoFileProvider.readFile).toHaveBeenCalledTimes(3);
     });
 
     it('TC-T5-RUN-05: oversized patch diff returns explicit SKIPPED warning to prevent token blowout', async () => {
