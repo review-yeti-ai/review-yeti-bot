@@ -962,9 +962,8 @@ describe('composed engine wiring', () => {
     const records = [{ ...releaseRecord(jsonPath, 'json'), path: jsonPath },
       { ...releaseRecord(yamlPath, 'yaml'), path: yamlPath }, textRecord(envPath, envBody, 'RELEASE_ENV_TAIL'),
       textRecord(notePath, noteBody, 'RELEASE_NOTES_TAIL')];
-    const otherPath = 'src/compile.ts';
-    // A higher-ranked source file exhausts the soft budget if release records are mistaken
-    // for ordinary config. Full-depth CI/IaC records must win, up to the unchanged hard cap.
+    // The four release patches exceed the soft budget. Internal notes would otherwise
+    // remain signatures only; exact CI/IaC records stay full up to the unchanged hard cap.
     const diff = records.map((record) => record.diff).join('');
     const changedFiles = files(diff);
     expect(changedFiles).toHaveLength(4);
