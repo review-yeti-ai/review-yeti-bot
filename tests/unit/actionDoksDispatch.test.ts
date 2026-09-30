@@ -30,6 +30,30 @@ function environment(overrides: Record<string, string> = {}) {
 afterEach(() => vi.restoreAllMocks());
 
 describe('DOKS Action dispatch client', () => {
+  it('emits the new candidate flag only for an explicit bounded central refresh', async () => {
+    const { buildDispatchRequest } = await import(modulePath);
+    const request = buildDispatchRequest(environment({ GITHUB_EVENT_NAME: 'repository_dispatch',
+      DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '2', REFRESH_REQUESTED: 'true',
+      REFRESH_EXECUTION_ATTEMPT: '1', INCOMPLETE_P2_RECOVERY: 'true' }));
+    expect(request.incompleteP2Recovery).toBe(true);
+    expect(buildDispatchRequest(environment({ INCOMPLETE_P2_RECOVERY: 'false' }))).not.toHaveProperty('incompleteP2Recovery');
+  });
+
+  it.each([
+    { REFRESH_REQUESTED: 'false' }, { EXPECTED_GENERATION: '4', REFRESH_EXECUTION_ATTEMPT: '3' },
+    { EXPECTED_GENERATION: '1' }, { REFRESH_EXECUTION_ATTEMPT: '2' },
+    { DOKS_PUBLISH_MODE: 'disabled' }, { GITHUB_EVENT_NAME: 'pull_request' },
+  ])('rejects an unbound P2 candidate before dispatch: %j', async (overrides) => {
+    const { buildDispatchRequest } = await import(modulePath);
+    expect(() => buildDispatchRequest(environment({ GITHUB_EVENT_NAME: 'repository_dispatch',
+      DOKS_PUBLISH_MODE: 'app-gate', EXPECTED_GENERATION: '2', REFRESH_REQUESTED: 'true',
+      REFRESH_EXECUTION_ATTEMPT: '1', INCOMPLETE_P2_RECOVERY: 'true', ...overrides }))).toThrow(/bounded exact-generation/);
+  });
+
+  it.each(['1', 'TRUE', 'yes'])('rejects ambiguous P2 flag %s', async (flag) => {
+    const { buildDispatchRequest } = await import(modulePath);
+    expect(() => buildDispatchRequest(environment({ INCOMPLETE_P2_RECOVERY: flag }))).toThrow('INCOMPLETE_P2_RECOVERY');
+  });
   it('builds a versioned credential-minimal immutable request', async () => {
     const { buildDispatchRequest } = await import(modulePath);
     const request = buildDispatchRequest(environment({

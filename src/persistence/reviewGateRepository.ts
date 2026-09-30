@@ -20,6 +20,8 @@ import { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GatePublicationTransition, type GatePublicationErrorClass, type ReviewGateRepository } from '../review/reviewGateContracts';
 import { reviewDispatchPrLockKey } from './reviewCiPersistence';
 import { selectPriorReviewRecord } from './incrementalPriorReview';
+import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } from './incompleteP2Recovery';
+import { incompleteP2RecoveryClaimMatches } from '../review/incompleteP2Recovery';
 import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput } from '../review/incrementalReview';
 import { selectVerdictCacheSource } from './verdictCacheSource';
 import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
@@ -172,7 +174,7 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       stage = 'state-load';
       const result = await client.query(`SELECT gate.*, runs.status AS run_status,
           runs.attempt AS current_generation, runs.effective_config_digest, runs.received_at, runs.terminal_deadline,
-          runs.authoritative_gate_app_id,
+          runs.authoritative_gate_app_id, runs.artifacts,
           outbox.worker_token_digest, outbox.execution_attempt AS current_execution,
           outbox.status AS outbox_status
         FROM review_gate_attempts gate JOIN review_runs runs USING (run_id)
@@ -206,6 +208,22 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
       if (!['queued', 'running'].includes(row.run_status)
         || !['pending', 'claimed', 'projected'].includes(row.outbox_status)
         || gate.creationState !== 'bound' || gate.checkId === null) return await finish('ignored');
+
+      const retainedDigest = event.executionAttempt > 1
+        ? await requiredIncompleteP2RecoveryDigest(client, event.runId, event.executionAttempt,
+          typeof row.artifacts === 'string' ? JSON.parse(row.artifacts) : row.artifacts)
+        : null;
+      const retainedContext = retainedDigest === null ? null : await loadIncompleteP2RecoveryContext(client, {
+        runId: event.runId, executionAttempt: event.executionAttempt, repositoryId: event.repositoryId,
+        identity: { owner: event.owner, repo: event.repo, prNumber: event.prNumber,
+          headSha: event.headSha, baseSha: event.baseSha, configDigest: event.configDigest },
+        policyDigest: event.policyDigest, expectedAppId: gate.expectedAppId,
+      });
+      const retainedFindingsValid = retainedDigest === null
+        ? event.result.incompleteP2Recovery === undefined
+        : retainedContext !== null && retainedContext.contextDigest === retainedDigest
+          && incompleteP2RecoveryClaimMatches(retainedContext, event.result.incompleteP2Recovery)
+          && event.result.incremental === undefined && event.result.verdictCache === undefined;
 
       const deadline = new Date(row.terminal_deadline).getTime();
       const deadlineValid = Number.isFinite(deadline) && row.terminal_deadline != null && now < deadline;
@@ -265,6 +283,9 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         ? { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' }
         : coverageFailure ? coverageFailure
         : currentDecision && currentDecision.status !== 'pending' ? currentDecision
+        : !retainedFindingsValid ? { status: 'failure', eligible: false, reason: 'invalid-evidence' }
+        : retainedDigest !== null && evidence?.exemption
+          ? { status: 'failure', eligible: false, reason: 'invalid-evidence' }
         : evidence && trusted
         ? evaluateReviewGate({ candidate: coordinates, current: trusted.current, evidence })
         : { status: 'failure', eligible: false, reason: 'invalid-evidence' };

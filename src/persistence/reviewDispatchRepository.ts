@@ -41,6 +41,7 @@ import {
   type ReviewGateCancellationReason,
 } from '../review/reviewGatePolicy';
 import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
+import { loadIncompleteP2RecoveryContext } from './incompleteP2Recovery';
 
 interface QueryResult {
   rows: any[];
@@ -216,6 +217,13 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined) {
     throw new Error('retry requested requires a retry-after execution attempt');
   }
+  if (input.incompleteP2Recovery !== undefined && (input.incompleteP2Recovery !== true
+    || !input.centralActionDispatch || input.publicationMode !== 'app-gate'
+    || !input.authoritativeGate || input.retryRequested !== true
+    || input.expectedGeneration === undefined || input.expectedGeneration < 2 || input.expectedGeneration > 3
+    || input.retryAfterExecutionAttempt !== input.expectedGeneration - 1)) {
+    throw new Error('Incomplete P2 recovery requires authoritative exact-generation admission');
+  }
   if (input.availableAt !== undefined
     && (!Number.isSafeInteger(input.availableAt) || input.availableAt < input.receivedAt)) {
     throw new Error('available-at must be a safe integer at or after receivedAt');
@@ -266,6 +274,7 @@ function generationRecoveryRequest(
     runId,
     expectedGeneration: expected,
     expectedAppId: input.authoritativeGate.expectedAppId,
+    ...(input.incompleteP2Recovery === true ? { incompleteP2Recovery: true } : {}),
   };
 }
 
@@ -729,6 +738,18 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           throw new ReviewGenerationConflictError(input.expectedGeneration ?? 1, 1);
         }
       }
+      // A central P2-only candidate cannot erase its findings by retrying. The
+      // complete archive is verified under the same PR lock as generation allocation.
+      const p2RecoveryContext = input.incompleteP2Recovery === true
+        ? await loadIncompleteP2RecoveryContext(client, {
+          runId, repositoryId: input.repositoryId, identity: input.identity,
+          policyDigest: input.effectivePolicyDigest!, incompleteP2Recovery: true,
+          expectedAppId: input.authoritativeGate!.expectedAppId, executionAttempt: input.expectedGeneration!,
+          recoveryEvidence: generationRecovery,
+        }) : null;
+      if (input.incompleteP2Recovery === true && !p2RecoveryContext) {
+        throw new Error('Retained P2 findings are required for recovery');
+      }
       const delivery = await client.query(
         `INSERT INTO github_deliveries
            (delivery_id, event_name, repository_id, installation_id, payload_digest, received_at)
@@ -874,7 +895,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
                -- The old deadline is already in the past, so a retry would be
                -- swept by the abandoned-run reaper before it could start.
                terminal_deadline = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
-                   THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END
+                   THEN EXCLUDED.terminal_deadline ELSE review_runs.terminal_deadline END,
+               artifacts = CASE WHEN (SELECT should_retry FROM retry_eligibility WHERE run_id = review_runs.run_id)
+                   THEN review_runs.artifacts || EXCLUDED.artifacts ELSE review_runs.artifacts END
          WHERE review_runs.publication_mode = EXCLUDED.publication_mode
            AND review_runs.authoritative_gate_app_id IS NOT DISTINCT FROM EXCLUDED.authoritative_gate_app_id
            AND review_runs.status <> 'superseded'
@@ -925,6 +948,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           generationRecovery.length,
           JSON.stringify({
             review_engine: input.reviewEngine || input.authoritativeGate?.prepared.config.review_engine || 'panel',
+            ...(p2RecoveryContext ? { incomplete_p2_recovery_digest: p2RecoveryContext.contextDigest } : {}),
           }),
         ],
       );

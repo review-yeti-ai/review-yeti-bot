@@ -39,6 +39,7 @@ import {
 export { createWorkerCompletionVerifier, type WorkerCompletionVerifier } from '../review/authoritativeServiceContracts';
 import type { IncrementalBaseLookup } from '../persistence/incrementalPriorReview';
 import { createIncrementalBaseHandler } from './incrementalBaseRoute';
+import { createIncompleteP2RecoveryHandler, type IncompleteP2RecoveryQueryable } from './incompleteP2RecoveryRoute';
 import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
 import { createVerdictCacheBaseHandler } from './verdictCacheBaseRoute';
 
@@ -72,6 +73,7 @@ export interface ActionDispatchRouterOptions {
   runStatusRepository?: Pick<ReviewDispatchRepository, 'getRunStatus'>;
   /** REL-1084: the prior review record a worker's incremental re-review may plan from. */
   incrementalBase?: IncrementalBaseLookup;
+  incompleteP2Recovery?: IncompleteP2RecoveryQueryable;
   /** REL-1085: the stored record a worker's verdict cache may plan from. */
   verdictCacheBase?: VerdictCacheBaseLookup;
   now?: () => number;
@@ -173,6 +175,10 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
     // the OIDC workflow identities, bind the request to those claims, and apply
     // the verifier's explicit allowlist.
     const centralRefreshAuthorized = isCentralRefreshAuthorized(dispatch, claims, options.verifier.policy);
+    if (dispatch.incompleteP2Recovery === true && (!centralRefreshAuthorized || !authoritative
+      || dispatch.publishMode !== 'app-gate' || !authoritativeRepositories.has(dispatch.repositoryId))) {
+      return response.status(403).json({ error: 'Incomplete P2 recovery requires authoritative central admission' });
+    }
 
     const receivedAt = now();
     const requestedAt = Date.parse(dispatch.requestedAt);
@@ -207,6 +213,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
         ...(centralRefreshAuthorized ? {
           retryRequested: true,
           retryAfterExecutionAttempt: dispatch.refreshExecutionAttempt,
+          ...(dispatch.incompleteP2Recovery === true ? { incompleteP2Recovery: true as const } : {}),
         } : {}),
         ...(dispatch.expectedGeneration === undefined ? {} : { expectedGeneration: dispatch.expectedGeneration }),
         identity: resolved?.identity || buildReviewRunIdentity({
@@ -466,6 +473,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
 
   router.get('/runs/:runId/attempts/:attempt/status', handleRunStatus);
   if (options.incrementalBase) router.post('/incremental-base', createIncrementalBaseHandler(options.incrementalBase));
+  if (options.incompleteP2Recovery) router.post('/incomplete-p2-recovery', createIncompleteP2RecoveryHandler(options.incompleteP2Recovery));
   if (options.verdictCacheBase) router.post('/verdict-cache-base', createVerdictCacheBaseHandler(options.verdictCacheBase));
   router.get('/status', handleRunStatus);
 
