@@ -63,6 +63,15 @@ export interface ReviewRun {
   updatedAt: number;
 }
 
+/** Internal admission provenance for the narrowly-scoped MCP recovery bootstrap.
+ * Values come from verified router context, never from tool arguments. */
+export interface McpStaticAdminRecoveryOrigin {
+  kind: 'mcp_static_admin';
+  callerId: string;
+  authorizedOwner: string;
+  authorizedRepo: string;
+}
+
 export interface ReviewAdmissionInput {
   deliveryId: string;
   eventName: string;
@@ -81,8 +90,10 @@ export interface ReviewAdmissionInput {
   indexEpoch?: number;
   /** Service-controlled same-head recovery; never decoded from an unverified request. */
   retryRequested?: boolean;
-  /** OIDC-authorized candidate; durable service-owned provenance remains mandatory. */
+  /** Explicit incomplete-P2 candidate; durable service-owned provenance remains mandatory. */
   incompleteP2Recovery?: true;
+  /** Trusted router provenance for the protected static-admin MCP bootstrap. */
+  incompleteP2RecoveryOrigin?: McpStaticAdminRecoveryOrigin;
   /**
    * One-based worker execution generation that the trusted recovery request
    * is allowed to replace. The durable outbox must still be immediately before

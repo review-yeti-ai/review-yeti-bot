@@ -5,6 +5,7 @@ import {
   type ToolResult,
   buildToolResultJson,
   MCP_ERRORS,
+  type McpExecutionContext,
 } from '../mcpTypes';
 import {
   TriggerReviewInputSchema,
@@ -21,6 +22,10 @@ import {
 import type { AuthoritativePublishingResolver } from '../../../review/authoritativePublishingResolver';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import type { ReviewDispatchRepository } from '../../../persistence/reviewDispatchRepository';
+import {
+  createMcpStaticAdminRecoveryOrigin,
+  isMcpStaticAdminRecoveryCaller,
+} from '../../../review/mcpStaticAdminRecoveryOrigin';
 
 export const triggerReviewDefinition: ToolDefinition = {
   name: 'trigger_review',
@@ -38,6 +43,11 @@ export const triggerReviewDefinition: ToolDefinition = {
         type: 'string',
         enum: ['composed', 'panel'],
         description: 'Review engine execution mode ("composed" or "panel").',
+      },
+      incomplete_p2_recovery: {
+        type: 'boolean',
+        enum: [true],
+        description: 'Request a bounded retained-P2 recovery. Static-token admin authentication and current authoritative repository admission are required.',
       },
     },
     required: ['owner', 'repo', 'pull_number', 'head_sha'],
@@ -68,7 +78,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
   return {
     definition: triggerReviewDefinition,
     schema: TriggerReviewInputSchema,
-    execute: async (rawArgs: Record<string, unknown>): Promise<ToolResult> => {
+    execute: async (rawArgs: Record<string, unknown>, context?: McpExecutionContext): Promise<ToolResult> => {
       const parsed = TriggerReviewInputSchema.safeParse(rawArgs);
       if (!parsed.success) {
         throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
@@ -81,7 +91,25 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         force = false,
         priority = 'normal',
         review_engine,
+        incomplete_p2_recovery,
       } = parsed.data;
+
+      if (incomplete_p2_recovery === true) {
+        if (!deps.admissionRepository) {
+          throw new Error('Incomplete P2 recovery requires durable authoritative admission');
+        }
+        const caller = context?.caller;
+        const authorizedRepository = context?.authorizedRepository;
+        if (context?.authenticatedByConfiguredAuthenticator !== true
+          || !isMcpStaticAdminRecoveryCaller(caller) || !authorizedRepository
+          || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
+          || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()) {
+          throw new Error('Incomplete P2 recovery requires verified static-token admin authentication and exact repository authorization');
+        }
+        if (force || review_engine !== undefined) {
+          throw new Error('Incomplete P2 recovery does not accept force or review_engine overrides');
+        }
+      }
 
       const headSha = head_sha.toLowerCase();
 
@@ -111,6 +139,11 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
       if (deps.admissionRepository && !authoritative) {
         throw new Error('trigger_review requires authoritative publishing admission');
       }
+      if (incomplete_p2_recovery === true
+        && (authoritative?.acceptNewRequests !== true
+          || !authoritative.repositoryIds?.includes(repositoryId))) {
+        throw new Error('Incomplete P2 recovery requires an active authoritative repository admission');
+      }
       if (authoritative?.acceptNewRequests === false
         || (authoritative && !authoritative.repositoryIds?.includes(repositoryId))) {
         throw new Error('trigger_review repository is outside authoritative admission');
@@ -124,6 +157,10 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
         await (deps.authoritativePublishing as any).admission(resolveCandidate);
       }
       const resolved = resolver ? await resolver.resolve(requested) : undefined;
+
+      if (incomplete_p2_recovery === true && !resolved) {
+        throw new Error('Incomplete P2 recovery requires current authoritative identity resolution');
+      }
 
       if (resolved && review_engine) {
         if (!resolved.prepared.config) {
@@ -216,6 +253,13 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
           identity: resolvedIdentity,
           dispatchPriority: priority,
           ...(review_engine ? { reviewEngine: review_engine } : {}),
+          ...(incomplete_p2_recovery === true ? {
+            retryRequested: true,
+            incompleteP2Recovery: true as const,
+            incompleteP2RecoveryOrigin: createMcpStaticAdminRecoveryOrigin(
+              context!.caller!, context!.authorizedRepository!,
+            ),
+          } : {}),
           ...(resolved && authoritative ? {
             effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
             authoritativeGate: {

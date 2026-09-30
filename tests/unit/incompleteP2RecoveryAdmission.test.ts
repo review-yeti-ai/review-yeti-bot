@@ -78,6 +78,7 @@ function incompleteEvidence(canonicalFindings = 2, rawFindings = 3): ReviewGener
     title: 'Review Yeti: BLOCK',
     legacyIncompleteRoster: {
       workerSummary: summary,
+      workerStartedAt: '2026-09-24T18:28:54Z',
       workerCompletedAt: '2026-09-24T18:28:56Z',
       gateChecks: [gateCheck],
     },
@@ -228,7 +229,7 @@ function transactionHarness() {
       events.push('outbox-allocation'); return { rows: [] };
     }
     if (/INSERT INTO review_generation_recoveries/u.test(sql)) {
-      events.push('generation-ledger-write'); return { rows: [] };
+      events.push('generation-ledger-write'); return { rows: [{ run_id: runId }] };
     }
     if (/INSERT INTO review_gate_attempts/u.test(sql)) {
       events.push('gate-allocation');

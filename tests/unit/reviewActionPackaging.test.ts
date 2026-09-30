@@ -150,6 +150,18 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(raw).not.toContain('--no-package-lock');
     expect(raw).not.toMatch(/npm install --prefix "\$GITHUB_ACTION_PATH" js-yaml/u);
   });
+
+  it('sets up pinned Node 24 only for the local legacy pipeline before dependency installation', () => {
+    const setupIndex = action.runs.steps.findIndex((step: any) => step.name === 'Set up Node.js 24 for the legacy pipeline');
+    const installIndex = action.runs.steps.findIndex((step: any) => step.name === 'Install pipeline dependencies');
+    const setup = action.runs.steps[setupIndex];
+
+    expect(setupIndex).toBeGreaterThanOrEqual(0);
+    expect(setupIndex).toBeLessThan(installIndex);
+    expect(setup.if).toBe("${{ inputs.execution-backend == 'local' && inputs.review-engine == 'legacy' }}");
+    expect(setup.uses).toBe('actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444');
+    expect(setup.with['node-version']).toBe('24');
+  });
 });
 
 describe('Pi runtime packaging contract', () => {

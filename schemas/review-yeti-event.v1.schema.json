@@ -79,8 +79,14 @@
     "lifecycleData": {
       "type": "object",
       "additionalProperties": false,
+      "dependentRequired": {
+        "admission_origin": ["actor"],
+        "actor": ["admission_origin"]
+      },
       "properties": {
         "stage": { "$ref": "#/$defs/label128" },
+        "admission_origin": { "const": "mcp_static_admin" },
+        "actor": { "type": "string", "pattern": "^admin:[a-f0-9]{12}$" },
         "terminal_class": { "$ref": "#/$defs/label128" },
         "result_digest": { "$ref": "#/$defs/digest" },
         "policy_digest": { "$ref": "#/$defs/digest" },

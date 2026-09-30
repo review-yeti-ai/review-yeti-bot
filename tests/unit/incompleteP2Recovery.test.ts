@@ -179,6 +179,7 @@ function sourceRowFixture(completion: ReturnType<typeof completionFixture>, atte
       title: 'Review Yeti: BLOCK',
       legacyIncompleteRoster: {
         workerSummary: workerSummary({ canonical, raw, expected, completed }),
+        workerStartedAt: attempt === 1 ? '2026-09-29T11:59:58Z' : '2026-09-29T12:05:00Z',
         workerCompletedAt: attempt === 1 ? '2026-09-29T12:00:01Z' : '2026-09-29T12:10:01Z',
         gateChecks: [gateCheckFixture(attempt, externalId,
           attempt === 1 ? '2026-09-29T12:00:02Z' : '2026-09-29T12:10:02Z')],
@@ -196,6 +197,7 @@ function recoveryEvidence(gateExternalId: string, options: { workerSummary?: str
     title: 'Review Yeti: BLOCK',
     legacyIncompleteRoster: {
       workerSummary: options.workerSummary ?? workerSummary(),
+      workerStartedAt: '2026-09-29T11:59:58Z',
       workerCompletedAt: '2026-09-29T12:00:01Z',
       gateChecks: [options.gateCheck ?? {
         id: 20,

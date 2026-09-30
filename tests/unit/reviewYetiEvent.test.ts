@@ -89,6 +89,21 @@ describe('review-yeti-event.v1 parser', () => {
     expect(parseReviewYetiEventV1(validLifecycleEvent())).toEqual(validLifecycleEvent());
   });
 
+  it('accepts paired bounded MCP recovery attribution and rejects a partial or forged actor', () => {
+    const event = {
+      ...validLifecycleEvent(),
+      event_kind: 'review.lifecycle.admission',
+      data: {
+        stage: 'admission',
+        admission_origin: 'mcp_static_admin',
+        actor: `admin:${'a'.repeat(12)}`,
+      },
+    };
+    expect(parseReviewYetiEventV1(event)).toEqual(event);
+    expect(() => parseReviewYetiEventV1({ ...event, data: { stage: 'admission', admission_origin: 'mcp_static_admin' } })).toThrow();
+    expect(() => parseReviewYetiEventV1({ ...event, data: { ...event.data, actor: 'admin:caller-name' } })).toThrow();
+  });
+
   it('accepts a valid closed progress envelope', () => {
     expect(parseReviewYetiEventV1(validProgressEvent())).toEqual(validProgressEvent());
   });
@@ -153,6 +168,10 @@ describe('review-yeti-event.v1 parser', () => {
 
     const fixtures: Array<{ name: string; accepted: boolean; value: unknown }> = [
       { name: 'valid lifecycle', accepted: true, value: validLifecycleEvent() },
+      { name: 'valid MCP recovery attribution', accepted: true, value: {
+        ...validLifecycleEvent(), event_kind: 'review.lifecycle.admission',
+        data: { stage: 'admission', admission_origin: 'mcp_static_admin', actor: `admin:${'a'.repeat(12)}` },
+      } },
       { name: 'valid progress', accepted: true, value: validProgressEvent() },
       { name: 'missing required run_id', accepted: false, value: withoutRunId },
       { name: 'malformed ULID', accepted: false, value: { ...validProgressEvent(), event_id: eventId.toLowerCase() } },
@@ -173,6 +192,10 @@ describe('review-yeti-event.v1 parser', () => {
       { name: 'unknown progress status enum', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, status: 'running' } } },
       { name: 'top-level additional property', accepted: false, value: { ...validProgressEvent(), unexpected: true } },
       { name: 'data additional property', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, unexpected: true } } },
+      { name: 'incomplete MCP recovery attribution', accepted: false, value: {
+        ...validLifecycleEvent(), event_kind: 'review.lifecycle.admission',
+        data: { stage: 'admission', admission_origin: 'mcp_static_admin' },
+      } },
       { name: 'nested additional property', accepted: false, value: { ...validLifecycleEvent(), data: { ...validLifecycleEvent().data, timing: { queued_at: occurredAt, unexpected: true } } } },
       { name: '2,000 astral Unicode code points', accepted: true, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: '😀'.repeat(2_000) } } },
       { name: '2,001 astral Unicode code points', accepted: false, value: { ...validProgressEvent(), data: { ...validProgressEvent().data, message: '😀'.repeat(2_001) } } },
