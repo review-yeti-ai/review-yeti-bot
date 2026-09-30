@@ -22,10 +22,15 @@ const queueMetricsCandidateField = "review-yeti.ai/queue-metrics-candidate"
 
 func queueMetricsCandidateValues(object client.Object) []string {
 	review, ok := object.(*reviewv1alpha2.PRReviewJob)
-	if !ok || isTerminalPhase(review.Status.Phase) || (workerCreationWasAttempted(review) && !isAwaitingResumption(review)) {
+	if !ok || !isQueueMetricsCandidate(review) {
 		return nil
 	}
 	return []string{"true"}
+}
+
+func isQueueMetricsCandidate(review *reviewv1alpha2.PRReviewJob) bool {
+	return review != nil && !isTerminalPhase(review.Status.Phase) &&
+		(!workerCreationWasAttempted(review) || isAwaitingResumption(review))
 }
 
 // Use the manager cache independently of admission. A full queue short-circuits
@@ -83,7 +88,7 @@ func (c *workerMetricsCollector) collect(ctx context.Context, now time.Time) err
 	for i := range reviews.Items {
 		candidate := &reviews.Items[i]
 		if validWorkerAdmissionCandidate(candidate, now) &&
-			(!workerCreationWasAttempted(candidate) || isAwaitingResumption(candidate)) {
+			isQueueMetricsCandidate(candidate) {
 			queued++
 		}
 	}
