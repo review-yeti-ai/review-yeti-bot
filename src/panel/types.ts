@@ -69,6 +69,18 @@ export interface LaneTurnUsage {
   durationMs: number;
 }
 
+/** Coded finalization evidence only: never provider text, findings, tool arguments or secrets. */
+export interface ComposedTaskFailureDiagnostics {
+  reason: 'total_turn_budget_exhausted' | 'task_turn_budget_exhausted'
+    | 'non_json_task_result' | 'tool_requested_during_finalization'
+    | 'task_id_mismatch' | 'nonce_mismatch' | 'invalid_status' | 'invalid_findings';
+  turnsUsed: number;
+  correctionAttempts: number;
+  toolTurns: number;
+  finishReason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | 'function_call' | 'unrecognized' | null;
+  lastToolOutcome: 'none' | 'returned' | 'requested_after_finalization';
+}
+
 /** Sum of every `LaneTurnUsage` entry for a lane -- the true per-lane total, as opposed to the
  * single-turn `usage`/`promptTokens`/`completionTokens`/`totalTokens` fields below, which have
  * always reflected only the lane's terminal turn. */
@@ -194,6 +206,7 @@ export interface PanelResult {
     id: string;
     error: string;
     failureClass: WorkerFailureClass;
+    diagnostics?: ComposedTaskFailureDiagnostics;
   }>;
   /** Final path/config/classifier-selected roster used by the panel execution. */
   applicablePersonaIds: string[];

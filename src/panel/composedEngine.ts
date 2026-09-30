@@ -108,6 +108,7 @@ import { normalizeRepositoryVisibility, type RepositoryVisibility } from '../rev
 import { logger } from '../utils/logger';
 import { FIND_FILES_TOOL_GUIDE } from './pathMatch';
 import type {
+  ComposedTaskFailureDiagnostics,
   LaneAggregateUsage,
   LaneTurnUsage,
   PanelFinding,
@@ -307,6 +308,19 @@ interface TurnCallResult {
   content: string;
   durationMs: number;
   usage: LaneTurnUsage;
+  finishReason: ComposedTaskFailureDiagnostics['finishReason'];
+}
+
+function allowlistedFinishReason(raw: unknown): ComposedTaskFailureDiagnostics['finishReason'] {
+  const candidate = (raw as any)?.choices?.[0]?.finish_reason
+    ?? (raw as any)?.choices?.[0]?.finishReason;
+  if (candidate === null || candidate === undefined) return null;
+  switch (candidate) {
+    case 'stop': case 'length': case 'content_filter': case 'tool_calls': case 'function_call':
+      return candidate;
+    default:
+      return 'unrecognized';
+  }
 }
 
 async function callTurn(params: {
@@ -407,6 +421,7 @@ async function callTurn(params: {
   return {
     content: response.content,
     durationMs,
+    finishReason: allowlistedFinishReason(response.raw),
     usage: {
       turn: params.turnNumber,
       kind: params.kind,
@@ -882,7 +897,7 @@ async function runPlanPhase(input: {
 type TaskOutcome =
   | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
   | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[] };
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics };
 
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
@@ -920,11 +935,17 @@ async function runTaskWorkPhase(input: {
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
   let correctionAttempts = 0;
+  let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
+  let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
+  const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
+    type: 'exhausted', turnUsages,
+    diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
+  });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining());
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
 
   for (let iter = 0; iter < localMaxTurns; iter++) {
-    if (input.turnsRemaining() <= 0) return { type: 'exhausted', turnUsages };
+    if (input.turnsRemaining() <= 0) return exhausted('total_turn_budget_exhausted');
     const isLastLocalTurn = iter === localMaxTurns - 1;
     const finalizing = iter >= localMaxTurns - finalizationTurns;
     if (iter === localMaxTurns - finalizationTurns) {
@@ -955,6 +976,7 @@ async function runTaskWorkPhase(input: {
       kind: finalizing ? 'final' : 'tool',
     });
     turnUsages.push(turn.usage);
+    finishReason = turn.finishReason;
     taskMessages = [...taskMessages, { role: 'assistant', content: turn.content }];
 
     const parsed = parseNativeTurn(turn.content);
@@ -966,6 +988,8 @@ async function runTaskWorkPhase(input: {
         zoektConfig: input.zoektConfig,
         signal: input.signal,
       });
+      // This records a returned envelope, NOT successful grounding or a tool-error verdict.
+      lastToolOutcome = 'returned';
       toolCallsLog.push({ tool: parsed.tool as string, args: parsed.args, scope: result.toolScope, exhaustive: result.isExhaustive });
       const toolOutput = input.requestCapBytes
         ? clipToolOutputToRequestCap(result.toolOutput, taskMessages, input.requestCapBytes)
@@ -979,17 +1003,23 @@ async function runTaskWorkPhase(input: {
 
     const candidate = parsed?.finalObject;
     let contractError: string | null = null;
+    let rejectionReason: ComposedTaskFailureDiagnostics['reason'] | null = null;
     if (!candidate) {
+      rejectionReason = parsed?.isToolCall ? 'tool_requested_during_finalization' : 'non_json_task_result';
+      if (parsed?.isToolCall) lastToolOutcome = 'requested_after_finalization';
       contractError = parsed?.isToolCall
         ? 'tool calls are closed; return a task result with COMPLETE or BLOCKED'
         : 'response was not a JSON object matching the tool-call or task-result shape';
     } else if (candidate.task !== input.task.id) {
+      rejectionReason = 'task_id_mismatch';
       contractError = `"task" must equal "${input.task.id}"`;
     } else if (candidate.nonce !== expectedNonce) {
+      rejectionReason = 'nonce_mismatch';
       // Binds the response to this request. The fan-out engine enforces the same thing via
       // `parseNativeJsonObject(content, expectedNonce)`; the composed path must not be weaker.
       contractError = 'result "nonce" did not match the nonce issued for this task';
     } else if (candidate.status !== 'COMPLETE' && candidate.status !== 'BLOCKED') {
+      rejectionReason = 'invalid_status';
       contractError = '"status" must be COMPLETE or BLOCKED';
     }
 
@@ -998,6 +1028,7 @@ async function runTaskWorkPhase(input: {
       try {
         findings = validateFindings(candidate.findings, input.changedFilesForTools);
       } catch (err) {
+        rejectionReason = 'invalid_findings';
         contractError = err instanceof PanelFindingsValidationError ? err.message : String((err as Error)?.message || err);
       }
     }
@@ -1009,7 +1040,7 @@ async function runTaskWorkPhase(input: {
         // `applicablePersonaIds` vs. returned-lane-ids check already turns into an incomplete,
         // BLOCK-by-roster-invalidity review -- exactly the same mechanism a genuine turn-budget
         // exhaustion below uses. A malformed task result that never resolves is not evidence.
-        return { type: 'exhausted', turnUsages };
+        return exhausted(rejectionReason ?? 'non_json_task_result');
       }
       correctionAttempts += 1;
       taskMessages = [...taskMessages, {
@@ -1030,7 +1061,7 @@ async function runTaskWorkPhase(input: {
     return { type: 'complete', findings, turnUsages, toolCalls: toolCallsLog, toolTurns, durationMs };
   }
 
-  return { type: 'exhausted', turnUsages };
+  return exhausted('task_turn_budget_exhausted');
 }
 
 /**
@@ -1042,6 +1073,7 @@ async function runTaskWorkPhase(input: {
 export function unreportedLaneFailure(
   task: ReviewTask,
   reason: 'no_budget' | 'exhausted',
+  diagnostics?: ComposedTaskFailureDiagnostics,
 ): NonNullable<PanelResult['unreportedLanes']>[number] {
   if (reason === 'no_budget') {
     return {
@@ -1052,8 +1084,10 @@ export function unreportedLaneFailure(
   }
   return {
     id: task.id,
-    error: `Task ${task.id} (${task.dimension}) ran and produced no verdict`,
+    error: `Task ${task.id} (${task.dimension}) ran and produced no verdict`
+      + (diagnostics ? ` [reason=${diagnostics.reason}; turns=${diagnostics.turnsUsed}; corrections=${diagnostics.correctionAttempts}; tool_turns=${diagnostics.toolTurns}; finish_reason=${diagnostics.finishReason ?? 'unavailable'}; last_tool_outcome=${diagnostics.lastToolOutcome}]` : ''),
     failureClass: 'malformed_output',
+    ...(diagnostics ? { diagnostics } : {}),
   };
 }
 
@@ -1321,7 +1355,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       } else {
         // Ran and returned no verdict. Off the published roster, so it cannot
         // satisfy coverage, and it is not an approval. Later tasks still run.
-        unreportedLanes.push(unreportedLaneFailure(task, 'exhausted'));
+        const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics);
+        unreportedLanes.push(failure);
+        logger.warn('[composed] task finalization incomplete', {
+          event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
+        });
       }
     }
 
