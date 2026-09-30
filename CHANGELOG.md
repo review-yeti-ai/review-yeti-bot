@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.14](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.13...v1.100.14) (2026-09-30)
+
+
+### Bug Fixes
+
+* **worker:** enforce one admitted review deadline ([#1179](https://github.com/review-yeti-ai/review-yeti-bot/issues/1179)) ([da05f8c](https://github.com/review-yeti-ai/review-yeti-bot/commit/da05f8cd43c75770a5a24688a0cc415fe764389f))
+
 ## [1.100.13](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.12...v1.100.13) (2026-09-30)
 
 
