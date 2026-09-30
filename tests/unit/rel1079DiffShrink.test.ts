@@ -543,6 +543,19 @@ describe('one applicability decision (worker, engines, trusted completion)', () 
 // ---------------------------------------------------------------------------
 
 describe('check-summary disclosure', () => {
+  it('API-3375 renders budget depths distinctly from oversized lockfiles and never calls them full', () => {
+    const disclosure = { ...planDiffShrink([], ON).disclosure, notSentInFull: [
+      { path: 'docs/signatures.md', why: 'budget-signatures' as const },
+      { path: 'docs/listed.md', why: 'budget-listed' as const },
+    ] };
+    const text = renderDiffShrinkSummary(disclosure).join('\n');
+    expect(text).toContain('not every change was sent in full (2)');
+    expect(text).toContain('docs/signatures.md` (review budget: signatures only)');
+    expect(text).toContain('docs/listed.md` (review budget: not deeply reviewed)');
+    expect(text).not.toContain('oversized lockfile');
+    expect(text).not.toContain('; every change was sent in full.');
+  });
+
   it('renders nothing when the flag is off', () => {
     expect(renderDiffShrinkSummary(null)).toEqual([]);
   });
