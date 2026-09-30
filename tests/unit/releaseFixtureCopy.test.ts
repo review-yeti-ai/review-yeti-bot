@@ -1,9 +1,8 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createScratchOwner } from '../support/scratch-lifecycle';
+import { createScratchOwner, requiredSuiteScratchRoot } from '../support/scratch-lifecycle';
 import {
   copyReleaseCommitFixture,
   RELEASE_FIXTURE_EXCLUDED_ROOTS,
@@ -11,7 +10,7 @@ import {
 
 describe('immutable release fixture copy', () => {
   it('rejects a nonempty destination without modifying its retained files', () => {
-    const owner = createScratchOwner({ parentDir: process.env.CT_REVIEW_DATA_DIR,
+    const owner = createScratchOwner({ parentDir: requiredSuiteScratchRoot(),
       prefix: 'yeti-release-destination-', kind: 'release-fixture-test' });
     try {
       fs.writeFileSync(path.join(owner.path, 'keep'), 'retained');
@@ -21,7 +20,7 @@ describe('immutable release fixture copy', () => {
   });
   it('archives the selected commit and excludes tracked workstation/runtime trees', () => {
     const owner = createScratchOwner({
-      parentDir: process.env.CT_REVIEW_DATA_DIR ?? os.tmpdir(),
+      parentDir: requiredSuiteScratchRoot(),
       prefix: 'yeti-release-copy-proof-',
       kind: 'release-fixture-test',
     });

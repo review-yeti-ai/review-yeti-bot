@@ -7,6 +7,29 @@ export const SCRATCH_OWNER_MANIFEST = '.ct-review-yeti-scratch-owner.json';
 
 export class ScratchChildrenLiveError extends Error {}
 
+export function isInsideSuiteRoot(storePath: string, suiteRoot: string): boolean {
+  if (!path.isAbsolute(storePath) || !path.isAbsolute(suiteRoot)) return false;
+  const relative = path.relative(suiteRoot, storePath);
+  return relative !== '' && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+export function cleanupSuiteStoreFile(storePath: string | undefined, suiteRoot: string): boolean {
+  if (!storePath || !isInsideSuiteRoot(storePath, suiteRoot)) return false;
+  try {
+    // Reject intermediate symlink escapes. Unlinking the final file symlink
+    // itself is safe and must not remove its external target.
+    const parent = fs.realpathSync(path.dirname(storePath));
+    if (fs.realpathSync(suiteRoot) !== suiteRoot
+      || (parent !== suiteRoot && !isInsideSuiteRoot(parent, suiteRoot))) return false;
+    fs.unlinkSync(storePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error; // Cleanup failures are not silently converted to success.
+  }
+}
+
 export interface ScratchOwnerMetadata {
   schema: 'review-yeti-scratch-owner.v1';
   ownerId: string;
@@ -91,6 +114,17 @@ export function readScratchOwnerMetadata(ownerPath: string): ScratchOwnerMetadat
     throw new Error(`Invalid Review Yeti scratch ownership manifest: ${manifestPath}`);
   }
   return value as ScratchOwnerMetadata;
+}
+
+export function requiredSuiteScratchRoot(value = process.env.CT_REVIEW_DATA_DIR): string {
+  if (!value || !path.isAbsolute(value)) {
+    throw new Error('Fixture scratch requires the owned test-state root');
+  }
+  const metadata = readScratchOwnerMetadata(value);
+  if (metadata.kind !== 'vitest-suite' || metadata.pid !== process.pid) {
+    throw new Error('Fixture scratch must belong to the current test-file suite');
+  }
+  return value;
 }
 
 export function createScratchOwner(options: ScratchOwnerOptions): ScratchOwner {

@@ -1,5 +1,4 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -7,17 +6,31 @@ import {
   cleanupScratchOwner,
   createScratchOwner,
   readScratchOwnerMetadata,
+  requiredSuiteScratchRoot,
 } from '../support/scratch-lifecycle';
 
 function createTestOwner(prefix: string, kind: string) {
   return createScratchOwner({
-    parentDir: process.env.CT_REVIEW_DATA_DIR ?? os.tmpdir(),
+    parentDir: requiredSuiteScratchRoot(),
     prefix,
     kind,
   });
 }
 
 describe('owned test scratch lifecycle (REL-1209)', () => {
+  it('requires current suite ownership for fixtures instead of silently using shared temp', () => {
+    expect(requiredSuiteScratchRoot()).toBe(process.env.CT_REVIEW_DATA_DIR);
+    const configured = process.env.CT_REVIEW_DATA_DIR;
+    try {
+      delete process.env.CT_REVIEW_DATA_DIR;
+      expect(() => requiredSuiteScratchRoot()).toThrow(/requires the owned/);
+    } finally { process.env.CT_REVIEW_DATA_DIR = configured; }
+    expect(() => requiredSuiteScratchRoot('')).toThrow(/requires the owned/);
+    expect(() => requiredSuiteScratchRoot('relative')).toThrow(/requires the owned/);
+    const other = createTestOwner('yeti-wrong-parent-', 'test-fixture');
+    try { expect(() => requiredSuiteScratchRoot(other.path)).toThrow(/current test-file suite/); }
+    finally { other.cleanup(); }
+  });
   it('rejects invalid labels and unknown owners before mutation', async () => {
     expect(() => createTestOwner('../unsafe-', 'vitest-suite')).toThrow(/simple directory prefix/);
     expect(() => createTestOwner('valid-', '../unsafe')).toThrow(/simple label/);

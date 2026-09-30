@@ -5,7 +5,6 @@ import '@testing-library/jest-dom/vitest';
 import * as matchers from '@testing-library/jest-dom/matchers';
 import { expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
-import fs from 'node:fs';
 import path from 'node:path';
 import { dashboardStore } from '../src/persistence/dashboardStore';
 import { postgresStore } from '../src/persistence/postgresStore';
@@ -15,6 +14,7 @@ import http from 'node:http';
 import { authService } from '../src/dashboard/authService';
 import {
   closeResourcesAndCleanupScratch,
+  cleanupSuiteStoreFile,
   createScratchOwner,
   readScratchOwnerMetadata,
 } from './support/scratch-lifecycle';
@@ -130,6 +130,9 @@ process.env.no_proxy = '*';
 const initialEnv = { ...process.env };
 
 function resetAllGlobalState() {
+  // Capture the actual previous store before restoring the baseline env. The
+  // baseline path is not the randomly assigned store used by the last test.
+  const previousStore = process.env.CT_DASHBOARD_STORE;
   // 1. Restore process.env
   for (const key of Object.keys(process.env)) {
     if (!(key in initialEnv)) {
@@ -151,13 +154,7 @@ function resetAllGlobalState() {
   // REL-560: the guard used to be `startsWith('/tmp/')`, which never matches on macOS because
   // os.tmpdir() is /var/folders/..., so the per-test cleanup silently did nothing there. Anchor
   // it to suiteStateRoot instead, which is correct on every platform.
-  if (process.env.CT_DASHBOARD_STORE && process.env.CT_DASHBOARD_STORE.startsWith(suiteStateRoot)) {
-    try {
-      if (fs.existsSync(process.env.CT_DASHBOARD_STORE)) {
-        fs.unlinkSync(process.env.CT_DASHBOARD_STORE);
-      }
-    } catch {}
-  }
+  cleanupSuiteStoreFile(previousStore, suiteStateRoot);
   const resetStoreId = `${process.pid}_${Date.now()}_${Math.random().toString(36).substring(2)}`;
   process.env.CT_DASHBOARD_STORE = path.join(suiteStateRoot, `test_store_${resetStoreId}.json`);
 

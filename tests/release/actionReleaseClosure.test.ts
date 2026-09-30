@@ -24,7 +24,7 @@ import fs from 'fs';
 import os from 'os';
 import { execFileSync } from 'child_process';
 import yaml from 'js-yaml';
-import { createScratchOwner, type ScratchOwner } from '../support/scratch-lifecycle';
+import { createScratchOwner, requiredSuiteScratchRoot, type ScratchOwner } from '../support/scratch-lifecycle';
 import { copyReleaseCommitFixture } from '../support/release-fixture-copy';
 
 const rootRepoDir = fs.existsSync(path.join(path.resolve(__dirname, '../..'), '.github/workflows/pipelines/review-pipeline.js'))
@@ -38,8 +38,7 @@ const { isBoundedDirectory } = require(path.join(rootRepoDir, 'scripts/boundedDi
 const fixtureScratchOwners: ScratchOwner[] = [];
 
 function createFixtureScratch(prefix: string): string {
-  const parentDir = process.env.CT_REVIEW_DATA_DIR;
-  if (!parentDir) throw new Error('Release fixture scratch must be nested under the owned test-state root');
+  const parentDir = requiredSuiteScratchRoot();
   const owner = createScratchOwner({ parentDir, prefix, kind: 'release-fixture' });
   fixtureScratchOwners.push(owner);
   return owner.path;

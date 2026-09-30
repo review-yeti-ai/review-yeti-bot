@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readScratchOwnerMetadata } from '../support/scratch-lifecycle';
+import { cleanupSuiteStoreFile, createScratchOwner, isInsideSuiteRoot, readScratchOwnerMetadata } from '../support/scratch-lifecycle';
 
 /**
  * REL-560 / REL-1209. Every on-disk root a test can write to must live in this test file's suite
@@ -55,11 +55,44 @@ describe('per-suite test-state isolation (REL-560 / REL-1209)', () => {
     expect(suiteMetadata.runId).toBe(runMetadata.runId);
   });
 
-  it('keeps the per-test store cleanup anchored to a prefix that matches on every platform', () => {
-    // The guard used to be `startsWith('/tmp/')`, which never matches on macOS because
-    // os.tmpdir() is /var/folders/..., so the cleanup silently did nothing there.
-    const setup = fs.readFileSync(path.join(process.cwd(), 'tests/setup.ts'), 'utf8');
-    expect(setup).not.toContain("CT_DASHBOARD_STORE.startsWith('/tmp/')");
-    expect(setup).toContain('suiteStateRoot');
+  it('removes an inside store while preserving outside and prefix-sharing sibling files', () => {
+    const parent = createScratchOwner({ parentDir: process.env.CT_REVIEW_DATA_DIR,
+      prefix: 'yeti-store-boundary-', kind: 'test-fixture' });
+    const suite = createScratchOwner({ parentDir: parent.path, prefix: 'suite-', kind: 'test-fixture' });
+    try {
+      const inside = path.join(suite.path, 'store.json');
+      const outside = path.join(parent.path, 'outside.json');
+      const sibling = `${suite.path}-other`;
+      fs.mkdirSync(sibling);
+      const siblingStore = path.join(sibling, 'store.json');
+      for (const file of [inside, outside, siblingStore]) fs.writeFileSync(file, '{}');
+      expect(isInsideSuiteRoot(inside, suite.path)).toBe(true);
+      expect(isInsideSuiteRoot(suite.path, suite.path)).toBe(false);
+      expect(isInsideSuiteRoot('relative.json', suite.path)).toBe(false);
+      expect(isInsideSuiteRoot(inside, 'relative-root')).toBe(false);
+      expect(cleanupSuiteStoreFile(inside, suite.path)).toBe(true);
+      expect(cleanupSuiteStoreFile(inside, suite.path)).toBe(false);
+      expect(cleanupSuiteStoreFile(undefined, suite.path)).toBe(false);
+      for (const file of [outside, siblingStore]) {
+        expect(isInsideSuiteRoot(file, suite.path)).toBe(false);
+        expect(cleanupSuiteStoreFile(file, suite.path)).toBe(false);
+        expect(fs.readFileSync(file, 'utf8')).toBe('{}');
+      }
+      fs.symlinkSync(parent.path, path.join(suite.path, 'escape'), 'dir');
+      expect(cleanupSuiteStoreFile(path.join(suite.path, 'escape', 'outside.json'), suite.path)).toBe(false);
+      expect(fs.existsSync(outside)).toBe(true);
+    } finally { suite.cleanup(); parent.cleanup(); }
+  });
+
+  let priorStore: string;
+  it('writes a store through the actual per-test environment', () => {
+    priorStore = process.env.CT_DASHBOARD_STORE!;
+    fs.writeFileSync(priorStore, '{}');
+    expect(fs.existsSync(priorStore)).toBe(true);
+  });
+  it('retires the prior store through the actual reset hook', () => {
+    expect(priorStore).toBeTruthy();
+    expect(fs.existsSync(priorStore)).toBe(false);
+    expect(process.env.CT_DASHBOARD_STORE).not.toBe(priorStore);
   });
 });
