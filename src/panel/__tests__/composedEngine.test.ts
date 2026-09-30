@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executeComposedReview } from '../composedEngine';
+import { buildComposedTaskExhaustion, executeComposedReview, unreportedLaneFailure } from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -8,6 +8,7 @@ import { OpenRouterConnectionError, OpenRouterResponseError } from '../../gatewa
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import * as panelEngine from '../panelEngine';
 import * as toolRuntime from '../toolRuntime';
+import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 
 const mockYaml = `
 version: 3
@@ -66,6 +67,100 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  const exhaustionContext = {
+    turnsUsed: 2, correctionAttempts: 1, toolTurns: 0,
+    finishReason: 'stop', lastToolOutcome: 'none',
+  } as const;
+  const exhaustionTask = { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' } as const;
+
+  it.each(['total_turn_budget_exhausted', 'task_turn_budget_exhausted'] as const)(
+    'does not attribute %s to a stale contract rejection', (reason) => {
+      // Exercise the pure terminal constructor, not a claimed live mid-task budget path.
+      const outcome = buildComposedTaskExhaustion(reason, exhaustionContext, [], 'result_fields');
+      expect(Object.hasOwn(outcome, 'contractFailure')).toBe(false);
+      const failure = unreportedLaneFailure({ ...exhaustionTask, paths: [...exhaustionTask.paths] }, 'exhausted', outcome.diagnostics);
+      expect(failure).toMatchObject({ failureClass: 'budget_exhausted', diagnostics: { reason } });
+      expect(failure.error).toContain(`[reason=${reason};`);
+      expect(failure.error).not.toContain('result_fields');
+      expect(failure.error).not.toContain('contract rejected');
+    });
+
+  it('binds a terminal contract rejection only to its matching canonical reason', () => {
+    const matching = buildComposedTaskExhaustion('invalid_result_fields', exhaustionContext, [], 'result_fields');
+    expect(matching.contractFailure).toBe('result_fields');
+    const mismatch = buildComposedTaskExhaustion('nonce_mismatch', exhaustionContext, [], 'result_fields');
+    expect(Object.hasOwn(mismatch, 'contractFailure')).toBe(false);
+    const failure = unreportedLaneFailure({ ...exhaustionTask, paths: [...exhaustionTask.paths] }, 'exhausted', matching.diagnostics);
+    expect(failure).toMatchObject({ failureClass: 'malformed_output', diagnostics: { reason: 'invalid_result_fields' } });
+    expect(failure.error).toContain('[reason=invalid_result_fields;');
+    expect(failure.error).not.toContain(': result_fields');
+    expect(failure.error).not.toContain('contract rejected');
+  });
+
+  const toolWire = JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts', nested: { lines: [1, 2] } } });
+  const toolFence = `\`\`\`json\n${toolWire}\n\`\`\``;
+  it.each([
+    ['bare JSON', toolWire, true],
+    ['JSON fence', toolFence, true],
+    ['uppercase CRLF fence', ` \n\`\`\`JSON\t\r\n${toolWire}\r\n\`\`\`\n `, true],
+    ['unlabelled fence', `\`\`\`\n${toolWire}\n\`\`\``, true],
+    ['leading prose', `tool request:\n${toolFence}`, false],
+    ['trailing prose', `${toolFence}\nfinished`, false],
+    ['two fences', `${toolFence}\n${toolFence}`, false],
+    ['wrong fence language', `\`\`\`javascript\n${toolWire}\n\`\`\``, false],
+    ['two objects', `${toolWire}\n${toolWire}`, false],
+    ['missing args', JSON.stringify({ tool: 'get_diff' }), false],
+    ['array args', JSON.stringify({ tool: 'get_diff', args: [] }), false],
+    ['null args', JSON.stringify({ tool: 'get_diff', args: null }), false],
+    ['scalar args', JSON.stringify({ tool: 'get_diff', args: 'src/auth/guard.ts' }), false],
+    ['extra envelope field', JSON.stringify({ tool: 'get_diff', args: {}, nonce: 'untrusted' }), false],
+    ['blank tool', JSON.stringify({ tool: ' \t', args: {} }), false],
+    ['nonstring tool', JSON.stringify({ tool: 3, args: {} }), false],
+    ['null response', 'null', false],
+    ['array response', `[${toolWire}]`, false],
+    ['scalar response', '42', false],
+  ] as const)('keeps both engines on the shared native wire contract for %s', async (_shape, content, admitted) => {
+    const runTool = vi.spyOn(toolRuntime, 'runReadOnlyTool');
+    let workTurns = 0;
+    const composedClient = { complete: vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      workTurns += 1;
+      return fakeResponse(workTurns === 1 || !admitted ? content
+        : JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    }) };
+    let personaTurns = 0;
+    const panelClient = { complete: vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (payload.metadata?.role === 'persona') {
+        personaTurns += 1;
+        return fakeResponse(personaTurns === 1 || !admitted ? content
+          : JSON.stringify({ nonce, decision: 'APPROVE', findings: [] }));
+      }
+      return fakeResponse(JSON.stringify(payload.metadata?.role === 'moderator'
+        ? { nonce, decision: 'RECONCILED', findings: [] } : { nonce, verdict: 'SHIP', rationale: 'Synthetic fixture.' }));
+    }) };
+    try {
+      const composed = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: composedClient });
+      expect(composed.personas).toHaveLength(admitted ? 1 : 0);
+      expect(runTool).toHaveBeenCalledTimes(admitted ? 1 : 0);
+      runTool.mockClear();
+      const panelRun = executePersonaPanel({ config: config(), changedFiles: CODE_FILES,
+        repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: panelClient,
+        requestPolicy: { responseFormat: { type: 'json_object' } } });
+      if (admitted) {
+        const panel = await panelRun;
+        expect(panel.personas).toMatchObject([{ decision: 'APPROVE' }]);
+      } else {
+        await expect(panelRun).rejects.toBeInstanceOf(PanelConfigurationError);
+      }
+      expect(runTool).toHaveBeenCalledTimes(admitted ? 1 : 0);
+    } finally {
+      runTool.mockRestore();
+    }
+  });
+
   // Regression guards for the 2026-09-21 plan-rejection outage. Both of these
   // failures were unrecoverable: `malformed_ids` burns the single corrective
   // turn, and `security_floor_violation` has no corrective turn at all, so a
@@ -428,7 +523,7 @@ describe('executeComposedReview', () => {
     expect(workCalls).toBe(3); // initial reply, one correction, one fresh recovery; never an unbounded retry
     expect(result.personas).toEqual([]);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-sec', failureClass: 'malformed_output',
-      error: expect.stringContaining('response_shape') }]);
+      error: expect.stringContaining('non_json_task_result') }]);
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual([]);
   });
 
@@ -517,12 +612,13 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
     expect(workCalls).toBe(3);
     expect(result.personas).toEqual([]);
-    expect(result.unreportedLanes).toMatchObject([{ failureClass: 'malformed_output', error: expect.stringContaining(reason) }]);
     const diagnosticReason = {
       nonce_mismatch: 'nonce_mismatch', task_mismatch: 'task_id_mismatch',
       status_enum: 'invalid_status', result_fields: 'invalid_result_fields',
       findings_contract: 'invalid_findings',
     }[reason];
+    expect(result.unreportedLanes).toMatchObject([{ failureClass: 'malformed_output', error: expect.stringContaining(`reason=${diagnosticReason}`) }]);
+    expect(result.unreportedLanes?.[0].error).not.toContain('contract rejected');
     expect(result.unreportedLanes?.[0].diagnostics).toMatchObject({
       reason: diagnosticReason, turnsUsed: 3, correctionAttempts: 2,
     });
@@ -615,7 +711,7 @@ describe('executeComposedReview', () => {
     expect(workCalls).toBe(3);
     expect(result.personas).toEqual([]);
     expect(result.unreportedLanes?.[0]).toMatchObject({ failureClass: 'malformed_output',
-      error: expect.stringContaining('tool_after_finalization'), diagnostics: {
+      error: expect.stringContaining('tool_requested_during_finalization'), diagnostics: {
         reason: 'tool_requested_during_finalization', lastToolOutcome: 'requested_after_finalization',
         toolTurns: 0, turnsUsed: 3, correctionAttempts: 2,
       } });
@@ -856,7 +952,7 @@ describe('executeComposedReview', () => {
     expect(workTurns).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
-      error: expect.stringContaining('response_shape') }]);
+      error: expect.stringContaining('non_json_task_result') }]);
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
     expect(complete).toHaveBeenCalledTimes(6);
   });

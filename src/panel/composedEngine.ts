@@ -98,6 +98,7 @@ import {
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
+import { isNativeJsonObject, nativeJsonContent, parseNativeToolCallValue } from './nativeTurnProtocol';
 import {
   resolveComposedMaxTasks,
   ReviewTask,
@@ -306,22 +307,15 @@ interface ParsedNativeTurn {
 }
 
 function parseNativeTurn(content: string): ParsedNativeTurn | null {
-  let value: any;
+  let value: unknown;
   try {
-    const trimmed = String(content ?? '').trim();
-    // Match the fan-out engine's strict whole-response normalization. Never extract JSON
-    // from prose, multiple fences, or a quoted example: the complete response must parse.
-    const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
-    value = JSON.parse(fenced ? fenced[1].trim() : trimmed);
+    value = JSON.parse(nativeJsonContent(String(content ?? '')));
   } catch {
     return null;
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (typeof value.tool === 'string' && value.tool.trim()
-      && Object.keys(value).every((key) => key === 'tool' || key === 'args')
-      && value.args && typeof value.args === 'object' && !Array.isArray(value.args)) {
-    return { isToolCall: true, tool: value.tool, args: value.args };
-  }
+  if (!isNativeJsonObject(value)) return null;
+  const toolCall = parseNativeToolCallValue(value);
+  if (toolCall) return { isToolCall: true, ...toolCall };
   return { isToolCall: false, finalObject: value };
 }
 
@@ -952,6 +946,22 @@ type TaskOutcome =
   | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
   | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; contractFailure?: TaskContractFailure };
 
+/** Bind only the terminal cause, never a sticky rejection from an earlier recovery turn. */
+export function buildComposedTaskExhaustion(
+  reason: ComposedTaskFailureDiagnostics['reason'],
+  diagnostics: Omit<ComposedTaskFailureDiagnostics, 'reason'>,
+  turnUsages: LaneTurnUsage[],
+  terminalContractFailure?: TaskContractFailure,
+): Extract<TaskOutcome, { type: 'exhausted' }> {
+  const contractFailure = terminalContractFailure
+    && TASK_CONTRACT_DIAGNOSTIC_REASONS[terminalContractFailure] === reason
+    ? terminalContractFailure : undefined;
+  return {
+    type: 'exhausted', turnUsages, diagnostics: { ...diagnostics, reason },
+    ...(contractFailure ? { contractFailure } : {}),
+  };
+}
+
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
   taskIndex: number;
@@ -990,13 +1000,12 @@ async function runTaskWorkPhase(input: {
   let toolTurns = 0;
   let correctionAttempts = 0;
   let freshRecoveryUsed = false;
-  let lastContractFailure: TaskContractFailure | undefined;
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
-  const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
-    type: 'exhausted', turnUsages, contractFailure: lastContractFailure,
-    diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
-  });
+  const exhausted = (reason: ComposedTaskFailureDiagnostics['reason'], terminalContractFailure?: TaskContractFailure): TaskOutcome =>
+    buildComposedTaskExhaustion(reason,
+      { turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
+      turnUsages, terminalContractFailure);
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
 
@@ -1081,14 +1090,13 @@ async function runTaskWorkPhase(input: {
     }
 
     if (contractFailure) {
-      lastContractFailure = contractFailure;
       if (freshRecoveryUsed || isLastLocalTurn) {
         // Never a pass and never a forced verdict on its own: leaving this task unreported (no
         // `complete`/`blocked` outcome) makes it absent from the roster, which the caller's
         // `applicablePersonaIds` vs. returned-lane-ids check already turns into an incomplete,
         // BLOCK-by-roster-invalidity review -- exactly the same mechanism a genuine turn-budget
         // exhaustion below uses. A malformed task result that never resolves is not evidence.
-        return exhausted(TASK_CONTRACT_DIAGNOSTIC_REASONS[contractFailure]);
+        return exhausted(TASK_CONTRACT_DIAGNOSTIC_REASONS[contractFailure], contractFailure);
       }
       if (correctionAttempts > 0) {
         freshRecoveryUsed = true;
@@ -1130,7 +1138,6 @@ export function unreportedLaneFailure(
   task: ReviewTask,
   reason: 'no_budget' | 'exhausted',
   diagnostics?: ComposedTaskFailureDiagnostics,
-  contractFailure?: TaskContractFailure,
 ): NonNullable<PanelResult['unreportedLanes']>[number] {
   if (reason === 'no_budget') {
     return {
@@ -1142,9 +1149,9 @@ export function unreportedLaneFailure(
   return {
     id: task.id,
     error: `Task ${task.id} (${task.dimension}) ran and produced no verdict`
-      + (contractFailure ? `: ${contractFailure} contract rejected` : '')
       + (diagnostics ? ` [reason=${diagnostics.reason}; turns=${diagnostics.turnsUsed}; corrections=${diagnostics.correctionAttempts}; tool_turns=${diagnostics.toolTurns}; finish_reason=${diagnostics.finishReason ?? 'unavailable'}; last_tool_outcome=${diagnostics.lastToolOutcome}]` : ''),
-    failureClass: 'malformed_output',
+    failureClass: diagnostics?.reason === 'total_turn_budget_exhausted' || diagnostics?.reason === 'task_turn_budget_exhausted'
+      ? 'budget_exhausted' : 'malformed_output',
     ...(diagnostics ? { diagnostics } : {}),
   };
 }
@@ -1413,7 +1420,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       } else {
         // Ran and returned no verdict. Off the published roster, so it cannot
         // satisfy coverage, and it is not an approval. Later tasks still run.
-        const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics, outcome.contractFailure);
+        const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics);
         unreportedLanes.push(failure);
         logger.warn('[composed] task finalization incomplete', {
           event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
