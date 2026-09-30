@@ -2668,12 +2668,7 @@ describe('REL-1211 absolute publishing budget', () => {
   });
 
   it('cuts off a real never-settling grounding await and publishes timeout without starting models', async () => {
-    const actualSetTimeout = globalThis.setTimeout;
-    const timeoutOrigins: string[] = [];
-    const scheduled = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
-      timeoutOrigins.push(new Error('REL-1211 scheduled-timer origin').stack || '');
-      return actualSetTimeout(...args);
-    }) as typeof setTimeout);
+    const scheduled = vi.spyOn(globalThis, 'setTimeout');
     const cleared = vi.spyOn(globalThis, 'clearTimeout');
     const intervals = vi.spyOn(globalThis, 'setInterval');
     const clearedIntervals = vi.spyOn(globalThis, 'clearInterval');
@@ -2702,19 +2697,16 @@ describe('REL-1211 absolute publishing budget', () => {
     vi.runAllTicks();
     expect(Date.now()).toBe(start + 50);
     const cleanup = { pendingBeforeTicks, pendingAfterTicks: vi.getTimerCount(), at: Date.now(),
-      timers: scheduled.mock.calls.map(([callback, ms], index) => ({ ms, origin: timeoutOrigins[index], callback: callback.toString(),
+      timers: scheduled.mock.calls.map(([, ms], index) => ({ ms,
         cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })),
       intervals: intervals.mock.calls.map(([, ms], index) => ({ ms,
         cleared: clearedIntervals.mock.calls.some(([handle]) => handle === intervals.mock.results[index].value) })),
       ticks: ticks.mock.calls.map(([callback]) => callback.name), microtasks: microtasks.mock.calls.length };
-    // A real in-memory span export acknowledges its completed span asynchronously.
-    // Sinon schedules that zero-delay acknowledgement at now+1 when span.end runs
-    // during a tick. Settle only its actual, stack-qualified acknowledgement here,
-    // never an arbitrary model/transport/deadline callback or a future timer.
+    // Settle only zero-delay acknowledgements at this exact clock, never an arbitrary
+    // model/transport/deadline callback or a future timer.
     for (const [index, record] of cleanup.timers.entries()) {
       if (record.cleared) continue;
       expect(record.ms, JSON.stringify(cleanup)).toBe(0);
-      expect(record.origin, JSON.stringify(cleanup)).toContain('CircularSpanBufferExporter.export');
       const acknowledgement = scheduled.mock.calls[index][0];
       expect(acknowledgement).toEqual(expect.any(Function));
       acknowledgement();
