@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { planDiffShrink, renderDiffShrinkSummary } from '../../src/review/diffShrink';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { createDefaultV3Config } from '../../src/config/configLoader';
@@ -176,6 +177,21 @@ describe('deterministic category order', () => {
     ['ova/versions/archive/1.2.3.yaml', 'config'],
     ['examples/ova/versions/1.2.3.yaml', 'config'],
     ['ova/versions/1.2.3.changelog.md', 'docs'],
+    ['release-notes/internal/1.2.3.md', 'ci-iac'],
+    ['release-notes/internal/1.2.3-rc4.md', 'ci-iac'],
+    ['release-notes/internal/1.2.3-beta.4.md', 'ci-iac'],
+    ['release-notes/internal/1.2.3.4-rc.1.md', 'ci-iac'],
+    ['release-notes/internal/settings.md', 'docs'],
+    ['release-notes/internal/1.2.md', 'docs'],
+    ['release-notes/internal/v1.2.3.md', 'docs'],
+    ['release-notes/internal/1.2.3+build.md', 'docs'],
+    ['release-notes/internal/1.2.3-.md', 'docs'],
+    ['release-notes/internal/1.2.3-rc..1.md', 'docs'],
+    ['release-notes/internal/archive/1.2.3.md', 'docs'],
+    ['examples/release-notes/internal/1.2.3.md', 'docs'],
+    ['/release-notes/internal/1.2.3.md', 'docs'],
+    ['release-notes/1.2.3.md', 'docs'],
+    ['release-notes/internal/1.2.3.changelog.md', 'docs'],
   ])('%s is %s', (path, category) => {
     expect(classifyBudgetCategory(path)).toBe(category);
   });
@@ -542,6 +558,87 @@ describe('one applicability decision', () => {
 // ---------------------------------------------------------------------------
 
 describe('attachReviewBudgetDisclosure', () => {
+  const snapshot = (path: string) => ({ ...planDiffShrink([], { enabled: true }).disclosure,
+    notSentInFull: [{ path, why: 'truncated' as const }] });
+
+  it('API-3375 reconciles only execution-proven cuts without mutating the original snapshots', () => {
+    const path = 'ova/versions/1.2.3.yaml';
+    const lane = packLaneBudget('release', [cutCandidate(path, 30_000)]);
+    const shrink = snapshot(path);
+    shrink.notSentInFull.push({ path: 'missing.yaml', why: 'truncated' });
+    const original = { personas: [{ id: 'release' }], diffShrink: shrink,
+      truncatedFiles: [{ path }, { path: 'missing.yaml' }] };
+    const before = JSON.stringify(original);
+    const result = attachReviewBudgetDisclosure(original, { scope: 'per-lane', packs: new Map([['release', lane]]) });
+    expect(result.diffShrink.notSentInFull).toEqual([{ path: 'missing.yaml', why: 'truncated' }]);
+    expect(result.truncatedFiles).toEqual([{ path: 'missing.yaml' }]);
+    expect(JSON.stringify(original)).toBe(before);
+    expect(result.diffShrink).not.toBe(shrink);
+  });
+
+  it.each(['filtered', 'summarized', 'unavailable', 'unreviewable'] as const)(
+    'API-3375 preserves unrelated %s reasons even beside a restored cut', (why) => {
+      const path = 'ova/versions/1.2.3.yaml';
+      const lane = packLaneBudget('release', [cutCandidate(path, 30_000)]);
+      const result = attachReviewBudgetDisclosure({ personas: [{ id: 'release' }],
+        diffShrink: { ...snapshot(path), notSentInFull: [{ path, why }, { path, why: 'truncated' as const }] } },
+      { scope: 'per-lane', packs: new Map([['release', lane]]) });
+      expect(result.diffShrink.notSentInFull).toEqual([{ path, why }]);
+    });
+
+  it.each(['cut', 'signatures', 'listed', 'missing-entry', 'missing-lane', 'fallback', 'keep'])(
+    'API-3375 retains genuine or ambiguous cuts: %s', (mode) => {
+      const path = 'ova/versions/1.2.3.yaml';
+      const full = packLaneBudget('release', [cutCandidate(path, 30_000)]);
+      const partial = mode === 'cut'
+        ? packLaneBudget('other', [cutCandidate(path, MAX_PACKED_DIFF_CHARS + 5_000)])
+        : packLaneBudget('other', [cutCandidate(path, 30_000)]);
+      if (mode === 'signatures' || mode === 'listed') {
+        const depth = mode === 'signatures' ? 'signatures' : 'not-deeply-reviewed';
+        partial.entries.set(path, { depth, promptPatch: 'reduced', toolPatch: 'cut' });
+        partial.disclosure.files[0] = { ...partial.disclosure.files[0], depth };
+      }
+      if (mode === 'missing-entry') partial.entries.delete(path);
+      const packs = new Map([['release', full]]);
+      if (!['missing-lane', 'fallback', 'keep'].includes(mode)) packs.set('other', partial);
+      const fallbacks = mode === 'fallback' ? new Map([['other', { laneId: 'other', budgetChars: 1,
+        packedChars: 0, files: [], fallback: { files: 1 } }]]) : undefined;
+      const original = { personas: [{ id: 'release' }, ...(mode === 'keep' ? [] : [{ id: 'other' }])],
+        diffShrink: snapshot(path), truncatedFiles: [{ path }] };
+      const result = attachReviewBudgetDisclosure(original, { scope: 'per-lane', packs, fallbacks },
+        mode === 'keep' ? new Set([path]) : undefined);
+      expect(result.truncatedFiles).toEqual([{ path }]);
+      expect(result.diffShrink.notSentInFull).toContainEqual({ path, why: 'truncated' });
+      if (mode === 'signatures' || mode === 'listed') expect(result.diffShrink.notSentInFull).toContainEqual({
+        path, why: mode === 'signatures' ? 'budget-signatures' : 'budget-listed',
+      });
+    });
+
+  it('API-3375 adds truthful signature/listing reasons even when the earlier cut list was empty', () => {
+    const lane = packLaneBudget('release', [candidate('src/a.ts', 50_000), candidate('src/b.ts', 50_000),
+      ...Array.from({ length: 12 }, (_, i) => candidate('src/auth/key' + i + '.ts', 13_000))]);
+    const original = { personas: [{ id: 'release' }], diffShrink: { ...snapshot('unused'), notSentInFull: [] } };
+    const result = attachReviewBudgetDisclosure(original, { scope: 'per-lane', packs: new Map([['release', lane]]) });
+    expect(result.diffShrink.notSentInFull).toContainEqual({ path: 'src/a.ts', why: 'budget-signatures' });
+    const summary = renderDiffShrinkSummary(result.diffShrink).join('\n');
+    expect(summary).toContain('not every change was sent in full');
+    expect(summary).not.toContain('oversized lockfile');
+    expect(original.diffShrink.notSentInFull).toEqual([]);
+  });
+
+  it('API-3375 refuses composed/off/unrun/fast-ship restoration without an executed lane', () => {
+    const path = 'ova/versions/1.2.3.yaml';
+    const plan = { scope: 'whole-diff' as const, packs: new Map([['composed', packLaneBudget('composed', [cutCandidate(path, 30_000)])]]) };
+    for (const original of [{ diffShrink: snapshot(path) }, { personas: [] },
+      { personas: [{ id: 'task', notApplicable: true }] }, { personas: [{ id: 42 }] },
+      { personas: [{ id: 'task' }], isFastShip: true }]) expect(attachReviewBudgetDisclosure(original, plan)).toBe(original);
+    const original = { personas: [{ id: 'task' }], diffShrink: snapshot(path) };
+    expect(attachReviewBudgetDisclosure(original, null)).toBe(original);
+    expect(attachReviewBudgetDisclosure(original, { scope: 'whole-diff', packs: new Map() })).toBe(original);
+    const withoutSnapshot = attachReviewBudgetDisclosure({ personas: [{ id: 'task' }] }, plan);
+    expect(withoutSnapshot).not.toHaveProperty('diffShrink');
+  });
+
   const pack = packLaneBudget('sec-lane', [cutCandidate('src/big.ts', 30_000)]);
   const skipped = packLaneBudget('perf-lane', [cutCandidate('src/other.ts', 30_000)]);
   const plan = { scope: 'per-lane' as const, packs: new Map([['sec-lane', pack], ['perf-lane', skipped]]) };
@@ -829,15 +926,27 @@ describe('composed engine wiring', () => {
     return { diff, tailLine: body.length, tail: kind === 'json' ? 'RELEASE_JSON_TAIL' : 'RELEASE_YAML_TAIL' };
   }
 
-  it('keeps release-record JSON/YAML tails in the prompt, get_diff and findings anchors past the old cut', async () => {
+  it('API-3375 keeps all four release files full through W5 plus shrink, tools, findings and public disclosure', async () => {
     const jsonPath = 'ova/versions/1.2.3-rc4.changelog.json';
     const yamlPath = 'ova/versions/1.2.3-rc4.yaml';
-    const records = [releaseRecord(jsonPath, 'json'), releaseRecord(yamlPath, 'yaml')];
+    const notePath = 'release-notes/internal/1.2.3-rc4.md';
+    const envPath = 'ova/versions/1.2.3-rc4.env';
+    const noteBody = ['# Synthetic release', ...Array.from({ length: 100 }, (_, i) => '- Change ' + i + ': ' + 'bounded synthetic release provenance '.repeat(3)), 'RELEASE_NOTES_TAIL'];
+    const envBody = ['RELEASE_VERSION=1.2.3-rc4', 'SYNTHETIC_IMAGE=example.invalid/image:synthetic', '# RELEASE_ENV_TAIL'];
+    const textRecord = (path: string, body: string[], tail: string) => ({ path, tail, tailLine: body.length,
+      diff: ['diff --git a/' + path + ' b/' + path, 'new file mode 100644', '--- /dev/null', '+++ b/' + path,
+        '@@ -0,0 +1,' + body.length + ' @@', ...body.map(line => '+' + line), ''].join('\n') });
+    const records = [{ ...releaseRecord(jsonPath, 'json'), path: jsonPath },
+      { ...releaseRecord(yamlPath, 'yaml'), path: yamlPath }, textRecord(envPath, envBody, 'RELEASE_ENV_TAIL'),
+      textRecord(notePath, noteBody, 'RELEASE_NOTES_TAIL')];
     const otherPath = 'src/compile.ts';
     // A higher-ranked source file exhausts the soft budget if release records are mistaken
     // for ordinary config. Full-depth CI/IaC records must win, up to the unchanged hard cap.
-    const changedFiles = files(records.map((record) => record.diff).join('') + addedFile(otherPath, 600, 'compiler'));
-    for (const file of changedFiles.filter((file) => file.path !== otherPath)) {
+    const diff = records.map((record) => record.diff).join('');
+    const changedFiles = files(diff);
+    expect(changedFiles).toHaveLength(4);
+    expect(changedFiles.reduce((sum, file) => sum + file.patch!.length, 0)).toBeGreaterThan(PERSONA_BUDGET_CHARS);
+    for (const file of changedFiles.filter((file) => [jsonPath, yamlPath].includes(file.path))) {
       expect(file.patch!.length).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
       expect(file.patch!.length).toBeLessThan(35_000);
     }
@@ -848,26 +957,26 @@ describe('composed engine wiring', () => {
       requests.push(JSON.stringify(request.messages));
       const nonce = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
       if (!prompt.includes('WORK TURN')) return { model: 'm', content: JSON.stringify({ nonce, tasks: [
-        { id: 'release-provenance', dimension: 'contract', paths: [jsonPath, yamlPath, otherPath], question: 'Are synthetic release records consistent?', rationale: 'Deployment provenance.' },
+        { id: 'release-provenance', dimension: 'contract', paths: records.map(record => record.path), question: 'Are synthetic release records consistent?', rationale: 'Deployment provenance.' },
       ] }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
       workCalls += 1;
-      if (workCalls <= 2) {
-        if (workCalls === 2) expect(extractMessageContentText(request.messages.at(-1).content)).toContain(records[0].tail);
-        return { model: 'm', content: JSON.stringify({ tool: 'get_diff', args: { path: workCalls === 1 ? jsonPath : yamlPath } }),
+      if (workCalls <= records.length) {
+        if (workCalls > 1) expect(extractMessageContentText(request.messages.at(-1).content)).toContain(records[workCalls - 2].tail);
+        return { model: 'm', content: JSON.stringify({ tool: 'get_diff', args: { path: records[workCalls - 1].path } }),
           usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
       }
       const toolEvidence = request.messages.filter((message: any) =>
         extractMessageContentText(message.content).startsWith('[PI_TOOL_RESULT]'));
-      expect(extractMessageContentText(toolEvidence.at(-1).content)).toContain(records[1].tail);
+      expect(extractMessageContentText(toolEvidence.at(-1).content)).toContain(records.at(-1)!.tail);
       return { model: 'm', content: JSON.stringify({ nonce, task: 'release-provenance', status: 'COMPLETE', findings:
-        records.map((record, index) => ({ severity: 'P2', path: index === 0 ? jsonPath : yamlPath, line: record.tailLine,
+        records.map((record) => ({ severity: 'P2', path: record.path, line: record.tailLine,
           startLine: null, title: 'Synthetic tail marker', body: 'The synthetic terminal record warrants checking.',
           suggestion: null, replacementCode: null })) }), usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
     });
     const cfg = COMPOSED_CONFIG();
-    cfg.composed = { max_tasks: 1, max_turns_total: 6, max_turns_per_task: 6 } as typeof cfg.composed;
+    cfg.composed = { max_tasks: 1, max_turns_total: 9, max_turns_per_task: 8 } as typeof cfg.composed;
     const result = await executeComposedReview({ config: cfg, changedFiles, repository: 'acme/release-fixture',
-      headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON });
+      headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON, diffShrink: { enabled: true } });
     for (const record of records) expect(requests[0]).toContain(record.tail);
     for (const request of requests) expect(Buffer.byteLength(request)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
     expect(result.personas).toHaveLength(1);
@@ -877,7 +986,25 @@ describe('composed engine wiring', () => {
     expect(result.reviewBudget?.lanes[0].files).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: jsonPath, category: 'ci-iac', depth: 'full', pastPerFileCut: true }),
       expect.objectContaining({ path: yamlPath, category: 'ci-iac', depth: 'full', pastPerFileCut: true }),
+      expect.objectContaining({ path: notePath, category: 'ci-iac', depth: 'full' }),
+      expect.objectContaining({ path: envPath, category: 'ci-iac', depth: 'full' }),
     ]));
+    expect(result.diffShrink?.notSentInFull).toEqual([]);
+    const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
+    await runPublishingReviewWorker({ NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate',
+      REVIEW_RUN_ID: 'run_' + 'c'.repeat(32), REVIEW_REPO: 'acme/release-fixture', REVIEW_REPOSITORY_ID: '1339040553',
+      REVIEW_POLICY_DIGEST: 'c'.repeat(64), REVIEW_CONFIG_DIGEST: 'd'.repeat(64), REVIEW_EXECUTION_ATTEMPT: '1',
+      REVIEW_PR_NUMBER: '1', REVIEW_HEAD_SHA: 'e'.repeat(40), REVIEW_BASE_SHA: 'b'.repeat(40),
+      REVIEW_MODEL: 'ollama/glm-5.3-flash', OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
+      OPENAI_API_KEY: 'vk-test', GH_TOKEN: 'ghs_test', REVIEW_YETI_BUDGET: 'all', REVIEW_YETI_DIFF_SHRINK: 'all',
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }) },
+    { checkClient, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
+      visibilityLookup: vi.fn(async () => 'PRIVATE' as const), composedReviewRunner: vi.fn(async () => result) as never, client: {} as never });
+    const summary = JSON.stringify((checkClient.completeCheck.mock.calls as unknown[][]).map(call => call[0]));
+    expect(summary).toContain('4 in full (2 past the 20k per-file cut), 0 as signatures only, 0 not deeply reviewed');
+    expect(summary).toContain('No file was shrunk; every change was sent in full.');
+    expect(summary).not.toContain('No file was shrunk, but not every change');
+    expect(summary).not.toContain('truncated');
   });
 
   it('does not bypass hard caps or turn nearby config paths into full-depth release records', () => {

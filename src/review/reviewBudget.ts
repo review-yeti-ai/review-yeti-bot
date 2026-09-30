@@ -62,7 +62,7 @@ import { resolveShrunkReviewApplicability } from './diffShrink';
 import { resolveCachedReviewApplicability } from './verdictCache';
 import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
-import type { DiffShrinkDisclosure } from '../types/diffShrink';
+import type { DiffShrinkDisclosure, NotSentInFullReason } from '../types/diffShrink';
 import { scopeFilesForPersona, type EffectiveReviewFile, type ReviewApplicability } from './personaApplicability';
 import { isDataOrConfigPath, isDocumentationOrAssetPath } from './reviewableContent';
 import { isSecuritySensitivePath } from './securitySensitivePaths';
@@ -156,6 +156,8 @@ const CI_IAC_PATTERNS: readonly RegExp[] = [
   // Versioned deployment records are packaging/compose provenance, not generic data config.
   // Anchor the exact repository-root layout and basename; nested/arbitrary config stays rank 2.
   /^ova\/versions\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.(?:env|ya?ml|changelog\.json)$/iu,
+  // Internal versioned release notes complete the same root-owned deployment record.
+  /^release-notes\/internal\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.md$/iu,
 ];
 
 const TEST_PATTERNS: readonly RegExp[] = [
@@ -564,19 +566,15 @@ export function resolveBudgetedReviewApplicability<P extends Parameters<typeof r
 }
 
 /**
- * Attach the disclosure of the packs whose lanes actually ran to an engine's
- * result, and correct the per-file-cut disclosure (REL-1092) to what those
- * lanes received: a file every running lane got whole, as signatures or as a
- * listing is no longer "truncated". A fast-ship result ran no lane and is
- * returned unchanged, as is any result when the budget was off.
+ * Publish only packs whose lanes ran. Reconcile pre-budget cut disclosures
+ * only when matching executed entries prove the path was full in every
+ * relevant pack. Unknown lanes, fallback and map-reduce cuts retain the
+ * original evidence; signatures and listings remain explicitly not full.
  */
 export function attachReviewBudgetDisclosure<T extends object>(
   result: T,
   plan: ReviewBudgetPlan | null,
-  /**
-   * REL-1083: files a lane outside this plan (a map-reduce chunked lane) still
-   * received only as the per-file cut. They stay in the truncation list.
-   */
+  /** Files another lane (such as a map-reduce chunk) still received cut. */
   keepTruncated?: ReadonlySet<string>,
 ): T & { reviewBudget?: ReviewBudgetDisclosure } {
   if (!plan || (result as { isFastShip?: unknown }).isFastShip === true) return result;
@@ -586,26 +584,43 @@ export function attachReviewBudgetDisclosure<T extends object>(
       .filter((persona: any) => persona && typeof persona.id === 'string' && persona.notApplicable !== true)
       .map((persona: any) => persona.id as string),
   );
-  const lanes = [...plan.packs.values()].map((pack) => pack.disclosure)
-    .concat([...(plan.fallbacks?.values() ?? [])])
+  if (ran.size === 0) return result;
+  const packs = [...plan.packs.values()].filter((pack) => plan.scope === 'whole-diff' || ran.has(pack.laneId));
+  const fallbacks = [...(plan.fallbacks?.values() ?? [])]
     .filter((lane) => plan.scope === 'whole-diff' || ran.has(lane.laneId));
+  const lanes = packs.map((pack) => pack.disclosure).concat(fallbacks);
   if (lanes.length === 0) return result;
 
-  const stillCut = new Set<string>();
-  const budgeted = new Set<string>();
-  for (const lane of lanes) {
-    for (const file of lane.files) {
-      budgeted.add(file.path);
-      if (file.depth === 'truncated') stillCut.add(file.path);
+  const ambiguous = fallbacks.length > 0 || (plan.scope === 'per-lane'
+    && [...ran].some((id) => !plan.packs.has(id) && !plan.fallbacks?.has(id)));
+  const depths = new Map<string, BudgetDepth[]>();
+  for (const pack of packs) {
+    for (const file of pack.disclosure.files) {
+      // Entries are what execution applied, not just a proposed disclosure.
+      const entry = pack.entries.get(file.path);
+      const depth = entry?.depth === file.depth ? file.depth : 'truncated';
+      depths.set(file.path, [...(depths.get(file.path) ?? []), depth]);
     }
   }
+  const restored = (path: string) => !ambiguous && keepTruncated?.has(path) !== true
+    && depths.has(path) && depths.get(path)!.every((depth) => depth === 'full');
   const disclosure: ReviewBudgetDisclosure = { ordering: 'deterministic-category', requestCapBytes: MAX_BUDGETED_REQUEST_BYTES, lanes };
   const next: any = { ...result, reviewBudget: disclosure };
   if (Array.isArray(next.truncatedFiles)) {
-    const kept = next.truncatedFiles.filter((file: { path: string }) => stillCut.has(file.path) || !budgeted.has(file.path)
-      || keepTruncated?.has(file.path) === true);
+    const kept = next.truncatedFiles.filter((file: { path: string }) => !restored(file.path));
     if (kept.length > 0) next.truncatedFiles = kept;
     else delete next.truncatedFiles;
+  }
+  const shrink = (result as { diffShrink?: DiffShrinkDisclosure }).diffShrink;
+  if (shrink && Array.isArray(shrink.notSentInFull)) {
+    const rows = shrink.notSentInFull.filter((row) => row.why !== 'truncated' || !restored(row.path));
+    for (const [path, sentDepths] of depths) {
+      const why: NotSentInFullReason | undefined = sentDepths.includes('truncated') ? 'truncated'
+        : sentDepths.includes('not-deeply-reviewed') ? 'budget-listed'
+          : sentDepths.includes('signatures') ? 'budget-signatures' : undefined;
+      if (why && !rows.some((row) => row.path === path && row.why === why)) rows.push({ path, why });
+    }
+    next.diffShrink = { ...shrink, notSentInFull: rows };
   }
   return next;
 }

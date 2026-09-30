@@ -53,5 +53,6 @@ export interface DiffShrinkDisclosure {
   notSentInFull?: Array<{ path: string; why: NotSentInFullReason }>;
 }
 
-export type NotSentInFullReason = 'filtered' | 'summarized' | 'truncated' | 'unavailable' | 'unreviewable';
+export type NotSentInFullReason = 'filtered' | 'summarized' | 'truncated' | 'unavailable' | 'unreviewable'
+  | 'budget-signatures' | 'budget-listed';
 
