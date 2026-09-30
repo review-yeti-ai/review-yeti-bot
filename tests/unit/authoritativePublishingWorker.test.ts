@@ -15,6 +15,7 @@ import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { isInfrastructureIncompleteResult } from '../../src/review/publicationFailurePolicy';
 import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
+import { unreportedLaneFailure } from '../../src/panel/composedEngine';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
@@ -690,8 +691,10 @@ describe('authoritative prepared publishing worker', () => {
       f.deps.composedReviewRunner = vi.fn().mockResolvedValue({ ...f.panel,
         taskPlan, applicablePersonaIds: ['task-a', 'task-b'],
         personas: [{ ...f.panel.personas[0], id: 'task-a' }],
-        unreportedLanes: [{ id: 'task-b', failureClass: 'malformed_output',
-          error: 'Task task-b (testing) ran and produced no verdict' }],
+        unreportedLanes: [unreportedLaneFailure(taskPlan[1], 'exhausted', {
+          reason: 'nonce_mismatch', turnsUsed: 12, correctionAttempts: 2,
+          toolTurns: 9, finishReason: 'length', lastToolOutcome: 'returned',
+        })],
       });
 
       const receipt = await runPublishingReviewWorker(f.env, f.deps);
@@ -699,6 +702,8 @@ describe('authoritative prepared publishing worker', () => {
       expect(check).toMatchObject({ conclusion: 'failure', title: 'Review Yeti: review did not complete' });
       expect(check?.summary).toContain('No review verdict');
       expect(check?.summary).toContain('task-b');
+      expect(check?.summary).toContain('reason=nonce_mismatch');
+      expect(check?.summary).toContain('turns=12; corrections=2; tool_turns=9; finish_reason=length');
       expect(check?.summary).toContain('Coverage: engine=composed; planned tasks=2; expected tasks=2; completed tasks=1');
       expect(check?.summary).not.toContain('Verdict `BLOCK`');
       expect(isRecoverableFailureTitle(check?.title)).toBe(true);
