@@ -77,3 +77,10 @@ export const FIND_FILES_TOOL_GUIDE = [
   `Globs are supported: * and ? within one path segment, ** across directories, {a,b} alternatives (e.g. "tests/fixtures/**/*.json", "**/*.{yml,yaml}"); plain text matches as a case-insensitive substring of the path.`,
   `A zero-hit result is proof of absence ONLY when the result says it searched the full repository tree. If it says the search was diff-scoped, the tree was truncated, or the lookup failed, the file may still exist: do not report it as missing; call read_file on the exact path, which is conclusive.`,
 ].join(' ');
+
+/** Shared exact-head/source-line/fallback contract for read_file in every investigation prompt. */
+export const READ_FILE_TOOL_GUIDE = [
+  `read_file: {"tool": "read_file", "args": {"path": "<path>", "startLine": 1, "endLine": 80}} Use only when needed for source context.`,
+  `It reads the current file at the reviewed head through the existing same-repository read-only provider, including files changed in this PR; requested line ranges are source-file lines.`,
+  `If that provider is unwired or the read fails, its result is explicitly patch/change-payload-only or unavailable and is not full-file coverage.`,
+].join(' ');
