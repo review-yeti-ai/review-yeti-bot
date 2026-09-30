@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCall } from './nativeTurnProtocol';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
-import { workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
+import { workerTerminalDeadlineAtMs, workerPanelDeadlineBudget, type WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, isSameFile, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import {
   executeSymbolResolutionAppendix,
@@ -486,9 +486,13 @@ export class PanelInfrastructureError extends PanelConfigurationError {
 
 /** The configured panel deadline elapsed; this is distinct from a provider request timeout. */
 export class PanelDeadlineExceededError extends PanelCancellationError {
-  constructor(timeoutMs: number) {
-    super(`review panel exceeded overall timeout of ${Math.ceil(timeoutMs / 1000)}s`);
+  readonly failureClass = 'timeout' as const;
+  readonly failureReason: string;
+  constructor(timeoutMs: number, terminalBound = false) {
+    super(terminalBound ? 'review panel exceeded admitted terminal model-work deadline'
+      : `review panel exceeded overall timeout of ${Math.ceil(timeoutMs / 1000)}s`);
     this.name = 'PanelDeadlineExceededError';
+    this.failureReason = terminalBound ? 'worker_terminal_deadline_exceeded' : 'worker_deadline_exceeded';
   }
 }
 
@@ -512,26 +516,37 @@ export function throwIfPanelAborted(signal?: AbortSignal): void {
 export function createPanelDeadlineSignal(
   overallTimeoutSeconds: number,
   parentSignal?: AbortSignal,
-): { signal: AbortSignal; cleanup: () => void; timeoutMs: number } {
-  const timeoutMs = Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
-    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
-    : 900_000;
+  budget = workerPanelDeadlineBudget(overallTimeoutSeconds, {}),
+): { signal: AbortSignal; cleanup: () => void; check: () => void; timeoutMs: number; budget: WorkerPanelDeadlineBudget } {
+  const timeoutMs = Math.max(0, budget.deadlineAtMs - Date.now());
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const expire = () => {
+    if (!controller.signal.aborted) controller.abort(new PanelDeadlineExceededError(timeoutMs, budget.terminalBound));
+  };
+  const check = () => {
+    // A blocked event loop or a deferred invocation cannot turn an expired budget into a 1ms call.
+    if (Date.now() >= budget.deadlineAtMs) expire();
+    throwIfPanelAborted(controller.signal);
+  };
   const onParentAbort = () => {
     if (!controller.signal.aborted) controller.abort(panelAbortError(parentSignal));
   };
 
   if (parentSignal?.aborted) {
     onParentAbort();
+  } else if (timeoutMs === 0) {
+    expire();
   } else {
     parentSignal?.addEventListener('abort', onParentAbort, { once: true });
-    timer = setTimeout(() => controller.abort(new PanelDeadlineExceededError(timeoutMs)), timeoutMs);
+    timer = setTimeout(expire, timeoutMs);
   }
 
   return {
     signal: controller.signal,
     timeoutMs,
+    budget,
+    check,
     cleanup: () => {
       if (timer !== undefined) clearTimeout(timer);
       parentSignal?.removeEventListener('abort', onParentAbort);
@@ -3641,6 +3656,8 @@ export async function executePersonaPanel(options: {
   repositoryVisibility?: RepositoryVisibility;
   /** Caller cancellation is linked to the configured overall panel deadline. */
   signal?: AbortSignal;
+  /** Fixed caller cutoff; nested panel setup must not restart the worker's budget. */
+  deadlineBudget?: WorkerPanelDeadlineBudget;
   workspaceRoot?: string;
   /** Service-authoritative runs use only immutable prepared config and exact
    * path applicability; mutable dashboard overrides and model pruning cannot
@@ -3665,9 +3682,12 @@ export async function executePersonaPanel(options: {
   /** REL-1139: diff headers the caller could not read (files never sent here); any makes the skip ineligible. */
   unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
-  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
-  const panelStartedAt = Date.now();
-  const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
+  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
+    options.deadlineBudget ?? workerPanelDeadlineBudget(options.config.reviewers.overall_timeout_s));
+  const remainingPanelTimeoutMs = () => {
+    deadline.check();
+    return deadline.budget.deadlineAtMs - Date.now();
+  };
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and
   // attached to whichever result this run returns.
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
@@ -3688,7 +3708,7 @@ export async function executePersonaPanel(options: {
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
-    throwIfPanelAborted(signal);
+    deadline.check();
     const repositoryVisibility = normalizeRepositoryVisibility(options.repositoryVisibility ?? 'UNKNOWN');
     const runId = Math.random().toString(36).slice(2);
     const runKey = `${repository}#${headSha}`;

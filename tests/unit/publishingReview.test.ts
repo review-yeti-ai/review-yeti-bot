@@ -1,4 +1,8 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
+import { PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
+import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
 import {
   classifyFailure,
@@ -2602,5 +2606,116 @@ describe('isGithubDiffNotRenderableError', () => {
     const error = new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 1, 406);
     expect(classifyFailure(error)).toBe('contract');
     expect(isGithubDiffNotRenderableError(error)).toBe(true);
+  });
+});
+
+describe('REL-1211 absolute publishing budget', () => {
+  const start = Date.parse('2026-09-30T16:00:50Z');
+  const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 121_000 + remaining).toISOString() });
+  beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(start); });
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it.each([0, -100])('REL-1211 refuses exhausted admission before main or shadow invocation: %s', async (remaining) => {
+    const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
+    const shadow = vi.fn();
+    const d = deps({ completion, composedReviewRunner: shadow, zoektGrounding: vi.fn(async () => ({})) });
+    const input = env({ ...deadlineEnv(remaining), REVIEW_EXECUTION_ATTEMPT: '2',
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) });
+    await expect(runPublishingReviewWorker(input, d as never)).rejects.toMatchObject({ name: 'PanelDeadlineExceededError' });
+    expect(d.panelRunner).not.toHaveBeenCalled(); expect(shadow).not.toHaveBeenCalled();
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+    expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ executionAttempt: 2,
+      failureClass: 'timeout', diagnostics: expect.objectContaining({ reason: 'worker_terminal_deadline_exceeded' }) }));
+    expect(completion.reportTerminalFailure.mock.calls[0][0].diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('includes elapsed grounding and setup in the cutoff, rather than restarting nested panel work', async () => {
+    const grounding = vi.fn(async () => { vi.setSystemTime(start + 40); return {}; });
+    let observed!: { signal: AbortSignal; deadlineBudget: { deadlineAtMs: number } };
+    const panelRunner = vi.fn((options: typeof observed) => { observed = options; return new Promise(() => {}); });
+    const completion = { reportTerminalFailure: vi.fn(async () => undefined) };
+    const d = deps({ panelRunner, completion, zoektGrounding: grounding });
+    const promise = runPublishingReviewWorker(env(deadlineEnv(50)), d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    expect(observed.deadlineBudget.deadlineAtMs).toBe(start + 50);
+    expect(observed.signal.aborted).toBe(true);
+    expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bounds hung main and shadow by the same cutoff and refuses late model success', async () => {
+    let mainSignal!: AbortSignal; let shadowSignal!: AbortSignal;
+    let lateMain!: (result: unknown) => void; let lateShadow!: (result: unknown) => void;
+    const panelRunner = vi.fn(({ signal }: { signal: AbortSignal }) => { mainSignal = signal; return new Promise(resolve => { lateMain = resolve; }); });
+    const composedReviewRunner = vi.fn(({ signal }: { signal: AbortSignal }) => { shadowSignal = signal; return new Promise(resolve => { lateShadow = resolve; }); });
+    const d = deps({ panelRunner, composedReviewRunner, zoektGrounding: vi.fn(async () => ({})) });
+    const promise = runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(50); await failure;
+    expect(panelRunner).toHaveBeenCalledOnce(); expect(composedReviewRunner).toHaveBeenCalledOnce();
+    expect(mainSignal).not.toBe(shadowSignal);
+    expect(mainSignal.aborted).toBe(true); expect(shadowSignal.reason).toBe(mainSignal.reason);
+    lateMain(await deps().panelRunner()); lateShadow(await deps().panelRunner());
+    await vi.advanceTimersByTimeAsync(1);
+    expect(d.checkClient.completeCheck.mock.calls.every(([event]) => event.conclusion === 'failure')).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('checks the deferred shadow invocation after a synchronous main callback crosses the cutoff', async () => {
+    const composedReviewRunner = vi.fn();
+    const panelRunner = vi.fn(async () => { vi.setSystemTime(start + 50); return deps().panelRunner(); });
+    const d = deps({ panelRunner, composedReviewRunner, zoektGrounding: vi.fn(async () => ({})) });
+    await expect(runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never))
+      .rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    expect(panelRunner).toHaveBeenCalledOnce();
+    expect(composedReviewRunner).not.toHaveBeenCalled();
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
+  });
+
+  it('preserves a typed terminal timeout in authoritative exact-attempt evidence and leaves the receipt interval usable', async () => {
+    const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 1 } } });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const prepared = preparePublishingPolicy({ content, source: { repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+      contentDigest: createHash('sha256').update(content).digest('hex') } }, transport);
+    const input = env({ ...deadlineEnv(50), REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_EXECUTION_ATTEMPT: '3',
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model, OPENAI_BASE_URL: transport.baseUrl,
+      GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE' });
+    let deliveredAt = 0; let delivered!: Record<string, any>;
+    const fetch = vi.fn(async (_url: unknown, init: RequestInit) => {
+      delivered = JSON.parse(String(init.body));
+      await new Promise(resolve => setTimeout(resolve, 30_000));
+      deliveredAt = Date.now();
+      return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1', runId: input.REVIEW_RUN_ID, status: 'recorded' }));
+    });
+    // The real transport retains its 30s total budget; delivery resolves shortly before it.
+    fetch.mockImplementationOnce(async (_url, init) => {
+      delivered = JSON.parse(String(init.body));
+      await new Promise(resolve => setTimeout(resolve, 29_000));
+      deliveredAt = Date.now(); return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1', runId: input.REVIEW_RUN_ID, status: 'recorded' }));
+    });
+    const reviewCompletion = new HttpWorkerReviewCompletionAdapter({ endpoint: input.REVIEW_COMPLETION_URL!, token: 'ghs_Synthetic-Worker.header_segment.signature-with-dash', fetchImplementation: fetch as never });
+    const d = deps({ panelRunner: vi.fn(() => new Promise(() => {})), reviewCompletion, zoektGrounding: vi.fn(async () => ({})),
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) });
+    const promise = runPublishingReviewWorker(input, d as never);
+    const failure = expect(promise).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(29_050); await failure;
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(delivered).toMatchObject({ runId: input.REVIEW_RUN_ID, headSha: HEAD, executionAttempt: 3,
+      result: { coverageComplete: false, quorumSatisfied: false, failureDiagnostics: { reason: 'worker_terminal_deadline_exceeded' } } });
+    expect(delivered.result.failureDiagnostics).not.toHaveProperty('recoverableIncompletePanel');
+    expect(delivered.result.personas.every((persona: any) => persona.status === 'ERROR' && persona.errorClass === 'timeout')).toBe(true);
+    const terminal = Date.parse(input.REVIEW_TERMINAL_DEADLINE!);
+    const hardStop = start + (Math.floor((terminal - start) / 1_000) - 60) * 1_000;
+    expect(deliveredAt).toBeLessThan(hardStop);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('classifies both admitted and local typed panel deadlines as timeout without retry markers', () => {
+    expect(classifyFailure(new PanelDeadlineExceededError(10, true))).toBe('timeout');
+    expect(classifyFailure(new PanelDeadlineExceededError(10))).toBe('timeout');
   });
 });

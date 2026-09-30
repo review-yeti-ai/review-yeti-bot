@@ -16,6 +16,33 @@ export const WORKER_TERMINAL_DEADLINE_ENV = 'REVIEW_TERMINAL_DEADLINE';
 /** The worker Job is deleted this long before the terminal deadline (Go `DeadlineReserveSeconds`). */
 export const WORKER_TERMINAL_DEADLINE_RESERVE_MS = 60_000;
 
+/** Keep the operator's existing receipt interval available before Job termination. */
+export const WORKER_RECEIPT_RESERVE_MS = 60_000;
+/** Go floors remaining seconds before projecting activeDeadlineSeconds. */
+export const WORKER_DEADLINE_FLOOR_MARGIN_MS = 1_000;
+
+export interface WorkerPanelDeadlineBudget {
+  deadlineAtMs: number;
+  timeoutMs: number;
+  terminalBound: boolean;
+}
+
+/** A fixed work cutoff, never a fresh timeout when passed to a nested engine. */
+export function workerPanelDeadlineBudget(
+  overallTimeoutSeconds: number,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  nowMs = Date.now(),
+): WorkerPanelDeadlineBudget {
+  const configuredMs = Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
+    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
+    : 900_000;
+  const terminalAt = workerTerminalDeadlineAtMs(env);
+  const terminalCutoff = terminalAt === undefined ? Infinity
+    : terminalAt - WORKER_TERMINAL_DEADLINE_RESERVE_MS - WORKER_RECEIPT_RESERVE_MS - WORKER_DEADLINE_FLOOR_MARGIN_MS;
+  const deadlineAtMs = Math.min(nowMs + configuredMs, terminalCutoff);
+  return { deadlineAtMs, timeoutMs: Math.max(0, deadlineAtMs - nowMs), terminalBound: terminalCutoff <= nowMs + configuredMs };
+}
+
 /** REL-1113: the single parser of `WORKER_TERMINAL_DEADLINE_ENV`: epoch ms, or undefined. */
 export function workerTerminalDeadlineAtMs(env: Readonly<Record<string, string | undefined>> = process.env): number | undefined {
   const raw = String(env[WORKER_TERMINAL_DEADLINE_ENV] ?? '').trim();

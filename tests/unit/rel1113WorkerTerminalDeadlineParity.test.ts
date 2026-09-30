@@ -5,6 +5,9 @@ import {
   WORKER_TERMINAL_DEADLINE_ENV,
   WORKER_TERMINAL_DEADLINE_RESERVE_MS,
   workerTerminalDeadlineAtMs,
+  workerPanelDeadlineBudget,
+  WORKER_RECEIPT_RESERVE_MS,
+  WORKER_DEADLINE_FLOOR_MARGIN_MS,
 } from '../../src/config/workerTerminalDeadline';
 import { TERMINAL_DEADLINE_ENV } from '../../src/review/mapReduceReview';
 import { remainingTerminalDeadlineMs, TRANSPORT_RETRY_TERMINAL_MARGIN_MS } from '../../src/panel/panelEngine';
@@ -30,5 +33,37 @@ describe('REL-1113 worker terminal-deadline contract', () => {
       .toBe(90_000 - TRANSPORT_RETRY_TERMINAL_MARGIN_MS);
     // Absent: no ADDITIONAL bound; the panel deadline still bounds every backoff.
     expect(remainingTerminalDeadlineMs({}, at)).toBe(Infinity);
+  });
+});
+
+describe('REL-1211 fixed model-work budget', () => {
+  const now = Date.parse('2026-09-30T16:00:50Z');
+  const terminalEnv = (at: number) => ({ [WORKER_TERMINAL_DEADLINE_ENV]: new Date(at).toISOString() });
+  it('pins both unchanged Go reserves and conservatively covers integer flooring', () => {
+    const go = readFileSync(join(__dirname, '../../k8s-operator/pkg/job/job.go'), 'utf8');
+    expect(go).toMatch(new RegExp(`WorkerReceiptReserveSeconds\\s*=\\s*int64\\(${WORKER_RECEIPT_RESERVE_MS / 1000}\\)`, 'u'));
+    expect(WORKER_DEADLINE_FLOOR_MARGIN_MS).toBe(1_000);
+    const terminal = Date.parse('2026-09-30T16:29:47.875Z');
+    const hardStop = now + (Math.floor((terminal - now) / 1_000) - 60) * 1_000;
+    const budget = workerPanelDeadlineBudget(1_800, terminalEnv(terminal), now);
+    expect(budget.deadlineAtMs).toBe(terminal - 121_000);
+    expect(hardStop - budget.deadlineAtMs).toBeGreaterThanOrEqual(60_000);
+    expect(budget.terminalBound).toBe(true);
+  });
+  it.each([undefined, '', '   ', 'not a date'])('preserves absent/empty/malformed local bounds: %s', (raw) => {
+    expect(workerPanelDeadlineBudget(5, { [WORKER_TERMINAL_DEADLINE_ENV]: raw }, now))
+      .toEqual({ deadlineAtMs: now + 5_000, timeoutMs: 5_000, terminalBound: false });
+  });
+  it.each([0, -1, NaN, Infinity])('preserves the configured fallback: %s', (seconds) => {
+    expect(workerPanelDeadlineBudget(seconds, {}, now).timeoutMs).toBe(900_000);
+  });
+  it('takes the earlier relative bound without consuming a later admission window', () => {
+    expect(workerPanelDeadlineBudget(5, terminalEnv(now + 200_000), now))
+      .toEqual({ deadlineAtMs: now + 5_000, timeoutMs: 5_000, terminalBound: false });
+    expect(workerPanelDeadlineBudget(0.0001, {}, now).timeoutMs).toBe(1);
+  });
+  it.each([0, -1, -100_000])('represents exhausted budget as zero, not a minimum provider call: %s', (remaining) => {
+    expect(workerPanelDeadlineBudget(1_800, terminalEnv(now + 121_000 + remaining), now))
+      .toEqual({ deadlineAtMs: now + remaining, timeoutMs: 0, terminalBound: true });
   });
 });
