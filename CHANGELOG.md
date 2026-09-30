@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.0...v1.100.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* share native wire contract and bind terminal diagnostics ([#1151](https://github.com/review-yeti-ai/review-yeti-bot/issues/1151)) ([fb98a22](https://github.com/review-yeti-ai/review-yeti-bot/commit/fb98a226c64f280e8ebf58111edf4afffb918f88))
+
 ## [1.100.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.99.2...v1.100.0) (2026-09-30)
 
 
