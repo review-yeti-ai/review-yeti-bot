@@ -75,6 +75,7 @@ function baseRow(overrides: Record<string, unknown> = {}) {
 interface Captured {
   statements: string[];
   markerQueries: number;
+  markerParameters: unknown[][];
 }
 
 /**
@@ -87,13 +88,14 @@ function makeDb(
   markers: Record<string, string> = {},
   options: { failGateJoin?: boolean } = {},
 ): { db: ReviewStatusDbClient; captured: Captured } {
-  const captured: Captured = { statements: [], markerQueries: 0 };
+  const captured: Captured = { statements: [], markerQueries: 0, markerParameters: [] };
   let mainQueries = 0;
   const db: ReviewStatusDbClient = {
-    async query(sql: string) {
+    async query(sql: string, parameters?: unknown[]) {
       captured.statements.push(sql);
       if (sql.includes('review_event_outbox')) {
         captured.markerQueries += 1;
+        captured.markerParameters.push(parameters ?? []);
         return {
           rows: Object.entries(markers).map(([event_kind, occurred_at]) => ({
             event_kind,
@@ -105,7 +107,8 @@ function makeDb(
       if (options.failGateJoin && mainQueries === 1) {
         throw new Error('relation "review_gate_attempts" does not exist');
       }
-      return { rows: [row] };
+      // The schema fallback cannot select an identity from an absent gate table.
+      return { rows: [options.failGateJoin ? { ...row, attempt_id: undefined } : row] };
     },
   };
   return { db, captured };
@@ -154,6 +157,9 @@ describe('get_review_status timing: every query branch selects the timing column
       for (const column of TIMING_COLUMNS) {
         expect(sql, `${branch.name} must select r.${column}`).toContain(`r.${column}`);
       }
+      if (branch.failGateJoin && !sql.includes('review_gate_attempts')) {
+        expect(sql).toMatch(/r\.artifacts\s*,\s*r\.received_at/u);
+      }
     }
   });
 
@@ -166,6 +172,13 @@ describe('get_review_status timing: every query branch selects the timing column
       // Fallbacks issue a gate-join query before falling back to their own.
       const expected = branch.failGateJoin ? 2 : 1;
       expect(captured.statements.length, branch.name).toBe(expected + 1);
+      const markerSql = captured.statements.find((sql) => sql.includes('review_event_outbox'));
+      expect(markerSql).toContain("payload->>'attempt_id' = $3");
+      expect(captured.markerParameters[0]).toEqual([
+        'run_timing_1',
+        ['review.lifecycle.dispatched', 'review.lifecycle.started', 'review.lifecycle.terminal'],
+        branch.failGateJoin ? null : 'attempt-42-1', T0,
+      ]);
     }
   });
 });
@@ -274,6 +287,22 @@ describe('get_review_status timing: an unfinished run never reports a duration',
 });
 
 describe('get_review_status timing: a terminal run reports both spans', () => {
+  it('treats legacy completed as terminal without changing the fail-closed gate verdict', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'completed',
+      run_stage: 'continuation_completed',
+      updated_at: T3,
+      desired_state: 'failure',
+      decision: { verdict: 'SHIP' },
+    }), {
+      'review.lifecycle.started': T2,
+    });
+
+    expect(data.verdict).toBe('FAILED');
+    expect(data.timing.completed_at).toBe(T3);
+    expect(data.timing.execution_seconds).toBeCloseTo(150, 5);
+  });
+
   it('derives execution_seconds only when both ends are durable', async () => {
     const { data } = await runTimingCase(baseRow({ run_status: 'succeeded' }), {
       'review.lifecycle.dispatched': T1,

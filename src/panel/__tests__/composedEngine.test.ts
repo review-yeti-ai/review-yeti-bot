@@ -9,6 +9,7 @@ import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import * as panelEngine from '../panelEngine';
 import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
+import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 
 const mockYaml = `
 version: 3
@@ -67,6 +68,39 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it.each(['plan', 'work'] as const)('cancels the active %s provider request when the review aborts', async (phase) => {
+    const controller = new AbortController();
+    let transportCancelled = false;
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+    const complete = vi.fn(async (request: any) => {
+      const planning = lastText(request.messages).includes('PLAN TURN');
+      if (phase === 'work' && planning) {
+        return fakeResponse(JSON.stringify({
+          nonce: issuedNonce(request.messages),
+          tasks: [{ id: 'auth-guard', dimension: 'security', paths: ['src/auth/guard.ts'],
+            question: 'Is the guard safe?', rationale: 'Changed authentication guard.' }],
+        }));
+      }
+      started();
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        request.signal?.addEventListener('abort', () => {
+          transportCancelled = true;
+          reject(new Error('provider request cancelled'));
+        }, { once: true });
+      });
+    });
+    const review = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      signal: controller.signal });
+    const rejected = expect(review).rejects.toThrow();
+    await requestStarted;
+    controller.abort();
+    await rejected;
+    expect(transportCancelled).toBe(true);
+    expect(complete).toHaveBeenCalledTimes(phase === 'plan' ? 1 : 2);
+  });
+
   const exhaustionContext = {
     turnsUsed: 2, correctionAttempts: 1, toolTurns: 0,
     finishReason: 'stop', lastToolOutcome: 'none',
@@ -115,41 +149,6 @@ describe('executeComposedReview', () => {
       expect(error).not.toContain(token);
     }
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual([]);
-  });
-
-
-  it.each(['read_file', 'view_file'])('REL-1204 exact-source shared composed loop uses %s on a carried file', async (tool) => {
-    const path = 'src/auth/guard.ts';
-    const source = 'CURRENT_COMPOSED_HEAD_SOURCE\nexport function guard() { return false; }\nCURRENT_COMPOSED_TAIL';
-    const readFile = vi.fn().mockResolvedValue(source);
-    let workCalls = 0;
-    let observedToolResult = '';
-    const complete = vi.fn(async (payload: any) => {
-      const nonce = issuedNonce(payload.messages);
-      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
-        { id: 'task-sec', dimension: 'security', paths: [path], question: 'Read current guard source.', rationale: 'Carried file needs exact source.' },
-      ] }));
-      workCalls += 1;
-      if (workCalls === 1) return fakeResponse(JSON.stringify({ tool, args: { path } }));
-      observedToolResult = JSON.stringify(payload.messages.filter((message: any) => String(message.content).includes('[PI_TOOL_RESULT]')));
-      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
-    });
-    const result = await executeComposedReview({ config: config(),
-      changedFiles: [{ path, patch: '[carried-forward: exact-head content available via tools]' }],
-      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
-      repoFileProvider: { readFile, findFiles: vi.fn().mockResolvedValue([path]) },
-    });
-    const observed = { sourceReads: readFile.mock.calls.length, observedToolResult };
-    expect(observed, JSON.stringify(observed)).toMatchObject({
-      sourceReads: 1, observedToolResult: expect.stringContaining('CURRENT_COMPOSED_HEAD_SOURCE'),
-    });
-    expect(readFile).toHaveBeenCalledExactlyOnceWith(path);
-    expect(observedToolResult).toContain('CURRENT_COMPOSED_TAIL');
-    expect(observedToolResult).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
-    expect(observedToolResult).not.toContain('[carried-forward:');
-    expect(workCalls).toBe(2);
-    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
-    expect(result.unreportedLanes).toEqual([]);
   });
 
   const toolWire = JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts', nested: { lines: [1, 2] } } });
@@ -345,6 +344,51 @@ describe('executeComposedReview', () => {
     expect(result.personas).toHaveLength(1);
     expect(result.personas[0]).toMatchObject({ id: 'task-sec', decision: 'APPROVE', findings: [] });
     expect(result.optionalFailures).toEqual([]);
+  });
+
+  it('feeds bounded full reviewed-head source for a changed path and records the truthful scope', async () => {
+    let workCalls = 0;
+    let systemPrompt = '';
+    const source = [
+      'line 1: module header',
+      'line 2: changed entrypoint',
+      'line 3: unchanged caller contract',
+      'line 4: strict-case allowlist',
+    ].join('\n');
+    const repoFileProvider = {
+      findFiles: vi.fn(),
+      readFile: vi.fn().mockResolvedValue(source),
+    };
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        systemPrompt = String(payload.messages.find((message: any) => message.role === 'system')?.content || '');
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) {
+        return fakeResponse(JSON.stringify({ tool: 'read_file', args: { path: 'src/auth/guard.ts', startLine: 3, endLine: 4 } }));
+      }
+      const transcript = JSON.stringify(payload.messages);
+      expect(transcript).toContain('unchanged caller contract');
+      expect(transcript).toContain('strict-case allowlist');
+      expect(transcript).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+      repoFileProvider,
+    });
+
+    expect(systemPrompt).toContain(READ_FILE_TOOL_GUIDE);
+    expect(systemPrompt).toContain('get_diff and text search remain limited to PR diff content');
+    expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/guard.ts');
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
   });
 
   // --- Mutation target 3: "make a BLOCKED task count as a pass" must go red -------------------
@@ -1130,5 +1174,39 @@ describe('executeComposedReview', () => {
     } finally {
       execSpy.mockRestore();
     }
+  });
+});
+
+describe('REL-1204 surviving composed exact-source authority', () => {
+  it('REL-1204 latest-base view_file shared composed loop reads carried current source once', async () => {
+    const path = 'src/auth/guard.ts';
+    const source = 'LATEST_COMPOSED_SOURCE\nexport function guard() { return false; }\nLATEST_COMPOSED_TAIL';
+    const readFile = vi.fn().mockResolvedValue(source);
+    let workCalls = 0; let observedToolResult = '';
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: [path], question: 'Read exact guard source.', rationale: 'Carried file needs exact source.' },
+      ] }));
+      workCalls += 1;
+      if (workCalls === 1) return fakeResponse(JSON.stringify({ tool: 'view_file', args: { path } }));
+      observedToolResult = JSON.stringify(payload.messages.filter((message: any) => String(message.content).includes('[PI_TOOL_RESULT]')));
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(),
+      changedFiles: [{ path, patch: '[carried-forward: exact-head content available via tools]' }],
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      repoFileProvider: { readFile, findFiles: vi.fn().mockResolvedValue([path]) },
+    });
+    const observed = { sourceReads: readFile.mock.calls.length, observedToolResult };
+    expect(observed, JSON.stringify(observed)).toMatchObject({ sourceReads: 1,
+      observedToolResult: expect.stringContaining('LATEST_COMPOSED_SOURCE') });
+    expect(readFile).toHaveBeenCalledExactlyOnceWith(path);
+    expect(observedToolResult).toContain('LATEST_COMPOSED_TAIL');
+    expect(observedToolResult).not.toContain('[carried-forward:');
+    expect(observedToolResult).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+    expect(workCalls).toBe(2);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
+    expect(result.unreportedLanes).toEqual([]);
   });
 });

@@ -3,6 +3,7 @@ import { executePersonaPanel, RepoFileProvider, REPO_FIND_FILES_MAX_HITS, REPO_R
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { READ_FILE_TOOL_GUIDE } from '../../src/panel/pathMatch';
 
 // REL: the defect this covers — a diff that *imports* a sibling file it does not itself modify
 // (`import { checkEvidence } from './dark-factory-evidence-gate.mjs'`) caused the persona's
@@ -58,7 +59,14 @@ const changedFiles = [
  * captures the exact tool-result text the harness fed back to the model on the following turn,
  * and lets the persona finish cleanly with an APPROVE so the panel run completes.
  */
-async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefined, toolCall: { tool: string; args: Record<string, string> } = { tool: 'find_files', args: { query: 'dark-factory-evidence-gate' } }): Promise<string> {
+async function runFindFilesScenario(
+  repoFileProvider: RepoFileProvider | undefined,
+  toolCall: { tool: string; args: Record<string, string> } = { tool: 'find_files', args: { query: 'dark-factory-evidence-gate' } },
+  observed?: {
+    personaPrompt?: string;
+    toolCalls?: Array<{ tool: string; scope?: string; exhaustive?: boolean }>;
+  },
+): Promise<string> {
   const config = buildConfig();
   let personaTurn = 0;
   let capturedToolResult = '';
@@ -90,6 +98,11 @@ async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefin
 
       personaTurn++;
       if (personaTurn === 1) {
+        if (observed) {
+          observed.personaPrompt = opts.messages
+            .map((message: any) => extractMessageContentText(message.content))
+            .join('\n');
+        }
         return {
           model: opts.model,
           content: '```json\n' + JSON.stringify(toolCall) + '\n```',
@@ -119,6 +132,7 @@ async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefin
   });
 
   expect(result.personas[0].decision).toBe('APPROVE');
+  if (observed) observed.toolCalls = result.personas[0].toolCalls;
   expect(capturedToolResult).not.toBe('');
   return capturedToolResult;
 }
@@ -260,23 +274,34 @@ describe('panelEngine symbol_search — scope-qualified miss', () => {
   });
 });
 
-describe('panelEngine — changed-file source reads and full-tree searches', () => {
-  // A changed-file read_file must fetch exact-head source, not the changed patch.
-  // Its provenance must still identify the path as part of this PR's diff.
+describe('panelEngine — read_file retrieves current source for changed paths', () => {
   const spy = () => ({
     findFiles: vi.fn(async () => ['src/ledger/writer.ts', 'src/other/writer.ts']),
-    readFile: vi.fn(async () => 'HEAD CONTENT, NOT THE PATCH'),
+    readFile: vi.fn(async () => [
+      'HEAD CONTENT at reviewed SHA',
+      'unchanged strict-case allowlist: known-safe',
+      'current writer implementation',
+    ].join('\n')),
   });
 
-  it('read_file on a changed file returns exact-head source and consults the provider once', async () => {
+  it('read_file on a changed file returns exact-head source context and records its scope', async () => {
     const provider = spy();
-    const out = await runFindFilesScenario(provider, { tool: 'read_file', args: { path: 'src/ledger/writer.ts' } });
-    expect(out).toContain('HEAD CONTENT, NOT THE PATCH');
-    expect(out).not.toContain('import { checkEvidence }');
-    expect(out).toContain('exists in the repository at the reviewed head');
-    expect(out).toContain("File 'src/ledger/writer.ts' is part of this PR's diff and exists in the repository at the reviewed head. Full current content:\nHEAD CONTENT, NOT THE PATCH");
+    const observed: {
+      personaPrompt?: string;
+      toolCalls?: Array<{ tool: string; scope?: string; exhaustive?: boolean }>;
+    } = {};
+    const out = await runFindFilesScenario(provider, { tool: 'read_file', args: { path: 'src/ledger/writer.ts' } }, observed);
+    expect(out).toContain('HEAD CONTENT at reviewed SHA');
+    expect(out).toContain('unchanged strict-case allowlist: known-safe');
+    expect(out).toContain('current writer implementation');
     expect(out).not.toContain("not part of this PR's diff");
     expect(provider.readFile).toHaveBeenCalledExactlyOnceWith('src/ledger/writer.ts');
+    expect(observed.toolCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool: 'read_file', scope: 'full-repository', exhaustive: true }),
+    ]));
+    expect(observed.personaPrompt).toContain('It reads the current file at the reviewed head');
+    expect(observed.personaPrompt).toContain('If that provider is unwired or the read fails');
+    expect(observed.personaPrompt).toContain(READ_FILE_TOOL_GUIDE);
   });
 
   it('find_files with a diff hit still searches the full tree, so files outside the diff are not hidden (REL-1102)', async () => {
@@ -297,5 +322,32 @@ describe('panelEngine grep_search — scope-qualified miss', () => {
     expect(out.toLowerCase()).toContain('changed files only');
     expect(out.toLowerCase()).toMatch(/may still exist outside the diff/);
     expect(out).not.toMatch(/No matches for '[^']*'\.\s*$/mu);
+  });
+});
+
+describe('REL-1204 surviving persona exact-source authority', () => {
+  it('REL-1204 latest-base view_file persona reads changed current source and retains upstream guidance', async () => {
+    const provider: RepoFileProvider = { findFiles: vi.fn().mockResolvedValue([]),
+      readFile: vi.fn().mockResolvedValue('LATEST_PERSONA_SOURCE_HEAD\nLATEST_PERSONA_SOURCE_TAIL') };
+    const observed: { personaPrompt?: string; toolCalls?: Array<{ tool: string; scope?: string; exhaustive?: boolean }> } = {};
+    const out = await runFindFilesScenario(provider, { tool: 'view_file', args: { path: 'src/ledger/writer.ts' } }, observed);
+    const actual = { sourceReads: vi.mocked(provider.readFile).mock.calls.length, out };
+    expect(actual, JSON.stringify(actual)).toMatchObject({ sourceReads: 1, out: expect.stringContaining('LATEST_PERSONA_SOURCE_HEAD') });
+    expect(provider.readFile).toHaveBeenCalledExactlyOnceWith('src/ledger/writer.ts');
+    expect(out).toContain('LATEST_PERSONA_SOURCE_TAIL');
+    expect(out).not.toContain('import { checkEvidence }');
+    expect(observed.toolCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool: 'view_file', scope: 'full-repository', exhaustive: true }),
+    ]));
+    expect(observed.personaPrompt).toContain(READ_FILE_TOOL_GUIDE);
+  });
+
+  it('REL-1204 latest-base unsafe persona partial path does not expose an unrelated changed patch', async () => {
+    const provider: RepoFileProvider = { findFiles: vi.fn().mockResolvedValue([]), readFile: vi.fn().mockResolvedValue(null) };
+    const out = await runFindFilesScenario(provider, { tool: 'view_file', args: { path: 'writer.ts' } });
+    const actual = { sourceReads: vi.mocked(provider.readFile).mock.calls.length, out };
+    expect(actual, JSON.stringify(actual)).toMatchObject({ sourceReads: 1, out: expect.not.stringContaining('import { checkEvidence }') });
+    expect(provider.readFile).toHaveBeenCalledExactlyOnceWith('writer.ts');
+    expect(out).toContain('writer.ts');
   });
 });

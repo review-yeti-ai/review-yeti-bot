@@ -63,7 +63,7 @@ const LIFECYCLE_MARKER_KINDS = [
  * failure mode is a null duration rather than an invented one.
  */
 const TERMINAL_RUN_STATUSES = new Set([
-  'succeeded', 'complete', 'failed', 'cancelled', 'superseded', 'terminal',
+  'succeeded', 'complete', 'completed', 'failed', 'cancelled', 'superseded', 'terminal',
 ]);
 
 function isoOrNull(value: unknown): string | null {
@@ -231,7 +231,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           const sql = `
             SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
                    r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
-                   r.created_at, r.updated_at, r.artifacts${REVIEW_RUN_TIMING_COLUMNS}
+                   r.created_at, r.updated_at, r.artifacts,${REVIEW_RUN_TIMING_COLUMNS}
               FROM review_runs r
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
                AND (r.head_sha = $4 OR r.head_sha LIKE ($4 || '%'))
@@ -243,7 +243,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           const sql = `
             SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
                    r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
-                   r.created_at, r.updated_at, r.artifacts${REVIEW_RUN_TIMING_COLUMNS}
+                   r.created_at, r.updated_at, r.artifacts,${REVIEW_RUN_TIMING_COLUMNS}
               FROM review_runs r
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
              ORDER BY
