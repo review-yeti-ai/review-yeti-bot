@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.100.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.7...v1.100.8) (2026-09-30)
+
+
+### Bug Fixes
+
+* **mcp:** isolate webhook parsing from bounded API routes ([#1167](https://github.com/review-yeti-ai/review-yeti-bot/issues/1167)) ([592f8db](https://github.com/review-yeti-ai/review-yeti-bot/commit/592f8dbc1add65c4bf68f95d58840a466982ec0e))
+
+## [1.100.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.6...v1.100.7) (2026-09-30)
+
+
+### Bug Fixes
+
+* **operator:** protect publishing workers from autoscaler scale-down ([#1166](https://github.com/review-yeti-ai/review-yeti-bot/issues/1166)) ([5589843](https://github.com/review-yeti-ai/review-yeti-bot/commit/5589843b5086b3a7bacc4a121373da96b84352b0))
+
+## [1.100.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.5...v1.100.6) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** scope retry timing and restore operator snapshots ([#1164](https://github.com/review-yeti-ai/review-yeti-bot/issues/1164)) ([7b6eb34](https://github.com/review-yeti-ai/review-yeti-bot/commit/7b6eb3481fc7c484e62b9b56deb487e32bfc8d9a))
+
 ## [1.100.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.4...v1.100.5) (2026-09-30)
 
 

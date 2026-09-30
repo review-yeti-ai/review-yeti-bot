@@ -160,26 +160,71 @@ describe('get_review_status timing: every query branch selects the timing column
     }
   });
 
-  it('binds lifecycle reads to the persisted attempt and leaves schema fallbacks unknown', async () => {
+  it('drives each branch exactly once and reads the lifecycle ledger', async () => {
     // Guards the harness itself: if a branch silently stopped being reachable,
     // the assertions above would pass without proving anything.
     for (const branch of branches) {
-      const { data, captured } = await runTimingCase(baseRow(), {}, branch);
-      const markerQueries = branch.failGateJoin ? 0 : 1;
-      expect(captured.markerQueries, branch.name).toBe(markerQueries);
+      const { captured } = await runTimingCase(baseRow(), {}, branch);
+      expect(captured.markerQueries, branch.name).toBe(1);
       // Fallbacks issue a gate-join query before falling back to their own.
       const expected = branch.failGateJoin ? 2 : 1;
-      expect(captured.statements.length, branch.name).toBe(expected + markerQueries);
-      if (branch.failGateJoin) {
-        expect(data.timing.started_at).toBeNull();
-        expect(data.timing.execution_seconds).toBeNull();
-      } else {
-        const markerSql = captured.statements.find((sql) => sql.includes('review_event_outbox'));
-        expect(markerSql).toContain('attempt_id = $3');
-        expect(captured.markerParameters[0][0]).toBe('run_timing_1');
-        expect(captured.markerParameters[0][2]).toBe('attempt-42-1');
-      }
+      expect(captured.statements.length, branch.name).toBe(expected + 1);
+      const markerSql = captured.statements.find((sql) => sql.includes('review_event_outbox'));
+      expect(markerSql).toContain("payload->>'attempt_id' = $3");
+      expect(captured.markerParameters[0]).toEqual([
+        'run_timing_1',
+        ['review.lifecycle.dispatched', 'review.lifecycle.started', 'review.lifecycle.terminal'],
+        branch.failGateJoin ? null : 'attempt-42-1', T0,
+      ]);
     }
+  });
+});
+
+describe('get_review_status timing: retries cannot inherit earlier execution markers', () => {
+  it('binds the current attempt when the run id is reused', async () => {
+    const events = [
+      { attempt_id: 'attempt-42-1', event_kind: 'review.lifecycle.started', occurred_at: '2026-09-28T18:00:00.000Z' },
+      { attempt_id: 'attempt-42-1', event_kind: 'review.lifecycle.terminal', occurred_at: '2026-09-28T18:30:00.000Z' },
+      { attempt_id: 'attempt-42-2', event_kind: 'review.lifecycle.started', occurred_at: T2 },
+      { attempt_id: 'attempt-42-2', event_kind: 'review.lifecycle.terminal', occurred_at: T3 },
+    ];
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (!sql.includes('review_event_outbox')) return { rows: [baseRow({ attempt_id: 'attempt-42-2', run_status: 'failed' })] };
+      // Emulate the ledger predicate: the old run-only query sees both attempts.
+      const scoped = sql.includes("payload->>'attempt_id'") ? events.filter(e => e.attempt_id === values?.[2]) : events;
+      const first = new Map<string, typeof events[number]>();
+      for (const event of scoped) if (!first.has(event.event_kind)) first.set(event.event_kind, event);
+      return { rows: [...first.values()] };
+    });
+    const result = await createGetReviewStatusTool({ query }).execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data.attempt_id).toBe('attempt-42-2');
+    expect(data.timing.started_at).toBe(T2);
+    expect(data.timing.completed_at).toBe(T3);
+    expect(data.timing.queue_seconds).toBe(20);
+    expect(data.timing.execution_seconds).toBe(150);
+    expect(query.mock.calls[1][1]?.[2]).toBe('attempt-42-2');
+  });
+
+  it('derives legacy timing only from unkeyed events after receipt', async () => {
+    const events = [
+      { attempt_id: null, event_kind: 'review.lifecycle.started', occurred_at: '2026-09-28T18:00:00.000Z' },
+      { attempt_id: 'other-attempt', event_kind: 'review.lifecycle.started', occurred_at: T1 },
+      { attempt_id: null, event_kind: 'review.lifecycle.started', occurred_at: T2 },
+      { attempt_id: null, event_kind: 'review.lifecycle.terminal', occurred_at: T3 },
+    ];
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (!sql.includes('review_event_outbox')) return { rows: [baseRow({ attempt_id: null, run_status: 'failed' })] };
+      const scoped = events.filter(e => e.attempt_id === null && e.occurred_at >= String(values?.[3]));
+      return { rows: scoped };
+    });
+    const result = await createGetReviewStatusTool({ query }).execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data.timing.started_at).toBe(T2);
+    expect(data.timing.completed_at).toBe(T3);
+    expect(data.timing.execution_seconds).toBe(150);
+    const markerCall = query.mock.calls[1] as unknown as [string, unknown[]];
+    expect(markerCall[1].slice(2)).toEqual([null, T0]);
   });
 });
 
