@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -89,6 +90,8 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	Scheme            *runtime.Scheme
 	Now               func() time.Time
 	MaxConcurrentJobs int
+	// MaxConcurrentReconciles allows parallel worker reconciliation (default 1).
+	MaxConcurrentReconciles int
 	// Publishing configures the app-gate lane. Left zero, BuildWorkerJob refuses
 	// every app-gate review -- deliberately, since this lane fails closed and a
 	// half-configured transport must not reach a running worker.
@@ -101,6 +104,11 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	// a warning Event on the PRReviewJob in addition to the log line; nil is
 	// tolerated so unit tests do not need to wire a fake recorder.
 	Recorder record.EventRecorder
+
+	// admissionMu serializes the active-job count evaluation, lease acquisition,
+	// and worker Job creation intra-instance when MaxConcurrentReconciles > 1,
+	// ensuring the API-backed active-job count remains an effective worker gate.
+	admissionMu sync.Mutex
 }
 
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch;delete
@@ -234,167 +242,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 			return r.reconcileExistingJob(ctx, &review, &existing, now)
 		}
 
-		limit := r.MaxConcurrentJobs
-		if limit <= 0 {
-			limit = DefaultV1Alpha2MaxConcurrentJobs
-		}
-		admission, err := r.admissionSnapshot(ctx, &review, now, limit)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		if admission.activeWorkers >= limit {
-			if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
-				meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-					Type:               reviewv1alpha2.ConditionAwaitingResumption,
-					Status:             metav1.ConditionTrue,
-					Reason:             "PrepCompleted",
-					Message:            "prep phase completed, awaiting model resumption",
-					ObservedGeneration: review.Generation,
-					LastTransitionTime: metav1.NewTime(now),
-				})
-			}
-			if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
-		}
-		if admission.olderWaiting {
-			if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
-				meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-					Type:               reviewv1alpha2.ConditionAwaitingResumption,
-					Status:             metav1.ConditionTrue,
-					Reason:             "PrepCompleted",
-					Message:            "prep phase completed, awaiting model resumption",
-					ObservedGeneration: review.Generation,
-					LastTransitionTime: metav1.NewTime(now),
-				})
-			}
-			if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
-		}
-
-		leaseResult, err := workspace.NewLeaseManager(r.Client).Acquire(
-			ctx,
-			review.Namespace,
-			review.Spec.RepositoryID,
-			review.Spec.PRNumber,
-			review.Spec.RunID,
-			review.Spec.TerminalDeadline.Time,
-			now,
-		)
-		if err != nil {
-			if errors.Is(err, workspace.ErrLeaseHeld) || errors.Is(err, workspace.ErrLeaseTakeoverNotAuthorized) {
-				if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
-					meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-						Type:               reviewv1alpha2.ConditionAwaitingResumption,
-						Status:             metav1.ConditionTrue,
-						Reason:             "PrepCompleted",
-						Message:            "prep phase completed, awaiting model resumption",
-						ObservedGeneration: review.Generation,
-						LastTransitionTime: metav1.NewTime(now),
-					})
-				}
-				if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceBusy", "waiting for the previous PR worker to release its workspace lease"); statusErr != nil {
-					return ctrl.Result{}, statusErr
-				}
-				return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
-			}
-			return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceLeaseRejected", err.Error())
-		}
-
-		if review.Spec.WorkerLeaseToken != "" {
-			review.Status.ActiveWorkerLeaseToken = review.Spec.WorkerLeaseToken
-		} else if leaseResult.Lease != nil && leaseResult.Lease.Spec.LeaseTransitions != nil {
-			review.Status.ActiveWorkerLeaseToken = fmt.Sprintf("%d", *leaseResult.Lease.Spec.LeaseTransitions)
-		}
-
-		worker, err := job.BuildWorkerJob(job.Input{
-			Review:           &review,
-			WorkspacePVCName: "",
-			WorkspaceLease:   leaseResult,
-			Now:              now,
-			Publishing:       r.Publishing,
-			Phase:            job.JobPhaseContinuation,
-		})
-		if err == nil && len(worker.Spec.Template.Spec.Containers) > 0 {
-			container := &worker.Spec.Template.Spec.Containers[0]
-			if review.Spec.LogicalChildID != "" {
-				container.Env = append(container.Env, corev1.EnvVar{Name: "CT_LOGICAL_CHILD_ID", Value: review.Spec.LogicalChildID})
-			}
-			if review.Spec.FencingEpoch > 0 {
-				container.Env = append(container.Env, corev1.EnvVar{Name: "CT_FENCING_EPOCH", Value: strconv.FormatInt(review.Spec.FencingEpoch, 10)})
-			}
-			if review.Spec.WorkerLeaseToken != "" {
-				container.Env = append(container.Env, corev1.EnvVar{Name: "CT_WORKER_LEASE_TOKEN", Value: review.Spec.WorkerLeaseToken})
-			}
-		}
-		if err != nil {
-			if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
-				return ctrl.Result{}, releaseErr
-			}
-			if review.Spec.PublicationMode == job.PublicationModeAppGate {
-				return r.startFailurePublication(ctx, &review, "WorkerContractRejected", err.Error())
-			}
-			return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractRejected", err.Error())
-		}
-		if r.Scheme != nil {
-			if err := controllerutil.SetControllerReference(&review, worker, r.Scheme); err != nil {
-				if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
-					return ctrl.Result{}, releaseErr
-				}
-				return ctrl.Result{}, err
-			}
-		}
-		controllerutil.AddFinalizer(worker, terminalOutcomeFinalizer)
-		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-			Type:               reviewv1alpha2.ConditionAwaitingResumption,
-			Status:             metav1.ConditionFalse,
-			Reason:             "Resumed",
-			Message:            "continuation phase resumed",
-			ObservedGeneration: review.Generation,
-			LastTransitionTime: metav1.NewTime(now),
-		})
-		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-			Type:               workerCreationReserved,
-			Status:             metav1.ConditionTrue,
-			Reason:             "CreateAttemptReserved",
-			Message:            "worker Job creation is reserved; outcome has not yet been observed",
-			ObservedGeneration: review.Generation,
-			LastTransitionTime: metav1.NewTime(now),
-		})
-		if err := r.Status().Update(ctx, &review); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := ctx.Err(); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.Create(ctx, worker); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return ctrl.Result{}, err
-			}
-			var existingJob batchv1.Job
-			if getErr := r.Get(ctx, types.NamespacedName{Namespace: worker.Namespace, Name: worker.Name}, &existingJob); getErr != nil {
-				return ctrl.Result{}, getErr
-			}
-			if !managedWorkerJobMatches(&review, &existingJob) {
-				return r.failWorkerContractMismatch(ctx, &review, &existingJob, workerContractMessage(&review, "racing"))
-			}
-			return r.reconcileExistingJob(ctx, &review, &existingJob, now)
-		}
-
-		review.Status.JobName = worker.Name
-		review.Status.PVCName = ""
-		review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
-		review.Status.StartTime = timePtr(metav1.NewTime(now))
-		if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageJobCreated, metav1.NewTime(now)); err != nil {
-			return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
-		}
-		if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseRunning, "WorkerCreated", workerMessage(&review, "created")); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+		return r.admitAndResumeContinuationWorker(ctx, &review, now)
 	}
 
 	workerName := resolveWorkerJobName(&review)
@@ -443,22 +291,204 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, r.fail(ctx, &review, "WorkerJobMissing", message)
 	}
 
+	return r.admitAndCreateWorker(ctx, &review, now)
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	now time.Time,
+) (ctrl.Result, error) {
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+
 	limit := r.MaxConcurrentJobs
 	if limit <= 0 {
 		limit = DefaultV1Alpha2MaxConcurrentJobs
 	}
-	admission, err := r.admissionSnapshot(ctx, &review, now, limit)
+	admission, err := r.admissionSnapshot(ctx, review, now, limit)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 	if admission.activeWorkers >= limit {
-		if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
+		if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
+			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+				Type:               reviewv1alpha2.ConditionAwaitingResumption,
+				Status:             metav1.ConditionTrue,
+				Reason:             "PrepCompleted",
+				Message:            "prep phase completed, awaiting model resumption",
+				ObservedGeneration: review.Generation,
+				LastTransitionTime: metav1.NewTime(now),
+			})
+		}
+		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
 	if admission.olderWaiting {
-		if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
+		if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
+			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+				Type:               reviewv1alpha2.ConditionAwaitingResumption,
+				Status:             metav1.ConditionTrue,
+				Reason:             "PrepCompleted",
+				Message:            "prep phase completed, awaiting model resumption",
+				ObservedGeneration: review.Generation,
+				LastTransitionTime: metav1.NewTime(now),
+			})
+		}
+		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+
+	leaseResult, err := workspace.NewLeaseManager(r.Client).Acquire(
+		ctx,
+		review.Namespace,
+		review.Spec.RepositoryID,
+		review.Spec.PRNumber,
+		review.Spec.RunID,
+		review.Spec.TerminalDeadline.Time,
+		now,
+	)
+	if err != nil {
+		if errors.Is(err, workspace.ErrLeaseHeld) || errors.Is(err, workspace.ErrLeaseTakeoverNotAuthorized) {
+			if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
+				meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+					Type:               reviewv1alpha2.ConditionAwaitingResumption,
+					Status:             metav1.ConditionTrue,
+					Reason:             "PrepCompleted",
+					Message:            "prep phase completed, awaiting model resumption",
+					ObservedGeneration: review.Generation,
+					LastTransitionTime: metav1.NewTime(now),
+				})
+			}
+			if statusErr := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "WorkspaceBusy", "waiting for the previous PR worker to release its workspace lease"); statusErr != nil {
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+		}
+		return ctrl.Result{}, r.fail(ctx, review, "WorkspaceLeaseRejected", err.Error())
+	}
+
+	if review.Spec.WorkerLeaseToken != "" {
+		review.Status.ActiveWorkerLeaseToken = review.Spec.WorkerLeaseToken
+	} else if leaseResult.Lease != nil && leaseResult.Lease.Spec.LeaseTransitions != nil {
+		review.Status.ActiveWorkerLeaseToken = fmt.Sprintf("%d", *leaseResult.Lease.Spec.LeaseTransitions)
+	}
+
+	worker, err := job.BuildWorkerJob(job.Input{
+		Review:           review,
+		WorkspacePVCName: "",
+		WorkspaceLease:   leaseResult,
+		Now:              now,
+		Publishing:       r.Publishing,
+		Phase:            job.JobPhaseContinuation,
+	})
+	if err == nil && len(worker.Spec.Template.Spec.Containers) > 0 {
+		container := &worker.Spec.Template.Spec.Containers[0]
+		if review.Spec.LogicalChildID != "" {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CT_LOGICAL_CHILD_ID", Value: review.Spec.LogicalChildID})
+		}
+		if review.Spec.FencingEpoch > 0 {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CT_FENCING_EPOCH", Value: strconv.FormatInt(review.Spec.FencingEpoch, 10)})
+		}
+		if review.Spec.WorkerLeaseToken != "" {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CT_WORKER_LEASE_TOKEN", Value: review.Spec.WorkerLeaseToken})
+		}
+	}
+	if err != nil {
+		if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
+			return ctrl.Result{}, releaseErr
+		}
+		if review.Spec.PublicationMode == job.PublicationModeAppGate {
+			return r.startFailurePublication(ctx, review, "WorkerContractRejected", err.Error())
+		}
+		return ctrl.Result{}, r.fail(ctx, review, "WorkerContractRejected", err.Error())
+	}
+	if r.Scheme != nil {
+		if err := controllerutil.SetControllerReference(review, worker, r.Scheme); err != nil {
+			if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
+				return ctrl.Result{}, releaseErr
+			}
+			return ctrl.Result{}, err
+		}
+	}
+	controllerutil.AddFinalizer(worker, terminalOutcomeFinalizer)
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               reviewv1alpha2.ConditionAwaitingResumption,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Resumed",
+		Message:            "continuation phase resumed",
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+	})
+	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+		Type:               workerCreationReserved,
+		Status:             metav1.ConditionTrue,
+		Reason:             "CreateAttemptReserved",
+		Message:            "worker Job creation is reserved; outcome has not yet been observed",
+		ObservedGeneration: review.Generation,
+		LastTransitionTime: metav1.NewTime(now),
+	})
+	if err := r.Status().Update(ctx, review); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.Create(ctx, worker); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return ctrl.Result{}, err
+		}
+		var existingJob batchv1.Job
+		if getErr := r.Get(ctx, types.NamespacedName{Namespace: worker.Namespace, Name: worker.Name}, &existingJob); getErr != nil {
+			return ctrl.Result{}, getErr
+		}
+		if !managedWorkerJobMatches(review, &existingJob) {
+			return r.failWorkerContractMismatch(ctx, review, &existingJob, workerContractMessage(review, "racing"))
+		}
+		return r.reconcileExistingJob(ctx, review, &existingJob, now)
+	}
+
+	review.Status.JobName = worker.Name
+	review.Status.PVCName = ""
+	review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
+	review.Status.StartTime = timePtr(metav1.NewTime(now))
+	if _, err := observeTiming(review, reviewv1alpha2.DispatchStageJobCreated, metav1.NewTime(now)); err != nil {
+		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
+	}
+	if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerCreated", workerMessage(review, "created")); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	now time.Time,
+) (ctrl.Result, error) {
+	r.admissionMu.Lock()
+	defer r.admissionMu.Unlock()
+
+	limit := r.MaxConcurrentJobs
+	if limit <= 0 {
+		limit = DefaultV1Alpha2MaxConcurrentJobs
+	}
+	admission, err := r.admissionSnapshot(ctx, review, now, limit)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if admission.activeWorkers >= limit {
+		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+	if admission.olderWaiting {
+		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
@@ -477,12 +507,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 	)
 	if err != nil {
 		if errors.Is(err, workspace.ErrLeaseHeld) || errors.Is(err, workspace.ErrLeaseTakeoverNotAuthorized) {
-			if statusErr := r.setPhase(ctx, &review, reviewv1alpha2.PhaseQueued, "WorkspaceBusy", "waiting for the previous PR worker to release its workspace lease"); statusErr != nil {
+			if statusErr := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "WorkspaceBusy", "waiting for the previous PR worker to release its workspace lease"); statusErr != nil {
 				return ctrl.Result{}, statusErr
 			}
 			return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 		}
-		return ctrl.Result{}, r.fail(ctx, &review, "WorkspaceLeaseRejected", err.Error())
+		return ctrl.Result{}, r.fail(ctx, review, "WorkspaceLeaseRejected", err.Error())
 	}
 
 	if review.Spec.WorkerLeaseToken != "" {
@@ -492,7 +522,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 	}
 
 	worker, err := job.BuildWorkerJob(job.Input{
-		Review:           &review,
+		Review:           review,
 		WorkspacePVCName: pvcName,
 		WorkspaceLease:   leaseResult,
 		Now:              now,
@@ -522,12 +552,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		// WorkerJobMissing above instead of a plain fail, or the terminal
 		// deadline reaper is the only thing left to notice it, 30 minutes later.
 		if review.Spec.PublicationMode == job.PublicationModeAppGate {
-			return r.startFailurePublication(ctx, &review, "WorkerContractRejected", err.Error())
+			return r.startFailurePublication(ctx, review, "WorkerContractRejected", err.Error())
 		}
-		return ctrl.Result{}, r.fail(ctx, &review, "WorkerContractRejected", err.Error())
+		return ctrl.Result{}, r.fail(ctx, review, "WorkerContractRejected", err.Error())
 	}
 	if r.Scheme != nil {
-		if err := controllerutil.SetControllerReference(&review, worker, r.Scheme); err != nil {
+		if err := controllerutil.SetControllerReference(review, worker, r.Scheme); err != nil {
 			if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
 				return ctrl.Result{}, releaseErr
 			}
@@ -547,12 +577,13 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		Reason: "CreateAttemptReserved", Message: "worker Job creation is reserved; outcome has not yet been observed",
 		ObservedGeneration: review.Generation, LastTransitionTime: metav1.NewTime(now),
 	})
-	if err := r.Status().Update(ctx, &review); err != nil {
+	if err := r.Status().Update(ctx, review); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return ctrl.Result{}, err
 	}
+	var existing batchv1.Job
 	if err := r.Create(ctx, worker); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return ctrl.Result{}, err
@@ -560,20 +591,20 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		if getErr := r.Get(ctx, types.NamespacedName{Namespace: worker.Namespace, Name: worker.Name}, &existing); getErr != nil {
 			return ctrl.Result{}, getErr
 		}
-		if !managedWorkerJobMatches(&review, &existing) {
-			return r.failWorkerContractMismatch(ctx, &review, &existing, workerContractMessage(&review, "racing"))
+		if !managedWorkerJobMatches(review, &existing) {
+			return r.failWorkerContractMismatch(ctx, review, &existing, workerContractMessage(review, "racing"))
 		}
-		return r.reconcileExistingJob(ctx, &review, &existing, now)
+		return r.reconcileExistingJob(ctx, review, &existing, now)
 	}
 
 	review.Status.JobName = worker.Name
 	review.Status.PVCName = pvcName
 	review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
 	review.Status.StartTime = timePtr(metav1.NewTime(now))
-	if _, err := observeTiming(&review, reviewv1alpha2.DispatchStageJobCreated, metav1.NewTime(now)); err != nil {
-		return ctrl.Result{}, r.fail(ctx, &review, "TimingContractViolation", err.Error())
+	if _, err := observeTiming(review, reviewv1alpha2.DispatchStageJobCreated, metav1.NewTime(now)); err != nil {
+		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
 	}
-	if err := r.setPhase(ctx, &review, reviewv1alpha2.PhaseRunning, "WorkerCreated", workerMessage(&review, "created")); err != nil {
+	if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerCreated", workerMessage(review, "created")); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
@@ -2252,12 +2283,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
+	maxConcurrentReconciles := r.MaxConcurrentReconciles
+	if maxConcurrentReconciles <= 0 {
+		maxConcurrentReconciles = 1
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&reviewv1alpha2.PRReviewJob{}).
 		Owns(&batchv1.Job{}).
-		// Serializing admission makes the API-backed active-job count an
-		// effective account-wide worker gate. Leader election in main.go ensures
-		// only one operator instance performs this admission at a time.
-		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
+		// MaxConcurrentReconciles allows parallel reconciliation (pod reaping,
+		// status updates, terminal cleanup, receipt handling) across reviews.
+		// Intra-instance worker admission is serialized via r.admissionMu so that
+		// the active-worker count remains an effective worker gate regardless of
+		// reconciler concurrency. Leader election in main.go ensures only one
+		// operator instance performs admission across the cluster.
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }

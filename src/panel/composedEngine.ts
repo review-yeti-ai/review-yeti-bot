@@ -636,14 +636,25 @@ function buildSystemPrompt(repository: string): string {
   ].join('\n\n');
 }
 
-function buildPlanDirective(
+export function buildPlanDirective(
   maxTasks: number,
   changedFilePaths: string[],
   expectedNonce: string,
   securityAuthPaths: string[] = [],
+  enabledPersonas: Array<{ id: string; charter: string }> = [],
 ): string {
+  const personaCharterLines = enabledPersonas.length > 0
+    ? [
+        `=== REVIEW PANEL PERSONAS & CHARTERS ===`,
+        `The review tasks you plan compose and cover the review panel's configured personas:`,
+        ...enabledPersonas.map((p) => `- ${p.id}: ${p.charter.slice(0, 160)}`),
+        ``,
+      ]
+    : [];
+
   return [
     `=== PLAN TURN ===`,
+    ...personaCharterLines,
     `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task).`,
     // Ids are specified with positive examples ONLY. This line used to read
     // '(for example "security-auth", not "T1")'. Naming the rejected form
@@ -1183,6 +1194,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               effectiveFilePaths,
               planNonce,
               effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
+              enabledPersonas,
             ),
           },
         ],
