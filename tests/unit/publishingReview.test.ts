@@ -2656,7 +2656,12 @@ describe('REL-1211 absolute publishing budget', () => {
   });
 
   it('cuts off a real never-settling grounding await and publishes timeout without starting models', async () => {
-    const scheduled = vi.spyOn(globalThis, 'setTimeout');
+    const actualSetTimeout = globalThis.setTimeout;
+    const timeoutOrigins: string[] = [];
+    const scheduled = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((...args: Parameters<typeof setTimeout>) => {
+      timeoutOrigins.push(new Error('REL-1211 scheduled-timer origin').stack || '');
+      return actualSetTimeout(...args);
+    }) as typeof setTimeout);
     const cleared = vi.spyOn(globalThis, 'clearTimeout');
     const intervals = vi.spyOn(globalThis, 'setInterval');
     const clearedIntervals = vi.spyOn(globalThis, 'clearInterval');
@@ -2685,13 +2690,28 @@ describe('REL-1211 absolute publishing budget', () => {
     vi.runAllTicks();
     expect(Date.now()).toBe(start + 50);
     const cleanup = { pendingBeforeTicks, pendingAfterTicks: vi.getTimerCount(), at: Date.now(),
-      timers: scheduled.mock.calls.map(([, ms], index) => ({ ms,
+      timers: scheduled.mock.calls.map(([, ms], index) => ({ ms, origin: timeoutOrigins[index],
         cleared: cleared.mock.calls.some(([handle]) => handle === scheduled.mock.results[index].value) })),
       intervals: intervals.mock.calls.map(([, ms], index) => ({ ms,
         cleared: clearedIntervals.mock.calls.some(([handle]) => handle === intervals.mock.results[index].value) })),
       ticks: ticks.mock.calls.map(([callback]) => callback.name), microtasks: microtasks.mock.calls.length };
-    console.info('REL-1211 same-clock grounding cleanup', JSON.stringify(cleanup));
-    expect(cleanup.pendingAfterTicks, JSON.stringify(cleanup)).toBe(0);
+    // A real in-memory span export acknowledges its completed span asynchronously.
+    // Sinon schedules that zero-delay acknowledgement at now+1 when span.end runs
+    // during a tick. Settle only its actual, stack-qualified acknowledgement here,
+    // never an arbitrary model/transport/deadline callback or a future timer.
+    for (const [index, record] of cleanup.timers.entries()) {
+      if (record.cleared) continue;
+      expect(record.ms, JSON.stringify(cleanup)).toBe(0);
+      expect(record.origin).toContain('InMemorySpanExporter.export');
+      const acknowledgement = scheduled.mock.calls[index][0];
+      expect(acknowledgement.toString()).toContain('resultCallback');
+      acknowledgement();
+      clearTimeout(scheduled.mock.results[index].value);
+    }
+    const pendingAfterAcknowledgement = vi.getTimerCount();
+    console.info('REL-1211 same-clock grounding cleanup', JSON.stringify({ ...cleanup, pendingAfterAcknowledgement }));
+    expect(Date.now()).toBe(start + 50);
+    expect(pendingAfterAcknowledgement, JSON.stringify(cleanup)).toBe(0);
     // A same-clock queued-job drain must leave real future timers observable.
     const futureDeadline = vi.fn(); const futureFlush = vi.fn();
     const futureDeadlineHandle = setTimeout(futureDeadline, 50);
