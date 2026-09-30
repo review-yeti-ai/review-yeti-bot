@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
 import { Pool, type PoolClient } from 'pg';
 import {
   REVIEW_EVENT_SCHEMA_SQL,
@@ -99,6 +100,46 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
       VALUES ($1, 123, 42, $2, $3, 0, $4)`,
     [runId, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
   }
+
+  it.each([null, 'current-attempt'])('scopes status timing with real PostgreSQL for attempt %s', async (attemptId) => {
+    const runId = 'run_00000000000000000000000000000001';
+    await insertCompleteRun(runId);
+    const received = '2026-09-28T19:00:00.000Z';
+    const started = '2026-09-28T19:00:20.000Z';
+    const terminal = '2026-09-28T19:02:50.000Z';
+    const events = [
+      { attempt: null, kind: 'review.lifecycle.started', at: '2026-09-28T18:00:00.000Z' },
+      { attempt: 'earlier-attempt', kind: 'review.lifecycle.started', at: '2026-09-28T19:00:12.000Z' },
+      { attempt: attemptId, kind: 'review.lifecycle.started', at: started },
+      { attempt: attemptId, kind: 'review.lifecycle.terminal', at: terminal },
+    ];
+    for (const [index, event] of events.entries()) {
+      await pool.query(`INSERT INTO review_event_outbox (
+        event_id, run_id, attempt_id, repository_id, pr_number, base_sha, head_sha, sequence,
+        schema, event_kind, occurred_at, correlation_id, trace_id, visibility, payload
+      ) VALUES ($1, $2, $3, 123, 42, $4, $5, $6, 'review-yeti-event.v1', $7,
+        $8, 'correlation', 'trace', 'internal', $9)`, [
+        eventId(index), runId, event.attempt ?? 'legacy-envelope', 'a'.repeat(40), 'b'.repeat(40), index + 1,
+        event.kind, event.at, JSON.stringify(event.attempt === null ? {} : { attempt_id: event.attempt }),
+      ]);
+    }
+    // Keep the status-row fixture small; execute the production marker SQL,
+    // including its grouping and null predicates, against the real ledger.
+    const tool = createGetReviewStatusTool({
+      async query(sql: string, values?: unknown[]) {
+        if (sql.includes('review_event_outbox')) return pool.query(sql, values);
+        return { rows: [{ run_id: runId, run_status: 'failed', attempt_id: attemptId,
+          received_at: received, created_at: received, updated_at: terminal,
+          head_sha: 'b'.repeat(40), owner: 'review-yeti-ai', repo: 'review-yeti-bot', pr_number: 42 }] };
+      },
+    });
+    const result = await tool.execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data.timing.started_at).toBe(started);
+    expect(data.timing.completed_at).toBe(terminal);
+    expect(data.timing.queue_seconds).toBe(20);
+    expect(data.timing.execution_seconds).toBe(150);
+  });
 
   function batchInput(runId: string, id: string, stage = 'completion') {
     return {

@@ -196,12 +196,24 @@ describe('get_review_status timing: retries cannot inherit earlier execution mar
     expect(query.mock.calls[1][1]?.[2]).toBe('attempt-42-2');
   });
 
-  it('limits unkeyed legacy markers to the current receipt window', async () => {
-    const query = vi.fn(async (sql: string) => ({ rows: sql.includes('review_event_outbox') ? [] : [baseRow({ attempt_id: null })] }));
-    await createGetReviewStatusTool({ query }).execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+  it('derives legacy timing only from unkeyed events after receipt', async () => {
+    const events = [
+      { attempt_id: null, event_kind: 'review.lifecycle.started', occurred_at: '2026-09-28T18:00:00.000Z' },
+      { attempt_id: 'other-attempt', event_kind: 'review.lifecycle.started', occurred_at: T1 },
+      { attempt_id: null, event_kind: 'review.lifecycle.started', occurred_at: T2 },
+      { attempt_id: null, event_kind: 'review.lifecycle.terminal', occurred_at: T3 },
+    ];
+    const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (!sql.includes('review_event_outbox')) return { rows: [baseRow({ attempt_id: null, run_status: 'failed' })] };
+      const scoped = events.filter(e => e.attempt_id === null && e.occurred_at >= String(values?.[3]));
+      return { rows: scoped };
+    });
+    const result = await createGetReviewStatusTool({ query }).execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
+    const data = JSON.parse((result.content[0] as any).text);
+    expect(data.timing.started_at).toBe(T2);
+    expect(data.timing.completed_at).toBe(T3);
+    expect(data.timing.execution_seconds).toBe(150);
     const markerCall = query.mock.calls[1] as unknown as [string, unknown[]];
-    expect(markerCall[0]).toContain("payload->>'attempt_id' IS NULL");
-    expect(markerCall[0]).toContain('occurred_at >= $4::timestamptz');
     expect(markerCall[1].slice(2)).toEqual([null, T0]);
   });
 });
