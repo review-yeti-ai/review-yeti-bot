@@ -87,6 +87,16 @@ function hasLegacyIncompleteRosterProof(
     && output.summary === formatIncompleteRosterGateSummary(counts.expectedLanes, counts.completedLanes);
 }
 
+function hasP2FindingSummary(
+  request: ReviewGenerationRecoveryRequest,
+  proof: ReviewGenerationRecoveryEvidence['legacyIncompleteRoster'],
+): boolean {
+  const counts = parseIncompleteRosterSummary(proof?.workerSummary, request.headSha);
+  return request.incompleteP2Recovery === true && counts !== null
+    && /^[1-9][0-9]*$/u.test(counts.canonicalFindingCountText)
+    && /^[1-9][0-9]*$/u.test(counts.rawFindingCountText);
+}
+
 /** The latest real Gate within the exact worker's lifetime boundary. Never search
  * backwards past a newer conflicting result to find a convenient failure. */
 export function selectIncompleteRecoveryGate(
@@ -142,9 +152,10 @@ export function validateReviewGenerationRecoveryRequest(
     || request.expectedGeneration > MAX_RECOVERABLE_REVIEW_GENERATION) refuse();
 }
 
-export function validateReviewGenerationRecoveryEvidence(
+function validateReviewGenerationRecoveryEvidenceInternal(
   request: ReviewGenerationRecoveryRequest,
   evidence: ReviewGenerationRecoveryEvidence[],
+  allowPersistedLegacyP2StartOmission: boolean,
 ): ReviewGenerationRecoveryEvidence[] {
   validateReviewGenerationRecoveryRequest(request);
   if (!Array.isArray(evidence) || evidence.length !== request.expectedGeneration - 1) refuse();
@@ -156,12 +167,18 @@ export function validateReviewGenerationRecoveryEvidence(
         && (request.incompleteP2Recovery !== true || generation === request.expectedGeneration - 1
           || entry.legacyIncompleteRoster?.nextWorkerStartedAt !== undefined)
         && hasLegacyIncompleteRosterProof(request, entry.legacyIncompleteRoster));
+    const markerBoundLegacyP2StartOmission = allowPersistedLegacyP2StartOmission
+      && generation === request.expectedGeneration - 1
+      && entry?.title === 'Review Yeti: BLOCK'
+      && entry.legacyIncompleteRoster?.workerStartedAt === undefined
+      && hasP2FindingSummary(request, entry.legacyIncompleteRoster);
     const p2WorkerIntervalValid = request.incompleteP2Recovery !== true
       || entry?.title !== 'Review Yeti: BLOCK'
       || generation < request.expectedGeneration - 1
       || (Number.isFinite(completedAt(entry.legacyIncompleteRoster?.workerStartedAt))
         && completedAt(entry.legacyIncompleteRoster?.workerStartedAt)
-          <= completedAt(entry.legacyIncompleteRoster?.workerCompletedAt));
+          <= completedAt(entry.legacyIncompleteRoster?.workerCompletedAt))
+      || markerBoundLegacyP2StartOmission;
     if (entry?.generation !== generation
       || !Number.isSafeInteger(entry.checkId) || entry.checkId <= 0
       || entry.externalId !== `${request.runId}:a${generation}`
@@ -169,6 +186,28 @@ export function validateReviewGenerationRecoveryEvidence(
       || !recoverableFailure || !p2WorkerIntervalValid) refuse();
   }
   return evidence;
+}
+
+/** Validate an App-ledger proof for new admission. Missing worker start times
+ * remain invalid, including for incomplete-P2 retries. */
+export function validateReviewGenerationRecoveryEvidence(
+  request: ReviewGenerationRecoveryRequest,
+  evidence: ReviewGenerationRecoveryEvidence[],
+): ReviewGenerationRecoveryEvidence[] {
+  return validateReviewGenerationRecoveryEvidenceInternal(request, evidence, false);
+}
+
+/** Reader-only compatibility for the already-admitted legacy P2 receipt shape.
+ * The caller must reconstruct the context and match its durable admission
+ * marker before returning any findings. This accepts only an absent latest
+ * worker start; malformed or inverted present intervals still fail closed. */
+export function validatePersistedLegacyIncompleteP2RecoveryEvidence(
+  request: ReviewGenerationRecoveryRequest,
+  evidence: ReviewGenerationRecoveryEvidence[],
+  expectedContextDigest: string,
+): ReviewGenerationRecoveryEvidence[] {
+  if (request.incompleteP2Recovery !== true || !/^[a-f0-9]{64}$/u.test(expectedContextDigest)) refuse();
+  return validateReviewGenerationRecoveryEvidenceInternal(request, evidence, true);
 }
 
 export function evaluateReviewGenerationRecoveryLedger(
