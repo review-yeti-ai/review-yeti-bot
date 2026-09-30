@@ -71,6 +71,10 @@ func runOperator() error {
 	if err != nil {
 		return err
 	}
+	maxConcurrentReconciles, err := operatorMaxConcurrentReconcilesFromEnv(os.Getenv)
+	if err != nil {
+		return err
+	}
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                        scheme,
 		Cache:                         cache.Options{DefaultNamespaces: map[string]cache.Config{job.Namespace: {}}},
@@ -89,12 +93,13 @@ func runOperator() error {
 	// historical contract permits floating images and process-local capacity;
 	// only the immutable v1alpha2 receipt-only path may be enabled.
 	v1alpha2 := &controllers.PRReviewJobV1Alpha2Reconciler{
-		Client:            mgr.GetClient(),
-		SecretReader:      mgr.GetAPIReader(),
-		Scheme:            mgr.GetScheme(),
-		MaxConcurrentJobs: maxConcurrentJobs,
-		Publishing:        publishingConfigFromEnv(),
-		Recorder:          mgr.GetEventRecorderFor("ct-review-yeti-operator"),
+		Client:                  mgr.GetClient(),
+		SecretReader:            mgr.GetAPIReader(),
+		Scheme:                  mgr.GetScheme(),
+		MaxConcurrentJobs:       maxConcurrentJobs,
+		MaxConcurrentReconciles: maxConcurrentReconciles,
+		Publishing:              publishingConfigFromEnv(),
+		Recorder:                mgr.GetEventRecorderFor("ct-review-yeti-operator"),
 	}
 	if err := v1alpha2.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("setup v1alpha2 reconciler: %w", err)
@@ -113,6 +118,19 @@ func operatorMaxConcurrentJobsFromEnv(getenv func(string) string) (int, error) {
 	value := strings.TrimSpace(getenv(key))
 	if value == "" {
 		return controllers.DefaultV1Alpha2MaxConcurrentJobs, nil
+	}
+	limit, err := strconv.Atoi(value)
+	if err != nil || limit <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return limit, nil
+}
+
+func operatorMaxConcurrentReconcilesFromEnv(getenv func(string) string) (int, error) {
+	const key = "REVIEW_YETI_OPERATOR_MAX_CONCURRENT_RECONCILES"
+	value := strings.TrimSpace(getenv(key))
+	if value == "" {
+		return 1, nil
 	}
 	limit, err := strconv.Atoi(value)
 	if err != nil || limit <= 0 {

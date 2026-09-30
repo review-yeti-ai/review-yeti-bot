@@ -89,6 +89,8 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	Scheme            *runtime.Scheme
 	Now               func() time.Time
 	MaxConcurrentJobs int
+	// MaxConcurrentReconciles allows parallel worker reconciliation (default 1).
+	MaxConcurrentReconciles int
 	// Publishing configures the app-gate lane. Left zero, BuildWorkerJob refuses
 	// every app-gate review -- deliberately, since this lane fails closed and a
 	// half-configured transport must not reach a running worker.
@@ -2252,12 +2254,15 @@ func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
+	maxConcurrentReconciles := r.MaxConcurrentReconciles
+	if maxConcurrentReconciles <= 0 {
+		maxConcurrentReconciles = 1
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&reviewv1alpha2.PRReviewJob{}).
 		Owns(&batchv1.Job{}).
-		// Serializing admission makes the API-backed active-job count an
-		// effective account-wide worker gate. Leader election in main.go ensures
-		// only one operator instance performs this admission at a time.
-		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
+		// Reconciler concurrency is configurable via REVIEW_YETI_OPERATOR_MAX_CONCURRENT_RECONCILES.
+		// Leader election in main.go ensures only one operator instance runs.
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }
