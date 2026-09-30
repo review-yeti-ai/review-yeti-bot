@@ -101,14 +101,19 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
     [runId, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64)]);
   }
 
-  it.each([null, 'current-attempt'])('scopes status timing with real PostgreSQL for attempt %s', async (attemptId) => {
+  it.each([
+    { attemptId: null, anchor: 'receipt' },
+    { attemptId: 'current-attempt', anchor: 'receipt' },
+    { attemptId: null, anchor: 'creation' },
+    { attemptId: null, anchor: 'absent' },
+  ])('scopes status timing with PostgreSQL for $attemptId / $anchor', async ({ attemptId, anchor }) => {
     const runId = 'run_00000000000000000000000000000001';
     await insertCompleteRun(runId);
     const received = '2026-09-28T19:00:00.000Z';
     const started = '2026-09-28T19:00:20.000Z';
     const terminal = '2026-09-28T19:02:50.000Z';
     const events = [
-      { attempt: null, kind: 'review.lifecycle.started', at: '2026-09-28T18:00:00.000Z' },
+      { attempt: null, kind: 'review.lifecycle.started', at: '2026-09-28T18:59:59.000Z' },
       { attempt: 'earlier-attempt', kind: 'review.lifecycle.started', at: '2026-09-28T19:00:12.000Z' },
       { attempt: attemptId, kind: 'review.lifecycle.started', at: started },
       { attempt: attemptId, kind: 'review.lifecycle.terminal', at: terminal },
@@ -129,16 +134,19 @@ describeWithPostgres('Postgres review lifecycle event repository', () => {
       async query(sql: string, values?: unknown[]) {
         if (sql.includes('review_event_outbox')) return pool.query(sql, values);
         return { rows: [{ run_id: runId, run_status: 'failed', attempt_id: attemptId,
-          received_at: received, created_at: received, updated_at: terminal,
+          received_at: anchor === 'receipt' ? received : null,
+          created_at: anchor === 'receipt' ? '2026-09-28T18:30:00.000Z' : anchor === 'creation' ? received : null,
+          updated_at: terminal,
           head_sha: 'b'.repeat(40), owner: 'review-yeti-ai', repo: 'review-yeti-bot', pr_number: 42 }] };
       },
     });
     const result = await tool.execute({ owner: 'review-yeti-ai', repo: 'review-yeti-bot', pull_number: 42 });
     const data = JSON.parse((result.content[0] as any).text);
-    expect(data.timing.started_at).toBe(started);
+    expect(data.timing.started_at).toBe(anchor === 'absent' ? null : started);
+    // A terminal row retains its native completion time even without a ledger anchor.
     expect(data.timing.completed_at).toBe(terminal);
-    expect(data.timing.queue_seconds).toBe(20);
-    expect(data.timing.execution_seconds).toBe(150);
+    expect(data.timing.queue_seconds).toBe(anchor === 'absent' ? null : 20);
+    expect(data.timing.execution_seconds).toBe(anchor === 'absent' ? null : 150);
   });
 
   function batchInput(runId: string, id: string, stage = 'completion') {
