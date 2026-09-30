@@ -1096,6 +1096,34 @@ describe('executeComposedReview', () => {
     expect(calls).toBe(1);
   });
 
+  it('uses the inherited admitted clock and cutoff instead of minting a composed retry window', async () => {
+    vi.useFakeTimers();
+    let currentMs = 10_000;
+    const now = () => currentMs;
+    const cancellation = new AbortController();
+    const admitted = panelEngine.createPanelDeadlineSignal(1_800, cancellation.signal,
+      { deadlineAtMs: 15_000, timeoutMs: 5_000, terminalBound: true }, now);
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      calls += 1;
+      currentMs = 15_000;
+      throw new OpenRouterResponseError('provider returned empty completion content', 200);
+    });
+    const settled = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete },
+      signal: admitted.signal }).catch((error) => error);
+
+    try {
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toBe(1);
+      expect(await settled).toBeInstanceOf(OpenRouterResponseError);
+    } finally {
+      cancellation.abort();
+      admitted.cleanup();
+      vi.useRealTimers();
+    }
+  });
+
   function threeTasks() {
     return [
       { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Is the first change safe?', rationale: 'first' },

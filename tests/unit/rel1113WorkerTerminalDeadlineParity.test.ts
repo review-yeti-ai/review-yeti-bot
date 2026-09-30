@@ -42,10 +42,10 @@ describe('REL-1113 worker terminal-deadline contract', () => {
   it('subtracts queue/setup and both existing reserves without widening the policy ceiling', () => {
     const deadline = Date.parse('2026-09-30T14:58:56.285Z');
     const env = { [WORKER_TERMINAL_DEADLINE_ENV]: new Date(deadline).toISOString() };
-    expect(workerPanelTimeoutMs(1800, env, Date.parse('2026-09-30T14:35:51Z'))).toBe(1_265_285);
+    expect(workerPanelTimeoutMs(1800, env, Date.parse('2026-09-30T14:35:51Z'))).toBe(1_264_285);
     expect(workerPanelTimeoutMs(900, env, deadline - 3_600_000)).toBe(900_000);
-    expect(workerPanelTimeoutMs(1800, env, deadline - 120_001)).toBe(1);
-    expect(workerPanelTimeoutMs(1800, env, deadline - 120_000)).toBe(0);
+    expect(workerPanelTimeoutMs(1800, env, deadline - 121_001)).toBe(1);
+    expect(workerPanelTimeoutMs(1800, env, deadline - 121_000)).toBe(0);
     expect(workerPanelTimeoutMs(1800, env, deadline + 1)).toBe(0);
   });
 

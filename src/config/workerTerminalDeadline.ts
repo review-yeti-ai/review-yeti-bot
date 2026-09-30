@@ -71,9 +71,5 @@ export function workerPanelTimeoutMs(
   env: Readonly<Record<string, string | undefined>>,
   nowMs: number,
 ): number {
-  const policyMs = configuredPanelTimeoutMs(overallTimeoutSeconds);
-  if (!String(env[WORKER_TERMINAL_DEADLINE_ENV] ?? '').trim()) return policyMs;
-  const deadline = workerTerminalDeadlineAtMs(env);
-  if (deadline === undefined || !Number.isFinite(nowMs)) throw new Error('Worker lifecycle deadline is invalid');
-  return Math.max(0, Math.min(policyMs, Math.floor(deadline - nowMs - WORKER_PANEL_RESERVE_MS)));
+  return workerPanelDeadlineBudget(overallTimeoutSeconds, env, nowMs).timeoutMs;
 }
