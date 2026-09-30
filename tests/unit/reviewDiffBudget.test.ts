@@ -453,7 +453,7 @@ describe('guarded gateway input budgeting', () => {
 
     expect(result.status, result.stderr).toBe(0);
     const evidence = JSON.parse(result.stdout);
-    expect(evidence.managerPath.replace(/\\\\/g, '/')).toMatch(/\/src\/pipeline\/shaPartitionManager\.ts$/u);
+    expect(evidence.managerPath.replace(/\\/g, '/')).toMatch(/\/src\/pipeline\/shaPartitionManager\.ts$/u);
     expect(evidence.partitionChars).toHaveLength(4);
     expect(evidence.partitionChars.every((chars: number) => chars <= 80_000)).toBe(true);
     expect(evidence.files).toBe(33);
