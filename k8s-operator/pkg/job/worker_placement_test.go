@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	v1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
 	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
 )
 
@@ -70,6 +71,60 @@ func TestWorkerPodsSpreadAcrossNodesWithoutBlockingScheduling(t *testing.T) {
 	}
 	if selector.Matches(labelSet{"review-yeti.ai/component": "operator"}) {
 		t.Fatalf("spread selector %s must count only worker Pods", selector)
+	}
+}
+
+func TestOnlyPublishingWorkerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
+	const annotation = "cluster-autoscaler.kubernetes.io/safe-to-evict"
+	now := time.Date(2026, 9, 23, 13, 0, 0, 0, time.UTC)
+
+	t.Run("app-gate publisher", func(t *testing.T) {
+		review := reviewFixture(now)
+		review.Spec.PublicationMode = job.PublicationModeAppGate
+		input := buildInput(review, now)
+		input.Publishing = publishingFixture()
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("build publisher: %v", err)
+		}
+		if got := built.Spec.Template.Annotations[annotation]; got != "false" {
+			t.Fatalf("publishing pod annotation %q = %q, want false", annotation, got)
+		}
+		if _, found := built.Annotations[annotation]; found {
+			t.Fatalf("Job metadata must not carry Pod-only annotation %q", annotation)
+		}
+	})
+
+	for _, tc := range []struct {
+		name      string
+		configure func(*v1alpha2.PRReviewJob)
+	}{
+		{name: "receipt-only"},
+		{name: "full-panel qualification", configure: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+			review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+		}},
+		{name: "same-head qualification", configure: func(review *v1alpha2.PRReviewJob) {
+			review.Spec.QualificationProfile = job.SameHeadQualificationProfile
+			review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			if tc.configure != nil {
+				tc.configure(review)
+			}
+			built, err := job.BuildWorkerJob(buildInput(review, now))
+			if err != nil {
+				t.Fatalf("build %s: %v", tc.name, err)
+			}
+			if got := built.Spec.Template.Labels["review-yeti.ai/component"]; got != job.ReceiptOnlyWorkerComponent {
+				t.Fatalf("component = %q, want receipt-only for %s", got, tc.name)
+			}
+			if _, found := built.Spec.Template.Annotations[annotation]; found {
+				t.Fatalf("non-publishing %s pod unexpectedly carries %q", tc.name, annotation)
+			}
+		})
 	}
 }
 

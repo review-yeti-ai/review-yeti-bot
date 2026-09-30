@@ -113,8 +113,12 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     expect(groundingArg.headSha).toBe(HEAD);
     expect(groundingArg.token).toBe('ghs_test');
     expect(groundingArg.enabled).toBe(true);
-    // Cancellation and binary-path seams are forwarded, not dropped.
-    expect(groundingArg.signal).toBe(signal);
+    // Grounding receives the panel's linked deadline signal, not the raw parent
+    // signal; absent an admitted terminal deadline this remains a full-budget,
+    // non-aborted signal and preserves the existing successful path.
+    expect(groundingArg.signal).toBeInstanceOf(AbortSignal);
+    expect(groundingArg.signal).not.toBe(signal);
+    expect((groundingArg.signal as AbortSignal).aborted).toBe(false);
     expect(groundingArg.zoektIndexBinaryPath).toBe('/opt/zoekt/zoekt-index');
 
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;

@@ -367,9 +367,9 @@ const MapReduceMinCharsEnv = "REVIEW_YETI_MAP_REDUCE_MIN_CHARS"
 // interpretation.
 const SkipEmptyModerationEnv = "REVIEW_YETI_SKIP_EMPTY_MODERATION"
 
-// TerminalDeadlineEnv carries the review's terminal deadline (RFC 3339, UTC)
-// to an app-gate worker when map-reduce is configured (REL-1083,
-// src/review/mapReduceReview.ts TERMINAL_DEADLINE_ENV). The Job itself is
+// TerminalDeadlineEnv carries every publishing review's terminal deadline (RFC 3339, UTC)
+// to the app-gate worker, independently of map-reduce (REL-1198).
+// The Job itself is
 // killed DeadlineReserveSeconds before it.
 const TerminalDeadlineEnv = "REVIEW_TERMINAL_DEADLINE"
 
@@ -474,6 +474,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 
 	templateLabels := copyStringMap(labels)
 	templateAnnotations := copyStringMap(annotations)
+	if templateLabels["review-yeti.ai/component"] == PublishingWorkerComponent {
+		templateAnnotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = "false"
+	}
 	one := int32(1)
 	zero := int32(0)
 	// Build with the fail-safe (longer) TTL. batch/v1 has exactly one
@@ -601,6 +604,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			reviewModel = admittedModel
 		}
 		env = append(env,
+			corev1.EnvVar{Name: TerminalDeadlineEnv, Value: spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)},
 			corev1.EnvVar{Name: "OPENAI_BASE_URL", Value: gatewayURL},
 			corev1.EnvVar{Name: "REVIEW_MODEL", Value: reviewModel},
 			corev1.EnvVar{
@@ -673,7 +677,6 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		if input.Publishing.MapReduce != "" {
 			env = append(env,
 				corev1.EnvVar{Name: MapReduceEnv, Value: input.Publishing.MapReduce},
-				corev1.EnvVar{Name: TerminalDeadlineEnv, Value: spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)},
 			)
 			if input.Publishing.MapReduceMinChars != "" {
 				env = append(env, corev1.EnvVar{Name: MapReduceMinCharsEnv, Value: input.Publishing.MapReduceMinChars})

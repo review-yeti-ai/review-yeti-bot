@@ -40,6 +40,18 @@ function fakeFetchReturning(archivePath: string, { ok = true, status = 200, head
   });
 }
 
+async function waitForFile(filePath: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(filePath)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path.basename(filePath)}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 describe('materializeReviewWorkdir', () => {
   it('rejects a malformed repository or non-SHA headSha before ever calling fetch', async () => {
     const fetchImplementation = vi.fn();
@@ -164,6 +176,56 @@ describe('materializeReviewWorkdir', () => {
     expect(fs.existsSync(path.join(destDir, 'README.md'))).toBe(true);
     // The GitHub-archive top-level directory must not survive extraction.
     expect(fs.existsSync(path.join(destDir, 'review-yeti-ai-review-yeti-bot-abc1234'))).toBe(false);
+  });
+
+  it('kills and joins an in-flight tar extraction when the lifecycle signal aborts', async () => {
+    const { archivePath, stageDir } = buildFixtureTarball();
+    const fetchImplementation = fakeFetchReturning(archivePath);
+    const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zoekt-materializer-cancel-'));
+    const startedPath = path.join(destDir, '.tar-started');
+    const wrapperPath = path.join(destDir, 'stalling-tar.js');
+    fs.writeFileSync(wrapperPath, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const dest = process.argv[process.argv.indexOf('-C') + 1];",
+      `fs.writeFileSync(${JSON.stringify(startedPath)}, String(process.pid));`,
+      'setInterval(() => fs.writeFileSync(path.join(dest, ".tar-heartbeat"), String(Date.now())), 10);',
+      'setTimeout(() => process.exit(0), 500);',
+      '',
+    ].join('\n'));
+    fs.chmodSync(wrapperPath, 0o755);
+    const controller = new AbortController();
+    const pending = materializeReviewWorkdir({
+      repository: 'review-yeti-ai/review-yeti-bot',
+      headSha: 'a'.repeat(40),
+      token: 'gh-token',
+      destDir,
+      fetchImplementation,
+      tarBinaryPath: wrapperPath,
+      signal: controller.signal,
+    });
+    let pid: number | undefined;
+    try {
+      await waitForFile(startedPath);
+      pid = Number(fs.readFileSync(startedPath, 'utf8'));
+      controller.abort();
+      const result = await pending;
+      expect(result).toMatchObject({ status: 'unavailable', reason: 'cancelled' });
+      expect(processIsAlive(pid)).toBe(false);
+      // Pre-abort writes are allowed; joined cancellation must prevent later writes.
+      const heartbeatPath = path.join(destDir, '.tar-heartbeat');
+      const heartbeat = () => fs.existsSync(heartbeatPath) ? fs.readFileSync(heartbeatPath, 'utf8') : null;
+      const afterJoin = heartbeat();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(heartbeat()).toBe(afterJoin);
+    } finally {
+      controller.abort();
+      if (pid && processIsAlive(pid)) process.kill(pid, 'SIGKILL');
+      await pending.catch(() => undefined);
+      fs.rmSync(destDir, { recursive: true, force: true });
+      fs.rmSync(stageDir, { recursive: true, force: true });
+    }
   });
 
   it('never forwards the token or a credential-shaped value into the tar child process argv', async () => {

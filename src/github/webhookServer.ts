@@ -87,8 +87,9 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
     : createRateLimiter({ windowMs: 60_000, max: 120, trustProxy: true });
   router.use(limiter);
 
-  // Middleware 1: Parse JSON and retain raw body buffer
-  router.use((req: RequestWithRawBody, res: Response, next: NextFunction) => {
+  // Parse only matched webhook POST routes. A globally mounted webhook router
+  // must not consume MCP/completion bodies before their own bounded parsers.
+  const parseWebhookJson = (req: RequestWithRawBody, res: Response, next: NextFunction) => {
     if (req.body !== undefined && req.rawBody !== undefined) {
       return next();
     }
@@ -97,10 +98,10 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
         r.rawBody = buf;
       },
     })(req, res, next);
-  });
+  };
 
   // Middleware 2: Security & JSON Body Parsing Error Handler
-  router.use((err: any, req: RequestWithRawBody, res: Response, next: NextFunction) => {
+  const handleWebhookJsonError = (err: any, req: RequestWithRawBody, res: Response, next: NextFunction) => {
     const p = req.path || '';
     const orig = req.originalUrl || '';
     const isWebhookPath = p === primaryPath || p === '/webhook' || p === '/api/webhook/github' || p === '/api/webhooks/github' || p.includes('/webhook') || orig.includes('/webhook');
@@ -127,7 +128,7 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
       });
     }
     next(err);
-  });
+  };
 
   // Core Webhook Route Handler
   const webhookHandler = async (req: RequestWithRawBody, res: Response, next: NextFunction) => {
@@ -208,17 +209,10 @@ export function createWebhookRouter(options: WebhookServerOptions = {}): Router 
     }
   };
 
-  // Mount at primary path, /webhook, and standard API alias paths (both singular and plural)
-  router.post(primaryPath, webhookHandler);
-  if (primaryPath !== '/webhook') {
-    router.post('/webhook', webhookHandler);
-  }
-  if (primaryPath !== '/api/webhook/github') {
-    router.post('/api/webhook/github', webhookHandler);
-  }
-  if (primaryPath !== '/api/webhooks/github') {
-    router.post('/api/webhooks/github', webhookHandler);
-  }
+  // Let Express apply the same exact route, case, and trailing-slash matching
+  // to parsing and handling, including all existing compatibility aliases.
+  const webhookPaths = [...new Set([primaryPath, '/webhook', '/api/webhook/github', '/api/webhooks/github'])];
+  router.post(webhookPaths, parseWebhookJson, handleWebhookJsonError, webhookHandler);
 
   return router;
 }
