@@ -33,18 +33,20 @@ const REVIEW_RUN_TIMING_COLUMNS = `
                    r.cancel_propagated_at, r.terminal_deadline`;
 
 /**
- * Durable execution markers, keyed by run_id alone.
+ * Durable execution markers bound to the current persisted gate attempt.
  *
  * `review_runs` has no started_at/completed_at column -- verified against the
  * live production schema. Execution start and finish are recorded only as
  * `review.lifecycle.*` rows in `review_event_outbox`, each with `occurred_at`.
- * This read is deliberately independent of the branches above so it cannot go
- * missing when one branch is edited.
+ * A run_id survives retries. Reading all its generations would make a retry
+ * inherit the first execution's start/finish. Missing current-attempt identity
+ * therefore yields unknown lifecycle timing, never guessed historical markers.
  */
 const LIFECYCLE_MARKER_SQL = `
   SELECT event_kind, MIN(occurred_at) AS occurred_at
     FROM review_event_outbox
    WHERE run_id = $1 AND event_kind = ANY($2::text[])
+     AND attempt_id = $3
    GROUP BY event_kind
 `;
 
@@ -124,11 +126,13 @@ export function buildReviewTiming(
 async function readLifecycleMarkers(
   db: ReviewStatusDbClient,
   runId: unknown,
+  attemptId: unknown,
 ): Promise<Map<string, string>> {
   const markers = new Map<string, string>();
   if (typeof runId !== 'string' || runId.length === 0) return markers;
+  if (typeof attemptId !== 'string' || attemptId.length === 0) return markers;
   try {
-    const result = await db.query(LIFECYCLE_MARKER_SQL, [runId, LIFECYCLE_MARKER_KINDS]);
+    const result = await db.query(LIFECYCLE_MARKER_SQL, [runId, LIFECYCLE_MARKER_KINDS, attemptId]);
     for (const row of result?.rows ?? []) {
       const occurredAt = isoOrNull(row.occurred_at);
       if (typeof row.event_kind === 'string' && occurredAt) markers.set(row.event_kind, occurredAt);
@@ -303,7 +307,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       // Timing is computed from the row plus its durable lifecycle markers. The
       // marker read is best-effort and never changes the status answer: if the
       // ledger is unavailable, every duration resolves to null.
-      const markers = await readLifecycleMarkers(db, row.run_id);
+      const markers = await readLifecycleMarkers(db, row.run_id, row.attempt_id);
       const timing = buildReviewTiming(row, markers, row.run_status);
 
       return buildToolResultJson({

@@ -75,6 +75,7 @@ function baseRow(overrides: Record<string, unknown> = {}) {
 interface Captured {
   statements: string[];
   markerQueries: number;
+  markerParameters: unknown[][];
 }
 
 /**
@@ -87,13 +88,14 @@ function makeDb(
   markers: Record<string, string> = {},
   options: { failGateJoin?: boolean } = {},
 ): { db: ReviewStatusDbClient; captured: Captured } {
-  const captured: Captured = { statements: [], markerQueries: 0 };
+  const captured: Captured = { statements: [], markerQueries: 0, markerParameters: [] };
   let mainQueries = 0;
   const db: ReviewStatusDbClient = {
-    async query(sql: string) {
+    async query(sql: string, parameters?: unknown[]) {
       captured.statements.push(sql);
       if (sql.includes('review_event_outbox')) {
         captured.markerQueries += 1;
+        captured.markerParameters.push(parameters ?? []);
         return {
           rows: Object.entries(markers).map(([event_kind, occurred_at]) => ({
             event_kind,
@@ -105,7 +107,8 @@ function makeDb(
       if (options.failGateJoin && mainQueries === 1) {
         throw new Error('relation "review_gate_attempts" does not exist');
       }
-      return { rows: [row] };
+      // The schema fallback cannot select an identity from an absent gate table.
+      return { rows: [options.failGateJoin ? { ...row, attempt_id: undefined } : row] };
     },
   };
   return { db, captured };
@@ -157,15 +160,25 @@ describe('get_review_status timing: every query branch selects the timing column
     }
   });
 
-  it('drives each branch exactly once and reads the lifecycle ledger by run_id only', async () => {
+  it('binds lifecycle reads to the persisted attempt and leaves schema fallbacks unknown', async () => {
     // Guards the harness itself: if a branch silently stopped being reachable,
     // the assertions above would pass without proving anything.
     for (const branch of branches) {
-      const { captured } = await runTimingCase(baseRow(), {}, branch);
-      expect(captured.markerQueries, branch.name).toBe(1);
+      const { data, captured } = await runTimingCase(baseRow(), {}, branch);
+      const markerQueries = branch.failGateJoin ? 0 : 1;
+      expect(captured.markerQueries, branch.name).toBe(markerQueries);
       // Fallbacks issue a gate-join query before falling back to their own.
       const expected = branch.failGateJoin ? 2 : 1;
-      expect(captured.statements.length, branch.name).toBe(expected + 1);
+      expect(captured.statements.length, branch.name).toBe(expected + markerQueries);
+      if (branch.failGateJoin) {
+        expect(data.timing.started_at).toBeNull();
+        expect(data.timing.execution_seconds).toBeNull();
+      } else {
+        const markerSql = captured.statements.find((sql) => sql.includes('review_event_outbox'));
+        expect(markerSql).toContain('attempt_id = $3');
+        expect(captured.markerParameters[0][0]).toBe('run_timing_1');
+        expect(captured.markerParameters[0][2]).toBe('attempt-42-1');
+      }
     }
   });
 });
