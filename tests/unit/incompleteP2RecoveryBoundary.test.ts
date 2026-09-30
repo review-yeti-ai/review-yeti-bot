@@ -9,6 +9,7 @@ import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2Rec
 import { deriveReviewGateExternalId } from '../../src/review/reviewCheckIdentity';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
 import { sha256 } from '../../src/review/reviewCore';
+import { loadIncompleteP2RecoveryContext } from '../../src/persistence/incompleteP2Recovery';
 
 const TOKEN = 'ghs_incomplete_p2_worker_token';
 const RUN = `run_${'1'.repeat(32)}`;
@@ -65,6 +66,9 @@ function incompleteArchiveFixture(options: {
   includeRecovery?: boolean;
   includeCompletion?: boolean;
   includePriorGate?: boolean;
+  omitWorkerStartedAt?: boolean;
+  workerStartedAt?: string;
+  runArtifactsOverride?: Record<string, unknown>;
   gateCheckOverrides?: Record<string, unknown>;
   sourceOverrides?: Record<string, unknown>;
 } = {}) {
@@ -99,15 +103,26 @@ function incompleteArchiveFixture(options: {
     output: { title: 'Review Yeti Gate: Failed (incomplete panel)', summary: GATE_SUMMARY },
     ...options.gateCheckOverrides,
   };
+  const legacyIncompleteRoster: Record<string, unknown> = {
+    workerSummary: INCOMPLETE_SUMMARY,
+    workerStartedAt: options.workerStartedAt ?? '2026-09-29T11:59:58Z',
+    workerCompletedAt: COMPLETED_AT,
+    gateChecks: [gateCheck],
+  };
+  if (options.omitWorkerStartedAt && options.workerStartedAt === undefined) {
+    delete legacyIncompleteRoster.workerStartedAt;
+  }
   const recovery = {
     generation: 1, checkId: 1001, externalId: `${RUN}:a1`, conclusion: 'failure', title: 'Review Yeti: BLOCK',
-    legacyIncompleteRoster: { workerSummary: INCOMPLETE_SUMMARY, workerStartedAt: '2026-09-29T11:59:58Z',
-      workerCompletedAt: COMPLETED_AT, gateChecks: [gateCheck] },
+    legacyIncompleteRoster,
   };
   const runRow = {
     run_id: RUN, repository_id: 123, owner: 'example', repo: 'candidate', pr_number: 42,
     head_sha: HEAD, base_sha: BASE, effective_policy_digest: POLICY, effective_config_digest: CONFIG,
     authoritative_gate_app_id: APP_ID, publication_mode: 'app-gate',
+    artifacts: options.runArtifactsOverride ?? (options.marker === undefined ? {} : {
+      incomplete_p2_recovery_digest: options.marker === 'valid' ? context.contextDigest : options.marker,
+    }),
   };
   const sourceRow = {
     ...runRow,
@@ -256,6 +271,45 @@ describe('authenticated incomplete P2 recovery route', () => {
     expect(response.body.executionAttempt).toBe(2);
   });
 
+  it('reads a marker-bound legacy receipt without workerStartedAt when its failed Gate is historically cancelled', async () => {
+    const fixture = incompleteArchiveFixture({ marker: 'valid', omitWorkerStartedAt: true,
+      sourceOverrides: { gate_desired_state: 'cancelled', gate_current_attempt: false } });
+    const response = await request(routeApp(fixture.queryable)).post('/api/dispatch/incomplete-p2-recovery')
+      .set('Authorization', `Bearer ${TOKEN}`).send(recoveryRequest);
+
+    expect(response.status).toBe(200);
+    expect(response.body.context.contextDigest).toBe(fixture.context.contextDigest);
+    expect(response.body.context.findings).toHaveLength(1);
+  });
+
+  it.each([
+    ['absent', {}],
+    ['different', { incomplete_p2_recovery_digest: '0'.repeat(64) }],
+  ])('the direct reader refuses a caller digest when the exact run marker is %s', async (_label, runArtifactsOverride) => {
+    const fixture = incompleteArchiveFixture({ marker: 'valid', omitWorkerStartedAt: true,
+      runArtifactsOverride, sourceOverrides: { gate_desired_state: 'cancelled', gate_current_attempt: false } });
+
+    await expect(loadIncompleteP2RecoveryContext(fixture.queryable, {
+      runId: RUN, executionAttempt: 2, repositoryId: 123,
+      identity: { owner: 'example', repo: 'candidate', prNumber: 42,
+        headSha: HEAD, baseSha: BASE, configDigest: CONFIG },
+      policyDigest: POLICY, expectedAppId: APP_ID,
+      expectedContextDigest: fixture.context.contextDigest,
+    })).rejects.toThrow(/Incomplete P2 recovery context is unavailable or invalid/u);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['mismatched', '0'.repeat(64)],
+  ])('does not use a legacy missing-start receipt with a %s admission marker', async (_label, marker) => {
+    const fixture = incompleteArchiveFixture({ marker, omitWorkerStartedAt: true,
+      sourceOverrides: { gate_desired_state: 'cancelled', gate_current_attempt: false } });
+    const response = await request(routeApp(fixture.queryable)).post('/api/dispatch/incomplete-p2-recovery')
+      .set('Authorization', `Bearer ${TOKEN}`).send(recoveryRequest);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Retained findings are temporarily unavailable' });
+  });
+
   it.each([
     ['no bearer', undefined],
     ['malformed bearer', 'Bearer not-an-installation-token'],
@@ -336,8 +390,11 @@ describe('authenticated incomplete P2 recovery route', () => {
     ['Gate from another App', { gateCheckOverrides: { app: { id: 7, slug: 'other-app' } } }],
     ['Gate from another head', { gateCheckOverrides: { head_sha: 'f'.repeat(40) } }],
     ['Gate bound to a different completion digest', { sourceOverrides: { gate_worker_result_digest: 'f'.repeat(64) } }],
+    ['currently cancelled Gate', { sourceOverrides: { gate_desired_state: 'cancelled', gate_current_attempt: true } }],
+    ['malformed present worker start', { workerStartedAt: 'not-an-app-timestamp' }],
+    ['inverted present worker interval', { workerStartedAt: '2026-09-29T12:00:01Z' }],
   ])('rejects %s when loading archived P2 context', async (_reason, options) => {
-    const fixture = incompleteArchiveFixture({ marker: 'valid', ...options });
+    const fixture = incompleteArchiveFixture({ marker: 'valid', omitWorkerStartedAt: true, ...options });
     const response = await request(routeApp(fixture.queryable)).post('/api/dispatch/incomplete-p2-recovery')
       .set('Authorization', `Bearer ${TOKEN}`).send(recoveryRequest);
     expect(response.status).toBe(503);
