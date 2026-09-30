@@ -9,6 +9,7 @@ import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import * as panelEngine from '../panelEngine';
 import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
+import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 
 const mockYaml = `
 version: 3
@@ -351,7 +352,7 @@ describe('executeComposedReview', () => {
       repoFileProvider,
     });
 
-    expect(systemPrompt).toContain('read_file retrieves the current file at the reviewed head');
+    expect(systemPrompt).toContain(READ_FILE_TOOL_GUIDE);
     expect(systemPrompt).toContain('get_diff and text search remain limited to PR diff content');
     expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/guard.ts');
     expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);

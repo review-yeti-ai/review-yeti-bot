@@ -88,6 +88,30 @@ describe('runReadOnlyTool', () => {
       expect(repoFileProvider.readFile).not.toHaveBeenCalled();
     });
 
+    it('keeps get_diff unavailable when the changed file has content but no patch', async () => {
+      const content = 'CHANGED FILE SOURCE BODY MUST NOT BE RETURNED';
+      const providerContent = 'PROVIDER SOURCE BODY MUST NOT BE RETURNED';
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(),
+        readFile: vi.fn().mockResolvedValue(providerContent),
+      };
+      const result = await runReadOnlyTool('get_diff', {
+        path: 'src/auth/multi.ts', startLine: 1, endLine: 1,
+      }, baseContext({
+        changedFiles: [{ path: 'src/auth/multi.ts', content }],
+        repoFileProvider,
+      }));
+      expect(result).toEqual({
+        toolOutput: "Tool 'get_diff' execution result:\nNo PR diff patch text is available for 'src/auth/multi.ts'. get_diff does not return current source content.",
+        toolScope: 'changed-patches-only',
+        isExhaustive: false,
+      });
+      expect(result.toolOutput).not.toContain(content);
+      expect(result.toolOutput).not.toContain(providerContent);
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(repoFileProvider.findFiles).not.toHaveBeenCalled();
+    });
+
     it('falls back to full-repository scope, exhaustive, when repoFileProvider has the file', async () => {
       const repoFileProvider: RepoFileProvider = {
         findFiles: vi.fn(),

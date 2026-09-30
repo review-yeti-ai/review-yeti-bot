@@ -144,7 +144,7 @@ export type {
   PanelResult,
   PanelRequestPolicy,
 } from './types';
-import { FIND_FILES_TOOL_GUIDE } from './pathMatch';
+import { FIND_FILES_TOOL_GUIDE, READ_FILE_TOOL_GUIDE } from './pathMatch';
 export { isDocumentationOrAssetPath } from '../review/reviewableContent';
 export {
   isSubmoduleEntry,
@@ -1621,7 +1621,7 @@ export function buildCompactDiffManifest(
     `Each persona in this container reviews independently based on their domain lane.`,
     `Fetch diff hunks or inspect source context on-demand using:`,
     `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
-    `- read_file: {"tool": "read_file", "args": {"path": "<path>", "startLine": 1, "endLine": 80}}`,
+    `- ${READ_FILE_TOOL_GUIDE}`,
     `- ${FIND_FILES_TOOL_GUIDE}`,
     `- zoekt / symbol_search: to audit cross-file symbols across the repository.`,
     `Do not assume file contents from this list. Fetch the commit diffs yourself.`,
@@ -2181,11 +2181,11 @@ async function invoke(
     `- DO NOT invoke get_diff or other tools simply to re-fetch or confirm what is already visible in the inlined diff hunks.`,
     `- TOOL USAGE IS STRICTLY A FALLBACK:`,
     `  * get_diff: Use ONLY for files explicitly marked [INDEXED: on-demand get_diff available] that exceeded the prompt budget.`,
-    `  * read_file: Use only when needed for source context. It reads the current file at the reviewed head through the read-only repository provider, including files changed in this PR; requested line ranges are source-file lines. If the provider is unavailable or fails, the result explicitly says whether only a bounded PR patch/change payload is available.`,
+    `  * ${READ_FILE_TOOL_GUIDE}`,
     `  * ${FIND_FILES_TOOL_GUIDE}`,
     `  * zoekt / symbol_search: Use ONLY when verifying cross-repository symbol definitions or call hierarchies.`,
     `  * External Documentation (${mcpToolListStr || 'fetch_docs, context7_search'}): Use Context7 ONLY when you encounter unfamiliar external APIs, third-party libraries, or framework version contracts where official documentation snippets are needed to verify expected behavior. Do NOT call Context7 if the code is self-explanatory or contained in the repository.`,
-    `- IMPORTANT EVIDENCE BOUNDARY: get_diff and text/symbol search tools inspect PR diff content only; a miss does not establish repository-wide absence. read_file can return the current exact-head source for one requested path when the existing read-only repository provider is available, including a changed path. If that provider is unwired or the read fails, its result is explicitly patch/change-payload-only or unavailable and is not full-file coverage. Never claim a function, module, or symbol is undefined or missing from a patch-scoped miss; use read_file or zoekt when broader evidence is needed.`,
+    `- IMPORTANT EVIDENCE BOUNDARY: get_diff and text/symbol search tools inspect PR diff content only; a miss does not establish repository-wide absence. Never claim a function, module, or symbol is undefined or missing from a patch-scoped miss; use read_file or zoekt when broader evidence is needed.`,
     `- CLEAN DIFF EMPTY APPROVAL: If the modified code in your domain lane contains no defects, render decision 'APPROVE' with findings: [] immediately on Turn 1. Never invent speculative or stylistic issues simply to produce findings.`,
     `- Permitted Tool Categories:`,
     `  1. Code Reading: view_file (scope depends on the available exact-path context); read_file (one exact current-head file when the provider is available); get_diff (changed-file patch only)`,

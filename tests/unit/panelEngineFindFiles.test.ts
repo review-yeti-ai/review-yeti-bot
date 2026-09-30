@@ -3,6 +3,7 @@ import { executePersonaPanel, RepoFileProvider, REPO_FIND_FILES_MAX_HITS, REPO_R
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { READ_FILE_TOOL_GUIDE } from '../../src/panel/pathMatch';
 
 // REL: the defect this covers — a diff that *imports* a sibling file it does not itself modify
 // (`import { checkEvidence } from './dark-factory-evidence-gate.mjs'`) caused the persona's
@@ -300,6 +301,7 @@ describe('panelEngine — read_file retrieves current source for changed paths',
     ]));
     expect(observed.personaPrompt).toContain('It reads the current file at the reviewed head');
     expect(observed.personaPrompt).toContain('If that provider is unwired or the read fails');
+    expect(observed.personaPrompt).toContain(READ_FILE_TOOL_GUIDE);
   });
 
   it('find_files with a diff hit still searches the full tree, so files outside the diff are not hidden (REL-1102)', async () => {
