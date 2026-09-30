@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.2...v1.100.3) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** preserve full release-record depth and truthful execution disclosure ([#1156](https://github.com/review-yeti-ai/review-yeti-bot/issues/1156)) ([4719323](https://github.com/review-yeti-ai/review-yeti-bot/commit/4719323cf170db5a9ad14290bf36531bc62c1d2f))
+
 ## [1.100.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.1...v1.100.2) (2026-09-30)
 
 
