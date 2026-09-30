@@ -73,7 +73,7 @@ export interface LaneTurnUsage {
 export interface ComposedTaskFailureDiagnostics {
   reason: 'total_turn_budget_exhausted' | 'task_turn_budget_exhausted'
     | 'non_json_task_result' | 'tool_requested_during_finalization'
-    | 'task_id_mismatch' | 'nonce_mismatch' | 'invalid_status' | 'invalid_findings';
+    | 'task_id_mismatch' | 'nonce_mismatch' | 'invalid_status' | 'invalid_findings' | 'invalid_result_fields';
   turnsUsed: number;
   correctionAttempts: number;
   toolTurns: number;

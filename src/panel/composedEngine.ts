@@ -302,12 +302,18 @@ interface ParsedNativeTurn {
 function parseNativeTurn(content: string): ParsedNativeTurn | null {
   let value: any;
   try {
-    value = JSON.parse(String(content ?? '').trim());
+    const trimmed = String(content ?? '').trim();
+    // Match the fan-out engine's strict whole-response normalization. Never extract JSON
+    // from prose, multiple fences, or a quoted example: the complete response must parse.
+    const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i);
+    value = JSON.parse(fenced ? fenced[1].trim() : trimmed);
   } catch {
     return null;
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (typeof value.tool === 'string' && value.tool.length > 0) {
+  if (typeof value.tool === 'string' && value.tool.trim()
+      && Object.keys(value).every((key) => key === 'tool' || key === 'args')
+      && value.args && typeof value.args === 'object' && !Array.isArray(value.args)) {
     return { isToolCall: true, tool: value.tool, args: value.args };
   }
   return { isToolCall: false, finalObject: value };
@@ -724,6 +730,38 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
   ].join('\n');
 }
 
+type TaskContractFailure = 'response_shape' | 'tool_after_finalization' | 'result_fields'
+  | 'task_mismatch' | 'nonce_mismatch' | 'status_enum' | 'findings_contract';
+
+const TASK_CONTRACT_DIAGNOSTIC_REASONS: Record<TaskContractFailure, ComposedTaskFailureDiagnostics['reason']> = {
+  response_shape: 'non_json_task_result',
+  tool_after_finalization: 'tool_requested_during_finalization',
+  result_fields: 'invalid_result_fields',
+  task_mismatch: 'task_id_mismatch',
+  nonce_mismatch: 'nonce_mismatch',
+  status_enum: 'invalid_status',
+  findings_contract: 'invalid_findings',
+};
+
+/** Only controller-owned reason codes reach failure receipts; provider text is never echoed. */
+function buildTaskFinalizationDirective(
+  task: ReviewTask,
+  expectedNonce: string,
+  recovery?: { kind: 'correction' | 'fresh'; reason: TaskContractFailure },
+): string {
+  return [
+    'TASK_FINALIZATION',
+    ...(recovery ? [recovery.kind === 'fresh' ? 'TASK_RESULT_FRESH_RECOVERY' : 'TASK_RESULT_CORRECTION',
+      `The previous task result failed the ${recovery.reason} contract.`] : []),
+    'The read-only investigation phase has ended. Return the complete task result now; do not request another tool.',
+    `Return exactly one JSON object with nonce "${expectedNonce}" and task "${task.id}". Do not include prose or Markdown fences.`,
+    'Use status COMPLETE or BLOCKED; if evidence is insufficient use BLOCKED, never invent a finding or an approval.',
+    'Every finding must use severity P0, P1 or P2, an exact changed path and a positive integer line anchored in the supplied diff. Include all required finding fields, using null for absent optional values.',
+    `Binding task-result schema: ${JSON.stringify(buildTaskResultResponseFormat().json_schema)}`,
+    `CT_REVIEW_NONCE:${expectedNonce}`,
+  ].join('\n');
+}
+
 /**
  * Issue #950: discriminate degenerate provider output from a genuine contract
  * breach at plan-rejection time.
@@ -906,7 +944,7 @@ async function runPlanPhase(input: {
 type TaskOutcome =
   | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
   | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics };
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; contractFailure?: TaskContractFailure };
 
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
@@ -936,18 +974,21 @@ async function runTaskWorkPhase(input: {
   // Per-task nonce, retained so the finalize object can be bound to THIS task's request. Without
   // it a stale or injected object echoing an earlier turn's shape would be accepted.
   const expectedNonce = nonce();
-  let taskMessages: OpenRouterMessage[] = [
+  const initialTaskMessages: OpenRouterMessage[] = [
     ...input.baseMessages,
     { role: 'user', content: buildTaskDirective(input.task, input.taskIndex, input.totalTasks, expectedNonce) },
   ];
+  let taskMessages = [...initialTaskMessages];
   const turnUsages: LaneTurnUsage[] = [];
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
   let correctionAttempts = 0;
+  let freshRecoveryUsed = false;
+  let lastContractFailure: TaskContractFailure | undefined;
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
   const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
-    type: 'exhausted', turnUsages,
+    type: 'exhausted', turnUsages, contractFailure: lastContractFailure,
     diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
   });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
@@ -956,13 +997,9 @@ async function runTaskWorkPhase(input: {
   for (let iter = 0; iter < localMaxTurns; iter++) {
     if (input.turnsRemaining() <= 0) return exhausted('total_turn_budget_exhausted');
     const isLastLocalTurn = iter === localMaxTurns - 1;
-    const finalizing = iter >= localMaxTurns - finalizationTurns;
-    if (iter === localMaxTurns - finalizationTurns) {
-      taskMessages = [...taskMessages, { role: 'user', content: [
-        'TASK_FINALIZATION',
-        'The read-only investigation phase has ended. Return the task result now; do not request another tool.',
-        'If evidence is insufficient, use BLOCKED. Preserve the task id and nonce from this task directive.',
-      ].join('\n') }];
+    const finalizing = correctionAttempts > 0 || iter >= localMaxTurns - finalizationTurns;
+    if (correctionAttempts === 0 && iter === localMaxTurns - finalizationTurns) {
+      taskMessages = [...taskMessages, { role: 'user', content: buildTaskFinalizationDirective(input.task, expectedNonce) }];
     }
     const responseFormat = finalizing ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
     const activeMessages = compactMessageWindow(taskMessages, {
@@ -982,7 +1019,7 @@ async function runTaskWorkPhase(input: {
       jobId: input.jobId,
       signal: input.signal,
       turnNumber: turnUsages.length + 1,
-      kind: finalizing ? 'final' : 'tool',
+      kind: correctionAttempts > 0 ? 'correction' : finalizing ? 'final' : 'tool',
     });
     turnUsages.push(turn.usage);
     finishReason = turn.finishReason;
@@ -1011,54 +1048,58 @@ async function runTaskWorkPhase(input: {
     }
 
     const candidate = parsed?.finalObject;
-    let contractError: string | null = null;
-    let rejectionReason: ComposedTaskFailureDiagnostics['reason'] | null = null;
+    let contractFailure: TaskContractFailure | undefined;
     if (!candidate) {
-      rejectionReason = parsed?.isToolCall ? 'tool_requested_during_finalization' : 'non_json_task_result';
+      contractFailure = parsed?.isToolCall ? 'tool_after_finalization' : 'response_shape';
       if (parsed?.isToolCall) lastToolOutcome = 'requested_after_finalization';
-      contractError = parsed?.isToolCall
-        ? 'tool calls are closed; return a task result with COMPLETE or BLOCKED'
-        : 'response was not a JSON object matching the tool-call or task-result shape';
+    } else if (Object.keys(candidate).some((key) => !['nonce', 'task', 'status', 'findings'].includes(key))) {
+      contractFailure = 'result_fields';
     } else if (candidate.task !== input.task.id) {
-      rejectionReason = 'task_id_mismatch';
-      contractError = `"task" must equal "${input.task.id}"`;
+      contractFailure = 'task_mismatch';
     } else if (candidate.nonce !== expectedNonce) {
-      rejectionReason = 'nonce_mismatch';
       // Binds the response to this request. The fan-out engine enforces the same thing via
       // `parseNativeJsonObject(content, expectedNonce)`; the composed path must not be weaker.
-      contractError = 'result "nonce" did not match the nonce issued for this task';
+      contractFailure = 'nonce_mismatch';
     } else if (candidate.status !== 'COMPLETE' && candidate.status !== 'BLOCKED') {
-      rejectionReason = 'invalid_status';
-      contractError = '"status" must be COMPLETE or BLOCKED';
+      contractFailure = 'status_enum';
     }
 
     let findings: PanelFinding[] = [];
-    if (!contractError) {
+    if (!contractFailure) {
       try {
         findings = validateFindings(candidate.findings, input.changedFilesForTools);
       } catch (err) {
-        rejectionReason = 'invalid_findings';
-        contractError = err instanceof PanelFindingsValidationError ? err.message : String((err as Error)?.message || err);
+        if (!(err instanceof PanelFindingsValidationError)) throw err;
+        contractFailure = 'findings_contract';
       }
     }
 
-    if (contractError) {
-      if (correctionAttempts >= 2 || isLastLocalTurn) {
+    if (contractFailure) {
+      lastContractFailure = contractFailure;
+      if (freshRecoveryUsed || isLastLocalTurn) {
         // Never a pass and never a forced verdict on its own: leaving this task unreported (no
         // `complete`/`blocked` outcome) makes it absent from the roster, which the caller's
         // `applicablePersonaIds` vs. returned-lane-ids check already turns into an incomplete,
         // BLOCK-by-roster-invalidity review -- exactly the same mechanism a genuine turn-budget
         // exhaustion below uses. A malformed task result that never resolves is not evidence.
-        return exhausted(rejectionReason ?? 'non_json_task_result');
+        return exhausted(TASK_CONTRACT_DIAGNOSTIC_REASONS[contractFailure]);
+      }
+      if (correctionAttempts > 0) {
+        freshRecoveryUsed = true;
+        // One fresh branch, not a new task or a larger budget. Keep the accepted plan/backbone,
+        // original task nonce and real read-only evidence; discard malformed assistant replies
+        // and their correction history so an invalid copied schema cannot keep priming itself.
+        const evidence = taskMessages.slice(initialTaskMessages.length).filter((message) =>
+          message.role === 'user' && typeof message.content === 'string'
+          && message.content.startsWith(PI_TOOL_RESULT_MARKER));
+        taskMessages = [...initialTaskMessages, ...evidence];
       }
       correctionAttempts += 1;
       taskMessages = [...taskMessages, {
         role: 'user',
-        content: [
-          'TASK_RESULT_CORRECTION',
-          `Your previous response was invalid: ${contractError}.`,
-          `Return the corrected final result object now with the exact top-level fields "nonce", "task" ("${input.task.id}"), "status" (COMPLETE or BLOCKED), and "findings".`,
-        ].join('\n'),
+        content: buildTaskFinalizationDirective(input.task, expectedNonce, {
+          kind: freshRecoveryUsed ? 'fresh' : 'correction', reason: contractFailure,
+        }),
       }];
       continue;
     }
@@ -1083,6 +1124,7 @@ export function unreportedLaneFailure(
   task: ReviewTask,
   reason: 'no_budget' | 'exhausted',
   diagnostics?: ComposedTaskFailureDiagnostics,
+  contractFailure?: TaskContractFailure,
 ): NonNullable<PanelResult['unreportedLanes']>[number] {
   if (reason === 'no_budget') {
     return {
@@ -1094,6 +1136,7 @@ export function unreportedLaneFailure(
   return {
     id: task.id,
     error: `Task ${task.id} (${task.dimension}) ran and produced no verdict`
+      + (contractFailure ? `: ${contractFailure} contract rejected` : '')
       + (diagnostics ? ` [reason=${diagnostics.reason}; turns=${diagnostics.turnsUsed}; corrections=${diagnostics.correctionAttempts}; tool_turns=${diagnostics.toolTurns}; finish_reason=${diagnostics.finishReason ?? 'unavailable'}; last_tool_outcome=${diagnostics.lastToolOutcome}]` : ''),
     failureClass: 'malformed_output',
     ...(diagnostics ? { diagnostics } : {}),
@@ -1364,7 +1407,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       } else {
         // Ran and returned no verdict. Off the published roster, so it cannot
         // satisfy coverage, and it is not an approval. Later tasks still run.
-        const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics);
+        const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics, outcome.contractFailure);
         unreportedLanes.push(failure);
         logger.warn('[composed] task finalization incomplete', {
           event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,

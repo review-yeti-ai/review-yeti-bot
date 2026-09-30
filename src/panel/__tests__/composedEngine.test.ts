@@ -391,6 +391,154 @@ describe('executeComposedReview', () => {
     expect(personas.some((p: any) => p.decision === 'APPROVE' || p.decision === 'FINDINGS')).toBe(false);
   });
 
+  it.each(['json', 'JSON', ''])('accepts only a complete %s Markdown fence around nonce-bound plan and result objects', async (language) => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      const body = text.includes('PLAN TURN')
+        ? { nonce, tasks: [{ id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Is the guard sound?', rationale: 'Review the guard.' }] }
+        : { nonce, task: 'task-sec', status: 'COMPLETE', findings: [] };
+      return fakeResponse(` \n\`\`\`${language}\r\n${JSON.stringify(body)}\r\n\`\`\`\n `);
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE' }]);
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
+  it.each(['prose', 'two-fences', 'two-objects', 'wrong-language'])('does not extract a task result from %s', async (shape) => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' }] }));
+      }
+      workCalls += 1;
+      const body = JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] });
+      const fence = `\`\`\`json\n${body}\n\`\`\``;
+      return fakeResponse(shape === 'prose' ? `Here is the result:\n${fence}`
+        : shape === 'two-fences' ? `${fence}\n${fence}`
+          : shape === 'two-objects' ? `${body}\n${body}` : `\`\`\`javascript\n${body}\n\`\`\``);
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(3); // initial reply, one correction, one fresh recovery; never an unbounded retry
+    expect(result.personas).toEqual([]);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-sec', failureClass: 'malformed_output',
+      error: expect.stringContaining('response_shape') }]);
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual([]);
+  });
+
+  it('immediately finalizes a malformed finding with the complete strict schema and does not normalize severity', async () => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' }] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) {
+        expect(payload.responseFormat).toEqual({ type: 'json_object' });
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [
+          { severity: 'HIGH', path: 'src/auth/guard.ts', line: 1, startLine: null, title: 'Synthetic guard defect',
+            body: 'The synthetic guard always returns true.', suggestion: null, replacementCode: null },
+        ] }));
+      }
+      expect(payload.responseFormat.json_schema.name).toBe('ct_review_task_result_v1');
+      expect(payload.responseFormat.json_schema.strict).toBe(true);
+      expect(payload.responseFormat.json_schema.schema.properties.findings.items.required).toEqual([
+        'severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion', 'replacementCode',
+      ]);
+      const correction = lastText(payload.messages);
+      expect(correction).toContain('TASK_RESULT_CORRECTION');
+      expect(correction).toContain('findings_contract');
+      expect(correction).toContain('Binding task-result schema:');
+      expect(correction).toContain('"enum":["P0","P1","P2"]');
+      expect(correction).toContain('do not request another tool');
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'BLOCKED', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(2);
+    expect(result.personas).toEqual([]);
+    expect(result.optionalFailures).toMatchObject([{ id: 'task-sec' }]);
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
+  it('uses at most one fresh strict recovery, retaining read-only evidence but not malformed replies', async () => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' }] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) return fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } }));
+      if (workCalls === 2) return fakeResponse('SYNTHETIC_MALFORMED_REPLY_A');
+      if (workCalls === 3) return fakeResponse('SYNTHETIC_MALFORMED_REPLY_B');
+      expect(payload.responseFormat.json_schema.name).toBe('ct_review_task_result_v1');
+      const all = JSON.stringify(payload.messages);
+      expect(lastText(payload.messages)).toContain('TASK_RESULT_FRESH_RECOVERY');
+      expect(all).toContain('[PI_TOOL_RESULT]');
+      expect(all).toContain('export function guard()');
+      expect(all).not.toContain('SYNTHETIC_MALFORMED_REPLY');
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(4);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1, turnsCount: 4 }]);
+    expect(result.personas[0].turnUsages?.slice(-4).map((usage) => usage.kind)).toEqual(['tool', 'tool', 'correction', 'correction']);
+  });
+
+  it.each([
+    ['nonce_mismatch', (nonce: string) => ({ nonce: `wrong-${nonce}`, task: 'task-sec', status: 'COMPLETE', findings: [] })],
+    ['task_mismatch', (nonce: string) => ({ nonce, task: 'other-task', status: 'COMPLETE', findings: [] })],
+    ['status_enum', (nonce: string) => ({ nonce, task: 'task-sec', status: 'APPROVE', findings: [] })],
+    ['result_fields', (nonce: string) => ({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [], tool: 'read_file', args: { path: 'src/auth/guard.ts' } })],
+    ['findings_contract', (nonce: string) => ({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [
+      { severity: 'P1', path: 'src/not-changed.ts', line: 1, title: 'Synthetic', body: 'Synthetic.' },
+    ] })],
+  ] as const)('retains the redacted %s reason without accepting a malformed final result', async (reason, badResult) => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' }] }));
+      }
+      workCalls += 1;
+      const body = JSON.stringify(badResult(nonce));
+      return fakeResponse(reason === 'nonce_mismatch' ? `\`\`\`json\n${body}\n\`\`\`` : body);
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(3);
+    expect(result.personas).toEqual([]);
+    expect(result.unreportedLanes).toMatchObject([{ failureClass: 'malformed_output', error: expect.stringContaining(reason) }]);
+    expect(result.unreportedLanes?.[0].error).not.toContain('wrong-');
+    expect(result.unreportedLanes?.[0].error).not.toContain('not-changed');
+    expect(result.unreportedLanes?.[0].error).not.toContain('Synthetic');
+  });
+
+  it.each([[100, 1], [100, 2], [2, 12], [3, 12]])('does not enlarge total/task caps %i/%i for recovery', async (totalCap, taskCap) => {
+    let workCalls = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'task-sec', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Guard?', rationale: 'Guard.' },
+      ] }));
+      workCalls += 1;
+      return fakeResponse('not a result');
+    });
+    const cfg = config();
+    cfg.composed = { max_turns_total: totalCap, max_turns_per_task: taskCap };
+    const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workCalls).toBe(Math.min(totalCap - 1, taskCap));
+    expect(result.personas).toEqual([]);
+  });
+
   // Collapsing N lanes into one loop deletes the redundancy that used to absorb provider hiccups.
   // In the fan-out engine a transient fault cost one lane and the panel still reached a verdict
   // from the rest; here there is no rest, so one empty completion would end the whole review.
@@ -573,6 +721,22 @@ describe('executeComposedReview', () => {
     const published = projectPublishingRosterBounds(result);
     expect(published.returnedIds).not.toContain('task-2');
     expect(result.applicablePersonaIds).toContain('task-2');
+  });
+
+  it('preserves completed and later tasks when a middle task exhausts its fresh contract recovery', async () => {
+    const { complete, workTurns } = routedClient((taskId, _text, nonce) => taskId === 'task-2'
+      ? 'SYNTHETIC_REASONING_WITHOUT_VERDICT'
+      : JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+    const cfg = config();
+    cfg.composed = { max_turns_total: 6, max_turns_per_task: 4 };
+    const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
+    expect(workTurns).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
+      error: expect.stringContaining('response_shape') }]);
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
+    expect(complete).toHaveBeenCalledTimes(6);
   });
 
   it('fails closed when every planned task produces no verdict', async () => {
