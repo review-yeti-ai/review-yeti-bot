@@ -474,6 +474,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 
 	templateLabels := copyStringMap(labels)
 	templateAnnotations := copyStringMap(annotations)
+	if templateLabels["review-yeti.ai/component"] == PublishingWorkerComponent {
+		templateAnnotations["cluster-autoscaler.kubernetes.io/safe-to-evict"] = "false"
+	}
 	one := int32(1)
 	zero := int32(0)
 	// Build with the fail-safe (longer) TTL. batch/v1 has exactly one
