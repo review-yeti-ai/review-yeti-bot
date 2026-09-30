@@ -139,7 +139,8 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
       repoFileProvider: { readFile, findFiles: vi.fn().mockResolvedValue([path]) },
     });
-    expect({ sourceReads: readFile.mock.calls.length, observedToolResult }).toMatchObject({
+    const observed = { sourceReads: readFile.mock.calls.length, observedToolResult };
+    expect(observed, JSON.stringify(observed)).toMatchObject({
       sourceReads: 1, observedToolResult: expect.stringContaining('CURRENT_COMPOSED_HEAD_SOURCE'),
     });
     expect(readFile).toHaveBeenCalledExactlyOnceWith(path);

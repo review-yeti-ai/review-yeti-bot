@@ -123,7 +123,8 @@ describe('runReadOnlyTool', () => {
       const result = await runReadOnlyTool(tool, { path: 'src/auth/multi.ts' }, baseContext({
         changedFiles: [{ path: 'src/auth/multi.ts', patch: '[carried-forward: exact-head content available via tools]' }], repoFileProvider,
       }));
-      expect({ sourceReads: vi.mocked(repoFileProvider.readFile).mock.calls.length, output: result.toolOutput }).toEqual({
+      const observed = { sourceReads: vi.mocked(repoFileProvider.readFile).mock.calls.length, output: result.toolOutput };
+      expect(observed, JSON.stringify(observed)).toEqual({
         sourceReads: 1,
         output: "Tool '" + tool + "' execution result:\nFile 'src/auth/multi.ts' is part of this PR's diff and exists in the repository at the reviewed head. Full current content:\n" + source,
       });
