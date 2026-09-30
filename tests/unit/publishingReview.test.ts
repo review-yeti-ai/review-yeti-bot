@@ -2702,9 +2702,11 @@ describe('REL-1211 absolute publishing budget', () => {
     for (const [index, record] of cleanup.timers.entries()) {
       if (record.cleared) continue;
       expect(record.ms, JSON.stringify(cleanup)).toBe(0);
-      expect(record.origin, JSON.stringify(cleanup)).toContain('InMemorySpanExporter.export');
+      expect(record.origin, JSON.stringify(cleanup)).toContain('CircularSpanBufferExporter.export');
+      expect(record.origin).toContain('/node_modules/@opentelemetry/sdk-trace-base/build/src/export/InMemorySpanExporter.js:41:');
+      expect(record.origin).toContain('/src/telemetry/spans.ts:28:');
       const acknowledgement = scheduled.mock.calls[index][0];
-      expect(acknowledgement.toString()).toContain('resultCallback');
+      expect(acknowledgement.toString()).toBe('() => resultCallback({ code: core_1.ExportResultCode.SUCCESS })');
       acknowledgement();
       clearTimeout(scheduled.mock.results[index].value);
     }
