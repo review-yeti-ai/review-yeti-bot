@@ -319,6 +319,43 @@ describe('Review Yeti worker-generation recovery ledger', () => {
     )).toThrow(/generation recovery ledger/u);
   });
 
+  it('rejects an inverted worker interval while its P2 Gates otherwise match', () => {
+    const first = incompleteWorkerCheck(1, 6, 5, { canonical: 2, raw: 3 },
+      '2026-09-24T18:28:58Z', '2026-09-24T18:28:56Z');
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 1, raw: 1 },
+      '2026-09-24T18:29:00Z', '2026-09-24T18:29:06Z');
+    const gates = [
+      incompleteGateCheck(2_001, 6, 5, '2026-09-24T18:28:58Z'),
+      incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:29:08Z'),
+    ];
+
+    expect(() => evaluateReviewGenerationRecoveryLedger(
+      request({ expectedGeneration: 3, incompleteP2Recovery: true }), [first, second], gates,
+    )).toThrow(/generation recovery ledger/u);
+  });
+
+  it.each([
+    ['overlapping workers', '2026-09-24T18:28:59Z'],
+    ['workers meeting exactly at the boundary', '2026-09-24T18:29:00Z'],
+  ])('rejects %s in P2 recovery while the newest Gate otherwise matches', (_label, secondStartedAt) => {
+    // Keep the first row as a recognized infrastructure-incomplete failure so
+    // the overlap guard is the only thing rejecting this otherwise-valid
+    // ledger. The candidate is still evaluated with incomplete-P2 recovery
+    // enabled, and the newest P2 row has an exact matching canonical Gate.
+    const first = workerCheck(1, {
+      started_at: '2026-09-24T18:28:50Z',
+      completed_at: '2026-09-24T18:29:00Z',
+      output: { title: exhaustedIncomplete, summary: 'infra', text: null },
+    });
+    const second = incompleteWorkerCheck(2, 4, 3, { canonical: 1, raw: 1 },
+      secondStartedAt, '2026-09-24T18:29:06Z');
+    const matchingLatestGate = incompleteGateCheck(2_002, 4, 3, '2026-09-24T18:29:08Z');
+
+    expect(() => evaluateReviewGenerationRecoveryLedger(
+      request({ expectedGeneration: 3, incompleteP2Recovery: true }), [first, second], [matchingLatestGate],
+    )).toThrow(/generation recovery ledger/u);
+  });
+
   it('refuses recovery beyond the bounded a3 generation without calling GitHub', async () => {
     const fetchImplementation = vi.fn();
     const client = new GitHubInstallationClient({ token: 'ghs_test', fetchImplementation });
