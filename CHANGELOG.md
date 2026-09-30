@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.100.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.99.2...v1.100.0) (2026-09-30)
+
+
+### Features
+
+* **REL-1198:** retain P2 findings across bounded incomplete review recovery ([#1148](https://github.com/review-yeti-ai/review-yeti-bot/issues/1148)) ([3692774](https://github.com/review-yeti-ai/review-yeti-bot/commit/3692774fc9591152358c34324522baad631193f6))
+
 ## [1.99.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.99.1...v1.99.2) (2026-09-30)
 
 
