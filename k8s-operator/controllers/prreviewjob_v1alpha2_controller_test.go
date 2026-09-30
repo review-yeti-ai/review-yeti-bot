@@ -3,6 +3,7 @@ package controllers_test
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -1958,4 +1959,75 @@ func TestPRReviewJobV1Alpha2DoesNotPromoteToSucceededOnEpochMismatch(t *testing.
 		t.Fatalf("expected ConditionFencingEpochMismatch=True, got %#v", cond)
 	}
 }
+
+func TestPRReviewJobV1Alpha2Reconciler_AdmissionSerializationPreventsOverAdmissionUnderConcurrency(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+
+	rev1 := v1alpha2Review(now)
+	rev1.Name = "ct-review-concurrent-1"
+	rev1.Spec.RunID = "run_11111111111111111111111111111111"
+	rev1.Spec.PRNumber = 101
+
+	rev2 := v1alpha2Review(now.Add(1 * time.Second))
+	rev2.Name = "ct-review-concurrent-2"
+	rev2.Spec.RunID = "run_22222222222222222222222222222222"
+	rev2.Spec.PRNumber = 102
+
+	kube := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(rev1, rev2).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).
+		Build()
+
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client:                  kube,
+		Scheme:                  scheme,
+		Now:                     func() time.Time { return now },
+		MaxConcurrentJobs:       1,
+		MaxConcurrentReconciles: 4,
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: rev1.Namespace, Name: rev1.Name},
+		})
+	}()
+
+	go func() {
+		defer wg.Done()
+		_, _ = reconciler.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: rev2.Namespace, Name: rev2.Name},
+		})
+	}()
+
+	wg.Wait()
+
+	var updated1, updated2 reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: rev1.Namespace, Name: rev1.Name}, &updated1); err != nil {
+		t.Fatalf("get rev1: %v", err)
+	}
+	if err := kube.Get(context.Background(), types.NamespacedName{Namespace: rev2.Namespace, Name: rev2.Name}, &updated2); err != nil {
+		t.Fatalf("get rev2: %v", err)
+	}
+
+	runningCount := 0
+	queuedCount := 0
+	for _, rev := range []*reviewv1alpha2.PRReviewJob{&updated1, &updated2} {
+		if rev.Status.Phase == reviewv1alpha2.PhaseRunning {
+			runningCount++
+		} else if rev.Status.Phase == reviewv1alpha2.PhaseQueued {
+			queuedCount++
+		}
+	}
+
+	if runningCount != 1 || queuedCount != 1 {
+		t.Fatalf("expected exactly 1 Running and 1 Queued review under MaxConcurrentJobs=1, got Running=%d, Queued=%d", runningCount, queuedCount)
+	}
+}
+
 

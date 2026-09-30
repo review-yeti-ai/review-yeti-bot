@@ -13,6 +13,7 @@ import {
   type ValidateTaskPlanContext,
 } from '../../src/panel/reviewTask';
 import { classifyPathByHeuristic } from '../../src/panel/classifierEngine';
+import { buildPlanDirective } from '../../src/panel/composedEngine';
 
 // Representative changed-file fixture. Verified against classifyPathByHeuristic
 // so the domain-lane assumptions baked into these tests do not silently drift
@@ -361,5 +362,39 @@ describe('isTaskDimension', () => {
     expect(isTaskDimension('sec-lane')).toBe(false);
     expect(isTaskDimension('nonsense')).toBe(false);
     expect(isTaskDimension(123)).toBe(false);
+  });
+});
+
+describe('buildPlanDirective -- panel persona task composition', () => {
+  const dummyFiles = ['src/auth/login.ts', 'src/api/users.ts'];
+  const nonce = 'test-nonce-123';
+
+  it('includes panel persona block and charters when enabledPersonas is provided', () => {
+    const personas = [
+      { id: 'sec-lane', charter: 'Focus strictly on security vulnerabilities, auth flaws, and injection vectors.' },
+      { id: 'arch-lane', charter: 'Evaluate API contract adherence, domain boundaries, and data models.' },
+    ];
+    const directive = buildPlanDirective(6, dummyFiles, nonce, ['src/auth/login.ts'], personas);
+
+    expect(directive).toContain('=== REVIEW PANEL PERSONAS & CHARTERS ===');
+    expect(directive).toContain('- sec-lane: Focus strictly on security vulnerabilities');
+    expect(directive).toContain('- arch-lane: Evaluate API contract adherence');
+    expect(directive).toContain('CT_REVIEW_NONCE:test-nonce-123');
+  });
+
+  it('omits panel persona block when enabledPersonas is an empty array', () => {
+    const directive = buildPlanDirective(6, dummyFiles, nonce, ['src/auth/login.ts'], []);
+
+    expect(directive).not.toContain('=== REVIEW PANEL PERSONAS & CHARTERS ===');
+    expect(directive).toContain('=== PLAN TURN ===');
+    expect(directive).toContain('CT_REVIEW_NONCE:test-nonce-123');
+  });
+
+  it('omits panel persona block when enabledPersonas is omitted (default argument)', () => {
+    const directive = buildPlanDirective(6, dummyFiles, nonce, ['src/auth/login.ts']);
+
+    expect(directive).not.toContain('=== REVIEW PANEL PERSONAS & CHARTERS ===');
+    expect(directive).toContain('=== PLAN TURN ===');
+    expect(directive).toContain('CT_REVIEW_NONCE:test-nonce-123');
   });
 });

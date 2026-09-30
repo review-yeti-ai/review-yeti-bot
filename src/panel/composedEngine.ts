@@ -636,7 +636,7 @@ function buildSystemPrompt(repository: string): string {
   ].join('\n\n');
 }
 
-function buildPlanDirective(
+export function buildPlanDirective(
   maxTasks: number,
   changedFilePaths: string[],
   expectedNonce: string,
