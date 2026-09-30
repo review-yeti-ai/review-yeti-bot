@@ -337,7 +337,7 @@ async function runCodeReadingTool(tName: string, args: any, context: ToolRuntime
     if (!matched) return {
       ...patchScope,
       toolOutput: prefix + (tName === 'get_diff'
-        ? `No changed patch for '${targetPath}' is available in this PR's diff. get_diff inspects changed patches only, not current repository source; this is not evidence the file is missing.`
+        ? `File '${targetPath}' is not part of this PR's diff. No changed patch for '${targetPath}' is available in this PR's diff. get_diff inspects changed patches only, not current repository source; this is not evidence the file is missing.`
         : `File '${targetPath}' is not part of this PR's diff. This tool's search scope here is changed files only (no full-repository access is wired for this run); the file may still exist elsewhere in the repository. Do not report it as missing, unconfirmed, or unverifiable from this result alone.`),
     };
     const sliced = sliceCodeReadLines(matched.patch || matched.content || 'File present in PR scope.', args);
