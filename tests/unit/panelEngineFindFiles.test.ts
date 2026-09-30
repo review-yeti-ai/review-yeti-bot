@@ -274,7 +274,7 @@ describe('panelEngine — changed-file source reads and full-tree searches', () 
     expect(out).toContain('HEAD CONTENT, NOT THE PATCH');
     expect(out).not.toContain('import { checkEvidence }');
     expect(out).toContain('exists in the repository at the reviewed head');
-    expect(out).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+    expect(out).toContain("File 'src/ledger/writer.ts' is part of this PR's diff and exists in the repository at the reviewed head. Full current content:\nHEAD CONTENT, NOT THE PATCH");
     expect(out).not.toContain("not part of this PR's diff");
     expect(provider.readFile).toHaveBeenCalledExactlyOnceWith('src/ledger/writer.ts');
   });
