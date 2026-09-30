@@ -2656,6 +2656,8 @@ describe('REL-1211 absolute publishing budget', () => {
   });
 
   it('cuts off a real never-settling grounding await and publishes timeout without starting models', async () => {
+    const scheduled = vi.spyOn(globalThis, 'setTimeout');
+    const cleared = vi.spyOn(globalThis, 'clearTimeout');
     let signal!: AbortSignal;
     const grounding = vi.fn(({ signal: current }: { signal: AbortSignal }) => { signal = current; return new Promise(() => {}); });
     const completion = { reportTerminalFailure: vi.fn(async (_event: unknown) => undefined) };
@@ -2668,6 +2670,36 @@ describe('REL-1211 absolute publishing budget', () => {
     expect(grounding).toHaveBeenCalledOnce(); expect(signal.aborted).toBe(true);
     expect(d.panelRunner).not.toHaveBeenCalled(); expect(client.complete).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({ failureClass: 'timeout' }));
+    const deadlineTimerIndex = scheduled.mock.calls.findIndex(([, ms]) => ms === 50);
+    expect(deadlineTimerIndex).toBeGreaterThanOrEqual(0);
+    expect(cleared).toHaveBeenCalledWith(scheduled.mock.results[deadlineTimerIndex].value);
+    // The expired timer was disarmed; flush already-settled cleanup at the same
+    // clock so neither a live deadline nor a 1s JEV flush can hide in this check.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Date.now()).toBe(start + 50);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('forwards real enabled shrinking to both deferred engines without changing their shared admitted cutoff', async () => {
+    let main!: { signal: AbortSignal; diffShrink?: unknown };
+    let shadow!: typeof main;
+    const provider = { readFile: vi.fn(async () => null), findFiles: vi.fn(async () => []) };
+    const d = deps({ repoFileProviderFactory: vi.fn(() => provider), zoektGrounding: vi.fn(async () => ({})),
+      panelRunner: vi.fn(async (input: typeof main) => { main = input; return clean(); }),
+      composedReviewRunner: vi.fn(async (input: typeof main) => { shadow = input; return clean(); }) });
+    await runPublishingReviewWorker(env({ ...deadlineEnv(50), REVIEW_YETI_DIFF_SHRINK: 'all',
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }) }), d as never);
+    expect(provider.readFile).toHaveBeenCalledWith('.gitattributes');
+    expect(main.diffShrink).toMatchObject({ enabled: true });
+    expect(shadow.diffShrink).toBe(main.diffShrink);
+    expect(main.signal).not.toBe(shadow.signal);
+    for (const signal of [main.signal, shadow.signal]) {
+      const inherited = createPanelDeadlineSignal(1_800, signal);
+      expect(inherited.budget.deadlineAtMs).toBe(start + 50);
+      inherited.cleanup();
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(Date.now()).toBe(start);
     expect(vi.getTimerCount()).toBe(0);
   });
 
