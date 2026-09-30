@@ -4,6 +4,7 @@ import {
   CENTRAL_REVIEW_REPOSITORY,
   isCentralReviewDispatchIdentity,
 } from './reviewCheckIdentity';
+import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from './incompleteP2RecoveryLimits';
 
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
 const positiveInteger = z.number().int().positive().safe();
@@ -49,7 +50,7 @@ export const actionDispatchRequestSchema = z.object({
 }).strict().superRefine((request, context) => {
   if (request.incompleteP2Recovery === true && (request.refreshRequested !== true
     || request.expectedGeneration === undefined || request.expectedGeneration < 2
-    || request.expectedGeneration > 3
+    || request.expectedGeneration > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
     || request.refreshExecutionAttempt !== request.expectedGeneration - 1)) {
     context.addIssue({ code: z.ZodIssueCode.custom,
       message: 'incomplete P2 recovery requires a bounded exact-generation refresh',

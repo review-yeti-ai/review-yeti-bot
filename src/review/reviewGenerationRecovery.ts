@@ -1,4 +1,5 @@
 import { isRecoverableFailureTitle, REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
+import { parseIncompleteRosterSummary } from './incompleteRosterSummary';
 
 export const MAX_RECOVERABLE_REVIEW_GENERATION = 3;
 export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
@@ -67,27 +68,20 @@ function hasLegacyIncompleteRosterProof(
     || !Number.isFinite(completedAt(proof.workerCompletedAt))
     || !Array.isArray(proof.gateChecks) || proof.gateChecks.length === 0
     || proof.gateChecks.length >= 1_000) return false;
-  const lines = proof.workerSummary.split('\n');
-  const findings = lines.filter((line) => line.startsWith('Findings: '));
-  const coverage = lines.filter((line) => line.startsWith('Coverage: '));
-  if (lines[0] !== `Verdict \`BLOCK\` at \`${request.headSha}\`.`
-    || findings.length !== 1
-    || !(findings[0] === 'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).'
-      || (request.incompleteP2Recovery === true
-        && /^Findings: [1-9][0-9]* \(blocking P0\/P1: 0; [1-9][0-9]* raw persona finding\(s\) before clustering\)\.$/u.test(findings[0])))
-    || coverage.length !== 1) return false;
-  const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverage[0]);
-  const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverage[0]);
-  if (!panel && !composed) return false;
-  const [expected, completed] = (panel ? panel.slice(1) : composed!.slice(2)).map(Number);
-  if (!Number.isSafeInteger(expected) || expected <= 0 || !Number.isSafeInteger(completed)
-    || completed < 0 || completed >= expected || (composed && Number(composed[1]) !== expected)) return false;
+  const counts = parseIncompleteRosterSummary(proof.workerSummary, request.headSha);
+  if (!counts) return false;
+  const isZeroFindingSummary = counts.canonicalFindingCountText === '0'
+    && counts.rawFindingCountText === '0';
+  const isP2FindingSummary = request.incompleteP2Recovery === true
+    && /^[1-9][0-9]*$/u.test(counts.canonicalFindingCountText)
+    && /^[1-9][0-9]*$/u.test(counts.rawFindingCountText);
+  if (!isZeroFindingSummary && !isP2FindingSummary) return false;
 
   const newest = selectIncompleteRecoveryGate(request, proof);
   const output = record(newest?.output);
   return newest?.conclusion === 'failure'
     && output?.title === 'Review Yeti Gate: Failed (incomplete panel)'
-    && output.summary === `Review Yeti Gate failed: the panel expected ${expected} review lane(s) but ${completed} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
+    && output.summary === `Review Yeti Gate failed: the panel expected ${counts.expectedLanes} review lane(s) but ${counts.completedLanes} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
 }
 
 /** The latest real Gate within the exact worker's lifetime boundary. Never search

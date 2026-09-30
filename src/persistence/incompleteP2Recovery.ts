@@ -3,7 +3,6 @@ import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME } from '../review/re
 import {
   MAX_INCOMPLETE_P2_RECOVERY_BYTES,
   MAX_INCOMPLETE_P2_RECOVERY_FINDINGS,
-  MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS,
   IncompleteP2RecoveryContextError,
   createIncompleteP2RecoveryContext,
   parseIncompleteP2RecoveryContext,
@@ -12,6 +11,10 @@ import {
   type IncompleteP2RecoveryIdentity,
   type IncompleteP2RecoverySource,
 } from '../review/incompleteP2Recovery';
+import {
+  MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT,
+} from '../review/incompleteP2RecoveryLimits';
+import { parseIncompleteRosterSummary } from '../review/incompleteRosterSummary';
 import {
   REVIEW_WORKER_APP_SLUG,
   validateReviewGenerationRecoveryEvidence,
@@ -78,24 +81,11 @@ function recoveryRequest(input: IncompleteP2RecoveryLookupInput, candidate: bool
 interface WorkerSummaryCounts { canonical: number; raw: number; expected: number; completed: number }
 
 function workerSummaryCounts(summary: unknown, headSha: string): WorkerSummaryCounts | null {
-  if (typeof summary !== 'string') return null;
-  const lines = summary.split('\n');
-  if (lines[0] !== `Verdict \`BLOCK\` at \`${headSha}\`.`) return null;
-  const findingLines = lines.filter((line) => line.startsWith('Findings: '));
-  const coverageLines = lines.filter((line) => line.startsWith('Coverage: '));
-  if (findingLines.length !== 1 || coverageLines.length !== 1) return null;
-  const findings = /^Findings: ([0-9]+) \(blocking P0\/P1: 0; ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u.exec(findingLines[0]);
-  if (!findings) return null;
-  const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverageLines[0]);
-  const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverageLines[0]);
-  if (!panel && !composed) return null;
-  const expected = Number(panel ? panel[1] : composed![2]);
-  const completed = Number(panel ? panel[2] : composed![3]);
-  if (composed && Number(composed[1]) !== expected) return null;
-  const canonical = Number(findings[1]);
-  const raw = Number(findings[2]);
-  if (![expected, completed, canonical, raw].every(Number.isSafeInteger)
-    || expected <= 0 || completed < 0 || completed >= expected
+  const counts = parseIncompleteRosterSummary(summary, headSha);
+  if (!counts) return null;
+  const { canonicalFindingCount: canonical, rawFindingCount: raw,
+    expectedLanes: expected, completedLanes: completed } = counts;
+  if (![canonical, raw].every(Number.isSafeInteger)
     || canonical < 0 || raw < canonical || raw > MAX_INCOMPLETE_P2_RECOVERY_FINDINGS) return null;
   return { canonical, raw, expected, completed };
 }
@@ -147,9 +137,9 @@ async function hasPersistedP2RecoveryCandidate(
   const result = await queryable.query(`
     SELECT recovered_generation, worker_check_id, external_id, conclusion, title, evidence
       FROM review_generation_recoveries
-     WHERE run_id = $1 AND recovered_generation <= 3
+     WHERE run_id = $1 AND recovered_generation <= ${MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT}
      ORDER BY recovered_generation ASC`, [runId]);
-  if (result.rows.length > 3) refuse();
+  if (result.rows.length > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT) refuse();
   for (let index = 0; index < result.rows.length; index += 1) {
     const row = result.rows[index];
     const stored = jsonValue(row.evidence);
@@ -310,7 +300,7 @@ function selectedGateCheck(
 
 function validateRunIdentity(row: Record<string, any>, input: IncompleteP2RecoveryLookupInput): IncompleteP2RecoveryIdentity {
   if (!RUN_ID.test(input.runId) || !Number.isSafeInteger(input.executionAttempt)
-    || input.executionAttempt < 2 || input.executionAttempt > 3
+    || input.executionAttempt < 2 || input.executionAttempt > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
     || !Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0
     || !Number.isSafeInteger(input.expectedAppId) || input.expectedAppId <= 0
     || !DIGEST.test(input.policyDigest) || !DIGEST.test(input.identity.configDigest)
@@ -437,7 +427,8 @@ export async function loadIncompleteP2RecoveryContext(
   input: IncompleteP2RecoveryLookupInput,
 ): Promise<IncompleteP2RecoveryContext | null> {
   if (input.executionAttempt === 1) return null;
-  if (!Number.isSafeInteger(input.executionAttempt) || input.executionAttempt < 2 || input.executionAttempt > 3) refuse();
+  if (!Number.isSafeInteger(input.executionAttempt) || input.executionAttempt < 2
+    || input.executionAttempt > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT) refuse();
   const runResult = await queryable.query(`
     SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
            effective_policy_digest, effective_config_digest, authoritative_gate_app_id,
@@ -581,7 +572,7 @@ export async function requiredIncompleteP2RecoveryDigest(
            effective_policy_digest, effective_config_digest, authoritative_gate_app_id
       FROM review_runs WHERE run_id = $1`, [runId])).rows[0];
   if (!row) refuse();
-  if (executionAttempt > MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS + 1) {
+  if (executionAttempt > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT) {
     if (marker !== undefined || await hasPersistedIncompleteGateFindings(queryable, runId, executionAttempt)
       || await hasPersistedP2RecoveryCandidate(queryable, runId, row.head_sha)) refuse();
     return null;

@@ -42,6 +42,7 @@ import {
 } from '../review/reviewGatePolicy';
 import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
 import { loadIncompleteP2RecoveryContext } from './incompleteP2Recovery';
+import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../review/incompleteP2RecoveryLimits';
 
 interface QueryResult {
   rows: any[];
@@ -220,7 +221,8 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
   if (input.incompleteP2Recovery !== undefined && (input.incompleteP2Recovery !== true
     || !input.centralActionDispatch || input.publicationMode !== 'app-gate'
     || !input.authoritativeGate || input.retryRequested !== true
-    || input.expectedGeneration === undefined || input.expectedGeneration < 2 || input.expectedGeneration > 3
+    || input.expectedGeneration === undefined || input.expectedGeneration < 2
+    || input.expectedGeneration > MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT
     || input.retryAfterExecutionAttempt !== input.expectedGeneration - 1)) {
     throw new Error('Incomplete P2 recovery requires authoritative exact-generation admission');
   }

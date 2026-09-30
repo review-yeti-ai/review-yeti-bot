@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS } from './incompleteP2RecoveryLimits';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 
@@ -13,7 +14,7 @@ export const incompleteP2RecoveryClaimSchema = z.object({
     workerResultDigest: digest,
     workerCheckId: z.number().int().positive().safe(),
     gateCheckId: z.number().int().positive().safe(),
-  }).strict()).min(1).max(2),
+  }).strict()).min(1).max(MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS),
 }).strict();
 
 export type IncompleteP2RecoveryClaim = z.infer<typeof incompleteP2RecoveryClaimSchema>;

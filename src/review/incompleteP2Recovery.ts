@@ -5,12 +5,16 @@ import {
   incompleteP2RecoveryClaimSchema,
   type IncompleteP2RecoveryClaim,
 } from './incompleteP2RecoveryClaim';
+import {
+  MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT,
+  MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS,
+} from './incompleteP2RecoveryLimits';
 
 export { incompleteP2RecoveryClaimSchema } from './incompleteP2RecoveryClaim';
 export type { IncompleteP2RecoveryClaim } from './incompleteP2RecoveryClaim';
+export { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT, MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS } from './incompleteP2RecoveryLimits';
 
 export const INCOMPLETE_P2_RECOVERY_CONTEXT_VERSION = 'IncompleteP2RecoveryContext.v1' as const;
-export const MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS = 2;
 export const MAX_INCOMPLETE_P2_RECOVERY_FINDINGS = 100;
 export const MAX_INCOMPLETE_P2_RECOVERY_BYTES = 64 * 1024;
 
@@ -30,7 +34,7 @@ const identitySchema = z.object({
   policyDigest: digest,
   configDigest: digest,
   expectedAppId: positiveInteger,
-  executionAttempt: z.number().int().min(2).max(MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS + 1).safe(),
+  executionAttempt: z.number().int().min(2).max(MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT).safe(),
 }).strict();
 
 /** A P2 finding is copied byte-for-byte at the JSON field level from an
