@@ -62,6 +62,36 @@ func TestOperatorMaxConcurrentJobsFromEnv(t *testing.T) {
 	}
 }
 
+func TestOperatorMaxConcurrentReconcilesFromEnv(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		value   string
+		want    int
+		wantErr bool
+	}{
+		{name: "safe reconciler default", value: "", want: 1},
+		{name: "explicit capacity", value: "4", want: 4},
+		{name: "zero", value: "0", wantErr: true},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "malformed", value: "many", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := operatorMaxConcurrentReconcilesFromEnv(func(name string) string {
+				if name != "REVIEW_YETI_OPERATOR_MAX_CONCURRENT_RECONCILES" {
+					t.Fatalf("unexpected environment key %q", name)
+				}
+				return test.value
+			})
+			if (err != nil) != test.wantErr {
+				t.Fatalf("operatorMaxConcurrentReconcilesFromEnv() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if got != test.want {
+				t.Fatalf("operatorMaxConcurrentReconcilesFromEnv() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
 func TestOperatorDisabledUnlessExplicitlyEnabled(t *testing.T) {
 	for _, test := range []struct {
 		value string
