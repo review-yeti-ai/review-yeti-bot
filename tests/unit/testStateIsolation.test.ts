@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { cleanupSuiteStoreFile, createScratchOwner, isInsideSuiteRoot, readScratchOwnerMetadata } from '../support/scratch-lifecycle';
+import { resetAllGlobalState } from '../setup';
 
 /**
  * REL-560 / REL-1209. Every on-disk root a test can write to must live in this test file's suite
@@ -84,14 +85,11 @@ describe('per-suite test-state isolation (REL-560 / REL-1209)', () => {
     } finally { suite.cleanup(); parent.cleanup(); }
   });
 
-  let priorStore: string;
-  it('writes a store through the actual per-test environment', () => {
-    priorStore = process.env.CT_DASHBOARD_STORE!;
+  it('retires the prior store through the actual reset hook', () => {
+    const priorStore = process.env.CT_DASHBOARD_STORE!;
     fs.writeFileSync(priorStore, '{}');
     expect(fs.existsSync(priorStore)).toBe(true);
-  });
-  it('retires the prior store through the actual reset hook', () => {
-    expect(priorStore).toBeTruthy();
+    resetAllGlobalState();
     expect(fs.existsSync(priorStore)).toBe(false);
     expect(process.env.CT_DASHBOARD_STORE).not.toBe(priorStore);
   });

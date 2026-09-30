@@ -129,7 +129,7 @@ process.env.no_proxy = '*';
 // Capture baseline process.env after initializing test environment variables
 const initialEnv = { ...process.env };
 
-function resetAllGlobalState() {
+export function resetAllGlobalState() {
   // Capture the actual previous store before restoring the baseline env. The
   // baseline path is not the randomly assigned store used by the last test.
   const previousStore = process.env.CT_DASHBOARD_STORE;

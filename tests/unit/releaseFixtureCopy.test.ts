@@ -3,10 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createScratchOwner, requiredSuiteScratchRoot } from '../support/scratch-lifecycle';
-import {
-  copyReleaseCommitFixture,
-  RELEASE_FIXTURE_EXCLUDED_ROOTS,
-} from '../support/release-fixture-copy';
+import { copyReleaseCommitFixture } from '../support/release-fixture-copy';
+
+// Independent contract: deleting or misspelling a production exclusion must
+// not also delete its fixture and expectation, leaving a vacuous green test.
+const REQUIRED_EXCLUDED_ROOTS = [
+  '.agents', '.artifacts', '.claude', '.codex', '.ct-memory', '.ct-meta', '.ct-mcp-runtimes',
+  '.gemini', '.herdr', '.next', '.opencode', '.pi', '.review-yeti', '.tmp', '.cache',
+  'artifacts', 'coverage', 'dist', 'node_modules', 'out', 'runs', 'screenshots', 'test-results',
+];
 
 describe('immutable release fixture copy', () => {
   it('rejects a nonempty destination without modifying its retained files', () => {
@@ -30,7 +35,7 @@ describe('immutable release fixture copy', () => {
       fs.mkdirSync(path.join(source, 'src'), { recursive: true });
       fs.writeFileSync(path.join(source, 'README.md'), 'commit version\n');
       fs.writeFileSync(path.join(source, 'src', 'kept.ts'), 'export const kept = true;\n');
-      for (const root of RELEASE_FIXTURE_EXCLUDED_ROOTS) {
+      for (const root of REQUIRED_EXCLUDED_ROOTS) {
         const directory = path.join(source, root);
         fs.mkdirSync(directory, { recursive: true });
         fs.writeFileSync(path.join(directory, 'local-evidence.txt'), root);
@@ -52,7 +57,7 @@ describe('immutable release fixture copy', () => {
       expect(fs.readFileSync(path.join(destination, 'README.md'), 'utf8')).toBe('commit version\n');
       expect(fs.readFileSync(path.join(destination, 'src', 'kept.ts'), 'utf8')).toContain('kept');
       expect(fs.existsSync(path.join(destination, 'untracked.txt'))).toBe(false);
-      for (const root of RELEASE_FIXTURE_EXCLUDED_ROOTS) {
+      for (const root of REQUIRED_EXCLUDED_ROOTS) {
         expect(fs.existsSync(path.join(destination, root)), `${root} must be excluded even when tracked`).toBe(false);
       }
       expect(fs.existsSync(path.join(destination, 'fixtures/tmp'))).toBe(false);

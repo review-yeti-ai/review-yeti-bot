@@ -9,7 +9,7 @@ deletion or crash reaper is added.
 
 ## Evidence
 
-Three focused files pass 22 tests; two opt-in interruption/failure probes are
+Three focused files pass 21 tests; two opt-in interruption/failure probes are
 skipped in ordinary runs. Focused V8 helper coverage passes enforced 80%
 thresholds: 90.62% lines, 89.78% statements, 87.30% branches, 100% functions.
 Negative cases hold replaced roots/parents/manifests, failed resource closure,
@@ -26,12 +26,17 @@ remain private evidence, not production or customer data.
 ## Lifecycle discovery
 
 Review follow-up replaced source-substring coverage with actual file removal
-and a two-test reset-hook regression. It exposed a real ordering bug: restoring
+and a self-contained reset-hook regression. It exposed a real ordering bug: restoring
 the baseline environment before cleanup lost the prior random store path.
 Capture that path first. A planted wrong anchor fails the behavioral test;
 restored behavior passes, preserving outside/prefix-sharing/symlink-escaped
 files. Fixture parents also explicitly require current suite ownership; an
 unset root no longer silently falls back to shared OS temp.
+
+The reset regression passes alone and shuffled, without sibling-test state.
+Fixture exclusion expectations are independently pinned; removing the
+production `node_modules` exclusion makes the archive test fail, and restoring
+it passes. These counterfactuals test behavior, not source substrings.
 
 Vitest 4 runs global teardown before closing its worker pool. Run retirement
 there would either delete live collection scratch or fail while workers are
