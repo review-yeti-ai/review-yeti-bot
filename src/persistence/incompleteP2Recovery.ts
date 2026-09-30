@@ -66,6 +66,18 @@ function jsonValue(value: unknown): unknown {
   try { return JSON.parse(value); } catch { return undefined; }
 }
 
+/** Legacy reservation changed a prior failure's publication intent to cancelled
+ * after its immutable recovery receipt was admitted. That is not a new review
+ * verdict. Only a non-current historical intent can use this compatibility path;
+ * the caller must still validate the original failure decision, App receipt,
+ * coordinates, worker archive and admission digest. Fresh admission stays strict.
+ */
+function isFailedGatePublicationState(row: Record<string, any>, allowHistoricalCancellation: boolean): boolean {
+  return row.gate_desired_state === 'failure'
+    || (allowHistoricalCancellation && row.gate_desired_state === 'cancelled'
+      && row.gate_current_attempt === false);
+}
+
 function recoveryRequest(input: IncompleteP2RecoveryLookupInput, candidate: boolean): ReviewGenerationRecoveryRequest {
   return {
     owner: input.identity.owner,
@@ -174,7 +186,8 @@ async function hasPersistedIncompleteGateFindings(
            gate.repository_id AS gate_repository_id, gate.pr_number AS gate_pr_number,
            gate.expected_app_id AS gate_expected_app_id, gate.check_id AS gate_check_id,
            gate.external_id AS gate_external_id, gate.creation_state AS gate_creation_state,
-           gate.desired_state AS gate_desired_state, gate.coordinates AS gate_coordinates,
+           gate.desired_state AS gate_desired_state, gate.current_attempt AS gate_current_attempt,
+           gate.coordinates AS gate_coordinates,
            gate.evidence AS gate_evidence, gate.decision AS gate_decision,
            gate.worker_result_digest AS gate_worker_result_digest,
            completions.execution_attempt AS source_execution_attempt,
@@ -192,7 +205,8 @@ async function hasPersistedIncompleteGateFindings(
        AND gate.execution_attempt < $2
        AND gate.creation_state = 'bound'
        AND gate.check_id IS NOT NULL
-       AND gate.desired_state = 'failure'
+       AND (gate.desired_state = 'failure'
+         OR (gate.desired_state = 'cancelled' AND NOT gate.current_attempt))
        AND gate.decision->>'reason' = 'incomplete-review'
      ORDER BY gate.execution_attempt ASC
      LIMIT ${MAX_INCOMPLETE_GATE_LOSS_GUARD_ROWS + 1}`, [runId, executionAttempt]);
@@ -203,7 +217,7 @@ async function hasPersistedIncompleteGateFindings(
     const coordinates = jsonValue(row.gate_coordinates);
     if (!isRecord(gateEvidence) || !isRecord(decision) || !isRecord(coordinates)
       || decision.status !== 'failure' || decision.reason !== 'incomplete-review'
-      || row.gate_creation_state !== 'bound' || row.gate_desired_state !== 'failure'
+      || row.gate_creation_state !== 'bound' || !isFailedGatePublicationState(row, true)
       || Number(row.gate_execution_attempt) <= 0
       || Number(row.gate_execution_attempt) >= executionAttempt
       || Number(row.gate_repository_id) !== Number(row.repository_id)
@@ -348,7 +362,9 @@ function gateRecordForSource(
     || gateCheck.output?.title !== 'Review Yeti Gate: Failed (incomplete panel)') refuse();
   if (!isRecord(gateEvidence) || !isRecord(decision) || !isRecord(coordinates)
     || decision.status !== 'failure' || decision.reason !== 'incomplete-review'
-    || row.gate_desired_state !== 'failure' || row.gate_creation_state !== 'bound'
+    || !isFailedGatePublicationState(row,
+      input.recoveryEvidence === undefined && input.incompleteP2Recovery !== true)
+    || row.gate_creation_state !== 'bound'
     || Number(row.gate_review_generation) !== sourceAttempt - 1
     || Number(row.gate_execution_attempt) !== sourceAttempt
     || Number(row.gate_repository_id) !== input.repositoryId
@@ -496,7 +512,8 @@ export async function loadIncompleteP2RecoveryContext(
            gate.review_generation AS gate_review_generation, gate.repository_id AS gate_repository_id,
            gate.pr_number AS gate_pr_number, gate.expected_app_id AS gate_expected_app_id,
            gate.external_id AS gate_external_id, gate.creation_state AS gate_creation_state,
-           gate.desired_state AS gate_desired_state, gate.coordinates AS gate_coordinates,
+           gate.desired_state AS gate_desired_state, gate.current_attempt AS gate_current_attempt,
+           gate.coordinates AS gate_coordinates,
            gate.evidence AS gate_evidence, gate.decision AS gate_decision,
            gate.worker_result_digest AS gate_worker_result_digest
       FROM review_runs runs
