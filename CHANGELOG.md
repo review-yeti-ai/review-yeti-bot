@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.99.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.98.1...v1.99.0) (2026-09-30)
+
+
+### Features
+
+* **composed:** exclude binary archives from task planning and scale multi-path turn ceiling ([#1145](https://github.com/review-yeti-ai/review-yeti-bot/issues/1145)) ([80dae26](https://github.com/review-yeti-ai/review-yeti-bot/commit/80dae26eef2e09181fca8f3f28a1a711585aaab7))
+
 ## [1.98.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.98.0...v1.98.1) (2026-09-30)
 
 
