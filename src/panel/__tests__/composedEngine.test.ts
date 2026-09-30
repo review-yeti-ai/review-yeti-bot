@@ -9,6 +9,7 @@ import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import * as panelEngine from '../panelEngine';
 import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
+import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 
 const mockYaml = `
 version: 3
@@ -67,6 +68,39 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it.each(['plan', 'work'] as const)('cancels the active %s provider request when the review aborts', async (phase) => {
+    const controller = new AbortController();
+    let transportCancelled = false;
+    let started!: () => void;
+    const requestStarted = new Promise<void>((resolve) => { started = resolve; });
+    const complete = vi.fn(async (request: any) => {
+      const planning = lastText(request.messages).includes('PLAN TURN');
+      if (phase === 'work' && planning) {
+        return fakeResponse(JSON.stringify({
+          nonce: issuedNonce(request.messages),
+          tasks: [{ id: 'auth-guard', dimension: 'security', paths: ['src/auth/guard.ts'],
+            question: 'Is the guard safe?', rationale: 'Changed authentication guard.' }],
+        }));
+      }
+      started();
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        request.signal?.addEventListener('abort', () => {
+          transportCancelled = true;
+          reject(new Error('provider request cancelled'));
+        }, { once: true });
+      });
+    });
+    const review = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      signal: controller.signal });
+    const rejected = expect(review).rejects.toThrow();
+    await requestStarted;
+    controller.abort();
+    await rejected;
+    expect(transportCancelled).toBe(true);
+    expect(complete).toHaveBeenCalledTimes(phase === 'plan' ? 1 : 2);
+  });
+
   const exhaustionContext = {
     turnsUsed: 2, correctionAttempts: 1, toolTurns: 0,
     finishReason: 'stop', lastToolOutcome: 'none',
@@ -310,6 +344,51 @@ describe('executeComposedReview', () => {
     expect(result.personas).toHaveLength(1);
     expect(result.personas[0]).toMatchObject({ id: 'task-sec', decision: 'APPROVE', findings: [] });
     expect(result.optionalFailures).toEqual([]);
+  });
+
+  it('feeds bounded full reviewed-head source for a changed path and records the truthful scope', async () => {
+    let workCalls = 0;
+    let systemPrompt = '';
+    const source = [
+      'line 1: module header',
+      'line 2: changed entrypoint',
+      'line 3: unchanged caller contract',
+      'line 4: strict-case allowlist',
+    ].join('\n');
+    const repoFileProvider = {
+      findFiles: vi.fn(),
+      readFile: vi.fn().mockResolvedValue(source),
+    };
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        systemPrompt = String(payload.messages.find((message: any) => message.role === 'system')?.content || '');
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) {
+        return fakeResponse(JSON.stringify({ tool: 'read_file', args: { path: 'src/auth/guard.ts', startLine: 3, endLine: 4 } }));
+      }
+      const transcript = JSON.stringify(payload.messages);
+      expect(transcript).toContain('unchanged caller contract');
+      expect(transcript).toContain('strict-case allowlist');
+      expect(transcript).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+      repoFileProvider,
+    });
+
+    expect(systemPrompt).toContain(READ_FILE_TOOL_GUIDE);
+    expect(systemPrompt).toContain('get_diff and text search remain limited to PR diff content');
+    expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/auth/guard.ts');
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
   });
 
   // --- Mutation target 3: "make a BLOCKED task count as a pass" must go red -------------------

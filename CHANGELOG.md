@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.100.12](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.11...v1.100.12) (2026-09-30)
+
+
+### Bug Fixes
+
+* **review:** read changed-file context at the exact head ([#1172](https://github.com/review-yeti-ai/review-yeti-bot/issues/1172)) ([d251e93](https://github.com/review-yeti-ai/review-yeti-bot/commit/d251e937f3afff59d31d11989a69975af8fdd0a0))
+
+## [1.100.11](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.10...v1.100.11) (2026-09-30)
+
+
+### Bug Fixes
+
+* **REL-1206:** cancel active composed model requests ([#1175](https://github.com/review-yeti-ai/review-yeti-bot/issues/1175)) ([12243fa](https://github.com/review-yeti-ai/review-yeti-bot/commit/12243fa325a03a1fca08d651949f2c1c0ed10620))
+
+## [1.100.10](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.9...v1.100.10) (2026-09-30)
+
+
+### Bug Fixes
+
+* scope review status timing to the current gate attempt ([#1163](https://github.com/review-yeti-ai/review-yeti-bot/issues/1163)) ([bb197df](https://github.com/review-yeti-ai/review-yeti-bot/commit/bb197df31604bd02257f71585d944302162b7b67))
+
 ## [1.100.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.8...v1.100.9) (2026-09-30)
 
 

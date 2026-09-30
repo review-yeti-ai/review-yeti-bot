@@ -3,6 +3,7 @@ import { executePersonaPanel, RepoFileProvider, REPO_FIND_FILES_MAX_HITS, REPO_R
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 import { OmniRouteClient } from '../../src/gateway/omniRouteClient';
+import { READ_FILE_TOOL_GUIDE } from '../../src/panel/pathMatch';
 
 // REL: the defect this covers — a diff that *imports* a sibling file it does not itself modify
 // (`import { checkEvidence } from './dark-factory-evidence-gate.mjs'`) caused the persona's
@@ -58,7 +59,14 @@ const changedFiles = [
  * captures the exact tool-result text the harness fed back to the model on the following turn,
  * and lets the persona finish cleanly with an APPROVE so the panel run completes.
  */
-async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefined, toolCall: { tool: string; args: Record<string, string> } = { tool: 'find_files', args: { query: 'dark-factory-evidence-gate' } }): Promise<string> {
+async function runFindFilesScenario(
+  repoFileProvider: RepoFileProvider | undefined,
+  toolCall: { tool: string; args: Record<string, string> } = { tool: 'find_files', args: { query: 'dark-factory-evidence-gate' } },
+  observed?: {
+    personaPrompt?: string;
+    toolCalls?: Array<{ tool: string; scope?: string; exhaustive?: boolean }>;
+  },
+): Promise<string> {
   const config = buildConfig();
   let personaTurn = 0;
   let capturedToolResult = '';
@@ -90,6 +98,11 @@ async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefin
 
       personaTurn++;
       if (personaTurn === 1) {
+        if (observed) {
+          observed.personaPrompt = opts.messages
+            .map((message: any) => extractMessageContentText(message.content))
+            .join('\n');
+        }
         return {
           model: opts.model,
           content: '```json\n' + JSON.stringify(toolCall) + '\n```',
@@ -119,6 +132,7 @@ async function runFindFilesScenario(repoFileProvider: RepoFileProvider | undefin
   });
 
   expect(result.personas[0].decision).toBe('APPROVE');
+  if (observed) observed.toolCalls = result.personas[0].toolCalls;
   expect(capturedToolResult).not.toBe('');
   return capturedToolResult;
 }
@@ -260,23 +274,34 @@ describe('panelEngine symbol_search — scope-qualified miss', () => {
   });
 });
 
-describe('panelEngine — a diff hit always wins over the repository provider', () => {
-  // Every earlier case targets a path outside the diff, so the branch ordering was
-  // never exercised. Reordering the provider lookup ahead of the diff match would
-  // answer a read_file on a changed file with its head content and "not part of
-  // this PR's diff", instead of the patch under review.
+describe('panelEngine — read_file retrieves current source for changed paths', () => {
   const spy = () => ({
     findFiles: vi.fn(async () => ['src/ledger/writer.ts', 'src/other/writer.ts']),
-    readFile: vi.fn(async () => 'HEAD CONTENT, NOT THE PATCH'),
+    readFile: vi.fn(async () => [
+      'HEAD CONTENT at reviewed SHA',
+      'unchanged strict-case allowlist: known-safe',
+      'current writer implementation',
+    ].join('\n')),
   });
 
-  it('read_file on a changed file returns the patch and never consults the provider', async () => {
+  it('read_file on a changed file returns exact-head source context and records its scope', async () => {
     const provider = spy();
-    const out = await runFindFilesScenario(provider, { tool: 'read_file', args: { path: 'src/ledger/writer.ts' } });
-    expect(out).toContain('import { checkEvidence }');
-    expect(out).not.toContain('HEAD CONTENT');
+    const observed: {
+      personaPrompt?: string;
+      toolCalls?: Array<{ tool: string; scope?: string; exhaustive?: boolean }>;
+    } = {};
+    const out = await runFindFilesScenario(provider, { tool: 'read_file', args: { path: 'src/ledger/writer.ts' } }, observed);
+    expect(out).toContain('HEAD CONTENT at reviewed SHA');
+    expect(out).toContain('unchanged strict-case allowlist: known-safe');
+    expect(out).toContain('current writer implementation');
     expect(out).not.toContain("not part of this PR's diff");
-    expect(provider.readFile).not.toHaveBeenCalled();
+    expect(provider.readFile).toHaveBeenCalledExactlyOnceWith('src/ledger/writer.ts');
+    expect(observed.toolCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tool: 'read_file', scope: 'full-repository', exhaustive: true }),
+    ]));
+    expect(observed.personaPrompt).toContain('It reads the current file at the reviewed head');
+    expect(observed.personaPrompt).toContain('If that provider is unwired or the read fails');
+    expect(observed.personaPrompt).toContain(READ_FILE_TOOL_GUIDE);
   });
 
   it('find_files with a diff hit still searches the full tree, so files outside the diff are not hidden (REL-1102)', async () => {
