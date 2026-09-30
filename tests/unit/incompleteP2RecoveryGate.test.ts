@@ -218,6 +218,56 @@ describe('incomplete P2 recovery Gate enforcement', () => {
     }));
   });
 
+  it('rejects a valid recovery claim when the service has no retained archive', async () => {
+    const recoveryContext = context();
+    const claim = incompleteP2RecoveryClaimFor(recoveryContext);
+    expect(incompleteP2RecoveryClaimSchema.safeParse(claim).success).toBe(true);
+    recoveryMocks.requiredDigest.mockResolvedValue(null);
+
+    const fixture = repositoryFixture();
+    const event = completion(recoveryContext, { claim });
+    expect(event).toMatchObject({
+      runId: RUN, repositoryId: 123, owner: 'example', repo: 'candidate', prNumber: 42,
+      headSha: HEAD, baseSha: BASE, policyDigest: POLICY, configDigest: CONFIG,
+      executionAttempt: 2,
+    });
+    const result = await fixture.repository.recordWorkerResult(
+      event,
+      { workerTokenDigest: WORKER_TOKEN_DIGEST },
+      trustedCompletion(),
+      NOW,
+    );
+
+    expect(result).toBe('recorded');
+    expect(gateDecision(fixture.calls)).toEqual({
+      status: 'failure', eligible: false, reason: 'invalid-evidence',
+    });
+    expect(recoveryMocks.requiredDigest).toHaveBeenCalled();
+    expect(recoveryMocks.load).not.toHaveBeenCalled();
+    expect(fixture.calls.some(({ sql }) => sql === 'COMMIT')).toBe(true);
+    expect(fixture.calls.some(({ sql }) => sql === 'ROLLBACK')).toBe(false);
+  });
+
+  it('allows an ordinary retry with no recovery claim when no archive is required', async () => {
+    const recoveryContext = context();
+    recoveryMocks.requiredDigest.mockResolvedValue(null);
+
+    const fixture = repositoryFixture();
+    const result = await fixture.repository.recordWorkerResult(
+      completion(recoveryContext),
+      { workerTokenDigest: WORKER_TOKEN_DIGEST },
+      trustedCompletion(),
+      NOW,
+    );
+
+    expect(result).toBe('recorded');
+    expect(gateDecision(fixture.calls)).toEqual({
+      status: 'success', eligible: true, reason: 'clean-review',
+    });
+    expect(recoveryMocks.requiredDigest).toHaveBeenCalled();
+    expect(recoveryMocks.load).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['missing claim', (recoveryContext: IncompleteP2RecoveryContext) => ({})],
     ['mismatched claim', (recoveryContext: IncompleteP2RecoveryContext) => ({
