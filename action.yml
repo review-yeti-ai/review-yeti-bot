@@ -63,7 +63,8 @@ inputs:
       REL-1113: wall-clock budget in ms for the review pipeline process. When reviewer lanes fail on
       transport, provider or deadline and no lane reported a finding, the pipeline re-attempts those
       lanes only while a full lane still fits inside this budget, then reports INCOMPLETE (never a
-      BLOCK verdict). Keep it below the calling job's timeout. Defaults to 780000 (13 minutes).
+      BLOCK verdict). This is the evidence-phase budget; reserve a separate closeout window in the
+      calling job. Defaults to 1200000 (20 minutes).
     required: false
     default: ''
   transport-compat:

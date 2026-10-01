@@ -21,6 +21,7 @@ import type { ReviewRunIdentity } from '../../src/review/reviewRun';
 import type { PanelResult } from '../../src/panel/types';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { logger } from '../../src/utils/logger';
+import { DEFAULT_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const HEAD_SHA = '1111111111111111111111111111111111111111';
 const BASE_SHA = '2222222222222222222222222222222222222222';
@@ -438,7 +439,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
         repositoryId: REPO_ID,
         installationId: 2001,
         receivedAt: 1_790_000_000_000,
-        terminalDeadline: 1_790_000_000_000 + 900_000,
+        terminalDeadline: 1_790_000_000_000 + DEFAULT_TERMINAL_DEADLINE_MS,
         payloadDigest: '5'.repeat(64),
         publicationMode: 'app-gate',
         centralActionDispatch: false,
@@ -459,7 +460,7 @@ describe('Milestone 2 Challenger Stress Suite: Review Engine Selection on trigge
         repositoryId: REPO_ID,
         installationId: 2001,
         receivedAt: 1_790_000_000_000,
-        terminalDeadline: 1_790_000_000_000 + 900_000,
+        terminalDeadline: 1_790_000_000_000 + DEFAULT_TERMINAL_DEADLINE_MS,
         payloadDigest: '5'.repeat(64),
         publicationMode: 'app-gate',
         centralActionDispatch: false,

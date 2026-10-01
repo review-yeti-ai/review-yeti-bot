@@ -25,7 +25,11 @@
 import { createPanelDeadlineSignal, executePersonaPanel, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
 import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
-import { executeComposedReview } from '../panel/composedEngine';
+import {
+  buildGracefulComposedPanelResult,
+  executeComposedReview,
+  type ComposedCheckpointSnapshot,
+} from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
@@ -84,6 +88,8 @@ import {
   type WorkerReviewResult,
 } from '../review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../review/workerReviewCompletionHttp';
+import type { ReviewExecutionCheckpointAdapter } from '../review/reviewExecutionCheckpointHttp';
+import { REVIEW_EXECUTION_CHECKPOINT_VERSION, type ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
 import type { PanelResult, LaneTokenUsage, LaneAggregateUsage } from '../panel/types';
 import { parseChangedFiles } from '../review/changedFiles';
 import { loadDiffShrinkInput, renderDiffShrinkSummary } from '../review/diffShrink';
@@ -956,6 +962,8 @@ export interface PublishingReviewDeps {
   incrementalBase?: IncrementalBaseSource;
   /** Fail-closed service-owned advisory context for a bounded exact-head replacement. */
   incompleteP2Recovery?: IncompleteP2RecoverySource;
+  /** Durable exact-head composed-task progress used for timeout closeout and resume. */
+  reviewCheckpoint?: ReviewExecutionCheckpointAdapter;
   /** REL-1084 test seam; production compares with this run's `GH_TOKEN`. */
   incrementalCompareReader?: CommitComparisonReader;
   /**
@@ -1502,6 +1510,65 @@ export async function runPublishingReviewWorker(
     // An empty changed-file set must not be read as "nothing to review, ship".
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
+    let resumedCheckpoint: ReviewExecutionCheckpoint | null = null;
+    if (authoritative && configuredReviewEngine === 'composed' && deps.reviewCheckpoint) {
+      try { resumedCheckpoint = await deps.reviewCheckpoint.read(deps.signal); }
+      catch (error) {
+        // A resume-store outage before evidence collection must not prevent a fresh full review.
+        // Writes remain enabled below, so a recovered store can still checkpoint this attempt.
+        logger.error('Exact-head review checkpoint could not be read; starting a full review', {
+          runId: identity.runId, repository: identity.repo, prNumber: identity.prNumber,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (resumedCheckpoint && (resumedCheckpoint.runId !== identity.runId
+      || resumedCheckpoint.repositoryId !== identity.repositoryId || resumedCheckpoint.owner !== identity.owner
+      || resumedCheckpoint.repo !== identity.repoName || resumedCheckpoint.prNumber !== identity.prNumber
+      || resumedCheckpoint.headSha !== identity.headSha || resumedCheckpoint.baseSha !== identity.baseSha
+      || resumedCheckpoint.policyDigest !== value(env, 'REVIEW_POLICY_DIGEST')
+      || resumedCheckpoint.configDigest !== value(env, 'REVIEW_CONFIG_DIGEST'))) {
+      throw new Error('Review execution checkpoint does not match this exact-head review');
+    }
+    // Set only after the composed engine revalidates the stored plan and findings against this
+    // exact diff. A syntactically valid but unusable stored checkpoint must never be rendered by
+    // the outer deadline race while the engine is still replacing its plan.
+    const composedCheckpointState: { latest: ComposedCheckpointSnapshot | null; durableRevision: number } = {
+      latest: null,
+      durableRevision: resumedCheckpoint?.revision ?? 0,
+    };
+    let checkpointPersistenceFailed = false;
+    const composedCheckpoint = configuredReviewEngine === 'composed' && deps.reviewCheckpoint ? {
+      resumed: resumedCheckpoint,
+      capture: (snapshot: ComposedCheckpointSnapshot) => {
+        composedCheckpointState.latest = structuredClone(snapshot);
+      },
+      save: async (snapshot: Parameters<NonNullable<Parameters<typeof executeComposedReview>[0]['checkpoint']>['save']>[0]) => {
+        // Custom composed runners may call `save` directly without the engine's synchronous
+        // capture hook. Retain the same monotonic in-process fallback in that compatibility path.
+        if (!composedCheckpointState.latest || composedCheckpointState.latest.revision <= snapshot.revision) {
+          composedCheckpointState.latest = structuredClone(snapshot);
+        }
+        try {
+          await deps.reviewCheckpoint!.write({
+            version: REVIEW_EXECUTION_CHECKPOINT_VERSION,
+            runId: identity.runId, repositoryId: identity.repositoryId, owner: identity.owner, repo: identity.repoName,
+            prNumber: identity.prNumber, headSha: identity.headSha, baseSha: identity.baseSha,
+            policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
+            executionAttempt: identity.executionAttempt, revision: snapshot.revision,
+            plan: snapshot.plan, completedTasks: snapshot.completedTasks,
+          }, deps.signal);
+          composedCheckpointState.durableRevision = Math.max(
+            composedCheckpointState.durableRevision,
+            snapshot.revision,
+          );
+        } catch (error) {
+          checkpointPersistenceFailed = true;
+          throw error;
+        }
+      },
+    } : undefined;
+
     const modelClient = boundedPublishingModelClient(
       deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey }),
     );
@@ -1873,8 +1940,7 @@ export async function runPublishingReviewWorker(
       prePanelCoverageComplete = unreadable.length === 0
         && omittedSourcePathsOf(unavailablePatchFilesOf(changedFiles)).length === 0;
       panelDeadline.check();
-      const panelResult = await raceWithPanelAbort(
-        Promise.resolve().then(() => {
+      const panelOperation = Promise.resolve().then(() => {
           panelDeadline.check();
           return panelRunner({
           config: groundedConfig,
@@ -1898,6 +1964,7 @@ export async function runPublishingReviewWorker(
           ...(reviewBudget ? { reviewBudget } : {}),
           ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
           ...(mapReduce ? { mapReduce } : {}),
+          ...(composedCheckpoint ? { checkpoint: composedCheckpoint } : {}),
           // REL-1139 (ADR 0687): default off; skips only the moderator call, never a lane or the
           // arbiter. Eligibility is logged on every run either way.
           ...(skipEmptyModerationEnabledFor(env, identity.repo) ? { skipEmptyModeration: true } : {}),
@@ -1909,10 +1976,33 @@ export async function runPublishingReviewWorker(
         })
           // REL-1124: only a rejection of the panel runner itself may be read as a reviewer lane
           // lost to the gateway; a source read or publication failure never is.
-          .catch((error: unknown) => { throw markThrownByPanel(error); }),
-        panelDeadline.signal,
-      );
-      panelDeadline.check();
+          .catch((error: unknown) => { throw markThrownByPanel(error); });
+      let panelResult: PanelResult;
+      try {
+        // Keep the outer race for every engine. The composed engine normally returns its own
+        // graceful result, but this boundary guarantees closeout even when a provider/harness
+        // ignores cancellation. The catch below reconstructs the result from the last validated
+        // in-process checkpoint instead of waiting indefinitely or discarding completed work.
+        panelResult = await raceWithPanelAbort(panelOperation, panelDeadline.signal);
+      } catch (error) {
+        const latestComposedCheckpoint = composedCheckpointState.latest;
+        if (reviewEngine !== 'composed' || !(error instanceof PanelDeadlineExceededError)
+          || !latestComposedCheckpoint) throw error;
+        panelResult = buildGracefulComposedPanelResult({
+          config: groundedConfig,
+          snapshot: latestComposedCheckpoint,
+          headSha: identity.headSha,
+          repositoryVisibility,
+          panelWallClockMs: Date.now() - Date.parse(startedAt),
+          checkpointPersistenceFailed: checkpointPersistenceFailed
+            || composedCheckpointState.durableRevision < latestComposedCheckpoint.revision,
+        });
+        void panelOperation.catch((lateError) => logger.warn('Composed review settled after checkpoint closeout', {
+          runId: identity.runId, repository: identity.repo,
+          error: lateError instanceof Error ? lateError.message : String(lateError),
+        }));
+      }
+      if (!panelResult.gracefulExit) panelDeadline.check();
       const diffShrinkDisclosure = panelResult.diffShrink ?? null;
       if (diffShrinkDisclosure) {
         logger.info('Diff shrinking applied before review', {
@@ -1978,7 +2068,8 @@ export async function runPublishingReviewWorker(
         });
       }
 
-      const isFastShip = isFastShipPanelResult(panelResult);
+      const fastShipResult = isFastShipPanelResult(panelResult) ? panelResult : null;
+      const isFastShip = fastShipResult !== null;
       // REL-1085: what the engine served from cache, and this run's clean per-file lane results
       // for later runs. A fast-ship or zero-lane result reviewed nothing, so it records nothing.
       const verdictCacheDisclosure = panelResult.verdictCache ?? null;
@@ -2038,6 +2129,7 @@ export async function runPublishingReviewWorker(
         && changedFiles.length > 0
         && changedFiles.every((file) => ignorePatterns.some((glob) => matchOne(glob, file.path)));
       const rawRoster = rawPublicationRoster(panelResult, isFastShip, notApplicable);
+      const gracefulPartial = panelResult.gracefulExit?.reason === 'evidence_deadline';
       const rawFindings = (Array.isArray(panelResult.personas) ? panelResult.personas : [])
         .flatMap((persona: { findings?: unknown[] }) => persona.findings || []);
       const panelQuorumSatisfied = panelResult?.quorum?.satisfied === true;
@@ -2122,7 +2214,8 @@ export async function runPublishingReviewWorker(
         missingConfiguredLaneCount: rawRoster.missingConfiguredLaneCount,
         malformedReturnedLaneCount: rawRoster.malformedReturnedLaneCount,
       };
-      const recoverablePanelFailure = isRecoverableIncompletePanel({ authoritative, ...recoverablePanelEvidence })
+      const recoverablePanelFailure = !gracefulPartial
+        && isRecoverableIncompletePanel({ authoritative, ...recoverablePanelEvidence })
         // `runPersona` assigns a coded `failureClass` at the exact point it observed the lane's
         // terminal error (REL-892 finding 2); prefer that over re-deriving one from the free-form
         // `error` string here. `classifyFailure` remains the fallback for a lane that failed
@@ -2254,6 +2347,8 @@ export async function runPublishingReviewWorker(
       : 'documentation-only';
     const title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'
+      : gracefulPartial
+        ? 'Review Yeti: INCOMPLETE (partial evidence published)'
       : unreportedNoVerdict
         ? 'Review Yeti: review did not complete'
         : documentationOnly
@@ -2262,8 +2357,8 @@ export async function runPublishingReviewWorker(
             ? 'Review Yeti: SHIP (fast-ship)'
             : `Review Yeti: ${verdict}`;
 
-    const safeClassifierRationale = fastShipApproved && panelResult.classifierRationale
-      ? panelResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
+    const safeClassifierRationale = fastShipApproved && fastShipResult?.classifierRationale
+      ? fastShipResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
       : 'Approved via fast-ship triage classifier.';
 
     const summaryParts = documentationOnly
@@ -2280,7 +2375,7 @@ export async function runPublishingReviewWorker(
           `### Review Yeti: SHIP (fast-ship)`,
           `- **Verdict**: \`SHIP\` at \`${identity.headSha}\` (fast-ship auto-approved without multi-persona panel).`,
           `- **Classifier Rationale**: \`${safeClassifierRationale}\``,
-          `- **Token Savings**: Estimated ~${panelResult.tokensSaved.toLocaleString()} tokens saved by bypassing full panel evaluation.`,
+          `- **Token Savings**: Estimated ~${(fastShipResult?.tokensSaved ?? 0).toLocaleString()} tokens saved by bypassing full panel evaluation.`,
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
@@ -2294,7 +2389,9 @@ export async function runPublishingReviewWorker(
           `Repository visibility: ${repositoryVisibility}.`,
         ]
       : [
-          unreportedNoVerdict
+          gracefulPartial
+            ? `Evidence collection reached its 20-minute cutoff at \`${identity.headSha}\`. The final closeout preserved and published ${findings.length} validated finding(s); ${panelResult.gracefulExit?.pendingTaskIds.length ?? 0} risk-ordered task(s) remain. This is fail-closed, not an approval. ${panelResult.gracefulExit?.checkpointPersistenceFailed ? 'Checkpoint persistence failed, so the rerun will safely revalidate work instead of trusting missing state.' : 'An exact-head rerun resumes the durable completed-task checkpoint.'}`
+            : unreportedNoVerdict
             ? `No review verdict at \`${identity.headSha}\`: ${missingIds.size} configured task(s) ran without a valid result. This is not a finding about the diff; request an exact-head review after correcting the malformed output.`
             : `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
           // REL-1139: the same shared decision the trusted completion side re-evaluates.
@@ -2456,9 +2553,13 @@ export async function runPublishingReviewWorker(
           // push this past `resultSchema.personas`'s own bound.
           personas: [...personas, ...errors, ...shadowPersonas, ...shadowErrors, ...shadowRunFailure].slice(0, MAX_PERSONAS),
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
-          coverageComplete: coverageGaps.length === 0,
-          quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict,
-          ...(unreportedNoVerdict ? { failureDiagnostics: {
+          coverageComplete: coverageGaps.length === 0 && !gracefulPartial,
+          quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict && !gracefulPartial,
+          ...(gracefulPartial ? { failureDiagnostics: {
+            reason: 'review_evidence_deadline',
+            logTail: `Evidence cutoff reached with ${panelResult.gracefulExit?.completedTaskIds.length ?? 0} completed and ${panelResult.gracefulExit?.pendingTaskIds.length ?? 0} pending task(s).${panelResult.gracefulExit?.checkpointPersistenceFailed ? ' Checkpoint persistence failed.' : ''}`,
+            recoverableIncompletePanel: false,
+          } } : unreportedNoVerdict ? { failureDiagnostics: {
             reason: 'panel_unreported_malformed_output',
             logTail: 'A configured reviewer task ran without a valid result.',
             recoverableIncompletePanel: false,
@@ -2723,11 +2824,11 @@ export async function runPublishingReviewWorker(
       model: transport.model,
       // A review with an unreported malformed task has no verdict either; neither failure
       // may report arbitration's BLOCK, which was derived only from incomplete coverage.
-      verdict: infrastructureIncomplete || unreportedNoVerdict ? 'INCOMPLETE' : verdict,
-      conclusion: authoritativeInfrastructureResult ? 'failure' : conclusion,
+      verdict: infrastructureIncomplete || unreportedNoVerdict || gracefulPartial ? 'INCOMPLETE' : verdict,
+      conclusion: authoritativeInfrastructureResult || gracefulPartial ? 'failure' : conclusion,
       findingCount: findings.length,
       blockingFindingCount: blocking.length,
-      failureClass: unreportedNoVerdict ? 'malformed_output' : (recoverablePanelFailure
+      failureClass: gracefulPartial ? 'timeout' : unreportedNoVerdict ? 'malformed_output' : (recoverablePanelFailure
         ?? (authoritativeInfrastructureResult ? (incompleteLanes[0]?.failureClass as WorkerTerminalFailure['failureClass'] | undefined) ?? 'transport' : null)),
       startedAt,
       completedAt,

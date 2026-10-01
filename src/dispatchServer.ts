@@ -2,6 +2,7 @@ import express, { type Express, type NextFunction, type Request, type Response, 
 import { READINESS_CONTRACTS, readinessBody, readinessStatus } from './health/readinessContract';
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
+import { MAX_REVIEW_CHECKPOINT_BYTES } from './review/reviewExecutionCheckpoint';
 import { createRateLimiter } from './security/rateLimiter';
 import { createWebhookRouter, type RequestWithRawBody } from './github/webhookServer';
 import type { GitHubWebhookAdmissionEvent } from './review/githubWebhookAdmission';
@@ -100,6 +101,7 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
   // Only the typed completion endpoint accepts bounded full persona evidence.
   // Action admission retains its smaller limit and strict request schema.
   app.use('/api/dispatch/completion', express.json({ limit: MAX_COMPLETION_BYTES, strict: true }));
+  app.use('/api/dispatch/review-checkpoint', express.json({ limit: MAX_REVIEW_CHECKPOINT_BYTES, strict: true }));
   app.use(express.json({ limit: '64kb', strict: true }));
 
   app.get('/', (request: Request, response: Response) => {
