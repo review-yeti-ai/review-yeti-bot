@@ -12,37 +12,91 @@ type Manifest = { version: string; entrypoint: string; files: Array<{ path: stri
 
 const ioCalls = vi.hoisted(() => ({
   opens: [] as string[],
+  lstats: [] as string[],
+  realpaths: [] as string[],
+  reads: [] as string[],
+  blocked: [] as string[],
+  stopPaths: new Set<string>(),
+  stopOpen: undefined as string | undefined,
+  replacements: [] as Array<{ before: number; after: number }>,
   handles: [] as Array<{ fd: number; close: () => Promise<void> }>,
-  mutation: undefined as undefined | { path: string; mode: 'truncate' | 'grow' | 'metadata' },
+  mutation: undefined as undefined | { path: string; mode: 'truncate' | 'grow' | 'metadata' | 'replace-before-open' | 'replace-before-second-lstat' | 'read-error' },
 }));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
+  function stopUnsafeIo(path: string) {
+    if (ioCalls.stopPaths.has(path)) {
+      ioCalls.blocked.push(path);
+      throw new Error('fixture stopped unsafe counterfactual path inspection');
+    }
+  }
+  async function replaceWithSameBytes(path: string) {
+    const before = await actual.lstat(path);
+    const replacement = `${path}.replacement`;
+    await actual.writeFile(replacement, await actual.readFile(path));
+    await actual.rename(replacement, path);
+    const after = await actual.lstat(path);
+    ioCalls.replacements.push({ before: before.ino, after: after.ino });
+  }
   return {
     ...actual,
+    lstat: async (...args: Parameters<typeof actual.lstat>) => {
+      const path = String(args[0]);
+      ioCalls.lstats.push(path);
+      stopUnsafeIo(path);
+      if (ioCalls.mutation?.path === path && ioCalls.mutation.mode === 'replace-before-second-lstat'
+          && ioCalls.lstats.filter((observed) => observed === path).length === 2) {
+        // Change the real inode after closure preflight, but before the helper
+        // takes its own fresh observed stat. Never fabricate returned metadata.
+        await replaceWithSameBytes(path);
+      }
+      return actual.lstat(...args);
+    },
+    realpath: async (...args: Parameters<typeof actual.realpath>) => {
+      const path = String(args[0]);
+      ioCalls.realpaths.push(path);
+      stopUnsafeIo(path);
+      return actual.realpath(...args);
+    },
     open: async (...args: Parameters<typeof actual.open>) => {
-      ioCalls.opens.push(String(args[0]));
+      const path = String(args[0]);
+      ioCalls.opens.push(path);
+      if (ioCalls.stopOpen === path) {
+        ioCalls.blocked.push(path);
+        throw new Error('fixture stopped unsafe counterfactual content read');
+      }
+      const mutation = ioCalls.mutation;
+      if (mutation?.path === path && mutation.mode === 'replace-before-open') {
+        // Keep the declared bytes/hash valid but replace the still-live original
+        // inode after lstat and before the actual O_NOFOLLOW open.
+        await replaceWithSameBytes(path);
+      }
       const handle = await actual.open(...args);
       ioCalls.handles.push(handle);
-      const mutation = ioCalls.mutation;
-      if (mutation?.path === String(args[0])) {
-        const read = handle.read.bind(handle) as (...values: any[]) => Promise<{ bytesRead: number; buffer: Buffer }>;
-        let changed = false;
-        // Observe real IO and change only this run-owned fixture. No fabricated
-        // handle, byte count, metadata, digest or validator result is returned.
-        handle.read = (async (...values: any[]) => {
-          if (!changed && mutation.mode === 'truncate') {
+      const read = handle.read.bind(handle) as (...values: any[]) => Promise<{ bytesRead: number; buffer: Buffer }>;
+      let changed = false;
+      // All observations come from real handles. The marked error is injected
+      // after a real read, with the descriptor still open for production cleanup.
+      handle.read = (async (...values: any[]) => {
+        ioCalls.reads.push(path);
+        if (mutation?.path === path && !changed && mutation.mode === 'truncate') {
+          changed = true;
+          await actual.truncate(path, 0);
+        }
+        const result = await read(...values);
+        if (mutation?.path === path && !changed && result.bytesRead > 0) {
+          if (mutation.mode === 'read-error') {
             changed = true;
-            await actual.truncate(mutation.path, 0);
+            throw new Error(`fixture read failed at ${path}: untrusted-provider-secret-marker`);
           }
-          const result = await read(...values);
-          if (!changed && result.bytesRead > 0) {
+          if (mutation.mode === 'grow' || mutation.mode === 'metadata') {
             changed = true;
-            if (mutation.mode === 'grow') await actual.appendFile(mutation.path, 'growth');
-            else await actual.utimes(mutation.path, new Date('2000-01-01'), new Date('2000-01-01'));
+            if (mutation.mode === 'grow') await actual.appendFile(path, 'growth');
+            else await actual.utimes(path, new Date('2000-01-01'), new Date('2000-01-01'));
           }
-          return result;
-        }) as typeof handle.read;
-      }
+        }
+        return result;
+      }) as typeof handle.read;
       return handle;
     },
   };
@@ -67,6 +121,13 @@ describe('worker runtime manifest integrity through the production self-test', (
     };
     moduleLoader.mockReset();
     ioCalls.opens.length = 0;
+    ioCalls.lstats.length = 0;
+    ioCalls.realpaths.length = 0;
+    ioCalls.reads.length = 0;
+    ioCalls.blocked.length = 0;
+    ioCalls.stopPaths.clear();
+    ioCalls.stopOpen = undefined;
+    ioCalls.replacements.length = 0;
     ioCalls.handles.length = 0;
     ioCalls.mutation = undefined;
   });
@@ -88,7 +149,7 @@ describe('worker runtime manifest integrity through the production self-test', (
 
   async function refuses(value: unknown = manifest) {
     await save(value);
-    await expect(run()).rejects.toThrow('worker runtime manifest is invalid');
+    await expect(run()).rejects.toThrow(/^worker runtime manifest is invalid$/);
     expect(moduleLoader).not.toHaveBeenCalled();
     expect(ioCalls.handles.every((handle) => handle.fd === -1)).toBe(true);
   }
@@ -115,6 +176,14 @@ describe('worker runtime manifest integrity through the production self-test', (
   it('rejects the formerly accepted header-only empty closure before any module is loaded', async () => {
     manifest.files = [];
     await refuses();
+  });
+
+  it.each([
+    { version: 'ReviewYetiWorkerRuntime.v0' },
+    { entrypoint: 'dist/other.js' },
+  ])('rejects an otherwise valid real closure with only the exact header changed (%j)', async (change) => {
+    await refuses({ ...manifest, ...change });
+    expect(ioCalls.opens).toEqual([manifestPath]);
   });
 
   it('rejects a listed file whose real bytes do not match its well-formed SHA256', async () => {
@@ -257,6 +326,47 @@ describe('worker runtime manifest integrity through the production self-test', (
     },
   );
 
+  it('refuses a real inode replacement between lstat and open even when listed bytes still match', async () => {
+    // This reaches the helper guard, but is also protected by the later
+    // preflight identity comparison. The manifest case below isolates the helper.
+    const path = 'replaced-file.bin';
+    const bytes = Buffer.from('unchanged declared fixture bytes');
+    await writeFile(join(root, path), bytes);
+    manifest.files.push({ path, sha256: sha256(bytes) });
+    ioCalls.mutation = { path: join(root, path), mode: 'replace-before-open' };
+    await refuses();
+  });
+
+  it('isolates post-lstat/pre-open identity refusal on the manifest, which has no later preflight guard', async () => {
+    ioCalls.mutation = { path: manifestPath, mode: 'replace-before-open' };
+    await refuses();
+    expect(ioCalls.replacements).toHaveLength(1);
+    expect(ioCalls.replacements[0].after).not.toBe(ioCalls.replacements[0].before);
+    expect(ioCalls.opens).toEqual([manifestPath]);
+    expect(ioCalls.reads).toEqual([]);
+  });
+
+  it('isolates retained preflight identity when a listed inode changes before the helper second lstat', async () => {
+    const path = join(root, ENTRYPOINT);
+    ioCalls.mutation = { path, mode: 'replace-before-second-lstat' };
+    await refuses();
+    expect(ioCalls.replacements).toHaveLength(1);
+    expect(ioCalls.replacements[0].after).not.toBe(ioCalls.replacements[0].before);
+    expect(ioCalls.lstats.filter((observed) => observed === path)).toHaveLength(2);
+    expect(ioCalls.opens).toEqual([manifestPath, path]);
+    expect(ioCalls.reads).not.toContain(path);
+  });
+
+  it.each(['manifest', 'listed file'] as const)(
+    'redacts a marked real-handle read error in the %s and closes before refusing loading', async (target) => {
+      const path = target === 'manifest' ? manifestPath : join(root, ENTRYPOINT);
+      ioCalls.mutation = { path, mode: 'read-error' };
+      await refuses();
+      expect(ioCalls.reads).toContain(path);
+      expect(ioCalls.handles).toHaveLength(target === 'manifest' ? 1 : 2);
+    },
+  );
+
   it('bounds manifest reads before parsing or loading', async () => {
     await save();
     await truncate(manifestPath, WORKER_RUNTIME_MANIFEST_LIMITS.manifestBytes + 1);
@@ -265,8 +375,15 @@ describe('worker runtime manifest integrity through the production self-test', (
   });
 
   it('bounds listed file size before reading a sparse oversized file', async () => {
-    await truncate(join(root, ENTRYPOINT), WORKER_RUNTIME_MANIFEST_LIMITS.fileBytes + 1);
+    const path = join(root, ENTRYPOINT);
+    await truncate(path, WORKER_RUNTIME_MANIFEST_LIMITS.fileBytes + 1);
+    // A removed cap must fail the observation, not read/hash 128 MiB to find
+    // the independent stale digest. The stop records any unsafe open attempt.
+    ioCalls.stopOpen = path;
     await refuses();
+    expect(ioCalls.opens).toEqual([manifestPath]);
+    expect(ioCalls.reads).not.toContain(path);
+    expect(ioCalls.blocked).toEqual([]);
   });
 
   it('preflights the aggregate byte bound before hashing any listed file', async () => {
@@ -283,10 +400,20 @@ describe('worker runtime manifest integrity through the production self-test', (
   });
 
   it('bounds file count before examining listed paths', async () => {
-    manifest.files = Array.from({ length: WORKER_RUNTIME_MANIFEST_LIMITS.files + 1 }, (_value, index) => ({
-      path: `files/${index}.js`, sha256: sha256('file'),
-    }));
+    manifest.files = [
+      ...manifest.files,
+      ...Array.from({ length: WORKER_RUNTIME_MANIFEST_LIMITS.files }, (_value, index) => ({
+        path: `files/${index}.js`, sha256: sha256('file'),
+      })),
+    ];
+    // The canonical entrypoint is present and valid. Stop before the first
+    // listed-directory lookup if the count guard regresses; no huge tree needed.
+    ioCalls.stopPaths.add(join(root, 'dist'));
     await refuses();
+    expect(ioCalls.opens).toEqual([manifestPath]);
+    expect(ioCalls.lstats).toEqual([manifestPath, manifestPath]);
+    expect(ioCalls.realpaths).toEqual([root]);
+    expect(ioCalls.blocked).toEqual([]);
   });
 
   it.each([
@@ -294,7 +421,12 @@ describe('worker runtime manifest integrity through the production self-test', (
     `${'directory/'.repeat(WORKER_RUNTIME_MANIFEST_LIMITS.pathComponents)}file.js`,
   ])('bounds path bytes/depth before traversal (%j)', async (path) => {
     manifest.files.push({ path, sha256: sha256('file') });
+    ioCalls.stopPaths.add(join(root, path.split('/')[0]));
     await refuses();
+    expect(ioCalls.opens).toEqual([manifestPath]);
+    expect(ioCalls.lstats).toEqual([manifestPath, manifestPath]);
+    expect(ioCalls.realpaths).toEqual([root]);
+    expect(ioCalls.blocked).toEqual([]);
   });
 
   it('rejects a FIFO manifest without waiting for a writer', async () => {
