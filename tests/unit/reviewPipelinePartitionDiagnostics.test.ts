@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import Module from 'node:module';
+import Module, { createRequire } from 'node:module';
 import { createScratchOwner, requiredSuiteScratchRoot } from '../support/scratch-lifecycle';
 
 const root = path.resolve(__dirname, '../..');
@@ -229,33 +229,34 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
   });
 });
 
-// Load the exact reducer from main(), in its real module lexical scope, without
-// adding an exported production API or duplicating its policy in the test. These
-// typed synthetic lane results give attribution fields distinct sibling values;
-// the full main()/parser/publication fixtures above remain the integration proof.
-function loadPartitionReducer(selectionCounterfactual = false) {
+type SelectorVariant = 'canonical' | 'nullish' | 'whitespace' | 'nullish-whitespace';
+
+// Ordinary assertions call the exported production helper directly. Only the
+// explicit mutation/equivalence controls compile an isolated module variant;
+// neither path extracts a region based on main() names, parameters or layout.
+function loadPartitionReducer(selectionCounterfactual = false, variant: SelectorVariant = 'canonical') {
   const filename = path.join(root, '.github/workflows/pipelines/review-pipeline.js');
-  const source = fs.readFileSync(filename, 'utf8');
-  const start = source.indexOf('personaResults = reviewPersonas.map((persona, pIdx) => {');
-  expect(start).toBeGreaterThan(-1);
-  const end = source.indexOf('\n      } else {', start);
-  expect(end).toBeGreaterThan(start);
-  let reducer = source.slice(start, end);
+  if (!selectionCounterfactual && variant === 'canonical') {
+    return createRequire(import.meta.url)(filename);
+  }
+  let source = fs.readFileSync(filename, 'utf8');
+  const selection = /const\s+diagnosticRun\s*=\s*anyError\s*(?:\|\||\?\?)\s*lastRun\s*;/g;
+  expect([...source.matchAll(selection)]).toHaveLength(1);
+  if (variant !== 'canonical') {
+    const operator = variant.includes('nullish') ? '??' : '||';
+    const separator = variant.includes('whitespace') ? '\n\t ' : ' ';
+    source = source.replace(selection, `const diagnosticRun${separator}=${separator}anyError${separator}${operator}${separator}lastRun;`);
+  }
   if (selectionCounterfactual) {
-    const original = 'const diagnosticRun = anyError || lastRun;';
-    expect(reducer).toContain(original);
     // Simulate changing only the representative-failure selection. All failed
     // diagnostics must follow this binding, while anyError still gates failure.
-    reducer = reducer.replace(original, "const diagnosticRun = laneRuns.filter((run) => run.decision === 'ERROR').at(-1) || lastRun;");
+    expect([...source.matchAll(selection)]).toHaveLength(1);
+    source = source.replace(selection, "const diagnosticRun = laneRuns.filter((run) => run.decision === 'ERROR').at(-1) || lastRun;");
   }
   const fixtureModule = new Module(filename) as any;
   fixtureModule.filename = filename;
   fixtureModule.paths = (Module as any)._nodeModulePaths(path.dirname(filename));
-  fixtureModule._compile(`${source}\nmodule.exports.fixtureReduce = (partitionRuns, reviewPersonas) => {
-    let personaResults;
-    ${reducer}
-    return personaResults;
-  };`, filename);
+  fixtureModule._compile(source, filename);
   return fixtureModule.exports;
 }
 
@@ -286,9 +287,9 @@ function diagnosticLane(kind: 'failed' | 'successful', recoveryAction: string | 
   };
 }
 
-function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[], selectionCounterfactual = false) {
-  const fixture = loadPartitionReducer(selectionCounterfactual);
-  const [result] = fixture.fixtureReduce(lanes.map((lane) => [lane]), [{ id: 'testing', name: 'Testing' }]);
+function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[], selectionCounterfactual = false, variant: SelectorVariant = 'canonical') {
+  const fixture = loadPartitionReducer(selectionCounterfactual, variant);
+  const [result] = fixture.aggregatePartitionPersonaResults(lanes.map((lane) => [lane]), [{ id: 'testing', name: 'Testing' }]);
   const receipt = fixture.buildProviderTelemetryReceipt([result], { repo: 'fixture/example', prNumber: 1 });
   return { result, receipt: receipt.lanes[0] };
 }
@@ -314,6 +315,18 @@ function expectFailedAttribution(result: any, receipt: any, failed: ReturnType<t
 }
 
 describe('production partition reducer attribution and recovery branches', () => {
+  it.each([
+    ['nullish', false], ['whitespace', false], ['nullish-whitespace', false],
+    ['nullish', true], ['whitespace', true], ['nullish-whitespace', true],
+  ] as const)('supports %s selection formatting with counterfactual=%s', (variant, counterfactual) => {
+    const first = diagnosticLane('failed', 'rate_limit_retry');
+    const last = { ...diagnosticLane('failed', 'structured_output_fallback'), ttftMs: 149 };
+    last.responseAttempts = [{ ...last.responseAttempts[0], ttftMs: last.ttftMs }];
+    const { result, receipt } = reduceDiagnosticLanes([first, last], counterfactual, variant);
+    expectFailedAttribution(result, receipt, counterfactual ? last : first);
+    expect(result.error).toBe(first.error);
+  });
+
   it.each([
     ['first', 'structured_output_fallback'], ['last', 'structured_output_fallback'],
     ['first', null], ['last', null],
