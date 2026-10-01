@@ -259,3 +259,350 @@ describe('embedded operator Go qualification workflow', () => {
     expect(missingVersion).toMatchObject({ failureClass: 'success', diagnosticClass: 'toolchain_version_unavailable', goVersion: null });
   });
 });
+
+// Regression fixtures use the existing receipt API. The plain manifest is independently
+// reconstructed from the actual owner files; the implementation must verify those facts
+// itself before retaining any observation. Raw native output must remain hash-only.
+const lifecycleTestName = 'TestM4_Integration_DynamicLifecycle_SlotRecycling_AcrossThreads';
+const lifecycleFile = 'controllers/m4_multithread_concurrency_test.go';
+const assertionSourceFiles = [
+  lifecycleFile,
+  'controllers/m2_declarative_admission_concurrency_test.go',
+];
+const lifecycleTemplates = [
+  { templateId: 'm4.lifecycle.initial-running', line: 256,
+    format: 'expected initial %d running reviews, got %d',
+    message: 'expected initial 4 running reviews, got 3', values: { expected: 4, actual: 3 } },
+  { templateId: 'm4.lifecycle.review0-phase', line: 326,
+    format: 'expected Review 0 Succeeded, got %s',
+    message: 'expected Review 0 Succeeded, got Running', values: { expected: 'Succeeded', actual: 'Running' } },
+  { templateId: 'm4.lifecycle.review1-phase', line: 329,
+    format: 'expected Review 1 Succeeded, got %s',
+    message: 'expected Review 1 Succeeded, got Running', values: { expected: 'Succeeded', actual: 'Running' } },
+  { templateId: 'm4.lifecycle.review2-phase', line: 332,
+    format: 'expected Review 2 Failed, got %s',
+    message: 'expected Review 2 Failed, got Running', values: { expected: 'Failed', actual: 'Running' } },
+  { templateId: 'm4.lifecycle.turnover-running', line: 358,
+    format: 'expected %d running reviews after slot turnover, got %d',
+    message: 'expected 4 running reviews after slot turnover, got 3', values: { expected: 4, actual: 3 } },
+  { templateId: 'm4.lifecycle.succeeded-count', line: 361,
+    format: 'expected 2 succeeded reviews, got %d',
+    message: 'expected 2 succeeded reviews, got 1', values: { expected: 2, actual: 1 } },
+  { templateId: 'm4.lifecycle.failed-count', line: 364,
+    format: 'expected 1 failed review, got %d',
+    message: 'expected 1 failed review, got 0', values: { expected: 1, actual: 0 } },
+  { templateId: 'm4.lifecycle.queued-count', line: 367,
+    format: 'expected %d queued reviews, got %d',
+    message: 'expected 9 queued reviews, got 10', values: { expected: 9, actual: 10 } },
+  { templateId: 'm4.lifecycle.capacity-max', line: 371,
+    format: 'limit exceeded during turnover: max %d',
+    message: 'limit exceeded during turnover: max 5', values: { maximum: 5 } },
+];
+
+interface AssertionManifestFixture {
+  schema: string;
+  sources: Array<{ file: string; sha256: string }>;
+  assertions: Array<{
+    templateId: string;
+    source: { file: string; sha256: string; line: number };
+    testName: string;
+    format: string;
+  }>;
+}
+
+function sourceManifestFixture(): AssertionManifestFixture {
+  const sources = assertionSourceFiles.map((file) => ({
+    file,
+    sha256: createHash('sha256').update(fs.readFileSync(path.join(operatorDirectory, file))).digest('hex'),
+  }));
+  return {
+    schema: 'operator-go-assertion-manifest.v1',
+    sources,
+    assertions: lifecycleTemplates.map(({ templateId, line, format }) => ({
+      templateId, source: { ...sources[0], line }, testName: lifecycleTestName, format,
+    })),
+  };
+}
+
+function nativeAssertionOutput(message: string, line = 358, threads: number | string = 4) {
+  return [
+    `--- FAIL: ${lifecycleTestName} (0.01s)`,
+    `    --- FAIL: ${lifecycleTestName}/${threads}Threads (0.01s)`,
+    `        m4_multithread_concurrency_test.go:${line}: ${message}`,
+    `FAIL\t${OPERATOR_MODULE}/controllers\t0.02s`,
+    '',
+  ].join('\n');
+}
+
+function assertionReceipt(
+  result: GoProcessResult,
+  sourceAssertionManifest: unknown = sourceManifestFixture(),
+  overrides: { goVersion?: unknown; sourceTestNames?: ReadonlySet<string>; operatorDirectory?: string } = {},
+) {
+  // An options variable remains structurally compatible with the pre-fix API. OLD
+  // exercises actual missing receipt data rather than an absent import or type member.
+  const options = { goVersion, sourceTestNames, operatorDirectory, sourceAssertionManifest, ...overrides };
+  return goFailureReceipt(result, options);
+}
+
+function expectNoAssertionObservation(result: ReturnType<typeof goFailureReceipt>, stdout: string, stderr = '') {
+  expect(result).not.toHaveProperty('assertionObservations.0');
+  expect(result.stdoutSha256).toBe(createHash('sha256').update(stdout).digest('hex'));
+  expect(result.stderrSha256).toBe(createHash('sha256').update(stderr).digest('hex'));
+  expect(JSON.stringify(result)).not.toMatch(/CANARY_SECRET|Bearer |github_pat_|private\.example|\/private\/|expected 4 running/u);
+}
+
+describe('source-bound operator native assertion observations', () => {
+  const positiveRows = lifecycleTemplates.flatMap((template) => [1, 4, 16].map((threadCount) => ({
+    ...template, threadCount,
+  })));
+
+  it.each(positiveRows)('retains $templateId in $threadCount Threads from the exact source declaration', (row) => {
+    const manifest = sourceManifestFixture();
+    const stdout = nativeAssertionOutput(row.message, row.line, row.threadCount);
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' }, manifest);
+    expect(result).toMatchObject({
+      failureClass: 'package_failure', diagnosticClass: 'go_test_failure',
+      failedTests: [lifecycleTestName], failedPackages: [`${OPERATOR_MODULE}/controllers`],
+      assertionObservations: [{
+        templateId: row.templateId,
+        testName: lifecycleTestName,
+        threadCount: row.threadCount,
+        source: { file: lifecycleFile, sha256: manifest.sources[0].sha256, line: row.line },
+        values: row.values,
+      }],
+    });
+    expect(result).toHaveProperty('assertionObservations.length', 1);
+    expect(result.stdoutSha256).toBe(createHash('sha256').update(stdout).digest('hex'));
+    expect(result.stderrSha256).toBe(createHash('sha256').update('').digest('hex'));
+    expect(JSON.stringify(result)).not.toContain(row.message);
+  });
+
+  it('retains three distinct source-bound assertions across the full thread matrix', () => {
+    const manifest = sourceManifestFixture();
+    const rows = [
+      { ...lifecycleTemplates[4], threadCount: 1 },
+      { ...lifecycleTemplates[5], threadCount: 4 },
+      { ...lifecycleTemplates[8], threadCount: 16 },
+    ];
+    const stdout = rows.map((row) => nativeAssertionOutput(row.message, row.line, row.threadCount)).join('');
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' }, manifest);
+    expect(result).toMatchObject({
+      failureClass: 'package_failure', diagnosticClass: 'go_test_failure',
+      failedTests: [lifecycleTestName], failedPackages: [`${OPERATOR_MODULE}/controllers`],
+    });
+    expect(result.assertionObservations).toHaveLength(3);
+    expect(result.assertionObservations).toEqual(rows.map((row) => ({
+      templateId: row.templateId,
+      testName: lifecycleTestName,
+      threadCount: row.threadCount,
+      source: { file: lifecycleFile, sha256: manifest.sources[0].sha256, line: row.line },
+      values: row.values,
+    })));
+    expect(result.assertionObservations?.map((row) => row.threadCount)).toEqual([1, 4, 16]);
+    expect(result.assertionObservations?.map((row) => row.templateId)).toEqual(rows.map((row) => row.templateId));
+    expect(result.stdoutSha256).toBe(createHash('sha256').update(stdout).digest('hex'));
+    expect(result.stderrSha256).toBe(createHash('sha256').update('').digest('hex'));
+    const serialized = JSON.stringify(result);
+    for (const row of rows) expect(serialized).not.toContain(row.message);
+    expect(serialized).not.toMatch(/CANARY_SECRET|Bearer |github_pat_|private\.example|\/private\//u);
+  });
+
+  const malformedOutputRows = [
+    { name: 'unknown fatal template', stdout: nativeAssertionOutput('CANARY_SECRET arbitrary assertion') },
+    { name: 'negative count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got -1') },
+    { name: 'fractional count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got 3.5') },
+    { name: 'noncanonical leading zero', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got 03') },
+    { name: 'nonfinite count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got Infinity') },
+    { name: 'unsafe integer count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got 9007199254740993') },
+    { name: 'source-mismatched expected limit', stdout: nativeAssertionOutput('expected 5 running reviews after slot turnover, got 3') },
+    { name: 'unknown phase', stdout: nativeAssertionOutput('expected Review 0 Succeeded, got CANARY_SECRET', 326) },
+    { name: 'phase with trailing credential', stdout: nativeAssertionOutput('expected Review 0 Succeeded, got Running Bearer CANARY_SECRET', 326) },
+    { name: 'missing phase', stdout: nativeAssertionOutput('expected Review 2 Failed, got ', 332) },
+    { name: 'unknown thread matrix member', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, 358, 2) },
+    { name: 'noncanonical thread count', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, 358, '04') },
+    { name: 'thread path with canary suffix', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('/4Threads (', '/4Threads/CANARY_SECRET (') },
+    { name: 'wrong source declaration line', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, 357) },
+    { name: 'absolute native source path', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('m4_multithread_concurrency_test.go:', '/private/build/m4_multithread_concurrency_test.go:') },
+    { name: 'traversal native source path', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('m4_multithread_concurrency_test.go:', '../m4_multithread_concurrency_test.go:') },
+    { name: 'unknown native source file', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('m4_multithread_concurrency_test.go:', 'private_source.go:') },
+    { name: 'mixed known and arbitrary assertion lines', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`FAIL\t${OPERATOR_MODULE}`, `        m4_multithread_concurrency_test.go:358: Bearer CANARY_SECRET\nFAIL\t${OPERATOR_MODULE}`) },
+    { name: 'ambiguous duplicate assertions', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`FAIL\t${OPERATOR_MODULE}`, `        m4_multithread_concurrency_test.go:358: ${lifecycleTemplates[4].message}\nFAIL\t${OPERATOR_MODULE}`) },
+    { name: 'unknown top-level test', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replaceAll(lifecycleTestName, 'TestCANARY_SECRET') },
+    { name: 'different source-declared top-level test', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replaceAll(lifecycleTestName, 'TestOperatorDisabledUnlessExplicitlyEnabled') },
+    { name: 'subtest does not belong to enclosing test', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`${lifecycleTestName}/4Threads`, 'TestOperatorDisabledUnlessExplicitlyEnabled/4Threads') },
+    { name: 'missing enclosing top-level failure', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).split('\n').slice(1).join('\n') },
+    { name: 'missing thread failure context', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).split('\n').filter((line) => !line.includes('/4Threads')).join('\n') },
+    { name: 'mixed credential in the matched numeric field', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got 3 github_pat_CANARY_SECRET') },
+    { name: 'too many native failure blocks', stdout: [1, 4, 16, 1].map((threads) => nativeAssertionOutput(lifecycleTemplates[4].message, 358, threads)).join('') },
+    { name: 'misplaced assertion outside a failure block', stdout: `m4_multithread_concurrency_test.go:358: ${lifecycleTemplates[4].message}\nFAIL\t${OPERATOR_MODULE}/controllers\t0.01s\n` },
+  ];
+  it.each(malformedOutputRows)('withholds $name and preserves the original output digest', ({ stdout }) => {
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' });
+    expect(result.failureClass).not.toBe('success');
+    expectNoAssertionObservation(result, stdout);
+  });
+
+  const forgedManifestRows: Array<{ name: string; mutate: (manifest: AssertionManifestFixture) => unknown }> = [
+    { name: 'absent manifest', mutate: () => null },
+    { name: 'nonobject manifest', mutate: () => 'CANARY_SECRET' },
+    { name: 'unknown schema', mutate: (m) => ({ ...m, schema: 'CANARY_SECRET' }) },
+    { name: 'missing source inventory', mutate: (m) => ({ ...m, sources: [] }) },
+    { name: 'duplicate source inventory', mutate: (m) => ({ ...m, sources: [m.sources[0], m.sources[0]] }) },
+    { name: 'unselected source inventory file', mutate: (m) => { m.sources[1].file = 'controllers/private_source.go'; return m; } },
+    { name: 'forged sibling fixture hash', mutate: (m) => { m.sources[1].sha256 = 'a'.repeat(64); return m; } },
+    { name: 'forged lifecycle source hash', mutate: (m) => { m.sources[0].sha256 = 'a'.repeat(64); m.assertions.forEach((a) => { a.source.sha256 = m.sources[0].sha256; }); return m; } },
+    { name: 'noncanonical source hash', mutate: (m) => { m.sources[0].sha256 = m.sources[0].sha256.toUpperCase(); return m; } },
+    { name: 'forged assertion source hash', mutate: (m) => { m.assertions[4].source.sha256 = 'b'.repeat(64); return m; } },
+    { name: 'absolute source inventory path', mutate: (m) => { m.sources[0].file = path.join(operatorDirectory, lifecycleFile); return m; } },
+    { name: 'traversal source inventory path', mutate: (m) => { m.sources[0].file = `../${lifecycleFile}`; return m; } },
+    { name: 'absolute assertion path', mutate: (m) => { m.assertions[4].source.file = `/private/${lifecycleFile}`; return m; } },
+    { name: 'traversal assertion path', mutate: (m) => { m.assertions[4].source.file = `../${lifecycleFile}`; return m; } },
+    { name: 'wrong declaration line', mutate: (m) => { m.assertions[4].source.line = 357; return m; } },
+    { name: 'fractional declaration line', mutate: (m) => { m.assertions[4].source.line = 358.5; return m; } },
+    { name: 'unknown template identifier', mutate: (m) => { m.assertions[4].templateId = 'CANARY_SECRET'; return m; } },
+    { name: 'duplicate template', mutate: (m) => { m.assertions.push(m.assertions[4]); return m; } },
+    { name: 'missing template', mutate: (m) => { m.assertions.splice(4, 1); return m; } },
+    { name: 'forged arbitrary format', mutate: (m) => { m.assertions[4].format = 'CANARY_SECRET %s'; return m; } },
+    { name: 'source format from another assertion', mutate: (m) => { m.assertions[4].format = m.assertions[0].format; return m; } },
+    { name: 'unknown source test', mutate: (m) => { m.assertions[4].testName = 'TestCANARY_SECRET'; return m; } },
+    { name: 'different declared source test', mutate: (m) => { m.assertions[4].testName = 'TestOperatorDisabledUnlessExplicitlyEnabled'; return m; } },
+    { name: 'source path case alias', mutate: (m) => { m.assertions[4].source.file = 'controllers/M4_multithread_concurrency_test.go'; return m; } },
+    { name: 'credential property widening', mutate: (m) => ({ ...m, credential: 'Bearer CANARY_SECRET' }) },
+    { name: 'throwing untrusted manifest accessor', mutate: (m) => Object.defineProperty(m, 'sources', { get() { throw new Error('CANARY_SECRET'); } }) },
+  ];
+  it.each(forgedManifestRows)('refuses $name even when native output matches a known assertion', ({ mutate }) => {
+    const stdout = nativeAssertionOutput(lifecycleTemplates[4].message);
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' }, mutate(sourceManifestFixture()));
+    expect(result.failureClass).not.toBe('success');
+    expectNoAssertionObservation(result, stdout);
+  });
+
+  it.each([
+    { name: 'missing source test membership', overrides: { sourceTestNames: new Set<string>() } },
+    { name: 'unknown toolchain', overrides: { goVersion: 'go1.24.13 CANARY_SECRET' } },
+    { name: 'missing owner directory', overrides: { operatorDirectory: path.join(operatorDirectory, 'missing') } },
+    { name: 'non-directory owner root', overrides: { operatorDirectory: path.join(operatorDirectory, 'go.mod') } },
+  ])('refuses $name without turning failure into success', ({ overrides }) => {
+    const stdout = nativeAssertionOutput(lifecycleTemplates[4].message);
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' }, sourceManifestFixture(), overrides);
+    expect(result.failureClass).not.toBe('success');
+    expectNoAssertionObservation(result, stdout);
+  });
+
+  it.each([
+    { name: 'successful process status', result: { status: 0, signal: null } },
+    { name: 'absent status', result: { signal: null } },
+    { name: 'fractional status', result: { status: 1.5, signal: null } },
+    { name: 'negative status', result: { status: -1, signal: null } },
+    { name: 'out-of-range status', result: { status: 256, signal: null } },
+    { name: 'string status', result: { status: '1', signal: null } },
+    { name: 'known termination signal', result: { status: 1, signal: 'SIGTERM' } },
+    { name: 'unknown termination signal', result: { status: 1, signal: 'CANARY_SECRET' } },
+    { name: 'spawn error', result: { status: 1, signal: null, error: { code: 'ENOENT' } } },
+  ])('does not promote assertion-looking text with $name', ({ result }) => {
+    const stdout = nativeAssertionOutput(lifecycleTemplates[4].message);
+    expectNoAssertionObservation(assertionReceipt({ ...result, stdout, stderr: '' }), stdout);
+  });
+
+  it('keeps successful native package output free of assertion observations', () => {
+    const stdout = `ok\t${OPERATOR_MODULE}/controllers\t0.01s\n`;
+    const result = assertionReceipt({ status: 0, signal: null, stdout, stderr: '' });
+    expect(result.failureClass).toBe('success');
+    expectNoAssertionObservation(result, stdout);
+  });
+
+  it('retains an ordinary unknown Go failure as hash-only when no manifest is supplied', () => {
+    const stdout = nativeAssertionOutput(lifecycleTemplates[4].message);
+    expectNoAssertionObservation(receipt({ status: 1, signal: null, stdout, stderr: '' }), stdout);
+  });
+
+  it('rejects an assertion candidate supplied on stderr without stdout test context', () => {
+    const stderr = nativeAssertionOutput(lifecycleTemplates[4].message);
+    const result = assertionReceipt({ status: 1, signal: null, stdout: '', stderr });
+    expectNoAssertionObservation(result, '', stderr);
+  });
+
+  it('withholds a valid stdout observation when stderr is not empty', () => {
+    const stdout = nativeAssertionOutput(lifecycleTemplates[4].message);
+    const stderr = 'go: downloading github.com/example/mod v1.0.0\n';
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr });
+    expectNoAssertionObservation(result, stdout, stderr);
+  });
+});
+
+describe('operator receipt defensive source and process neighbors', () => {
+  it('returns no source test names for unreadable directory kinds', () => {
+    expect([...readOperatorGoTestNameAllowlist(path.join(operatorDirectory, 'missing-directory'))]).toEqual([]);
+    expect([...readOperatorGoTestNameAllowlist(path.join(operatorDirectory, 'go.mod'))]).toEqual([]);
+  });
+
+  it('walks genuine Go tests but skips vendor, dependency, Git and symlink sources', () => {
+    const scratch = fs.mkdtempSync(path.join(tmpdir(), 'operator-go-source-names-'));
+    try {
+      for (const name of ['nested', 'vendor', 'node_modules', '.git']) fs.mkdirSync(path.join(scratch, name));
+      fs.writeFileSync(path.join(scratch, 'nested', 'real_test.go'), [
+        'package controllers',
+        'func TestDeclaredFixture(t *testing.T) {}',
+        'func TestdeclaredInvalid(t *testing.T) {}',
+        `func Test${'A'.repeat(130)}(t *testing.T) {}`,
+        '',
+      ].join('\n'));
+      fs.writeFileSync(path.join(scratch, 'ordinary.go'), 'func TestUnselectedFile(t *testing.T) {}');
+      for (const name of ['vendor', 'node_modules', '.git']) {
+        fs.writeFileSync(path.join(scratch, name, 'ignored_test.go'), 'func TestIgnoredSource(t *testing.T) {}');
+      }
+      fs.symlinkSync(path.join(scratch, 'nested', 'real_test.go'), path.join(scratch, 'link_test.go'));
+      expect([...readOperatorGoTestNameAllowlist(scratch)]).toEqual(['TestDeclaredFixture']);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['EMFILE', 'ENFILE', 'ENOMEM'])('keeps resource spawn code %s in its existing class', (code) => {
+    expect(receipt({ status: null, signal: null, error: { code } })).toMatchObject({
+      failureClass: 'process_error', diagnosticClass: 'resource_exhausted', errorClass: 'resource_exhausted',
+    });
+  });
+
+  it.each([
+    { name: 'primitive error', error: 'CANARY_SECRET' },
+    { name: 'non-string error code', error: { code: 123 } },
+    { name: 'throwing code getter', error: Object.defineProperty({}, 'code', { get() { throw new Error('CANARY_SECRET'); } }) },
+  ])('keeps $name in the hash-only spawn taxonomy', ({ error }) => {
+    const result = receipt({ status: null, signal: null, error });
+    expect(result).toMatchObject({ failureClass: 'process_error', errorClass: 'spawn_error' });
+    expect(JSON.stringify(result)).not.toContain('CANARY_SECRET');
+  });
+
+  it.each([
+    { status: 0, signal: 'SIGTERM', stdout: 'go version go1.24.13 linux/amd64' },
+    { status: 0, signal: null, error: { code: 'ENOENT' }, stdout: 'go version go1.24.13 linux/amd64' },
+    { status: 0, signal: null, stdout: Buffer.from('go version go1.24.13 linux/amd64') },
+    { status: 0, signal: null, stdout: 'unknown version' },
+  ])('refuses non-authoritative Go version readback %#', (result) => {
+    expect(parseGoVersion(result)).toBeNull();
+  });
+
+  it('never reports unknown package names or arbitrary test identifiers', () => {
+    const stdout = '--- FAIL: TestCANARY_SECRET (0.01s)\nFAIL\tprivate.example/CANARY_SECRET\t0.01s\n';
+    const result = receipt({ status: 1, signal: null, stdout, stderr: '' });
+    expect(result).toMatchObject({ failedPackages: [], failedTests: [] });
+    expect(JSON.stringify(result)).not.toMatch(/CANARY_SECRET|private\.example/u);
+  });
+
+  it('deduplicates and bounds source-declared top-level failure identifiers', () => {
+    const names = [...sourceTestNames].sort().slice(0, 30);
+    expect(names).toHaveLength(30);
+    const stdout = [...names, ...names].map((name) => `--- FAIL: ${name} (0.01s)`).join('\n');
+    expect(receipt({ status: 1, signal: null, stdout, stderr: '' }).failedTests).toEqual(names.slice(0, 24));
+  });
+
+  it('handles non-string native streams without serializing them', () => {
+    const result = receipt({ status: 1, signal: null, stdout: { canary: 'CANARY_SECRET' }, stderr: Buffer.from('CANARY_SECRET') });
+    expect(result).toMatchObject({ failureClass: 'exit_nonzero', diagnosticClass: 'unclassified_exit' });
+    expect(result.stdoutSha256).toBe(createHash('sha256').update('').digest('hex'));
+    expect(result.stderrSha256).toBe(result.stdoutSha256);
+    expect(JSON.stringify(result)).not.toContain('CANARY_SECRET');
+  });
+});
