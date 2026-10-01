@@ -559,7 +559,10 @@ describe('current failed-execution operational enrichment',()=>{
       if(sql.includes("failure_diagnostics->'operationalTelemetry'")){
         enrichment++; expect(values).toEqual([row.run_id,row.head_sha,row.attempt_id]);
         expect(sql).toContain('g.current_attempt=true');expect(sql).toContain("r.failure_diagnostics->>'executionAttempt'=g.execution_attempt::text");
-        expect(sql).not.toMatch(/SELECT.*logTail|SELECT.*payload|SELECT.*r.failure_diagnostics,/s);
+        expect(sql).toContain("w.payload->>'configDigest'=r.effective_config_digest");
+        const selection=sql.split('FROM')[0];
+        expect(selection).toContain("failure_diagnostics->'operationalTelemetry' AS operational_telemetry");
+        expect(selection).not.toMatch(/logTail|w\.payload|failure_diagnostics\s*,/);
         return {rows:[{operational_telemetry:operationalTelemetry}]};
       }
       if(sql.includes('review_event_outbox')||sql.includes('review_dispatch_outbox'))return {rows:[]};return {rows:[row]};
