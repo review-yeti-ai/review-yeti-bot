@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.102.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.9...v1.102.0) (2026-10-01)
+
+
+### Features
+
+* **review:** preserve evidence through graceful closeout ([#1203](https://github.com/review-yeti-ai/review-yeti-bot/issues/1203)) ([29a864f](https://github.com/review-yeti-ai/review-yeti-bot/commit/29a864fee8e607514039d59902085c85451301d0))
+
 ## [1.101.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.8...v1.101.9) (2026-10-01)
 
 
