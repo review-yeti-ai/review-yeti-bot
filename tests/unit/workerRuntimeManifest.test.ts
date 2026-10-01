@@ -10,14 +10,40 @@ const ENTRYPOINT = 'dist/cli/runLiveReview.js';
 const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 type Manifest = { version: string; entrypoint: string; files: Array<{ path: string; sha256: string }> };
 
-const ioCalls = vi.hoisted(() => ({ opens: [] as string[] }));
+const ioCalls = vi.hoisted(() => ({
+  opens: [] as string[],
+  handles: [] as Array<{ fd: number; close: () => Promise<void> }>,
+  mutation: undefined as undefined | { path: string; mode: 'truncate' | 'grow' | 'metadata' },
+}));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
     ...actual,
-    open: (...args: Parameters<typeof actual.open>) => {
+    open: async (...args: Parameters<typeof actual.open>) => {
       ioCalls.opens.push(String(args[0]));
-      return actual.open(...args);
+      const handle = await actual.open(...args);
+      ioCalls.handles.push(handle);
+      const mutation = ioCalls.mutation;
+      if (mutation?.path === String(args[0])) {
+        const read = handle.read.bind(handle) as (...values: any[]) => Promise<{ bytesRead: number; buffer: Buffer }>;
+        let changed = false;
+        // Observe real IO and change only this run-owned fixture. No fabricated
+        // handle, byte count, metadata, digest or validator result is returned.
+        handle.read = (async (...values: any[]) => {
+          if (!changed && mutation.mode === 'truncate') {
+            changed = true;
+            await actual.truncate(mutation.path, 0);
+          }
+          const result = await read(...values);
+          if (!changed && result.bytesRead > 0) {
+            changed = true;
+            if (mutation.mode === 'grow') await actual.appendFile(mutation.path, 'growth');
+            else await actual.utimes(mutation.path, new Date('2000-01-01'), new Date('2000-01-01'));
+          }
+          return result;
+        }) as typeof handle.read;
+      }
+      return handle;
     },
   };
 });
@@ -41,9 +67,12 @@ describe('worker runtime manifest integrity through the production self-test', (
     };
     moduleLoader.mockReset();
     ioCalls.opens.length = 0;
+    ioCalls.handles.length = 0;
+    ioCalls.mutation = undefined;
   });
 
   afterEach(async () => {
+    for (const handle of ioCalls.handles) if (handle.fd !== -1) await handle.close();
     await rm(root, { recursive: true, force: true });
   });
 
@@ -61,6 +90,7 @@ describe('worker runtime manifest integrity through the production self-test', (
     await save(value);
     await expect(run()).rejects.toThrow('worker runtime manifest is invalid');
     expect(moduleLoader).not.toHaveBeenCalled();
+    expect(ioCalls.handles.every((handle) => handle.fd === -1)).toBe(true);
   }
 
   it('accepts real listed bytes before loading the unchanged six module IDs and returns the raw manifest digest', async () => {
@@ -215,6 +245,17 @@ describe('worker runtime manifest integrity through the production self-test', (
     manifest.files.push({ path: 'multi-chunk.bin', sha256: sha256(original) });
     await refuses();
   });
+
+  it.each(['truncate', 'grow', 'metadata'] as const)(
+    'refuses a real %s change during hashing and closes all handles before refusing module loading', async (mode) => {
+      const path = 'changing-file.bin';
+      const bytes = Buffer.from('original fixture bytes');
+      await writeFile(join(root, path), bytes);
+      manifest.files.push({ path, sha256: sha256(bytes) });
+      ioCalls.mutation = { path: join(root, path), mode };
+      await refuses();
+    },
+  );
 
   it('bounds manifest reads before parsing or loading', async () => {
     await save();
