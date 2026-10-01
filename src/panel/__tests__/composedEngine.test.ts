@@ -1738,7 +1738,7 @@ describe('executeComposedReview', () => {
       }
       if (turn === 2) {
         expect(text).toContain('[PI_TOOL_RESULT]');
-        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: true]');
+        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: false]');
         toolResultSeen = true;
         return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
       }
