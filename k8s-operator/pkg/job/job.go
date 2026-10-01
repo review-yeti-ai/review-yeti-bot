@@ -178,13 +178,13 @@ const (
 	WorkerMemoryRequest                = "96Mi"
 	WorkerCPULimit                     = "1"
 	WorkerMemoryLimit                  = "256Mi"
-	// The CRD's CEL rule bounds terminalDeadline - receivedAt to [900s, 3600s]
+	// The CRD's CEL rule fixes terminalDeadline - receivedAt at 900 seconds
 	// (see charts/review-yeti/templates/crd.yaml and
 	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
 	// these two in lockstep with that rule and with the TypeScript dispatch
 	// side's src/config/terminalDeadline.ts MIN/MAX.
 	MinTerminalDeadlineSeconds = int64(900)
-	MaxTerminalDeadlineSeconds = int64(3600)
+	MaxTerminalDeadlineSeconds = int64(900)
 	// Keep a one-minute publication/failure-conclusion reserve inside the
 	// admitted run deadline. The worker itself may never consume the full
 	// admission window.
@@ -1115,7 +1115,7 @@ func remainingDeadlineSeconds(receivedAt, deadline, now time.Time) (int64, error
 		return 0, workspace.ErrInsufficientDeadline
 	}
 	// The worker's own budget must never exceed this run's admitted window
-	// (validateInput already bounds that window to [900s, 3600s]) minus the
+	// (validateInput already fixes that window at 900s) minus the
 	// publication/failure-conclusion reserve, even when more of the terminal
 	// deadline happens to remain.
 	windowCapSeconds := int64(math.Round(deadline.Sub(receivedAt).Seconds())) - DeadlineReserveSeconds

@@ -34,7 +34,12 @@ export interface ReviewCheckRun {
 }
 
 export interface ReviewActiveWorker {
-  pod_name: string;
+  /** Exact pod identity when known from the live worker lease. */
+  pod_name: string | null;
+  /** Deterministic Kubernetes Job identity after durable DOKS projection. */
+  job_name?: string;
+  /** PRReviewJob identity that owns the worker Job. */
+  projection_name?: string;
   started_at: string;
   lease_expires_at: string;
 }

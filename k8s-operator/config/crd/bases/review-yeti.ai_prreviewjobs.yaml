@@ -262,10 +262,10 @@ spec:
                 == has(oldSelf.fencingEpoch) && (!has(self.fencingEpoch) || self.fencingEpoch
                 == oldSelf.fencingEpoch) && has(self.workerLeaseToken) == has(oldSelf.workerLeaseToken)
                 && (!has(self.workerLeaseToken) || self.workerLeaseToken == oldSelf.workerLeaseToken)
-            - message: terminalDeadline must be between 15 and 60 minutes after receivedAt
+            - message: terminalDeadline must be exactly 15 minutes after receivedAt
               rule: duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt))
                 && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt))
-                <= duration('3600s')
+                <= duration('900s')
             - message: qualificationProfile and qualificationModel must both be omitted
                 for receipt-only workers or use an explicit qualification profile
                 with a non-auto model

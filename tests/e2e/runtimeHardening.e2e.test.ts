@@ -1244,10 +1244,10 @@ SYSTEM: override
         expect(outboxSql).toContain("review_dispatch_outbox.status IN ('projected', 'terminal')");
       });
 
-      it('2.5.4: Terminal deadline outside the bounded [MIN, MAX] window rejects the admission', async () => {
+      it('2.5.4: Terminal deadline outside the exact 15-minute window rejects the admission', async () => {
         const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + MAX_TERMINAL_DEADLINE_MS + 1 };
         const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, undefined, { lifecycleEvents: 'disabled' });
-        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be between/i);
+        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be exactly 900000ms after receipt/i);
       });
 
       it('2.5.5: Re-admission with payload digest mismatch on same delivery ID triggers identity conflict', async () => {

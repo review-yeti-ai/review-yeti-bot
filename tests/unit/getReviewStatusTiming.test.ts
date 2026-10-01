@@ -86,7 +86,7 @@ interface Captured {
 function makeDb(
   row: Record<string, unknown>,
   markers: Record<string, string> = {},
-  options: { failGateJoin?: boolean } = {},
+  options: { failGateJoin?: boolean; projection?: Record<string, unknown> | null } = {},
 ): { db: ReviewStatusDbClient; captured: Captured } {
   const captured: Captured = { statements: [], markerQueries: 0, markerParameters: [] };
   let mainQueries = 0;
@@ -103,6 +103,9 @@ function makeDb(
           })),
         };
       }
+      if (sql.includes('review_dispatch_outbox')) {
+        return { rows: options.projection ? [options.projection] : [] };
+      }
       mainQueries += 1;
       if (options.failGateJoin && mainQueries === 1) {
         throw new Error('relation "review_gate_attempts" does not exist');
@@ -117,7 +120,11 @@ function makeDb(
 async function runTimingCase(
   row: Record<string, unknown>,
   markers: Record<string, string> = {},
-  options: { headSha?: string; failGateJoin?: boolean } = {},
+  options: {
+    headSha?: string;
+    failGateJoin?: boolean;
+    projection?: Record<string, unknown> | null;
+  } = {},
 ) {
   const { db, captured } = makeDb(row, markers, options);
   const tool = createGetReviewStatusTool(db);
@@ -133,7 +140,8 @@ async function runTimingCase(
 
 /** Every statement the tool issues against review_runs (excludes the marker read). */
 function mainStatements(captured: Captured): string[] {
-  const statements = captured.statements.filter((s) => !s.includes('review_event_outbox'));
+  const statements = captured.statements.filter((s) =>
+    !s.includes('review_event_outbox') && !s.includes('review_dispatch_outbox'));
   if (statements.length === 0) throw new Error('no main review_runs query was issued');
   return statements;
 }
@@ -171,7 +179,7 @@ describe('get_review_status timing: every query branch selects the timing column
       expect(captured.markerQueries, branch.name).toBe(1);
       // Fallbacks issue a gate-join query before falling back to their own.
       const expected = branch.failGateJoin ? 2 : 1;
-      expect(captured.statements.length, branch.name).toBe(expected + 1);
+      expect(captured.statements.length, branch.name).toBe(expected + 2);
       const markerSql = captured.statements.find((sql) => sql.includes('review_event_outbox'));
       expect(markerSql).toContain("payload->>'attempt_id' = $3");
       expect(captured.markerParameters[0]).toEqual([
@@ -180,6 +188,68 @@ describe('get_review_status timing: every query branch selects the timing column
         branch.failGateJoin ? null : 'attempt-42-1', T0,
       ]);
     }
+  });
+});
+
+describe('get_review_status timing: durable DOKS projection', () => {
+  it('reports a projected worker as active after the dispatcher lease is released', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'queued',
+      run_stage: 'queued',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: 'in_progress',
+      terminal_deadline: new Date(Date.now() + 600_000).toISOString(),
+    }), { 'review.lifecycle.started': T2 }, {
+      projection: {
+        dispatch_status: 'projected',
+        projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
+        dispatch_updated_at: T2,
+      },
+    });
+
+    expect(data.verdict).toBe('RUNNING');
+    expect(data.phase).toBe('evaluating_personas');
+    expect(data.active_worker).toMatchObject({
+      pod_name: null,
+      job_name: 'ct-review-0123456789abcdef0123456789abcdef-worker',
+      projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
+      started_at: T2,
+    });
+  });
+
+  it('does not advertise a stale projection after the admitted deadline', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'queued',
+      run_stage: 'queued',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: 'queued',
+      terminal_deadline: new Date(Date.now() - 1).toISOString(),
+    }), {}, {
+      projection: {
+        dispatch_status: 'projected',
+        projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
+        dispatch_updated_at: T2,
+      },
+    });
+
+    expect(data.phase).toBe('queued');
+    expect(data.active_worker).toBeNull();
+  });
+
+  it('does not let a durable start marker keep an expired run in a running phase', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'queued',
+      run_stage: 'queued',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: 'queued',
+      terminal_deadline: new Date(Date.now() - 1).toISOString(),
+    }), { 'review.lifecycle.started': T2 });
+
+    expect(data.phase).toBe('queued');
+    expect(data.active_worker).toBeNull();
   });
 });
 
@@ -206,7 +276,8 @@ describe('get_review_status timing: retries cannot inherit earlier execution mar
     expect(data.timing.completed_at).toBe(T3);
     expect(data.timing.queue_seconds).toBe(20);
     expect(data.timing.execution_seconds).toBe(150);
-    expect(query.mock.calls[1][1]?.[2]).toBe('attempt-42-2');
+    const markerCall = query.mock.calls.find(([sql]) => sql.includes('review_event_outbox'));
+    expect(markerCall?.[1]?.[2]).toBe('attempt-42-2');
   });
 
   it('derives legacy timing only from unkeyed events after receipt', async () => {
@@ -226,7 +297,7 @@ describe('get_review_status timing: retries cannot inherit earlier execution mar
     expect(data.timing.started_at).toBe(T2);
     expect(data.timing.completed_at).toBe(T3);
     expect(data.timing.execution_seconds).toBe(150);
-    const markerCall = query.mock.calls[1] as unknown as [string, unknown[]];
+    const markerCall = query.mock.calls.find(([sql]) => sql.includes('review_event_outbox')) as unknown as [string, unknown[]];
     expect(markerCall[1].slice(2)).toEqual([null, T0]);
   });
 });

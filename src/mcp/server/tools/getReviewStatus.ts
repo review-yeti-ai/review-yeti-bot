@@ -57,6 +57,18 @@ const LIFECYCLE_MARKER_KINDS = [
   'review.lifecycle.terminal',
 ];
 
+const DISPATCH_PROJECTION_SQL = `
+  SELECT status AS dispatch_status, projection_name, updated_at AS dispatch_updated_at
+    FROM review_dispatch_outbox
+   WHERE run_id = $1
+`;
+
+interface DispatchProjection {
+  dispatch_status: unknown;
+  projection_name: unknown;
+  dispatch_updated_at: unknown;
+}
+
 /**
  * Statuses in which a run has genuinely terminated. Deliberately an allowlist:
  * an unrecognised future status is treated as NOT terminal, so the conservative
@@ -150,6 +162,28 @@ async function readLifecycleMarkers(
     // duration then resolves to null rather than a fabricated value.
   }
   return markers;
+}
+
+async function readDispatchProjection(
+  db: ReviewStatusDbClient,
+  runId: unknown,
+): Promise<DispatchProjection | null> {
+  if (typeof runId !== 'string' || runId.length === 0) return null;
+  try {
+    return (await db.query(DISPATCH_PROJECTION_SQL, [runId])).rows[0] ?? null;
+  } catch {
+    // Older or partial schemas may not have the durable dispatch outbox. The
+    // review row and lifecycle ledger still produce a conservative answer.
+    return null;
+  }
+}
+
+function isTerminalStatus(value: unknown): boolean {
+  return typeof value === 'string' && TERMINAL_RUN_STATUSES.has(value);
+}
+
+function isTerminalGateState(value: unknown): boolean {
+  return value === 'success' || value === 'failure' || value === 'cancelled' || value === 'timed_out';
 }
 
 export const getReviewStatusDefinition: ToolDefinition = {
@@ -271,16 +305,37 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
 
       const row = result.rows[0];
       const now = Date.now();
+      const [markers, projection] = await Promise.all([
+        readLifecycleMarkers(db, row.run_id, row.attempt_id, row.received_at ?? row.created_at),
+        readDispatchProjection(db, row.run_id),
+      ]);
+      const terminalDeadline = isoOrNull(row.terminal_deadline);
+      const projectionName = typeof projection?.projection_name === 'string'
+        ? projection.projection_name.trim() : '';
+      const projectionIsCurrent = projection?.dispatch_status === 'projected'
+        && projectionName.length > 0
+        && !isTerminalStatus(row.run_status)
+        && !isTerminalGateState(row.desired_state)
+        && terminalDeadline !== null
+        && Date.parse(terminalDeadline) > now;
+      const durableExecutionStarted = markers.has('review.lifecycle.started');
+      const effectiveRunStatus = row.run_status === 'queued'
+        && (projectionIsCurrent || (durableExecutionStarted
+          && !isTerminalGateState(row.desired_state)
+          && terminalDeadline !== null
+          && Date.parse(terminalDeadline) > now))
+        ? 'running'
+        : row.run_status;
 
       const phase = projectReviewStatusPhase({
         desiredState: row.desired_state,
-        runStatus: row.run_status,
+        runStatus: effectiveRunStatus,
         runStage: row.run_stage,
       });
       const verdict = projectReviewStatusVerdict({
         decision: row.decision,
         desiredState: row.desired_state,
-        runStatus: row.run_status,
+        runStatus: effectiveRunStatus,
       });
 
       const attemptId = row.attempt_id || (row.run_id ? `review-attempt-${pull_number}-${row.attempt || 1}` : null);
@@ -300,7 +355,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         : null;
 
       const leaseExpires = row.lease_expires_at ? new Date(row.lease_expires_at).getTime() : 0;
-      const activeWorker: ReviewActiveWorker | null =
+      const leasedWorker: ReviewActiveWorker | null =
         row.lease_owner && (leaseExpires > now || !row.lease_expires_at)
           ? {
               pod_name: row.lease_owner,
@@ -311,10 +366,31 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
             }
           : null;
 
+      // DOKS releases the short dispatcher lease after it has durably created
+      // the PRReviewJob. From that point onward, the projection row is the
+      // authoritative execution identity; treating the cleared dispatcher
+      // lease as "no worker" is what made live reviews look queued. The
+      // operator's deterministic worker Job name is <projection>-worker. The
+      // exact generated Pod suffix is not persisted, so do not mislabel the
+      // Job name as a Pod identity.
+      const projectedWorker: ReviewActiveWorker | null = projectionIsCurrent
+        ? {
+            pod_name: null,
+            job_name: `${projectionName}-worker`,
+            projection_name: projectionName,
+            started_at: markers.get('review.lifecycle.started')
+              ?? isoOrNull(projection?.dispatch_updated_at)
+              ?? isoOrNull(row.updated_at)
+              ?? isoOrNull(row.created_at)
+              ?? new Date(now).toISOString(),
+            lease_expires_at: terminalDeadline,
+          }
+        : null;
+      const activeWorker = leasedWorker ?? projectedWorker;
+
       // Timing is computed from the row plus its durable lifecycle markers. The
       // marker read is best-effort and never changes the status answer: if the
       // ledger is unavailable, every duration resolves to null.
-      const markers = await readLifecycleMarkers(db, row.run_id, row.attempt_id, row.received_at ?? row.created_at);
       const timing = buildReviewTiming(row, markers, row.run_status);
 
       return buildToolResultJson({

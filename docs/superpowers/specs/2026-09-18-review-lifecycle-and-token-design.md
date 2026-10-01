@@ -40,7 +40,7 @@ Every statement below was verified against the source, not inferred.
 - `auto_review.triggers` is parsed with a default of `pr_opened`, `pr_synchronize`, `@ct-review` and is not read by any code path. `src/config/schema.ts:265`
 - The gateway client's retry count defaults to zero. All retry and fallback behavior lives in Bifrost. `src/gateway/openRouterClient.ts:1741`
 - The dispatch outbox has `available_at`, and `claimNext` filters and orders on it. `releaseForRetry` already accepts a future `availableAt`. `src/persistence/reviewDispatchRepository.ts:415`, `src/persistence/reviewDispatchRepository.ts:324`
-- The operator's `MaxConcurrentJobs` defaults to 1. Worker `activeDeadlineSeconds` is the remainder of a 30 minute terminal window. `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go:48`, `src/config/terminalDeadline.ts`
+- The operator's `MaxConcurrentJobs` defaults to 1. Worker `activeDeadlineSeconds` is the remainder of the fixed 15-minute end-to-end terminal window. `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go`, `src/config/terminalDeadline.ts`
 
 ## 1. Trigger strategy
 
@@ -108,7 +108,7 @@ Cancellation is a first-class transition that propagates outward in three hops, 
 This is the hop that actually saves GPU time. Two mechanisms:
 
 1. SIGTERM handler. Create a root `AbortController` at process start. On SIGTERM, abort with a `PanelCancellationError` carrying the reason, and pass `signal` into `executePersonaPanel`. The engine already races model and tool calls against it. Pass the same signal into the streaming fetch so the HTTP connection to the gateway is closed. vLLM stops generating on client disconnect. Confirm that Bifrost propagates client disconnect upstream. If it does not, the cancel saves worker time but not GPU time, and that needs a gateway fix.
-2. Self-check. Add an authenticated `GET /api/dispatch/runs/:runId/attempts/:attempt/status` that accepts the same bearer token the worker already uses for completion and returns `{ current, status, cancelReason }`. The worker polls it every 20 to 30 seconds and wires the result into `isCurrentHead` and into the root controller. This bounds the worst-case waste to about one model turn even when the whole push chain is down. It also doubles as a lease heartbeat, letting the reaper detect dead pods far sooner than the 30 minute terminal deadline.
+2. Self-check. Add an authenticated `GET /api/dispatch/runs/:runId/attempts/:attempt/status` that accepts the same bearer token the worker already uses for completion and returns `{ current, status, cancelReason }`. The worker polls it every 20 to 30 seconds and wires the result into `isCurrentHead` and into the root controller. This bounds the worst-case waste to about one model turn even when the whole push chain is down. It also doubles as a lease heartbeat, letting the reaper detect dead pods far sooner than the 15-minute terminal deadline.
 
 ### Latency budget
 

@@ -452,31 +452,21 @@ describe('PostgresReviewDispatchRepository', () => {
     },
   );
 
-  // A run's persisted terminalDeadline reflects whichever REVIEW_YETI_TERMINAL_DEADLINE_MS
-  // value was in effect at admission time. A later dispatcher restart or rolling config
-  // update must not orphan that already-admitted run: this invariant validates the
-  // bounded [MIN, MAX] window (the same range the CRD's CEL rule and the Go operator
-  // enforce), not exact equality to whatever this process currently resolves.
-  it('accepts an admitted window that differs from the current TERMINAL_DEADLINE_MS but is still within [MIN, MAX]', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
-    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) } as any);
-    const admittedUnderADifferentWindow = {
-      ...input(),
-      // Neither MIN_TERMINAL_DEADLINE_MS nor the current TERMINAL_DEADLINE_MS -- a
-      // third in-range value simulating an env change between admission and now.
-      terminalDeadline: input().receivedAt + Math.round((MIN_TERMINAL_DEADLINE_MS + MAX_TERMINAL_DEADLINE_MS) / 2),
-    };
-    expect(admittedUnderADifferentWindow.terminalDeadline).not.toBe(input().terminalDeadline);
-    await expect(repository.admit(admittedUnderADifferentWindow)).resolves.toMatchObject({ status: 'accepted' });
+  it('rejects an admitted window that differs from the fixed 15-minute ceiling', async () => {
+    const connect = vi.fn();
+    const repository = new PostgresReviewDispatchRepository({ connect } as any);
+    await expect(repository.admit({ ...input(), terminalDeadline: input().terminalDeadline + 1 }))
+      .rejects.toThrow(/terminal deadline must be exactly/i);
+    expect(connect).not.toHaveBeenCalled();
   });
 
   it('rejects a terminal deadline outside the bounded [MIN, MAX] window before opening a transaction', async () => {
     const connect = vi.fn();
     const repository = new PostgresReviewDispatchRepository({ connect } as any);
     await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }))
-      .rejects.toThrow(/terminal deadline must be between/i);
+      .rejects.toThrow(/terminal deadline must be exactly/i);
     await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }))
-      .rejects.toThrow(/terminal deadline must be between/i);
+      .rejects.toThrow(/terminal deadline must be exactly/i);
     expect(connect).not.toHaveBeenCalled();
   });
 

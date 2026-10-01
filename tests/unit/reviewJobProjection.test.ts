@@ -200,24 +200,12 @@ describe('buildReviewJobProjection', () => {
     expect(() => buildReviewJobProjection({ ...input, publicationMode: 'enabled' as any }, receivedAt + 60_000))
       .toThrow(/publication mode/i);
     expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }, receivedAt + 60_000))
-      .toThrow(/terminal deadline must be between/i);
+      .toThrow(/terminal deadline must be exactly/i);
     // The below-floor rejection is an independent branch from the above-ceiling one
     // (buildReviewJobProjection has its own copy of this check, separate from
     // reviewDispatchRepository's), so it needs its own direct assertion here too.
     expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }, receivedAt + 60_000))
-      .toThrow(/terminal deadline must be between/i);
-    // A window that is neither a boundary nor the current TERMINAL_DEADLINE_MS --
-    // simulating a run admitted before a config change -- must still project
-    // cleanly. Derived relative to TERMINAL_DEADLINE_MS itself (not a literal) so
-    // this is deterministic regardless of the ambient REVIEW_YETI_TERMINAL_DEADLINE_MS
-    // the suite happened to load under: pick the midpoint on whichever side of
-    // TERMINAL_DEADLINE_MS still has room, which always differs from it.
-    const midWindow = TERMINAL_DEADLINE_MS >= MAX_TERMINAL_DEADLINE_MS
-      ? Math.round((MIN_TERMINAL_DEADLINE_MS + TERMINAL_DEADLINE_MS) / 2)
-      : Math.round((TERMINAL_DEADLINE_MS + MAX_TERMINAL_DEADLINE_MS) / 2);
-    expect(midWindow).not.toBe(TERMINAL_DEADLINE_MS);
-    expect(buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + midWindow }, receivedAt + 60_000).spec.runId)
-      .toBe(input.runId);
+      .toThrow(/terminal deadline must be exactly/i);
     expect(() => buildReviewJobProjection(input, input.terminalDeadline - 119_999))
       .toThrow(/120 seconds/i);
     expect(buildReviewJobProjection(input, input.terminalDeadline - 120_000).metadata.name)

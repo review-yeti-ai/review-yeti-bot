@@ -621,7 +621,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		// An app-gate review that will never have a worker still owes the
 		// dispatcher a verdict. Route it through the same delegation as
 		// WorkerJobMissing above instead of a plain fail, or the terminal
-		// deadline reaper is the only thing left to notice it, 30 minutes later.
+		// deadline reaper is the only thing left to notice it, 15 minutes later.
 		if review.Spec.PublicationMode == job.PublicationModeAppGate {
 			return r.startFailurePublication(ctx, review, "WorkerContractRejected", err.Error())
 		}
@@ -1997,7 +1997,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
 func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob) error {
 	window := review.Spec.TerminalDeadline.Sub(review.Spec.ReceivedAt.Time)
 	if window < time.Duration(job.MinTerminalDeadlineSeconds)*time.Second || window > time.Duration(job.MaxTerminalDeadlineSeconds)*time.Second {
-		return errors.New("terminal deadline must be between 15 and 60 minutes after receivedAt")
+		return errors.New("terminal deadline must be exactly 15 minutes after receivedAt")
 	}
 	if review.Namespace != job.Namespace {
 		return fmt.Errorf("review must run in namespace %q", job.Namespace)
