@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runReadOnlyTool, type ToolRuntimeContext } from '../toolRuntime';
-import type { RepoFileProvider } from '../panelEngine';
+import { REPO_READ_FILE_MAX_CHARS, type RepoFileProvider } from '../panelEngine';
 
 vi.mock('../../mcp/mcpFleetManager', () => ({
   mcpFleetManager: {
@@ -24,6 +24,89 @@ describe('runReadOnlyTool', () => {
   const baseContext = (overrides: Partial<ToolRuntimeContext> = {}): ToolRuntimeContext => ({
     changedFiles: [{ path: 'src/auth/multi.ts', patch: 'export function login() {}\n' }],
     ...overrides,
+  });
+
+  describe('bounded read_files', () => {
+    it('returns separate exact-head source ranges in request order without substituting patches', async () => {
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(),
+        readFile: vi.fn(async (path) => path === 'src/auth/multi.ts'
+          ? 'auth header\nauth caller contract\nauth footer'
+          : 'config header\nconfig allowlist\nconfig footer'),
+      };
+      const result = await runReadOnlyTool('read_files', { files: [
+        { path: 'src/auth/multi.ts', startLine: 2, endLine: 2 },
+        { path: 'src/config.ts', startLine: 2, endLine: 2 },
+      ] }, baseContext({ repoFileProvider }));
+      expect(vi.mocked(repoFileProvider.readFile).mock.calls).toEqual([['src/auth/multi.ts'], ['src/config.ts']]);
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: true });
+      expect(result.toolOutput).toContain('Lines 2-2 of 3');
+      expect(result.toolOutput).toContain('auth caller contract');
+      expect(result.toolOutput).toContain('config allowlist');
+      expect(result.toolOutput).not.toContain('export function login');
+      expect(result.toolOutput).not.toContain('auth footer');
+      expect(result.toolOutput.indexOf('auth caller contract')).toBeLessThan(result.toolOutput.indexOf('config allowlist'));
+    });
+
+    it('keeps a failed lookup and patch fallback non-exhaustive alongside a successful source read', async () => {
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(),
+        readFile: vi.fn(async (path) => {
+          if (path === 'src/auth/multi.ts') throw new Error('lookup unavailable');
+          return 'real current config';
+        }),
+      };
+      const result = await runReadOnlyTool('read_files', { files: [
+        { path: 'src/auth/multi.ts' }, { path: 'src/config.ts' },
+      ] }, baseContext({ repoFileProvider }));
+      expect(result).toMatchObject({ toolScope: 'mixed-read-only', isExhaustive: false });
+      expect(result.toolOutput).toContain('SCOPE: changed-patches-only | EXHAUSTIVE: false');
+      expect(result.toolOutput).toContain('lookup failure, not confirmation');
+      expect(result.toolOutput).toContain('Only the PR patch is available');
+      expect(result.toolOutput).toContain('SCOPE: full-repository | EXHAUSTIVE: true');
+      expect(result.toolOutput).toContain('real current config');
+    });
+
+    it.each([
+      {}, { files: [] }, { files: Array.from({ length: 9 }, () => ({ path: 'src/config.ts' })) },
+      { files: [{ path: 'src/config.ts', tool: 'write_file' }] },
+      { files: [{ path: 'src/config.ts', startLine: 4, endLine: 2 }] },
+      { files: [{ path: 'src/config.ts', startLine: 1.5 }] },
+      { files: [{ path: '' }] }, { files: [{ path: 'src/config.ts' }], tool: 'knowledge_get' },
+    ])('rejects malformed or nested tool arguments before doing any I/O: %j', async (args) => {
+      const repoFileProvider: RepoFileProvider = { findFiles: vi.fn(), readFile: vi.fn() };
+      const result = await runReadOnlyTool('read_files', args, baseContext({ repoFileProvider }));
+      expect(result.isExhaustive).toBe(false);
+      expect(result.toolOutput).toContain('execution rejected');
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+      expect(mcpFleetManager.executeTool).not.toHaveBeenCalled();
+    });
+
+    it('bounds the aggregate UTF-8 output and does not read undisclosed remaining files', async () => {
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(), readFile: vi.fn().mockResolvedValue('🧪'.repeat(200_000)),
+      };
+      const result = await runReadOnlyTool('read_files', { files: [
+        { path: 'src/large.ts' }, { path: 'src/unread.ts' },
+      ] }, baseContext({ repoFileProvider }));
+      expect(Buffer.byteLength(result.toolOutput, 'utf8')).toBeLessThanOrEqual(REPO_READ_FILE_MAX_CHARS);
+      expect(result.toolOutput).not.toContain('\uFFFD');
+      expect(result.toolOutput).toContain('BATCH TRUNCATED');
+      expect(result.toolOutput).toContain('1 remaining file(s) were not read');
+      expect(result.isExhaustive).toBe(false);
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/large.ts');
+    });
+
+    it('propagates the original cancellation without advancing to the next file', async () => {
+      const controller = new AbortController();
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(), readFile: vi.fn(async () => { controller.abort(); return 'source'; }),
+      };
+      await expect(runReadOnlyTool('read_files', { files: [
+        { path: 'src/auth/multi.ts' }, { path: 'src/config.ts' },
+      ] }, baseContext({ repoFileProvider, signal: controller.signal }))).rejects.toThrow();
+      expect(repoFileProvider.readFile).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('disallowed tool', () => {

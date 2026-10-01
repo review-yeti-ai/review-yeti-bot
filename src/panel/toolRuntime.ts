@@ -47,6 +47,67 @@ export interface ToolRuntimeResult {
   isExhaustive: boolean;
 }
 
+const READ_FILES_MAX_FILES = 8;
+// One batch has the existing single-read payload ceiling, not eight times that ceiling.
+const READ_FILES_MAX_BYTES = REPO_READ_FILE_MAX_CHARS;
+
+function boundedUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text, 'utf8');
+  if (bytes.length <= maxBytes) return text;
+  for (let end = maxBytes; end >= Math.max(0, maxBytes - 3); end--) {
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, end)); }
+    catch { /* A cut may intersect the final Unicode code point. */ }
+  }
+  return '';
+}
+
+async function readFiles(args: any, context: ToolRuntimeContext): Promise<ToolRuntimeResult> {
+  const files = args?.files;
+  const validRange = (value: unknown) => value === undefined
+    || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+  if (!args || typeof args !== 'object' || Array.isArray(args)
+    || Object.keys(args).some((key) => key !== 'files')
+    || !Array.isArray(files) || files.length < 1 || files.length > READ_FILES_MAX_FILES
+    || files.some((file) => !file || typeof file !== 'object' || Array.isArray(file)
+      || Object.keys(file).some((key) => !['path', 'startLine', 'endLine'].includes(key))
+      || typeof file.path !== 'string' || !file.path.trim() || file.path.length > 4096
+      || !validRange(file.startLine) || !validRange(file.endLine)
+      || (file.startLine !== undefined && file.endLine !== undefined && file.endLine < file.startLine))) {
+    return { toolOutput: "Tool 'read_files' execution rejected: Supply 1-8 files with an exact path and optional positive integer startLine/endLine. No other arguments or tools are allowed.",
+      toolScope: 'changed-patches-only', isExhaustive: false };
+  }
+
+  let toolOutput = "Tool 'read_files' execution result:\n";
+  let isExhaustive = true;
+  const scopes = new Set<string>();
+  // Leave room for an engine-owned disclosure even if a source payload fills the batch.
+  const payloadLimit = READ_FILES_MAX_BYTES - 256;
+  for (let index = 0; index < files.length; index++) {
+    throwIfPanelAborted(context.signal);
+    const remaining = payloadLimit - Buffer.byteLength(toolOutput, 'utf8');
+    if (remaining <= 0) {
+      toolOutput += `\n[BATCH TRUNCATED: ${files.length - index} requested file(s) were not read. Request smaller source ranges.]`;
+      isExhaustive = false;
+      break;
+    }
+    // Reuse precisely the same exact-head read, source-line slicing and fallback as read_file.
+    // Reads stay serial and share the original abort signal; no new tool or provider concurrency.
+    const result = await runReadOnlyTool('read_file', files[index], context);
+    throwIfPanelAborted(context.signal);
+    scopes.add(result.toolScope);
+    isExhaustive = isExhaustive && result.isExhaustive;
+    const section = `\n[FILE ${JSON.stringify(files[index].path)} | SCOPE: ${result.toolScope} | EXHAUSTIVE: ${result.isExhaustive}]\n${result.toolOutput}\n`;
+    if (Buffer.byteLength(section, 'utf8') > remaining) {
+      toolOutput += boundedUtf8(section, remaining);
+      toolOutput += `\n[BATCH TRUNCATED: current file output is incomplete; ${files.length - index - 1} remaining file(s) were not read. Request smaller source ranges.]`;
+      isExhaustive = false;
+      break;
+    }
+    toolOutput += section;
+  }
+  return { toolOutput, toolScope: scopes.size === 1 ? [...scopes][0] : 'mixed-read-only', isExhaustive };
+}
+
 /**
  * Execute one read-only tool call and return its output plus scope envelope.
  *
@@ -59,6 +120,7 @@ export async function runReadOnlyTool(
   args: any,
   context: ToolRuntimeContext,
 ): Promise<ToolRuntimeResult> {
+  if (toolName === 'read_files') return readFiles(args, context);
   const toolCall = { tool: toolName, args };
   const options = context;
   const changedFiles = context.changedFiles;
