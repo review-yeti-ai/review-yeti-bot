@@ -111,6 +111,32 @@ describe('runReadOnlyTool', () => {
       expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/large.ts');
     });
 
+    it('discloses unread files when a complete section exactly fills the batch payload', async () => {
+      const path = 'src/exact-limit.ts';
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(), readFile: vi.fn().mockResolvedValue(''),
+      };
+      const context = baseContext({ repoFileProvider });
+      const emptyRead = await runReadOnlyTool('read_file', { path }, context);
+      const header = "Tool 'read_files' execution result:\n";
+      const emptySection = `\n[FILE ${JSON.stringify(path)} | SCOPE: ${emptyRead.toolScope} | EXHAUSTIVE: ${emptyRead.isExhaustive}]\n${emptyRead.toolOutput}\n`;
+      const sourceBytes = REPO_READ_FILE_MAX_CHARS - 256
+        - Buffer.byteLength(header + emptySection, 'utf8');
+      expect(sourceBytes).toBeGreaterThan(0);
+      vi.mocked(repoFileProvider.readFile).mockClear().mockResolvedValue('x'.repeat(sourceBytes));
+
+      const result = await runReadOnlyTool('read_files', { files: [
+        { path }, { path: 'src/unread.ts' },
+      ] }, context);
+
+      expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith(path);
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: false });
+      expect(result.toolOutput).toContain('EXHAUSTIVE: true');
+      expect(result.toolOutput).not.toContain('OUTPUT: INCOMPLETE');
+      expect(result.toolOutput).toContain('BATCH TRUNCATED: 1 requested file(s) were not read');
+      expect(Buffer.byteLength(result.toolOutput, 'utf8')).toBeLessThanOrEqual(REPO_READ_FILE_MAX_CHARS);
+    });
+
     it('propagates the original cancellation without advancing to the next file', async () => {
       const controller = new AbortController();
       const repoFileProvider: RepoFileProvider = {
