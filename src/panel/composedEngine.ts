@@ -104,6 +104,7 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCallValue } from './nativeTurnProtocol';
+import { MAX_TASK_ID_LENGTH, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../reviewTaskContract';
 import {
   resolveComposedMaxTasks,
   ReviewTask,
@@ -284,6 +285,30 @@ export function resolveComposedEngineMaxTurns(
     return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
   }
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
+}
+
+/** Ceiling for total findings collected across composed tasks before early finalization. */
+export const COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP = 500;
+export const COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS = 25;
+
+/**
+ * Resolution order: `env.COMPOSED_ENGINE_MAX_FINDINGS` or `env.REVIEW_YETI_MAX_FINDINGS` (operator override)
+ * wins when set, then the base-policy-projected `composed.max_findings_total`, clamped to
+ * `COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP`, falling back to `COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS` (25).
+ */
+export function resolveComposedEngineMaxFindings(
+  env: NodeJS.ProcessEnv = process.env,
+  configuredMaxFindingsTotal?: number,
+): number {
+  const envVal = env.COMPOSED_ENGINE_MAX_FINDINGS || env.REVIEW_YETI_MAX_FINDINGS;
+  const raw = Number(envVal);
+  if (Number.isSafeInteger(raw) && raw > 0) {
+    return Math.min(raw, COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP);
+  }
+  if (Number.isSafeInteger(configuredMaxFindingsTotal) && (configuredMaxFindingsTotal as number) > 0) {
+    return Math.min(configuredMaxFindingsTotal as number, COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP);
+  }
+  return COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS;
 }
 
 /**
@@ -768,7 +793,8 @@ export function buildPlanDirective(
     // which `validateTaskPlan` rejects as `malformed_ids`, failing the plan
     // after its single corrective turn. Describe the shape wanted and show
     // conforming ids; never quote a non-conforming one.
-    `Each task names an id matching [a-z][a-z0-9_-]* -- a short lowercase kebab-case slug naming what the task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape". Each task also names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
+    `Use a short lowercase slug naming what each task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape".`,
+    ...buildPlanTaskContractGuidance(expectedNonce, changedFilePaths, securityAuthPaths),
     `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
     // The security floor is enforced against `classifyPathByHeuristic`, a
     // deterministic model-independent classification of the real changed
@@ -788,6 +814,42 @@ export function buildPlanDirective(
     `On an investigation turn, you may request exactly one read-only tool as {"tool":"tool_name","args":{}}. When ready, return the final plan object with the exact top-level fields "nonce" and "tasks" -- no other fields, no Markdown fences.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
+}
+
+/** Shared by the initial and corrective plan requests so both teach the same validated task shape. */
+function buildPlanTaskContractGuidance(
+  expectedNonce: string,
+  changedFilePaths: string[],
+  securityAuthPaths: string[] = [],
+): string[] {
+  const guidance = [
+    `Task ids must match ${TASK_ID_PATTERN.source} (1-${MAX_TASK_ID_LENGTH} characters).`,
+    `Every task object must include these nested fields: "id", "dimension", "paths", "question", and "rationale".`,
+    `The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}. The "paths" value must be an array containing only exact changed code paths from the PR CHANGED FILES INDEX above; do not invent or rewrite paths.`,
+    `The question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters; do not omit either field.`,
+  ];
+  const examplePath = changedFilePaths[0];
+  if (!examplePath) {
+    return [
+      ...guidance,
+      `No changed code path is available for a positive task example.`,
+    ];
+  }
+
+  const securityExample = securityAuthPaths.includes(examplePath);
+  const taskExample = {
+    id: securityExample ? 'security-auth-example' : 'testing-contract-example',
+    dimension: securityExample ? 'security' : 'testing',
+    paths: [examplePath],
+    question: 'What regression risk should be checked in this changed path?',
+    rationale: 'This task examines the changed path for a concrete behavior regression.',
+  };
+  const planExample = JSON.stringify({ nonce: expectedNonce, tasks: [taskExample] });
+
+  return [
+    ...guidance,
+    `Positive example of the complete plan/task JSON shape, using the issued nonce and an allowed changed path: ${planExample}. This illustrates one task's shape only; the full plan must still cover every changed code path and satisfy the security floor.`,
+  ];
 }
 
 function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: number, expectedNonce: string): string {
@@ -916,6 +978,7 @@ async function runPlanPhase(input: {
   providerId: ProviderId;
   messages: OpenRouterMessage[];
   effectiveFilePaths: string[];
+  securityAuthPaths: string[];
   maxTasks: number;
   timeoutMs: number;
   inactivityTimeoutMs: number;
@@ -1007,6 +1070,7 @@ async function runPlanPhase(input: {
         content: [
           'PLAN_CORRECTION',
           'Your plan was rejected: the "nonce" field did not match the nonce issued for this request.',
+          ...buildPlanTaskContractGuidance(input.expectedNonce, input.effectiveFilePaths, input.securityAuthPaths),
           'Return a corrected complete plan object now with the exact top-level fields "nonce" and "tasks".',
         ].join('\n'),
       }];
@@ -1036,13 +1100,14 @@ async function runPlanPhase(input: {
     }
     correctionUsed = true;
     const uncovered = validation.reason === 'coverage_gap' ? ` Uncovered paths: ${(validation.uncoveredPaths || []).join(', ')}.` : '';
-    const changed = ` Changed files you may name, and no others: ${input.effectiveFilePaths.join(', ')}.`;
+    const changed = ` Changed files you may name, and no others: ${JSON.stringify(input.effectiveFilePaths)}.`;
     messages = [...messages, {
       role: 'user',
       content: [
         'PLAN_CORRECTION',
         `Your plan was rejected: ${validation.message}${uncovered}${changed}`,
-        'Task ids must match [a-z][a-z0-9_-]*. Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
+        ...buildPlanTaskContractGuidance(input.expectedNonce, input.effectiveFilePaths, input.securityAuthPaths),
+        'Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
       ].join('\n'),
     }];
   }
@@ -1500,6 +1565,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     ];
 
     const totalTurnBudget = resolveComposedEngineMaxTurns(process.env, config.composed?.max_turns_total);
+    const maxFindings = resolveComposedEngineMaxFindings(process.env, config.composed?.max_findings_total);
+    span.setAttribute('review_yeti.composed.max_findings', maxFindings);
     let totalTurnsUsed = 0;
     const remainingBudget = () => totalTurnBudget - totalTurnsUsed;
     const timeoutMs = Math.max(1, deadline.timeoutMs - (Date.now() - panelStartedAt));
@@ -1528,6 +1595,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           providerId,
           messages: baseMessages,
           effectiveFilePaths,
+          securityAuthPaths: effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
           maxTasks,
           timeoutMs,
           inactivityTimeoutMs,
@@ -1681,6 +1749,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let nextFoldIndex = 0;
     let reservedTurns = 0;
     let evidenceDeadlineExpired = false;
+    let maxFindingsReached = false;
+    let totalFindingsCollected = [...completedCheckpointTasks.values()].reduce((sum, f) => sum + f.length, 0);
     const taskAbort = new AbortController();
     const onPanelAbort = () => taskAbort.abort(signal?.reason);
     if (signal?.aborted) taskAbort.abort(signal.reason);
@@ -1699,6 +1769,15 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const { task, index, reservedTurns } = reserved;
       const diagnosticLane = composedTaskDiagnosticLane(index);
       const taskStartedAt = Date.now();
+      logger.info('[composed] task started', {
+        event: 'composed_task_started',
+        taskId: task.id,
+        dimension: task.dimension,
+        question: task.question,
+        paths: task.paths,
+        taskIndex: index,
+        diagnosticLane,
+      });
       options.progress?.emit({
         task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
         provider: providerId, model, required: true,
@@ -1730,6 +1809,17 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           turnsRemaining: () => reservedTurns - taskTurnUsages.length,
           progress: options.progress,
           progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
+        });
+        logger.info('[composed] task completed', {
+          event: 'composed_task_completed',
+          taskId: task.id,
+          dimension: task.dimension,
+          question: task.question,
+          outcomeType: outcome.type,
+          findingsCount: outcome.type === 'complete' ? outcome.findings.length : 0,
+          turnCount: outcome.turnUsages.length,
+          durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
+          diagnosticLane,
         });
         options.progress?.emit({
           task: 'composed_task',
@@ -1855,12 +1945,94 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         if (actualTurns > active.reserved.reservedTurns || totalTurnsUsed + actualTurns + reservedForOtherTasks > totalTurnBudget) {
           throw new Error('composed task usage exceeded its reservation or the review turn budget');
         }
+        if (result.outcome.type === 'complete') {
+          totalFindingsCollected += result.outcome.findings.length;
+        }
         activeTasks.delete(active.reserved.index);
         reservedTurns = reservedForOtherTasks;
         totalTurnsUsed += actualTurns;
         settledTasks.set(result.index, result);
       }
       foldReadyTasks();
+    };
+
+    const checkAndFinalizeMaxFindings = async (): Promise<boolean> => {
+      if (totalFindingsCollected < maxFindings) return false;
+      maxFindingsReached = true;
+      logger.info('[composed] max findings limit reached; finalizing review early', {
+        event: 'composed_max_findings_reached',
+        totalFindingsCollected,
+        maxFindings,
+        pendingTasksRemaining: pendingTasks.length - nextTaskIndex,
+        activeTasksRunning: activeTasks.size,
+      });
+
+      // 1. Abort any running tasks
+      taskAbort.abort(new Error('max_findings_reached'));
+
+      // 2. Wait for active tasks to settle
+      await Promise.allSettled([...activeTasks.values()].map((active) => active.settled));
+
+      // 3. For any active tasks that actually succeeded before or during abort, include them
+      for (const active of activeTasks.values()) {
+        if (active.status === 'fulfilled' && active.result) {
+          const result = active.result;
+          if (result.outcome.type === 'complete') {
+            totalFindingsCollected += result.outcome.findings.length;
+          }
+          settledTasks.set(result.index, result);
+        }
+      }
+      activeTasks.clear();
+      reservedTurns = 0;
+
+      // 4. Fold all settled tasks
+      const ready = [...settledTasks.values()].sort((left, right) => left.index - right.index);
+      settledTasks.clear();
+      for (const result of ready) foldSettledTask(result);
+
+      // 5. Populate personas for unstarted or aborted tasks so quorum is satisfied
+      const handledIds = new Set([
+        ...personas.map((p) => p.id),
+        ...optionalFailures.map((f) => f.id),
+        ...unreportedLanes.map((u) => u.id),
+      ]);
+      for (let i = 0; i < planOutcome.tasks.length; i++) {
+        const task = planOutcome.tasks[i];
+        if (!handledIds.has(task.id)) {
+          options.progress?.emit({
+            task: 'composed_task',
+            status: 'completed',
+            role: 'composed_task',
+            lane: composedTaskDiagnosticLane(i),
+            provider: providerId,
+            model,
+            required: true,
+            durationMs: 0,
+            turn: 0,
+            usage: progressUsage([]),
+          });
+          personas.push({
+            id: task.id,
+            required: true,
+            providerId,
+            model,
+            decision: 'APPROVE',
+            findings: [],
+            usage: null,
+            costUSD: null,
+            durationMs: 0,
+            turnsCount: 0,
+            toolTurns: 0,
+            turnUsages: [],
+            aggregateUsage: sumAggregateUsage([]),
+            toolCalls: [],
+          });
+          handledIds.add(task.id);
+        }
+      }
+      if (options.checkpoint) saveCheckpoint();
+      return true;
     };
 
     const gracefulAbortAndWait = async (error: unknown): Promise<void> => {
@@ -1921,6 +2093,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         checkForFatalTask();
         consumeSettledTasks();
 
+        if (await checkAndFinalizeMaxFindings()) {
+          break;
+        }
+
         while (activeTasks.size < taskConcurrency && nextTaskIndex < pendingTasks.length) {
           throwIfPanelAborted(signal);
           // Drain the current event-loop turn before another admission. A sibling's rejection can
@@ -1931,6 +2107,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           throwIfPanelAborted(signal);
           checkForFatalTask();
           consumeSettledTasks();
+
+          if (await checkAndFinalizeMaxFindings()) {
+            break;
+          }
 
           const remaining = remainingBudget();
           if (remaining <= 0) {
@@ -1976,6 +2156,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           nextTaskIndex += 1;
         }
 
+        if (maxFindingsReached) break;
+
         if (activeTasks.size === 0) {
           if (nextTaskIndex >= pendingTasks.length) break;
           // A task should have been launched whenever positive budget and an empty active set
@@ -1995,6 +2177,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       signal?.removeEventListener('abort', onPanelAbort);
     }
     span.setAttribute('review_yeti.composed.funded_task_count', fundedTaskCount);
+    span.setAttribute('review_yeti.composed.max_findings_reached', maxFindingsReached);
 
     const taskOrder = new Map(planOutcome.tasks.map((task, index) => [task.id, index]));
     personas.sort((left, right) => (taskOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER)
@@ -2034,8 +2217,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       quorum: { required: 1, distinctProviders: [providerId], satisfied: true },
       moderator: { providerId, model: 'none', decision: 'RECONCILED', findings: [],
         usage: null, costUSD: null, durationMs: 0 },
-      arbiter: { providerId, model: 'none', verdict: 'SHIP',
-        rationale: 'Composed engine: cross-task reconciliation is intra-context; the binding verdict is computed by canonical arbitration over the recorded task lanes.',
+      arbiter: { providerId, model: 'none', verdict: maxFindingsReached ? 'BLOCK' : 'SHIP',
+        rationale: maxFindingsReached
+          ? `Max review findings limit (${maxFindings}) reached; finalized review early.`
+          : 'Composed engine: cross-task reconciliation is intra-context; the binding verdict is computed by canonical arbitration over the recorded task lanes.',
         usage: null, costUSD: null, durationMs: 0 },
     };
   }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))

@@ -523,8 +523,8 @@ export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
  * Policy-authored bounds for the composed engine (`src/panel/composedEngine.ts`). Every field is
  * optional and, when present, only ever narrows the engine's own hard-coded defaults/caps
  * (`DEFAULT_MAX_TASKS`, `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`, `COMPOSED_TASK_MAX_TURNS`) --
- * policy can lower these, never raise them. `max_tasks` and `max_turns_total` are wired into
- * `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
+ * policy can lower these, never raise them. `max_tasks`, `max_turns_total`, and `max_findings_total`
+ * are wired into `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
  *
  * `task_dimensions` is projected and validated for forward-compatible policy authoring but is not
  * yet consumed -- the plan turn still seeds from the engine's own `TASK_DIMENSIONS`. Stated here
@@ -542,6 +542,7 @@ export const composedEngineConfigSchema = z.object({
   max_tasks: z.number().int().positive().max(64).optional(),
   max_turns_total: z.number().int().positive().max(200).optional(),
   max_turns_per_task: z.number().int().positive().max(50).optional(),
+  max_findings_total: z.number().int().positive().max(500).optional(),
   task_dimensions: z.array(z.string().min(1)).min(1).optional(),
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;

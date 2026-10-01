@@ -3,9 +3,12 @@ import {
   COMPOSED_TASK_CONCURRENCY_CEILING,
   executeComposedReview,
   orderReviewTasksByRisk,
+  resolveComposedEngineMaxFindings,
   resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
+import { TASK_ID_PATTERN } from '../../reviewTaskContract';
+import { isBypassDiffOnlyPath } from '../../pathDomainContract';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -278,7 +281,7 @@ describe('executeComposedReview', () => {
     // Positive id examples only. Quoting the rejected form primed models to
     // emit exactly it (observed: `T1`..`T7` -> malformed_ids).
     expect(planDirective).not.toContain('"T1"');
-    expect(planDirective).toContain('[a-z][a-z0-9_-]*');
+    expect(planDirective).toContain(TASK_ID_PATTERN.source);
   });
 
   it('states that no security task is required when no changed path is security-sensitive', async () => {
@@ -1759,4 +1762,108 @@ describe('executeComposedReview', () => {
       execSpy.mockRestore();
     }
   });
+
+  describe('resolveComposedEngineMaxFindings', () => {
+    it('defaults to 25 when unconfigured', () => {
+      expect(resolveComposedEngineMaxFindings({}, undefined)).toBe(25);
+    });
+
+    it('honours configured max_findings_total narrowed by policy', () => {
+      expect(resolveComposedEngineMaxFindings({}, 10)).toBe(10);
+      expect(resolveComposedEngineMaxFindings({}, 50)).toBe(50);
+    });
+
+    it('honours operator env overrides bounded by hard cap', () => {
+      expect(resolveComposedEngineMaxFindings({ COMPOSED_ENGINE_MAX_FINDINGS: '15' }, 50)).toBe(15);
+      expect(resolveComposedEngineMaxFindings({ REVIEW_YETI_MAX_FINDINGS: '30' }, undefined)).toBe(30);
+      expect(resolveComposedEngineMaxFindings({ COMPOSED_ENGINE_MAX_FINDINGS: '9999' }, undefined)).toBe(500);
+    });
+  });
+
+  describe('isBypassDiffOnlyPath', () => {
+    it('identifies lockfiles as bypass paths', () => {
+      expect(isBypassDiffOnlyPath('package-lock.json')).toBe(true);
+      expect(isBypassDiffOnlyPath('mix.lock')).toBe(true);
+      expect(isBypassDiffOnlyPath('yarn.lock')).toBe(true);
+      expect(isBypassDiffOnlyPath('pnpm-lock.yaml')).toBe(true);
+      expect(isBypassDiffOnlyPath('sub/dir/cargo.lock')).toBe(true);
+      expect(isBypassDiffOnlyPath('go.sum')).toBe(true);
+    });
+
+    it('identifies json data files as bypass paths while preserving package.json and tsconfig.json', () => {
+      expect(isBypassDiffOnlyPath('data/fixtures.json')).toBe(true);
+      expect(isBypassDiffOnlyPath('package.json')).toBe(false);
+      expect(isBypassDiffOnlyPath('tsconfig.json')).toBe(false);
+    });
+
+    it('does not classify source code as bypass', () => {
+      expect(isBypassDiffOnlyPath('src/auth/guard.ts')).toBe(false);
+      expect(isBypassDiffOnlyPath('lib/cdrcisco/telemetry.ex')).toBe(false);
+    });
+  });
+
+  it('finalizes review early and populates all personas when max findings threshold is reached', async () => {
+    const started: string[] = [];
+    const completedTasks: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(6) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error(`missing task id in work directive: ${directive.slice(0, 100)}`);
+      started.push(taskId);
+
+      // Task 1 returns 25 findings
+      if (taskId === 'task-1') {
+        const findings = Array.from({ length: 25 }, (_, i) => ({
+          title: `Finding ${i + 1}`,
+          severity: 'P1',
+          path: 'src/auth/guard.ts',
+          line: 1,
+          startLine: null,
+          body: `Critical issue ${i + 1}`,
+          suggestion: null,
+          replacementCode: null,
+        }));
+        completedTasks.push(taskId);
+        return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings }));
+      }
+
+      // Other tasks take longer or return clean
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      completedTasks.push(taskId);
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    }));
+
+    // Quorum must be satisfied and all 6 tasks accounted for in personas
+    expect(result.quorum.satisfied).toBe(true);
+    expect(result.personas).toHaveLength(6);
+    expect(result.unreportedLanes).toEqual([]);
+    expect(result.arbiter.verdict).toBe('BLOCK');
+    expect(result.arbiter.rationale).toContain('Max review findings limit (25) reached');
+
+    // Task 1 should have its 25 findings
+    const task1Persona = result.personas.find((p) => p.id === 'task-1');
+    expect(task1Persona?.findings).toHaveLength(25);
+    expect(task1Persona?.decision).toBe('FINDINGS');
+
+    // Downstream canonical arbitration should compute BLOCK
+    const arbitration = computeArbitration(result.personas, result.applicablePersonaIds!.length, {
+      changedFiles: CODE_FILES,
+      coverageComplete: true,
+      panelSize: 1,
+    });
+    expect(arbitration.verdict).toBe('BLOCK');
+  });
 });
+

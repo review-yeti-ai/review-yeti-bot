@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.103.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.2...v1.103.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** preserve draft validation on ready transition ([#1218](https://github.com/review-yeti-ai/review-yeti-bot/issues/1218)) ([2da96c5](https://github.com/review-yeti-ai/review-yeti-bot/commit/2da96c531946e35adf396346f1a6b41f8194f0fb))
+
+## [1.103.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.1...v1.103.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **panel:** clarify composed PLAN task contracts ([#1215](https://github.com/review-yeti-ai/review-yeti-bot/issues/1215)) ([ff8d0f3](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff8d0f32d316b3c254c107360b715757f5d8adcb))
+
 ## [1.103.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.0...v1.103.1) (2026-10-01)
 
 
