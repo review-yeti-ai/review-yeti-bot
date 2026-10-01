@@ -132,7 +132,7 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     // Invalid queries still consume the shared per-run call budget, without
     // spawning a process or needing a real index. Engine config owns one handle.
     let last;
-    for (let i = 0; i < 64; i++) last = await session.call('zoekt_search', { query: '' });
+    for (let i = 0; i < 64; i++) last = await session.call('code_search_zoekt', { query: '' });
     expect(last).toMatchObject({ reason: 'call_budget_exhausted', indexScope,
       identity: { repository: 'calltelemetry/ct-meta', headSha: HEAD } });
   });
