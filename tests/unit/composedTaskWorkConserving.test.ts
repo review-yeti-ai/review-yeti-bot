@@ -145,7 +145,8 @@ describe('work-conserving composed task scheduling', () => {
     await waitForStarted(taskThreeStarted.promise);
     // Task 2 settles, freeing one concurrency slot while tasks 1 and 3 remain active.
     await waitForStarted(taskFourStarted.promise);
-    expect(await taskFourPrompt.promise).not.toContain('[TASK task-2 COMPLETE');
+    const taskFourContext = await taskFourPrompt.promise;
+    expect(taskFourContext.split('\n').filter((line) => /^- Task task-\d+ \(/u.test(line))).toEqual([]);
     expect(taskThreeGate.promise).toBeDefined();
 
     // Once task 1 settles, the contiguous receipt prefix includes tasks 1 and 2. Task 3 is
@@ -153,10 +154,14 @@ describe('work-conserving composed task scheduling', () => {
     taskOneGate.resolve();
     await waitForStarted(taskFiveStarted.promise);
     const taskFiveContext = await taskFivePrompt.promise;
-    expect(taskFiveContext).toContain('[TASK task-1 COMPLETE');
-    expect(taskFiveContext).toContain('[TASK task-2 COMPLETE');
-    expect(taskFiveContext).not.toContain('[TASK task-3 COMPLETE');
-    expect(taskFiveContext).not.toContain('[TASK task-4 COMPLETE');
+    // The scoped swarm prefix carries compact summaries, not the old shared
+    // conversation markers. Exact ordered membership still forbids leaking
+    // completed-but-not-yet-folded or still-running sibling work.
+    expect(taskFiveContext).toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS (2 completed) ===');
+    expect(taskFiveContext.split('\n').filter((line) => /^- Task task-\d+ \(/u.test(line))).toEqual([
+      '- Task task-1 (architecture, paths [src/app.ts]): CLEAN (0 findings)',
+      '- Task task-2 (architecture, paths [src/app.ts]): CLEAN (0 findings)',
+    ]);
 
     taskFourGate.resolve();
     taskThreeGate.resolve();
