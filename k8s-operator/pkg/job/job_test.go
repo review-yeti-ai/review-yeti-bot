@@ -397,6 +397,9 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever || result.Spec.Template.Spec.AutomountServiceAccountToken == nil || *result.Spec.Template.Spec.AutomountServiceAccountToken {
 		t.Fatalf("pod restart/token policy = %s/%v", result.Spec.Template.Spec.RestartPolicy, result.Spec.Template.Spec.AutomountServiceAccountToken)
 	}
+	if result.Spec.Template.Spec.PriorityClassName != job.WorkerPriorityClassName {
+		t.Fatalf("pod priorityClassName = %q, want %q", result.Spec.Template.Spec.PriorityClassName, job.WorkerPriorityClassName)
+	}
 	if result.Spec.Template.Spec.ServiceAccountName != "" {
 		t.Fatalf("service account = %q, want empty", result.Spec.Template.Spec.ServiceAccountName)
 	}
@@ -440,6 +443,75 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("receipt-only job contains forbidden credential marker %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestBuildWorkerJobInjectsWorkerPriorityClassName(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	testCases := []struct {
+		name  string
+		setup func(review *v1alpha2.PRReviewJob, input *job.Input)
+	}{
+		{
+			name:  "standard receipt-only worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {},
+		},
+		{
+			name: "prep phase worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				input.Phase = job.JobPhasePrep
+			},
+		},
+		{
+			name: "continuation phase worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				input.Phase = job.JobPhaseContinuation
+			},
+		},
+		{
+			name: "full panel qualification worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+				review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+			},
+		},
+		{
+			name: "same head qualification worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.QualificationProfile = job.SameHeadQualificationProfile
+				review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+			},
+		},
+		{
+			name: "app-gate publishing worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.PublicationMode = "app-gate"
+				input.Publishing = publishingFixture()
+			},
+		},
+		{
+			name: "disabled publishing worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.PublicationMode = "disabled"
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			input := buildInput(review, now)
+			tc.setup(review, &input)
+			worker, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatalf("BuildWorkerJob() error = %v", err)
+			}
+			if worker.Spec.Template.Spec.PriorityClassName != job.WorkerPriorityClassName {
+				t.Fatalf("priorityClassName = %q, want %q",
+					worker.Spec.Template.Spec.PriorityClassName, job.WorkerPriorityClassName)
+			}
+		})
 	}
 }
 

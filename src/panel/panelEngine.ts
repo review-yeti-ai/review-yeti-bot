@@ -151,6 +151,7 @@ export type {
   PanelRequestPolicy,
 } from './types';
 import { FIND_FILES_TOOL_GUIDE, READ_FILE_TOOL_GUIDE } from './pathMatch';
+import { REPO_READ_FILE_MAX_CHARS } from './toolLimits';
 export { isDocumentationOrAssetPath } from '../review/reviewableContent';
 export {
   isSubmoduleEntry,
@@ -187,7 +188,7 @@ import type {
  * the lane past its context window and fail it outright.
  */
 export const REPO_FIND_FILES_MAX_HITS = 50;
-export const REPO_READ_FILE_MAX_CHARS = 512 * 1024;
+export { REPO_READ_FILE_MAX_CHARS } from './toolLimits';
 /** Max investigation turns per persona. After that the session must emit findings. */
 export const MAX_INVESTIGATION_TURNS = 15;
 /** Idle budget after the last completed turn: start the next turn or end the session. */
