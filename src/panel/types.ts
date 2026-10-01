@@ -124,6 +124,20 @@ export interface PersonaLaneResult {
 }
 
 export interface PanelResult {
+  /**
+   * Evidence collection stopped at its reserved cutoff and the engine returned
+   * validated work instead of throwing it away. Missing tasks keep the result
+   * fail-closed; the publisher uses the protected closeout phase to render the
+   * collected findings and a resumable INCOMPLETE receipt.
+   */
+  gracefulExit?: {
+    reason: 'evidence_deadline';
+    completedTaskIds: string[];
+    pendingTaskIds: string[];
+    checkpointRevision?: number;
+    /** Closeout still publishes local evidence when durable progress storage is unavailable. */
+    checkpointPersistenceFailed?: true;
+  };
   /** Validated composed task plan, carried to the trusted completion boundary. */
   taskPlan?: import('./reviewTask').ReviewTask[];
   headSha: string;

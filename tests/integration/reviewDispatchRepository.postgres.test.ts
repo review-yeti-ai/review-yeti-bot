@@ -104,7 +104,7 @@ function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
   };
   return {
     deliveryId, eventName: 'pull_request', repositoryId: 123, installationId: 456,
-    receivedAt, terminalDeadline: receivedAt + 900_000,
+    receivedAt, terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
     payloadDigest: sha256(identity), publicationMode: 'app-gate' as const,
     centralActionDispatch: false,
     identity, effectivePolicyDigest: identity.reviewPolicy.effectivePolicyDigest,
@@ -309,7 +309,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
         await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
       } else {
-        await client.query('DROP TABLE IF EXISTS pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       }
       client.release();
       client = undefined;
@@ -2175,7 +2175,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       failureClass: 'provider_error',
     }, { workerTokenDigest }, 1_003)).resolves.toMatchObject({ status: 'failed' });
 
-    // The worker has failed durably, but the 15-minute admission window is still
+    // The worker has failed durably, but the 25-minute admission window is still
     // open. Reconciliation must publish the exact one-based a1 identity now.
     const [failed] = await repository.claimAbandonedPublishingRuns('reaper-a', 2_000, 1);
     expect(failed).toMatchObject({
@@ -3939,7 +3939,11 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     it('cannot mutate at or after the run deadline even with an unexpired lease', async () => {
       const { repository, client } = await createRepository();
       await repository.admit(sameHeadAdmission('initial', 1_000));
-      const claim = (await repository.claimNext('dispatcher-a', 890_000, 30_000))!;
+      const claim = (await repository.claimNext(
+        'dispatcher-a',
+        1_000 + TERMINAL_DEADLINE_MS - 10_000,
+        30_000,
+      ))!;
       expect(claim.leaseExpiresAt).toBeGreaterThan(claim.terminalDeadline + 1);
       const before = await dispatchState(client, claim.runId);
       for (const now of [claim.terminalDeadline, claim.terminalDeadline + 1]) {
