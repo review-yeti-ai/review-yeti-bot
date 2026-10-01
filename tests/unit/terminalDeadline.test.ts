@@ -116,4 +116,12 @@ describe('assertPersistedTerminalDeadlineWindow', () => {
     expect(() => assertPersistedTerminalDeadlineWindow(0, LEGACY_MAX_TERMINAL_DEADLINE_MS + 1))
       .toThrow(/persisted terminal deadline/i);
   });
+
+  it('rejects non-finite persisted receivedAt or terminalDeadline', () => {
+    expect(() => assertPersistedTerminalDeadlineWindow(Number.NaN, Number.NaN)).toThrow(/persisted terminal deadline/i);
+    expect(() => assertPersistedTerminalDeadlineWindow(1_000, Number.NaN)).toThrow(/persisted terminal deadline/i);
+    expect(() => assertPersistedTerminalDeadlineWindow(Number.NaN, 1_000 + 900_000)).toThrow(/persisted terminal deadline/i);
+    expect(() => assertPersistedTerminalDeadlineWindow(1_000, Number.POSITIVE_INFINITY)).toThrow(/persisted terminal deadline/i);
+    expect(() => assertPersistedTerminalDeadlineWindow(Number.NEGATIVE_INFINITY, 1_000)).toThrow(/persisted terminal deadline/i);
+  });
 });

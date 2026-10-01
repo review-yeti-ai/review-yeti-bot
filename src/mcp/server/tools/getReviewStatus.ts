@@ -376,7 +376,6 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       // Job name as a Pod identity.
       const projectedWorker: ReviewActiveWorker | null = projectionIsCurrent
         ? {
-            pod_name: '',
             identity_kind: 'job',
             job_name: `${projectionName}-worker`,
             projection_name: projectionName,

@@ -726,16 +726,23 @@ func TestPRReviewJobV1Alpha2ReconcilerValidatesProjectionWindow(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		window      time.Duration
+		phase       reviewv1alpha2.PRReviewJobPhase
 		wantInvalid bool
 	}{
 		{name: "one second under", window: 899 * time.Second, wantInvalid: true},
+		{name: "legacy queued one second under", window: 899 * time.Second, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
 		{name: "exactly fifteen minutes", window: 900 * time.Second, wantInvalid: false},
 		{name: "one second over", window: 901 * time.Second, wantInvalid: true},
+		{name: "legacy unmarked window", window: 35 * time.Minute, wantInvalid: true},
+		{name: "legacy queued window", window: 35 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: false},
+		{name: "legacy upper boundary", window: time.Duration(job.LegacyMaxTerminalDeadlineSeconds) * time.Second, phase: reviewv1alpha2.PhaseQueued, wantInvalid: false},
+		{name: "over legacy upper boundary", window: time.Duration(job.LegacyMaxTerminalDeadlineSeconds+1) * time.Second, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			scheme := v1alpha2Scheme(t)
 			review := v1alpha2Review(received)
 			review.Spec.TerminalDeadline = metav1.NewTime(received.Add(test.window))
+			review.Status.Phase = test.phase
 			kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
 			// now == received: stay well inside whichever window is under test so a
 			// valid window does not also trip the separate DeadlineExpired path.

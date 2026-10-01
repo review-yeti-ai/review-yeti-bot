@@ -35,7 +35,7 @@ export interface ReviewCheckRun {
 
 export interface ReviewActiveWorker {
   /** Exact pod identity when known from the live worker lease. */
-  pod_name: string;
+  pod_name?: string;
   /** Tells consumers whether `pod_name` or `job_name` is authoritative. */
   identity_kind: 'pod' | 'job';
   /** Deterministic Kubernetes Job identity after durable DOKS projection. */

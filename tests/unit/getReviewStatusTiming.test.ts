@@ -86,7 +86,7 @@ interface Captured {
 function makeDb(
   row: Record<string, unknown>,
   markers: Record<string, string> = {},
-  options: { failGateJoin?: boolean; projection?: Record<string, unknown> | null } = {},
+  options: { failGateJoin?: boolean; failProjection?: boolean; projection?: Record<string, unknown> | null } = {},
 ): { db: ReviewStatusDbClient; captured: Captured } {
   const captured: Captured = { statements: [], markerQueries: 0, markerParameters: [] };
   let mainQueries = 0;
@@ -104,6 +104,7 @@ function makeDb(
         };
       }
       if (sql.includes('review_dispatch_outbox')) {
+        if (options.failProjection) throw new Error('relation "review_dispatch_outbox" does not exist');
         return { rows: options.projection ? [options.projection] : [] };
       }
       mainQueries += 1;
@@ -123,6 +124,7 @@ async function runTimingCase(
   options: {
     headSha?: string;
     failGateJoin?: boolean;
+    failProjection?: boolean;
     projection?: Record<string, unknown> | null;
   } = {},
 ) {
@@ -211,12 +213,27 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.verdict).toBe('RUNNING');
     expect(data.phase).toBe('evaluating_personas');
     expect(data.active_worker).toMatchObject({
-      pod_name: '',
       identity_kind: 'job',
       job_name: 'ct-review-0123456789abcdef0123456789abcdef-worker',
       projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
       started_at: T2,
     });
+    expect(data.active_worker).not.toHaveProperty('pod_name');
+  });
+
+  it('falls back conservatively when the durable projection table is unavailable', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'queued',
+      run_stage: 'queued',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: 'queued',
+      terminal_deadline: new Date(Date.now() + 600_000).toISOString(),
+    }), {}, { failProjection: true });
+
+    expect(data.verdict).toBe('PENDING');
+    expect(data.phase).toBe('queued');
+    expect(data.active_worker).toBeNull();
   });
 
   it('does not advertise a stale projection after the admitted deadline', async () => {
