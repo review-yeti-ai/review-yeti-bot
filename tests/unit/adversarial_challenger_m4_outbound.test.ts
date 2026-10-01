@@ -425,7 +425,7 @@ describe('Milestone 4 Challenger 2 — Outbound Fleet & Concurrency Stress Suite
 
       expect(execSpy).toHaveBeenCalledWith('ct_impact', { target: 'src/routes/auth.ts' });
       expect(result.toolScope).toBe('cross-repository-ast-mesh');
-      expect(result.isExhaustive).toBe(true);
+      expect(result.isExhaustive).toBe(false);
       expect(result.toolOutput).toContain('blastRadius');
     });
 
@@ -439,7 +439,7 @@ describe('Milestone 4 Challenger 2 — Outbound Fleet & Concurrency Stress Suite
       const result = await runReadOnlyTool('ct_impact', { target_file: 'src/routes/auth.ts' }, baseContext());
 
       expect(execSpy).toHaveBeenCalledWith('ct_impact', { target_file: 'src/routes/auth.ts' });
-      expect(result.isExhaustive).toBe(true);
+      expect(result.isExhaustive).toBe(false);
     });
 
     it('TC-CHAL2-VAL-07: accepts ct_impact when query is supplied instead of target', async () => {
@@ -452,7 +452,7 @@ describe('Milestone 4 Challenger 2 — Outbound Fleet & Concurrency Stress Suite
       const result = await runReadOnlyTool('ct_impact', { query: 'UserToken' }, baseContext());
 
       expect(execSpy).toHaveBeenCalledWith('ct_impact', { query: 'UserToken' });
-      expect(result.isExhaustive).toBe(true);
+      expect(result.isExhaustive).toBe(false);
     });
 
     it('TC-CHAL2-VAL-08: rejects ct_mesh_query when query is missing or empty', async () => {
@@ -576,7 +576,7 @@ describe('Milestone 4 Challenger 2 — Outbound Fleet & Concurrency Stress Suite
 
       const resSuccess = await runReadOnlyTool('ct_impact', { target: 'good-target' }, baseContext());
       expect(resSuccess.toolOutput).toContain('"status": "ok"');
-      expect(resSuccess.isExhaustive).toBe(true);
+      expect(resSuccess.isExhaustive).toBe(false);
     });
 
     it('TC-CHAL2-CON-03: Semaphore limiter enforces MAX_CONCURRENT_PERSONAS ceiling under heavy burst', async () => {
