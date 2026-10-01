@@ -264,7 +264,7 @@ export function createPublishingProgress(
     try {
       const raw=(response.usage || {}) as unknown as Record<string, unknown>;
       const values={promptTokens:raw.prompt ?? raw.prompt_tokens, completionTokens:raw.completion ?? raw.completion_tokens,
-        totalTokens:raw.total ?? raw.total_tokens, cachedTokens:raw.cachedTokens ?? raw.cached ?? raw.cached_tokens ?? (raw.prompt_tokens_details as any)?.cached_tokens,
+        totalTokens:raw.total ?? raw.total_tokens, cachedTokens:raw.cachedTokens ?? raw.cached ?? raw.cached_tokens ?? (raw.prompt_tokens_details as any)?.cached_tokens ?? raw.cache_read_input_tokens,
         costUSD:response.costUSD};
       for(const key of Object.keys(values) as Array<keyof typeof values>){
         const n=values[key]; const max=key==='costUSD'?1_000_000_000:Number.MAX_SAFE_INTEGER;

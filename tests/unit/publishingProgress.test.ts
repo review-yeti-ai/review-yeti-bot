@@ -142,6 +142,31 @@ describe('publishing progress diagnostics', () => {
     const progress = createPublishingProgress({ runId: 'run-cache-read', executionAttempt: 1 }, { sink: (event) => events.push(event) });
     await progress.instrument({ complete: vi.fn(async () => cachedResponse) }).complete(request());
     expect(events[1]).toMatchObject({ status: 'completed', usage: { cachedTokens: 6 } });
+    expect(progress.snapshot?.()?.responseUsage).toMatchObject({
+      availability: 'known', responses: 1,
+      samples: { promptTokens: 1, completionTokens: 1, totalTokens: 1, cachedTokens: 1, costUSD: 1 },
+      totals: { promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedTokens: 6, costUSD: 0.004 },
+    });
+
+    const partial = createPublishingProgress({ runId: 'run-cache-zero', executionAttempt: 1 }, { sink: () => {} });
+    const zeroResponse = { ...providerResponse(), usage: { cache_read_input_tokens: 0 }, costUSD: undefined } as unknown as OpenRouterResponse;
+    await partial.instrument({ complete: async () => zeroResponse }).complete(request());
+    expect(partial.snapshot?.()?.responseUsage).toEqual({
+      availability: 'partial', responses: 1,
+      samples: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 1, costUSD: 0 },
+      totals: { cachedTokens: 0 },
+    });
+
+    for (const cacheRead of [undefined, '6', -1, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      const unknown = createPublishingProgress({ runId: 'run-cache-unknown', executionAttempt: 1 }, { sink: () => {} });
+      const missingResponse = { ...providerResponse(), usage: { cache_read_input_tokens: cacheRead }, costUSD: undefined } as unknown as OpenRouterResponse;
+      await unknown.instrument({ complete: async () => missingResponse }).complete(request());
+      expect(unknown.snapshot?.()?.responseUsage).toEqual({
+        availability: 'unknown', responses: 1,
+        samples: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0 },
+        totals: {},
+      });
+    }
   });
 
   it('emits abort progress immediately once and keeps the pending provider result unchanged', async () => {
