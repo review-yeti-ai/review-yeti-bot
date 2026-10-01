@@ -60,6 +60,15 @@ describe('deletion evidence replay', () => {
     expect(inventory[0]).toMatchObject({ oldPath: 'scripts/old name.sh', sensitive: true });
   });
 
+  it('keeps symlinks and gitlinks separate even if a contents provider could return equal referents', async () => {
+    const { runtime, provider } = setup([file('one.ts', '120000'), file('two.ts', '120000'), file('module', '160000')]);
+    for (const path of ['one.ts', 'two.ts', 'module']) {
+      expect(await runtime.evidence(path)).toMatchObject({ status: 'unavailable', reason: 'unsupported_old_file_mode' });
+    }
+    expect(provider.readFileAt).not.toHaveBeenCalled();
+    expect(runtime.manifest().totalGroups).toBe(3);
+  });
+
   it('extracts removed definitions from complete old source and retains unchanged caller candidates', async () => {
     const { runtime, provider, search } = setup();
     const result: any = await runtime.evidence('old.ts');

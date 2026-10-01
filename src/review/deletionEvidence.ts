@@ -77,7 +77,7 @@ export function createDeletionEvidenceRuntime(input: {
   const manifest = (offset = 0, limit = 24, expectedDigest?: string) => {
     const groups = new Map<string, Entry[]>();
     for (const entry of entries) {
-      const key = entry.sourceDigest && entry.oldMode && entry.sourceSha
+      const key = entry.sourceDigest && /^100(?:644|755)$/u.test(entry.oldMode ?? '') && entry.sourceSha
         ? `${entry.sourceSha}:${entry.sourceDigest}:${entry.oldMode}` : `path:${entry.path}`;
       groups.set(key, [...(groups.get(key) ?? []), entry]);
     }
@@ -96,6 +96,9 @@ export function createDeletionEvidenceRuntime(input: {
     throwIfPanelAborted(input.signal);
     const entry = byPath.get(path);
     if (!entry || !entry.available || !input.provider.readFileAt) return { status: 'unavailable', reason: 'original_evidence_unavailable', authority: 'none' };
+    // A contents lookup may dereference a symlink. Do not call those bytes the
+    // removed link's source or group them as a regular-file equivalence proof.
+    if (entry.oldMode && !/^100(?:644|755)$/u.test(entry.oldMode)) return { status: 'unavailable', reason: 'unsupported_old_file_mode', authority: 'none' };
     let old, current;
     try {
       old = await raceWithPanelAbort(input.provider.readFileAt(entry.oldPath, 'merge-base'), input.signal);
