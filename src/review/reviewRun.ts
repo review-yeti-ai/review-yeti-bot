@@ -92,6 +92,8 @@ export interface ReviewAdmissionInput {
   retryRequested?: boolean;
   /** Explicit incomplete-P2 candidate; durable service-owned provenance remains mandatory. */
   incompleteP2Recovery?: true;
+  /** Service-derived, one-generation continuation of a validated composed closeout. */
+  gracefulComposedContinuation?: true;
   /** Trusted router provenance for the protected static-admin MCP bootstrap. */
   incompleteP2RecoveryOrigin?: McpStaticAdminRecoveryOrigin;
   /**
