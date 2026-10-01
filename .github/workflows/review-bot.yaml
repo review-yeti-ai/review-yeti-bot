@@ -12,7 +12,7 @@ name: Review Bot
 # same code path third-party consumers get via `uses: review-yeti-ai/review-yeti-bot@v1`.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   repository_dispatch:
     types: [review-requested, re-review-requested, dispatch-review]
 
@@ -28,6 +28,9 @@ concurrency:
 jobs:
   review:
     name: Execute AI Review Pipeline
+    # Draft self-reviews must not start checkout or paid review lanes. Dispatch
+    # callers remain eligible; ready_for_review admits a promoted self PR.
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     # Caller-side hard backstop: no direct self-review or repository-dispatch path may run
     # longer than the central Review Yeti contract's fifteen-minute ceiling.
