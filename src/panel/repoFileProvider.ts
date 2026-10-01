@@ -1,3 +1,4 @@
+import { MAX_PINNED_SOURCE_BYTES } from './toolLimits';
 import type { GitHubInstallationClient } from '../github/installationClient';
 import { logger } from '../utils/logger';
 import type { RepoFileProvider } from './panelEngine';
@@ -60,7 +61,7 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
               sourceCache.delete(oldest);
             }
           }
-          return Buffer.byteLength(content ?? '', 'utf8') <= 8_000_000 ? content : null;
+          return Buffer.byteLength(content ?? '', 'utf8') <= MAX_PINNED_SOURCE_BYTES ? content : null;
         }).catch((error) => { if (sourceCache.get(key) === current) sourceCache.delete(key); throw error; });
       }
       return { sha, content: await entry.promise };

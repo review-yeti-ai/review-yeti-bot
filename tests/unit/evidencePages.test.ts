@@ -1,4 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:crypto')>();
+  return { ...actual, createHash: vi.fn(actual.createHash) };
+});
 import { runReadOnlyTool } from '../../src/panel/toolRuntime';
 import { createRepoFileProvider } from '../../src/panel/repoFileProvider';
 import type { GitHubInstallationClient } from '../../src/github/installationClient';
@@ -7,6 +12,29 @@ const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), OLD = 'c'.repeat(40);
 const parse = (value: { toolOutput: string }) => JSON.parse(value.toolOutput);
 
 describe('original evidence pages', () => {
+  it('uses separate original evidence while legacy tools retain reduced patches', async () => {
+    const context = { changedFiles: [{ path: 'x', patch: 'cut', originalPatchLength: 10 }],
+      originalChangedFiles: [{ path: 'x', patch: 'full patch' }] };
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, context)).content).toBe('full patch');
+    expect((await runReadOnlyTool('get_diff', { path: 'x' }, context)).toolOutput).not.toContain('full patch');
+  });
+
+  it('hashes a stable source once across pages and invalidates changed content', async () => {
+    let content = 'x'.repeat(160_000);
+    const context = { changedFiles: [], repoFileProvider: { readFile: async () => null, findFiles: async () => [],
+      readFileAt: async () => ({ sha: HEAD, content }) } };
+    vi.mocked(createHash).mockClear();
+    const first = parse(await runReadOnlyTool('read_file_page', { path: 'x', side: 'head', maxChars: 16_000 }, context));
+    for (let startOffset = 16_000; startOffset < content.length; startOffset += 16_000) {
+      expect(parse(await runReadOnlyTool('read_file_page', { path: 'x', side: 'head', startOffset, digest: first.digest }, context)).status).toBe('ok');
+    }
+    expect(createHash).toHaveBeenCalledTimes(1);
+    content += 'changed';
+    expect(parse(await runReadOnlyTool('read_file_page', { path: 'x', side: 'head', digest: first.digest }, context)).reason)
+      .toBe('evidence_digest_mismatch');
+    expect(createHash).toHaveBeenCalledTimes(2);
+  });
+
   it('recovers a late contract from a >100KB single deletion hunk despite a reduced tool patch', async () => {
     const patch = 'diff --git a/old.sh b/old.sh\n@@ -1 +0,0 @@\n-' + 'x'.repeat(160_000) + 'guard_tenant_id';
     const context = { changedFiles: [{ path: 'old.sh', patch: '[REDUCED]', originalPatchLength: patch.length }],

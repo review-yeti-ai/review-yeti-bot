@@ -37,6 +37,7 @@ import { createPathMatcher, isGlobQuery, normalizeRepoPath } from './pathMatch';
 /** Read-only inputs a tool call may need. Mirrors the subset of `invoke()`'s options the original block closed over. */
 export interface ToolRuntimeContext {
   changedFiles: any[];
+  originalChangedFiles?: any[];
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: any;
   signal?: AbortSignal;

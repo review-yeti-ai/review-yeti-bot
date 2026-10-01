@@ -54,7 +54,7 @@ describe('panel original diff-size boundary', () => {
       changedFiles: [{ path: 'src/security/large.ts', patch: '+ const fixture = true;\n'.repeat(30_000) }],
     });
 
-    expect(prompts[0]).toContain('src/security/large.ts (SKIPPED:');
+    expect(prompts[0]).toContain('src/security/large.ts (OVERSIZED:');
     expect(prompts.some((prompt) => prompt.includes("SKIPPED 'src/security/large.ts': patch is"))).toBe(true);
     expect(prompts.every((prompt) => !prompt.includes('+ const fixture = true;'))).toBe(true);
   });

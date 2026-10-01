@@ -1040,6 +1040,7 @@ async function runPlanPhase(input: {
   jobId?: string;
   signal?: AbortSignal;
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
+  originalFiles?: any[];
   expectedNonce: string;
   /** Absolute epoch ms this run must not sleep past; forwarded to every provider call. */
   deadlineAtMs?: number;
@@ -1090,6 +1091,7 @@ async function runPlanPhase(input: {
     if (parsed?.isToolCall) {
       const result = await runReadOnlyTool(parsed.tool as string, parsed.args, {
         changedFiles: input.changedFilesForTools,
+        originalChangedFiles: input.originalFiles,
         repoFileProvider: input.repoFileProvider,
         zoektConfig: input.zoektConfig,
         signal: input.signal,
@@ -1187,6 +1189,7 @@ async function runTaskWorkPhase(input: {
   providerId: ProviderId;
   baseMessages: OpenRouterMessage[];
   changedFilesForTools: Array<{ path: string; patch?: string; content?: string }>;
+  originalFiles?: any[];
   timeoutMs: number;
   inactivityTimeoutMs: number;
   requestPolicy?: PanelRequestPolicy;
@@ -1269,6 +1272,7 @@ async function runTaskWorkPhase(input: {
       toolTurns += 1;
       const result = await runReadOnlyTool(parsed.tool as string, parsed.args, {
         changedFiles: input.changedFilesForTools,
+        originalChangedFiles: input.originalFiles,
         repoFileProvider: input.repoFileProvider,
         zoektConfig: input.zoektConfig,
         signal: input.signal,
@@ -1307,7 +1311,7 @@ async function runTaskWorkPhase(input: {
     let findingFailureCode: PanelFindingsValidationError['findingFailureCode'] | undefined;
     if (!contractFailure) {
       try {
-        findings = validateFindings(candidate.findings, input.changedFilesForTools);
+        findings = validateFindings(candidate.findings, input.originalFiles ?? input.changedFilesForTools);
       } catch (err) {
         if (!(err instanceof PanelFindingsValidationError)) throw err;
         findingFailureCode = err.findingFailureCode;
@@ -1548,10 +1552,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const effectiveFiles = applicability.effectiveFiles;
     const budgetPack = reviewBudgetPlan?.packs.get(COMPOSED_BUDGET_LANE_ID);
     const budgeted = budgetPack ? applyLaneBudgetPack(effectiveFiles, budgetPack) : null;
-    // Read-only tools and findings validation read whole patches for files sent whole.
-    // Tool reads and finding anchors retain the authoritative original diff.
-    // Prompt reductions must never destroy access to evidence.
-    const toolFiles = changedFiles;
+    // Legacy tools preserve their existing prompt-pack bounds. Page tools and
+    // finding anchors receive the original diff separately so reductions cannot
+    // destroy access to evidence or silently expand a legacy tool payload.
+    const toolFiles = budgeted ? budgeted.toolFiles : effectiveFiles;
     const requestCapBytes = budgetPack?.requestCapBytes;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {
@@ -1667,6 +1671,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           jobId,
           signal,
           changedFilesForTools: toolFiles,
+          originalFiles: changedFiles,
           expectedNonce: planNonce,
           ...(requestCapBytes ? { requestCapBytes } : {}),
           deadlineAtMs: composedDeadlineAtMs,
@@ -1703,7 +1708,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       for (const task of options.checkpoint.resumed.completedTasks) {
         if (!planIds.has(task.id)) continue;
         try {
-          completedCheckpointTasks.set(task.id, validateFindings(task.findings, toolFiles));
+          completedCheckpointTasks.set(task.id, validateFindings(task.findings, changedFiles));
         } catch {
           // A stale or invalid checkpoint never becomes review evidence.
         }
@@ -1866,6 +1871,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           providerId,
           baseMessages: taskBaseMessages,
           changedFilesForTools: toolFiles,
+          originalFiles: changedFiles,
           ...(requestCapBytes ? { requestCapBytes } : {}),
           timeoutMs,
           inactivityTimeoutMs,
