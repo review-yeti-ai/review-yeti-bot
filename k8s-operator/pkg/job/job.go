@@ -46,6 +46,7 @@ import (
 
 const (
 	Namespace                     = "ct-review-system"
+	WorkerPriorityClassName       = "ct-review-worker"
 	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
 	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
 	SameHeadQualificationEnv      = "REVIEW_SAME_HEAD_QUALIFICATION_ONLY"
@@ -804,6 +805,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: templateLabels, Annotations: templateAnnotations},
 				Spec: corev1.PodSpec{
+					PriorityClassName:            WorkerPriorityClassName,
 					RestartPolicy:                corev1.RestartPolicyNever,
 					AutomountServiceAccountToken: &automountToken,
 					SecurityContext: &corev1.PodSecurityContext{

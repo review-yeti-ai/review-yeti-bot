@@ -393,7 +393,8 @@ func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
 			workerEndedSuperseded(review) {
 			return false, nil
 		}
-		receipt, err := r.fetchAppGateReceipt(ctx, review)
+		coordinator := r.getReceiptCoordinator()
+		receipt, err := coordinator.QueryReceipt(ctx, review)
 		if err != nil {
 			if errors.Is(err, errTemporaryReceiptLookup) {
 				return false, err

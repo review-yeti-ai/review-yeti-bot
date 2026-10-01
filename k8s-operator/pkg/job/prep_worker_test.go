@@ -60,4 +60,9 @@ func TestBuildWorkerJobWithPrepPhase(t *testing.T) {
 	if !job.IsPrepWorkerJob(built) {
 		t.Errorf("IsPrepWorkerJob(built) = false, want true")
 	}
+
+	// 4. Verify PriorityClassName
+	if built.Spec.Template.Spec.PriorityClassName != job.WorkerPriorityClassName {
+		t.Errorf("pod template priorityClassName = %q, want %q", built.Spec.Template.Spec.PriorityClassName, job.WorkerPriorityClassName)
+	}
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	ctrl "sigs.k8s.io/controller-runtime"
+
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
 )
 
 func TestMainInitializesControllerRuntimeLogger(t *testing.T) {
@@ -69,8 +71,12 @@ func TestOperatorMaxConcurrentReconcilesFromEnv(t *testing.T) {
 		want    int
 		wantErr bool
 	}{
-		{name: "safe reconciler default", value: "", want: 1},
-		{name: "explicit capacity", value: "4", want: 4},
+		{name: "safe reconciler default (4)", value: "", want: controllers.DefaultV1Alpha2MaxConcurrentReconciles},
+		{name: "bounds: 1 thread", value: "1", want: 1},
+		{name: "bounds: 4 threads", value: "4", want: 4},
+		{name: "bounds: 16 threads", value: "16", want: 16},
+		{name: "capping large value (1000 -> 64)", value: "1000", want: controllers.MaxV1Alpha2ReconcileConcurrencyCap},
+		{name: "whitespace trimming", value: "  16  ", want: 16},
 		{name: "zero", value: "0", wantErr: true},
 		{name: "negative", value: "-1", wantErr: true},
 		{name: "malformed", value: "many", wantErr: true},
