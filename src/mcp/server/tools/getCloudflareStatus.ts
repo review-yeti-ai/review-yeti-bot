@@ -90,6 +90,14 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
           doksFallbackConfigured: true,
           dataSource: 'baseline_sample_telemetry',
         },
+        compute_plane: {
+          active_runner: 'cloudflare',
+          default_runner: 'cloudflare',
+          supported_runners: ['cloudflare', 'digitalocean'],
+          aliases: {
+            digitalocean: ['mars', 'do'],
+          },
+        },
       });
     },
   };
