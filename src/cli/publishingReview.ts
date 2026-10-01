@@ -33,6 +33,7 @@ import {
 } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
+import { createDeletionEvidenceRuntime } from '../review/deletionEvidence';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
@@ -1913,6 +1914,13 @@ export async function runPublishingReviewWorker(
             },
           }
         : workerConfig;
+      if (repoFileProvider) {
+        const deletionEvidence = createDeletionEvidenceRuntime({ files: changedFiles, provider: repoFileProvider,
+          repository: identity.repo, headSha: identity.headSha, env,
+          zoektConfig: (groundedConfig as any).evidence?.zoekt, signal: panelDeadline.signal });
+        repoFileProvider.deletionManifest = deletionEvidence.manifest;
+        repoFileProvider.deletionEvidence = deletionEvidence.evidence;
+      }
       // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
       // cutoff. Late setup cannot mint another relative window for either engine.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is

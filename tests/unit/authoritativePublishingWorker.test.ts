@@ -979,6 +979,7 @@ describe('authoritative prepared publishing worker', () => {
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
         readFileAt: expect.any(Function), readDiff: expect.any(Function),
+        deletionManifest: expect.any(Function), deletionEvidence: expect.any(Function),
       },
       isCurrentHead: undefined,
       deterministicRoster: true,
