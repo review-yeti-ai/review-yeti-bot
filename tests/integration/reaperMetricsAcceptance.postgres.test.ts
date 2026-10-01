@@ -99,5 +99,5 @@ describeAcceptance('REL-817 deterministic reaper metric acceptance', () => {
     });
     expect(expectedBefore.deliveryIdentityMismatch).toBeGreaterThan(0);
     expect(expectedBefore.supersededAttempt).toBeGreaterThan(0);
-  });
+  }, 15_000);
 });

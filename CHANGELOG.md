@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.102.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.0...v1.102.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve typed panel failure classification ([#1212](https://github.com/review-yeti-ai/review-yeti-bot/issues/1212)) ([720c5e2](https://github.com/review-yeti-ai/review-yeti-bot/commit/720c5e23be214723834601264f5fd31e27f6d1a6))
+
+## [1.102.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.9...v1.102.0) (2026-10-01)
+
+
+### Features
+
+* **review:** preserve evidence through graceful closeout ([#1203](https://github.com/review-yeti-ai/review-yeti-bot/issues/1203)) ([29a864f](https://github.com/review-yeti-ai/review-yeti-bot/commit/29a864fee8e607514039d59902085c85451301d0))
+
+## [1.101.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.8...v1.101.9) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve terminal SSE metadata and provider errors ([#1202](https://github.com/review-yeti-ai/review-yeti-bot/issues/1202)) ([d137fc3](https://github.com/review-yeti-ai/review-yeti-bot/commit/d137fc3c326b428f3d1041372a95f34b397dc083))
+
+## [1.101.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.7...v1.101.8) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** pin embedded Go qualification and safe failure evidence ([#1204](https://github.com/review-yeti-ai/review-yeti-bot/issues/1204)) ([d059560](https://github.com/review-yeti-ai/review-yeti-bot/commit/d0595608a7e4e59a4e0fd487057cd004c80516e6))
+
 ## [1.101.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.6...v1.101.7) (2026-10-01)
 
 

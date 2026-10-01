@@ -5,6 +5,7 @@ import { incrementalReviewEnabledFor } from './incrementalReview';
 import { HttpVerdictCacheBaseSource } from './verdictCacheBaseHttp';
 import { verdictCacheEnabledFor } from './verdictCache';
 import { HttpIncompleteP2RecoverySource } from './incompleteP2RecoveryHttp';
+import { HttpReviewExecutionCheckpointAdapter } from './reviewExecutionCheckpointHttp';
 
 /** REL-1084: the prior-review read for incremental planning, only when the flag is on for this
  * repository. Fail-soft: a source that cannot be built leaves the run on a full review. */
@@ -44,6 +45,7 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
   incrementalBase?: HttpIncrementalBaseSource;
   verdictCacheBase?: HttpVerdictCacheBaseSource;
   incompleteP2Recovery?: HttpIncompleteP2RecoverySource;
+  reviewCheckpoint?: HttpReviewExecutionCheckpointAdapter;
 } {
   const endpoint = String(env.REVIEW_COMPLETION_URL || '').trim();
   const flag = String(env.REVIEW_AUTHORITATIVE_GATE || '').trim();
@@ -54,6 +56,8 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
   }
   return flag === 'true'
     ? { reviewCompletion: new HttpWorkerReviewCompletionAdapter({ token, endpoint }), ...incrementalBaseFor(env, token, endpoint),
+      reviewCheckpoint: new HttpReviewExecutionCheckpointAdapter({ token, completionEndpoint: endpoint,
+        runId: String(env.REVIEW_RUN_ID ?? ''), executionAttempt: Number(env.REVIEW_EXECUTION_ATTEMPT ?? '1') }),
       ...(Number(env.REVIEW_EXECUTION_ATTEMPT ?? '1') > 1 ? {
         incompleteP2Recovery: new HttpIncompleteP2RecoverySource({ token, completionEndpoint: endpoint,
           runId: String(env.REVIEW_RUN_ID ?? ''), executionAttempt: Number(env.REVIEW_EXECUTION_ATTEMPT) }),

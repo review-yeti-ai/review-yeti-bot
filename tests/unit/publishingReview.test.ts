@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { createPanelDeadlineSignal, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
-import type { WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
+import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import { workerFailureClasses } from '../../src/types/workerFailure';
+import { WORKER_PANEL_RESERVE_MS, type WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
+import * as publishingProgress from '../../src/telemetry/publishingProgress';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
@@ -344,7 +346,7 @@ describe('OpenAI gateway is the admitted transport', () => {
 
     expect(config.reviewers.fallback).toBe('none');
     expect(config.default_max_turns).toBe(15);
-    expect(config.reviewers.overall_timeout_s).toBe(3000);
+    expect(config.reviewers.overall_timeout_s).toBe(1200);
     expect(config.reviewers.providers).toEqual([expect.objectContaining({
       id: 'bifrost',
       enabled: true,
@@ -543,6 +545,39 @@ describe('runPublishingReviewWorker', () => {
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('failure');
     expect(receipt.blockingFindingCount).toBe(1);
+  });
+
+  it('publishes every collected finding during graceful composed closeout and reports INCOMPLETE', async () => {
+    const composedReviewRunner = vi.fn(async () => ({
+      taskPlan: [
+        { id: 'security-auth', dimension: 'security', paths: ['src/a.ts'], question: 'Safe?', rationale: 'Risk.' },
+        { id: 'testing', dimension: 'testing', paths: ['src/a.ts'], question: 'Covered?', rationale: 'Tests.' },
+      ],
+      applicablePersonaIds: ['security-auth', 'testing'],
+      personas: [{ id: 'security-auth', required: true, providerId: 'bifrost', model: 'test',
+        decision: 'FINDINGS', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'Preserved defect', body: 'This validated finding must survive the evidence cutoff.' }],
+        usage: null, costUSD: null, durationMs: 1 }],
+      optionalFailures: [],
+      unreportedLanes: [{ id: 'testing', error: 'evidence cutoff', failureClass: 'timeout' }],
+      gracefulExit: { reason: 'evidence_deadline', completedTaskIds: ['security-auth'], pendingTaskIds: ['testing'], checkpointRevision: 2 },
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      moderator: { providerId: 'bifrost', model: 'none', decision: 'RECONCILED', findings: [], usage: null, costUSD: null, durationMs: 0 },
+      arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'canonical', usage: null, costUSD: null, durationMs: 0 },
+    }));
+    const d = deps({ composedReviewRunner });
+
+    const receipt = await runPublishingReviewWorker(env({
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }),
+    }), d as never);
+
+    expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1,
+      blockingFindingCount: 1, failureClass: 'timeout' });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+      conclusion: 'failure', title: 'Review Yeti: INCOMPLETE (partial evidence published)',
+      summary: expect.stringContaining('final closeout preserved and published 1 validated finding(s)'),
+      text: expect.stringContaining('Preserved defect'),
+    }));
   });
 
   it('fails raw publication when an applicable optional lane exhausts its budget', async () => {
@@ -1770,6 +1805,34 @@ describe('identity and failure classification', () => {
     expect(classifyFailure(new Error('unexpected invariant violation'))).toBe('internal_error');
   });
 
+  it.each(workerFailureClasses)('preserves the actual panel error declared class %s instead of inferring it from wording', (failureClass) => {
+    const error = new PanelConfigurationError('unexpected invariant violation', { failureClass });
+    expect(classifyFailure(error)).toBe(failureClass);
+  });
+
+  it.each([
+    { name: 'PanelConfigurationError', message: 'unexpected invariant violation', failureClass: 'contract' },
+    Object.assign(new Error('unexpected invariant violation'), { failureClass: 'contract' }),
+    Object.assign(new Error('unexpected invariant violation'), { failureClass: 'SHIP' }),
+    new PanelConfigurationError('unexpected invariant violation'),
+    new PanelConfigurationError('unexpected invariant violation', { failureClass: 'SHIP' as never }),
+  ])('does not trust undeclared or out-of-contract failure-class claims (%#)', (error) => {
+    expect(classifyFailure(error)).toBe('internal_error');
+  });
+
+  it.each([
+    [new PanelDeadlineExceededError(1_000), 'timeout'],
+    [new OpenRouterTimeoutError('deadline'), 'timeout'],
+    [new OpenRouterConnectionError('socket closed'), 'transport'],
+    [new OpenRouterResponseError('unauthorized', 401), 'auth'],
+    [new OpenRouterResponseError('busy', 429), 'rate_limit'],
+    [new OpenRouterResponseError('upstream failed', 503), 'provider_error'],
+    [new UpstreamCapacityRejectionError('bifrost', 'queue full'), 'rate_limit'],
+  ])('keeps the typed deadline/gateway precedence even with a conflicting declaration (%#)', (error, expected) => {
+    Object.defineProperty(error, 'failureClass', { value: 'contract' });
+    expect(classifyFailure(error)).toBe(expected);
+  });
+
   it('classifies a GitHub HTTP 406 qualification-read failure as contract, never internal_error', () => {
     const failureClass = classifyFailure(new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406));
     expect(failureClass).toBe('contract');
@@ -1807,6 +1870,95 @@ describe('identity and failure classification', () => {
   ])('classifies typed gateway error %s as %s', (error, expected) => {
     expect(classifyFailure(error)).toBe(expected);
   });
+});
+
+describe('real composed plan rejection reaches fail-closed publication', () => {
+  const policy = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+    personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 3 },
+  } });
+  const cases = [
+    ['invalid_task_fields', [5, 5], 'contract'],
+    ['nonce', [5, 5], 'contract'],
+    ['coverage_gap', [5, 5], 'contract'],
+    ['invalid_task_fields', [0, 5], 'provider_error'],
+    ['nonce', [5, 0], 'provider_error'],
+    ['coverage_gap', [0, 0], 'provider_error'],
+  ] as const;
+
+  for (const authoritative of [false, true]) {
+    it.each(cases)('publishes the engine-declared %s rejection (%j tokens, %s; authoritative=' + authoritative + ')', async (reason, completionTokens, expected) => {
+      const input = env({ REVIEW_YETI_POLICY_JSON: policy });
+      const reportTerminalFailure = vi.fn(async () => undefined);
+      const reportReviewResult = vi.fn(async () => undefined);
+      if (authoritative) {
+        const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+        const prepared = preparePublishingPolicy({ content: policy, source: {
+          repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+          contentDigest: createHash('sha256').update(policy).digest('hex'),
+        } }, transport);
+        Object.assign(input, {
+          REVIEW_AUTHORITATIVE_GATE: 'true',
+          REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+          REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/completion',
+          REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+          REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+        });
+      }
+      const diff = DIFF + 'diff --git a/src/b.ts b/src/b.ts\n@@ -1 +1 @@\n-old\n+new\n';
+      let turn = 0;
+      const complete = vi.fn(async (request: { messages: Array<{ content: unknown }> }) => {
+        const text = JSON.stringify(request.messages);
+        const nonce = text.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/u)?.[1];
+        expect(nonce).toBeTruthy();
+        expect(text).toContain('PLAN TURN');
+        expect(text).not.toContain('WORK TURN');
+        const tokens = completionTokens[turn++];
+        expect(tokens).toBeDefined();
+        return { model: 'fixture-model', content: JSON.stringify({
+          nonce: reason === 'nonce' ? 'fixture-wrong-nonce' : nonce,
+          tasks: [{ id: 'contract-api', dimension: 'contract',
+            paths: reason === 'coverage_gap' ? ['src/a.ts'] : ['src/a.ts', 'src/b.ts'],
+            question: reason === 'invalid_task_fields' ? '' : 'Does the API preserve its contract?',
+            rationale: 'Changed API source.' }],
+        }), usage: { prompt: 10, completion: tokens, total: 10 + tokens }, costUSD: null, raw: {} };
+      });
+      // Only transport/read/publication seams are fixtures; no composed runner override.
+      const d = deps({ client: { complete },
+        sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })),
+        zoektGrounding: vi.fn(async () => ({})),
+        ...(authoritative ? { reviewCompletion: { reportReviewResult } }
+          : { completion: { reportTerminalFailure } }),
+      });
+      const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
+      const error = await runPublishingReviewWorker(input, d).then(() => undefined, (failure: unknown) => failure);
+      expect(error).toBeInstanceOf(PanelConfigurationError);
+      expect(error).toMatchObject({ failureClass: expected });
+      expect((error as Error).message).toContain(reason === 'nonce' ? 'plan "nonce" did not match' : `(${reason})`);
+      expect(classifyFailure(error)).toBe(expected);
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(d.panelRunner).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(d.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        conclusion: 'failure', checkId: 4242,
+      }));
+      if (authoritative) {
+        expect(reportReviewResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          result: expect.objectContaining({ coverageComplete: false, quorumSatisfied: false,
+            personas: [
+              { id: 'sec-lane', decision: 'ERROR', status: 'ERROR', errorClass: expected, findings: [] },
+              { id: 'qual-lane', decision: 'ERROR', status: 'ERROR', errorClass: expected, findings: [] },
+            ],
+          }),
+        }));
+        expect(reportTerminalFailure).not.toHaveBeenCalled();
+      } else {
+        expect(reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          failureClass: expected, diagnostics: expect.not.objectContaining({ recoverableIncompletePanel: true }),
+        }));
+        expect(reportReviewResult).not.toHaveBeenCalled();
+      }
+    });
+  }
 });
 
 describe('worker terminal failure adapter', () => {
@@ -2617,7 +2769,7 @@ describe('REL-1211 absolute publishing budget', () => {
   const start = Date.parse('2026-09-30T16:00:50Z');
   const clean = () => ({ applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
     quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } });
-  const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 121_000 + remaining).toISOString() });
+  const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 300_000 + remaining).toISOString() });
   const jevEnv = { REVIEW_YETI_JEV_SHADOW: 'true', TYPESAFE_BASE_URL: 'https://api.typesafe.example/v1/systemone',
     TYPESAFE_MODEL: 'jev-latest', TYPESAFE_API_KEY: 'ts-test-key', TYPESAFE_MODEL_PIN: 'jev-1.13.0' };
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(start); });
@@ -2885,7 +3037,7 @@ describe('operational telemetry terminal callback counterfactual',()=>{
       return new Promise(()=>{});})};
     const panelRunner=vi.fn(async(input:any)=>{await input.client.complete({model:'safe',messages:[{role:'user',content:'SECRET prompt'}],timeoutMs:1000,signal:input.signal});
       return input.client.complete({model:'safe',messages:[],timeoutMs:1000,signal:input.signal});});
-    const input=env({REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/completion',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+121_050).toISOString()});
+    const input=env({REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/completion',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+WORKER_PANEL_RESERVE_MS+50).toISOString()});
     const task=runPublishingReviewWorker(input,deps({completion,client,panelRunner,zoektGrounding:vi.fn(async()=>({}))}) as never);
     const rejected=expect(task).rejects.toBeInstanceOf(PanelDeadlineExceededError);
     await vi.advanceTimersByTimeAsync(100); await rejected;
@@ -2922,4 +3074,94 @@ it('keeps content-free answered-call observations in the native thrown-infrastru
   expect(event.result.failureDiagnostics.operationalTelemetry.phaseCounts.persona_lane.started).toBe(0);
   expect(event.result.personas.every((persona:any)=>persona.status==='ERROR'&&persona.errorClass==='transport')).toBe(true);
   expect(JSON.stringify(event.result.failureDiagnostics.operationalTelemetry)).not.toContain('SECRET');
+});
+
+
+describe('telemetry integration with protected composed closeout', () => {
+  const fixture = () => {
+    const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+      personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 },
+    } });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const prepared = preparePublishingPolicy({ content, source: { repositoryId: 987, repository: 'example/policy',
+      sha: 'e'.repeat(40), path: 'policy/review.json', contentDigest: createHash('sha256').update(content).digest('hex') } }, transport);
+    const input = env({ REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_EXECUTION_ATTEMPT: '3',
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model,
+      OPENAI_BASE_URL: transport.baseUrl, GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+      REVIEW_TERMINAL_DEADLINE: new Date(Date.now() + WORKER_PANEL_RESERVE_MS + 50).toISOString() });
+    const reportReviewResult = vi.fn(async (_event: Parameters<HttpWorkerReviewCompletionAdapter['reportReviewResult']>[0]) => {});
+    const plan = [{ id: 'security-auth', dimension: 'security', paths: ['src/a.ts'], question: 'Safe?', rationale: 'Risk.' },
+      { id: 'testing', dimension: 'testing', paths: ['src/a.ts'], question: 'Covered?', rationale: 'Tests.' }];
+    const finding = { severity: 'P1', path: 'src/a.ts', line: 1, title: 'Preserved checkpoint finding', body: 'Validated defect.' };
+    const partial = { taskPlan: plan, applicablePersonaIds: ['security-auth', 'testing'],
+      personas: [{ id: 'security-auth', findings: [finding] }], optionalFailures: [],
+      unreportedLanes: [{ id: 'testing', error: 'evidence cutoff', failureClass: 'timeout' }],
+      gracefulExit: { reason: 'evidence_deadline', completedTaskIds: ['security-auth'], pendingTaskIds: ['testing'], checkpointRevision: 2 },
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false }, arbiter: { verdict: 'SHIP' } };
+    return { input, transport, reportReviewResult, plan, finding, partial };
+  };
+
+  it.each(['resolved', 'rejected'] as const)('captures native timeout observations once and preserves the validated finding after late %s cancellation', async (settlement) => {
+    vi.useFakeTimers(); vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
+    const f = fixture(); const factory = publishingProgress.createPublishingProgress;
+    let reporter!: ReturnType<typeof factory>;
+    const spy = vi.spyOn(publishingProgress, 'createPublishingProgress').mockImplementation((...args) => { reporter = factory(...args); return reporter; });
+    let answer!: (value: any) => void; let rejectLate!: (error: Error) => void; let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const response = { model: f.transport.model, content: 'SECRET response', usage: { prompt: 11, completion: 7, total: 18, cache_read_input_tokens: 6 }, costUSD: 0.004, raw: {} };
+    const client = { complete: vi.fn(async () => client.complete.mock.calls.length === 1 ? response : new Promise<any>((resolve, reject) => { answer = resolve; rejectLate = reject; })) };
+    const write = vi.fn(async () => 2);
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      options.progress.emit({ task: 'panel', status: 'started' });
+      await options.client.complete({ model: f.transport.model, messages: [{ role: 'user', content: 'SECRET prompt' }], signal: options.signal, timeoutMs: 1_000 });
+      await options.checkpoint.save({ revision: 2, plan: f.plan, completedTasks: [{ id: 'security-auth', findings: [f.finding] }] });
+      const late = options.client.complete({ model: f.transport.model, messages: [], signal: options.signal, timeoutMs: 1_000 });
+      entered(); await late;
+      options.progress.emit({ task: 'panel', status: 'completed' });
+      return f.partial;
+    });
+    const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: { read: vi.fn(async () => null), write },
+      reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+    try {
+      await started; await vi.advanceTimersByTimeAsync(100);
+      expect(await task).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+      expect(write).toHaveBeenCalledOnce(); expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      const event = f.reportReviewResult.mock.calls[0][0];
+      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
+        personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+        failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false,
+          operationalTelemetry: { cause: 'unknown', providerCalls: { started: 2, completed: 1, aborted: 1, inflight: 0 },
+            responseUsage: { availability: 'known', responses: 1, totals: { totalTokens: 18, cachedTokens: 6 } },
+            phaseCounts: { panel: { started: 1, completed: 0, failed: 0, aborted: 1 }, persona_lane: { started: 0 }, composed_task: { started: 0 } } } } });
+      const saved = JSON.stringify(event);
+      if (settlement === 'rejected') rejectLate(new Error('late canceled model failure'));
+      else answer(response);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(write).toHaveBeenCalledOnce(); expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(JSON.stringify(event)).toBe(saved);
+      expect(reporter.snapshot?.()?.phaseCounts.panel).toMatchObject({ started: 1, completed: 0, failed: 0, aborted: 1 });
+      expect(JSON.stringify(event.result.failureDiagnostics?.operationalTelemetry)).not.toContain('SECRET');
+    } finally { spy.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it.each(['missing', 'malformed', 'throwing'] as const)('omits %s optional observations without changing graceful findings or INCOMPLETE', async (kind) => {
+    const f = fixture(); const factory = publishingProgress.createPublishingProgress;
+    const spy = vi.spyOn(publishingProgress, 'createPublishingProgress').mockImplementation((...args) => ({ ...factory(...args),
+      snapshot: () => { if (kind === 'throwing') throw new Error('SECRET optional diagnostics'); return kind === 'malformed' ? { rawPrompt: 'SECRET' } as never : undefined; } }));
+    try {
+      const result = await runPublishingReviewWorker(f.input, deps({ composedReviewRunner: vi.fn(async () => f.partial),
+        reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+        sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+      expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+      expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      const event = f.reportReviewResult.mock.calls[0][0];
+      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
+        personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+        failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false } });
+      expect(event.result.failureDiagnostics).not.toHaveProperty('operationalTelemetry');
+    } finally { spy.mockRestore(); }
+  });
 });

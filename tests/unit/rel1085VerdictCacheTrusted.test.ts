@@ -257,14 +257,15 @@ describe('worker verdict cache base client', () => {
     await expect(make(() => new Response('x'.repeat(2_000_001), { status: 200 })).read()).rejects.toThrow();
   });
 
-  it('is built only when the flag is on for the repository, and fail-soft', () => {
+  it('is built only when the flag is on for the repository, and rejects an invalid shared worker identity', () => {
     const env = { REVIEW_COMPLETION_URL: 'https://svc.example/api/dispatch/completion', REVIEW_AUTHORITATIVE_GATE: 'true',
       REVIEW_REPO: 'example/candidate', REVIEW_RUN_ID: RUN, REVIEW_EXECUTION_ATTEMPT: '1' };
     expect(publishingWorkerAdapters(env, TOKEN)).not.toHaveProperty('verdictCacheBase');
     expect(publishingWorkerAdapters({ ...env, REVIEW_YETI_VERDICT_CACHE: 'example/candidate' }, TOKEN).verdictCacheBase)
       .toBeInstanceOf(HttpVerdictCacheBaseSource);
     expect(publishingWorkerAdapters({ ...env, REVIEW_YETI_VERDICT_CACHE: 'example/other' }, TOKEN)).not.toHaveProperty('verdictCacheBase');
-    expect(publishingWorkerAdapters({ ...env, REVIEW_YETI_VERDICT_CACHE: 'all', REVIEW_RUN_ID: 'bad' }, TOKEN)).not.toHaveProperty('verdictCacheBase');
+    expect(() => publishingWorkerAdapters({ ...env, REVIEW_YETI_VERDICT_CACHE: 'all', REVIEW_RUN_ID: 'bad' }, TOKEN))
+      .toThrow('Invalid review checkpoint identity');
   });
 });
 
