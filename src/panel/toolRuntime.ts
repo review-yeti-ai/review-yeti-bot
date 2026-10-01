@@ -19,6 +19,7 @@
  * not exist anywhere" -- that is the documented root cause of a real false-positive class in this
  * system.
  */
+import { readEvidencePage } from './evidencePages';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { ASTParser } from '../indexer/astParser';
 import {
@@ -117,6 +118,7 @@ export async function runReadOnlyTool(
   args: any,
   context: ToolRuntimeContext,
 ): Promise<ToolRuntimeResult> {
+  if (toolName === 'read_file_page' || toolName === 'get_diff_page') return readEvidencePage(toolName, args, context);
   if (toolName === 'read_files') return readFiles(args, context);
   const toolCall = { tool: toolName, args };
   const options = context;

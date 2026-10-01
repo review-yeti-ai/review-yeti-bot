@@ -800,7 +800,9 @@ function buildSystemPrompt(repository: string): string {
     `2. WORK: the engine tells you, one at a time, which planned task to execute. You investigate that task's paths (using read-only tools if needed) and report COMPLETE with findings, or BLOCKED if you cannot complete it.`,
     ``,
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
-    `- Code Reading: view_file, read_file, get_diff`,
+    `- Code Reading: view_file, read_file, get_diff, get_diff_page, read_file_page`,
+    `get_diff_page args: {"path":"<exact path>","startOffset":0,"maxChars":16000}. Continue at nextOffset and repeat digest; offsets count UTF-16 code units. It reads the original patch even when globally reduced or oversized.`,
+    `read_file_page args: {"path":"<exact path>","side":"merge-base","startOffset":0,"maxChars":16000}. Use merge-base for removed source and head for surviving source. A page is not proof all obligations were reviewed.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
     `get_diff and text search remain limited to PR diff content.`,
     `- AST & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
@@ -1542,7 +1544,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const budgetPack = reviewBudgetPlan?.packs.get(COMPOSED_BUDGET_LANE_ID);
     const budgeted = budgetPack ? applyLaneBudgetPack(effectiveFiles, budgetPack) : null;
     // Read-only tools and findings validation read whole patches for files sent whole.
-    const toolFiles = budgeted ? budgeted.toolFiles : effectiveFiles;
+    // Tool reads and finding anchors retain the authoritative original diff.
+    // Prompt reductions must never destroy access to evidence.
+    const toolFiles = changedFiles;
     const requestCapBytes = budgetPack?.requestCapBytes;
     if (applicability.applicable.length === 0) {
       if (!applicability.noReviewableContent) {

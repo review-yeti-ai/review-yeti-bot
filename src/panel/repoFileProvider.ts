@@ -16,7 +16,7 @@ import { createPathMatcher } from './pathMatch';
  * tool call pays no extra API cost. The tree lists every blob (code, JSON, YAML, fixtures); there is
  * no file-type filter.
  */
-export function createRepoFileProvider(github: GitHubInstallationClient, owner: string, repo: string, headSha: string): RepoFileProvider {
+export function createRepoFileProvider(github: GitHubInstallationClient, owner: string, repo: string, headSha: string, evidence?: { baseSha: string; changedFiles: Array<{ path: string; patch?: string; originalPatchLength?: number }> }): RepoFileProvider {
   let treePromise: Promise<{ paths: string[]; truncated: boolean }> | undefined;
   const loadTree = () => {
     if (!treePromise) {
@@ -28,7 +28,47 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
     }
     return treePromise;
   };
+  let mergeBasePromise: Promise<string> | undefined;
+  const mergeBase = () => {
+    if (!evidence?.baseSha) throw new Error('Old source identity unavailable');
+    if (!mergeBasePromise) mergeBasePromise = github.getMergeBase(owner, repo, evidence.baseSha, headSha)
+      .catch((error) => { mergeBasePromise = undefined; throw error; });
+    return mergeBasePromise;
+  };
+  const originals = new Map(evidence?.changedFiles.map((file) => [file.path, file]) ?? []);
+  // Cache only bounded page sources. The exact commit is part of every key;
+  // eviction costs another read, never a different revision or missing evidence.
+  const sourceCache = new Map<string, { promise: Promise<string | null>; bytes: number }>();
+  let sourceBytes = 0;
   return {
+    async readFileAt(path, side) {
+      const sha = side === 'head' ? headSha : await mergeBase();
+      const key = `${sha}:${path}`;
+      let entry = sourceCache.get(key);
+      if (!entry) {
+        entry = { bytes: 0, promise: github.getFileContent(owner, repo, path, sha, { notFoundIsEmpty: true }) };
+        sourceCache.set(key, entry);
+        const current = entry;
+        current.promise = current.promise.then((content) => {
+          if (sourceCache.get(key) === current) {
+            current.bytes = Buffer.byteLength(content ?? '', 'utf8');
+            sourceBytes += current.bytes;
+            while (sourceBytes > 16_000_000 || sourceCache.size > 32) {
+              const oldest = sourceCache.keys().next().value;
+              if (oldest === undefined) break;
+              sourceBytes -= sourceCache.get(oldest)!.bytes;
+              sourceCache.delete(oldest);
+            }
+          }
+          return Buffer.byteLength(content ?? '', 'utf8') <= 8_000_000 ? content : null;
+        }).catch((error) => { if (sourceCache.get(key) === current) sourceCache.delete(key); throw error; });
+      }
+      return { sha, content: await entry.promise };
+    },
+    readDiff(path) {
+      const file = originals.get(path);
+      return typeof file?.patch === 'string' ? { patch: file.patch, originalPatchLength: file.originalPatchLength } : null;
+    },
     async findFiles(query: string): Promise<string[]> {
       const { paths, truncated } = await loadTree();
       const matches = createPathMatcher(query);

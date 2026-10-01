@@ -91,3 +91,22 @@ describe('GitHubInstallationClient.getFileTree', () => {
     await expect(client.getFileTree('o', 'r', 'ref')).rejects.toThrow('git tree response is not an array');
   });
 });
+
+
+describe('pinned source identities', () => {
+  it('rejects a compare response for the wrong admitted base', async () => {
+    const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
+    (client as any).request = vi.fn(async () => ({ base_commit: { sha: 'c'.repeat(40) }, merge_base_commit: { sha: 'd'.repeat(40) } }));
+    await expect(client.getMergeBase('o', 'r', 'a'.repeat(40), 'b'.repeat(40))).rejects.toThrow('identity mismatch');
+  });
+
+  it('loads the exact large-file blob instead of treating an empty contents placeholder as source', async () => {
+    const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
+    const sha = 'a'.repeat(40), content = 'old tenant guard';
+    (client as any).request = vi.fn(async (url: string) => url.includes('/git/blobs/')
+      ? { sha, encoding: 'base64', content: Buffer.from(content).toString('base64') }
+      : { sha, encoding: 'none', content: '', size: Buffer.byteLength(content) });
+    expect(await client.getFileContent('o', 'r', 'old.sh', 'b'.repeat(40), { notFoundIsEmpty: true })).toBe(content);
+    expect((client as any).request).toHaveBeenLastCalledWith('/repos/o/r/git/blobs/' + sha);
+  });
+});

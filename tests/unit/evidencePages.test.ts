@@ -1,0 +1,59 @@
+import { describe, expect, it, vi } from 'vitest';
+import { runReadOnlyTool } from '../../src/panel/toolRuntime';
+import { createRepoFileProvider } from '../../src/panel/repoFileProvider';
+import type { GitHubInstallationClient } from '../../src/github/installationClient';
+
+const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), OLD = 'c'.repeat(40);
+const parse = (value: { toolOutput: string }) => JSON.parse(value.toolOutput);
+
+describe('original evidence pages', () => {
+  it('recovers a late contract from a >100KB single deletion hunk despite a reduced tool patch', async () => {
+    const patch = 'diff --git a/old.sh b/old.sh\n@@ -1 +0,0 @@\n-' + 'x'.repeat(160_000) + 'guard_tenant_id';
+    const context = { changedFiles: [{ path: 'old.sh', patch: '[REDUCED]', originalPatchLength: patch.length }],
+      repoFileProvider: { findFiles: async () => [], readFile: async () => null,
+        readDiff: (path: string) => path === 'old.sh' ? { patch } : null } };
+    let offset = 0, digest: string | undefined, recovered = '';
+    do {
+      const value = await runReadOnlyTool('get_diff_page', { path: 'old.sh', startOffset: offset, maxChars: 16_000,
+        ...(digest ? { digest } : {}) }, context);
+      expect(value.isExhaustive).toBe(false);
+      const page = parse(value);
+      expect(page.status).toBe('ok'); expect(page.content.length).toBeLessThanOrEqual(16_000);
+      recovered += page.content; digest = page.digest; offset = page.nextOffset;
+    } while (offset !== null);
+    expect(recovered).toBe(patch);
+    expect(recovered.endsWith('guard_tenant_id')).toBe(true);
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'old.sh', digest: 'd'.repeat(64) }, context)))
+      .toMatchObject({ status: 'invalid', reason: 'evidence_digest_mismatch' });
+  });
+
+  it('reads removed source at the verified merge-base, never the branch tip, and memoizes it', async () => {
+    const github = { getMergeBase: vi.fn(async () => OLD), getFileContent: vi.fn(async (_o, _r, _p, sha) => sha === OLD ? 'old contract' : null) };
+    const provider = createRepoFileProvider(github as unknown as GitHubInstallationClient, 'o', 'r', HEAD,
+      { baseSha: BASE, changedFiles: [] });
+    const context = { changedFiles: [], repoFileProvider: provider };
+    for (let i = 0; i < 2; i++) expect(parse(await runReadOnlyTool('read_file_page', { path: 'old.sh', side: 'merge-base' }, context)))
+      .toMatchObject({ status: 'ok', sha: OLD, side: 'merge-base', content: 'old contract' });
+    expect(github.getMergeBase).toHaveBeenCalledExactlyOnceWith('o', 'r', BASE, HEAD);
+    expect(github.getFileContent).toHaveBeenCalledExactlyOnceWith('o', 'r', 'old.sh', OLD, { notFoundIsEmpty: true });
+    expect(parse(await runReadOnlyTool('read_file_page', { path: 'old.sh', side: 'head' }, context)))
+      .toMatchObject({ status: 'unavailable' });
+  });
+
+  it.each([{ path: 'old.sh', side: 'base' }, { path: '../secret', side: 'head' },
+    { path: 'old.sh', side: 'head', maxChars: 32_001 }, { path: 'old.sh', side: 'head', startOffset: -1 },
+    { path: 'old.sh', side: 'head', command: 'execute' }])('rejects arbitrary revisions, paths and page bounds', async (args) => {
+    const readFileAt = vi.fn();
+    const value = await runReadOnlyTool('read_file_page', args, { changedFiles: [],
+      repoFileProvider: { readFile: async () => null, findFiles: async () => [], readFileAt } });
+    expect(parse(value).status).toBe('invalid'); expect(readFileAt).not.toHaveBeenCalled();
+  });
+
+  it('keeps unavailable, previously truncated and canceled evidence unresolved', async () => {
+    const context = { changedFiles: [{ path: 'x', patch: 'cut', originalPatchLength: 99 }] };
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, context))).toMatchObject({ status: 'unavailable' });
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'missing' }, context))).toMatchObject({ status: 'unavailable' });
+    const abort = new AbortController(); abort.abort();
+    await expect(runReadOnlyTool('get_diff_page', { path: 'x' }, { ...context, signal: abort.signal })).rejects.toThrow();
+  });
+});

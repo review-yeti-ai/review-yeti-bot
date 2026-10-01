@@ -238,6 +238,10 @@ export interface RepoFileProvider {
   findFiles(query: string): Promise<string[]>;
   /** Full content of a single file at the reviewed head, or null if it does not exist there. */
   readFile(path: string): Promise<string | null>;
+  /** Pinned source sides; merge-base is verified against the admitted base/head. */
+  readFileAt?(path: string, side: 'head' | 'merge-base'): Promise<{ content: string | null; sha: string }>;
+  /** Original admitted patch, independent of shrinking or prompt packing. */
+  readDiff?(path: string): { patch: string; originalPatchLength?: number } | null;
   /**
    * Whether the repository tree behind findFiles was truncated by the API. GitHub
    * truncates recursive trees past ~100k entries, and a zero-hit search over a
@@ -1670,6 +1674,8 @@ export function buildCompactDiffManifest(
     `Each persona in this container reviews independently based on their domain lane.`,
     `Fetch diff hunks or inspect source context on-demand using:`,
     `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
+    `- get_diff_page: {"tool":"get_diff_page","args":{"path":"<path>","startOffset":0,"maxChars":16000}}; follows nextOffset through the ORIGINAL patch, including oversized single hunks.`,
+    `- read_file_page: {"tool":"read_file_page","args":{"path":"<path>","side":"merge-base","startOffset":0,"maxChars":16000}}; use head for surviving source and merge-base for removed source. Repeat returned digest when continuing.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
     `- ${FIND_FILES_TOOL_GUIDE}`,
     `- zoekt / symbol_search: to audit cross-file symbols across the repository.`,
@@ -1871,7 +1877,7 @@ export function buildScopedDiffSection(
     const affinityTag = isAffinity ? ' (★ YOUR LANE)' : '';
 
     if (skippedSet.has(filePath)) {
-      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxFileDiffChars}) [${lane}]`;
+      return `- ${filePath} (OVERSIZED: ${filePatchChars(f)} chars; use get_diff_page or read_file_page in bounded pages) [${lane}]`;
     }
     if (indexedSet.has(filePath)) {
       return `- ${filePath} [${lane}]${affinityTag}${statStr} [INDEXED: on-demand get_diff available]`;
@@ -1903,7 +1909,7 @@ export function buildScopedDiffSection(
       ]
     : [
         `=== ALL FILES OVERSIZED ===`,
-        `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars) and cannot be inlined or fetched via get_diff.`,
+        `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`,
       ];
 
   const diffText = [
@@ -2231,6 +2237,7 @@ async function invoke(
     `- IMMEDIATE VERDICT MANDATE (Turn 1): If the pre-injected diff hunks and pre-check evidence provide sufficient context to evaluate code correctness, security, and quality, you MUST render your final findings and verdict IMMEDIATELY on Turn 1.`,
     `- DO NOT invoke get_diff or other tools simply to re-fetch or confirm what is already visible in the inlined diff hunks.`,
     `- TOOL USAGE IS STRICTLY A FALLBACK:`,
+    `  * get_diff_page/read_file_page: Inspect original diff or pinned head/merge-base source in bounded pages; follow nextOffset with the returned digest.`,
     `  * get_diff: Use ONLY for files explicitly marked [INDEXED: on-demand get_diff available] that exceeded the prompt budget.`,
     `  * ${READ_FILE_TOOL_GUIDE}`,
     `  * ${FIND_FILES_TOOL_GUIDE}`,
@@ -2239,7 +2246,7 @@ async function invoke(
     `- IMPORTANT EVIDENCE BOUNDARY: get_diff and text/symbol search tools inspect PR diff content only; a miss does not establish repository-wide absence. Never claim a function, module, or symbol is undefined or missing from a patch-scoped miss; use read_file or zoekt when broader evidence is needed.`,
     `- CLEAN DIFF EMPTY APPROVAL: If the modified code in your domain lane contains no defects, render decision 'APPROVE' with findings: [] immediately on Turn 1. Never invent speculative or stylistic issues simply to produce findings.`,
     `- Permitted Tool Categories:`,
-    `  1. Code Reading: view_file (scope depends on the available exact-path context); read_file (one exact current-head file when the provider is available); get_diff (changed-file patch only)`,
+    `  1. Code Reading: view_file (scope depends on the available exact-path context); read_file (one exact current-head file when the provider is available); get_diff (changed-file patch only); get_diff_page (original patch); read_file_page (pinned head or merge-base source)`,
     `  2. AST Context & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
     `  3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}`,
     `  4. Fleet Architecture, Knowledge & Policy (CallTelemetry ct-mcp):`,
