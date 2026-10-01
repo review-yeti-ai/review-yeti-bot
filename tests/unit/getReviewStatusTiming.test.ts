@@ -236,6 +236,7 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.verdict).toBe('PENDING');
     expect(data.phase).toBe('queued');
     expect(data.active_worker).toBeNull();
+    expect(data.active_projection).toBeFalsy();
   });
 
   it('does not advertise a stale projection after the admitted deadline', async () => {
@@ -256,6 +257,7 @@ describe('get_review_status timing: durable DOKS projection', () => {
 
     expect(data.phase).toBe('queued');
     expect(data.active_worker).toBeNull();
+    expect(data.active_projection).toBeFalsy();
   });
 
   it('does not let a durable start marker keep an expired run in a running phase', async () => {
@@ -306,6 +308,7 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.verdict).toBe('SHIP');
     expect(data.phase).toBe('completed');
     expect(data.active_worker).toBeNull();
+    expect(data.active_projection).toBeFalsy();
   });
 
   it.each([
@@ -332,6 +335,7 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.verdict).toBe(expectedVerdict);
     expect(data.phase).toBe('completed');
     expect(data.active_worker).toBeNull();
+    expect(data.active_projection).toBeFalsy();
   });
 });
 
