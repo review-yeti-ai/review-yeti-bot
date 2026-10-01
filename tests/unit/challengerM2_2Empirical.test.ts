@@ -1,44 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { WorkerStatusPoller } from '../../src/cli/workerStatusPoller';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
-
-type GoResult = Pick<SpawnSyncReturns<string>, 'status' | 'signal' | 'error' | 'stdout' | 'stderr'>;
-const operatorModule = 'github.com/review-yeti-ai/review-yeti-bot/k8s-operator';
-const operatorPackages = new Set(['', '/api/v1alpha1', '/api/v1alpha2', '/controllers',
-  '/pkg/cleanup', '/pkg/job', '/pkg/metrics', '/pkg/queue', '/pkg/workspace'].map(suffix => operatorModule + suffix));
-
-function goFailureReceipt(result: GoResult) {
-  const stdout = result.stdout ?? '';
-  const stderr = result.stderr ?? '';
-  const failedPackages = [...new Set([...`${stdout}\n${stderr}`.matchAll(/^FAIL\s+(\S+)(?:\s|$)/gmu)]
-    .map(match => match[1]).filter(packageName => operatorPackages.has(packageName)))].sort();
-  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
-  const errorClass = !result.error ? null
-    : code === 'ETIMEDOUT' ? 'timeout'
-    : code === 'ENOBUFS' ? 'output_buffer_limit'
-    : code === 'ENOENT' ? 'executable_missing'
-    : code === 'EACCES' ? 'permission_denied' : 'spawn_error';
-  const signal = result.signal === null ? null
-    : ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGABRT', 'SIGFPE', 'SIGKILL', 'SIGSEGV',
-      'SIGPIPE', 'SIGALRM', 'SIGTERM', 'SIGUSR1', 'SIGUSR2', 'SIGBUS', 'SIGTRAP'].includes(result.signal)
-      ? result.signal : 'UNKNOWN';
-  const status = Number.isInteger(result.status) && result.status !== null && result.status >= 0 && result.status <= 255
-    ? result.status : null;
-  const failureClass = errorClass !== null ? 'process_error'
-    : signal !== null ? 'process_signal'
-    : failedPackages.length > 0 ? 'package_failure'
-    : status === null ? 'missing_exit_status'
-    : status !== 0 ? 'exit_nonzero'
-    : stdout.includes('FAIL') ? 'suite_failure'
-    : !stdout.includes(`${operatorModule}/controllers`) ? 'missing_expected_package' : 'success';
-  return { status, signal, errorClass, failureClass, failedPackages,
-    stdoutSha256: createHash('sha256').update(stdout).digest('hex'),
-    stderrSha256: createHash('sha256').update(stderr).digest('hex') };
-}
+import {
+  goFailureReceipt,
+  OPERATOR_MODULE as operatorModule,
+  parseGoVersion,
+  readOperatorGoTestNameAllowlist,
+  type GoProcessResult,
+} from '../support/operatorGoFailureReceipt';
 
 describe('Challenger M2-2 Empirical Stress Suite', () => {
   // =========================================================================
@@ -762,15 +735,18 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
 
     it('empirically executes operator Go test suite and verifies all packages pass', () => {
       const operatorDir = resolve(__dirname, '../../k8s-operator');
+      const versionResult = spawnSync('go', ['version'], { cwd: operatorDir, encoding: 'utf8', timeout: 5000 });
+      const goVersion = parseGoVersion(versionResult);
+      const sourceTestNames = readOperatorGoTestNameAllowlist(operatorDir);
       const result = spawnSync('go', ['test', './...'], { cwd: operatorDir, encoding: 'utf8', timeout: 180000 });
-      const receipt = goFailureReceipt(result);
+      const receipt = goFailureReceipt(result, { goVersion, sourceTestNames });
       if (receipt.failureClass !== 'success') throw new Error(`Operator Go suite failed: ${JSON.stringify(receipt)}`);
       expect(result.stdout.includes(`${operatorModule}/controllers`)).toBe(true);
       expect(result.stdout.includes('FAIL')).toBe(false);
     }, 180000);
 
     describe('closed Go consumer diagnostics', () => {
-      const passed: GoResult = { status: 0, signal: null, stdout: `ok\t${operatorModule}/controllers\t0.1s\n`, stderr: '' };
+      const passed: GoProcessResult = { status: 0, signal: null, stdout: `ok\t${operatorModule}/controllers\t0.1s\n`, stderr: '' };
 
       it.each([
         { changes: { status: 1 }, failureClass: 'exit_nonzero' },
@@ -783,7 +759,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
         { changes: { stdout: `ok\t${operatorModule}/controllers\nFAIL\n` }, failureClass: 'suite_failure' },
         { changes: { stdout: '' }, failureClass: 'missing_expected_package' },
       ])('rejects incomplete or failed Go execution: $failureClass $changes', ({ changes, failureClass }) => {
-        const receipt = goFailureReceipt({ ...passed, ...changes } as GoResult);
+        const receipt = goFailureReceipt({ ...passed, ...changes } as GoProcessResult);
         expect(receipt.failureClass).toBe(failureClass);
         expect(receipt.failureClass).not.toBe('success');
       });
@@ -810,7 +786,7 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
 
       it('accepts a complete successful suite and handles absent buffers without exposing errors', () => {
         expect(goFailureReceipt(passed)).toMatchObject({ status: 0, signal: null, errorClass: null, failureClass: 'success', failedPackages: [] });
-        const receipt = goFailureReceipt({ status: null, signal: null, stdout: null, stderr: null } as unknown as GoResult);
+        const receipt = goFailureReceipt({ status: null, signal: null, stdout: null, stderr: null } as GoProcessResult);
         expect(receipt.failureClass).toBe('missing_exit_status');
         expect(receipt.stdoutSha256).toBe(createHash('sha256').update('').digest('hex'));
         expect(receipt.stderrSha256).toBe(receipt.stdoutSha256);
