@@ -86,7 +86,8 @@ function expectedPlanExample(nonce: string): string {
 }
 
 function expectTaskContractGuidance(text: string, nonce: string): void {
-  expect(text).toContain(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`);
+  const idRule = `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`;
+  expect(text.split(idRule)).toHaveLength(2);
   expect(text).toContain('include these nested fields: "id", "dimension", "paths", "question", and "rationale"');
   expect(text).toContain(`question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters`);
   expect(text).toContain(`The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}.`);
@@ -102,11 +103,25 @@ describe('composed plan task-field contract clarity', () => {
     expect(text).toContain('include these nested fields: "id", "dimension", "paths", "question", and "rationale"');
     expect(text).toContain(`question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters`);
     expect(text).toContain(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`);
+    expect(text).toContain(`The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}.`);
     expect(text).toContain('No changed code path is available for a positive task example.');
     expect(text).not.toContain('Positive example of the complete plan/task JSON shape');
     expect(text).not.toContain('"paths":[null]');
     expect(text).toContain(`CT_REVIEW_NONCE:${nonce}`);
   });
+
+  it.each(['src/util/format.ts', 'src/utils/name, "quoted".ts'])(
+    'uses the valid non-security example for the exact changed path %s', (path) => {
+      const nonce = 'non-security-example-nonce';
+      const text = buildPlanDirective(4, [path], nonce, []);
+      const task = { ...validTask(), id: 'testing-contract-example', dimension: 'testing', paths: [path] };
+
+      expect(text).toContain(JSON.stringify({ nonce, tasks: [task] }));
+      expect(text).not.toContain('security-auth-example');
+      expect(text.split(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`)).toHaveLength(2);
+      expect(validateTaskPlan({ tasks: [task] }, { changedFiles: [path] })).toMatchObject({ valid: true, tasks: [task] });
+    },
+  );
 
   it.each([
     ['question', 'missing', undefined],

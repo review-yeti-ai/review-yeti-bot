@@ -769,7 +769,7 @@ export function buildPlanDirective(
     // which `validateTaskPlan` rejects as `malformed_ids`, failing the plan
     // after its single corrective turn. Describe the shape wanted and show
     // conforming ids; never quote a non-conforming one.
-    `Each task id must match ${TASK_ID_PATTERN.source} -- a 1-128 character lowercase slug naming what the task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape".`,
+    `Use a short lowercase slug naming what each task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape".`,
     ...buildPlanTaskContractGuidance(expectedNonce, changedFilePaths, securityAuthPaths),
     `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
     // The security floor is enforced against `classifyPathByHeuristic`, a
@@ -798,13 +798,17 @@ function buildPlanTaskContractGuidance(
   changedFilePaths: string[],
   securityAuthPaths: string[] = [],
 ): string[] {
+  const guidance = [
+    `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`,
+    `Every task object must include these nested fields: "id", "dimension", "paths", "question", and "rationale".`,
+    `The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}. The "paths" value must be an array containing only exact changed code paths from the PR CHANGED FILES INDEX above; do not invent or rewrite paths.`,
+    `The question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters; do not omit either field.`,
+  ];
   const examplePath = changedFilePaths[0];
   if (!examplePath) {
     return [
-      `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`,
-      `Every task object must include these nested fields: "id", "dimension", "paths", "question", and "rationale".`,
-      `The question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters; do not omit either field.`,
-      `A task path must be an exact changed code path from the PR CHANGED FILES INDEX above; do not invent or rewrite paths. No changed code path is available for a positive task example.`,
+      ...guidance,
+      `No changed code path is available for a positive task example.`,
     ];
   }
 
@@ -819,10 +823,7 @@ function buildPlanTaskContractGuidance(
   const planExample = JSON.stringify({ nonce: expectedNonce, tasks: [taskExample] });
 
   return [
-    `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`,
-    `Every task object must include these nested fields: "id", "dimension", "paths", "question", and "rationale".`,
-    `The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}. The "paths" value must be an array containing only exact changed code paths from the PR CHANGED FILES INDEX above; do not invent or rewrite paths.`,
-    `The question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters; do not omit either field.`,
+    ...guidance,
     `Positive example of the complete plan/task JSON shape, using the issued nonce and an allowed changed path: ${planExample}. This illustrates one task's shape only; the full plan must still cover every changed code path and satisfy the security floor.`,
   ];
 }
@@ -1081,7 +1082,6 @@ async function runPlanPhase(input: {
       content: [
         'PLAN_CORRECTION',
         `Your plan was rejected: ${validation.message}${uncovered}${changed}`,
-        `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`,
         ...buildPlanTaskContractGuidance(input.expectedNonce, input.effectiveFilePaths, input.securityAuthPaths),
         'Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
       ].join('\n'),
