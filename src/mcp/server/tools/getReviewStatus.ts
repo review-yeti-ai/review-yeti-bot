@@ -359,6 +359,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         row.lease_owner && (leaseExpires > now || !row.lease_expires_at)
           ? {
               pod_name: row.lease_owner,
+              identity_kind: 'pod',
               started_at: new Date(row.updated_at || row.created_at || now).toISOString(),
               lease_expires_at: row.lease_expires_at
                 ? new Date(row.lease_expires_at).toISOString()
@@ -375,7 +376,8 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       // Job name as a Pod identity.
       const projectedWorker: ReviewActiveWorker | null = projectionIsCurrent
         ? {
-            pod_name: null,
+            pod_name: '',
+            identity_kind: 'job',
             job_name: `${projectionName}-worker`,
             projection_name: projectionName,
             started_at: markers.get('review.lifecycle.started')

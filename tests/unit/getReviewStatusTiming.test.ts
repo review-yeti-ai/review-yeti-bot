@@ -211,7 +211,8 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.verdict).toBe('RUNNING');
     expect(data.phase).toBe('evaluating_personas');
     expect(data.active_worker).toMatchObject({
-      pod_name: null,
+      pod_name: '',
+      identity_kind: 'job',
       job_name: 'ct-review-0123456789abcdef0123456789abcdef-worker',
       projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
       started_at: T2,
@@ -249,6 +250,63 @@ describe('get_review_status timing: durable DOKS projection', () => {
     }), { 'review.lifecycle.started': T2 });
 
     expect(data.phase).toBe('queued');
+    expect(data.active_worker).toBeNull();
+  });
+
+  it('uses a durable start marker to report a current run as running without inventing a worker identity', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'queued',
+      run_stage: 'queued',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: 'in_progress',
+      terminal_deadline: new Date(Date.now() + 600_000).toISOString(),
+    }), { 'review.lifecycle.started': T2 });
+
+    expect(data.verdict).toBe('RUNNING');
+    expect(data.phase).toBe('evaluating_personas');
+    expect(data.active_worker).toBeNull();
+  });
+
+  it('does not advertise a projected worker after the run row becomes terminal', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'complete',
+      run_stage: 'publish',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: null,
+      terminal_deadline: new Date(Date.now() + 600_000).toISOString(),
+    }), {}, {
+      projection: {
+        dispatch_status: 'projected',
+        projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
+        dispatch_updated_at: T2,
+      },
+    });
+
+    expect(data.verdict).toBe('SHIP');
+    expect(data.phase).toBe('completed');
+    expect(data.active_worker).toBeNull();
+  });
+
+  it('does not let projection or start evidence override a terminal gate state', async () => {
+    const { data } = await runTimingCase(baseRow({
+      run_status: 'queued',
+      run_stage: 'queued',
+      lease_owner: null,
+      lease_expires_at: null,
+      desired_state: 'failure',
+      terminal_deadline: new Date(Date.now() + 600_000).toISOString(),
+    }), { 'review.lifecycle.started': T2 }, {
+      projection: {
+        dispatch_status: 'projected',
+        projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
+        dispatch_updated_at: T2,
+      },
+    });
+
+    expect(data.verdict).toBe('FAILED');
+    expect(data.phase).toBe('completed');
     expect(data.active_worker).toBeNull();
   });
 });
