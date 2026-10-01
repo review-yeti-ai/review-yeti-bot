@@ -6,6 +6,7 @@ import {
   resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
+import { TASK_ID_PATTERN } from '../../reviewTaskContract';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -278,7 +279,7 @@ describe('executeComposedReview', () => {
     // Positive id examples only. Quoting the rejected form primed models to
     // emit exactly it (observed: `T1`..`T7` -> malformed_ids).
     expect(planDirective).not.toContain('"T1"');
-    expect(planDirective).toContain('[a-z][a-z0-9_-]*');
+    expect(planDirective).toContain(TASK_ID_PATTERN.source);
   });
 
   it('states that no security task is required when no changed path is security-sensitive', async () => {
