@@ -1,9 +1,44 @@
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { execSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { WorkerStatusPoller } from '../../src/cli/workerStatusPoller';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
+
+type GoResult = Pick<SpawnSyncReturns<string>, 'status' | 'signal' | 'error' | 'stdout' | 'stderr'>;
+const operatorModule = 'github.com/review-yeti-ai/review-yeti-bot/k8s-operator';
+const operatorPackages = new Set(['', '/api/v1alpha1', '/api/v1alpha2', '/controllers',
+  '/pkg/cleanup', '/pkg/job', '/pkg/metrics', '/pkg/queue', '/pkg/workspace'].map(suffix => operatorModule + suffix));
+
+function goFailureReceipt(result: GoResult) {
+  const stdout = result.stdout ?? '';
+  const stderr = result.stderr ?? '';
+  const failedPackages = [...new Set([...`${stdout}\n${stderr}`.matchAll(/^FAIL\s+(\S+)(?:\s|$)/gmu)]
+    .map(match => match[1]).filter(packageName => operatorPackages.has(packageName)))].sort();
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  const errorClass = !result.error ? null
+    : code === 'ETIMEDOUT' ? 'timeout'
+    : code === 'ENOBUFS' ? 'output_buffer_limit'
+    : code === 'ENOENT' ? 'executable_missing'
+    : code === 'EACCES' ? 'permission_denied' : 'spawn_error';
+  const signal = result.signal === null ? null
+    : ['SIGHUP', 'SIGINT', 'SIGQUIT', 'SIGILL', 'SIGABRT', 'SIGFPE', 'SIGKILL', 'SIGSEGV',
+      'SIGPIPE', 'SIGALRM', 'SIGTERM', 'SIGUSR1', 'SIGUSR2', 'SIGBUS', 'SIGTRAP'].includes(result.signal)
+      ? result.signal : 'UNKNOWN';
+  const status = Number.isInteger(result.status) && result.status !== null && result.status >= 0 && result.status <= 255
+    ? result.status : null;
+  const failureClass = errorClass !== null ? 'process_error'
+    : signal !== null ? 'process_signal'
+    : failedPackages.length > 0 ? 'package_failure'
+    : status === null ? 'missing_exit_status'
+    : status !== 0 ? 'exit_nonzero'
+    : stdout.includes('FAIL') ? 'suite_failure'
+    : !stdout.includes(`${operatorModule}/controllers`) ? 'missing_expected_package' : 'success';
+  return { status, signal, errorClass, failureClass, failedPackages,
+    stdoutSha256: createHash('sha256').update(stdout).digest('hex'),
+    stderrSha256: createHash('sha256').update(stderr).digest('hex') };
+}
 
 describe('Challenger M2-2 Empirical Stress Suite', () => {
   // =========================================================================
@@ -727,9 +762,59 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
 
     it('empirically executes operator Go test suite and verifies all packages pass', () => {
       const operatorDir = resolve(__dirname, '../../k8s-operator');
-      const output = execSync('go test ./...', { cwd: operatorDir, encoding: 'utf8' });
-      expect(output).toContain('github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers');
-      expect(output).not.toContain('FAIL');
+      const result = spawnSync('go', ['test', './...'], { cwd: operatorDir, encoding: 'utf8', timeout: 180000 });
+      const receipt = goFailureReceipt(result);
+      if (receipt.failureClass !== 'success') throw new Error(`Operator Go suite failed: ${JSON.stringify(receipt)}`);
+      expect(result.stdout.includes(`${operatorModule}/controllers`)).toBe(true);
+      expect(result.stdout.includes('FAIL')).toBe(false);
     }, 180000);
+
+    describe('closed Go consumer diagnostics', () => {
+      const passed: GoResult = { status: 0, signal: null, stdout: `ok\t${operatorModule}/controllers\t0.1s\n`, stderr: '' };
+
+      it.each([
+        { changes: { status: 1 }, failureClass: 'exit_nonzero' },
+        { changes: { status: null }, failureClass: 'missing_exit_status' },
+        { changes: { status: -1 }, failureClass: 'missing_exit_status' },
+        { changes: { status: 256 }, failureClass: 'missing_exit_status' },
+        { changes: { status: null, signal: 'SIGTERM' }, failureClass: 'process_signal' },
+        { changes: { signal: 'UNTRUSTED_SECRET_SIGNAL' }, failureClass: 'process_signal' },
+        { changes: { status: 1, stdout: `FAIL\t${operatorModule}/controllers\t0.1s\n` }, failureClass: 'package_failure' },
+        { changes: { stdout: `ok\t${operatorModule}/controllers\nFAIL\n` }, failureClass: 'suite_failure' },
+        { changes: { stdout: '' }, failureClass: 'missing_expected_package' },
+      ])('rejects incomplete or failed Go execution: $failureClass $changes', ({ changes, failureClass }) => {
+        const receipt = goFailureReceipt({ ...passed, ...changes } as GoResult);
+        expect(receipt.failureClass).toBe(failureClass);
+        expect(receipt.failureClass).not.toBe('success');
+      });
+
+      it.each([
+        ['ETIMEDOUT', 'timeout'], ['ENOBUFS', 'output_buffer_limit'], ['ENOENT', 'executable_missing'],
+        ['EACCES', 'permission_denied'], ['UNTRUSTED_SECRET_CODE', 'spawn_error'],
+      ])('reports only a closed error class for process code %s', (code, errorClass) => {
+        const error = Object.assign(new Error('UNTRUSTED_SECRET_MESSAGE'), { code });
+        const receipt = goFailureReceipt({ ...passed, status: null, error });
+        expect(receipt).toMatchObject({ failureClass: 'process_error', errorClass });
+        expect(JSON.stringify(receipt)).not.toMatch(/UNTRUSTED_SECRET/u);
+      });
+
+      it('redacts arbitrary child output, deduplicates only owned package IDs, and retains exact digests', () => {
+        const stdout = `CANARY_SECRET_STDOUT\nFAIL\t${operatorModule}/controllers\t0.1s\nFAIL\t${operatorModule}/controllers\nFAIL\t${operatorModule}/pkg/cleanup\nFAIL\t${operatorModule}/CANARY_SECRET_SUFFIX\n`;
+        const stderr = 'CANARY_SECRET_STDERR\nFAIL\tprivate.example/CANARY_SECRET_PACKAGE\n';
+        const receipt = goFailureReceipt({ status: 1, signal: null, stdout, stderr });
+        expect(receipt.failedPackages).toEqual([`${operatorModule}/controllers`, `${operatorModule}/pkg/cleanup`]);
+        expect(receipt.stdoutSha256).toBe(createHash('sha256').update(stdout).digest('hex'));
+        expect(receipt.stderrSha256).toBe(createHash('sha256').update(stderr).digest('hex'));
+        expect(JSON.stringify(receipt)).not.toMatch(/CANARY_SECRET|private\.example/u);
+      });
+
+      it('accepts a complete successful suite and handles absent buffers without exposing errors', () => {
+        expect(goFailureReceipt(passed)).toMatchObject({ status: 0, signal: null, errorClass: null, failureClass: 'success', failedPackages: [] });
+        const receipt = goFailureReceipt({ status: null, signal: null, stdout: null, stderr: null } as unknown as GoResult);
+        expect(receipt.failureClass).toBe('missing_exit_status');
+        expect(receipt.stdoutSha256).toBe(createHash('sha256').update('').digest('hex'));
+        expect(receipt.stderrSha256).toBe(receipt.stdoutSha256);
+      });
+    });
   });
 });

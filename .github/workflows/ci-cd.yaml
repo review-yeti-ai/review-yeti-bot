@@ -26,6 +26,9 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Ordinary quality checks run while the author prepares a draft. Paid native
+  # review retains its ready-only guard in review-bot.yaml; publication keeps
+  # its existing successful-main-event guards below.
   # REL-1074. The required `test` check is an aggregator over parallel jobs:
   #
   #   test-plan        decides full vs incremental and which files run (scripts/ci/select-vitest-tests.mjs)
@@ -41,7 +44,7 @@ jobs:
   # detection fails. The release-please PR already ran the suite, so release commits skip it;
   # typecheck still gates them.
   test-plan:
-    if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
@@ -179,7 +182,7 @@ jobs:
   # only ran when someone remembered to. A guard whose tests do not run is a
   # guard nobody is checking. It needs node and jq, not node_modules.
   worker-helper:
-    if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
@@ -194,7 +197,7 @@ jobs:
         run: npm run test:worker-helper
 
   build:
-    if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
@@ -216,7 +219,7 @@ jobs:
 
   test:
     needs: [test-plan, vitest, vitest-postgres, worker-helper, build]
-    if: "always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    if: "always() && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 5
     permissions: {}
@@ -252,7 +255,6 @@ jobs:
           exit "$failed"
 
   typecheck:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: blacksmith-4vcpu-ubuntu-2404
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
@@ -279,7 +281,6 @@ jobs:
         run: npm run lint:src -- --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo
 
   operator-test:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: blacksmith-4vcpu-ubuntu-2404
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
@@ -327,7 +328,7 @@ jobs:
         run: go test ./...
 
   legacy-runtime:
-    if: "(github.event_name != 'pull_request' || github.event.pull_request.draft == false) && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
+    if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
