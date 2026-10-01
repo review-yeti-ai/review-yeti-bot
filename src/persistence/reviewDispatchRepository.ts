@@ -45,6 +45,7 @@ import {
 } from '../review/reviewGatePolicy';
 import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
 import { loadIncompleteP2RecoveryContext } from './incompleteP2Recovery';
+import { REVIEW_DISPATCH_OUTBOX_STATUS } from './reviewDispatchStatus';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../review/incompleteP2RecoveryLimits';
 import { isTrustedMcpStaticAdminRecoveryOrigin } from '../review/mcpStaticAdminRecoveryOrigin';
 
@@ -166,14 +167,6 @@ export const SUPERSEDED_PUBLISHING_REASON = 'superseded_publisher_owned_check';
  * partition cannot silently diverge if a future publication mode is added.
  */
 export const PUBLISHABLE_PUBLICATION_MODES = ['app-gate'] as const;
-
-/** Persistence-owned vocabulary consumed by status projections. */
-export const REVIEW_DISPATCH_OUTBOX_STATUS = {
-  pending: 'pending',
-  claimed: 'claimed',
-  projected: 'projected',
-  terminal: 'terminal',
-} as const;
 
 /**
  * A non-'app-gate' run (currently only 'disabled') has no App check to fail
@@ -421,6 +414,21 @@ function assertExpectedGeneration(input: ReviewAdmissionInput, row: Record<strin
   if (input.expectedGeneration !== durableGeneration) {
     throw new ReviewGenerationConflictError(input.expectedGeneration, durableGeneration);
   }
+}
+
+/** One identity predicate for both exact-window and legacy-window redelivery. */
+function assertDuplicateDeliveryIdentity(input: ReviewAdmissionInput, row: Record<string, any> | undefined): void {
+  if (!row || row.payload_digest !== input.payloadDigest || Number(row.repository_id) !== input.repositoryId) {
+    throw new Error('delivery identity conflict: delivery id was already used for another payload or repository');
+  }
+  if (row.publication_mode !== input.publicationMode) {
+    throw new Error('delivery publication mode conflict: delivery id was already used with another publication mode');
+  }
+  if (input.authoritativeGate && (Number(row.authoritative_gate_app_id) !== input.authoritativeGate.expectedAppId
+    || row.identity_digest !== sha256(input.identity))) {
+    throw new Error('Duplicate delivery no longer matches current authoritative identity');
+  }
+  assertExpectedGeneration(input, row);
 }
 
 /**
@@ -854,7 +862,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         || row.publication_mode !== 'app-gate'
         || Number(row.authoritative_gate_app_id) !== input.authoritativeGate?.expectedAppId
         || row.status !== 'failed'
-        || row.outbox_status !== 'projected'
+        || row.outbox_status !== REVIEW_DISPATCH_OUTBOX_STATUS.projected
         || Number(row.outbox_execution_attempt) !== attempt
         || row.outbox_delivery_id !== row.delivery_id
         || row.outbox_has_projection !== true
@@ -933,17 +941,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
         throw new Error('legacy terminal deadline is valid only for an existing delivery');
       }
-      if (row.payload_digest !== input.payloadDigest || Number(row.repository_id) !== input.repositoryId) {
-        throw new Error('delivery identity conflict: delivery id was already used for another payload or repository');
-      }
-      if (row.publication_mode !== input.publicationMode) {
-        throw new Error('delivery publication mode conflict: delivery id was already used with another publication mode');
-      }
-      if (input.authoritativeGate && (Number(row.authoritative_gate_app_id) !== input.authoritativeGate.expectedAppId
-        || row.identity_digest !== sha256(input.identity))) {
-        throw new Error('Duplicate delivery no longer matches current authoritative identity');
-      }
-      assertExpectedGeneration(input, row);
+      assertDuplicateDeliveryIdentity(input, row);
       const run = fromRow(row);
       if (run.receivedAt === undefined || run.terminalDeadline === undefined) {
         throw new Error('persisted duplicate delivery is missing its terminal deadline');
@@ -1074,17 +1072,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           [input.deliveryId],
         );
         const row = existing.rows[0];
-        if (!row || row.payload_digest !== input.payloadDigest || Number(row.repository_id) !== input.repositoryId) {
-          throw new Error('delivery identity conflict: delivery id was already used for another payload or repository');
-        }
-        if (row.publication_mode !== input.publicationMode) {
-          throw new Error('delivery publication mode conflict: delivery id was already used with another publication mode');
-        }
-        if (input.authoritativeGate && (Number(row.authoritative_gate_app_id) !== input.authoritativeGate.expectedAppId
-          || row.identity_digest !== sha256(input.identity))) {
-          throw new Error('Duplicate delivery no longer matches current authoritative identity');
-        }
-        assertExpectedGeneration(input, row);
+        assertDuplicateDeliveryIdentity(input, row);
         await client.query('COMMIT');
         return {
           status: 'duplicate',

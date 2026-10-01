@@ -15,7 +15,7 @@ import {
   projectReviewStatusPhase,
   projectReviewStatusVerdict,
 } from '../reviewStatusVerdict';
-import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchRepository';
+import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
