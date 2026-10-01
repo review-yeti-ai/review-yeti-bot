@@ -8008,6 +8008,74 @@ function applyFullWithCarryDiffSwap({ prContext, reviewScope, fullDiffText }) {
   return reviewScope;
 }
 
+// The production reducer is independently testable without main() layout.
+function aggregatePartitionPersonaResults(partitionRuns, reviewPersonas) {
+  return reviewPersonas.map((persona, pIdx) => {
+    const laneRuns = partitionRuns.map((pRun) => pRun[pIdx]);
+    const allFindings = laneRuns.flatMap((r) => r.findings || []);
+    const totalInputTokens = laneRuns.reduce((sum, r) => sum + (r.inputTokens || 0), 0);
+    const totalOutputTokens = laneRuns.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
+    const totalAttempts = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryAttemptCount(r.attemptCount) || 0), 0);
+    const totalLatencyMs = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryDuration(r.latencyMs) || 0), 0);
+    const retryReasons = normalizeTelemetryRetryReasons(laneRuns.flatMap((r) => Array.isArray(r.retryReasons) ? r.retryReasons : []));
+    const anyError = laneRuns.find((r) => r.decision === 'ERROR');
+    const lastRun = laneRuns.at(-1) || {};
+    const baseRun = laneRuns[0] || {};
+    // Terminal diagnostics must describe the same failed partition as its
+    // bounded response attempts, not a successful sibling. Findings, usage
+    // totals and the inherited coverage fields remain unchanged.
+    const diagnosticRun = anyError || lastRun;
+
+    let totalCost = null;
+    const numericCosts = laneRuns.map((r) => normalizeCost(r.cost)).filter((c) => c !== null);
+    if (numericCosts.length === laneRuns.length) {
+      totalCost = numericCosts.reduce((sum, c) => sum + c, 0);
+    } else if (laneRuns.some((r) => isSubscriptionLane(r))) {
+      totalCost = 'Subscription';
+    }
+
+    return {
+      ...baseRun,
+      ...(anyError ? {
+        transport: diagnosticRun.transport,
+        provider: diagnosticRun.provider,
+        model: diagnosticRun.model,
+        ttftMs: diagnosticRun.ttftMs,
+        routerMetadata: diagnosticRun.routerMetadata,
+        requestFingerprint: diagnosticRun.requestFingerprint,
+        responseAttempts: normalizeModelResponseAttempts(diagnosticRun.responseAttempts),
+      } : {}),
+      personaId: persona.id,
+      displayName: persona.name,
+      findings: allFindings,
+      inputTokens: totalInputTokens || null,
+      outputTokens: totalOutputTokens || null,
+      cost: totalCost,
+      attemptCount: totalAttempts,
+      latencyMs: totalLatencyMs,
+      retryReasons,
+      failureClass: anyError ? (normalizeTelemetryOutcomeClass(anyError.failureClass) || 'unknown') : null,
+      responseStatus: normalizeTelemetryStatus(diagnosticRun.responseStatus),
+      errorCode: normalizeTelemetryErrorCode(diagnosticRun.errorCode),
+      generationIdDigest: normalizeTelemetryIdentifier(diagnosticRun.generationIdDigest),
+      routerAttempt: normalizeTelemetryAttemptCount(diagnosticRun.routerAttempt),
+      recoveryAction: normalizeTelemetryRecoveryAction(anyError
+        ? diagnosticRun.recoveryAction : laneRuns.find((r) => r.recoveryAction)?.recoveryAction),
+      outputShape: normalizeFindingsOutputShape(diagnosticRun.outputShape),
+      finishReason: normalizeModelFinishReason(diagnosticRun.finishReason),
+      responseMode: normalizeResponseMode(diagnosticRun.responseMode),
+      findingsSource: normalizeFindingsSource(diagnosticRun.findingsSource),
+      contentPresent: anyError ? anyError.contentPresent === true : laneRuns.some((r) => r.contentPresent === true),
+      reasoningPresent: anyError ? anyError.reasoningPresent === true : laneRuns.some((r) => r.reasoningPresent === true),
+      contentSizeBucket: normalizeResponseSizeBucket(diagnosticRun.contentSizeBucket),
+      reasoningSizeBucket: normalizeResponseSizeBucket(diagnosticRun.reasoningSizeBucket),
+      outputContract: normalizeOutputContractTelemetry(diagnosticRun.outputContract),
+      decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
+      error: anyError ? anyError.error : undefined,
+    };
+  });
+}
+
 async function main() {
   console.log('=====================================================');
   console.log(`🚀 ${BOT_LABEL}`);
@@ -8385,56 +8453,7 @@ async function main() {
         );
 
         // Aggregate results per persona across partitions
-        personaResults = reviewPersonas.map((persona, pIdx) => {
-          const laneRuns = partitionRuns.map((pRun) => pRun[pIdx]);
-          const allFindings = laneRuns.flatMap((r) => r.findings || []);
-          const totalInputTokens = laneRuns.reduce((sum, r) => sum + (r.inputTokens || 0), 0);
-          const totalOutputTokens = laneRuns.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
-          const totalAttempts = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryAttemptCount(r.attemptCount) || 0), 0);
-          const totalLatencyMs = laneRuns.reduce((sum, r) => sum + (normalizeTelemetryDuration(r.latencyMs) || 0), 0);
-          const retryReasons = normalizeTelemetryRetryReasons(laneRuns.flatMap((r) => Array.isArray(r.retryReasons) ? r.retryReasons : []));
-          const anyError = laneRuns.find((r) => r.decision === 'ERROR');
-          const lastRun = laneRuns.at(-1) || {};
-          const baseRun = laneRuns[0] || {};
-
-          let totalCost = null;
-          const numericCosts = laneRuns.map((r) => normalizeCost(r.cost)).filter((c) => c !== null);
-          if (numericCosts.length === laneRuns.length) {
-            totalCost = numericCosts.reduce((sum, c) => sum + c, 0);
-          } else if (laneRuns.some((r) => isSubscriptionLane(r))) {
-            totalCost = 'Subscription';
-          }
-
-          return {
-            ...baseRun,
-            personaId: persona.id,
-            displayName: persona.name,
-            findings: allFindings,
-            inputTokens: totalInputTokens || null,
-            outputTokens: totalOutputTokens || null,
-            cost: totalCost,
-            attemptCount: totalAttempts,
-            latencyMs: totalLatencyMs,
-            retryReasons,
-            failureClass: anyError ? (normalizeTelemetryOutcomeClass(anyError.failureClass) || 'unknown') : null,
-            responseStatus: normalizeTelemetryStatus(anyError?.responseStatus ?? lastRun.responseStatus),
-            errorCode: normalizeTelemetryErrorCode(anyError?.errorCode ?? lastRun.errorCode),
-            generationIdDigest: normalizeTelemetryIdentifier(lastRun.generationIdDigest),
-            routerAttempt: normalizeTelemetryAttemptCount(lastRun.routerAttempt),
-            recoveryAction: normalizeTelemetryRecoveryAction(laneRuns.find((r) => r.recoveryAction)?.recoveryAction),
-            outputShape: normalizeFindingsOutputShape(lastRun.outputShape),
-            finishReason: normalizeModelFinishReason(lastRun.finishReason),
-            responseMode: normalizeResponseMode(lastRun.responseMode),
-            findingsSource: normalizeFindingsSource(lastRun.findingsSource),
-            contentPresent: laneRuns.some((r) => r.contentPresent === true),
-            reasoningPresent: laneRuns.some((r) => r.reasoningPresent === true),
-            contentSizeBucket: normalizeResponseSizeBucket(lastRun.contentSizeBucket),
-            reasoningSizeBucket: normalizeResponseSizeBucket(lastRun.reasoningSizeBucket),
-            outputContract: normalizeOutputContractTelemetry(lastRun.outputContract),
-            decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
-            error: anyError ? anyError.error : undefined,
-          };
-        });
+        personaResults = aggregatePartitionPersonaResults(partitionRuns, reviewPersonas);
       } else {
         console.log(`[Bounded Evaluation] Dispatching ${reviewPersonas.length} live persona lane(s) (${assignmentBudget.planned}/${assignmentBudget.maximum} assignment cap) to ${modelConfig.model} via ${modelConfig.baseUrl} with concurrency ${personaConcurrency}...`);
         const transportPlans = buildTransportDispatchPlans(
@@ -8753,6 +8772,7 @@ module.exports = {
   resolveLaneCoverageComplete,
   resolveInfrastructureIncomplete,
   retryInfrastructureFailedLanes,
+  aggregatePartitionPersonaResults,
   toInfrastructureIncompleteArbitration,
   reportInfrastructureIncomplete,
   resolveFindingFalsificationPolicy,
