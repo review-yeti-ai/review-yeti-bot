@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executeComposedReview, unreportedLaneFailure } from '../composedEngine';
+import {
+  allocateComposedTaskTurnBudgets,
+  executeComposedReview,
+  unreportedLaneFailure,
+} from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -1207,6 +1211,48 @@ describe('executeComposedReview', () => {
     return { complete, workTurns };
   }
 
+  it('allocates a narrow total budget fairly across planned task branches', () => {
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 5, 4)).toEqual([2, 2, 1]);
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 2, 4)).toEqual([1, 1, 0]);
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 0, 4)).toEqual([0, 0, 0]);
+  });
+
+  it('dispatches every funded task branch concurrently', async () => {
+    let activeWorkCalls = 0;
+    let maxActiveWorkCalls = 0;
+    let releaseWork!: () => void;
+    const allWorkStarted = new Promise<void>((resolve) => { releaseWork = resolve; });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      const taskId = threeTasks().find((task) => payload.messages.some((message: any) =>
+        typeof message.content === 'string' && message.content.includes(`Task id: ${task.id}`)))?.id;
+      if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
+      activeWorkCalls += 1;
+      maxActiveWorkCalls = Math.max(maxActiveWorkCalls, activeWorkCalls);
+      if (activeWorkCalls === threeTasks().length) releaseWork();
+      await allWorkStarted;
+      activeWorkCalls -= 1;
+      return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 4, max_turns_per_task: 1 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(maxActiveWorkCalls).toBe(3);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3']);
+  });
+
   it('keeps later lanes running when a middle task produces no verdict', async () => {
     const { complete, workTurns } = routedClient((taskId, _text, nonce) => {
       if (taskId === 'task-2') return 'not a verdict';
@@ -1245,12 +1291,12 @@ describe('executeComposedReview', () => {
     cfg.composed = { max_turns_total: 6, max_turns_per_task: 4 };
     const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
+    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3', 'task-2']);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
       error: expect.stringContaining('non_json_task_result') }]);
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
-    expect(complete).toHaveBeenCalledTimes(6);
+    expect(complete).toHaveBeenCalledTimes(5);
   });
 
   it('fails closed when every planned task produces no verdict', async () => {
