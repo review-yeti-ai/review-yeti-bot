@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.108.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.107.0...v1.108.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** add merge-group webhook attestation with composite delta hazard scan ([#1243](https://github.com/review-yeti-ai/review-yeti-bot/issues/1243)) ([792fa99](https://github.com/review-yeti-ai/review-yeti-bot/commit/792fa999b0e3fa2c1a7c5be23b2963c8267b8d4e))
+
+## [1.107.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.106.0...v1.107.0) (2026-10-01)
+
+
+### Features
+
+* **mcp:** support public read MCP access and /mcp route ([49d10a0](https://github.com/review-yeti-ai/review-yeti-bot/commit/49d10a0f47905fef311bcdb4ba36490b37ec89f5))
+* **orchestrator:** add Cloudflare serverless orchestrator alongside k8s-operator ([ff9c54e](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff9c54ea1300add4cf5bf5d69eee242ccb578f12))
+
+
+### Bug Fixes
+
+* defer unused installation client loading in token auth ([#1241](https://github.com/review-yeti-ai/review-yeti-bot/issues/1241)) ([fd4fb6e](https://github.com/review-yeti-ai/review-yeti-bot/commit/fd4fb6e1c42692cf66704cbca66946e97ff87e7a))
+* preserve scoped retrieval evidence and Zoekt budgets (REL-1077) ([#1240](https://github.com/review-yeti-ai/review-yeti-bot/issues/1240)) ([32eb060](https://github.com/review-yeti-ai/review-yeti-bot/commit/32eb0602d9bb1a26a8f7196b762ce36a8a748f56))
+
 ## [1.106.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.105.1...v1.106.0) (2026-10-01)
 
 
