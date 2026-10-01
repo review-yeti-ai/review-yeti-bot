@@ -1620,6 +1620,9 @@ export async function runPublishingReviewWorker(
             policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
             executionAttempt: identity.executionAttempt, revision: snapshot.revision,
             plan: snapshot.plan, completedTasks: snapshot.completedTasks,
+            ...(snapshot.satisfiedFindingRecheckIds === undefined ? {} : {
+              satisfiedFindingRecheckIds: snapshot.satisfiedFindingRecheckIds,
+            }),
           }, deps.signal);
           composedCheckpointState.durableRevision = Math.max(
             composedCheckpointState.durableRevision,

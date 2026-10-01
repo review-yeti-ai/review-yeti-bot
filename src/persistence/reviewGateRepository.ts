@@ -64,6 +64,12 @@ async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, eve
     };
     const rechecks = await loadValidatedDisputedFindingRechecks(client, run, event.executionAttempt);
     if (rechecks.length === 0) return true;
+    // A disputed finding must be revisited by a fresh task result. Incremental
+    // and verdict-cache claims can carry prior conclusions across that task,
+    // even when the worker also presents a checkpoint receipt for its lane.
+    // Keep this service-side guard independent of the worker's normal policy
+    // that disables those optimizations on resumed executions.
+    if (event.result.incremental !== undefined || event.result.verdictCache !== undefined) return false;
 
     const checkpointRow = (await client.query(
       'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1', [event.runId],

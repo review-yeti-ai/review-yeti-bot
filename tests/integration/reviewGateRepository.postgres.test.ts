@@ -40,6 +40,8 @@ MAX_COMPLETION_BYTES,
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
+import { INCREMENTAL_REVIEW_CLAIM_VERSION } from '../../src/review/incrementalReviewClaim';
+import { VERDICT_CACHE_CLAIM_VERSION } from '../../src/review/verdictCacheClaim';
 
 const databaseUrl = postgresDatabaseUrl();
 const describeWithPostgres = describeWithPostgresShared;
@@ -1044,7 +1046,10 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       return { id, repository, gate, event, trusted, resolve };
     }
 
-    async function disputedGateCompletionFixture(receiptPersisted: boolean) {
+    async function disputedGateCompletionFixture(
+      receiptPersisted: boolean,
+      carryForwardClaim?: 'incremental' | 'verdictCache',
+    ) {
       const id = runId(1265);
       const task = { id: 'security-auth', dimension: 'security' as const, paths: ['src/example.ts'],
         question: 'Does the authorization boundary hold?', rationale: 'The changed path controls tenant access.' };
@@ -1144,6 +1149,23 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           composedMaxTasks: 1, changedFiles: [{ path: 'src/example.ts', patch: '@@ -0,0 +1 @@\n+export const access = true;\n' }],
           coverageComplete: true, quorumSatisfied: true },
       };
+      if (carryForwardClaim === 'incremental') {
+        event.result.incremental = {
+          version: INCREMENTAL_REVIEW_CLAIM_VERSION,
+          previousRunId: runId(1264), previousExecutionAttempt: 1,
+          previousHeadSha: 'a'.repeat(40), previousBaseSha: 'b'.repeat(40),
+          previousCompletionDigest: 'f'.repeat(64), carriedForwardPaths: ['src/example.ts'],
+        };
+        trusted.coverage.incrementalVerified = true;
+      } else if (carryForwardClaim === 'verdictCache') {
+        event.result.verdictCache = {
+          version: VERDICT_CACHE_CLAIM_VERSION,
+          laneKeys: { [task.id]: 'f'.repeat(64) }, entries: [],
+          hits: { runId: runId(1264), executionAttempt: 1, completionDigest: 'f'.repeat(64),
+            paths: ['src/example.ts'] },
+        };
+        trusted.coverage.verdictCacheVerified = true;
+      }
       const repository = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'disabled' });
       const resolve = vi.fn(async (_gate: StoredReviewGate) => trusted);
       return { id, repository, event, resolve, requestId: unsigned.requestId };
@@ -1163,6 +1185,23 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       expect(state.outbox.status).toBe('projected');
       expect(requestId).toMatch(/^[0-9a-f-]{36}$/u);
     });
+
+    it.each(['incremental', 'verdictCache'] as const)(
+      'rejects a valid %s carry-forward claim while a disputed finding re-review is pending',
+      async (claim) => {
+        const { id, repository, event, resolve } = await disputedGateCompletionFixture(true, claim);
+        expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+        expect(resolve).toHaveBeenCalledOnce();
+        const state = await snapshot(id);
+        expect(state.run.status).toBe('failed');
+        const current = state.gates.find((gate: any) => gate.current_attempt);
+        expect(current.decision).toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
+        // The fixture supplies trusted verification for the otherwise-valid
+        // carry-forward claim; the pending dispute request is the reason it
+        // cannot make the current Gate eligible.
+        expect(current.evidence).not.toBeNull();
+      },
+    );
 
     function expectTerminalState(
       state: Awaited<ReturnType<typeof snapshot>>,
