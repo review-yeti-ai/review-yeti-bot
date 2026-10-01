@@ -1,4 +1,4 @@
-import { MAX_PINNED_SOURCE_BYTES } from './toolLimits';
+import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
 import { createHash } from 'node:crypto';
 import type { ToolRuntimeContext, ToolRuntimeResult } from './toolRuntime';
 import { classifyUnavailablePatch } from '../review/patchAvailability';
