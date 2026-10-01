@@ -88,6 +88,7 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
           status: 'MATCHING',
           consecutiveMatches: 100,
           doksFallbackConfigured: true,
+          dataSource: 'baseline_sample_telemetry',
         },
       });
     },
