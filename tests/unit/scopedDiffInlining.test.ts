@@ -254,7 +254,7 @@ describe('Milestone 3 (R3): Pre-Fetched Bounded Diff Injection & Turn Reduction'
       const result = buildScopedDiffSection(files, { maxFileDiffChars: 500 });
       expect(result.skippedPaths).toContain('src/huge_bundle.js');
       expect(result.inlinedPaths).toContain('src/normal.ts');
-      expect(result.diffText).toContain('(SKIPPED: 1000 chars > max-file-diff-chars 500)');
+      expect(result.diffText).toContain('(OVERSIZED: 1000 chars; use get_diff_page or read_file_page in bounded pages)');
       expect(result.diffText).not.toContain('<untrusted_diff_data file="src/huge_bundle.js">');
     });
 
