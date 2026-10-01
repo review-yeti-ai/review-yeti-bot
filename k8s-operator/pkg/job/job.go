@@ -46,6 +46,7 @@ import (
 
 const (
 	Namespace                     = "ct-review-system"
+	WorkerPriorityClassName       = "ct-review-worker"
 	ReceiptOnlyEnv                = "REVIEW_RECEIPT_ONLY"
 	FullPanelQualificationEnv     = "REVIEW_FULL_PANEL_QUALIFICATION_ONLY"
 	SameHeadQualificationEnv      = "REVIEW_SAME_HEAD_QUALIFICATION_ONLY"
@@ -177,13 +178,19 @@ const (
 	WorkerMemoryRequest                = "96Mi"
 	WorkerCPULimit                     = "1"
 	WorkerMemoryLimit                  = "256Mi"
-	// The CRD's CEL rule bounds terminalDeadline - receivedAt to [900s, 3600s]
+	// The CRD's CEL rule fixes terminalDeadline - receivedAt at 900 seconds
 	// (see charts/review-yeti/templates/crd.yaml and
 	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
 	// these two in lockstep with that rule and with the TypeScript dispatch
-	// side's src/config/terminalDeadline.ts MIN/MAX.
+	// side's src/config/terminalDeadline.ts DEFAULT_TERMINAL_DEADLINE_MS.
 	MinTerminalDeadlineSeconds = int64(900)
-	MaxTerminalDeadlineSeconds = int64(3600)
+	MaxTerminalDeadlineSeconds = int64(900)
+	// LegacyPersistedMaxTerminalDeadlineSeconds documents the former upper
+	// bound for database-only, read-only recovery. The Go operator intentionally
+	// never accepts this value: old rows must be finalized without creating a
+	// new PRReviewJob. A TypeScript contract test pins the recovery constant to
+	// this migration marker so the two languages cannot drift silently.
+	LegacyPersistedMaxTerminalDeadlineSeconds = int64(3600)
 	// Keep a one-minute publication/failure-conclusion reserve inside the
 	// admitted run deadline. The worker itself may never consume the full
 	// admission window.
@@ -804,6 +811,7 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: templateLabels, Annotations: templateAnnotations},
 				Spec: corev1.PodSpec{
+					PriorityClassName:            WorkerPriorityClassName,
 					RestartPolicy:                corev1.RestartPolicyNever,
 					AutomountServiceAccountToken: &automountToken,
 					SecurityContext: &corev1.PodSecurityContext{
@@ -1113,7 +1121,7 @@ func remainingDeadlineSeconds(receivedAt, deadline, now time.Time) (int64, error
 		return 0, workspace.ErrInsufficientDeadline
 	}
 	// The worker's own budget must never exceed this run's admitted window
-	// (validateInput already bounds that window to [900s, 3600s]) minus the
+	// (validateInput already fixes that window at 900s) minus the
 	// publication/failure-conclusion reserve, even when more of the terminal
 	// deadline happens to remain.
 	windowCapSeconds := int64(math.Round(deadline.Sub(receivedAt).Seconds())) - DeadlineReserveSeconds

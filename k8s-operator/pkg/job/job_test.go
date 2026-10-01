@@ -397,6 +397,9 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 	if result.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever || result.Spec.Template.Spec.AutomountServiceAccountToken == nil || *result.Spec.Template.Spec.AutomountServiceAccountToken {
 		t.Fatalf("pod restart/token policy = %s/%v", result.Spec.Template.Spec.RestartPolicy, result.Spec.Template.Spec.AutomountServiceAccountToken)
 	}
+	if result.Spec.Template.Spec.PriorityClassName != job.WorkerPriorityClassName {
+		t.Fatalf("pod priorityClassName = %q, want %q", result.Spec.Template.Spec.PriorityClassName, job.WorkerPriorityClassName)
+	}
 	if result.Spec.Template.Spec.ServiceAccountName != "" {
 		t.Fatalf("service account = %q, want empty", result.Spec.Template.Spec.ServiceAccountName)
 	}
@@ -440,6 +443,75 @@ func TestBuildWorkerJobCreatesBoundedReceiptOnlyPod(t *testing.T) {
 		if strings.Contains(lower, forbidden) {
 			t.Fatalf("receipt-only job contains forbidden credential marker %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+func TestBuildWorkerJobInjectsWorkerPriorityClassName(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+
+	testCases := []struct {
+		name  string
+		setup func(review *v1alpha2.PRReviewJob, input *job.Input)
+	}{
+		{
+			name:  "standard receipt-only worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {},
+		},
+		{
+			name: "prep phase worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				input.Phase = job.JobPhasePrep
+			},
+		},
+		{
+			name: "continuation phase worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				input.Phase = job.JobPhaseContinuation
+			},
+		},
+		{
+			name: "full panel qualification worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.QualificationProfile = job.FullPanelQualificationProfile
+				review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+			},
+		},
+		{
+			name: "same head qualification worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.QualificationProfile = job.SameHeadQualificationProfile
+				review.Spec.QualificationModel = "deepseek/deepseek-v4-flash-0731"
+			},
+		},
+		{
+			name: "app-gate publishing worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.PublicationMode = "app-gate"
+				input.Publishing = publishingFixture()
+			},
+		},
+		{
+			name: "disabled publishing worker",
+			setup: func(review *v1alpha2.PRReviewJob, input *job.Input) {
+				review.Spec.PublicationMode = "disabled"
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			review := reviewFixture(now)
+			input := buildInput(review, now)
+			tc.setup(review, &input)
+			worker, err := job.BuildWorkerJob(input)
+			if err != nil {
+				t.Fatalf("BuildWorkerJob() error = %v", err)
+			}
+			if worker.Spec.Template.Spec.PriorityClassName != job.WorkerPriorityClassName {
+				t.Fatalf("priorityClassName = %q, want %q",
+					worker.Spec.Template.Spec.PriorityClassName, job.WorkerPriorityClassName)
+			}
+		})
 	}
 }
 
@@ -613,11 +685,7 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	}
 }
 
-// REL-733: the CRD's CEL rule (and validateInput) accept any admitted window in
-// [900s, 3600s], not just the original fixed 15 minutes. The worker's active
-// deadline must scale with whichever window this run was actually admitted
-// with, capped at that window minus the publication/failure-conclusion reserve.
-func TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow(t *testing.T) {
+func TestBuildWorkerJobEnforcesFixedEndToEndDeadline(t *testing.T) {
 	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name     string
@@ -625,9 +693,8 @@ func TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow(t *testing.T) {
 		now      time.Time
 		wantSecs int64
 	}{
-		{name: "thirty minute window at admission", window: 30 * time.Minute, now: received, wantSecs: 1740},
-		{name: "sixty minute window at admission", window: 60 * time.Minute, now: received, wantSecs: 3540},
-		{name: "thirty minute window mid-run", window: 30 * time.Minute, now: received.Add(10 * time.Minute), wantSecs: 1140},
+		{name: "fifteen minute window at admission", window: 15 * time.Minute, now: received, wantSecs: 840},
+		{name: "fifteen minute window mid-run", window: 15 * time.Minute, now: received.Add(5 * time.Minute), wantSecs: 540},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			review := reviewFixture(received)
@@ -641,13 +708,13 @@ func TestBuildWorkerJobScalesActiveDeadlineWithAdmittedWindow(t *testing.T) {
 			}
 		})
 	}
-	// Beyond the CRD's 3600s ceiling, the run was never admissible.
+	// Any wider window violates the end-to-end service ceiling.
 	tooLong := reviewFixture(received)
-	tooLong.Spec.TerminalDeadline = metav1.NewTime(received.Add(61 * time.Minute))
+	tooLong.Spec.TerminalDeadline = metav1.NewTime(received.Add(16 * time.Minute))
 	if _, err := job.BuildWorkerJob(buildInput(tooLong, received)); !errors.Is(err, job.ErrJobDeadline) {
 		t.Fatalf("over-ceiling window error = %v, want ErrJobDeadline", err)
 	}
-	// Below the CRD's 900s floor, the run was never admissible either.
+	// A shorter projected window is also not the immutable admitted contract.
 	tooShort := reviewFixture(received)
 	tooShort.Spec.TerminalDeadline = metav1.NewTime(received.Add(14 * time.Minute))
 	if _, err := job.BuildWorkerJob(buildInput(tooShort, received)); !errors.Is(err, job.ErrJobDeadline) {

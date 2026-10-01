@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executeComposedReview, unreportedLaneFailure } from '../composedEngine';
+import {
+  allocateComposedTaskTurnBudgets,
+  COMPOSED_TASK_CONCURRENCY,
+  executeComposedReview,
+  unreportedLaneFailure,
+} from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -482,6 +487,37 @@ describe('executeComposedReview', () => {
   });
 
   // --- Mutation target 3: "make a BLOCKED task count as a pass" must go red -------------------
+  it('can investigate related reviewed-head files in one tool turn and still requires a nonce-bound result', async () => {
+    let workCalls = 0;
+    const repoFileProvider = {
+      findFiles: vi.fn(), readFile: vi.fn(async (path: string) => `current source for ${path}`),
+    };
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) {
+        return fakeResponse(JSON.stringify({ tool: 'read_files', args: { files: [
+          { path: 'src/auth/guard.ts' }, { path: 'src/config.ts' },
+        ] } }));
+      }
+      const transcript = JSON.stringify(payload.messages);
+      expect(transcript).toContain('current source for src/auth/guard.ts');
+      expect(transcript).toContain('current source for src/config.ts');
+      expect(transcript).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+      // Tool results are evidence only; this provider result is the sole task completion.
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete }, repoFileProvider });
+    expect(complete).toHaveBeenCalledTimes(3); // one plan, one batch, one required final result
+    expect(repoFileProvider.readFile).toHaveBeenCalledTimes(2);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
+    expect(result.personas[0].toolCalls).toMatchObject([{ tool: 'read_files', scope: 'full-repository', exhaustive: true }]);
+  });
+
   it('records a BLOCKED task as a failed lane, never a pass', async () => {
     const complete = vi.fn(async (payload: any) => {
       const text = lastText(payload.messages);
@@ -1073,9 +1109,10 @@ describe('executeComposedReview', () => {
   // The retry ladders check their backoff against the run's remaining budget. That check compared
   // against Infinity until the deadline was actually threaded from the orchestrator into
   // `callTurn` -- the guard existed, was described as "budget-aware" in its own commit message,
-  // and could not fire. This pins that it is reachable: with no budget left, a retryable error is
-  // NOT retried, so exactly one provider call is made.
-  it('does not retry when the remaining budget cannot fit the backoff', async () => {
+  // and could not fire. A non-positive configured setting uses the shared 900s fallback, rather
+  // than an inline zero cutoff that disagrees with the abort signal's admitted budget.
+  it('uses the shared configured fallback when the timeout setting is non-positive', async () => {
+    vi.useFakeTimers();
     let calls = 0;
     const complete = vi.fn(async () => {
       calls += 1;
@@ -1085,7 +1122,7 @@ describe('executeComposedReview', () => {
     const cfg: any = config();
     cfg.reviewers = { ...cfg.reviewers, overall_timeout_s: 0 };
 
-    await executeComposedReview({
+    const settled = executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
       repository: 'calltelemetry/ct-meta',
@@ -1093,7 +1130,47 @@ describe('executeComposedReview', () => {
       client: { complete },
     }).catch(() => undefined);
 
-    expect(calls).toBe(1);
+    try {
+      await vi.advanceTimersByTimeAsync(10_000);
+      await settled;
+      expect(calls).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses the inherited admitted clock and cutoff instead of minting a composed retry window', async () => {
+    vi.useFakeTimers();
+    // Keep the cutoff in the future according to Date.now(), but advance only the admitted
+    // clock to it. If callTurn accidentally consults Date.now() again, it will see retry budget
+    // and make another provider call; using the admitted clock must suppress that retry.
+    const wallClockMs = Date.now();
+    let currentMs = wallClockMs;
+    const now = () => currentMs;
+    const deadlineAtMs = wallClockMs + 5_000;
+    const cancellation = new AbortController();
+    const admitted = panelEngine.createPanelDeadlineSignal(1_800, cancellation.signal,
+      { deadlineAtMs, timeoutMs: 5_000, terminalBound: true }, now);
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      calls += 1;
+      currentMs = deadlineAtMs;
+      throw new OpenRouterResponseError('provider returned empty completion content', 200);
+    });
+    const settled = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete },
+      signal: admitted.signal, deadlineBudget: admitted.budget, deadlineNow: admitted.now }).catch((error) => error);
+
+    try {
+      expect(Date.now()).toBeLessThan(deadlineAtMs);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(calls).toBe(1);
+      expect(await settled).toBeInstanceOf(OpenRouterResponseError);
+    } finally {
+      cancellation.abort();
+      admitted.cleanup();
+      vi.useRealTimers();
+    }
   });
 
   function threeTasks() {
@@ -1101,6 +1178,13 @@ describe('executeComposedReview', () => {
       { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Is the first change safe?', rationale: 'first' },
       { id: 'task-2', dimension: 'testing', paths: ['src/auth/guard.ts'], question: 'Is the second change covered?', rationale: 'second' },
       { id: 'task-3', dimension: 'architecture', paths: ['src/auth/guard.ts'], question: 'Does the third change fail closed?', rationale: 'third' },
+    ];
+  }
+
+  function fourTasks() {
+    return [
+      ...threeTasks(),
+      { id: 'task-4', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Does the fourth change remain available?', rationale: 'fourth' },
     ];
   }
 
@@ -1134,6 +1218,86 @@ describe('executeComposedReview', () => {
     });
     return { complete, workTurns };
   }
+
+  it('allocates a narrow total budget fairly across planned task branches', () => {
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 5, 4)).toEqual([2, 2, 1]);
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 2, 4)).toEqual([1, 1, 0]);
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 0, 4)).toEqual([0, 0, 0]);
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 10, 2)).toEqual([2, 2, 2]);
+  });
+
+  it('dispatches every funded task branch concurrently', async () => {
+    let activeWorkCalls = 0;
+    let maxActiveWorkCalls = 0;
+    let releaseWork!: () => void;
+    const allWorkStarted = new Promise<void>((resolve) => { releaseWork = resolve; });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
+      }
+      const taskId = threeTasks().find((task) => payload.messages.some((message: any) =>
+        typeof message.content === 'string' && message.content.includes(`Task id: ${task.id}`)))?.id;
+      if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
+      activeWorkCalls += 1;
+      maxActiveWorkCalls = Math.max(maxActiveWorkCalls, activeWorkCalls);
+      if (activeWorkCalls === threeTasks().length) releaseWork();
+      await allWorkStarted;
+      activeWorkCalls -= 1;
+      return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 4, max_turns_per_task: 1 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(maxActiveWorkCalls).toBe(3);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3']);
+  });
+
+  it('bounds larger plans to three concurrent provider branches', async () => {
+    let activeWorkCalls = 0;
+    let maxActiveWorkCalls = 0;
+    let releaseFirstWave!: () => void;
+    const firstWaveStarted = new Promise<void>((resolve) => { releaseFirstWave = resolve; });
+    const tasks = fourTasks();
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks }));
+      }
+      const taskId = tasks.find((task) => payload.messages.some((message: any) =>
+        typeof message.content === 'string' && message.content.includes(`Task id: ${task.id}`)))?.id;
+      if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
+      activeWorkCalls += 1;
+      maxActiveWorkCalls = Math.max(maxActiveWorkCalls, activeWorkCalls);
+      if (activeWorkCalls === COMPOSED_TASK_CONCURRENCY) releaseFirstWave();
+      await firstWaveStarted;
+      activeWorkCalls -= 1;
+      return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(maxActiveWorkCalls).toBe(COMPOSED_TASK_CONCURRENCY);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+  });
 
   it('keeps later lanes running when a middle task produces no verdict', async () => {
     const { complete, workTurns } = routedClient((taskId, _text, nonce) => {
@@ -1173,12 +1337,12 @@ describe('executeComposedReview', () => {
     cfg.composed = { max_turns_total: 6, max_turns_per_task: 4 };
     const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
+    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-2', 'task-3']);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
       error: expect.stringContaining('non_json_task_result') }]);
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
-    expect(complete).toHaveBeenCalledTimes(6);
+    expect(complete).toHaveBeenCalledTimes(5);
   });
 
   it('fails closed when every planned task produces no verdict', async () => {

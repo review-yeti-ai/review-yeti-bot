@@ -130,11 +130,14 @@ func operatorMaxConcurrentReconcilesFromEnv(getenv func(string) string) (int, er
 	const key = "REVIEW_YETI_OPERATOR_MAX_CONCURRENT_RECONCILES"
 	value := strings.TrimSpace(getenv(key))
 	if value == "" {
-		return 1, nil
+		return controllers.DefaultV1Alpha2MaxConcurrentReconciles, nil
 	}
 	limit, err := strconv.Atoi(value)
 	if err != nil || limit <= 0 {
 		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	if limit > controllers.MaxV1Alpha2ReconcileConcurrencyCap {
+		return controllers.MaxV1Alpha2ReconcileConcurrencyCap, nil
 	}
 	return limit, nil
 }

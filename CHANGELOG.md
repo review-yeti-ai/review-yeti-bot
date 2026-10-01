@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.101.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.2...v1.101.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* enforce 15-minute review deadline ([#1184](https://github.com/review-yeti-ai/review-yeti-bot/issues/1184)) ([a557775](https://github.com/review-yeti-ai/review-yeti-bot/commit/a55777530a54cd75736815405e02613f1c3f68e3))
+
+## [1.101.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.1...v1.101.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** admit public self-review at ready or explicit request ([#1189](https://github.com/review-yeti-ai/review-yeti-bot/issues/1189)) ([ab8f557](https://github.com/review-yeti-ai/review-yeti-bot/commit/ab8f5574c79eb2be53ff9fa7c2b2550567b39fc6))
+
+## [1.101.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.0...v1.101.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** batch related source reads within one investigation turn ([#1185](https://github.com/review-yeti-ai/review-yeti-bot/issues/1185)) ([b680f7a](https://github.com/review-yeti-ai/review-yeti-bot/commit/b680f7a1be82372eb99d8e59635ecd96181d2f4d))
+
+## [1.101.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.14...v1.101.0) (2026-10-01)
+
+
+### Features
+
+* **operator:** decouple reconcile concurrency from worker admission (ADR 0720) ([#1183](https://github.com/review-yeti-ai/review-yeti-bot/issues/1183)) ([6013ccc](https://github.com/review-yeti-ai/review-yeti-bot/commit/6013cccd4297f80576e33fef6c2d11c77c59ac35))
+
+## [1.100.14](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.13...v1.100.14) (2026-09-30)
+
+
+### Bug Fixes
+
+* **worker:** enforce one admitted review deadline ([#1179](https://github.com/review-yeti-ai/review-yeti-bot/issues/1179)) ([da05f8c](https://github.com/review-yeti-ai/review-yeti-bot/commit/da05f8cd43c75770a5a24688a0cc415fe764389f))
+
 ## [1.100.13](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.12...v1.100.13) (2026-09-30)
 
 
