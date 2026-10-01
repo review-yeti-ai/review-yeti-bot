@@ -101,7 +101,7 @@ function createZoektGroundingStage(overrides = {}) {
       if (!built || built.status !== 'ok') {
         return { indexDir: undefined, scratchDir, reason: `build_${built?.status || 'unknown'}` };
       }
-      return { indexDir, scratchDir, indexScope: { ...built.indexScope, complete: false, repository: input.repository, headSha: input.headSha } };
+      return { indexDir, scratchDir, indexScope: { ...built.indexScope, repository: input.repository, headSha: input.headSha } };
     } catch (error) {
       // Catch path owns its own cleanup: the caller never received a receipt,
       // so nothing else knows this scratch tree exists. An explicit fsPromises

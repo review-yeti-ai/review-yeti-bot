@@ -398,7 +398,7 @@ export async function runReadOnlyTool(
       try {
         const zoektTool = require('../mcp/zoektSearchTool');
         const zoektRes: any = await raceWithPanelAbort(
-          zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig, { signal: options?.signal }),
+          zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig, { signal: options?.signal, session: options?.zoektConfig?.searchSession }),
           options?.signal,
         );
         isExhaustive = zoektRes.status === 'ok' && zoektRes.exhaustive === true && zoektRes.truncated !== true;

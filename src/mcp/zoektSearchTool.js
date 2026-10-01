@@ -300,24 +300,22 @@ function createZoektSearchTool({ identity, indexDir, config = {}, spawnImpl = de
 /**
  * Direct invocation helper for panel engine and MCP runners.
  */
-const directSessions = new WeakMap();
 async function executeZoektSearch(args = {}, config = {}, options = {}) {
-  // Grounded configs share the run-owned identity even when an engine merges
-  // config views. Do not reset the call budget on every tool invocation.
-  const key = config?.identity && typeof config.identity === 'object' ? config.identity : config;
-  const binding = JSON.stringify([options?.identity || config?.identity,
-    options?.indexDir || config?.indexDir || process.env.ZOEKT_INDEX_DIR]);
-  const session = key && typeof key === 'object' ? directSessions.get(key) : undefined;
-  if (session && session.binding !== binding) return { status: 'unavailable', reason: 'index_identity_changed' };
-  let tool = session?.tool;
-  if (!tool) tool = createZoektSearchTool({
-    identity: options?.identity || config?.identity,
-    indexDir: options?.indexDir || config?.indexDir || process.env.ZOEKT_INDEX_DIR,
+  // The publishing run deliberately owns this shared session. Independent
+  // callers retain stateless helper behavior and choose their own test seams.
+  if (options.session) {
+    if (options.spawnImpl || options.fsImpl || options.indexDir) {
+      return { status: 'unavailable', reason: 'session_override_rejected' };
+    }
+    return options.session.call(TOOL_NAME, args, { signal: options.signal });
+  }
+  const tool = createZoektSearchTool({
+    identity: options.identity || config.identity,
+    indexDir: options.indexDir || config.indexDir || process.env.ZOEKT_INDEX_DIR,
     config,
-    spawnImpl: options?.spawnImpl,
-    fsImpl: options?.fsImpl,
+    spawnImpl: options.spawnImpl,
+    fsImpl: options.fsImpl,
   });
-  if (key && typeof key === 'object') directSessions.set(key, { tool, binding });
   return tool.call(TOOL_NAME, args, options);
 }
 

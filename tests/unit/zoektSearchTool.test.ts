@@ -271,16 +271,32 @@ describe('Zoekt completeness and shared direct session', () => {
       queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
       return child;
     });
-    const options = { spawnImpl, fsImpl: fakeFsAvailable() };
+    const session = createZoektSearchTool({ identity: runIdentity, indexDir: '/idx', config, spawnImpl, fsImpl: fakeFsAvailable() });
+    const options = { session };
     expect((await executeZoektSearch({ query: 'a' }, config, options)).status).toBe('ok');
     expect(await executeZoektSearch({ query: 'b' }, { ...config }, options))
       .toMatchObject({ reason: 'call_budget_exhausted', identity });
     expect(spawnImpl).toHaveBeenCalledTimes(1);
-    expect(await executeZoektSearch({ query: 'b' }, { ...config, indexDir: '/other' }, options))
-      .toMatchObject({ reason: 'index_identity_changed' });
+    expect(await executeZoektSearch({ query: 'b' }, config, { ...options, indexDir: '/other' }))
+      .toMatchObject({ reason: 'session_override_rejected' });
     const controller = new AbortController(); controller.abort();
     expect(await executeZoektSearch({ query: 'c' }, { identity: { ...identity }, indexDir: '/idx' },
-      { ...options, signal: controller.signal })).toMatchObject({ status: 'cancelled' });
+      { spawnImpl, fsImpl: fakeFsAvailable(), signal: controller.signal })).toMatchObject({ status: 'cancelled' });
     expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('trusted scoped completeness identity', () => {
+  it.each([['matching', identity.headSha, true], ['stale', 'b'.repeat(40), false]])('requires %s snapshot for an exhaustive indexed set', async (_name, headSha, exhaustive) => {
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const tool = createZoektSearchTool({ identity, indexDir: '/idx',
+      config: { indexScope: { repository: identity.repository, headSha, complete: true } }, fsImpl: fakeFsAvailable(), spawnImpl });
+    expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'consumer' }))
+      .toMatchObject({ status: 'ok', queryComplete: true, exhaustive });
   });
 });

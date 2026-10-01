@@ -1889,6 +1889,18 @@ export async function runPublishingReviewWorker(
       // worker never needs to know that policy.
       const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
       const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
+      // One explicit search session per publishing run, shared by merged engine
+      // views. The helper remains stateless for callers without this session.
+      const zoektSearchSession = zoektIndexDir ? require('../mcp/zoektSearchTool').createZoektSearchTool({
+        identity: { repository: identity.repo, headSha: identity.headSha },
+        indexDir: zoektIndexDir,
+        config: {
+          ...(workerConfig as any).pre_checks?.zoekt,
+          ...(workerConfig as any).evidence?.zoekt,
+          ...zoektBinaryOverride,
+          indexScope: zoektScratchRoot.indexScope,
+        },
+      }) : undefined;
       const groundedConfig = zoektIndexDir
         ? {
             ...workerConfig,
@@ -1899,6 +1911,7 @@ export async function runPublishingReviewWorker(
                 indexDir: zoektIndexDir,
                 identity: { repository: identity.repo, headSha: identity.headSha },
                 indexScope: zoektScratchRoot.indexScope,
+                searchSession: zoektSearchSession,
                 ...zoektBinaryOverride,
               },
             },
