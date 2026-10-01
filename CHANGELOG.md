@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.101.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.5...v1.101.6) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve admitted deadlines across configuration changes ([#1200](https://github.com/review-yeti-ai/review-yeti-bot/issues/1200)) ([9073967](https://github.com/review-yeti-ai/review-yeti-bot/commit/9073967490922a2413790c817b46db066e6f89b7))
+* **review:** run composed tasks concurrently within the shared turn budget ([#1190](https://github.com/review-yeti-ai/review-yeti-bot/issues/1190)) ([ce858b0](https://github.com/review-yeti-ai/review-yeti-bot/commit/ce858b00e5bef7f10a94c7875d6c5e7673481a54))
+
 ## [1.101.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.4...v1.101.5) (2026-10-01)
 
 
