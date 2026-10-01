@@ -367,32 +367,46 @@ type PreflightSqlToken = {
   interpolated?: boolean;
 };
 
+type PreflightSourceLanguage = 'javascript' | 'python' | 'ruby' | 'elixir' | 'php' | 'sql' | 'other';
+
 const SQL_SELECT_FROM_PATTERN = /\bSELECT\b[\s\S]*?\bFROM\b/i;
 const STATIC_SQL_IDENTIFIERS = new Set(['false', 'none', 'null', 'true', 'undefined']);
 const PREFLIGHT_IDENTIFIER_PATTERN = /[A-Za-z_$][A-Za-z0-9_$]*/y;
 const PREFLIGHT_NUMBER_PATTERN = /(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?n?/y;
 
-function tokenizePreflightSourceLine(line: string): PreflightSqlToken[] {
+function preflightSourceLanguage(filePath: string): PreflightSourceLanguage {
+  const extension = /\.[^.\/]+$/.exec(filePath)?.[0]?.toLowerCase();
+  if (['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts'].includes(extension || '')) return 'javascript';
+  if (['.py', '.pyw'].includes(extension || '')) return 'python';
+  if (['.rb', '.rake', '.gemspec'].includes(extension || '')) return 'ruby';
+  if (['.ex', '.exs'].includes(extension || '')) return 'elixir';
+  if (['.php', '.phtml', '.php5'].includes(extension || '')) return 'php';
+  if (extension === '.sql') return 'sql';
+  return 'other';
+}
+
+function tokenizePreflightSourceLine(line: string, language: PreflightSourceLanguage): PreflightSqlToken[] {
   const tokens: PreflightSqlToken[] = [];
   let index = 0;
-  let sawBareSqlSelect = false;
-  let sawBareSqlFrom = false;
 
   while (index < line.length) {
     if (/\s/.test(line[index])) {
       index++;
       continue;
     }
-    if (line.startsWith('//', index) || line[index] === '#') break;
-    if (line.startsWith('--', index) && sawBareSqlSelect && sawBareSqlFrom) break;
-    if (line.startsWith('/*', index)) {
+    if (['javascript', 'php', 'other'].includes(language) && line.startsWith('//', index)) break;
+    if (['python', 'ruby', 'elixir', 'php', 'sql'].includes(language) && line[index] === '#') break;
+    if (language === 'sql' && line.startsWith('--', index)) break;
+    if (['javascript', 'php', 'sql', 'other'].includes(language) && line.startsWith('/*', index)) {
       const commentEnd = line.indexOf('*/', index + 2);
       if (commentEnd < 0) break;
       index = commentEnd + 2;
       continue;
     }
 
-    const pythonStringPrefix = /^(?:f|fr|rf)(?=["'])/i.exec(line.slice(index, index + 3))?.[0];
+    const pythonStringPrefix = language === 'python'
+      ? /^(?:f|fr|rf)(?=["'])/i.exec(line.slice(index, index + 3))?.[0]
+      : undefined;
     if (pythonStringPrefix) index += pythonStringPrefix.length;
     const quote = line[index];
     if (quote === '"' || quote === "'" || quote === '`') {
@@ -406,14 +420,22 @@ function tokenizePreflightSourceLine(line: string): PreflightSqlToken[] {
           index += 2;
           continue;
         }
-        if (quote === '`' && char === '$' && line[index + 1] === '{') interpolated = true;
+        if (language === 'javascript' && quote === '`' && char === '$' && line[index + 1] === '{') interpolated = true;
         if (pythonStringPrefix && char === '{' && line[index + 1] === '{') {
           index += 2;
           continue;
         }
         if (pythonStringPrefix && char === '{') interpolated = true;
-        if (quote === '"' && char === '#' && line[index + 1] === '{') interpolated = true;
-        if (quote === '"' && char === '$' && /[A-Za-z_{]/.test(line[index + 1] || '')) interpolated = true;
+        if (
+          quote === '"' &&
+          ['ruby', 'elixir'].includes(language) &&
+          char === '#' &&
+          line[index + 1] === '{'
+        ) interpolated = true;
+        if (
+          quote === '"' && language === 'php' && char === '$' &&
+          /[A-Za-z_{]/.test(line[index + 1] || '')
+        ) interpolated = true;
         index++;
       }
       const value = line.slice(contentStart, index);
@@ -430,9 +452,6 @@ function tokenizePreflightSourceLine(line: string): PreflightSqlToken[] {
     PREFLIGHT_IDENTIFIER_PATTERN.lastIndex = index;
     const identifier = PREFLIGHT_IDENTIFIER_PATTERN.exec(line)?.[0];
     if (identifier) {
-      const normalizedIdentifier = identifier.toLowerCase();
-      if (normalizedIdentifier === 'select') sawBareSqlSelect = true;
-      if (normalizedIdentifier === 'from' && sawBareSqlSelect) sawBareSqlFrom = true;
       tokens.push({ kind: 'identifier', text: identifier });
       index += identifier.length;
       continue;
@@ -453,8 +472,9 @@ function tokenizePreflightSourceLine(line: string): PreflightSqlToken[] {
   return tokens;
 }
 
-function hasSqlSelectFromShape(tokens: PreflightSqlToken[]): boolean {
-  const sourceShape = tokens.map((token) => token.kind === 'string' ? token.value || '' : token.text).join(' ');
+function hasSqlSelectFromShape(tokens: PreflightSqlToken[], language: PreflightSourceLanguage): boolean {
+  const sourceTokens = language === 'sql' ? tokens : tokens.filter((token) => token.kind === 'string');
+  const sourceShape = sourceTokens.map((token) => token.kind === 'string' ? token.value || '' : token.text).join(' ');
   return SQL_SELECT_FROM_PATTERN.test(sourceShape);
 }
 
@@ -509,15 +529,73 @@ function hasDynamicSqlOperand(
   return true;
 }
 
-function hasUnsafeSqlConstruction(line: string): boolean {
-  const tokens = tokenizePreflightSourceLine(line);
+function tokenNestingDepths(tokens: PreflightSqlToken[]): number[] {
+  const depths: number[] = [];
+  let depth = 0;
+  for (const token of tokens) {
+    depths.push(depth);
+    if (['(', '[', '{'].includes(token.text)) depth++;
+    if ([')', ']', '}'].includes(token.text)) depth = Math.max(0, depth - 1);
+  }
+  return depths;
+}
+
+function expressionContainingToken(
+  tokens: PreflightSqlToken[],
+  depths: number[],
+  tokenIndex: number,
+): PreflightSqlToken[] {
+  const depth = depths[tokenIndex];
+  let start = 0;
+  let end = tokens.length;
+
+  for (let index = tokenIndex - 1; index >= 0; index--) {
+    const token = tokens[index];
+    if (token.text === ';' || (token.text === ',' && depths[index] === depth)) {
+      start = index + 1;
+      break;
+    }
+    if (['(', '[', '{'].includes(token.text) && depths[index] + 1 === depth) {
+      start = index + 1;
+      break;
+    }
+  }
+
+  for (let index = tokenIndex + 1; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (
+      token.text === ';' ||
+      (token.text === ',' && depths[index] === depth) ||
+      ([')', ']', '}'].includes(token.text) && depths[index] === depth)
+    ) {
+      end = index;
+      break;
+    }
+  }
+
+  return tokens.slice(start, end);
+}
+
+function hasUnsafeSqlConstruction(line: string, filePath: string): boolean {
+  const language = preflightSourceLanguage(filePath);
+  const tokens = tokenizePreflightSourceLine(line, language);
   let statement: PreflightSqlToken[] = [];
 
   const statementHasUnsafeConstruction = (parts: PreflightSqlToken[]): boolean => {
-    if (!hasSqlSelectFromShape(parts)) return false;
-    if (parts.some((token) => token.kind === 'string' && token.interpolated)) return true;
+    if (!hasSqlSelectFromShape(parts, language)) return false;
+
+    const hasDynamicSqlExecution = language === 'sql' && parts.some(
+      (token) => token.kind === 'identifier' && ['exec', 'execute', 'prepare'].includes(token.text.toLowerCase()),
+    );
 
     const matchingIndexes = matchingParenthesisIndexes(parts);
+    const nestingDepths = tokenNestingDepths(parts);
+    for (let index = 0; index < parts.length; index++) {
+      if (parts[index].kind !== 'string' || !parts[index].interpolated) continue;
+      const expression = expressionContainingToken(parts, nestingDepths, index);
+      if (hasSqlSelectFromShape(expression, language)) return true;
+    }
+
     const dynamicPrefix = [0];
     for (const token of parts) {
       dynamicPrefix.push(dynamicPrefix[dynamicPrefix.length - 1] + Number(isDynamicSqlIdentifier(token) || token.interpolated === true));
@@ -525,6 +603,8 @@ function hasUnsafeSqlConstruction(line: string): boolean {
 
     for (let index = 0; index < parts.length; index++) {
       if (parts[index].text !== '+') continue;
+      if (language === 'sql' && !hasDynamicSqlExecution) continue;
+      if (!hasSqlSelectFromShape(expressionContainingToken(parts, nestingDepths, index), language)) continue;
       if (
         hasDynamicSqlOperand(parts, matchingIndexes, dynamicPrefix, index - 1, -1) ||
         hasDynamicSqlOperand(parts, matchingIndexes, dynamicPrefix, index + 1, 1)
@@ -535,8 +615,21 @@ function hasUnsafeSqlConstruction(line: string): boolean {
       if (parts[index].kind !== 'identifier' || parts[index].text.toLowerCase() !== 'concat' || parts[index + 1].text !== '(') {
         continue;
       }
+      if (language === 'sql' && !hasDynamicSqlExecution) continue;
       const close = matchingIndexes[index + 1];
-      if (close > index + 2 && dynamicPrefix[close] - dynamicPrefix[index + 2] > 0) return true;
+      if (close > index + 2) {
+        const argumentsTokens = parts.slice(index + 2, close);
+        const methodReceiverCall = parts[index - 1]?.text === '.';
+        // For a method call, inspect only its containing expression: this keeps a
+        // separate bound SQL argument outside the query-string construction scope.
+        const constructionTokens = methodReceiverCall
+          ? expressionContainingToken(parts, nestingDepths, index)
+          : argumentsTokens;
+        if (
+          hasSqlSelectFromShape(constructionTokens, language) &&
+          dynamicPrefix[close] - dynamicPrefix[index + 2] > 0
+        ) return true;
+      }
     }
 
     return false;
@@ -642,7 +735,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
             });
           }
 
-          if (hasUnsafeSqlConstruction(added.text)) {
+          if (hasUnsafeSqlConstruction(added.text, file.path)) {
             findings.push({
               finding_id: `pref-sqli-${file.path}-${added.line}`,
               severity: 'P0',
