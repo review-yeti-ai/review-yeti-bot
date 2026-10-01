@@ -129,7 +129,7 @@
       "lane_overhead_ms": "120000",
       "lane_call_budget": "24",
       "max_review_assignments": "24",
-      "max_investigation_turns": 15
+      "max_investigation_turns": 20
     },
     "max_diff_chars": "2000000",
     "max_incremental_diff_chars": "60000",
