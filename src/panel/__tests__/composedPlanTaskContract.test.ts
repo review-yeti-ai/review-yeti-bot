@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
-import { executeComposedReview } from '../composedEngine';
+import { buildPlanDirective, executeComposedReview } from '../composedEngine';
 import { validateTaskPlan, type RawReviewTask } from '../reviewTask';
+import { MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../../reviewTaskContract';
 
 const changedPath = 'src/auth/guard.ts';
 const changedFiles = [{
@@ -85,14 +86,28 @@ function expectedPlanExample(nonce: string): string {
 }
 
 function expectTaskContractGuidance(text: string, nonce: string): void {
+  expect(text).toContain(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`);
   expect(text).toContain('include these nested fields: "id", "dimension", "paths", "question", and "rationale"');
-  expect(text).toContain('question and rationale must each be nonempty, non-whitespace strings');
-  expect(text).toContain(JSON.stringify([changedPath]));
+  expect(text).toContain(`question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters`);
+  expect(text).toContain(`The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}.`);
   expect(text).toContain(expectedPlanExample(nonce));
   expect(text).toContain('top-level fields "nonce" and "tasks"');
 }
 
 describe('composed plan task-field contract clarity', () => {
+  it('omits the positive task example when no changed code path is available', () => {
+    const nonce = 'empty-path-fixture-nonce';
+    const text = buildPlanDirective(4, [], nonce);
+
+    expect(text).toContain('include these nested fields: "id", "dimension", "paths", "question", and "rationale"');
+    expect(text).toContain(`question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters`);
+    expect(text).toContain(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`);
+    expect(text).toContain('No changed code path is available for a positive task example.');
+    expect(text).not.toContain('Positive example of the complete plan/task JSON shape');
+    expect(text).not.toContain('"paths":[null]');
+    expect(text).toContain(`CT_REVIEW_NONCE:${nonce}`);
+  });
+
   it.each([
     ['question', 'missing', undefined],
     ['question', 'empty', ''],
@@ -117,7 +132,14 @@ describe('composed plan task-field contract clarity', () => {
     });
   });
 
-  it('captures a valid correction after a blank plan and includes the full nonce/path/task contract in both requests', async () => {
+  it.each([128, 129])('keeps the validator task-id boundary at %i characters', (length) => {
+    const id = 'a'.repeat(length);
+    expect(TASK_ID_PATTERN.test(id)).toBe(length === 128);
+    expect(validateTaskPlan({ tasks: [{ ...validTask(), id }] }, { changedFiles: [changedPath] }).valid).toBe(length === 128);
+  });
+
+  it.each(['blank fields', 'nonce mismatch', 'oversized id'] as const)(
+    'captures a valid correction after %s and includes the full nonce/path/task contract in both requests', async (firstFailure) => {
     const requests: any[] = [];
     const correctedTask = {
       ...validTask(),
@@ -130,13 +152,14 @@ describe('composed plan task-field contract clarity', () => {
       const latest = requestLastText(request);
       const nonce = issuedNonce(request.messages);
       if (latest.includes('PLAN TURN')) {
-        return fakeResponse(JSON.stringify({ nonce, tasks: [{
-          id: 'security-auth-example',
-          dimension: 'security',
-          paths: [changedPath],
-          question: '   ',
-          rationale: '',
-        }] }));
+        return fakeResponse(JSON.stringify({
+          nonce: firstFailure === 'nonce mismatch' ? 'wrong-issued-nonce' : nonce,
+          tasks: [{
+            ...validTask(),
+            ...(firstFailure === 'blank fields' ? { question: '   ', rationale: '' } : {}),
+            ...(firstFailure === 'oversized id' ? { id: 'a'.repeat(129) } : {}),
+          }],
+        }));
       }
       if (latest.includes('PLAN_CORRECTION')) {
         return fakeResponse(JSON.stringify({ nonce, tasks: [correctedTask] }));
@@ -167,11 +190,19 @@ describe('composed plan task-field contract clarity', () => {
     const nonce = issuedNonce(requests[0].messages);
     expectTaskContractGuidance(initialText, nonce);
     expectTaskContractGuidance(correctionText, nonce);
-    expect(correctionText).toContain('missing or blank question or rationale');
-    expect(correctionText).toContain('security-auth-example');
+    if (firstFailure === 'blank fields') {
+      expect(correctionText).toContain('missing or blank question or rationale');
+      expect(correctionText).toContain('security-auth-example');
+      expect(correctionText).toContain(`Changed files you may name, and no others: ${JSON.stringify([changedPath])}.`);
+    } else if (firstFailure === 'nonce mismatch') {
+      expect(correctionText).toContain('the "nonce" field did not match the nonce issued for this request');
+    } else {
+      expect(correctionText).toContain(`Changed files you may name, and no others: ${JSON.stringify([changedPath])}.`);
+    }
     expect(result.taskPlan).toEqual([correctedTask]);
     expect(result.personas).toMatchObject([{ id: correctedTask.id, decision: 'APPROVE', findings: [] }]);
-  });
+    },
+  );
 
   it('rejects a second invalid plan after exactly one correction and makes no task request', async () => {
     const requests: any[] = [];
