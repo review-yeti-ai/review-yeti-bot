@@ -2,7 +2,7 @@ import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '.
 import { resolveCachedTokens } from '../gateway/openRouterClient';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { logger } from '../utils/logger';
-import { normalizeOperationalTelemetry, operationalTelemetryEventSchema, type OperationalTelemetry } from '../review/workerCompletion';
+import { deriveResponseUsageAvailability, normalizeOperationalTelemetry, operationalTelemetryEventSchema, type OperationalTelemetry } from '../review/workerCompletion';
 
 export type PublishingProgressRole = 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task' | 'other';
 export type PublishingProgressStatus = 'started' | 'completed' | 'failed' | 'aborted' | 'skipped' | 'blocked' | 'rejected';
@@ -298,7 +298,7 @@ export function createPublishingProgress(
     try {
       const copy=JSON.parse(JSON.stringify(observed)) as OperationalTelemetry;
       const samples=Object.values(copy.responseUsage.samples);
-      copy.responseUsage.availability=copy.responseUsage.responses>0&&samples.every(n=>n===copy.responseUsage.responses)?'known':samples.some(n=>n>0)?'partial':'unknown';
+      copy.responseUsage.availability=deriveResponseUsageAvailability(copy.responseUsage.responses,samples);
       if(panelStartedAt!==undefined){const elapsed=(panelFinishedAt ?? now())-panelStartedAt;if(Number.isSafeInteger(elapsed)&&elapsed>=0&&elapsed<=86_400_000)copy.panel.wallClockMs=elapsed;}
       return normalizeOperationalTelemetry(copy);
     } catch { return undefined; }

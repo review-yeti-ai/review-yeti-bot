@@ -65,6 +65,16 @@ export const operationalTelemetryEventSchema = z.object({
       'finding_line_not_added', 'finding_line_unanchorable', 'finding_severity_invalid']).optional(),
   }).strict();
 
+/** Derive availability from observed per-field sample counts, including observed zeros. */
+export function deriveResponseUsageAvailability(
+  responses: number,
+  samples: readonly number[],
+): 'known' | 'partial' | 'unknown' {
+  return responses > 0 && samples.every(n => n === responses)
+    ? 'known'
+    : samples.some(n => n > 0) ? 'partial' : 'unknown';
+}
+
 /** Content-free observations, never an inferred provider cause or retry decision. */
 export const operationalTelemetrySchema = z.object({
   version: z.literal('OperationalTelemetry.v1'),
@@ -97,7 +107,7 @@ export const operationalTelemetrySchema = z.object({
 }).strict().superRefine((value, ctx) => {
   const calls=value.providerCalls;
   const samples=Object.values(value.responseUsage.samples);
-  const availability=value.responseUsage.responses>0&&samples.every(n=>n===value.responseUsage.responses)?'known':samples.some(n=>n>0)?'partial':'unknown';
+  const availability=deriveResponseUsageAvailability(value.responseUsage.responses,samples);
   if (calls.started !== calls.completed + calls.failed + calls.aborted + calls.inflight
     || value.responseUsage.responses !== calls.completed
     || value.responseUsage.availability !== availability
