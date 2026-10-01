@@ -148,6 +148,7 @@ describe('work-conserving composed task scheduling', () => {
     // contiguous settled prefix.
     await waitForStarted(taskFourStarted.promise);
     const taskFourContext = await taskFourPrompt.promise;
+    expect(taskFourContext.split('\n').filter((line) => /^- Task task-\d+ \(/u.test(line))).toEqual([]);
     expect(taskFourContext).not.toContain('[TASK task-2 COMPLETE');
     expect(taskFourContext).not.toContain('Task task-2 (architecture, paths [src/app.ts])');
     expect(taskFourContext).not.toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS');
@@ -166,6 +167,10 @@ describe('work-conserving composed task scheduling', () => {
     expect(taskFiveContext).toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS (2 completed) ===');
     expect(taskFiveContext).toContain('- Task task-1 (architecture, paths [src/app.ts]): CLEAN (0 findings)');
     expect(taskFiveContext).toContain('- Task task-2 (architecture, paths [src/app.ts]): CLEAN (0 findings)');
+    expect(taskFiveContext.split('\n').filter((line) => /^- Task task-\d+ \(/u.test(line))).toEqual([
+      '- Task task-1 (architecture, paths [src/app.ts]): CLEAN (0 findings)',
+      '- Task task-2 (architecture, paths [src/app.ts]): CLEAN (0 findings)',
+    ]);
     for (let taskNumber = 1; taskNumber < 5; taskNumber += 1) {
       expect(taskFiveContext).not.toContain(`[TASK task-${taskNumber} COMPLETE`);
     }
