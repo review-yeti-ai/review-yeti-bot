@@ -8,6 +8,20 @@ import { createComposedTaskPlan, createComposedTaskOutcome, verifyComposedTaskPl
   type TrustedComposedTaskLedgerContext } from '../review/composedTaskLedger';
 import { lockReviewPr, withReviewPrTransaction, type ReviewPrQueryable, type ReviewPrTransactionPool } from './reviewPrTransaction';
 
+// One liveness predicate for the locked worker read AND the deferred COMMIT
+// boundary. Token ownership and the exact trusted identity remain independent
+// TypeScript checks; this fragment must not become either of those proofs.
+const COMPOSED_TASK_LIVENESS_SQL = `
+  gate.current_attempt AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
+  AND gate.desired_state IN ('queued','in_progress') AND gate.worker_result_digest IS NULL
+  AND runs.authoritative_gate_app_id = gate.expected_app_id AND runs.publication_mode = 'app-gate'
+  AND runs.artifacts->>'review_engine' = 'composed'
+  AND runs.attempt = gate.review_generation AND outbox.execution_attempt + 1 = gate.execution_attempt
+  AND runs.status IN ('queued','running') AND outbox.status IN ('pending','claimed','projected')
+  AND runs.cancel_requested_at IS NULL AND outbox.cancel_requested_at IS NULL
+  AND runs.terminal_deadline > clock_timestamp()
+`;
+
 /** Additive bootstrap only; no API enrollment or worker adoption. Text stores
  * canonical JSON so the DB enforces the exact UTF-8 byte count, not jsonb's
  * differently spaced rendering. Immutable UPDATE guard permits run FK cleanup. */
@@ -108,14 +122,7 @@ export const COMPOSED_TASK_LEDGER_SCHEMA_SQL = `
       IF NOT EXISTS (
         SELECT 1 FROM review_gate_attempts gate JOIN review_runs runs USING(run_id)
         JOIN review_dispatch_outbox outbox USING(run_id)
-        WHERE gate.attempt_id = NEW.attempt_id AND gate.current_attempt
-          AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
-          AND gate.desired_state IN ('queued','in_progress') AND gate.worker_result_digest IS NULL
-          AND runs.authoritative_gate_app_id = gate.expected_app_id AND runs.publication_mode = 'app-gate'
-          AND runs.attempt = gate.review_generation AND outbox.execution_attempt + 1 = gate.execution_attempt
-          AND runs.status IN ('queued','running') AND outbox.status IN ('pending','claimed','projected')
-          AND runs.cancel_requested_at IS NULL AND outbox.cancel_requested_at IS NULL
-          AND runs.terminal_deadline > clock_timestamp()
+        WHERE gate.attempt_id = NEW.attempt_id AND (${COMPOSED_TASK_LIVENESS_SQL})
       ) THEN
         RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = 'composed_task_commit_fence',
           MESSAGE = 'composed task commit fence rejected';
@@ -186,12 +193,15 @@ export class PostgresComposedTaskLedgerRepository {
       runs.authoritative_gate_app_id, runs.publication_mode, runs.received_at, runs.terminal_deadline,
       runs.cancel_requested_at AS run_cancel, runs.artifacts, outbox.cancel_requested_at AS dispatch_cancel,
       outbox.worker_token_digest, outbox.execution_attempt AS current_execution, outbox.status AS outbox_status,
-      runs.terminal_deadline > clock_timestamp() AS deadline_current
+      runs.terminal_deadline > clock_timestamp() AS deadline_current,
+      (${COMPOSED_TASK_LIVENESS_SQL}) IS TRUE AS retention_current
       FROM review_gate_attempts gate JOIN review_runs runs USING(run_id)
       JOIN review_dispatch_outbox outbox USING(run_id)
       WHERE gate.run_id=$1 AND gate.current_attempt FOR UPDATE OF gate,runs,outbox`, [i.runId])).rows[0];
     if (!row) return 'stale';
     if (!sameToken(row.worker_token_digest, proof?.workerTokenDigest)) return 'unauthorized';
+    // Preserve expired-worker classification before exact identity checks;
+    // other liveness failures are checked after those independent proofs.
     if (row.deadline_current !== true) return 'stale';
     const coordinates = json(row.coordinates);
     const identity = json(row.identity);
@@ -212,11 +222,7 @@ export class PostgresComposedTaskLedgerRepository {
       || canonicalJson(identity?.reviewPolicy?.sources) !== canonicalJson(i.policySources)
       || ['runId','repositoryId','owner','repo','prNumber','headSha','baseSha','policyDigest','executionAttempt','attemptId']
         .some(key => coordinates?.[key] !== i[key as keyof typeof i])) return 'unauthorized';
-    if (row.publication_mode !== 'app-gate' || json(row.artifacts)?.review_engine !== 'composed'
-      || !['queued', 'running'].includes(row.run_status) || !['pending', 'claimed', 'projected'].includes(row.outbox_status)
-      || row.run_cancel != null || row.dispatch_cancel != null || row.deadline_current !== true
-      || row.creation_state !== 'bound' || row.check_id == null
-      || !['queued', 'in_progress'].includes(row.desired_state) || row.worker_result_digest != null) return 'stale';
+    if (row.retention_current !== true) return 'stale';
     return 'current';
   }
 

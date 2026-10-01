@@ -46,6 +46,17 @@ describe('composed task retention contract (not execution or approval)', () => {
     expect(() => createComposedTaskPlan(trusted, [tasks[0]])).toThrow();
   });
 
+  it('rejects eight otherwise valid testing tasks that cover auth paths without a security task', () => {
+    const { trusted, tasks } = ledgerFixture();
+    const eight = Array.from({ length: 8 }, (_, index) => ({ ...tasks[0], id: `testing-${index}`,
+      paths: trusted.changedFiles.map(file => file.path) }));
+    expect(eight).toHaveLength(8);
+    expect(eight.every(task => task.dimension === 'testing')).toBe(true);
+    // Both paths are covered and cardinality is valid. The missing security
+    // dimension, not an unrelated coverage gap or ninth task, must refuse it.
+    expect(() => createComposedTaskPlan(trusted, eight)).toThrow('Composed task retention: invalid-plan');
+  });
+
   it.each(['attemptId', 'runId', 'expectedAppId', 'executionAttempt', 'reviewGeneration', 'receivedAt', 'terminalDeadline'])
     ('rejects malformed identity %s', field => {
       const { trusted, tasks } = ledgerFixture();
@@ -106,6 +117,22 @@ describe('composed task retention contract (not execution or approval)', () => {
       status: 'complete', findings: huge, usage }, trusted.changedFiles)).toThrow();
     try { createComposedTaskPlan(trusted, [{ nonce: 'PRIVATE_NONCE_DO_NOT_ECHO' }]); }
     catch (error) { expect(String(error)).not.toContain('PRIVATE_NONCE_DO_NOT_ECHO'); }
+  });
+
+  it.each(['digest', 'byteLength', 'payload'] as const)('rejects tampered retained outcome %s', field => {
+    const { trusted, tasks, usage, finding } = ledgerFixture();
+    const plan = createComposedTaskPlan(trusted, tasks);
+    const outcome = createComposedTaskOutcome(plan, { planDigest: plan.digest, taskId: tasks[0].id,
+      status: 'complete', findings: [finding], usage }, trusted.changedFiles);
+    expect(verifyComposedTaskOutcome(plan, outcome, trusted.changedFiles)).toEqual(outcome);
+    const tampered = { ...outcome,
+      ...(field === 'digest' ? { digest: '8'.repeat(64) } : {}),
+      ...(field === 'byteLength' ? { byteLength: outcome.byteLength + 1 } : {}),
+      ...(field === 'payload' ? { payload: { ...outcome.payload, usage: { ...outcome.payload.usage,
+        promptTokens: usage.promptTokens + 1, totalTokens: usage.totalTokens + 1 } } } : {}),
+    };
+    expect(() => verifyComposedTaskOutcome(plan, tampered, trusted.changedFiles))
+      .toThrow('Composed task retention: integrity');
   });
 
   it('rejects executable/cyclic/sparse input without invoking accessors or retaining hidden fields', () => {

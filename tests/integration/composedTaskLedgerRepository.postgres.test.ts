@@ -424,6 +424,48 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
     expect(await counts()).toEqual({ plans: 1, outcomes: 0 });
   });
 
+  it.each(['reordered', 'added'] as const)('changedPathsDigest refuses %s files under the exact same identity', async change => {
+    await recordPlan(); await recordTask();
+    const before = await readEvidence();
+    const changed = { ...fixture.trusted, changedFiles: change === 'reordered'
+      ? [...fixture.trusted.changedFiles].reverse()
+      : [...fixture.trusted.changedFiles, { path: 'src/another.ts', patch: '@@ -1 +1 @@\n-before\n+after' }] };
+    expect(changed.identity).toBe(fixture.trusted.identity);
+    expect((await repository.recordTask(changed, resultOf(planOf().digest), fixture.proof)).status).toBe('conflict');
+    await expect(repository.readRetained(changed)).rejects.toMatchObject({ code: 'identity-mismatch' });
+    expect(await counts()).toEqual({ plans: 1, outcomes: 1 });
+    await expectUnchangedEvidence(before);
+  });
+
+  it.each(['digest', 'payload', 'byteLength'] as const)('tampered outcome %s cannot be retained or verified as duplicate evidence', async field => {
+    await recordPlan();
+    const plan = planOf();
+    const outcome = createComposedTaskOutcome(plan, resultOf(plan.digest), fixture.trusted.changedFiles);
+    const payload = field === 'payload' ? canonicalJson(createComposedTaskOutcome(plan,
+      resultOf(plan.digest, { findings: [] }), fixture.trusted.changedFiles).payload) : canonicalJson(outcome.payload);
+    const insert = () => pool.query(`INSERT INTO composed_task_outcomes
+      (attempt_id,plan_digest,task_id,task_index,status,content_digest,payload,byte_length)
+      VALUES ($1,$2,$3,0,'complete',$4,$5,$6)`, [fixture.trusted.identity.attemptId, plan.digest,
+      fixture.tasks[0].id, field === 'digest' ? '8'.repeat(64) : outcome.digest,
+      payload, Buffer.byteLength(payload, 'utf8') + (field === 'byteLength' ? 1 : 0)]);
+    if (field === 'byteLength') {
+      // The real schema cannot store a mismatched length; do not weaken its
+      // CHECK merely to manufacture a corruption fixture. Unit verification
+      // separately covers such a record at the parser boundary.
+      await expect(insert()).rejects.toMatchObject({ code: '23514', constraint: 'composed_task_outcomes_byte_length_check' });
+      expect(await counts()).toEqual({ plans: 1, outcomes: 0 });
+      expect((await recordTask()).status).toBe('recorded');
+      expect((await repository.readRetained(fixture.trusted))?.outcomes[0]).toEqual(outcome);
+    } else {
+      await insert();
+      const before = await readEvidence();
+      await expect(recordTask()).rejects.toMatchObject({ code: 'integrity' });
+      await expect(repository.readRetained(fixture.trusted)).rejects.toMatchObject({ code: 'integrity' });
+      expect(await counts()).toEqual({ plans: 1, outcomes: 1 });
+      await expectUnchangedEvidence(before);
+    }
+  });
+
   it('corrupt retained plan digest cannot become a duplicate acknowledgement or readable evidence', async () => {
     const plan = planOf();
     await pool.query(`INSERT INTO composed_task_plans (attempt_id,content_digest,payload,byte_length,task_count)
@@ -483,6 +525,10 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
     "UPDATE review_gate_attempts SET desired_state='success'",
     "UPDATE review_gate_attempts SET creation_state='reserved',check_id=NULL",
     "UPDATE review_runs SET terminal_deadline=clock_timestamp()-interval '1 second'",
+    "UPDATE review_runs SET publication_mode='disabled'",
+    "UPDATE review_runs SET artifacts='{}'::jsonb",
+    "UPDATE review_runs SET artifacts='{\"review_engine\":\"legacy\"}'::jsonb",
+    "UPDATE review_runs SET artifacts='{\"review_engine\":1}'::jsonb",
   ])('revoked/terminal/expired worker cannot commit or receive a duplicate ACK: %s', async sql => {
     await recordPlan(); await recordTask();
     await pool.query(sql);
@@ -570,6 +616,32 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
       await expect(writer).rejects.toMatchObject({ code: 'fence-expired' });
       expect((await counts()).outcomes).toBe(0);
     } finally { barrier.release(); await writer.catch(() => undefined); }
+  });
+
+  it.each(['plan', 'task'] as const)('late engine revocation before %s COMMIT rolls back at the real DB boundary', async target => {
+    if (target === 'task') await recordPlan();
+    const before = await readEvidence();
+    const revokedAtCommit: ReviewPrTransactionPool = { async connect() {
+      const client = await pool.connect();
+      return { release: () => client.release(), async query(sql, values) {
+        if (sql === 'COMMIT') {
+          // After the last real locked SELECT, in the same owned transaction.
+          // The deferred trigger, not another TypeScript fence, must refuse it.
+          await client.query(`UPDATE review_runs SET artifacts='{}'::jsonb WHERE run_id=$1`,
+            [fixture.trusted.identity.runId]);
+        }
+        const result = await client.query(sql, values);
+        return { rows: result.rows, ...(result.rowCount !== null ? { rowCount: result.rowCount } : {}) };
+      } };
+    } };
+    const writer = new PostgresComposedTaskLedgerRepository(revokedAtCommit);
+    await expect(target === 'plan' ? writer.recordPlan(fixture.trusted, fixture.tasks, fixture.proof)
+      : writer.recordTask(fixture.trusted, resultOf(planOf().digest), fixture.proof))
+      .rejects.toMatchObject({ code: 'fence-expired' });
+    expect(await counts()).toEqual({ plans: target === 'task' ? 1 : 0, outcomes: 0 });
+    await expectUnchangedEvidence(before);
+    expect((await pool.query('SELECT artifacts FROM review_runs WHERE run_id=$1',
+      [fixture.trusted.identity.runId])).rows[0].artifacts).toEqual({ review_engine: 'composed' });
   });
 
   it('rolls back real insert failure and sanitizes SQL/body diagnostics', async () => {
