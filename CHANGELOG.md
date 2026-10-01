@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.104.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.3...v1.104.0) (2026-10-01)
+
+
+### Features
+
+* **composed:** early exit on max review findings and diff-only bypass for lockfiles ([#1221](https://github.com/review-yeti-ai/review-yeti-bot/issues/1221)) ([eeb5d81](https://github.com/review-yeti-ai/review-yeti-bot/commit/eeb5d81706a474d2f417b84b271ed69a5e80a11f))
+* **composed:** swarm subagent context isolation, findings decomposition, and early blocker exit ([#1224](https://github.com/review-yeti-ai/review-yeti-bot/issues/1224)) ([f2f8895](https://github.com/review-yeti-ai/review-yeti-bot/commit/f2f8895175280432bfc5d6d94c4307816cb111ba))
+
 ## [1.103.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.2...v1.103.3) (2026-10-01)
 
 
