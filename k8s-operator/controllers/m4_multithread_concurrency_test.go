@@ -58,27 +58,77 @@ import (
 // to mimic atomic etcd CAS transactions in the in-memory fake client.
 func makeM4OCCConcurrencyInterceptor(monitor *ConcurrencyMonitor) interceptor.Funcs {
 	var leaseMu sync.Mutex
-	funcs := monitor.InterceptorFuncs()
-	origUpdate := funcs.Update
+	var workerMu sync.Mutex
+	activeWorkers := make(map[client.ObjectKey]bool)
+	// Observe committed Job state, not the mutation's input. Status writes can
+	// free capacity before metadata cleanup, while a full Update ignores status
+	// when the fake client has the real Job status subresource enabled.
+	observeMutation := func(ctx context.Context, c client.Client, obj client.Object, mutate func() error) error {
+		if _, ok := obj.(*batchv1.Job); !ok {
+			return mutate()
+		}
+		workerMu.Lock()
+		defer workerMu.Unlock()
+		if err := mutate(); err != nil {
+			return err
+		}
+		key := client.ObjectKeyFromObject(obj)
+		var stored batchv1.Job
+		err := c.Get(ctx, key, &stored)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		active := err == nil && (stored.Spec.Suspend == nil || !*stored.Spec.Suspend)
+		for _, condition := range stored.Status.Conditions {
+			if condition.Status == corev1.ConditionTrue &&
+				(condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) {
+				active = false
+			}
+		}
+		if active == activeWorkers[key] {
+			return nil
+		}
+		var delta int32 = -1
+		if active {
+			delta = 1
+			activeWorkers[key] = true
+		} else {
+			delete(activeWorkers, key)
+		}
+		curr := atomic.AddInt32(&monitor.activeJobs, delta)
+		monitor.mu.Lock()
+		defer monitor.mu.Unlock()
+		if curr > monitor.maxObserved {
+			monitor.maxObserved = curr
+		}
+		if delta > 0 && curr > monitor.limit {
+			monitor.violations = append(monitor.violations,
+				fmt.Sprintf("Limit %d exceeded: %d active after committed mutation of %s", monitor.limit, curr, key.Name))
+		}
+		return nil
+	}
+	funcs := interceptor.Funcs{}
+	funcs.Create = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+		return observeMutation(ctx, c, obj, func() error { return c.Create(ctx, obj, opts...) })
+	}
 	funcs.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 		if _, ok := obj.(*coordinationv1.Lease); ok {
 			leaseMu.Lock()
 			defer leaseMu.Unlock()
 		}
-		if origUpdate != nil {
-			return origUpdate(ctx, c, obj, opts...)
-		}
-		return c.Update(ctx, obj, opts...)
+		return observeMutation(ctx, c, obj, func() error { return c.Update(ctx, obj, opts...) })
 	}
-	origDelete := funcs.Delete
 	funcs.Delete = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-		if _, ok := obj.(*batchv1.Job); ok {
-			atomic.AddInt32(&monitor.activeJobs, -1)
-		}
-		if origDelete != nil {
-			return origDelete(ctx, c, obj, opts...)
-		}
-		return c.Delete(ctx, obj, opts...)
+		return observeMutation(ctx, c, obj, func() error { return c.Delete(ctx, obj, opts...) })
+	}
+	funcs.Patch = func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+		return observeMutation(ctx, c, obj, func() error { return c.Patch(ctx, obj, patch, opts...) })
+	}
+	funcs.SubResourceUpdate = func(ctx context.Context, c client.Client, subresource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+		return observeMutation(ctx, c, obj, func() error { return c.SubResource(subresource).Update(ctx, obj, opts...) })
+	}
+	funcs.SubResourcePatch = func(ctx context.Context, c client.Client, subresource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+		return observeMutation(ctx, c, obj, func() error { return c.SubResource(subresource).Patch(ctx, obj, patch, opts...) })
 	}
 	return funcs
 }
