@@ -24,10 +24,6 @@ const ENV_VAR = 'REVIEW_YETI_TERMINAL_DEADLINE_MS';
  */
 export const DEFAULT_TERMINAL_DEADLINE_MS = 900_000;
 
-/** Compatibility aliases derived from the one exact end-to-end ceiling. */
-export const MIN_TERMINAL_DEADLINE_MS = DEFAULT_TERMINAL_DEADLINE_MS;
-export const MAX_TERMINAL_DEADLINE_MS = DEFAULT_TERMINAL_DEADLINE_MS;
-
 /**
  * Upper bound used only to finish runs persisted before the exact 15-minute
  * invariant shipped. It must never be used for admission or projection.

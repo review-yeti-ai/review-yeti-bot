@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_TERMINAL_DEADLINE_MS,
-  MAX_TERMINAL_DEADLINE_MS,
-  MIN_TERMINAL_DEADLINE_MS,
   LEGACY_MAX_TERMINAL_DEADLINE_MS,
   assertPersistedTerminalDeadlineWindow,
   assertTerminalDeadlineWindow,
@@ -28,22 +26,22 @@ describe('resolveTerminalDeadlineMs', () => {
   });
 
   it('accepts the exact fixed boundary value', () => {
-    expect(resolveTerminalDeadlineMs(envWith(String(MIN_TERMINAL_DEADLINE_MS)))).toBe(MIN_TERMINAL_DEADLINE_MS);
-    expect(resolveTerminalDeadlineMs(envWith(String(MAX_TERMINAL_DEADLINE_MS)))).toBe(MAX_TERMINAL_DEADLINE_MS);
+    expect(resolveTerminalDeadlineMs(envWith(String(DEFAULT_TERMINAL_DEADLINE_MS))))
+      .toBe(DEFAULT_TERMINAL_DEADLINE_MS);
   });
 
   it('rejects any attempt to widen the end-to-end ceiling', () => {
     expect(() => resolveTerminalDeadlineMs(envWith('2400000'))).toThrow(/must equal the 900000 millisecond/i);
   });
 
-  it('rejects a value one millisecond below MIN_TERMINAL_DEADLINE_MS', () => {
-    expect(() => resolveTerminalDeadlineMs(envWith(String(MIN_TERMINAL_DEADLINE_MS - 1)))).toThrow(
+  it('rejects a value one millisecond below the exact deadline', () => {
+    expect(() => resolveTerminalDeadlineMs(envWith(String(DEFAULT_TERMINAL_DEADLINE_MS - 1)))).toThrow(
       new RegExp(`${ENV_VAR} must equal`, 'i'),
     );
   });
 
-  it('rejects a value one millisecond above MAX_TERMINAL_DEADLINE_MS', () => {
-    expect(() => resolveTerminalDeadlineMs(envWith(String(MAX_TERMINAL_DEADLINE_MS + 1)))).toThrow(
+  it('rejects a value one millisecond above the exact deadline', () => {
+    expect(() => resolveTerminalDeadlineMs(envWith(String(DEFAULT_TERMINAL_DEADLINE_MS + 1)))).toThrow(
       new RegExp(`${ENV_VAR} must equal`, 'i'),
     );
   });
@@ -77,24 +75,21 @@ describe('resolveTerminalDeadlineMs', () => {
 });
 
 describe('assertTerminalDeadlineWindow', () => {
-  it('accepts a window at the exact MIN and MAX boundaries', () => {
-    expect(() => assertTerminalDeadlineWindow(0, MIN_TERMINAL_DEADLINE_MS)).not.toThrow();
-    expect(() => assertTerminalDeadlineWindow(0, MAX_TERMINAL_DEADLINE_MS)).not.toThrow();
+  it('accepts only the exact deadline window', () => {
+    expect(() => assertTerminalDeadlineWindow(0, DEFAULT_TERMINAL_DEADLINE_MS)).not.toThrow();
   });
 
   it('accepts the exact window regardless of the receivedAt offset', () => {
     expect(() => assertTerminalDeadlineWindow(1_000, 1_000 + 900_000)).not.toThrow();
   });
 
-  it('rejects a window one millisecond below MIN or above MAX', () => {
-    expect(() => assertTerminalDeadlineWindow(0, MIN_TERMINAL_DEADLINE_MS - 1)).toThrow(/terminal deadline must be exactly/i);
-    expect(() => assertTerminalDeadlineWindow(0, MAX_TERMINAL_DEADLINE_MS + 1)).toThrow(/terminal deadline must be exactly/i);
+  it('rejects a window one millisecond below or above the exact deadline', () => {
+    expect(() => assertTerminalDeadlineWindow(0, DEFAULT_TERMINAL_DEADLINE_MS - 1)).toThrow(/terminal deadline must be exactly/i);
+    expect(() => assertTerminalDeadlineWindow(0, DEFAULT_TERMINAL_DEADLINE_MS + 1)).toThrow(/terminal deadline must be exactly/i);
   });
 
-  // The subsequent range comparisons silently pass on NaN (NaN < MIN and NaN > MAX
-  // are both false), so the three Number.isFinite guards are the only thing
-  // rejecting non-finite input -- and they are the sole remaining rejection for
-  // repository.admit(), which no longer does its own finite check inline.
+  // Arithmetic with NaN cannot satisfy the exact deadline invariant, but pin the
+  // explicit finite guards because repository.admit() delegates this validation.
   it('rejects non-finite receivedAt or terminalDeadline', () => {
     expect(() => assertTerminalDeadlineWindow(Number.NaN, Number.NaN)).toThrow(/terminal deadline must be exactly/i);
     expect(() => assertTerminalDeadlineWindow(1_000, Number.NaN)).toThrow(/terminal deadline must be exactly/i);
