@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.104.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.1...v1.104.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* preserve incomplete task evidence at findings stop ([#1229](https://github.com/review-yeti-ai/review-yeti-bot/issues/1229)) ([2cbb810](https://github.com/review-yeti-ai/review-yeti-bot/commit/2cbb810e070e2449a793bd405a886777af66832c))
+
 ## [1.104.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.0...v1.104.1) (2026-10-01)
 
 
