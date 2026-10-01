@@ -263,7 +263,8 @@ describe('Zoekt completeness and shared direct session', () => {
       queueMicrotask(() => { child.stdout.write(record + '\n'); child.stdout.end(); child.emit('exit', 0); });
       return child;
     });
-    const tool = createZoektSearchTool({ identity, indexDir: '/idx', fsImpl: fakeFsAvailable(), spawnImpl });
+    const tool = createZoektSearchTool({ identity, indexDir: '/idx', fsImpl: fakeFsAvailable(), spawnImpl,
+      config: { indexScope: { repository: identity.repository, headSha: identity.headSha, complete: true } } });
     expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'x' }))
       .toMatchObject({ status: 'ok', truncated: true, queryComplete: false, exhaustive: false });
   });
