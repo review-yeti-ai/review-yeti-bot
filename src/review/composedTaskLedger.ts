@@ -9,6 +9,7 @@ import type { ComposedTaskFailureDiagnostics } from '../panel/types';
 
 /** Retention only. No cursor, approval, provider reservation or budget refund. */
 export const COMPOSED_TASK_LEDGER_VERSION = 'ComposedTaskLedger.v1' as const;
+export const COMPOSED_TASK_OUTCOME_VERSION = 'ComposedTaskOutcome.v1' as const;
 export const MAX_COMPOSED_LEDGER_BYTES = MAX_COMPLETION_BYTES;
 export type ComposedTaskLedgerErrorCode = 'invalid-plan' | 'invalid-outcome' | 'byte-bound'
   | 'integrity' | 'identity-mismatch' | 'fence-expired' | 'storage-unavailable';
@@ -81,7 +82,7 @@ const diagnosticsSchema: z.ZodType<ComposedTaskFailureDiagnostics> = z.object({
   finishReason: z.enum(['stop', 'length', 'content_filter', 'tool_calls', 'function_call', 'unrecognized']).nullable(),
   lastToolOutcome: z.enum(['none', 'returned', 'requested_after_finalization']),
 }).strict();
-const outcomeBase = { version: z.literal('ComposedTaskOutcome.v1').default('ComposedTaskOutcome.v1'),
+const outcomeBase = { version: z.literal(COMPOSED_TASK_OUTCOME_VERSION).default(COMPOSED_TASK_OUTCOME_VERSION),
   planDigest: digest, taskId: z.string().regex(TASK_ID_PATTERN), usage: usageSchema };
 const outcomeSchema = z.discriminatedUnion('status', [
   z.object({ ...outcomeBase, status: z.literal('complete'), findings: findingsSchema }).strict(),

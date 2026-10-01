@@ -4,6 +4,7 @@ import { MAX_TASKS_HARD_CAP } from '../reviewTaskContract';
 import type { WorkerCompletionProof } from '../review/workerCompletion';
 import { createComposedTaskPlan, createComposedTaskOutcome, verifyComposedTaskPlan, verifyComposedTaskOutcome,
   parseComposedTaskOutcomeInput, validateComposedTaskLedgerContext, ComposedTaskLedgerError, MAX_COMPOSED_LEDGER_BYTES,
+  COMPOSED_TASK_LEDGER_VERSION, COMPOSED_TASK_OUTCOME_VERSION,
   type ComposedTaskPlan, type ComposedTaskOutcome, type ComposedTaskRecord,
   type TrustedComposedTaskLedgerContext } from '../review/composedTaskLedger';
 import { lockReviewPr, withReviewPrTransaction, type ReviewPrQueryable, type ReviewPrTransactionPool } from './reviewPrTransaction';
@@ -41,7 +42,7 @@ export const COMPOSED_TASK_LEDGER_SCHEMA_SQL = `
     task_count INTEGER NOT NULL CHECK (task_count BETWEEN 1 AND ${MAX_TASKS_HARD_CAP}),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (attempt_id, content_digest),
-    CHECK ((payload::jsonb->>'version' = 'ComposedTaskLedger.v1') IS TRUE),
+    CHECK ((payload::jsonb->>'version' = '${COMPOSED_TASK_LEDGER_VERSION}') IS TRUE),
     CHECK ((payload::jsonb->'identity'->>'attemptId' = attempt_id) IS TRUE),
     CHECK ((jsonb_array_length(payload::jsonb->'tasks') = task_count) IS TRUE)
   );
@@ -58,7 +59,7 @@ export const COMPOSED_TASK_LEDGER_SCHEMA_SQL = `
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (attempt_id, task_id), UNIQUE (attempt_id, task_index),
     FOREIGN KEY (attempt_id, plan_digest) REFERENCES composed_task_plans(attempt_id, content_digest) ON DELETE CASCADE,
-    CHECK ((payload::jsonb->>'version' = 'ComposedTaskOutcome.v1') IS TRUE),
+    CHECK ((payload::jsonb->>'version' = '${COMPOSED_TASK_OUTCOME_VERSION}') IS TRUE),
     CHECK ((payload::jsonb->>'planDigest' = plan_digest) IS TRUE),
     CHECK ((payload::jsonb->>'taskId' = task_id) IS TRUE), CHECK ((payload::jsonb->>'status' = status) IS TRUE)
   );
