@@ -64,10 +64,11 @@ export function createDeletionEvidenceRuntime(input: {
 }) {
   const entries = deletionInventory(input.files);
   const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+  const env: NodeJS.ProcessEnv = input.env ?? { NODE_ENV: process.env.NODE_ENV ?? 'production' };
   let asker = input.asker, modelPin = input.modelPin;
-  if (!asker && enabled(input.env ?? {}, input.repository)) {
+  if (!asker && enabled(env, input.repository)) {
     try {
-      const transport = jevTransport(input.env ?? {});
+      const transport = jevTransport(env);
       if (transport) { modelPin = transport.modelPin; asker = new JevClient({ ...transport, stageBudgetMs: 15_000, perCallCapMs: 2_000, maxRetries: 1 }); }
     } catch { /* Unavailable optional classifier leaves every obligation under ordinary review. */ }
   }
@@ -83,9 +84,9 @@ export function createDeletionEvidenceRuntime(input: {
     const all = [...groups].map(([id, members]) => ({ id: hash(id),
       proof: members.length > 1 ? 'pinned_old_source_digest_and_mode' : 'individual_path', members }));
     const digest = hash(JSON.stringify(all));
-    if ((offset > 0 && !expectedDigest) || (expectedDigest && expectedDigest !== digest)) return { status: 'invalid', reason: 'manifest_changed_restart_pagination' };
+    if ((offset > 0 && !expectedDigest) || (expectedDigest && expectedDigest !== digest)) return { status: 'invalid' as const, reason: 'manifest_changed_restart_pagination' };
     return { version: DELETION_QUESTION_VERSION, repository: input.repository, headSha: input.headSha,
-      status: 'ok', digest,
+      status: 'ok' as const, digest,
       inventoryDigest: hash(JSON.stringify(entries.map(({ sourceDigest, sourceSha, ...entry }) => entry))),
       contentScope: 'old_source_only', totalFiles: entries.length, totalGroups: all.length, offset, groups: all.slice(offset, offset + limit),
       nextOffset: offset + limit < all.length ? offset + limit : null, authority: 'evidence_only' };
