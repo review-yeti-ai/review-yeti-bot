@@ -8,6 +8,34 @@ export interface IncompleteRosterSummaryCounts {
   completedLanes: number;
 }
 
+/** Parse the exact composed graceful-closeout summary. This is deliberately
+ * separate from the BLOCK summary parser: an INCOMPLETE publication is useful
+ * only as a narrowly validated checkpoint receipt, never as a findings verdict. */
+export function parseGracefulComposedSummary(
+  summary: unknown,
+  headSha: string,
+): IncompleteRosterSummaryCounts | null {
+  if (typeof summary !== 'string') return null;
+  const lines = summary.split('\n');
+  const first = lines[0] ?? '';
+  const prefix = `Evidence collection reached its 20-minute cutoff at \`${headSha}\`. `
+    + 'The final closeout preserved and published ';
+  if (!first.startsWith(prefix)) return null;
+  const closeout = /^(\d+) validated finding\(s\); (\d+) risk-ordered task\(s\) remain\. This is fail-closed, not an approval\. An exact-head rerun resumes the durable completed-task checkpoint\.$/u
+    .exec(first.slice(prefix.length));
+  if (!closeout) return null;
+
+  const normalized = [`Verdict \`BLOCK\` at \`${headSha}\`.`, ...lines.slice(1)].join('\n');
+  const counts = parseIncompleteRosterSummary(normalized, headSha);
+  const publishedFindings = Number(closeout[1]);
+  const remainingTasks = Number(closeout[2]);
+  if (!counts || !Number.isSafeInteger(publishedFindings) || publishedFindings !== counts.canonicalFindingCount
+    || !Number.isSafeInteger(remainingTasks)
+    || counts.expectedLanes - counts.completedLanes !== remainingTasks
+    || counts.rawFindingCount < counts.canonicalFindingCount) return null;
+  return counts;
+}
+
 /** Render the exact Gate summary used to describe an incomplete review roster. */
 export function formatIncompleteRosterGateSummary(expectedLanes: number, completedLanes: number): string {
   return `Review Yeti Gate failed: the panel expected ${expectedLanes} review lane(s) but ${completedLanes} completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.`;
