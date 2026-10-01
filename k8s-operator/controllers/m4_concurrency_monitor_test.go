@@ -9,16 +9,22 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 func newM4MonitorFixture(t *testing.T, limit int32) (client.WithWatch, *ConcurrencyMonitor) {
+	return newConcurrencyMonitorFixture(t, limit, makeM4OCCConcurrencyInterceptor)
+}
+
+func newConcurrencyMonitorFixture(t *testing.T, limit int32, intercept func(*ConcurrencyMonitor) interceptor.Funcs) (client.WithWatch, *ConcurrencyMonitor) {
 	t.Helper()
 	monitor := NewConcurrencyMonitor(limit)
 	kube := fake.NewClientBuilder().WithScheme(v1alpha2Scheme(t)).
 		WithStatusSubresource(&batchv1.Job{}).
-		WithInterceptorFuncs(makeM4OCCConcurrencyInterceptor(monitor)).Build()
+		WithInterceptorFuncs(intercept(monitor)).Build()
 	return kube, monitor
 }
 
@@ -157,11 +163,122 @@ func TestM4MonitorMetadataCannotPretendToCompleteStatusSubresource(t *testing.T)
 		t.Fatal(err)
 	}
 	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
 	worker.Annotations = map[string]string{"metadata-only": "true"}
 	if err := kube.Update(ctx, worker); err != nil {
 		t.Fatal(err)
 	}
+	var stored batchv1.Job
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(worker), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.Succeeded != 0 || len(stored.Status.Conditions) != 0 {
+		t.Fatalf("metadata Update persisted staged terminal status: %+v", stored.Status)
+	}
+	if stored.Annotations["metadata-only"] != "true" {
+		t.Fatal("metadata Update did not persist the annotation")
+	}
 	assertM4MonitorActive(t, kube, monitor, 1)
+}
+
+// Fixed expected counts and an intentional over-admission are independent of
+// the monitor's predicate. Exercise both public test adapters, not just M4.
+func TestConcurrencyMonitorCommittedTransitionsBothAdapters(t *testing.T) {
+	for _, adapter := range []struct {
+		name  string
+		funcs func(*ConcurrencyMonitor) interceptor.Funcs
+	}{
+		{"shared", (*ConcurrencyMonitor).InterceptorFuncs},
+		{"m4-lease-cas", makeM4OCCConcurrencyInterceptor},
+	} {
+		t.Run(adapter.name, func(t *testing.T) {
+			ctx := context.Background()
+			kube, monitor := newConcurrencyMonitorFixture(t, 1, adapter.funcs)
+			worker := m4MonitorWorker("reused-key")
+			if err := kube.Create(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 1)
+			if err := kube.Create(ctx, m4MonitorWorker(worker.Name)); !apierrors.IsAlreadyExists(err) {
+				t.Fatalf("duplicate Create = %v", err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 1)
+			stale := worker.DeepCopy()
+			worker.Status = batchv1.JobStatus{Succeeded: 1, Failed: 1, Conditions: []batchv1.JobCondition{{Type: batchv1.JobSuccessCriteriaMet, Status: corev1.ConditionTrue}, {Type: batchv1.JobFailureTarget, Status: corev1.ConditionTrue}}}
+			if err := kube.Status().Update(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 1)
+			worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+			worker.Annotations = map[string]string{"metadata-only": "true"}
+			if err := kube.Update(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 1)
+			if err := kube.Update(ctx, stale); !apierrors.IsConflict(err) {
+				t.Fatalf("stale Update = %v", err)
+			}
+			if err := kube.Status().Update(ctx, stale); !apierrors.IsConflict(err) {
+				t.Fatalf("stale status Update = %v", err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 1)
+			for i := 0; i < 2; i++ {
+				worker.Status = batchv1.JobStatus{Conditions: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}}
+				if err := kube.Status().Update(ctx, worker); err != nil {
+					t.Fatal(err)
+				}
+				assertM4MonitorActive(t, kube, monitor, 0)
+			}
+			if err := kube.Delete(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			if err := kube.Delete(ctx, worker); !apierrors.IsNotFound(err) {
+				t.Fatalf("repeated Delete = %v", err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 0)
+			worker = m4MonitorWorker("reused-key")
+			if err := kube.Create(ctx, worker); err != nil {
+				t.Fatal(err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 1)
+			for _, suspended := range []bool{true, true, false, false} {
+				before := worker.DeepCopy()
+				worker.Spec.Suspend = &suspended
+				if err := kube.Patch(ctx, worker, client.MergeFrom(before)); err != nil {
+					t.Fatal(err)
+				}
+				want := int32(1)
+				if suspended {
+					want = 0
+				}
+				assertM4MonitorActive(t, kube, monitor, want)
+			}
+			for i := 0; i < 2; i++ {
+				before := worker.DeepCopy()
+				worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+				if err := kube.Status().Patch(ctx, worker, client.MergeFrom(before)); err != nil {
+					t.Fatal(err)
+				}
+				assertM4MonitorActive(t, kube, monitor, 0)
+			}
+			if err := kube.Status().Patch(ctx, m4MonitorWorker("missing"), client.RawPatch(types.MergePatchType, []byte(`{"status":{"succeeded":1}}`))); !apierrors.IsNotFound(err) {
+				t.Fatalf("missing status Patch = %v", err)
+			}
+			assertM4MonitorActive(t, kube, monitor, 0)
+			if monitor.MaxObservedActive() != 1 || len(monitor.Violations()) != 0 {
+				t.Fatal("replays or failed mutations manufactured a capacity breach")
+			}
+			for _, name := range []string{"first", "second"} {
+				if err := kube.Create(ctx, m4MonitorWorker(name)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertM4MonitorActive(t, kube, monitor, 2)
+			if monitor.MaxObservedActive() != 2 || len(monitor.Violations()) != 1 {
+				t.Fatal("actual over-admission was not detected")
+			}
+		})
+	}
 }
 
 func TestM4MonitorPodCountersDoNotCompleteJob(t *testing.T) {
