@@ -80,6 +80,7 @@ import {
   buildPanelResponseFormat,
   createPanelDeadlineSignal,
   PanelDeadlineExceededError,
+  PanelCancellationError,
   mergeZoektToolConfig,
   PanelConfigurationError,
   personaCoverageError,
@@ -1361,14 +1362,22 @@ async function runTaskWorkPhase(input: {
  * `no_budget` — the task never started because the composed turn budget was spent.
  * `exhausted` — the task ran and still produced no verdict.
  * `evidence_deadline` — the evidence phase ended before this task completed.
+ * `findings_stop` — a validated finding stopped collection without a verdict for this task.
  * These records stay off `personas` and `optionalFailures`, so their ids do not
  * enter the published roster. A missing id keeps the review incomplete.
  */
 export function unreportedLaneFailure(
   task: ReviewTask,
-  reason: 'no_budget' | 'exhausted' | 'evidence_deadline',
+  reason: 'no_budget' | 'exhausted' | 'evidence_deadline' | 'findings_stop',
   diagnostics?: ComposedTaskFailureDiagnostics,
 ): NonNullable<PanelResult['unreportedLanes']>[number] {
+  if (reason === 'findings_stop') {
+    return {
+      id: task.id,
+      error: `Task ${task.id} (${task.dimension}) produced no verdict before the findings stop; planned coverage remains incomplete`,
+      failureClass: 'contract',
+    };
+  }
   if (reason === 'evidence_deadline') {
     return {
       id: task.id,
@@ -1787,6 +1796,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       settled: Promise<void>;
       result?: SettledTask;
       error?: unknown;
+      turnUsages: LaneTurnUsage[];
     };
     const activeTasks = new Map<number, ActiveTask>();
     const settledTasks = new Map<number, SettledTask>();
@@ -1816,7 +1826,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
     };
 
-    const runReservedTask = async (reserved: ReservedTask, taskBaseMessages: OpenRouterMessage[], taskSignal: AbortSignal): Promise<SettledTask> => {
+    const runReservedTask = async (reserved: ReservedTask, taskBaseMessages: OpenRouterMessage[], taskSignal: AbortSignal,
+      taskTurnUsages: LaneTurnUsage[]): Promise<SettledTask> => {
       const { task, index, reservedTurns } = reserved;
       const diagnosticLane = composedTaskDiagnosticLane(index);
       const taskStartedAt = Date.now();
@@ -1833,7 +1844,6 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
         provider: providerId, model, required: true,
       });
-      const taskTurnUsages: LaneTurnUsage[] = [];
       try {
         const outcome = await runTaskWorkPhase({
           maxTurnsPerTask: config.composed?.max_turns_per_task,
@@ -1993,6 +2003,17 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       if (failed) throw failed.error;
     };
 
+    const accountTaskUsage = (active: ActiveTask, actualTurns: number, refundUnused: boolean) => {
+      const reservedForOtherTasks = reservedTurns - active.reserved.reservedTurns;
+      if (actualTurns > active.reserved.reservedTurns || totalTurnsUsed + actualTurns + reservedForOtherTasks > totalTurnBudget) {
+        throw new Error('composed task usage exceeded its reservation or the review turn budget');
+      }
+      totalTurnsUsed += actualTurns;
+      // A cancelled request has no proven physical usage or unused-turn refund. At final
+      // closeout consume only observed turns and leave the remainder reserved, never reusable.
+      reservedTurns -= refundUnused ? active.reserved.reservedTurns : actualTurns;
+    };
+
     const consumeSettledTasks = () => {
       const completed = [...activeTasks.values()]
         .filter((active) => active.status === 'fulfilled' && active.result)
@@ -2000,10 +2021,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       for (const active of completed) {
         const result = active.result!;
         const actualTurns = result.outcome.turnUsages.length;
-        const reservedForOtherTasks = reservedTurns - active.reserved.reservedTurns;
-        if (actualTurns > active.reserved.reservedTurns || totalTurnsUsed + actualTurns + reservedForOtherTasks > totalTurnBudget) {
-          throw new Error('composed task usage exceeded its reservation or the review turn budget');
-        }
+        accountTaskUsage(active, actualTurns, true);
         if (result.outcome.type === 'complete') {
           totalFindingsCollected += result.outcome.findings.length;
           if (result.outcome.findings.some((f) => f.severity === 'P0')) {
@@ -2011,8 +2029,6 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           }
         }
         activeTasks.delete(active.reserved.index);
-        reservedTurns = reservedForOtherTasks;
-        totalTurnsUsed += actualTurns;
         settledTasks.set(result.index, result);
       }
       foldReadyTasks();
@@ -2032,34 +2048,32 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         activeTasksRunning: activeTasks.size,
       });
 
-      // 1. Abort any running tasks
-      taskAbort.abort(new Error(reason));
+      // Use the same typed cancellation object the bounded provider race returns, so a real
+      // sibling failure that raced the stop is not mistaken for our deliberate cancellation.
+      const stop = new PanelCancellationError();
+      taskAbort.abort(stop);
 
       // 2. Wait for active tasks to settle
       await Promise.allSettled([...activeTasks.values()].map((active) => active.settled));
+      throwIfPanelAborted(signal);
+      const failed = [...activeTasks.values()].find((active) => active.status === 'rejected' && active.error !== stop);
+      if (failed) throw failed.error;
 
-      // 3. For any active tasks that actually succeeded before or during abort, include them
-      for (const active of activeTasks.values()) {
-        if (active.status === 'fulfilled' && active.result) {
-          const result = active.result;
-          if (result.outcome.type === 'complete') {
-            totalFindingsCollected += result.outcome.findings.length;
-            if (result.outcome.findings.some((f) => f.severity === 'P0')) {
-              blockerFindingDetected = true;
-            }
-          }
-          settledTasks.set(result.index, result);
-        }
+      // Use the normal owner for fulfilled usage/reservations, exactly once. Aborted branches
+      // retain any prior observed spend in progress/the metered client, not in approval lanes.
+      consumeSettledTasks();
+      for (const active of [...activeTasks.values()].sort((left, right) => left.reserved.index - right.reserved.index)) {
+        accountTaskUsage(active, active.turnUsages.length, false);
       }
       activeTasks.clear();
-      reservedTurns = 0;
 
       // 4. Fold all settled tasks
       const ready = [...settledTasks.values()].sort((left, right) => left.index - right.index);
       settledTasks.clear();
       for (const result of ready) foldSettledTask(result);
 
-      // 5. Populate personas for unstarted or aborted tasks so quorum is satisfied
+      // A stopped branch is missing evidence, not a clean approval. Preserve the complete plan
+      // and mark every missing result unreported so canonical publication cannot synthesize SHIP.
       const handledIds = new Set([
         ...personas.map((p) => p.id),
         ...optionalFailures.map((f) => f.id),
@@ -2068,37 +2082,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       for (let i = 0; i < planOutcome.tasks.length; i++) {
         const task = planOutcome.tasks[i];
         if (!handledIds.has(task.id)) {
-          options.progress?.emit({
-            task: 'composed_task',
-            status: 'completed',
-            role: 'composed_task',
-            lane: composedTaskDiagnosticLane(i),
-            provider: providerId,
-            model,
-            required: true,
-            durationMs: 0,
-            turn: 0,
-            usage: progressUsage([]),
-          });
-          personas.push({
-            id: task.id,
-            required: true,
-            providerId,
-            model,
-            decision: 'APPROVE',
-            findings: [],
-            usage: null,
-            costUSD: null,
-            durationMs: 0,
-            turnsCount: 0,
-            toolTurns: 0,
-            turnUsages: [],
-            aggregateUsage: sumAggregateUsage([]),
-            toolCalls: [],
-          });
+          unreportedLanes.push(unreportedLaneFailure(task, 'findings_stop'));
           handledIds.add(task.id);
         }
       }
+      skipRemainingForAbort();
       if (options.checkpoint) saveCheckpoint();
       return true;
     };
@@ -2135,6 +2123,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         reserved,
         status: 'running',
         settled: Promise.resolve(),
+        turnUsages: [],
       };
       activeTasks.set(index, active);
       reservedTurns += reservation;
@@ -2169,7 +2158,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         },
       ];
 
-      active.settled = runReservedTask(reserved, taskScopedBaseMessages, taskAbort.signal).then(
+      active.settled = runReservedTask(reserved, taskScopedBaseMessages, taskAbort.signal, active.turnUsages).then(
         (result) => {
           active.status = 'fulfilled';
           active.result = result;
@@ -2272,6 +2261,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       signal?.removeEventListener('abort', onPanelAbort);
     }
     span.setAttribute('review_yeti.composed.funded_task_count', fundedTaskCount);
+    // Observed response turns are not a claim that an aborted physical request spent nothing.
+    span.setAttribute('review_yeti.composed.observed_turn_count', totalTurnsUsed);
+    span.setAttribute('review_yeti.composed.retained_turn_reservations', reservedTurns);
     span.setAttribute('review_yeti.composed.max_findings_reached', maxFindingsReached);
     span.setAttribute('review_yeti.composed.blocker_exit', blockerFindingDetected);
 
@@ -2310,12 +2302,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       // arbitration call site (see `src/cli/publishingReview.ts`) is what actually prevents a
       // longer task plan from silently raising the P1 blocking threshold; this field must not be
       // read as a substitute for that.
-      quorum: { required: 1, distinctProviders: [providerId], satisfied: true },
+      quorum: { required: 1, distinctProviders: [providerId],
+        satisfied: unreportedLanes.length === 0 && optionalFailures.length === 0 && personas.length === planOutcome.tasks.length },
       moderator: { providerId, model: 'none', decision: 'RECONCILED', findings: [],
         usage: null, costUSD: null, durationMs: 0 },
-      arbiter: { providerId, model: 'none', verdict: maxFindingsReached ? 'BLOCK' : 'SHIP',
-        rationale: maxFindingsReached
-          ? `Max review findings limit (${maxFindings}) reached; finalized review early.`
+      arbiter: { providerId, model: 'none', verdict: maxFindingsReached || blockerFindingDetected || unreportedLanes.length > 0 ? 'BLOCK' : 'SHIP',
+        rationale: maxFindingsReached || blockerFindingDetected
+          ? `${maxFindingsReached ? `Max review findings limit (${maxFindings}) reached` : 'P0 blocker finding detected'}; preserved actual task results; ${unreportedLanes.length} planned task(s) remain unreported.`
           : 'Composed engine: cross-task reconciliation is intra-context; the binding verdict is computed by canonical arbitration over the recorded task lanes.',
         usage: null, costUSD: null, durationMs: 0 },
     };
