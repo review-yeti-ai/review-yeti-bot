@@ -87,20 +87,17 @@ func slotKey(namespace, name string) string {
 	return fmt.Sprintf("%s/%s", namespace, name)
 }
 
-func parseSlotKey(key string) (namespace, name string) {
-	parts := strings.SplitN(key, "/", 2)
-	if len(parts) == 2 {
-		return parts[0], parts[1]
-	}
-	return DefaultCapacityLedgerNamespace, parts[0]
-}
-
-func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2.PRReviewJob, maxSlots int) (bool, error) {
+func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2.PRReviewJob, maxSlots int, currentActive ...int) (bool, error) {
 	if review == nil || review.Name == "" {
 		return false, errors.New("cannot acquire capacity slot for nil or unnamed review")
 	}
 	if maxSlots <= 0 {
 		return false, nil
+	}
+	for _, active := range currentActive {
+		if active >= maxSlots {
+			return false, nil
+		}
 	}
 
 	leaseNs := c.namespace
@@ -170,30 +167,9 @@ func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2
 			}
 		}
 
-		// Capacity check: if active slots already at or above limit, check for stale entries
+		// Capacity check: if active slots already at or above limit, deny admission
 		if len(activeSlots) >= maxSlots {
-			// Self-healing prune: verify if existing slot holders are still active in the cluster
-			var liveSlots []string
-			for _, s := range activeSlots {
-				ns, n := parseSlotKey(s)
-				var rev reviewv1alpha2.PRReviewJob
-				getErr := c.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: n}, &rev)
-				if getErr != nil {
-					if apierrors.IsNotFound(getErr) {
-						continue // review deleted, prune slot
-					}
-					liveSlots = append(liveSlots, s)
-					continue
-				}
-				if rev.DeletionTimestamp != nil || isTerminalPhase(rev.Status.Phase) {
-					continue // terminating or terminal review, prune slot
-				}
-				liveSlots = append(liveSlots, s)
-			}
-			activeSlots = liveSlots
-			if len(activeSlots) >= maxSlots {
-				return false, nil
-			}
+			return false, nil
 		}
 
 		// Add this review to active slots

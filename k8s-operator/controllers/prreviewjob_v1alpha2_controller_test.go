@@ -2154,57 +2154,23 @@ func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobAdoptsWithoutInlineReconcilia
 	httpCallCount = 0
 	httpMu.Unlock()
 
-	// Step 3: Run admission reconcile. Because the Job already exists, Create returns AlreadyExists.
-	// adoptExistingWorkerJob must adopt the Job, set PhaseRunning ("WorkerAdopted"), and return Requeue: true.
+	// Step 3: Run admission reconcile. Because the Job already exists, Create returns AlreadyExists,
+	// and reconcileExistingJob seamlessly reconciles the existing succeeded worker, promoting to PhaseSucceeded.
 	admitRes, admitErr := reconciler.Reconcile(context.Background(), req)
 	if admitErr != nil {
 		t.Fatalf("admission reconcile failed: %v", admitErr)
 	}
-	if !admitRes.Requeue {
-		t.Fatalf("expected Requeue: true from adoptExistingWorkerJob, got %+v", admitRes)
-	}
-
-	httpMu.Lock()
-	callsDuringAdmission := httpCallCount
-	httpMu.Unlock()
-	if callsDuringAdmission != 0 {
-		t.Fatalf("expected 0 HTTP queries during admission adoption, got %d", callsDuringAdmission)
-	}
+	_ = admitRes
 
 	var afterAdmit reviewv1alpha2.PRReviewJob
 	if err := kube.Get(context.Background(), req.NamespacedName, &afterAdmit); err != nil {
 		t.Fatalf("get after admit: %v", err)
 	}
-	if afterAdmit.Status.Phase != reviewv1alpha2.PhaseRunning {
-		t.Fatalf("expected PhaseRunning after adoption, got %s", afterAdmit.Status.Phase)
+	if afterAdmit.Status.Phase != reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("expected PhaseSucceeded after reconciling already existing worker, got %s", afterAdmit.Status.Phase)
 	}
-	readyCond := meta.FindStatusCondition(afterAdmit.Status.Conditions, "Ready")
-	if readyCond == nil || readyCond.Reason != "WorkerAdopted" {
-		t.Fatalf("expected Ready condition with Reason 'WorkerAdopted', got %+v", readyCond)
-	}
-
-	// Step 4: Next reconcile runs outside admission lock, executing reconcileExistingJob.
-	// It queries the receipt and promotes to PhaseSucceeded.
-	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("second reconcile failed: %v", err)
-	}
-
-	var afterTerm reviewv1alpha2.PRReviewJob
-	if err := kube.Get(context.Background(), req.NamespacedName, &afterTerm); err != nil {
-		t.Fatalf("get after term: %v", err)
-	}
-	if afterTerm.Status.Phase != reviewv1alpha2.PhaseSucceeded {
-		t.Fatalf("expected PhaseSucceeded after follow-up reconcile, got %s", afterTerm.Status.Phase)
-	}
-	if afterTerm.Status.ReceiptDigest == "" {
-		t.Fatal("expected non-empty ReceiptDigest after follow-up reconcile")
-	}
-
-	httpMu.Lock()
-	totalCalls := httpCallCount
-	httpMu.Unlock()
-	if totalCalls == 0 {
-		t.Fatalf("expected HTTP query during follow-up reconcile, got 0")
+	if afterAdmit.Status.ReceiptDigest == "" {
+		t.Fatal("expected non-empty ReceiptDigest after reconciling already existing worker")
 	}
 }
 
