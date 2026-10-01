@@ -40,6 +40,23 @@ describe('original evidence pages', () => {
       .toMatchObject({ status: 'unavailable' });
   });
 
+  it('binds continuation digests to snapshot, path and source side even for equal content', async () => {
+    const provider = { readFile: async () => null, findFiles: async () => [],
+      readDiff: () => ({ patch: 'same patch', identity: { repository: 'o/r', baseSha: BASE, headSha: HEAD } }),
+      readFileAt: async (_path: string, side: string) => ({ content: 'same source', sha: side === 'head' ? HEAD : OLD }) };
+    const context = { changedFiles: [], repoFileProvider: provider };
+    const first = parse(await runReadOnlyTool('get_diff_page', { path: 'one.ts', maxChars: 4 }, context));
+    expect(first.identity).toEqual({ repository: 'o/r', baseSha: BASE, headSha: HEAD });
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'two.ts', digest: first.digest }, context)))
+      .toMatchObject({ status: 'invalid', reason: 'evidence_digest_mismatch' });
+    provider.readDiff = () => ({ patch: 'same patch', identity: { repository: 'o/r', baseSha: BASE, headSha: OLD } });
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'one.ts', digest: first.digest }, context)))
+      .toMatchObject({ status: 'invalid', reason: 'evidence_digest_mismatch' });
+    const source = parse(await runReadOnlyTool('read_file_page', { path: 'one.ts', side: 'head' }, context));
+    expect(parse(await runReadOnlyTool('read_file_page', { path: 'one.ts', side: 'merge-base', digest: source.digest }, context)))
+      .toMatchObject({ status: 'invalid', reason: 'evidence_digest_mismatch' });
+  });
+
   it.each([{ path: 'old.sh', side: 'base' }, { path: '../secret', side: 'head' },
     { path: 'old.sh', side: 'head', maxChars: 32_001 }, { path: 'old.sh', side: 'head', startOffset: -1 },
     { path: 'old.sh', side: 'head', command: 'execute' }])('rejects arbitrary revisions, paths and page bounds', async (args) => {
