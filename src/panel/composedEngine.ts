@@ -6,13 +6,12 @@
  * diff, over ALL effective files, with no persona narrowing and unscoped pre-check evidence) built
  * exactly once. The engine sends a PLAN turn over that prefix asking for a bounded `ReviewTask[]`
  * (see `./reviewTask.ts`), validates it deterministically (never trusting the model's own account
- * of completeness), then walks an ENGINE-OWNED task cursor -- the model never chooses the order and
- * never self-reports "done" for free. Each task gets its own short, branched sub-conversation (tool
- * calls via `./toolRuntime.ts`, compacted via `./messageWindow.ts` if it runs long); once that task
- * finalizes, its branch is discarded and the persistent conversation gains exactly one receipt line
- * (`[TASK <id> COMPLETE -- N finding(s) recorded]`), never the accumulated turns. That is what keeps
- * many tasks affordable in one context: the persistent conversation carries the plan and the
- * *current* task's evidence, never the full history of every prior task's investigation.
+ * of completeness), then dispatches ENGINE-OWNED task branches -- the model never chooses the order
+ * and never self-reports "done" for free. Each task gets its own short, independently budgeted
+ * sub-conversation (tool calls via `./toolRuntime.ts`, compacted via `./messageWindow.ts` if it runs
+ * long). The branches share the accepted plan and absolute review deadline, but not another task's
+ * accumulated turns. That is what keeps many tasks affordable in one context while allowing the
+ * planned work to run concurrently instead of multiplying the review's wall-clock time.
  *
  * This module must never import from `../panel/panelEngine.ts`'s persona/moderator/arbiter
  * internals (`runPersona`, `executePersonaPanel`) and must not change their behaviour -- those
@@ -138,7 +137,7 @@ export interface ComposedReviewOptions {
   client: ReviewModelClient;
   /** Optional publisher-owned diagnostics context; absent for local/direct engine callers. */
   progress?: PublishingProgressReporter;
-  /** Publisher-only: shadow evidence stays serial and never raises its model-call footprint. */
+  /** Publisher-owned shadow execution stays serial so its provider footprint does not grow. */
   publisherShadow?: boolean;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
@@ -196,19 +195,6 @@ export const COMPOSED_TASK_CONCURRENCY_CEILING = 3;
 const TASK_FINALIZATION_TURNS = 3;
 
 /**
- * Composed tasks share one admitted review budget. Respect an operator's lower lane ceiling,
- * cap ordinary composed work at three, and keep publisher-owned shadow work serial so adding
- * shadow evidence does not increase its existing model-call footprint.
- */
-export function resolveComposedTaskConcurrency(
-  env: Record<string, string | undefined> = process.env,
-  publisherShadow = false,
-): number {
-  if (publisherShadow) return 1;
-  return Math.min(COMPOSED_TASK_CONCURRENCY_CEILING, resolveMaxConcurrentLanes(env));
-}
-
-/**
  * Per-task turn ceiling. Policy NARROWS only: a value above the dynamic engine ceiling is ignored
  * rather than honoured, so central policy can tighten a budget it does not own but never widen it.
  * Non-positive and non-integer values fall back to the engine constant rather than clamping to
@@ -260,6 +246,19 @@ export function resolveComposedEngineMaxTurns(
     return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
   }
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
+}
+
+/**
+ * Composed tasks share one admitted review budget. Respect an operator's lower lane ceiling,
+ * cap ordinary composed work at three, and keep publisher-owned shadow work serial so adding
+ * shadow evidence does not increase its existing model-call footprint.
+ */
+export function resolveComposedTaskConcurrency(
+  env: Record<string, string | undefined> = process.env,
+  publisherShadow = false,
+): number {
+  if (publisherShadow) return 1;
+  return Math.min(COMPOSED_TASK_CONCURRENCY_CEILING, resolveMaxConcurrentLanes(env));
 }
 
 // ---------------------------------------------------------------------------
@@ -1014,7 +1013,7 @@ async function runPlanPhase(input: {
 }
 
 // ---------------------------------------------------------------------------
-// WORK phase -- one isolated task branch, engine-owned cursor
+// WORK phase -- one independently budgeted engine-owned task branch
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
@@ -1431,11 +1430,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     totalTurnsUsed += planOutcome.turnsUsed;
     span.setAttribute('review_yeti.composed.task_count', planOutcome.tasks.length);
 
-    // Persistent backbone after planning: head (cached) + exactly one plan receipt line. The
-    // plan's own tool-call turns and corrective turn are discarded -- the engine already holds
-    // the validated `ReviewTask[]` and restates each task's own detail on that task's own turn;
+    // Shared backbone after planning: head (cached) + exactly one plan receipt line. The plan's
+    // own tool-call turns and corrective turn are discarded -- the engine already holds the
+    // validated `ReviewTask[]` and restates each task's own detail on that task's own branch;
     // nothing is lost, only the model's now-irrelevant intermediate turns.
-    let persistentMessages: OpenRouterMessage[] = [
+    const taskBaseMessages: OpenRouterMessage[] = [
       baseMessages[0],
       baseMessages[1],
       { role: 'assistant', content: 'Plan accepted.' },
@@ -1446,7 +1445,12 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const optionalFailures: PanelResult['optionalFailures'] = [];
     const unreportedLanes: NonNullable<PanelResult['unreportedLanes']> = [];
     let planUsageFolded = false;
+
+    let persistentMessages: OpenRouterMessage[] = taskBaseMessages;
     const taskConcurrency = resolveComposedTaskConcurrency(process.env, options.publisherShadow === true);
+    span.setAttribute('review_yeti.composed.dispatch_mode', 'bounded_parallel');
+    span.setAttribute('review_yeti.composed.concurrency_limit', taskConcurrency);
+    let fundedTaskCount = 0;
     type ReservedTask = { task: ReviewTask; index: number; reservedTurns: number };
     type SettledTask = ReservedTask & { outcome: TaskOutcome };
     let nextTaskIndex = 0;
@@ -1548,6 +1552,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         reservationBudget -= reservedTurns;
         nextTaskIndex += 1;
       }
+      fundedTaskCount += cohort.length;
 
       const cohortAbort = new AbortController();
       const onPanelAbort = () => cohortAbort.abort(signal?.reason);
@@ -1631,6 +1636,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         }
       }
     }
+    span.setAttribute('review_yeti.composed.funded_task_count', fundedTaskCount);
 
     return {
       headSha,
@@ -1645,13 +1651,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       unreportedLanes,
       zeroLaneNonEvidence: false,
       panelWallClockMs: Date.now() - panelStartedAt,
-      // One composed context is one reviewer. `quorum` here describes this engine's own
-      // single-context execution, not the arbitration threshold -- `panelSize: 1` at the
+      // One composed plan with independently budgeted task branches is one reviewer. `quorum`
+      // here describes this engine's own execution, not the arbitration threshold -- `panelSize: 1` at the
       // arbitration call site (see `src/cli/publishingReview.ts`) is what actually prevents a
       // longer task plan from silently raising the P1 blocking threshold; this field must not be
       // read as a substitute for that.
       quorum: { required: 1, distinctProviders: [providerId], satisfied: true },
-      // Cross-lane reconciliation is intra-context here (the engine-owned task cursor + the
+      // Cross-lane reconciliation is intra-review here (the engine-owned accepted task plan +
       // deterministic `clusterFindings` dedupe at arbitration time), so there is no separate
       // moderator/arbiter provider turn to run. These are zero-cost stubs kept only so every
       // existing type and fixture expecting a `PanelResult` shape stays valid; the caller's

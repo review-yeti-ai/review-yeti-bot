@@ -4,6 +4,10 @@ import { reviewGateStatusForReason, type ReviewGateDecision } from '../../review
 export type ReviewStatusVerdict = ReviewStatusOutput['verdict'];
 export type ReviewStatusPhase = ReviewStatusOutput['phase'];
 
+const TERMINAL_RUN_STATUSES = new Set([
+  'succeeded', 'complete', 'completed', 'failed', 'cancelled', 'superseded', 'terminal',
+]);
+
 type NativeGateStatus = ReviewGateDecision['status'];
 
 type ParsedDecision =
@@ -108,6 +112,41 @@ function hasGateState(desiredState: unknown): boolean {
   return desiredState !== null && desiredState !== undefined && desiredState !== '';
 }
 
+export function isTerminalReviewGateState(value: unknown): boolean {
+  return value === 'success' || value === 'failure' || value === 'cancelled' || value === 'timed_out';
+}
+
+export function isTerminalReviewRunStatus(value: unknown): boolean {
+  return typeof value === 'string' && TERMINAL_RUN_STATUSES.has(value);
+}
+
+/**
+ * Projects durable execution evidence into the effective lifecycle seen by all
+ * status readers. A cleared dispatcher lease does not make a projected or
+ * started worker queued, but stale/terminal evidence can never revive a run.
+ */
+export function projectReviewExecutionLiveness(input: {
+  runStatus: unknown;
+  desiredState: unknown;
+  hasProjectedWorker: boolean;
+  durableExecutionStarted: boolean;
+  terminalDeadlineMs: number | null;
+  nowMs: number;
+}): { effectiveRunStatus: unknown; projectionIsCurrent: boolean } {
+  const liveWindow = input.terminalDeadlineMs !== null
+    && Number.isFinite(input.terminalDeadlineMs)
+    && input.terminalDeadlineMs > input.nowMs;
+  const executionMayBeLive = liveWindow
+    && !isTerminalReviewGateState(input.desiredState)
+    && !isTerminalReviewRunStatus(input.runStatus);
+  const projectionIsCurrent = input.hasProjectedWorker && executionMayBeLive;
+  const effectiveRunStatus = input.runStatus === 'queued'
+    && (projectionIsCurrent || (input.durableExecutionStarted && executionMayBeLive))
+    ? 'running'
+    : input.runStatus;
+  return { effectiveRunStatus, projectionIsCurrent };
+}
+
 function guardExplicitShip(desiredState: unknown, runStatus: unknown): ReviewStatusVerdict {
   if (hasGateState(desiredState)) return verdictForGateState(desiredState) ?? 'FAILED';
 
@@ -158,10 +197,7 @@ export function projectReviewStatusPhase(input: {
   runStatus: unknown;
   runStage: unknown;
 }): ReviewStatusPhase {
-  if (input.desiredState === 'success'
-    || input.desiredState === 'failure'
-    || input.desiredState === 'cancelled'
-    || input.desiredState === 'timed_out') {
+  if (isTerminalReviewGateState(input.desiredState)) {
     return 'completed';
   }
   if (input.runStatus === 'queued') return 'queued';

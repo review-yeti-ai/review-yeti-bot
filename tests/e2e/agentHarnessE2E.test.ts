@@ -235,7 +235,7 @@ export const ConditionUnknownEffectPending = 'UnknownEffectPending';
 
 export function makeValidGoPRReviewJob(overrides?: Partial<GoPRReviewJobSpec>): GoPRReviewJob {
   const now = new Date('2026-09-27T18:00:00.000Z');
-  const deadline = new Date(now.getTime() + 1800 * 1000); // 30 mins
+  const deadline = new Date(now.getTime() + 900 * 1000); // exact 15-minute end-to-end budget
   return {
     apiVersion: 'review.calltelemetry.com/v1alpha2',
     kind: 'PRReviewJob',
@@ -342,10 +342,10 @@ export function validateGoCRDSpecCEL(
   const tRec = new Date(spec.receivedAt).getTime();
   const tDead = new Date(spec.terminalDeadline).getTime();
   const diffSec = (tDead - tRec) / 1000;
-  if (diffSec < 900 || diffSec > 3600) {
+  if (diffSec !== 900) {
     return {
       valid: false,
-      error: 'terminalDeadline must be between 15 and 60 minutes after receivedAt',
+      error: 'terminalDeadline must be exactly 15 minutes after receivedAt',
     };
   }
 

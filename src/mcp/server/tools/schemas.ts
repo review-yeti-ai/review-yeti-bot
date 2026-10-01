@@ -39,6 +39,14 @@ export interface ReviewActiveWorker {
   lease_expires_at: string;
 }
 
+/** Durable DOKS execution identity, additive to the legacy Pod lease shape. */
+export interface ReviewActiveProjection {
+  /** PRReviewJob identity; its Kubernetes status owns the current worker Job name. */
+  projection_name: string;
+  started_at: string;
+  terminal_deadline: string;
+}
+
 /**
  * Review run timing, split into the two quantities a consumer actually needs.
  *
@@ -94,6 +102,8 @@ export interface ReviewTiming {
 }
 
 export interface ReviewStatusOutput {
+  /** Optional so TypeScript consumers constructing the prior shape remain source-compatible. */
+  schema_version?: 'ReviewStatus.v2';
   found: boolean;
   verdict: 'SHIP' | 'NACK' | 'COMMENT' | 'FIX_FIRST' | 'PENDING' | 'RUNNING' | 'FAILED';
   attempt_id: string | null;
@@ -101,6 +111,8 @@ export interface ReviewStatusOutput {
   phase: 'queued' | 'evaluating_personas' | 'arbitration' | 'completed';
   check_run: ReviewCheckRun | null;
   active_worker: ReviewActiveWorker | null;
+  /** Additive durable projection identity; never masquerades as a Pod or Job. */
+  active_projection?: ReviewActiveProjection | null;
   /** Optional so existing consumers keep working; absent when no run was found. */
   timing?: ReviewTiming | null;
   message?: string;
