@@ -120,6 +120,20 @@ jobs:
       - name: Build the artifacts the suite reads (npm pretest)
         run: npm run test:artifacts
 
+      - name: Set up embedded operator Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.0.0
+        with:
+          go-version: "1.24.13"
+          check-latest: false
+          cache: false
+
+      - name: Verify embedded operator Go toolchain
+        shell: bash
+        run: |
+          actual="$(go env GOVERSION)"
+          test "$actual" = "go1.24.13"
+          printf 'Go toolchain: %s\n' "$actual"
+
       - name: Run Vitest shard
         env:
           MODE: ${{ needs.test-plan.outputs.mode }}

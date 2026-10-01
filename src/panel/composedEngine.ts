@@ -22,6 +22,7 @@
  * `validateFindings` (identical findings contract), and `buildPanelResponseFormat`'s new `plan`
  * role (additive; every existing role's schema is byte-identical to before this file existed).
  */
+import { setImmediate as yieldToNextEventLoop } from 'node:timers/promises';
 import { buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import type { WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
@@ -1511,7 +1512,22 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let fundedTaskCount = 0;
     type ReservedTask = { task: ReviewTask; index: number; reservedTurns: number };
     type SettledTask = ReservedTask & { outcome: TaskOutcome };
+    type ActiveTask = {
+      reserved: ReservedTask;
+      status: 'running' | 'fulfilled' | 'rejected';
+      settled: Promise<void>;
+      result?: SettledTask;
+      error?: unknown;
+    };
+    const activeTasks = new Map<number, ActiveTask>();
+    const settledTasks = new Map<number, SettledTask>();
     let nextTaskIndex = 0;
+    let nextFoldIndex = 0;
+    let reservedTurns = 0;
+    const taskAbort = new AbortController();
+    const onPanelAbort = () => taskAbort.abort(signal?.reason);
+    if (signal?.aborted) taskAbort.abort(signal.reason);
+    else signal?.addEventListener('abort', onPanelAbort, { once: true });
 
     const checkRetentionRun = () => {
       if (!retention) return;
@@ -1577,8 +1593,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           signal: taskSignal,
           repoFileProvider,
           zoektConfig,
-          // The shared budget counts both completed and in-flight allocations. Each task may spend
-          // only its reserved slice; the unused portion is refunded after the whole cohort settles.
+          // A task may spend only its reserved slice. Ordinary execution refunds each settled
+          // task; retained execution refunds only after every funded cohort outcome ACK settles.
           turnsRemaining: () => reservedTurns - taskTurnUsages.length,
           progress: options.progress,
           progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
@@ -1626,121 +1642,288 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       }
     };
 
-    while (nextTaskIndex < planOutcome.tasks.length) {
-      throwIfPanelAborted(signal);
-      checkRetentionRun();
-      let reservationBudget = remainingBudget();
-      if (reservationBudget <= 0) {
-        while (nextTaskIndex < planOutcome.tasks.length) await skipForBudget(nextTaskIndex++);
-        break;
-      }
+    const foldSettledTask = ({ task, outcome }: SettledTask) => {
+      // Fold the PLAN phase's real provider spend into the first task lane that produces a
+      // result, retaining the existing cost/token accounting contract.
+      const turnUsagesForLane = !planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')
+        ? [...planOutcome.turnUsages, ...outcome.turnUsages]
+        : outcome.turnUsages;
+      if (!planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')) planUsageFolded = true;
 
-      // Reserve in plan order, without exceeding either a task's existing dynamic ceiling or
-      // the remaining review-wide budget. Work is admitted in cohorts so unused turns are
-      // refunded before tasks waiting behind the current cohort are considered.
-      const cohort: ReservedTask[] = [];
-      while (cohort.length < taskConcurrency && nextTaskIndex < planOutcome.tasks.length && reservationBudget > 0) {
-        const task = planOutcome.tasks[nextTaskIndex];
-        const fullTaskCeiling = resolveTaskTurnCeiling(
-          config.composed?.max_turns_per_task,
-          COMPOSED_TASK_MAX_TURNS_HARD_CAP,
-          task.paths?.length || 1,
-        );
-        // Do not starve a later task with a partial reservation merely because an earlier task
-        // has not refunded unused turns yet. Admit full dynamic ceilings in parallel; if no task
-        // fits an empty cohort, let the first task consume the same partial remainder it would
-        // have received under the prior serial scheduler.
-        if (fullTaskCeiling > reservationBudget && cohort.length > 0) break;
-        const reservedTurns = fullTaskCeiling <= reservationBudget
-          ? fullTaskCeiling
-          : resolveTaskTurnCeiling(config.composed?.max_turns_per_task, reservationBudget, task.paths?.length || 1);
-        cohort.push({ task, index: nextTaskIndex, reservedTurns });
-        reservationBudget -= reservedTurns;
+      if (outcome.type === 'complete') {
+        personas.push({
+          id: task.id,
+          required: true,
+          providerId,
+          model,
+          decision: outcome.findings.length > 0 ? 'FINDINGS' : 'APPROVE',
+          findings: outcome.findings,
+          usage: null,
+          costUSD: sumAggregateUsage(turnUsagesForLane).costUSD || null,
+          durationMs: outcome.durationMs,
+          turnsCount: outcome.turnUsages.length,
+          toolTurns: outcome.toolTurns,
+          turnUsages: turnUsagesForLane,
+          aggregateUsage: sumAggregateUsage(turnUsagesForLane),
+          toolCalls: outcome.toolCalls,
+        });
+        persistentMessages = [
+          ...persistentMessages,
+          { role: 'assistant', content: `Task ${task.id} complete.` },
+          { role: 'user', content: `[TASK ${task.id} COMPLETE -- ${outcome.findings.length} finding(s) recorded]` },
+        ];
+      } else if (outcome.type === 'blocked') {
+        optionalFailures.push({
+          id: task.id,
+          error: `Task ${task.id} (${task.dimension}) reported BLOCKED for path(s) [${task.paths.join(', ')}]: ${task.question}`,
+          failureClass: 'contract',
+        });
+        persistentMessages = [
+          ...persistentMessages,
+          { role: 'assistant', content: `Task ${task.id} blocked.` },
+          { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
+        ];
+      } else {
+        // Exhausted work remains absent from the returned roster and cannot satisfy coverage.
+        unreportedLanes.push(unreportedLaneFailure(task, 'exhausted', outcome.diagnostics));
+        logger.warn('[composed] task finalization incomplete', {
+          event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
+        });
+      }
+    };
+
+    // Results become context for later tasks only as a contiguous plan-order prefix. In-flight
+    // tasks hold the immutable message-array snapshot they received at dispatch; a later task may
+    // see more of that prefix, but completion order can never reorder or race receipt mutations.
+    const foldReadyTasks = () => {
+      while (settledTasks.has(nextFoldIndex)) {
+        const ready = settledTasks.get(nextFoldIndex)!;
+        settledTasks.delete(nextFoldIndex);
+        foldSettledTask(ready);
+        nextFoldIndex += 1;
+      }
+    };
+
+    const skipRemainingForAbort = () => {
+      while (nextTaskIndex < planOutcome.tasks.length) {
+        options.progress?.emit({
+          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(nextTaskIndex),
+          provider: providerId, model, required: true, rejectionCode: 'aborted',
+        });
         nextTaskIndex += 1;
       }
-      fundedTaskCount += cohort.length;
+    };
 
-      const cohortAbort = new AbortController();
-      const onPanelAbort = () => cohortAbort.abort(signal?.reason);
-      if (signal?.aborted) cohortAbort.abort(signal.reason);
-      else signal?.addEventListener('abort', onPanelAbort, { once: true });
-      const cohortPromises = cohort.map((reserved) => runReservedTask(reserved, persistentMessages, cohortAbort.signal));
-      let settled: SettledTask[];
-      try {
-        settled = await Promise.all(cohortPromises);
-      } catch (error) {
-        // A thrown task failure remains fatal as it was in the serial engine. Stop siblings and
-        // wait for every started wrapper to settle before returning the error; no task request is
-        // intentionally left running in the background.
-        cohortAbort.abort(error);
-        await Promise.allSettled(cohortPromises);
-        while (nextTaskIndex < planOutcome.tasks.length) {
-          options.progress?.emit({
-            task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(nextTaskIndex),
-            provider: providerId, model, required: true, rejectionCode: 'aborted',
-          });
+    const abortAndWait = async (error: unknown): Promise<never> => {
+      taskAbort.abort(error);
+      // runReservedTask wrappers convert their own failures into progress then reject. Wait for
+      // every active wrapper to finish so no provider operation is detached from this review.
+      await Promise.allSettled([...activeTasks.values()].map((active) => active.settled));
+      skipRemainingForAbort();
+      throw error;
+    };
+
+    const checkForFatalTask = (): void => {
+      const failed = [...activeTasks.values()]
+        .filter((active) => active.status === 'rejected')
+        .sort((left, right) => left.reserved.index - right.reserved.index)[0];
+      if (failed) throw failed.error;
+    };
+
+    const consumeSettledTasks = () => {
+      const completed = [...activeTasks.values()]
+        .filter((active) => active.status === 'fulfilled' && active.result)
+        .sort((left, right) => left.reserved.index - right.reserved.index);
+      for (const active of completed) {
+        const result = active.result!;
+        const actualTurns = result.outcome.turnUsages.length;
+        const reservedForOtherTasks = reservedTurns - active.reserved.reservedTurns;
+        if (actualTurns > active.reserved.reservedTurns || totalTurnsUsed + actualTurns + reservedForOtherTasks > totalTurnBudget) {
+          throw new Error('composed task usage exceeded its reservation or the review turn budget');
+        }
+        activeTasks.delete(active.reserved.index);
+        reservedTurns = reservedForOtherTasks;
+        totalTurnsUsed += actualTurns;
+        settledTasks.set(result.index, result);
+      }
+      foldReadyTasks();
+    };
+
+    const launchTask = (index: number, reservation: number) => {
+      const reserved: ReservedTask = { task: planOutcome.tasks[index], index, reservedTurns: reservation };
+      const active: ActiveTask = {
+        reserved,
+        status: 'running',
+        settled: Promise.resolve(),
+      };
+      activeTasks.set(index, active);
+      reservedTurns += reservation;
+      fundedTaskCount += 1;
+      // Snapshot the current plan-order receipt prefix. `persistentMessages` is replaced, never
+      // mutated, by foldSettledTask, so existing branches cannot observe later completions.
+      const taskMessagesSnapshot = [...persistentMessages];
+      active.settled = runReservedTask(reserved, taskMessagesSnapshot, taskAbort.signal).then(
+        (result) => {
+          active.status = 'fulfilled';
+          active.result = result;
+        },
+        (error: unknown) => {
+          active.status = 'rejected';
+          active.error = error;
+        },
+      );
+    };
+
+    const runRetainedCohorts = async () => {
+      while (nextTaskIndex < planOutcome.tasks.length) {
+        throwIfPanelAborted(signal);
+        checkRetentionRun();
+        let reservationBudget = remainingBudget();
+        if (reservationBudget <= 0) {
+          while (nextTaskIndex < planOutcome.tasks.length) await skipForBudget(nextTaskIndex++);
+          break;
+        }
+
+        // Freeze this funded cohort before dispatch. Its own ACKs can publish task progress
+        // independently, but no slot, reservation or context is released until all wrappers settle.
+        const cohort: ReservedTask[] = [];
+        while (cohort.length < taskConcurrency && nextTaskIndex < planOutcome.tasks.length && reservationBudget > 0) {
+          const task = planOutcome.tasks[nextTaskIndex];
+          const fullTaskCeiling = resolveTaskTurnCeiling(
+            config.composed?.max_turns_per_task,
+            COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+            task.paths?.length || 1,
+          );
+          // A partial tail is eligible only with an empty cohort: an already-funded sibling
+          // must first settle and refund unused turns before a later full ceiling is considered.
+          if (fullTaskCeiling > reservationBudget && cohort.length > 0) break;
+          const reservation = fullTaskCeiling <= reservationBudget
+            ? fullTaskCeiling
+            : resolveTaskTurnCeiling(config.composed?.max_turns_per_task, reservationBudget, task.paths?.length || 1);
+          cohort.push({ task, index: nextTaskIndex, reservedTurns: reservation });
+          reservationBudget -= reservation;
           nextTaskIndex += 1;
         }
-        throw error;
-      } finally {
-        signal?.removeEventListener('abort', onPanelAbort);
-      }
+        fundedTaskCount += cohort.length;
 
-      // Actual use, not reserved capacity, is charged. A task that finalizes early releases its
-      // remainder here for the next cohort while aggregate spend still cannot exceed the cap.
-      totalTurnsUsed += settled.reduce((used, item) => used + item.outcome.turnUsages.length, 0);
-
-      // Preserve the accepted plan's deterministic order for lane output and persistent receipt
-      // lines even when tasks in the cohort finish in a different order.
-      for (const { task, outcome } of settled) {
-        // Fold the PLAN phase's real provider spend into the first task lane that produces a
-        // result, retaining the existing cost/token accounting contract.
-        const turnUsagesForLane = !planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')
-          ? [...planOutcome.turnUsages, ...outcome.turnUsages]
-          : outcome.turnUsages;
-        if (!planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')) planUsageFolded = true;
-
-        if (outcome.type === 'complete') {
-          personas.push({
-            id: task.id,
-            required: true,
-            providerId,
-            model,
-            decision: outcome.findings.length > 0 ? 'FINDINGS' : 'APPROVE',
-            findings: outcome.findings,
-            usage: null,
-            costUSD: sumAggregateUsage(turnUsagesForLane).costUSD || null,
-            durationMs: outcome.durationMs,
-            turnsCount: outcome.turnUsages.length,
-            toolTurns: outcome.toolTurns,
-            turnUsages: turnUsagesForLane,
-            aggregateUsage: sumAggregateUsage(turnUsagesForLane),
-            toolCalls: outcome.toolCalls,
-          });
-          persistentMessages = [
-            ...persistentMessages,
-            { role: 'assistant', content: `Task ${task.id} complete.` },
-            { role: 'user', content: `[TASK ${task.id} COMPLETE -- ${outcome.findings.length} finding(s) recorded]` },
-          ];
-        } else if (outcome.type === 'blocked') {
-          optionalFailures.push({
-            id: task.id,
-            error: `Task ${task.id} (${task.dimension}) reported BLOCKED for path(s) [${task.paths.join(', ')}]: ${task.question}`,
-            failureClass: 'contract',
-          });
-          persistentMessages = [
-            ...persistentMessages,
-            { role: 'assistant', content: `Task ${task.id} blocked.` },
-            { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
-          ];
-        } else {
-          // Exhausted work remains absent from the returned roster and cannot satisfy coverage.
-          unreportedLanes.push(unreportedLaneFailure(task, 'exhausted', outcome.diagnostics));
-          logger.warn('[composed] task finalization incomplete', {
-            event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
-          });
+        const cohortAbort = new AbortController();
+        const onCohortAbort = () => cohortAbort.abort(signal?.reason);
+        if (signal?.aborted) cohortAbort.abort(signal.reason);
+        else signal?.addEventListener('abort', onCohortAbort, { once: true });
+        // Start every member of the frozen funded cohort before awaiting any individual branch.
+        const cohortPromises = cohort.map((reserved) => runReservedTask(reserved, [...persistentMessages], cohortAbort.signal));
+        let settled: SettledTask[];
+        try {
+          settled = await Promise.all(cohortPromises);
+        } catch (error) {
+          cohortAbort.abort(error);
+          // Join abort-raced wrappers, not raw retention producers that may never acknowledge.
+          await Promise.allSettled(cohortPromises);
+          skipRemainingForAbort();
+          throw error;
+        } finally {
+          signal?.removeEventListener('abort', onCohortAbort);
         }
+        throwIfPanelAborted(signal);
+        checkRetentionRun();
+
+        let cohortActualTurns = 0;
+        let cohortReservedTurns = cohort.reduce((sum, item) => sum + item.reservedTurns, 0);
+        for (const result of settled) {
+          const actualTurns = result.outcome.turnUsages.length;
+          cohortReservedTurns -= result.reservedTurns;
+          cohortActualTurns += actualTurns;
+          if (actualTurns > result.reservedTurns || totalTurnsUsed + cohortActualTurns + cohortReservedTurns > totalTurnBudget) {
+            throw new Error('composed task usage exceeded its reservation or the review turn budget');
+          }
+        }
+        // Charge actual usage exactly once, refund the whole cohort, then fold in plan order.
+        totalTurnsUsed += cohortActualTurns;
+        for (const result of settled) foldSettledTask(result);
       }
+    };
+
+    const runWorkConservingTasks = async () => {
+      while (nextTaskIndex < planOutcome.tasks.length || activeTasks.size > 0) {
+        throwIfPanelAborted(signal);
+        await Promise.resolve();
+        checkForFatalTask();
+        consumeSettledTasks();
+
+        while (activeTasks.size < taskConcurrency && nextTaskIndex < planOutcome.tasks.length) {
+          throwIfPanelAborted(signal);
+          // Drain the current event-loop turn before another admission. A sibling's rejection can
+          // still be propagating through async wrappers after a successful sibling wakes the
+          // scheduler; observe that fatal status before dispatching queued work. This yields once,
+          // without waiting for any still-running provider call.
+          await yieldToNextEventLoop();
+          throwIfPanelAborted(signal);
+          checkForFatalTask();
+          consumeSettledTasks();
+
+          const remaining = remainingBudget();
+          if (remaining <= 0) {
+            if (activeTasks.size === 0) {
+              while (nextTaskIndex < planOutcome.tasks.length) await skipForBudget(nextTaskIndex++);
+            }
+            break;
+          }
+
+          const available = remaining - reservedTurns;
+          if (available < 0) {
+            throw new Error('composed task reservations exceed the remaining review turn budget');
+          }
+
+          const task = planOutcome.tasks[nextTaskIndex];
+          const pathCount = task.paths?.length || 1;
+          const fullTaskCeiling = resolveTaskTurnCeiling(
+            config.composed?.max_turns_per_task,
+            COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+            pathCount,
+          );
+
+          if (fullTaskCeiling <= available) {
+            launchTask(nextTaskIndex, fullTaskCeiling);
+            nextTaskIndex += 1;
+            continue;
+          }
+
+          if (activeTasks.size > 0) {
+            // Do not partially fund a later task while an in-flight reservation may still be
+            // refunded. Wait for a settlement, then retry this same plan-order task.
+            break;
+          }
+
+          // Preserve serial-tail semantics: only with no active reservation left may the first
+          // remaining task consume a partial final budget.
+          const partialTail = resolveTaskTurnCeiling(
+            config.composed?.max_turns_per_task,
+            remaining,
+            pathCount,
+          );
+          launchTask(nextTaskIndex, partialTail);
+          nextTaskIndex += 1;
+        }
+
+        if (activeTasks.size === 0) {
+          if (nextTaskIndex >= planOutcome.tasks.length) break;
+          // A task should have been launched whenever positive budget and an empty active set
+          // remain. Re-enter the dispatch loop rather than sleeping on an empty Promise.race.
+          continue;
+        }
+        await Promise.race([...activeTasks.values()].map((active) => active.settled));
+      }
+    };
+
+    try {
+      if (retention) await runRetainedCohorts();
+      else await runWorkConservingTasks();
+      throwIfPanelAborted(signal);
+      checkRetentionRun();
+    } catch (error) {
+      await abortAndWait(error);
+    } finally {
+      signal?.removeEventListener('abort', onPanelAbort);
     }
     span.setAttribute('review_yeti.composed.funded_task_count', fundedTaskCount);
 
