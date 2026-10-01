@@ -717,7 +717,7 @@ describe('Challenger M3-2 Empirical Stress Tests: Prefix-Cache Invariants & Turn
       const result = buildScopedDiffSection(files, { maxFileDiffChars: 50_000 });
       expect(result.skippedPaths).toEqual(['src/minified.bundle.js']);
       expect(result.inlinedPaths).toEqual(['src/normal.ts']);
-      expect(result.diffText).toContain('(SKIPPED: 200000 chars > max-file-diff-chars 50000)');
+      expect(result.diffText).toContain('(OVERSIZED: 200000 chars; use get_diff_page or read_file_page in bounded pages)');
       expect(result.diffText).toContain('<untrusted_diff_data file="src/normal.ts">');
       expect(result.diffText).not.toContain('<untrusted_diff_data file="src/minified.bundle.js">');
     });

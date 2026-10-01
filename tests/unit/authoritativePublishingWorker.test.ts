@@ -978,6 +978,7 @@ describe('authoritative prepared publishing worker', () => {
       // reason the exact-call assertion below should drift on its own.
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
+        readFileAt: expect.any(Function), readDiff: expect.any(Function),
       },
       isCurrentHead: undefined,
       deterministicRoster: true,
