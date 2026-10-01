@@ -1,3 +1,4 @@
+import { MAX_PINNED_SOURCE_BYTES } from '../panel/toolLimits';
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
@@ -991,13 +992,13 @@ export class GitHubInstallationClient {
       // blob it names, within the same admitted source bound, rather than return
       // its empty placeholder as verified source.
       if (data.encoding === 'none' && /^[0-9a-f]{40}$/u.test(data.sha || '')
-        && Number.isSafeInteger(data.size) && data.size <= 8_000_000) {
+        && Number.isSafeInteger(data.size) && data.size <= MAX_PINNED_SOURCE_BYTES) {
         const blob = await this.request(`/repos/${owner}/${repo}/git/blobs/${data.sha}`);
         if (blob.sha !== data.sha || blob.encoding !== 'base64' || typeof blob.content !== 'string') {
           throw new Error('Source blob identity mismatch');
         }
         const bytes = Buffer.from(blob.content.replace(/\n/g, ''), 'base64');
-        if (bytes.length !== data.size || bytes.length > 8_000_000) throw new Error('Source blob size mismatch');
+        if (bytes.length !== data.size || bytes.length > MAX_PINNED_SOURCE_BYTES) throw new Error('Source blob size mismatch');
         return bytes.toString('utf8');
       }
       if (data.encoding === 'none') return null;

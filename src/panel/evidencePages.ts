@@ -1,11 +1,30 @@
+import { MAX_PINNED_SOURCE_BYTES } from './toolLimits';
 import { createHash } from 'node:crypto';
 import type { ToolRuntimeContext, ToolRuntimeResult } from './toolRuntime';
 import { classifyUnavailablePatch } from '../review/patchAvailability';
 import { normalizeRepoPath } from './pathMatch';
-import { raceWithPanelAbort, throwIfPanelAborted } from './panelEngine';
+import { raceWithPanelAbort, throwIfPanelAborted } from './panelAbort';
 
 /** Offsets count UTF-16 code units, so even one enormous source line is pageable. */
 export const EVIDENCE_PAGE_MAX_CHARS = 32_000;
+// A run's provider owns a bounded cache; different reviews cannot reuse receipts.
+const digestCaches = new WeakMap<object, Map<string, { text: string; digest: string; bytes: number }>>();
+function evidenceDigest(owner: object, key: string, text: string): string {
+  let cache = digestCaches.get(owner);
+  if (!cache) { cache = new Map(); digestCaches.set(owner, cache); }
+  const hit = cache.get(key);
+  if (hit?.text === text) return hit.digest;
+  const digest = createHash('sha256').update(key).update('\0').update(text).digest('hex');
+  const bytes = Buffer.byteLength(text);
+  cache.delete(key);
+  if (bytes <= MAX_PINNED_SOURCE_BYTES) cache.set(key, { text, digest, bytes });
+  let total = [...cache.values()].reduce((sum, entry) => sum + entry.bytes, 0);
+  while (cache.size > 32 || total > 16_000_000) {
+    const oldest = cache.keys().next().value!;
+    total -= cache.get(oldest)!.bytes; cache.delete(oldest);
+  }
+  return digest;
+}
 
 export async function readEvidencePage(
   tool: 'get_diff_page' | 'read_file_page', args: any, context: ToolRuntimeContext,
@@ -36,7 +55,7 @@ export async function readEvidencePage(
   try {
     if (tool === 'get_diff_page') {
       const original = context.repoFileProvider?.readDiff
-        ? context.repoFileProvider.readDiff(path) : context.changedFiles.find((file) => file.path === path);
+        ? context.repoFileProvider.readDiff(path) : (context.originalChangedFiles ?? context.changedFiles).find((file) => file.path === path);
       if (typeof original?.patch !== 'string' || classifyUnavailablePatch(original.patch) !== null
         || (original.originalPatchLength ?? 0) > original.patch.length) {
         return result({ status: 'unavailable', reason: 'original_diff_unavailable', path });
@@ -57,7 +76,8 @@ export async function readEvidencePage(
     return result({ status: 'unavailable', reason: 'source_lookup_failed', path });
   }
   throwIfPanelAborted(context.signal);
-  const digest = createHash('sha256').update(JSON.stringify({ identity, sha, side: args.side, path, text })).digest('hex');
+  const digest = evidenceDigest(context.repoFileProvider ?? context.originalChangedFiles ?? context.changedFiles,
+    JSON.stringify({ identity, sha, side: args.side, path }), text);
   if (args.digest !== undefined && args.digest !== digest) return result({ status: 'invalid', reason: 'evidence_digest_mismatch', path });
   const startOffset = args.startOffset ?? 0;
   if (startOffset > text.length) return result({ status: 'invalid', reason: 'offset_out_of_range', path });

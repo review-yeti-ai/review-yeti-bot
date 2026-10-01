@@ -94,6 +94,45 @@ describe('GitHubInstallationClient.getFileTree', () => {
 
 
 describe('pinned source identities', () => {
+  it.each([
+    { sha: 'c'.repeat(40), encoding: 'base64', content: 'eA==' },
+    { sha: 'a'.repeat(40), encoding: 'none', content: 'x' },
+    { sha: 'a'.repeat(40), encoding: 'base64', content: 42 },
+    { sha: 'a'.repeat(40), encoding: 'base64', content: 'eHg=' },
+  ])('rejects unverified large blob bytes: %j', async (blob) => {
+    const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
+    (client as any).request = vi.fn(async (url: string) => url.includes('/git/blobs/') ? blob
+      : { sha: 'a'.repeat(40), encoding: 'none', content: '', size: 1 });
+    await expect(client.getFileContent('o', 'r', 'x', 'b'.repeat(40), { notFoundIsEmpty: true }))
+      .rejects.toThrow(/Source blob (identity|size) mismatch/);
+  });
+
+  it('does not fetch a contents placeholder above the admitted byte limit', async () => {
+    const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
+    (client as any).request = vi.fn(async () => ({ sha: 'a'.repeat(40), encoding: 'none', size: 8_000_001 }));
+    expect(await client.getFileContent('o', 'r', 'x', 'b'.repeat(40))).toBeNull();
+    expect((client as any).request).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds pinned source cache entries and bytes without changing revisions', async () => {
+    const github = stubGitHub({ getFileContent: async () => 'x' });
+    const provider = createRepoFileProvider(github, 'o', 'r', 'a'.repeat(40));
+    for (let i = 0; i < 33; i++) await provider.readFileAt!(`p${i}`, 'head');
+    await provider.readFileAt!('p32', 'head');
+    expect(github.getFileContent).toHaveBeenCalledTimes(33);
+    await provider.readFileAt!('p0', 'head');
+    expect(github.getFileContent).toHaveBeenCalledTimes(34);
+    const large = stubGitHub({ getFileContent: async () => 'x'.repeat(6_000_000) });
+    const bounded = createRepoFileProvider(large, 'o', 'r', 'a'.repeat(40));
+    for (const path of ['a', 'b', 'c']) await bounded.readFileAt!(path, 'head');
+    await bounded.readFileAt!('c', 'head');
+    expect(large.getFileContent).toHaveBeenCalledTimes(3);
+    await bounded.readFileAt!('a', 'head');
+    expect(large.getFileContent).toHaveBeenCalledTimes(4);
+    const oversized = createRepoFileProvider(stubGitHub({ getFileContent: async () => 'x'.repeat(8_000_001) }), 'o', 'r', 'a'.repeat(40));
+    expect(await oversized.readFileAt!('huge', 'head')).toEqual({ sha: 'a'.repeat(40), content: null });
+  });
+
   it('rejects a compare response for the wrong admitted base', async () => {
     const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
     (client as any).request = vi.fn(async () => ({ base_commit: { sha: 'c'.repeat(40) }, merge_base_commit: { sha: 'd'.repeat(40) } }));

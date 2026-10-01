@@ -452,6 +452,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build bot dist for the context-copied image
+        # The ARM runner's default V8 heap is ~2 GiB; Next's typecheck exceeds
+        # it on the current source tree (main run 36933675579). Keep the
+        # existing runner and checks, with room below its memory ceiling.
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
         run: |
           set -euo pipefail
           npm ci
