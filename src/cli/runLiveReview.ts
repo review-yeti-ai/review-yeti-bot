@@ -38,6 +38,7 @@ import { logger } from '../utils/logger';
 import { isPrepPhase, runPrepPhase } from '../review/prepPhase';
 import { isContinuationPhase, runContinuationPhase } from '../review/continuationPhase';
 import workerSelfTestModules from './workerSelfTestModules.json';
+import { verifyWorkerRuntimeManifest } from './workerRuntimeManifest';
 
 export interface WorkerAuthConfig {
   appId: string;
@@ -1492,23 +1493,7 @@ export async function runWorkerSelfTest(
   moduleLoader: (moduleId: string) => unknown = require,
 ): Promise<WorkerSelfTestResult> {
   const manifestPath = env.REVIEW_RUNTIME_MANIFEST_PATH?.trim() || '/app/runtime-manifest.json';
-  let manifestBytes: Buffer;
-  try {
-    manifestBytes = await readFile(manifestPath);
-  } catch {
-    throw new Error('worker runtime manifest is missing');
-  }
-  let manifest: unknown;
-  try {
-    manifest = JSON.parse(manifestBytes.toString('utf8'));
-  } catch {
-    throw new Error('worker runtime manifest is invalid');
-  }
-  if (!manifest || typeof manifest !== 'object' ||
-      (manifest as { version?: unknown }).version !== 'ReviewYetiWorkerRuntime.v1' ||
-      (manifest as { entrypoint?: unknown }).entrypoint !== 'dist/cli/runLiveReview.js') {
-    throw new Error('worker runtime manifest is invalid');
-  }
+  const runtimeManifestDigest = await verifyWorkerRuntimeManifest(manifestPath);
   const loadedModuleIds: string[] = [];
   for (const moduleId of WORKER_SELF_TEST_MODULES) {
     moduleLoader(moduleId);
@@ -1517,7 +1502,7 @@ export async function runWorkerSelfTest(
   return {
     ok: true,
     nodeVersion: process.versions.node,
-    runtimeManifestDigest: createHash('sha256').update(manifestBytes).digest('hex'),
+    runtimeManifestDigest,
     loadedModuleIds,
   };
 }
