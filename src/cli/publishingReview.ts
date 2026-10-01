@@ -1216,7 +1216,7 @@ export async function runPublishingReviewWorker(
         }));
     // One immutable, content-free snapshot for both native and legacy terminal boundaries.
     const operationalTelemetry = executionProgress?.snapshot?.();
-    if (operationalTelemetry) {
+    if (operationalTelemetry && (operationalTelemetry.providerCalls.started > 0 || value(env, 'REVIEW_TERMINAL_DEADLINE'))) {
       const total=tokenLedger.snapshot().total;
       if(total.calls>0) {
         const withLedger=normalizeOperationalTelemetry({...operationalTelemetry,ledger:{basis:'returned_responses_including_shadow',availability:'partial',...total}});
@@ -1522,7 +1522,7 @@ export async function runPublishingReviewWorker(
     // engine gets its own label so its cost never reads as panel cost.
     // Phase events describe only this gating publisher execution. Shadow review remains separate
     // non-gating evidence; the existing token ledger continues to account for its provider spend.
-    const progress = createPublishingProgress(identity, { now });
+    const progress = createPublishingProgress(identity);
     executionProgress = progress;
     const client = meterModelClient(progress.instrument(modelClient), tokenLedger);
     const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });

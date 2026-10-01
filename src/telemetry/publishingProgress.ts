@@ -330,9 +330,8 @@ export function createPublishingProgress(
     } catch { /* unsafe optional event metadata is ignored */ }
   };
 
-  return {
+  const reporter: PublishingProgressReporter = {
     emit,
-    snapshot,
     instrument(client: ReviewModelClient): ReviewModelClient {
       return {
         complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
@@ -403,4 +402,7 @@ export function createPublishingProgress(
       };
     },
   };
+  // Preserve the existing enumerable panelRunner contract; this is local observation only.
+  Object.defineProperty(reporter, 'snapshot', {value:snapshot, enumerable:false});
+  return reporter;
 }

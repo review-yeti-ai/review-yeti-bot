@@ -174,6 +174,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           stage TEXT NOT NULL DEFAULT 'admission',
           result_digest VARCHAR(64),
           error_text TEXT,
+          burst_started_at TIMESTAMPTZ, cancel_requested_at TIMESTAMPTZ, cancel_propagated_at TIMESTAMPTZ,
           failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
           artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           lease_owner TEXT,
