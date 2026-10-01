@@ -27,6 +27,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -43,15 +44,17 @@ import (
 // ConcurrencyMonitor tracks active unsuspended worker Jobs created in real-time,
 // recording any instant where the active count exceeds the configured limit.
 type ConcurrencyMonitor struct {
-	mu          sync.Mutex
-	activeJobs  int32
-	maxObserved int32
-	violations  []string
-	limit       int32
+	workerMu      sync.Mutex
+	activeWorkers map[client.ObjectKey]bool
+	mu            sync.Mutex
+	activeJobs    int32
+	maxObserved   int32
+	violations    []string
+	limit         int32
 }
 
 func NewConcurrencyMonitor(limit int32) *ConcurrencyMonitor {
-	return &ConcurrencyMonitor{limit: limit}
+	return &ConcurrencyMonitor{limit: limit, activeWorkers: make(map[client.ObjectKey]bool)}
 }
 
 func (m *ConcurrencyMonitor) MaxObservedActive() int32 {
@@ -68,31 +71,81 @@ func (m *ConcurrencyMonitor) Violations() []string {
 	return copied
 }
 
+// Pod counters and precursor conditions do not establish Job completion.
+// This is a test oracle, deliberately separate from controller admission code.
+func committedWorkerConsumesCapacity(stored *batchv1.Job) bool {
+	if stored.Spec.Suspend != nil && *stored.Spec.Suspend {
+		return false
+	}
+	for _, condition := range stored.Status.Conditions {
+		if condition.Status == corev1.ConditionTrue &&
+			(condition.Type == batchv1.JobComplete || condition.Type == batchv1.JobFailed) {
+			return false
+		}
+	}
+	return true
+}
+
+// Serialize Job mutation plus readback so each successful committed key
+// transition is observed once. Non-Job operations remain unconstrained.
+func (m *ConcurrencyMonitor) observeMutation(ctx context.Context, c client.Client, obj client.Object, mutate func() error) error {
+	if _, ok := obj.(*batchv1.Job); !ok {
+		return mutate()
+	}
+	m.workerMu.Lock()
+	defer m.workerMu.Unlock()
+	if err := mutate(); err != nil {
+		return err
+	}
+	key := client.ObjectKeyFromObject(obj)
+	var stored batchv1.Job
+	err := c.Get(ctx, key, &stored)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	active := err == nil && committedWorkerConsumesCapacity(&stored)
+	if active == m.activeWorkers[key] {
+		return nil
+	}
+	var delta int32 = -1
+	if active {
+		delta = 1
+		m.activeWorkers[key] = true
+	} else {
+		delete(m.activeWorkers, key)
+	}
+	curr := atomic.AddInt32(&m.activeJobs, delta)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if curr > m.maxObserved {
+		m.maxObserved = curr
+	}
+	if delta > 0 && curr > m.limit {
+		m.violations = append(m.violations,
+			fmt.Sprintf("Limit %d exceeded: %d active after committed mutation of %s", m.limit, curr, key.Name))
+	}
+	return nil
+}
+
 func (m *ConcurrencyMonitor) InterceptorFuncs() interceptor.Funcs {
 	return interceptor.Funcs{
 		Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
-			if j, ok := obj.(*batchv1.Job); ok {
-				if j.Spec.Suspend == nil || !*j.Spec.Suspend {
-					curr := atomic.AddInt32(&m.activeJobs, 1)
-					m.mu.Lock()
-					if curr > m.maxObserved {
-						m.maxObserved = curr
-					}
-					if curr > m.limit {
-						m.violations = append(m.violations, fmt.Sprintf("Limit %d exceeded: %d active on Create of %s", m.limit, curr, j.Name))
-					}
-					m.mu.Unlock()
-				}
-			}
-			return c.Create(ctx, obj, opts...)
+			return m.observeMutation(ctx, c, obj, func() error { return c.Create(ctx, obj, opts...) })
 		},
 		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-			if j, ok := obj.(*batchv1.Job); ok {
-				if j.Status.Succeeded > 0 || j.Status.Failed > 0 {
-					atomic.AddInt32(&m.activeJobs, -1)
-				}
-			}
-			return c.Update(ctx, obj, opts...)
+			return m.observeMutation(ctx, c, obj, func() error { return c.Update(ctx, obj, opts...) })
+		},
+		Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			return m.observeMutation(ctx, c, obj, func() error { return c.Delete(ctx, obj, opts...) })
+		},
+		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+			return m.observeMutation(ctx, c, obj, func() error { return c.Patch(ctx, obj, patch, opts...) })
+		},
+		SubResourceUpdate: func(ctx context.Context, c client.Client, subresource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			return m.observeMutation(ctx, c, obj, func() error { return c.SubResource(subresource).Update(ctx, obj, opts...) })
+		},
+		SubResourcePatch: func(ctx context.Context, c client.Client, subresource string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+			return m.observeMutation(ctx, c, obj, func() error { return c.SubResource(subresource).Patch(ctx, obj, patch, opts...) })
 		},
 	}
 }
