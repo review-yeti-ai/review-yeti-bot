@@ -100,7 +100,9 @@ describe('mergeZoektToolConfig — the panel-owned lookup policy (REL-677)', () 
 describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
   it('injects the grounded indexDir into both pre_checks.zoekt and evidence.zoekt', async () => {
     const panelRunner = vi.fn(async () => basePanel());
-    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch' }));
+    const indexScope = { complete: false, excludedDirectories: ['build'], fileLimitBytes: 2097152,
+      repository: 'calltelemetry/ct-meta', headSha: HEAD };
+    const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch', indexScope }));
     const signal = new AbortController().signal;
     await runPublishingReviewWorker(
       env({ ZOEKT_INDEX_BIN: '/opt/zoekt/zoekt-index' }),
@@ -124,6 +126,15 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
     // Single-surface contract: evidence.zoekt carries the grounding; the panel owns propagation.
     expect(panelArg.config.evidence.zoekt.indexDir).toBe('/tmp/fake-index');
+    expect(panelArg.config.evidence.zoekt.indexScope).toEqual(indexScope);
+    const session = panelArg.config.evidence.zoekt.searchSession;
+    expect(session.call).toBeTypeOf('function');
+    // Invalid queries still consume the shared per-run call budget, without
+    // spawning a process or needing a real index. Engine config owns one handle.
+    let last;
+    for (let i = 0; i < 64; i++) last = await session.call('zoekt_search', { query: '' });
+    expect(last).toMatchObject({ reason: 'call_budget_exhausted', indexScope,
+      identity: { repository: 'calltelemetry/ct-meta', headSha: HEAD } });
   });
 
   it('leaves the panel config untouched when grounding resolves without an index', async () => {
