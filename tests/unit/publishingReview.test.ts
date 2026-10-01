@@ -2908,7 +2908,7 @@ it('keeps content-free answered-call observations in the native thrown-infrastru
     REVIEW_CONFIG_DIGEST:prepared.policy.effectiveConfigDigest,REVIEW_PREPARED_CONFIG_JSON:JSON.stringify({version:'PreparedReviewExecution.v1',config:prepared.config,transport}),
     REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/api/dispatch/completion',REVIEW_MODEL:transport.model,OPENAI_BASE_URL:transport.baseUrl,
     GITHUB_PUBLISH_TOKEN:'ghs_fake',REVIEW_REPOSITORY_VISIBILITY:'PRIVATE',REVIEW_YETI_SKIP_EMPTY_MODERATION:'true',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+900_000).toISOString()});
-  const reportReviewResult=vi.fn(async()=>{});
+  const reportReviewResult=vi.fn(async(_event: Parameters<HttpWorkerReviewCompletionAdapter['reportReviewResult']>[0])=>{});
   const client={complete:vi.fn(async()=>({model:transport.model,content:'SECRET response',usage:{prompt:11,completion:7,total:18},costUSD:null,raw:{}}))};
   const original=new OpenRouterConnectionError('fetch failed: SECRET transport detail');
   const panelRunner=vi.fn(async(input:any)=>{expect(input.skipEmptyModeration).toBe(true);await input.client.complete({model:transport.model,messages:[],timeoutMs:1000});throw original;});
