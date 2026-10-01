@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   COMPOSED_TASK_CONCURRENCY_CEILING,
+  buildTaskScopedFiles,
+  buildTaskScopedPrefix,
   executeComposedReview,
   orderReviewTasksByRisk,
   resolveComposedEngineMaxFindings,
@@ -1858,6 +1860,175 @@ describe('executeComposedReview', () => {
     expect(task1Persona?.decision).toBe('FINDINGS');
 
     // Downstream canonical arbitration should compute BLOCK
+    const arbitration = computeArbitration(result.personas, result.applicablePersonaIds!.length, {
+      changedFiles: CODE_FILES,
+      coverageComplete: true,
+      panelSize: 1,
+    });
+    expect(arbitration.verdict).toBe('BLOCK');
+  });
+
+  describe('buildTaskScopedFiles and buildTaskScopedPrefix', () => {
+    const multiFiles = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() {}' },
+      { path: 'src/db/migrate.ts', patch: '@@ -1,1 +1,2 @@\n+export function migrate() {}' },
+      { path: 'src/ui/button.tsx', patch: '@@ -1,1 +1,2 @@\n+export function Button() {}' },
+    ];
+
+    it('scopes effective files strictly to task paths when paths match', () => {
+      const task = { id: 'task-auth', dimension: 'security' as const, paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' };
+      const scoped = buildTaskScopedFiles(task, multiFiles);
+      expect(scoped).toEqual([multiFiles[0]]);
+    });
+
+    it('falls back to all effective files when task paths are unassigned or empty', () => {
+      const task = { id: 'task-arch', dimension: 'architecture' as const, paths: [], question: 'Overall arch?', rationale: 'Arch.' };
+      const scoped = buildTaskScopedFiles(task, multiFiles);
+      expect(scoped).toEqual(multiFiles);
+    });
+
+    it('builds a scoped prefix containing only assigned file diffs and sets task scope header', () => {
+      const task = { id: 'task-auth', dimension: 'security' as const, paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' };
+      const prefix = buildTaskScopedPrefix({
+        task,
+        effectiveFiles: multiFiles,
+        domainLanes: { 'src/auth/guard.ts': 'security_auth', 'src/db/migrate.ts': 'data_persistence', 'src/ui/button.tsx': 'ui_frontend' },
+        repository: 'acme/test-repo',
+        headSha: 'abc1234',
+        repositoryVisibility: 'PUBLIC',
+        rules: ['Rule 1'],
+        preCheckEvidence: {},
+      });
+
+      expect(prefix).toContain('TASK SCOPE: src/auth/guard.ts');
+      expect(prefix).toContain('export function guard()');
+      expect(prefix).not.toContain('export function migrate()');
+      expect(prefix).not.toContain('export function Button()');
+    });
+  });
+
+  it('isolates subagent swarm context so tasks only receive diffs for their assigned paths', async () => {
+    const multiFiles = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() {}' },
+      { path: 'src/db/migrate.ts', patch: '@@ -1,1 +1,2 @@\n+export function migrate() {}' },
+    ];
+    const taskAuthMessages: any[] = [];
+    const taskDbMessages: any[] = [];
+
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      const text = lastText(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' },
+            { id: 'task-db', dimension: 'architecture', paths: ['src/db/migrate.ts'], question: 'DB safe?', rationale: 'DB.' },
+          ],
+        }));
+      }
+
+      if (text.includes('Task id: task-auth')) {
+        taskAuthMessages.push(...payload.messages);
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-auth', status: 'COMPLETE', findings: [] }));
+      }
+      if (text.includes('Task id: task-db')) {
+        taskDbMessages.push(...payload.messages);
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-db', status: 'COMPLETE', findings: [] }));
+      }
+
+      return fakeResponse(JSON.stringify({ nonce, task: 'unknown', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: multiFiles,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(result.personas).toHaveLength(2);
+    expect(result.personas.map((p) => p.decision)).toEqual(['APPROVE', 'APPROVE']);
+
+    // Verify task-auth only received guard.ts diff and NOT migrate.ts diff
+    const authTranscript = JSON.stringify(taskAuthMessages);
+    expect(authTranscript).toContain('export function guard()');
+    expect(authTranscript).not.toContain('export function migrate()');
+
+    // Verify task-db only received migrate.ts diff and NOT guard.ts diff
+    const dbTranscript = JSON.stringify(taskDbMessages);
+    expect(dbTranscript).toContain('export function migrate()');
+    expect(dbTranscript).not.toContain('export function guard()');
+  });
+
+  it('finalizes review early and blocks immediately when a P0 blocker finding is found', async () => {
+    let taskAuthExecuted = false;
+    let taskDbExecuted = false;
+
+    const multiFiles = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() { return true; }' },
+      { path: 'src/db/migrate.ts', patch: '@@ -1,1 +1,2 @@\n+export function migrate() { return true; }' },
+    ];
+
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      const text = lastText(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' },
+            { id: 'task-db', dimension: 'architecture', paths: ['src/db/migrate.ts'], question: 'DB safe?', rationale: 'DB.' },
+          ],
+        }));
+      }
+
+      if (text.includes('Task id: task-auth')) {
+        taskAuthExecuted = true;
+        return fakeResponse(JSON.stringify({
+          nonce,
+          task: 'task-auth',
+          status: 'COMPLETE',
+          findings: [
+            {
+              path: 'src/auth/guard.ts',
+              line: 1,
+              severity: 'P0',
+              title: 'Critical bypass',
+              body: 'Authentication check is unconditionally bypassed.',
+            },
+          ],
+        }));
+      }
+
+      if (text.includes('Task id: task-db')) {
+        taskDbExecuted = true;
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-db', status: 'COMPLETE', findings: [] }));
+      }
+
+      return fakeResponse(JSON.stringify({ nonce, task: 'unknown', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: multiFiles,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(taskAuthExecuted).toBe(true);
+    // Quorum is satisfied because unstarted/aborted tasks are populated with clean approvals
+    expect(result.personas).toHaveLength(2);
+    expect(result.unreportedLanes).toEqual([]);
+
+    const taskAuthPersona = result.personas.find((p) => p.id === 'task-auth');
+    expect(taskAuthPersona?.decision).toBe('FINDINGS');
+    expect(taskAuthPersona?.findings).toHaveLength(1);
+    expect(taskAuthPersona?.findings[0].severity).toBe('P0');
+
+    // Downstream canonical arbitration must compute BLOCK
     const arbitration = computeArbitration(result.personas, result.applicablePersonaIds!.length, {
       changedFiles: CODE_FILES,
       coverageComplete: true,
