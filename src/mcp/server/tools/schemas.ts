@@ -66,15 +66,17 @@ export interface ReviewActiveProjection {
  *   must not be presented as interchangeable with a cluster-side queue metric.
  */
 export interface ReviewTiming {
+  /** Lifecycle spans include projection, worker scheduling and setup; not pure model execution. */
+  basis: 'control_plane_lifecycle';
   /** Durable delivery receipt (`review_runs.received_at`). */
   received_at: string | null;
   /** Row insert (`review_runs.created_at`). */
   created_at: string | null;
   /** Debounce burst window open (`review_runs.burst_started_at`). */
   burst_started_at: string | null;
-  /** A worker claimed the run for execution (`review.lifecycle.dispatched`). */
+  /** Control-plane dispatch claim (`review.lifecycle.dispatched`). */
   dispatched_at: string | null;
-  /** A worker durably began executing the run (`review.lifecycle.started`). */
+  /** Durable control-plane start/projection (`review.lifecycle.started`), not a pod start. */
   started_at: string | null;
   /**
    * Run reached a terminal instant. Populated only for terminal runs: the
@@ -89,12 +91,12 @@ export interface ReviewTiming {
   /** Deadline after which the run is considered abandoned. */
   terminal_deadline: string | null;
   /**
-   * Seconds from receipt to durable worker claim, control-plane only.
+   * Seconds from receipt to durable control-plane claim/projection.
    * Null until a claim has actually happened (never a count-up to "now").
    */
   queue_seconds: number | null;
   /**
-   * Seconds from durable worker claim to terminal instant.
+   * Seconds from durable control-plane start to terminal instant, including worker scheduling/setup.
    * NULL for any run that has not terminated -- including one whose sub-steps
    * have individually finished. Derived only when both ends are durable.
    */
@@ -108,7 +110,7 @@ export interface ReviewStatusOutput {
   verdict: 'SHIP' | 'NACK' | 'COMMENT' | 'FIX_FIRST' | 'PENDING' | 'RUNNING' | 'FAILED';
   attempt_id: string | null;
   head_sha: string | null;
-  phase: 'queued' | 'evaluating_personas' | 'arbitration' | 'completed';
+  phase: 'queued' | 'running' | 'evaluating_personas' | 'arbitration' | 'completed' | 'unknown';
   check_run: ReviewCheckRun | null;
   active_worker: ReviewActiveWorker | null;
   /** Additive durable projection identity; never masquerades as a Pod or Job. */

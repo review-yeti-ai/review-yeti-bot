@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.101.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.4...v1.101.5) (2026-10-01)
+
+
+### Bug Fixes
+
+* **mcp:** report current review lifecycle phase truthfully ([#1188](https://github.com/review-yeti-ai/review-yeti-bot/issues/1188)) ([ebae015](https://github.com/review-yeti-ai/review-yeti-bot/commit/ebae01592bcd00bab0ed43c3e817a46d4b663a69))
+
+## [1.101.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.3...v1.101.4) (2026-10-01)
+
+
+### Bug Fixes
+
+* **publishing:** size work within admitted lifecycle ([#1193](https://github.com/review-yeti-ai/review-yeti-bot/issues/1193)) ([ec4cbd3](https://github.com/review-yeti-ai/review-yeti-bot/commit/ec4cbd33509431b253548c58b3f3419337512d8e))
+
+## [1.101.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.2...v1.101.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* enforce 15-minute review deadline ([#1184](https://github.com/review-yeti-ai/review-yeti-bot/issues/1184)) ([a557775](https://github.com/review-yeti-ai/review-yeti-bot/commit/a55777530a54cd75736815405e02613f1c3f68e3))
+
 ## [1.101.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.1...v1.101.2) (2026-10-01)
 
 

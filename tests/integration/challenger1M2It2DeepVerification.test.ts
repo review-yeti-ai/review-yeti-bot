@@ -499,7 +499,9 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
       expect(data.attempt_id).toBeNull();
       expect(data.check_run).toBeNull();
       expect(data.active_worker).toBeNull();
-      expect(data.phase).toBe('queued');
+      expect(data.phase).toBe('unknown');
+      expect(data.run_id).toBeUndefined();
+      expect(data.timing).toBeUndefined();
       expect(data.message).toBe('Database service is unavailable');
     });
   });

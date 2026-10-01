@@ -14,7 +14,7 @@ describe('publishingWorkerConfig', () => {
       }) }, { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'not-persisted', model: 'review-model' });
 
       expect(config.default_max_turns).toBe(expected);
-      expect(config.reviewers.overall_timeout_s).toBe(1800);
+      expect(config.reviewers.overall_timeout_s).toBe(3000);
       expect(config.reviewers.providers).toEqual([expect.objectContaining({
         id: 'bifrost', model: 'review-model', review_timeout_s: 180, arbiter_timeout_s: 180,
       })]);
