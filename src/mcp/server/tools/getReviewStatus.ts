@@ -14,6 +14,7 @@ import {
 import {
   projectReviewStatusPhase,
   projectReviewStatusVerdict,
+  matchesReviewStatusIdentity,
 } from '../reviewStatusVerdict';
 
 export interface ReviewStatusDbClient {
@@ -102,11 +103,12 @@ export function buildReviewTiming(
   // marker is preferred; the terminal updated_at write is the fallback.
   const completedAt = runIsTerminal ? (terminalMarker ?? isoOrNull(row.updated_at)) : null;
 
-  // The queue wait ends when a worker actually claimed the run: the started
-  // marker when present, else the dispatch marker. Null until that happens.
+  // The queue span ends at the durable control-plane start/projection (or
+  // dispatch claim). Actual worker scheduling may happen later.
   const claimedAt = startedAt ?? dispatchedAt;
 
   return {
+    basis: 'control_plane_lifecycle',
     received_at: receivedAt,
     created_at: createdAt,
     burst_started_at: isoOrNull(row.burst_started_at),
@@ -185,7 +187,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           verdict: 'PENDING',
           attempt_id: null,
           head_sha: head_sha ?? null,
-          phase: 'queued',
+          phase: 'unknown',
           check_run: null,
           active_worker: null,
           message: 'Database service is unavailable',
@@ -227,42 +229,48 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         }
       } catch {
         // Fallback if review_gate_attempts does not exist in schema
-        if (head_sha) {
-          const sql = `
-            SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
-                   r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
-                   r.created_at, r.updated_at, r.artifacts,${REVIEW_RUN_TIMING_COLUMNS}
-              FROM review_runs r
-             WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
-               AND (r.head_sha = $4 OR r.head_sha LIKE ($4 || '%'))
-             ORDER BY r.created_at DESC
-             LIMIT 1
-          `;
-          result = await db.query(sql, [owner, repo, pull_number, head_sha]);
-        } else {
-          const sql = `
-            SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
-                   r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
-                   r.created_at, r.updated_at, r.artifacts,${REVIEW_RUN_TIMING_COLUMNS}
-              FROM review_runs r
-             WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
-             ORDER BY
-               CASE WHEN r.status IN ('queued', 'running', 'publishing') THEN 0
-                    WHEN r.status IN ('succeeded', 'complete') THEN 1 ELSE 2 END ASC,
-               r.created_at DESC
-             LIMIT 1
-          `;
-          result = await db.query(sql, [owner, repo, pull_number]);
+        try {
+          if (head_sha) {
+            const sql = `
+              SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
+                     r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
+                     r.created_at, r.updated_at, r.artifacts,${REVIEW_RUN_TIMING_COLUMNS}
+                FROM review_runs r
+               WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
+                 AND (r.head_sha = $4 OR r.head_sha LIKE ($4 || '%'))
+               ORDER BY r.created_at DESC
+               LIMIT 1
+            `;
+            result = await db.query(sql, [owner, repo, pull_number, head_sha]);
+          } else {
+            const sql = `
+              SELECT r.run_id, r.owner, r.repo, r.pr_number, r.head_sha, r.status AS run_status,
+                     r.stage AS run_stage, r.attempt, r.lease_owner, r.lease_expires_at,
+                     r.created_at, r.updated_at, r.artifacts,${REVIEW_RUN_TIMING_COLUMNS}
+                FROM review_runs r
+               WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
+               ORDER BY
+                 CASE WHEN r.status IN ('queued', 'running', 'publishing') THEN 0
+                      WHEN r.status IN ('succeeded', 'complete') THEN 1 ELSE 2 END ASC,
+                 r.created_at DESC
+               LIMIT 1
+            `;
+            result = await db.query(sql, [owner, repo, pull_number]);
+          }
+        } catch {
+          // Read uncertainty is metadata only: never render database error text
+          // or imply a queued/completed review from an unavailable service.
+          result = { rows: [] };
         }
       }
 
-      if (!result || result.rows.length === 0) {
+      if (!result || !matchesReviewStatusIdentity(result.rows[0], { owner, repo, pullNumber: pull_number, headSha: head_sha })) {
         return buildToolResultJson({
           found: false,
           verdict: 'PENDING',
           attempt_id: null,
           head_sha: head_sha ?? null,
-          phase: 'queued',
+          phase: 'unknown',
           check_run: null,
           active_worker: null,
           message: `No review run found for ${owner}/${repo} PR #${pull_number}`,

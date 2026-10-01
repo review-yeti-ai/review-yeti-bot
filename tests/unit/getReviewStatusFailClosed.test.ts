@@ -345,7 +345,7 @@ const verdictProjectionCases: Array<{
     name: 'in-progress state without a decision remains RUNNING',
     row: baseRow({ run_status: 'queued', desired_state: 'in_progress', decision: null }),
     expected: 'RUNNING',
-    expectedPhase: 'queued',
+    expectedPhase: 'running',
   },
   {
     name: 'successful legacy run without gate or decision remains SHIP',

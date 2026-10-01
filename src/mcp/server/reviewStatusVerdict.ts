@@ -152,7 +152,17 @@ export function projectReviewStatusVerdict(input: {
   return fallbackVerdict(input.desiredState, input.runStatus);
 }
 
-/** Projects current-gate terminality while retaining the run row's live phase. */
+/** A cached or malformed row must never answer for another requested identity. */
+export function matchesReviewStatusIdentity(row: unknown, input: {
+  owner: string; repo: string; pullNumber: number; headSha?: string;
+}): boolean {
+  return isRecord(row) && row.owner === input.owner && row.repo === input.repo
+    && row.pr_number === input.pullNumber && typeof row.head_sha === 'string'
+    && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu.test(row.head_sha)
+    && (!input.headSha || row.head_sha.toLowerCase().startsWith(input.headSha.toLowerCase()));
+}
+
+/** Current native lifecycle wins over lagging run projection, not approval. */
 export function projectReviewStatusPhase(input: {
   desiredState: unknown;
   runStatus: unknown;
@@ -164,11 +174,20 @@ export function projectReviewStatusPhase(input: {
     || input.desiredState === 'timed_out') {
     return 'completed';
   }
-  if (input.runStatus === 'queued') return 'queued';
+  if (hasGateState(input.desiredState)
+    && input.desiredState !== 'queued' && input.desiredState !== 'in_progress') return 'unknown';
+  if (input.runStatus === 'queued') {
+    // Projection acknowledgement advances the native App gate before the run
+    // row or worker pod. It proves control-plane progress, not persona work.
+    return input.desiredState === 'in_progress' ? 'running' : 'queued';
+  }
   if (input.runStatus === 'running' || input.runStatus === 'publishing') {
     return input.runStage === 'arbitration' || input.runStage === 'publish'
       ? 'arbitration'
       : 'evaluating_personas';
   }
-  return 'completed';
+  if (input.desiredState === 'queued' || input.desiredState === 'in_progress') return 'unknown';
+  return typeof input.runStatus === 'string'
+    && ['succeeded', 'complete', 'completed', 'failed', 'cancelled', 'superseded', 'terminal']
+      .includes(input.runStatus) ? 'completed' : 'unknown';
 }
