@@ -123,11 +123,16 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
     let output = '';
     child.stdout?.on('data', (chunk) => { output += chunk.toString('utf8'); });
     child.stderr?.on('data', (chunk) => { output += chunk.toString('utf8'); });
+    let watchdog: NodeJS.Timeout | undefined;
 
     try {
       const exit = await Promise.race([
         once(child, 'exit'),
-        delay(4_000).then(() => { throw new Error(`PostgreSQL startup probe exceeded deadline: ${output}`); }),
+        // Cold ts-node startup competes with the full CI shard's workers.
+        // This bounds fixture startup, not the application's error contract.
+        new Promise<never>((_resolve, reject) => {
+          watchdog = setTimeout(() => reject(new Error(`PostgreSQL startup probe exceeded deadline: ${output}`)), 15_000);
+        }),
       ]);
 
       expect(exit).toEqual([1, null]);
@@ -139,11 +144,12 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
       expect(output).not.toContain('raw-provider-detail');
       expect(output).not.toContain('synthetic-db-password');
     } finally {
+      clearTimeout(watchdog);
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       for (const socket of sockets) socket.destroy();
       if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     }
-  }, 10_000);
+  }, 20_000);
 
   it('falls back seamlessly to PVC file storage when DATABASE_URL is unconfigured', () => {
     delete process.env.DATABASE_URL;
