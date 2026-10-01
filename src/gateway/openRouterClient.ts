@@ -105,6 +105,12 @@ export interface OpenRouterRequest {
   maxRetryDelayMs?: number;
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
+  /** Internal publishing diagnostics only; removed by the worker wrapper before provider dispatch. */
+  internalProgress?: {
+    turn: number;
+    task?: 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task';
+    lane?: string;
+  };
 }
 
 export interface TokensUsed {

@@ -19,6 +19,7 @@ import { dashboardStore } from '../../persistence/dashboardStore';
 import { CtReviewConfigV3 } from '../../config/schema';
 import { mcpFleetManager } from '../../mcp/mcpFleetManager';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
+import { createPublishingProgress } from '../../telemetry/publishingProgress';
 
 const mockYaml = `
 version: 3
@@ -77,6 +78,99 @@ describe('PanelEngine (src/panel) — Exception Propagation & Fail-Closed Verifi
       title: 'Title',
       body: 'Body',
     }]);
+  });
+
+  it.each([
+    {
+      name: 'an invalid line',
+      finding: { severity: 'P1', path: 'src/auth/jwt.ts', line: 0, title: 'Synthetic', body: 'Synthetic.' },
+      code: 'finding_line_invalid',
+      hint: 'Use a positive integer line number; remove the finding if no exact line can be supplied.',
+    },
+    {
+      name: 'an invalid severity',
+      finding: { severity: 'HIGH', path: 'src/auth/jwt.ts', line: 1, title: 'Synthetic', body: 'Synthetic.' },
+      code: 'finding_severity_invalid',
+      hint: 'Use exactly one declared severity value: P0, P1, or P2. Do not relabel or infer severity.',
+    },
+  ])('uses a fixed $name hint in the existing correction budget and still rejects invalid output', async ({ finding, code, hint }) => {
+    const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-classic-finding-correction', executionAttempt: 1 }, { sink: (event) => events.push(event) });
+    const calls: any[] = [];
+    const complete = vi.fn(async (request: any) => {
+      calls.push(request);
+      const text = request.messages.map((message: any) => typeof message.content === 'string'
+        ? message.content
+        : Array.isArray(message.content) ? message.content.map((part: any) => part.text || '').join('\n') : '').join('\n');
+      const nonce = text.match(/CT_REVIEW_BEGIN:([a-f0-9-]+)/)?.[1] || 'nonce-fixture';
+      return {
+        id: 'response',
+        model: 'ghp_fixture_response_model_12345',
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify({ decision: 'FINDINGS', findings: [finding] })}\nCT_REVIEW_END:${nonce}`,
+        usage: { prompt: 3, completion: 2, total: 5 },
+        costUSD: 0,
+        raw: {},
+      };
+    });
+
+    await expect(executePersonaPanel({
+      config,
+      changedFiles: [{ path: 'src/auth/jwt.ts', patch: '@@ -0,0 +1,2 @@\n+const a = 1;\n+const b = 2;' }],
+      repository: 'test/repo', headSha: 'abc1234',
+      client: progress.instrument({ complete }), progress,
+    })).rejects.toMatchObject({ failureClass: 'malformed_output' });
+
+    expect(calls).toHaveLength(4); // two bounded attempts, each with at most one correction turn
+    const correctionTexts = calls.slice(1).map((request) => request.messages.map((message: any) => typeof message.content === 'string'
+      ? message.content
+      : Array.isArray(message.content) ? message.content.map((part: any) => part.text || '').join('\n') : '').join('\n'));
+    expect(correctionTexts.some((text) => text.includes('STRUCTURED_OUTPUT_CORRECTION') && text.includes(hint))).toBe(true);
+    const rejectedOutputs = events.filter((event) => event.task === 'provider_output' && event.status === 'rejected');
+    expect(rejectedOutputs).toHaveLength(calls.length);
+    expect(rejectedOutputs.every((event) => event.rejectionCode === code)).toBe(true);
+    expect(rejectedOutputs.every((event) => !Object.hasOwn(event, 'turn'))).toBe(true);
+    const providerCalls = events.filter((event) => event.task === 'provider_call' && event.status === 'started');
+    expect(providerCalls).toHaveLength(calls.length);
+    expect(providerCalls.every((event) => event.model === 'codex/gpt-5.6-sol-high')).toBe(true);
+    expect(JSON.stringify(events)).not.toContain('ghp_fixture_response_model_12345');
+  });
+
+  it('keeps classic findings shape-only when the supplied patch is truncated', async () => {
+    const config = parseAndValidateConfig(mockYaml) as unknown as CtReviewConfigV3;
+    const finding = { severity: 'P1', path: 'src/auth/jwt.ts', line: 120, title: 'Synthetic', body: 'Synthetic.' };
+    const partialPatch = '@@ -1,1 +1,1 @@\n-old line\n+new line\n\n... [Diff truncated by Smart Hunk Filter] ...';
+    const truncatedFile = { path: 'src/auth/jwt.ts', patch: partialPatch, originalPatchLength: 45_000 };
+    const complete = vi.fn(async (request: any) => {
+      const text = request.messages.map((message: any) => typeof message.content === 'string'
+        ? message.content
+        : Array.isArray(message.content) ? message.content.map((part: any) => part.text || '').join('\n') : '').join('\n');
+      const nonce = text.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/)?.[1] || 'nonce-fixture';
+      const role = request.metadata?.role;
+      const result = role === 'persona'
+        ? { decision: 'FINDINGS', findings: [finding] }
+        : role === 'moderator'
+          ? { decision: 'RECONCILED', findings: [finding] }
+          : { verdict: 'FIX_FIRST', rationale: 'The reported change needs a fix.' };
+      return {
+        id: `response-${role}`,
+        model: 'codex/gpt-5.6-sol-high',
+        content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(result)}\nCT_REVIEW_END:${nonce}`,
+        usage: { prompt: 3, completion: 2, total: 5 },
+        costUSD: 0,
+        raw: {},
+      };
+    });
+
+    const result = await executePersonaPanel({
+      config,
+      changedFiles: [truncatedFile],
+      repository: 'test/repo', headSha: 'abc1234',
+      client: { complete },
+    });
+
+    expect(result.personas[0]).toMatchObject({ decision: 'FINDINGS', findings: [finding] });
+    expect(complete).toHaveBeenCalled();
   });
 
   // REL-940: a transport failure now retries on a bounded exponential

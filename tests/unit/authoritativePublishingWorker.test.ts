@@ -20,6 +20,7 @@ import { isInfrastructureIncompleteResult } from '../../src/review/publicationFa
 import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import { unreportedLaneFailure } from '../../src/panel/composedEngine';
+import type { OpenRouterRequest } from '../../src/gateway/openRouterClient';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
@@ -90,11 +91,11 @@ function fixture(options: { reviewEngine?: 'panel' | 'composed' | 'shadow' } = {
     visibilityLookup: vi.fn(async () => 'PRIVATE' as const), reviewCompletion: { reportReviewResult } };
   const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
-  vi.spyOn(logger, 'info').mockImplementation(() => undefined);
+  const infoLog = vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   // Fail closed even if a future change accidentally escapes the injected seams.
   const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
   return { env, deps, prepared, envelope, panel, source, checkClient, sourceLoader, panelRunner,
-    client, reportReviewResult, legacyFailure, errorLog, fetch };
+    client, reportReviewResult, legacyFailure, errorLog, infoLog, fetch };
 }
 
 function expectedEvent(f: ReturnType<typeof fixture>, result: WorkerReviewResult) {
@@ -151,7 +152,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       );
       try {
         await started;
-        await vi.advanceTimersByTimeAsync(59_999);
+        await vi.advanceTimersByTimeAsync(58_999);
         expect(f.reportReviewResult).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(1);
         // Must leave the existing 60s worker receipt reserve AND 60s gate reserve.
@@ -216,7 +217,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     const pending = runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
     try {
       await started;
-      await vi.advanceTimersByTimeAsync(49_999);
+      await vi.advanceTimersByTimeAsync(48_999);
       expect(f.reportReviewResult).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
@@ -270,8 +271,8 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     let lateScratch: string | undefined;
     try {
       await groundingStarted;
-      // The absolute deadline is 180s away; the panel cutoff is 120s earlier.
-      await vi.advanceTimersByTimeAsync(60_000);
+      // The absolute deadline is 180s away; both reserves plus the Go floor leave 59s.
+      await vi.advanceTimersByTimeAsync(59_000);
       expect(groundingSignal?.aborted).toBe(true);
       expect(f.reportReviewResult).toHaveBeenCalledOnce();
       expect(f.panelRunner).not.toHaveBeenCalled();
@@ -380,7 +381,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     );
     try {
       await groundingStarted;
-      await vi.advanceTimersByTimeAsync(59_999);
+      await vi.advanceTimersByTimeAsync(58_999);
       expect(f.reportReviewResult).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
@@ -834,6 +835,81 @@ describe('authoritative prepared publishing worker', () => {
     })).toMatchObject({ valid: true, evidence: { verdict: 'SHIP', expectedLanes: 1, completedLanes: 1 } });
   });
 
+  it('wires admitted composed plan and task calls through progress and token attribution wrappers', async () => {
+    const f = fixture({ reviewEngine: 'composed' });
+    const modelTaskId = 'task-a';
+    const taskPlan = [{ id: modelTaskId, dimension: 'architecture' as const, paths: ['src/a.ts'],
+      question: 'Does this change preserve the contract?', rationale: 'The changed source needs review.' }];
+    const requestsSeenByRunner: OpenRouterRequest[] = [];
+    const privatePrompt = 'credential-shaped-task-plan-prompt';
+    const providerResponseModel = 'ghp_fixture_response_model_123456';
+    f.client.complete.mockImplementation(async () => ({
+      model: providerResponseModel,
+      content: 'private provider response payload',
+      usage: { prompt: 13, completion: 7, total: 20, cache_read_input_tokens: 3 },
+      costUSD: 0.02,
+      raw: { private: 'raw response' },
+    }));
+    f.deps.composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>(async (options) => {
+      const planRequest: OpenRouterRequest = {
+        model: transport.model,
+        messages: [{ role: 'user', content: privatePrompt }],
+        timeoutMs: 1_000,
+        providerId: 'bifrost',
+        internalProgress: { task: 'composed_plan', turn: 1 },
+      };
+      const taskRequest: OpenRouterRequest = {
+        model: transport.model,
+        messages: [{ role: 'user', content: 'private task prompt' }],
+        timeoutMs: 1_000,
+        providerId: 'bifrost',
+        internalProgress: { task: 'composed_task', lane: 'composed-task-1', turn: 1 },
+      };
+      requestsSeenByRunner.push(planRequest, taskRequest);
+      await options.client.complete(planRequest);
+      await options.client.complete(taskRequest);
+      return { ...f.panel, taskPlan, applicablePersonaIds: [modelTaskId],
+        personas: [{ ...f.panel.personas[0], id: modelTaskId }] };
+    });
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(requestsSeenByRunner.map((request) => request.internalProgress?.task)).toEqual(['composed_plan', 'composed_task']);
+    expect(requestsSeenByRunner[1]?.internalProgress?.lane).toBe('composed-task-1');
+    expect(f.client.complete).toHaveBeenCalledTimes(2);
+    for (const [forwarded] of f.client.complete.mock.calls) {
+      expect(forwarded).not.toHaveProperty('internalProgress');
+      expect(forwarded).toHaveProperty('maxTokens', PUBLISHING_MAX_OUTPUT_TOKENS);
+    }
+
+    const progressEvents = f.infoLog.mock.calls
+      .filter(([message]) => message === 'Publishing review progress')
+      .map(([, fields]) => fields as Record<string, unknown>)
+      .filter((fields) => fields.task === 'provider_call');
+    expect(progressEvents).toHaveLength(4);
+    expect(progressEvents.map(({ role, lane, status, model }) => ({ role, lane, status, model }))).toEqual([
+      { role: 'composed_plan', lane: undefined, status: 'started', model: transport.model },
+      { role: 'composed_plan', lane: undefined, status: 'completed', model: transport.model },
+      { role: 'composed_task', lane: 'composed-task-1', status: 'started', model: transport.model },
+      { role: 'composed_task', lane: 'composed-task-1', status: 'completed', model: transport.model },
+    ]);
+
+    const accounting = f.infoLog.mock.calls
+      .find(([message]) => message === 'Review token accounting')?.[1] as Record<string, unknown> | undefined;
+    const tokensByLane = accounting?.tokensByLane as Record<string, unknown> | undefined;
+    expect(accounting).toMatchObject({
+      providerCalls: 2,
+      tokensByOther: { 'composed-plan': { calls: 1, prompt: 13, completion: 7, cached: 3 } },
+      tokensByLane: { 'composed-task-1': { calls: 1, prompt: 13, completion: 7, cached: 3 } },
+    });
+    expect(Object.keys(tokensByLane ?? {})).toEqual(['composed-task-1']);
+    const diagnostics = JSON.stringify({ progressEvents, accounting });
+    expect(diagnostics).not.toContain(modelTaskId);
+    expect(diagnostics).not.toContain(providerResponseModel);
+    expect(diagnostics).not.toContain(privatePrompt);
+    expect(diagnostics).not.toContain('private provider response payload');
+  });
+
   it('executes the exact admitted config instead of mutable policy, persona, and turn environment', async () => {
     const f = fixture();
     Object.assign(f.env, { REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
@@ -848,6 +924,12 @@ describe('authoritative prepared publishing worker', () => {
       client: { complete: expect.any(Function) },
       jobId: f.env.REVIEW_RUN_ID, baseSha: BASE, prNumber: 42,
       signal: expect.any(AbortSignal),
+      deadlineBudget: expect.objectContaining({
+        deadlineAtMs: expect.any(Number),
+        timeoutMs: expect.any(Number),
+        terminalBound: expect.any(Boolean),
+      }),
+      deadlineNow: expect.any(Function),
       // This fixture's GH_TOKEN is a real `ghs_`-shaped read token and no
       // repoFileProviderFactory is injected, so the worker wires the default
       // full-repository grounding provider (REL- full-repo grounding): a
@@ -856,7 +938,9 @@ describe('authoritative prepared publishing worker', () => {
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
       },
+      isCurrentHead: undefined,
       deterministicRoster: true,
+      progress: { emit: expect.any(Function), instrument: expect.any(Function) },
       requestPolicy: { responseFormat: { type: 'json_object' } },
     });
     expect(f.panelRunner.mock.calls[0][0].config.default_max_turns).toBe(1);

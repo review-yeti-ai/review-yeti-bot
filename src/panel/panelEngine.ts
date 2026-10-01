@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCall } from './nativeTurnProtocol';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
-import { workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
+import { workerTerminalDeadlineAtMs, workerPanelDeadlineBudget, type WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, isSameFile, ZoektPreCheckResult } from '../services/zoektPreCheckService';
 import {
   executeSymbolResolutionAppendix,
@@ -37,6 +37,12 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { runInSpan, getMetrics } from '../telemetry';
 import { recordProviderCallTokenMetrics } from '../telemetry/tokenLedger';
+import {
+  findingCorrectionForCode,
+  findingRejectionCodeForCode,
+  safePublishingRejectionCode,
+  type PublishingProgressReporter,
+} from '../telemetry/publishingProgress';
 import { evaluateEffortAndBudget } from '../pipeline/tokenBudgetManager';
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { isRedTeamPersona, resolveDualModel, RED_TEAM_CHARTER_DEFAULT } from '../personas/redTeamPersona';
@@ -483,9 +489,13 @@ export class PanelInfrastructureError extends PanelConfigurationError {
 
 /** The configured panel deadline elapsed; this is distinct from a provider request timeout. */
 export class PanelDeadlineExceededError extends PanelCancellationError {
-  constructor(timeoutMs: number) {
-    super(`review panel exceeded overall timeout of ${Math.ceil(timeoutMs / 1000)}s`);
+  readonly failureClass = 'timeout' as const;
+  readonly failureReason: string;
+  constructor(timeoutMs: number, terminalBound = false) {
+    super(terminalBound ? 'review panel exceeded admitted terminal model-work deadline'
+      : `review panel exceeded overall timeout of ${Math.ceil(timeoutMs / 1000)}s`);
     this.name = 'PanelDeadlineExceededError';
+    this.failureReason = terminalBound ? 'worker_terminal_deadline_exceeded' : 'worker_deadline_exceeded';
   }
 }
 
@@ -509,26 +519,42 @@ export function throwIfPanelAborted(signal?: AbortSignal): void {
 export function createPanelDeadlineSignal(
   overallTimeoutSeconds: number,
   parentSignal?: AbortSignal,
-): { signal: AbortSignal; cleanup: () => void; timeoutMs: number } {
-  const timeoutMs = Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
-    ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
-    : 900_000;
+  requestedBudget?: WorkerPanelDeadlineBudget,
+  requestedNow?: () => number,
+): { signal: AbortSignal; cleanup: () => void; check: () => void; timeoutMs: number; budget: WorkerPanelDeadlineBudget; now: () => number } {
+  const now = requestedNow ?? Date.now;
+  let budget = requestedBudget ?? workerPanelDeadlineBudget(overallTimeoutSeconds, {}, now());
+  budget = Object.freeze({ ...budget });
+  const timeoutMs = Math.max(0, budget.deadlineAtMs - now());
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const expire = () => {
+    if (!controller.signal.aborted) controller.abort(new PanelDeadlineExceededError(timeoutMs, budget.terminalBound));
+  };
+  const check = () => {
+    // A blocked event loop or a deferred invocation cannot turn an expired budget into a 1ms call.
+    if (now() >= budget.deadlineAtMs) expire();
+    throwIfPanelAborted(controller.signal);
+  };
   const onParentAbort = () => {
     if (!controller.signal.aborted) controller.abort(panelAbortError(parentSignal));
   };
 
   if (parentSignal?.aborted) {
     onParentAbort();
+  } else if (timeoutMs === 0) {
+    expire();
   } else {
     parentSignal?.addEventListener('abort', onParentAbort, { once: true });
-    timer = setTimeout(() => controller.abort(new PanelDeadlineExceededError(timeoutMs)), timeoutMs);
+    timer = setTimeout(expire, timeoutMs);
   }
 
   return {
     signal: controller.signal,
     timeoutMs,
+    budget,
+    now,
+    check,
     cleanup: () => {
       if (timer !== undefined) clearTimeout(timer);
       parentSignal?.removeEventListener('abort', onParentAbort);
@@ -589,9 +615,17 @@ export function panelDelay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export class PanelFindingsValidationError extends Error {
-  constructor(message: string) {
+  readonly findingFailureCode:
+    | 'contract_invalid' | 'path_invalid' | 'path_not_changed' | 'line_invalid' | 'line_not_added'
+    | 'line_unanchorable' | 'severity_invalid';
+
+  constructor(
+    message: string,
+    findingFailureCode: PanelFindingsValidationError['findingFailureCode'] = 'contract_invalid',
+  ) {
     super(message);
     this.name = 'PanelFindingsValidationError';
+    this.findingFailureCode = findingFailureCode;
   }
 }
 
@@ -1193,7 +1227,21 @@ export function validateFindings(value: unknown, changedFiles?: Array<{ path: st
   const validation = validateReviewFindings(value, changedFiles);
   if (!validation.valid) {
     const suffix = validation.index === undefined ? '' : ` at index ${validation.index}`;
-    throw new PanelFindingsValidationError(`invalid findings contract${suffix}: ${validation.error || 'unknown validation error'}`);
+    const findingFailureCode: PanelFindingsValidationError['findingFailureCode'] = (() => {
+      switch (validation.error) {
+        case 'finding path must be a relative non-empty string': return 'path_invalid';
+        case 'finding path must name a changed file': return 'path_not_changed';
+        case 'finding line must be an integer greater than zero': return 'line_invalid';
+        case 'finding line must identify an added line in the changed file': return 'line_not_added';
+        case 'finding cannot be anchored because the changed file has no line hunk': return 'line_unanchorable';
+        case 'finding severity must be P0, P1, or P2': return 'severity_invalid';
+        default: return 'contract_invalid';
+      }
+    })();
+    throw new PanelFindingsValidationError(
+      `invalid findings contract${suffix}: ${validation.error || 'unknown validation error'}`,
+      findingFailureCode,
+    );
   }
   const findings = validation.findings as PanelFinding[];
   if (Array.isArray(value)) {
@@ -1923,6 +1971,8 @@ async function invoke(
      * before this option existed.
      */
     compaction?: { enabled?: boolean } & MessageWindowPolicy;
+    /** Enabled only for the publishing worker; stripped before the provider client is called. */
+    diagnosticProgress?: boolean;
     /**
      * REL-1082 (`REVIEW_YETI_BUDGET`): the lane's budgeted inline content. The diff section is
      * built from `promptFiles` instead of `payload.changedFiles` (which the read-only tools keep
@@ -2303,6 +2353,7 @@ async function invoke(
           persona: requestPersona,
           ...(options?.providerId ? { providerId: options.providerId } : {}),
           ...(effectiveOnFirstToken ? { onFirstToken: effectiveOnFirstToken } : {}),
+          ...(options?.diagnosticProgress ? { internalProgress: { turn: iter + 1 } } : {}),
           metadata: {
             ...(turnRequestPolicy?.metadata || {}),
             role,
@@ -2661,6 +2712,7 @@ async function runPersona(
   allowDashboardOverrides = true,
   /** REL-1082: this lane's review-budget pack; absent sends today's content. */
   laneBudgetPack?: LaneBudgetPack,
+  progress?: PublishingProgressReporter,
 ) {
   return runInSpan(`review_yeti_persona_lane`, async (span) => {
     throwIfPanelAborted(signal);
@@ -2920,6 +2972,7 @@ async function runPersona(
             repoFileProvider,
             onFirstToken: (requestPolicy as any)?.onFirstToken,
             signal,
+            diagnosticProgress: Boolean(progress),
             compaction: { enabled: resolveTurnWindowCompactionEnabled(config as { turn_window_compaction?: boolean }) },
             ...(lanePacked && laneBudgetPack ? {
               reviewBudget: {
@@ -2934,6 +2987,17 @@ async function runPersona(
                 const findings = validateFindings((candidate as any)?.findings);
                 return personaDecisionContractError((candidate as any)?.decision, findings);
               } catch (error: any) {
+                if (error instanceof PanelFindingsValidationError) {
+                  const correction = findingCorrectionForCode(error.findingFailureCode);
+                  progress?.emit({
+                    task: 'provider_output',
+                    status: 'rejected',
+                    role: 'persona',
+                    lane: persona.id,
+                    rejectionCode: findingRejectionCodeForCode(error.findingFailureCode),
+                  });
+                  return correction ? `${error.message}. ${correction.hint}` : error.message;
+                }
                 return error instanceof Error ? error.message : String(error);
               }
             },
@@ -3630,6 +3694,8 @@ export async function executePersonaPanel(options: {
   prNumber?: number;
   client: ReviewModelClient;
   jobId?: string;
+  /** Explicit publisher-owned reporter; non-publishing callers emit no publishing phase events. */
+  progress?: PublishingProgressReporter;
   requestPolicy?: PanelRequestPolicy;
   generateArchitecturalFlowchart?: boolean;
   isCurrentHead?: () => boolean;
@@ -3638,6 +3704,10 @@ export async function executePersonaPanel(options: {
   repositoryVisibility?: RepositoryVisibility;
   /** Caller cancellation is linked to the configured overall panel deadline. */
   signal?: AbortSignal;
+  /** Fixed caller cutoff; nested panel setup must not restart the worker's budget. */
+  deadlineBudget?: WorkerPanelDeadlineBudget;
+  /** Clock paired with `deadlineBudget`; inherited from `signal` for nested engines. */
+  deadlineNow?: () => number;
   workspaceRoot?: string;
   /** Service-authoritative runs use only immutable prepared config and exact
    * path applicability; mutable dashboard overrides and model pruning cannot
@@ -3662,9 +3732,17 @@ export async function executePersonaPanel(options: {
   /** REL-1139: diff headers the caller could not read (files never sent here); any makes the skip ineligible. */
   unreadableDiffHeaders?: number;
 }): Promise<PanelResult> {
-  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal);
+  const admittedBudget = options.deadlineBudget;
+  const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
+    admittedBudget, options.deadlineNow);
   const panelStartedAt = Date.now();
-  const remainingPanelTimeoutMs = () => deadline.timeoutMs - (Date.now() - panelStartedAt);
+  const remainingPanelTimeoutMs = () => {
+    // Only an admitted worker context adds synchronous absolute expiry. Standalone
+    // callers retain their existing local timer and transport-backoff contracts.
+    if (admittedBudget) deadline.check();
+    else throwIfPanelAborted(deadline.signal);
+    return deadline.budget.deadlineAtMs - deadline.now();
+  };
   // REL-1079: the shrink disclosure is recorded by the same call that shrinks, and
   // attached to whichever result this run returns.
   let diffShrinkDisclosure: DiffShrinkDisclosure | null = null;
@@ -3682,10 +3760,12 @@ export async function executePersonaPanel(options: {
   // REL-1083: chunk plans for lanes larger than one budget, and what each chunked lane that ran did.
   let mapReducePlan: MapReducePlan | null = null;
   const mapReduceLanes = new Map<string, MapReduceLaneDisclosure>();
+  const progress = options.progress;
+  progress?.emit({ task: 'panel', status: 'started' });
   return runInSpan<PanelResult>('review_yeti_panel', async (span): Promise<PanelResult> => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, generateArchitecturalFlowchart, isCurrentHead, repoFileProvider } = options;
     const signal = deadline.signal;
-    throwIfPanelAborted(signal);
+    deadline.check();
     const repositoryVisibility = normalizeRepositoryVisibility(options.repositoryVisibility ?? 'UNKNOWN');
     const runId = Math.random().toString(36).slice(2);
     const runKey = `${repository}#${headSha}`;
@@ -4179,12 +4259,16 @@ export async function executePersonaPanel(options: {
     }
 
     const laneQueueWaitMs = new Map<string, number>();
+    const laneStartedAt = new Map<string, number>();
     const laneFanoutStartedAt = Date.now();
     const settledResults: PromiseSettledResult<{ persona: any; result: any; error: any }>[] =
       await mapConcurrentSettled(
         applicable,
         MAX_CONCURRENT_PERSONAS,
         async (persona) => {
+          const startedAt = Date.now();
+          laneStartedAt.set(persona.id, startedAt);
+          progress?.emit({ task: 'persona_lane', status: 'started', role: 'persona', lane: persona.id, required: persona.required });
           const stillCurrent = isCurrentHead ? isCurrentHead() : true;
           const currentActiveId = activeRuns.get(runKey);
           if (!stillCurrent || currentActiveId !== runId) {
@@ -4201,6 +4285,10 @@ export async function executePersonaPanel(options: {
 
           if (gating.skipped) {
             logger.info(`Skipping persona ${persona.id}: ${gating.skipReason}`);
+            progress?.emit({
+              task: 'persona_lane', status: 'skipped', role: 'persona', lane: persona.id, required: persona.required,
+              durationMs: Date.now() - startedAt,
+            });
             return {
               persona,
               result: {
@@ -4272,6 +4360,7 @@ export async function executePersonaPanel(options: {
               budgetOverride,
               !options.deterministicRoster,
               lanePack,
+              progress,
             );
             // REL-1083: a lane larger than one budget runs as chunks plus a reduce pass and
             // returns one result under its own id; every other lane is one call, as today.
@@ -4282,7 +4371,7 @@ export async function executePersonaPanel(options: {
                 plan: chunkPlan,
                 limiter: chunkLimiter,
                 concurrency: mapReducePlan.concurrency,
-                deadlineAtMs: Math.min(Date.now() + remainingPanelTimeoutMs(), mapReducePlan.deadlineAtMs ?? Infinity),
+                deadlineAtMs: Math.min(deadline.budget.deadlineAtMs, mapReducePlan.deadlineAtMs ?? Infinity),
                 sharingLanes: mapReducePlan.lanes.size,
                 signal,
                 runChunk: async (chunk) => (await runLane(chunk.pack)) as PersonaLaneResult,
@@ -4301,9 +4390,33 @@ export async function executePersonaPanel(options: {
                   && (error.failureClass === 'rate_limit' || error.failureClass === 'transport'),
               });
               mapReduceLanes.set(persona.id, mapped.disclosure);
+              progress?.emit({
+                task: 'persona_lane', status: 'completed', role: 'persona', lane: persona.id, required: persona.required,
+                ...(mapped.result.providerId ? { provider: mapped.result.providerId } : {}),
+                durationMs: Date.now() - startedAt,
+                usage: {
+                  promptTokens: mapped.result.promptTokens,
+                  completionTokens: mapped.result.completionTokens,
+                  totalTokens: mapped.result.totalTokens,
+                  cachedTokens: mapped.result.aggregateUsage?.cachedTokens,
+                  costUSD: mapped.result.costUSD || 0,
+                },
+              });
               return { persona, result: mapped.result, error: undefined };
             }
             const result = await runLane(reviewBudgetPlan?.packs.get(persona.id));
+            progress?.emit({
+              task: 'persona_lane', status: 'completed', role: 'persona', lane: persona.id, required: persona.required,
+              ...(result.providerId ? { provider: result.providerId } : {}),
+              durationMs: Date.now() - startedAt,
+              usage: {
+                promptTokens: result.promptTokens,
+                completionTokens: result.completionTokens,
+                totalTokens: result.totalTokens,
+                cachedTokens: result.aggregateUsage?.cachedTokens,
+                costUSD: result.costUSD || 0,
+              },
+            });
             return { persona, result, error: undefined };
           } finally {
             activeInFlightPersonas--;
@@ -4349,6 +4462,20 @@ export async function executePersonaPanel(options: {
       const lastKnownModel: string | undefined = reason instanceof PanelConfigurationError ? reason.lastKnownModel : undefined;
       const failureClass: WorkerFailureClass | undefined = reason instanceof PanelConfigurationError ? reason.failureClass : undefined;
       const failureReason: string | undefined = reason instanceof PanelConfigurationError ? reason.failureReason : undefined;
+      progress?.emit({
+        task: 'persona_lane',
+        status: deadline.signal.aborted ? 'aborted' : 'failed',
+        role: 'persona',
+        lane: persona.id,
+        required: persona.required,
+        durationMs: Date.now() - (laneStartedAt.get(persona.id) ?? Date.now()),
+        rejectionCode: safePublishingRejectionCode(reason, deadline.signal),
+        ...(lastKnownUsage ? { usage: {
+          promptTokens: lastKnownUsage.promptTokens,
+          completionTokens: lastKnownUsage.completionTokens,
+          totalTokens: lastKnownUsage.totalTokens,
+        } } : {}),
+      });
       // REL-904 lane/provider attribution: the coded failure class (auth, rate_limit,
       // transport, provider_error, ...) is what separates a provider outage from a lane
       // logic defect. Attributes stay in the closed workerFailureClasses vocabulary.
@@ -4537,6 +4664,7 @@ export async function executePersonaPanel(options: {
           requestPolicy,
           signal,
           inactivityTimeoutMs: moderatorInactivityTimeoutMs,
+          diagnosticProgress: Boolean(progress),
           validateParsed: (candidate) => {
             try {
               validateFindings((candidate as any)?.findings);
@@ -4660,6 +4788,7 @@ export async function executePersonaPanel(options: {
             requestPolicy,
             signal,
             inactivityTimeoutMs: arbiterInactivityTimeoutMs,
+            diagnosticProgress: Boolean(progress),
           });
           let verdict = run.parsed?.verdict;
           if (verdict === 'APPROVE' || verdict === 'PASSED' || verdict === 'SUCCESS') verdict = 'SHIP';
@@ -4842,5 +4971,17 @@ export async function executePersonaPanel(options: {
     .then((result) => attachReviewDepthDisclosure(result, depthDisclosure))
     .then((result) => attachReviewBudgetDisclosure(result, reviewBudgetPlan, mapReduceKeepTruncated(mapReduceLanes)))
     .then((result) => attachMapReduceDisclosure(result, mapReducePlan, mapReduceLanes, reviewBudgetPlan))
+    .then((result) => {
+      progress?.emit({ task: 'panel', status: 'completed', durationMs: Date.now() - panelStartedAt });
+      return result;
+    }, (error: unknown) => {
+      progress?.emit({
+        task: 'panel',
+        status: deadline.signal.aborted ? 'aborted' : 'failed',
+        durationMs: Date.now() - panelStartedAt,
+        rejectionCode: safePublishingRejectionCode(error, deadline.signal),
+      });
+      throw error;
+    })
     .finally(deadline.cleanup);
 }

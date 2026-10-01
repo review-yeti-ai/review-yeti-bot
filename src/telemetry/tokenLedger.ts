@@ -19,6 +19,7 @@
  */
 import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../gateway/openRouterClient';
 import { resolveCachedTokens } from '../gateway/openRouterClient';
+import { MAX_TASKS_HARD_CAP } from '../reviewTaskContract';
 import { getMetrics } from './metrics';
 
 export interface TokenUsageTotals {
@@ -92,8 +93,21 @@ export function addTokenUsage(into: TokenUsageTotals, usage: TokenUsageTotals): 
 
 /** Where a request's usage belongs. `forcedLabel` pins every call of one wrapped client (e.g. the
  * composed shadow engine) to a single `other` bucket regardless of the labels it sets. */
-export function attributeRequest(request: Pick<OpenRouterRequest, 'persona' | 'metadata'>, forcedLabel?: string): { role: TokenRole; key: string } {
+export function attributeRequest(
+  request: Pick<OpenRouterRequest, 'persona' | 'metadata' | 'internalProgress'>,
+  forcedLabel?: string,
+): { role: TokenRole; key: string } {
   if (forcedLabel) return { role: 'other', key: forcedLabel };
+  // Composed review attribution is an internal-only marker. It is consumed here, before
+  // PublishingProgressReporter strips it from the provider request.
+  if (request.internalProgress?.task === 'composed_plan') return { role: 'other', key: 'composed-plan' };
+  if (request.internalProgress?.task === 'composed_task') {
+    const lane = request.internalProgress.lane;
+    const match = typeof lane === 'string' ? /^composed-task-([1-9][0-9]*)$/u.exec(lane) : null;
+    const taskIndex = match ? Number(match[1]) : NaN;
+    const validDiagnosticLane = Number.isSafeInteger(taskIndex) && taskIndex <= MAX_TASKS_HARD_CAP;
+    return { role: 'lanes', key: validDiagnosticLane && lane ? lane : UNATTRIBUTED };
+  }
   const role = request.metadata?.role;
   if (role && LANE_ROLES.has(role)) {
     return { role: 'lanes', key: request.persona || request.metadata?.persona || UNATTRIBUTED };
@@ -110,7 +124,11 @@ export class TokenLedger {
   private readonly lanes = new Map<string, TokenUsageTotals>();
   private readonly others = new Map<string, TokenUsageTotals>();
 
-  record(request: Pick<OpenRouterRequest, 'persona' | 'metadata'>, response: Pick<OpenRouterResponse, 'usage' | 'costUSD'>, forcedLabel?: string): void {
+  record(
+    request: Pick<OpenRouterRequest, 'persona' | 'metadata' | 'internalProgress'>,
+    response: Pick<OpenRouterResponse, 'usage' | 'costUSD'>,
+    forcedLabel?: string,
+  ): void {
     const usage = usageOfResponse(response);
     const { role, key } = attributeRequest(request, forcedLabel);
     addTokenUsage(this.totals, usage);
