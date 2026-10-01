@@ -97,6 +97,11 @@ func TestBuildWorkerJob_ContinuationPhase(t *testing.T) {
 	if workspaceVol.EmptyDir.SizeLimit == nil || !workspaceVol.EmptyDir.SizeLimit.Equal(expectedSize) {
 		t.Fatalf("expected workspace size limit 1Gi, got %v", workspaceVol.EmptyDir.SizeLimit)
 	}
+
+	// 7. PriorityClassName
+	if worker.Spec.Template.Spec.PriorityClassName != job.WorkerPriorityClassName {
+		t.Fatalf("expected pod template priorityClassName = %q, got %q", job.WorkerPriorityClassName, worker.Spec.Template.Spec.PriorityClassName)
+	}
 }
 
 func TestBuildWorkerJob_ContinuationNameLengthValidation(t *testing.T) {

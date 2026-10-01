@@ -50,9 +50,11 @@ import (
 )
 
 const (
-	DefaultV1Alpha2MaxConcurrentJobs = 1
-	v1Alpha2RequeueAfter             = 5 * time.Second
-	v1Alpha2PVCCreateRequeue         = 1 * time.Second
+	DefaultV1Alpha2MaxConcurrentJobs       = 1
+	DefaultV1Alpha2MaxConcurrentReconciles = 4
+	MaxV1Alpha2ReconcileConcurrencyCap     = 64
+	v1Alpha2RequeueAfter                   = 5 * time.Second
+	v1Alpha2PVCCreateRequeue               = 1 * time.Second
 	workerCreationReserved           = "WorkerCreationReserved"
 	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
 	failurePublicationCondition      = "FailurePublication"
@@ -100,15 +102,17 @@ type PRReviewJobV1Alpha2Reconciler struct {
 	// status lookup. A nil value uses Go's system-root TLS transport. Redirects
 	// and the request deadline are constrained by the lookup itself.
 	ReceiptHTTPClient *http.Client
+	// ReceiptCoordinator manages non-blocking, asynchronous receipt retrieval and caching.
+	ReceiptCoordinator *AppGateReceiptCoordinator
+	coordinatorOnce    sync.Once
 	// Recorder is optional. When set, a Forbidden run-Secret delete surfaces as
 	// a warning Event on the PRReviewJob in addition to the log line; nil is
 	// tolerated so unit tests do not need to wire a fake recorder.
 	Recorder record.EventRecorder
 
-	// admissionMu serializes the active-job count evaluation, lease acquisition,
-	// and worker Job creation intra-instance when MaxConcurrentReconciles > 1,
-	// ensuring the API-backed active-job count remains an effective worker gate.
-	admissionMu sync.Mutex
+	// CapacityLedger manages declarative, atomic CAS worker admission via
+	// coordination.k8s.io/v1 Lease in ct-review-system, eliminating in-memory mutexes.
+	CapacityLedger *CapacityLedger
 }
 
 // +kubebuilder:rbac:groups=review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;update;patch;delete
@@ -126,11 +130,31 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 	return conflictRequeue(result, err)
 }
 
+func (r *PRReviewJobV1Alpha2Reconciler) getCapacityLedger() *CapacityLedger {
+	if r.CapacityLedger != nil {
+		return r.CapacityLedger
+	}
+	return NewCapacityLedger(r.Client, DefaultCapacityLedgerNamespace)
+}
+
+func (r *PRReviewJobV1Alpha2Reconciler) getReceiptCoordinator() *AppGateReceiptCoordinator {
+	if r.ReceiptCoordinator != nil {
+		return r.ReceiptCoordinator
+	}
+	r.coordinatorOnce.Do(func() {
+		if r.ReceiptCoordinator == nil {
+			r.ReceiptCoordinator = NewAppGateReceiptCoordinator(r)
+		}
+	})
+	return r.ReceiptCoordinator
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
 	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			_ = r.getCapacityLedger().ReleaseSlotByName(ctx, req.Name)
 			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
 		}
 		return ctrl.Result{}, err
@@ -142,6 +166,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 	// below. Route it to the run-Secret cleanup path and return; every other
 	// branch in this function assumes a review that is not being deleted.
 	if review.DeletionTimestamp != nil {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, &review)
 		return r.reconcileRunSecretDeletion(ctx, &review)
 	}
 	// Attach the cleanup guard as early as possible so no admission window
@@ -190,6 +215,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 		return r.reconcileFailurePublication(ctx, &review)
 	}
 	if isTerminalPhase(review.Status.Phase) {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, &review)
 		return r.reconcileTerminalWorkspace(ctx, &review)
 	}
 	if review.Spec.CancelRequested != nil && *review.Spec.CancelRequested {
@@ -299,9 +325,6 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 	review *reviewv1alpha2.PRReviewJob,
 	now time.Time,
 ) (ctrl.Result, error) {
-	r.admissionMu.Lock()
-	defer r.admissionMu.Unlock()
-
 	limit := r.MaxConcurrentJobs
 	if limit <= 0 {
 		limit = DefaultV1Alpha2MaxConcurrentJobs
@@ -321,6 +344,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 				LastTransitionTime: metav1.NewTime(now),
 			})
 		}
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "CapacityExceeded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "CapacityExceeded",
+			Message:            fmt.Sprintf("waiting for one of %d worker slots", limit),
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
 		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -337,7 +368,44 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 				LastTransitionTime: metav1.NewTime(now),
 			})
 		}
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "CapacityExceeded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "CapacityExceeded",
+			Message:            "waiting for an older worker admission candidate",
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
 		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+
+	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !acquired {
+		if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
+			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+				Type:               reviewv1alpha2.ConditionAwaitingResumption,
+				Status:             metav1.ConditionTrue,
+				Reason:             "PrepCompleted",
+				Message:            "prep phase completed, awaiting model resumption",
+				ObservedGeneration: review.Generation,
+				LastTransitionTime: metav1.NewTime(now),
+			})
+		}
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "CapacityExceeded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "CapacityExceeded",
+			Message:            fmt.Sprintf("waiting for one of %d worker slots", limit),
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
+		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
@@ -353,6 +421,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 		now,
 	)
 	if err != nil {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 		if errors.Is(err, workspace.ErrLeaseHeld) || errors.Is(err, workspace.ErrLeaseTakeoverNotAuthorized) {
 			if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
 				meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
@@ -399,6 +468,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 		}
 	}
 	if err != nil {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 		if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
 			return ctrl.Result{}, releaseErr
 		}
@@ -409,6 +479,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 	}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(review, worker, r.Scheme); err != nil {
+			_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 			if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
 				return ctrl.Result{}, releaseErr
 			}
@@ -446,10 +517,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 		if getErr := r.Get(ctx, types.NamespacedName{Namespace: worker.Namespace, Name: worker.Name}, &existingJob); getErr != nil {
 			return ctrl.Result{}, getErr
 		}
-		if !managedWorkerJobMatches(review, &existingJob) {
-			return r.failWorkerContractMismatch(ctx, review, &existingJob, workerContractMessage(review, "racing"))
-		}
-		return r.reconcileExistingJob(ctx, review, &existingJob, now)
+		return r.adoptExistingWorkerJob(ctx, review, &existingJob, "", now)
 	}
 
 	review.Status.JobName = worker.Name
@@ -470,9 +538,6 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 	review *reviewv1alpha2.PRReviewJob,
 	now time.Time,
 ) (ctrl.Result, error) {
-	r.admissionMu.Lock()
-	defer r.admissionMu.Unlock()
-
 	limit := r.MaxConcurrentJobs
 	if limit <= 0 {
 		limit = DefaultV1Alpha2MaxConcurrentJobs
@@ -482,13 +547,48 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		return ctrl.Result{}, err
 	}
 	if admission.activeWorkers >= limit {
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "CapacityExceeded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "CapacityExceeded",
+			Message:            fmt.Sprintf("waiting for one of %d worker slots", limit),
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
 		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
 	}
 	if admission.olderWaiting {
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "CapacityExceeded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "CapacityExceeded",
+			Message:            "waiting for an older worker admission candidate",
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
 		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+	}
+
+	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !acquired {
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "CapacityExceeded",
+			Status:             metav1.ConditionTrue,
+			Reason:             "CapacityExceeded",
+			Message:            fmt.Sprintf("waiting for one of %d worker slots", limit),
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.NewTime(now),
+		})
+		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
@@ -506,6 +606,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		now,
 	)
 	if err != nil {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 		if errors.Is(err, workspace.ErrLeaseHeld) || errors.Is(err, workspace.ErrLeaseTakeoverNotAuthorized) {
 			if statusErr := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "WorkspaceBusy", "waiting for the previous PR worker to release its workspace lease"); statusErr != nil {
 				return ctrl.Result{}, statusErr
@@ -541,6 +642,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		}
 	}
 	if err != nil {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 		// The lease was acquired for this attempt, but no Job exists. Release it
 		// before recording a terminal contract failure so a later run is not
 		// stranded behind an invalid projection.
@@ -558,6 +660,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 	}
 	if r.Scheme != nil {
 		if err := controllerutil.SetControllerReference(review, worker, r.Scheme); err != nil {
+			_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 			if releaseErr := workspace.NewLeaseManager(r.Client).Release(ctx, review.Namespace, review.Spec.RepositoryID, review.Spec.PRNumber, review.Spec.RunID, now); releaseErr != nil {
 				return ctrl.Result{}, releaseErr
 			}
@@ -591,10 +694,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		if getErr := r.Get(ctx, types.NamespacedName{Namespace: worker.Namespace, Name: worker.Name}, &existing); getErr != nil {
 			return ctrl.Result{}, getErr
 		}
-		if !managedWorkerJobMatches(review, &existing) {
-			return r.failWorkerContractMismatch(ctx, review, &existing, workerContractMessage(review, "racing"))
-		}
-		return r.reconcileExistingJob(ctx, review, &existing, now)
+		return r.adoptExistingWorkerJob(ctx, review, &existing, pvcName, now)
 	}
 
 	review.Status.JobName = worker.Name
@@ -608,6 +708,61 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{}, nil
+}
+
+// adoptExistingWorkerJob adopts an existing Kubernetes Job discovered during admission
+// when r.Create returns an AlreadyExists error. It verifies the worker contract,
+// attaches the terminal outcome finalizer if needed, updates the parent PRReviewJob
+// status to record adoption, and requeues immediately.
+//
+// Crucially, this method DOES NOT call reconcileExistingJob or perform any external
+// HTTP receipt lookups, ensuring admission proceeds swiftly without lock contention or I/O blocking.
+func (r *PRReviewJobV1Alpha2Reconciler) adoptExistingWorkerJob(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+	existing *batchv1.Job,
+	pvcName string,
+	now time.Time,
+) (ctrl.Result, error) {
+	if !managedWorkerJobMatches(review, existing) {
+		return r.failWorkerContractMismatch(ctx, review, existing, workerContractMessage(review, "racing"))
+	}
+
+	// Adopt Job by ensuring terminal outcome finalizer is attached,
+	// protecting authoritative outcome from aggressive TTL collection.
+	if existing.DeletionTimestamp == nil && !controllerutil.ContainsFinalizer(existing, terminalOutcomeFinalizer) {
+		controllerutil.AddFinalizer(existing, terminalOutcomeFinalizer)
+		if err := r.Update(ctx, existing); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	}
+
+	review.Status.JobName = existing.Name
+	review.Status.PVCName = pvcName
+	review.Status.LeaseName = workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber)
+	if review.Status.StartTime == nil {
+		if !existing.CreationTimestamp.IsZero() {
+			review.Status.StartTime = timePtr(existing.CreationTimestamp)
+		} else {
+			review.Status.StartTime = timePtr(metav1.NewTime(now))
+		}
+	}
+
+	jobCreatedAt := metav1.NewTime(now)
+	if !existing.CreationTimestamp.IsZero() {
+		jobCreatedAt = existing.CreationTimestamp
+	}
+	if _, err := observeTiming(review, reviewv1alpha2.DispatchStageJobCreated, jobCreatedAt); err != nil {
+		return ctrl.Result{}, r.fail(ctx, review, "TimingContractViolation", err.Error())
+	}
+
+	if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseRunning, "WorkerAdopted", workerMessage(review, "adopted")); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Requeue immediately so the next reconcile loop handles the Job lifecycle
+	// via reconcileExistingJob outside of the admission critical section.
+	return ctrl.Result{Requeue: true}, nil
 }
 
 // A finalizer on an owned child cannot delay deletion of its owner. If a
@@ -765,8 +920,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileCancellation(
 	}
 
 	// No worker Job exists yet (queued): delete the CR without creating a worker pod
-	if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
-		return ctrl.Result{}, err
+	if !workerCreationWasAttempted(review) {
+		if err := r.Delete(ctx, review); err != nil && !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
 	}
 	return ctrl.Result{}, nil
 }
@@ -936,6 +1093,18 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	// Ensure ReceiptDigest and ReceiptEvidenceRef are populated
 	auditRecorded, err := r.ensureReceiptAuditability(ctx, review, worker, now)
 	if err != nil {
+		if errors.Is(err, ErrReceiptLookupPending) {
+			if terminationRecorded || auditRecorded {
+				_ = r.Status().Update(ctx, review)
+			}
+			return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
+		}
+		if errors.Is(err, errTemporaryReceiptLookup) {
+			if terminationRecorded || auditRecorded {
+				_ = r.Status().Update(ctx, review)
+			}
+			return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, err
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -1134,6 +1303,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 			base := worker.DeepCopy()
 			ready, err := r.prepareFinishedWorkerRelease(ctx, review, worker)
 			if err != nil {
+				if errors.Is(err, ErrReceiptLookupPending) {
+					return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
+				}
+				if errors.Is(err, errTemporaryReceiptLookup) {
+					return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, err
+				}
 				return ctrl.Result{}, err
 			}
 			if ready {
@@ -1626,6 +1801,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalDeletion(
 // already have removed the review, and a repeated attempt (retry, requeue
 // race) must not surface that as an error.
 func (r *PRReviewJobV1Alpha2Reconciler) deleteTerminalReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (ctrl.Result, error) {
+	_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 	if review.Status.ReceiptDigest == "" || review.Status.ReceiptEvidenceRef == "" {
 		if _, err := r.ensureReceiptAuditability(ctx, review, nil, r.clock()); err != nil {
 			return ctrl.Result{}, err
@@ -1668,6 +1844,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
+	_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
 	if !controllerutil.ContainsFinalizer(review, runSecretCleanupFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -1846,6 +2023,20 @@ func (r *PRReviewJobV1Alpha2Reconciler) setPhase(ctx context.Context, review *re
 		ObservedGeneration: review.Generation,
 		LastTransitionTime: metav1.Now(),
 	})
+	if phase == reviewv1alpha2.PhaseRunning {
+		meta.RemoveStatusCondition(&review.Status.Conditions, "CapacityExceeded")
+		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+			Type:               "Admitted",
+			Status:             metav1.ConditionTrue,
+			Reason:             "WorkerSlotAcquired",
+			Message:            "worker slot acquired from capacity ledger",
+			ObservedGeneration: review.Generation,
+			LastTransitionTime: metav1.Now(),
+		})
+	}
+	if isTerminalPhase(phase) {
+		_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
+	}
 	return r.Status().Update(ctx, review)
 }
 
@@ -2277,6 +2468,18 @@ func (r *PRReviewJobV1Alpha2Reconciler) failClosedFencing(
 	return ctrl.Result{}, nil
 }
 
+// ClampedMaxConcurrentReconciles returns the configured reconcile concurrency clamped to [1, MaxV1Alpha2ReconcileConcurrencyCap].
+func (r *PRReviewJobV1Alpha2Reconciler) ClampedMaxConcurrentReconciles() int {
+	maxConcurrentReconciles := r.MaxConcurrentReconciles
+	if maxConcurrentReconciles < 1 {
+		return 1
+	}
+	if maxConcurrentReconciles > MaxV1Alpha2ReconcileConcurrencyCap {
+		return MaxV1Alpha2ReconcileConcurrencyCap
+	}
+	return maxConcurrentReconciles
+}
+
 // SetupWithManager registers only the v1alpha2 projection and its owned Jobs.
 // PVCs are intentionally not owned because their lifecycle is PR-scoped.
 func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -2289,19 +2492,16 @@ func (r *PRReviewJobV1Alpha2Reconciler) SetupWithManager(mgr ctrl.Manager) error
 	if r.APIReader == nil {
 		r.APIReader = mgr.GetAPIReader()
 	}
-	maxConcurrentReconciles := r.MaxConcurrentReconciles
-	if maxConcurrentReconciles <= 0 {
-		maxConcurrentReconciles = 1
-	}
+	maxConcurrentReconciles := r.ClampedMaxConcurrentReconciles()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&reviewv1alpha2.PRReviewJob{}).
 		Owns(&batchv1.Job{}).
 		// MaxConcurrentReconciles allows parallel reconciliation (pod reaping,
 		// status updates, terminal cleanup, receipt handling) across reviews.
-		// Intra-instance worker admission is serialized via r.admissionMu so that
-		// the active-worker count remains an effective worker gate regardless of
-		// reconciler concurrency. Leader election in main.go ensures only one
-		// operator instance performs admission across the cluster.
+		// Workload admission is coordinated declaratively via CapacityLedger
+		// using atomic Compare-And-Swap (CAS) optimistic locking on the
+		// singleton coordination.k8s.io/v1 Lease in ct-review-system, eliminating
+		// intra-instance mutex lock convoys and providing multi-replica admission safety.
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }

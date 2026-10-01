@@ -11,8 +11,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
@@ -22,15 +24,101 @@ import (
 )
 
 const (
-	appGateReceiptTimeout = 3 * time.Second
-	maxRunStatusBytes     = 32 << 10
+	appGateReceiptTimeout     = 3 * time.Second
+	maxRunStatusBytes         = 32 << 10
+	defaultReceiptWaitTimeout = 100 * time.Millisecond
 )
 
 var (
 	errTemporaryReceiptLookup = errors.New("temporary app-gate receipt lookup failure")
 	errRejectedReceipt        = errors.New("app-gate receipt missing or invalid")
+	ErrReceiptLookupPending   = fmt.Errorf("%w: lookup in flight", errTemporaryReceiptLookup)
 	receiptDigestPattern      = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
+
+type receiptLookupOutcome struct {
+	receipt   *appGateReceipt
+	err       error
+	fetchedAt time.Time
+}
+
+// AppGateReceiptCoordinator coordinates non-blocking receipt retrieval and caching.
+// It ensures that slow or stalled external HTTP endpoints do not block reconciler
+// threads or serialize admission, while deduplicating in-flight network queries.
+type AppGateReceiptCoordinator struct {
+	reconciler  *PRReviewJobV1Alpha2Reconciler
+	flight      singleflight.Group
+	cache       sync.Map // key string -> receiptLookupOutcome
+	WaitTimeout time.Duration
+}
+
+func NewAppGateReceiptCoordinator(r *PRReviewJobV1Alpha2Reconciler) *AppGateReceiptCoordinator {
+	return &AppGateReceiptCoordinator{
+		reconciler:  r,
+		WaitTimeout: defaultReceiptWaitTimeout,
+	}
+}
+
+func (c *AppGateReceiptCoordinator) ReceiptKey(review *reviewv1alpha2.PRReviewJob, attempt int32) string {
+	return fmt.Sprintf("%s/%s/%s@%d", review.Namespace, review.Name, review.Spec.RunID, attempt)
+}
+
+func (c *AppGateReceiptCoordinator) QueryReceipt(
+	ctx context.Context,
+	review *reviewv1alpha2.PRReviewJob,
+) (*appGateReceipt, error) {
+	attempt, err := job.ExecutionAttemptForSpec(review.Spec)
+	if err != nil || !job.IsValidRunSecretName(review.Spec.RunSecretName) {
+		return nil, fmt.Errorf("%w: invalid run Secret identity", errRejectedReceipt)
+	}
+	key := c.ReceiptKey(review, attempt)
+
+	// 1. Check in-memory cache for valid receipt or deterministic rejection
+	if val, ok := c.cache.Load(key); ok {
+		outcome := val.(receiptLookupOutcome)
+		if outcome.receipt != nil || errors.Is(outcome.err, errRejectedReceipt) {
+			return outcome.receipt, outcome.err
+		}
+	}
+
+	// 2. Coalesce background fetch via singleflight.DoChan
+	ch := c.flight.DoChan(key, func() (any, error) {
+		bgCtx, cancel := context.WithTimeout(context.Background(), appGateReceiptTimeout)
+		defer cancel()
+
+		receipt, fetchErr := c.reconciler.fetchAppGateReceipt(bgCtx, review)
+		outcome := receiptLookupOutcome{
+			receipt:   receipt,
+			err:       fetchErr,
+			fetchedAt: c.reconciler.clock(),
+		}
+		// Cache valid receipts and deterministic rejections permanently for this attempt
+		if receipt != nil || (fetchErr != nil && !errors.Is(fetchErr, errTemporaryReceiptLookup)) {
+			c.cache.Store(key, outcome)
+		}
+		return outcome, nil
+	})
+
+	waitDuration := c.WaitTimeout
+	if waitDuration <= 0 {
+		waitDuration = defaultReceiptWaitTimeout
+	}
+
+	select {
+	case res := <-ch:
+		if res.Val != nil {
+			outcome := res.Val.(receiptLookupOutcome)
+			return outcome.receipt, outcome.err
+		}
+		return nil, res.Err
+	case <-time.After(waitDuration):
+		return nil, ErrReceiptLookupPending
+	}
+}
+
+func (c *AppGateReceiptCoordinator) Forget(key string) {
+	c.cache.Delete(key)
+}
 
 // Action-dispatch owns the durable completion/gate predicate and authenticates
 // the exact run Secret's publish token. This operator only re-verifies the

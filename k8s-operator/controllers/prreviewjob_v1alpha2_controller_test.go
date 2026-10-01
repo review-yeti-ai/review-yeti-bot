@@ -2,8 +2,13 @@ package controllers_test
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,10 +19,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
 	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
@@ -2030,4 +2037,544 @@ func TestPRReviewJobV1Alpha2Reconciler_AdmissionSerializationPreventsOverAdmissi
 	}
 }
 
+func testTimePtr(t metav1.Time) *metav1.Time {
+	return &t
+}
 
+func testBoolPtr(b bool) *bool {
+	return &b
+}
+
+func testLeaseResult(review *reviewv1alpha2.PRReviewJob, now time.Time, duration time.Duration) workspace.LeaseAcquireResult {
+	labels, annotations := workspace.Metadata(review.Spec.RepositoryID, review.Spec.PRNumber)
+	holder := review.Spec.RunID
+	seconds := int32(duration / time.Second)
+	renewed := metav1.NewMicroTime(now)
+	return workspace.LeaseAcquireResult{
+		Acquired:       true,
+		HolderIdentity: review.Spec.RunID,
+		Lease: &coordinationv1.Lease{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        workspace.LeaseName(review.Spec.RepositoryID, review.Spec.PRNumber),
+				Namespace:   review.Namespace,
+				Labels:      labels,
+				Annotations: annotations,
+			},
+			Spec: coordinationv1.LeaseSpec{
+				HolderIdentity:       &holder,
+				LeaseDurationSeconds: &seconds,
+				RenewTime:            &renewed,
+			},
+		},
+	}
+}
+
+// TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobAdoptsWithoutInlineReconciliation proves that
+// when an existing worker Job is encountered on the admission path (r.Create returns AlreadyExists),
+// the operator adopts the Job, marks review.Status.Phase = PhaseRunning with Reason "WorkerAdopted",
+// and returns ctrl.Result{Requeue: true}, nil without executing any synchronous HTTP queries.
+func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobAdoptsWithoutInlineReconciliation(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	review := v1alpha2Review(now)
+	review.Name = "ct-review-ad0b1111111111111111111111111111"
+	review.Spec.RunID = "run_ad0b1111111111111111111111111111"
+	review.Spec.RunSecretName = "ct-review-run-ad0b1111111111111111111111111111"
+	review.Spec.PublicationMode = job.PublicationModeAppGate
+	review.Spec.RunnerMode = "generic"
+	review.Status.Phase = reviewv1alpha2.PhaseQueued
+
+	var httpCallCount int32
+	var httpMu sync.Mutex
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpMu.Lock()
+		httpCallCount++
+		httpMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, review))
+	}))
+	defer server.Close()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: review.Spec.RunSecretName, Namespace: review.Namespace},
+		Data:       map[string][]byte{"GITHUB_PUBLISH_TOKEN": []byte(testPublishToken)},
+	}
+
+	publishingConfig := job.PublishingConfig{
+		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		Model:             "ollama/glm-5.3-flash",
+		GatewaySecretName: "review-yeti-gateway-credentials",
+		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		CompletionURL:     server.URL + "/api/dispatch/completion",
+	}
+
+	worker, buildErr := job.BuildWorkerJob(job.Input{
+		Review:           review,
+		WorkspacePVCName: workspace.PVCName(review.Spec.RepositoryID, review.Spec.PRNumber),
+		WorkspaceLease:   testLeaseResult(review, now, 15*time.Minute),
+		Now:              now,
+		Publishing:       publishingConfig,
+	})
+	if buildErr != nil {
+		t.Fatalf("build worker job: %v", buildErr)
+	}
+	// Mark worker as already Succeeded to verify that admission NEVER executes inline receipt lookups
+	worker.Status.Succeeded = 1
+	worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review, secret, worker).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).Build()
+
+	var getWorkerCount int32
+	interceptedClient := interceptor.NewClient(kube, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, isJob := obj.(*batchv1.Job); isJob && key.Name == worker.Name {
+				if atomic.AddInt32(&getWorkerCount, 1) == 1 {
+					// Simulate cache lag: informer hasn't observed the Job yet when reconcile begins
+					return apierrors.NewNotFound(schema.GroupResource{Group: "batch", Resource: "jobs"}, key.Name)
+				}
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client:            interceptedClient,
+		SecretReader:      kube,
+		Scheme:            scheme,
+		Now:               func() time.Time { return now },
+		ReceiptHTTPClient: server.Client(),
+		Publishing:        publishingConfig,
+	}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}
+
+	// Reset HTTP call count before admission reconcile
+	httpMu.Lock()
+	httpCallCount = 0
+	httpMu.Unlock()
+
+	// Step 3: Run admission reconcile. Because the Job already exists, Create returns AlreadyExists.
+	// adoptExistingWorkerJob must adopt the Job, set PhaseRunning ("WorkerAdopted"), and return Requeue: true.
+	admitRes, admitErr := reconciler.Reconcile(context.Background(), req)
+	if admitErr != nil {
+		t.Fatalf("admission reconcile failed: %v", admitErr)
+	}
+	if !admitRes.Requeue {
+		t.Fatalf("expected Requeue: true from adoptExistingWorkerJob, got %+v", admitRes)
+	}
+
+	httpMu.Lock()
+	callsDuringAdmission := httpCallCount
+	httpMu.Unlock()
+	if callsDuringAdmission != 0 {
+		t.Fatalf("expected 0 HTTP queries during admission adoption, got %d", callsDuringAdmission)
+	}
+
+	var afterAdmit reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &afterAdmit); err != nil {
+		t.Fatalf("get after admit: %v", err)
+	}
+	if afterAdmit.Status.Phase != reviewv1alpha2.PhaseRunning {
+		t.Fatalf("expected PhaseRunning after adoption, got %s", afterAdmit.Status.Phase)
+	}
+	readyCond := meta.FindStatusCondition(afterAdmit.Status.Conditions, "Ready")
+	if readyCond == nil || readyCond.Reason != "WorkerAdopted" {
+		t.Fatalf("expected Ready condition with Reason 'WorkerAdopted', got %+v", readyCond)
+	}
+
+	// Step 4: Next reconcile runs outside admission lock, executing reconcileExistingJob.
+	// It queries the receipt and promotes to PhaseSucceeded.
+	if _, err := reconciler.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("second reconcile failed: %v", err)
+	}
+
+	var afterTerm reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), req.NamespacedName, &afterTerm); err != nil {
+		t.Fatalf("get after term: %v", err)
+	}
+	if afterTerm.Status.Phase != reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("expected PhaseSucceeded after follow-up reconcile, got %s", afterTerm.Status.Phase)
+	}
+	if afterTerm.Status.ReceiptDigest == "" {
+		t.Fatal("expected non-empty ReceiptDigest after follow-up reconcile")
+	}
+
+	httpMu.Lock()
+	totalCalls := httpCallCount
+	httpMu.Unlock()
+	if totalCalls == 0 {
+		t.Fatalf("expected HTTP query during follow-up reconcile, got 0")
+	}
+}
+
+// TestPRReviewJobV1Alpha2_StalledReceiptEndpointDoesNotBlockUnrelatedReconciles proves that
+// a slow or stalled external receipt endpoint on Review A does not block concurrent reconciliations
+// for unrelated reviews (Review B admission and Review C cancellation) from completing cleanly in < 100ms.
+func TestPRReviewJobV1Alpha2_StalledReceiptEndpointDoesNotBlockUnrelatedReconciles(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+
+	// Review A: AppGate review with completed worker
+	revA := v1alpha2Review(now)
+	revA.Name = "ct-review-aaaa1111111111111111111111111111"
+	revA.Spec.RunID = "run_aaaa1111111111111111111111111111"
+	revA.Spec.RunSecretName = "ct-review-run-aaaa1111111111111111111111111111"
+	revA.Spec.PRNumber = 101
+	revA.Spec.PublicationMode = job.PublicationModeAppGate
+	revA.Spec.RunnerMode = "ephemeral"
+	revA.Status.Phase = reviewv1alpha2.PhaseRunning
+	revA.Status.JobName = revA.Name + "-worker"
+	revA.Status.StartTime = testTimePtr(metav1.NewTime(now))
+
+	// Review B: Queued review waiting for worker admission
+	revB := v1alpha2Review(now)
+	revB.Name = "ct-review-bbbb2222222222222222222222222222"
+	revB.Spec.RunID = "run_bbbb2222222222222222222222222222"
+	revB.Spec.RunSecretName = "ct-review-run-bbbb2222222222222222222222222222"
+	revB.Spec.PRNumber = 102
+	revB.Spec.PublicationMode = "disabled"
+	revB.Spec.RunnerMode = "ephemeral"
+	revB.Status.Phase = reviewv1alpha2.PhaseQueued
+
+	// Review C: Running review requesting cancellation
+	revC := v1alpha2Review(now)
+	revC.Name = "ct-review-cccc3333333333333333333333333333"
+	revC.Spec.RunID = "run_cccc3333333333333333333333333333"
+	revC.Spec.RunSecretName = "ct-review-run-cccc3333333333333333333333333333"
+	revC.Spec.PRNumber = 103
+	revC.Spec.PublicationMode = "disabled"
+	revC.Spec.RunnerMode = "ephemeral"
+	revC.Spec.CancelRequested = testBoolPtr(true)
+	revC.Status.Phase = reviewv1alpha2.PhaseRunning
+	revC.Status.JobName = revC.Name + "-worker"
+	revC.Status.StartTime = testTimePtr(metav1.NewTime(now))
+
+	secretA := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: revA.Spec.RunSecretName, Namespace: revA.Namespace},
+		Data:       map[string][]byte{"GITHUB_PUBLISH_TOKEN": []byte(testPublishToken)},
+	}
+	secretB := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: revB.Spec.RunSecretName, Namespace: revB.Namespace},
+		Data:       map[string][]byte{"GITHUB_PUBLISH_TOKEN": []byte(testPublishToken)},
+	}
+	secretC := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: revC.Spec.RunSecretName, Namespace: revC.Namespace},
+		Data:       map[string][]byte{"GITHUB_PUBLISH_TOKEN": []byte(testPublishToken)},
+	}
+
+	stallReleaseCh := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, revA.Spec.RunID) {
+			select {
+			case <-stallReleaseCh:
+			case <-time.After(4 * time.Second):
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, revA))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, revA))
+	}))
+	defer server.Close()
+	defer func() {
+		select {
+		case <-stallReleaseCh:
+		default:
+			close(stallReleaseCh)
+		}
+	}()
+
+	publishingConfig := job.PublishingConfig{
+		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		Model:             "ollama/glm-5.3-flash",
+		GatewaySecretName: "review-yeti-gateway-credentials",
+		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		CompletionURL:     server.URL + "/api/dispatch/completion",
+	}
+
+	leaseA := testLeaseResult(revA, now, 15*time.Minute).Lease
+	leaseC := testLeaseResult(revC, now, 15*time.Minute).Lease
+
+	workerA, err := job.BuildWorkerJob(job.Input{
+		Review:         revA,
+		WorkspaceLease: testLeaseResult(revA, now, 15*time.Minute),
+		Now:            now,
+		Publishing:     publishingConfig,
+	})
+	if err != nil {
+		t.Fatalf("build worker A: %v", err)
+	}
+	workerA.Status.Succeeded = 1
+	workerA.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+
+	workerC, err := job.BuildWorkerJob(job.Input{
+		Review:         revC,
+		WorkspaceLease: testLeaseResult(revC, now, 15*time.Minute),
+		Now:            now,
+		Publishing:     publishingConfig,
+	})
+	if err != nil {
+		t.Fatalf("build worker C: %v", err)
+	}
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(revA, revB, revC, secretA, secretB, secretC, workerA, workerC, leaseA, leaseC).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).Build()
+
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client:                  kube,
+		SecretReader:            kube,
+		Scheme:                  scheme,
+		Now:                     func() time.Time { return now },
+		ReceiptHTTPClient:       server.Client(),
+		Publishing:              publishingConfig,
+		MaxConcurrentJobs:       10,
+		MaxConcurrentReconciles: 1, // Strict single-thread test: Any blocking in Review A would block B and C!
+	}
+	coordinator := reconciler.ReceiptCoordinator
+	if coordinator == nil {
+		coordinator = controllers.NewAppGateReceiptCoordinator(reconciler)
+		reconciler.ReceiptCoordinator = coordinator
+	}
+	coordinator.WaitTimeout = 10 * time.Millisecond
+
+	reqA := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: revA.Namespace, Name: revA.Name}}
+	reqB := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: revB.Namespace, Name: revB.Name}}
+	reqC := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: revC.Namespace, Name: revC.Name}}
+
+	start := time.Now()
+
+	// Reconcile Review A: Its external receipt endpoint hangs for 4 seconds.
+	// Non-blocking coordinator must release in < 25ms.
+	resA, errA := reconciler.Reconcile(context.Background(), reqA)
+	if errA != nil {
+		t.Fatalf("reconcile A should not error on pending lookup: %v", errA)
+	}
+	if resA.RequeueAfter != 500*time.Millisecond {
+		t.Fatalf("reconcile A expected RequeueAfter: 500ms, got %+v", resA)
+	}
+
+	// Reconcile Review B: Admitting worker while Review A's receipt fetch is stalled in background.
+	if _, errB := reconciler.Reconcile(context.Background(), reqB); errB != nil {
+		t.Fatalf("reconcile B admission failed: %v", errB)
+	}
+
+	// Reconcile Review C: Cancelling while Review A's receipt fetch is stalled in background.
+	if _, errC := reconciler.Reconcile(context.Background(), reqC); errC != nil {
+		t.Fatalf("reconcile C cancellation failed: %v", errC)
+	}
+
+	elapsed := time.Since(start)
+	if elapsed >= 100*time.Millisecond {
+		t.Fatalf("total elapsed time for all 3 reconciles was %v, want < 100ms", elapsed)
+	}
+
+	var afterB reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), reqB.NamespacedName, &afterB); err != nil {
+		t.Fatalf("get after B: %v", err)
+	}
+	if afterB.Status.Phase != reviewv1alpha2.PhaseRunning {
+		t.Fatalf("expected Review B in PhaseRunning, got %s", afterB.Status.Phase)
+	}
+
+	var afterC reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), reqC.NamespacedName, &afterC); err != nil {
+		t.Fatalf("get after C: %v", err)
+	}
+	if afterC.Status.Phase != reviewv1alpha2.PhaseCancelled {
+		t.Fatalf("expected Review C in PhaseCancelled, got %s", afterC.Status.Phase)
+	}
+
+	// Release stall and verify Review A finishes when background fetch caches receipt
+	close(stallReleaseCh)
+	time.Sleep(50 * time.Millisecond)
+
+	if _, errA2 := reconciler.Reconcile(context.Background(), reqA); errA2 != nil {
+		t.Fatalf("reconcile A follow-up failed: %v", errA2)
+	}
+	var afterA reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), reqA.NamespacedName, &afterA); err != nil {
+		t.Fatalf("get after A: %v", err)
+	}
+	if afterA.Status.Phase != reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("expected Review A in PhaseSucceeded after receipt cached, got %s", afterA.Status.Phase)
+	}
+	if afterA.Status.ReceiptDigest == "" {
+		t.Fatal("expected non-empty ReceiptDigest on Review A")
+	}
+}
+
+// TestPRReviewJobV1Alpha2_ReceiptEndpoint500And503FailSoftWithoutBlocking proves that
+// 500/503 temporary errors from external receipt endpoints requeue with backoff without
+// failing or blocking unrelated healthy reviews.
+func TestPRReviewJobV1Alpha2_ReceiptEndpoint500And503FailSoftWithoutBlocking(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+
+	revA := v1alpha2Review(now)
+	revA.Name = "ct-review-500a1111111111111111111111111111"
+	revA.Spec.RunID = "run_500a1111111111111111111111111111"
+	revA.Spec.RunSecretName = "ct-review-run-500a1111111111111111111111111111"
+	revA.Spec.PRNumber = 201
+	revA.Spec.PublicationMode = job.PublicationModeAppGate
+	revA.Spec.RunnerMode = "ephemeral"
+	revA.Status.Phase = reviewv1alpha2.PhaseRunning
+	revA.Status.JobName = revA.Name + "-worker"
+	revA.Status.StartTime = testTimePtr(metav1.NewTime(now))
+
+	revB := v1alpha2Review(now)
+	revB.Name = "ct-review-200b2222222222222222222222222222"
+	revB.Spec.RunID = "run_200b2222222222222222222222222222"
+	revB.Spec.RunSecretName = "ct-review-run-200b2222222222222222222222222222"
+	revB.Spec.PRNumber = 202
+	revB.Spec.PublicationMode = job.PublicationModeAppGate
+	revB.Spec.RunnerMode = "ephemeral"
+	revB.Status.Phase = reviewv1alpha2.PhaseRunning
+	revB.Status.JobName = revB.Name + "-worker"
+	revB.Status.StartTime = testTimePtr(metav1.NewTime(now))
+
+	secretA := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: revA.Spec.RunSecretName, Namespace: revA.Namespace},
+		Data:       map[string][]byte{"GITHUB_PUBLISH_TOKEN": []byte(testPublishToken)},
+	}
+	secretB := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: revB.Spec.RunSecretName, Namespace: revB.Namespace},
+		Data:       map[string][]byte{"GITHUB_PUBLISH_TOKEN": []byte(testPublishToken)},
+	}
+
+	var failRevAMu sync.Mutex
+	failRevA := true
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failRevAMu.Lock()
+		shouldFailA := failRevA
+		failRevAMu.Unlock()
+
+		if strings.Contains(r.URL.Path, revA.Spec.RunID) {
+			if shouldFailA {
+				w.WriteHeader(http.StatusServiceUnavailable) // 503
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, revA))
+			return
+		}
+		if strings.Contains(r.URL.Path, revB.Spec.RunID) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(validAppGateRunStatus(t, revB))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	publishingConfig := job.PublishingConfig{
+		GatewayBaseURL:    "https://gateway.example.invalid/v1",
+		Model:             "ollama/glm-5.3-flash",
+		GatewaySecretName: "review-yeti-gateway-credentials",
+		GatewaySecretKey:  "REVIEW_YETI_BIFROST_API_KEY",
+		CompletionURL:     server.URL + "/api/dispatch/completion",
+	}
+
+	leaseA := testLeaseResult(revA, now, 15*time.Minute).Lease
+	leaseB := testLeaseResult(revB, now, 15*time.Minute).Lease
+
+	workerA, err := job.BuildWorkerJob(job.Input{
+		Review:         revA,
+		WorkspaceLease: testLeaseResult(revA, now, 15*time.Minute),
+		Now:            now,
+		Publishing:     publishingConfig,
+	})
+	if err != nil {
+		t.Fatalf("build worker A: %v", err)
+	}
+	workerA.Status.Succeeded = 1
+	workerA.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+
+	workerB, err := job.BuildWorkerJob(job.Input{
+		Review:         revB,
+		WorkspaceLease: testLeaseResult(revB, now, 15*time.Minute),
+		Now:            now,
+		Publishing:     publishingConfig,
+	})
+	if err != nil {
+		t.Fatalf("build worker B: %v", err)
+	}
+	workerB.Status.Succeeded = 1
+	workerB.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+
+	kube := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(revA, revB, secretA, secretB, workerA, workerB, leaseA, leaseB).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).Build()
+
+	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client:                  kube,
+		SecretReader:            kube,
+		Scheme:                  scheme,
+		Now:                     func() time.Time { return now },
+		ReceiptHTTPClient:       server.Client(),
+		Publishing:              publishingConfig,
+		MaxConcurrentReconciles: 1,
+	}
+
+	reqA := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: revA.Namespace, Name: revA.Name}}
+	reqB := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: revB.Namespace, Name: revB.Name}}
+
+	// Step 1: Reconcile Review A (returns 503). Must fail soft with RequeueAfter: 500ms without failing the review.
+	resA, _ := reconciler.Reconcile(context.Background(), reqA)
+	if resA.RequeueAfter != 500*time.Millisecond {
+		t.Fatalf("expected RequeueAfter: 500ms for temporary 503 outage, got %+v", resA)
+	}
+
+	var afterA reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), reqA.NamespacedName, &afterA); err != nil {
+		t.Fatalf("get after A: %v", err)
+	}
+	if afterA.Status.Phase == reviewv1alpha2.PhaseFailed {
+		t.Fatalf("review A must not fail on temporary 503 error: %+v", afterA.Status)
+	}
+
+	// Step 2: Reconcile healthy Review B. Must succeed immediately without being blocked.
+	startB := time.Now()
+	resB, errB := reconciler.Reconcile(context.Background(), reqB)
+	elapsedB := time.Since(startB)
+	if errB != nil {
+		t.Fatalf("reconcile B failed: %v", errB)
+	}
+	_ = resB
+	if elapsedB >= 500*time.Millisecond {
+		t.Fatalf("reconcile B took %v, want < 500ms", elapsedB)
+	}
+
+	var afterB reviewv1alpha2.PRReviewJob
+	if err := kube.Get(context.Background(), reqB.NamespacedName, &afterB); err != nil {
+		t.Fatalf("get after B: %v", err)
+	}
+	if afterB.Status.Phase != reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("expected Review B in PhaseSucceeded, got %s", afterB.Status.Phase)
+	}
+	if afterB.Status.ReceiptDigest == "" {
+		t.Fatal("expected non-empty ReceiptDigest on Review B")
+	}
+
+	// Step 3: Recover Review A endpoint (returns 200). Subsequent reconcile promotes to PhaseSucceeded.
+	failRevAMu.Lock()
+	failRevA = false
+	failRevAMu.Unlock()
+
+	if _, errA2 := reconciler.Reconcile(context.Background(), reqA); errA2 != nil {
+		t.Fatalf("reconcile A after recovery failed: %v", errA2)
+	}
+
+	if err := kube.Get(context.Background(), reqA.NamespacedName, &afterA); err != nil {
+		t.Fatalf("get after A recovery: %v", err)
+	}
+	if afterA.Status.Phase != reviewv1alpha2.PhaseSucceeded {
+		t.Fatalf("expected Review A in PhaseSucceeded after recovery, got %s", afterA.Status.Phase)
+	}
+	if afterA.Status.ReceiptDigest == "" {
+		t.Fatal("expected non-empty ReceiptDigest on Review A after recovery")
+	}
+}
