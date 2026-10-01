@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import { createRequire } from 'node:module';
 import {
   createPartitionPlan,
   detectFileStatus,
@@ -20,6 +21,8 @@ import {
   FileStatus,
 } from '../../src/pipeline/shaPartitionManager';
 import * as partitionManagerModule from '../../src/pipeline/shaPartitionManager';
+
+const pipeline = createRequire(import.meta.url)('../../.github/workflows/pipelines/review-pipeline.js');
 
 // Re-export for any test suites importing from this test file
 export {
@@ -78,6 +81,92 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       expect(rangeStart(1, 2, 1, 1)).toBe(2); // second inserted line
       expect(rangeStart(2, 0, 0, 0)).toBe(2); // pure deletion at source end
       expect(rangeStart(3, 2, 2, 0)).toBe(4); // zero new-side range after two old lines
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('rejects an unrecognized source and fragment body prefix: %s', (line) => {
+      const source = '@@ -10,1 +10,1 @@ replacement\n-old\n+new';
+      const fragment = '@@ -10,1 +9,0 @@ replacement\n-old';
+      expect(partitionManagerModule.parseUnifiedHunk(source)).not.toBeNull();
+      expect(partitionManagerModule.parseUnifiedHunk(fragment)).not.toBeNull();
+      // Counts remain 1/1 and 1/0 if this line is silently ignored. No marker or
+      // invalid header can mask the unrecognized-body rejection under test.
+      expect(partitionManagerModule.parseUnifiedHunk(source.replace('\n+new', `\n${line}\n+new`))).toBeNull();
+      expect(partitionManagerModule.parseUnifiedHunk(`${fragment}\n${line}`)).toBeNull();
+    });
+  });
+
+  describe('unrecognized-body public producer and Action admission', () => {
+    const filePath = 'src/unrecognized-body.ts';
+    const fileHeader = `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n`;
+    const request = (patch: string, safeDiffCapacityChars: number) => ({
+      files: [{ path: filePath, patch, status: 'modified' }],
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+      safeDiffCapacityChars,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('preserves an oversized malformed source instead of manufacturing fragments: %s', (line) => {
+      const body = ['-old-line', ...Array.from({ length: 4 }, (_unused, index) => `+added-line-${index}-${'x'.repeat(20)}`)];
+      const validPatch = `${fileHeader}@@ -1,1 +1,4 @@\n${body.join('\n')}\n`;
+      const patch = validPatch.replace('\n+added-line-0', `\n${line}\n+added-line-0`);
+      const cap = fileHeader.length + 70;
+      const plan = (candidate: string) => createPartitionPlan(
+        [{ path: filePath, patch: candidate }], BASE_SHA, HEAD_SHA, cap, { splitOversizedHunksAtLines: true },
+      );
+
+      expect(plan(validPatch).partitions.length).toBeGreaterThan(1);
+      expect(plan(validPatch).partitions.every((partition) => partition.totalChars <= cap)).toBe(true);
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(plan(patch).partitions.flatMap((partition) => partition.files.map((file) => file.patch))).toEqual([patch]);
+      expect(() => pipeline.createReviewPartitionPlan(request(patch, cap)))
+        .toThrow('complete, bounded file and hunk coverage');
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('rejects a count-matching malformed source through the real Action validator: %s', (line) => {
+      const firstHunk = '@@ -1,1 +1,1 @@ first\n-old\n+new';
+      const secondHunk = `@@ -2,1 +2,1 @@ second\n-${'o'.repeat(30)}\n+${'n'.repeat(30)}`;
+      const malformedHunk = firstHunk.replace('\n+new', `\n${line}\n+new`);
+      const cap = fileHeader.length + Math.max(malformedHunk.length, secondHunk.length) + 1;
+      const validPatch = `${fileHeader}${firstHunk}\n${secondHunk}\n`;
+      const patch = `${fileHeader}${malformedHunk}\n${secondHunk}\n`;
+      expect(validPatch.length).toBeGreaterThan(cap);
+      expect(pipeline.createReviewPartitionPlan(request(validPatch, cap)).partitions).toHaveLength(2);
+
+      // Both emitted copies fit the cap and retain every byte; rejection must
+      // validate the source hunk, not rely on overflow, missing files or counts.
+      const plan = createPartitionPlan([{ path: filePath, patch }], BASE_SHA, HEAD_SHA, cap, { splitOversizedHunksAtLines: true });
+      expect(plan.partitions).toHaveLength(2);
+      expect(plan.partitions.every((partition) => partition.totalChars <= cap)).toBe(true);
+      expect(plan.partitions[0].files[0].patch).toBe(`${fileHeader}${malformedHunk}\n`);
+      expect(() => pipeline.createReviewPartitionPlan(request(patch, cap)))
+        .toThrow('complete, bounded file and hunk coverage');
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('rejects a count-matching malformed fragment through the real Action parser: %s', (line) => {
+      const firstHunk = '@@ -1,1 +1,1 @@ first\n-old\n+new';
+      const secondHunk = `@@ -2,1 +2,1 @@ second\n-${'o'.repeat(30)}\n+${'n'.repeat(30)}`;
+      const patch = `${fileHeader}${firstHunk}\n${secondHunk}\n`;
+      const cap = fileHeader.length + secondHunk.length + 1;
+      const input = request(patch, cap);
+      const validPlan: PartitionPlan = pipeline.createReviewPartitionPlan(input);
+      expect(validPlan.partitions).toHaveLength(2);
+      const malformedPlan = structuredClone(validPlan);
+      const fragment = firstHunk.replace('\n+new', `\n${line}\n+new`);
+      const partition = malformedPlan.partitions[0];
+      const plannedFile = partition.files[0];
+      plannedFile.patch = `${fileHeader}${fragment}\n`;
+      plannedFile.originalChars = plannedFile.patch.length;
+      plannedFile.compactedChars = plannedFile.patch.length;
+      partition.totalChars = plannedFile.patch.length;
+      expect(malformedPlan.partitions.every((planned) => planned.totalChars <= cap)).toBe(true);
+
+      expect(pipeline.shaPartitionManager.parseUnifiedHunk(firstHunk)).not.toBeNull();
+      expect(pipeline.shaPartitionManager.parseUnifiedHunk(fragment)).toBeNull();
+      expect(() => pipeline.createReviewPartitionPlan({
+        ...input,
+        partitionManager: { createPartitionPlan: () => malformedPlan },
+      })).toThrow('complete, bounded file and hunk coverage');
     });
   });
 
@@ -603,7 +692,10 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       expect(pieces.some((piece) => piece.patch.trimEnd().endsWith('\n' + marker))).toBe(true);
     });
 
-    it('bounds joined-code-unit materialization while splitting a large single hunk', () => {
+    // These instrument Array.join work only, not concatenation or all possible
+    // assembly mechanisms. The positive lower bound prevents a no-join rewrite
+    // from satisfying this mechanism-specific upper bound vacuously.
+    it('observes nonzero bounded Array.join materialization while splitting a large single hunk', () => {
       const filePath = 'src/large-linear-hunk.ts';
       const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
       const body = Array.from({ length: 360 }, (_unused, index) =>
@@ -612,9 +704,11 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       const safeDiffChars = fileHeader.length + 900;
       const originalJoin = Array.prototype.join;
       let joinedCodeUnits = 0;
+      let joinCalls = 0;
       let plan: PartitionPlan | undefined;
       const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: any[], separator?: string) {
         const joined = originalJoin.apply(this, [separator]);
+        joinCalls += 1;
         joinedCodeUnits += joined.length;
         return joined;
       });
@@ -631,14 +725,16 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       }
 
       expect(plan).toBeDefined();
-      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
       expect(plan!.partitions.every((partition) => partition.totalChars <= safeDiffChars)).toBe(true);
       const emittedContextLines = plan!.partitions.flatMap((partition) => partition.files)
         .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith(' context-')));
       expect(emittedContextLines).toEqual(body);
+      expect(joinCalls).toBeGreaterThan(0);
+      expect(joinedCodeUnits).toBeGreaterThan(0);
+      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
     });
 
-    it('bounds joined-code-unit materialization while grouping many small hunks', () => {
+    it('observes nonzero bounded Array.join materialization while grouping many small hunks', () => {
       const filePath = 'src/many-linear-hunks.ts';
       const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
       const hunks = Array.from({ length: 900 }, (_unused, index) =>
@@ -647,9 +743,11 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       const safeDiffChars = fileHeader.length + 900;
       const originalJoin = Array.prototype.join;
       let joinedCodeUnits = 0;
+      let joinCalls = 0;
       let plan: PartitionPlan | undefined;
       const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: any[], separator?: string) {
         const joined = originalJoin.apply(this, [separator]);
+        joinCalls += 1;
         joinedCodeUnits += joined.length;
         return joined;
       });
@@ -666,7 +764,6 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       }
 
       expect(plan).toBeDefined();
-      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
       expect(plan!.partitions.every((partition) => partition.totalChars <= safeDiffChars)).toBe(true);
       const emittedHunks = plan!.partitions.flatMap((partition) => partition.files)
         .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith('@@')));
@@ -675,6 +772,9 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       expect(emittedHunks).toEqual(hunks.map((hunk) => hunk.split('\n')[0]));
       expect(emittedContextLines).toEqual(Array.from({ length: 900 }, (_unused, index) =>
         ` context-${String(index).padStart(4, '0')}`));
+      expect(joinCalls).toBeGreaterThan(0);
+      expect(joinedCodeUnits).toBeGreaterThan(0);
+      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
     });
 
     it('TEST_T2_06: empty input files returns single partition with 0 files and 100% coverage', () => {
