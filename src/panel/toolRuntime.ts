@@ -30,7 +30,7 @@ import {
   throwIfPanelAborted,
   type RepoFileProvider,
 } from './panelEngine';
-import { REPO_READ_FILE_MAX_CHARS } from './toolLimits';
+import { READ_FILES_MAX_BYTES, READ_FILES_MAX_FILES, REPO_READ_FILE_MAX_CHARS } from './toolLimits';
 import { createPathMatcher, isGlobQuery, normalizeRepoPath } from './pathMatch';
 
 /** Read-only inputs a tool call may need. Mirrors the subset of `invoke()`'s options the original block closed over. */
@@ -46,10 +46,6 @@ export interface ToolRuntimeResult {
   toolScope: string;
   isExhaustive: boolean;
 }
-
-const READ_FILES_MAX_FILES = 8;
-// Share the existing numeric source-read bound, measured in UTF-8 bytes across the batch.
-const READ_FILES_MAX_BYTES = REPO_READ_FILE_MAX_CHARS;
 
 function boundedUtf8(text: string, maxBytes: number): string {
   const bytes = Buffer.from(text, 'utf8');
@@ -73,7 +69,7 @@ async function readFiles(args: any, context: ToolRuntimeContext): Promise<ToolRu
       || typeof file.path !== 'string' || !file.path.trim() || file.path.length > 4096
       || !validRange(file.startLine) || !validRange(file.endLine)
       || (file.startLine !== undefined && file.endLine !== undefined && file.endLine < file.startLine))) {
-    return { toolOutput: "Tool 'read_files' execution rejected: Supply 1-8 files with an exact path and optional positive integer startLine/endLine. No other arguments or tools are allowed.",
+    return { toolOutput: `Tool 'read_files' execution rejected: Supply 1-${READ_FILES_MAX_FILES} files with an exact path and optional positive integer startLine/endLine. No other arguments or tools are allowed.`,
       toolScope: 'changed-patches-only', isExhaustive: false };
   }
 
