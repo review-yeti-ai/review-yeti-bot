@@ -24,7 +24,7 @@
  *    security-floor check below for why that specifically matters.
  */
 
-import { classifyDomainLanesByHeuristic } from './pathDomainContract';
+import { classifyDomainLanesByHeuristic, isBypassDiffOnlyPath } from './pathDomainContract';
 
 // ---------------------------------------------------------------------------
 // Task dimensions
@@ -365,6 +365,10 @@ export function validateTaskPlan(
   // classification, never against the model's own account of itself.
   const domainLanes = classifyDomainLanesByHeuristic(context.changedFiles.map((path) => ({ path })));
   const nonDocAssetPaths = context.changedFiles.filter((path) => domainLanes[path] !== 'docs_assets');
+  const reviewableCodePaths = nonDocAssetPaths.filter((path) => !isBypassDiffOnlyPath(path));
+  // If reviewable non-bypass code paths exist, lockfiles and data files bypass required task coverage.
+  // If only bypass files exist, they remain covered by nonDocAssetPaths so a plan covering them is valid.
+  const pathsRequiringCoverage = reviewableCodePaths.length > 0 ? reviewableCodePaths : nonDocAssetPaths;
   const securityAuthPaths = context.changedFiles.filter((path) => domainLanes[path] === 'security_auth');
 
   // --- Rule 5: security floor ----------------------------------------------
@@ -409,7 +413,7 @@ export function validateTaskPlan(
   for (const task of normalizedTasks) {
     for (const p of task.paths) coveredPaths.add(p);
   }
-  const uncoveredPaths = nonDocAssetPaths.filter((p) => !coveredPaths.has(p));
+  const uncoveredPaths = pathsRequiringCoverage.filter((p) => !coveredPaths.has(p));
   if (uncoveredPaths.length > 0) {
     return reject(
       'coverage_gap',

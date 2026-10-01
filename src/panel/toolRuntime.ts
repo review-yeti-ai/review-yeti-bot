@@ -32,6 +32,7 @@ import {
   type RepoFileProvider,
 } from './panelEngine';
 import { createPathMatcher, isGlobQuery, normalizeRepoPath } from './pathMatch';
+import { isBypassDiffOnlyPath } from '../pathDomainContract';
 
 /** Read-only inputs a tool call may need. Mirrors the subset of `invoke()`'s options the original block closed over. */
 export interface ToolRuntimeContext {
@@ -220,6 +221,14 @@ export async function runReadOnlyTool(
         toolScope = 'changed-patches-only';
         isExhaustive = false;
         toolOutput += `No PR diff patch is available for '${targetPath}'. get_diff is limited to changed-file patch content; use read_file for current file content when the repository provider is available.`;
+      } else if (isBypassDiffOnlyPath(targetPath)) {
+        if (matched) {
+          appendChangedPatch(`Full raw file evaluation bypassed for lockfile/data file '${targetPath}'. Lockfiles and data files receive diff-only validation. `);
+        } else {
+          toolScope = 'changed-patches-only';
+          isExhaustive = false;
+          toolOutput += `Full raw file evaluation bypassed for lockfile/data file '${targetPath}'. Lockfiles and data files outside the PR diff are not evaluated in detail.`;
+        }
       } else if (options?.repoFileProvider && (tName === 'read_file' || !matched)) {
         try {
           const content = await raceWithPanelAbort(options.repoFileProvider.readFile(targetPath), options?.signal);

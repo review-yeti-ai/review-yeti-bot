@@ -1214,7 +1214,7 @@ describe('executeComposedReview', () => {
     cfg.composed = { max_turns_total: 6, max_turns_per_task: 4 };
     const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
+    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3', 'task-2', 'task-2']);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
       error: expect.stringContaining('non_json_task_result') }]);
@@ -1340,5 +1340,128 @@ describe('executeComposedReview', () => {
     } finally {
       execSpy.mockRestore();
     }
+  });
+
+  it('runs tasks concurrently with bounded worker concurrency', async () => {
+    let activeTasks = 0;
+    let maxActiveTasks = 0;
+
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Q1', rationale: 'R1' },
+            { id: 'task-2', dimension: 'performance', paths: ['src/auth/guard.ts'], question: 'Q2', rationale: 'R2' },
+            { id: 'task-3', dimension: 'architecture', paths: ['src/auth/guard.ts'], question: 'Q3', rationale: 'R3' },
+          ],
+        }));
+      }
+
+      // Work turns - delay slightly to observe overlap
+      activeTasks += 1;
+      maxActiveTasks = Math.max(maxActiveTasks, activeTasks);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      activeTasks -= 1;
+
+      const taskId = ['task-1', 'task-2', 'task-3'].find((id) => text.includes(id)) || 'task-1';
+      return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+    });
+
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 20, max_turns_per_task: 4 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(maxActiveTasks).toBeGreaterThan(1);
+    expect(result.personas.map((p) => p.id)).toEqual(['task-1', 'task-2', 'task-3']);
+  });
+
+  it('does not penalize tool execution turns against the interaction turn budget', async () => {
+    let toolCallsCount = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Q1', rationale: 'R1' },
+            { id: 'task-2', dimension: 'architecture', paths: ['src/auth/guard.ts'], question: 'Q2', rationale: 'R2' },
+          ],
+        }));
+      }
+
+      const allText = payload.messages.map((m: any) => typeof m.content === 'string' ? m.content : '').join('\n');
+      const taskId = ['task-2', 'task-1'].find((id) => allText.includes(`Task id: ${id}`)) || 'task-1';
+
+      if (taskId === 'task-1') {
+        if (toolCallsCount < 3) {
+          toolCallsCount += 1;
+          return fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } }));
+        }
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+      }
+
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-2', status: 'COMPLETE', findings: [] }));
+    });
+
+    const cfg: any = config();
+    // Budget of 3 total turns: 1 for plan, 1 for task-1, 1 for task-2.
+    // If tool calls counted against the budget, task-1's 3 tool calls would exhaust it!
+    cfg.composed = { max_turns_total: 3, max_turns_per_task: 10 };
+
+    const result = await executeComposedReview({
+      config: cfg,
+      changedFiles: CODE_FILES,
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(toolCallsCount).toBe(3);
+    // Both tasks completed because tool turns did not consume the 3-turn model budget
+    expect(result.personas.map((p) => p.id)).toEqual(['task-1', 'task-2']);
+    expect(result.unreportedLanes ?? []).toEqual([]);
+  });
+
+  it('allows lockfiles and json data files to bypass task plan coverage without causing coverage gaps', async () => {
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) {
+        // Plan covers only the code file, omitting package-lock.json and data.json
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'auth-task', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth check', rationale: 'Auth code' },
+          ],
+        }));
+      }
+      return fakeResponse(JSON.stringify({ nonce, task: 'auth-task', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: [
+        { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() {}' },
+        { path: 'package-lock.json', patch: '@@ -1,1 +1,2 @@\n+{}' },
+        { path: 'fixtures/data.json', patch: '@@ -1,1 +1,2 @@\n+{}' },
+      ],
+      repository: 'calltelemetry/ct-meta',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    // Successfully accepted without coverage gap rejection
+    expect(result.personas.map((p) => p.id)).toEqual(['auth-task']);
   });
 });

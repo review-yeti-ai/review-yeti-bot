@@ -139,6 +139,40 @@ describe('runReadOnlyTool', () => {
       expect(repoFileProvider.readFile).not.toHaveBeenCalled();
     });
 
+    it('bypasses full raw file read for lockfiles and returns PR diff patch', async () => {
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(),
+        readFile: vi.fn().mockResolvedValue('50000 lines of raw lockfile'),
+      };
+      const result = await runReadOnlyTool('read_file', { path: 'package-lock.json' }, baseContext({
+        changedFiles: [{ path: 'package-lock.json', patch: '@@ -1,2 +1,2 @@\n-foo: 1.0.0\n+foo: 1.0.1' }],
+        repoFileProvider,
+      }));
+      expect(result.toolScope).toBe('changed-patches-only');
+      expect(result.isExhaustive).toBe(false);
+      expect(result.toolOutput).toContain('Full raw file evaluation bypassed for lockfile/data file');
+      expect(result.toolOutput).toContain('+foo: 1.0.1');
+      expect(result.toolOutput).not.toContain('50000 lines of raw lockfile');
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+    });
+
+    it('bypasses full raw file read for JSON data files and returns PR diff patch', async () => {
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(),
+        readFile: vi.fn().mockResolvedValue('{"big": "json"}'),
+      };
+      const result = await runReadOnlyTool('read_file', { path: 'fixtures/data.json' }, baseContext({
+        changedFiles: [{ path: 'fixtures/data.json', patch: '@@ -1 +1 @@\n-{"old": 1}\n+{"new": 2}' }],
+        repoFileProvider,
+      }));
+      expect(result.toolScope).toBe('changed-patches-only');
+      expect(result.isExhaustive).toBe(false);
+      expect(result.toolOutput).toContain('Full raw file evaluation bypassed for lockfile/data file');
+      expect(result.toolOutput).toContain('+{"new": 2}');
+      expect(result.toolOutput).not.toContain('{"big": "json"}');
+      expect(repoFileProvider.readFile).not.toHaveBeenCalled();
+    });
+
     it('reports a lookup failure (not confirmed-missing) when repoFileProvider.readFile throws', async () => {
       const repoFileProvider: RepoFileProvider = {
         findFiles: vi.fn(),

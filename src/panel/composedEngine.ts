@@ -23,8 +23,9 @@
  * `validateFindings` (identical findings contract), and `buildPanelResponseFormat`'s new `plan`
  * role (additive; every existing role's schema is byte-identical to before this file existed).
  */
-import { buildDocumentationOnlyPanelResult } from './fastShipResult';
+import { buildDocumentationOnlyPanelResult, buildFastShipPanelResult } from './fastShipResult';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
+import { resolveMaxFileSize } from '../config/configLoader';
 import type { WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { resolvePreChecksConfig } from '../config/schema';
 import { executeZoektPreCheck, formatZoektPreCheckPrompt, ZoektPreCheckResult } from '../services/zoektPreCheckService';
@@ -71,7 +72,15 @@ import {
   type MapReduceInput,
   type MapReducePlan,
 } from '../review/mapReduceReview';
-import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
+import {
+  classifyDomainLanesByHeuristic,
+  containsExecutableOrSensitiveCode,
+  classifyReviewScope,
+  ClassifierResult,
+  DomainLane,
+} from './classifierEngine';
+import { resolveMaxConcurrentLanes } from './laneConcurrency';
+import { isBypassDiffOnlyPath } from '../pathDomainContract';
 import {
   buildDiffSection,
   buildPanelResponseFormat,
@@ -180,7 +189,7 @@ export interface ComposedReviewOptions {
  * escape hatch cannot disagree about what "too many" means. */
 export const COMPOSED_ENGINE_MAX_TOTAL_TURNS_HARD_CAP = 200;
 
-export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 100;
+export const COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS = 20;
 /** Turns available to the PLAN phase alone (tool calls + up to one corrective retry + finalize). */
 export const COMPOSED_PLAN_MAX_TURNS = 4;
 /** Turns available to a single task's WORK phase (tool calls + correction + finalize). */
@@ -671,7 +680,13 @@ function buildSystemPrompt(repository: string): string {
     ``,
     `This review happens in two phases inside this one conversation:`,
     `1. PLAN: you propose a bounded list of review tasks covering the changed files across security, performance, architecture, testing, dependencies, contract, and licensing dimensions.`,
-    `2. WORK: the engine tells you, one at a time, which planned task to execute. You investigate that task's paths (using read-only tools if needed) and report COMPLETE with findings, or BLOCKED if you cannot complete it.`,
+    `2. WORK: the engine executes planned tasks concurrently. You investigate that task's paths (using read-only tools if needed) and report COMPLETE with findings, or BLOCKED if you cannot complete it.`,
+    ``,
+    `TURN BUDGET & STEERING (binding):`,
+    `You operate under a strict turn budget of 20 interaction turns maximum across the entire review.`,
+    `Tool execution turns (tool runs) do NOT count against this 20-turn budget; you have full freedom to prioritize, explore with tools, and collect necessary evidence.`,
+    `Prioritize your interaction turns on high-risk application changes (security/auth, data persistence, API contracts).`,
+    `Lockfiles (e.g. mix.lock, package-lock.json), documentation, and JSON data files bypass deep LLM evaluation and receive diff-only validation. Do not evaluate full raw files, JSON files, or lockfiles in detail.`,
     ``,
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
     `- Code Reading: view_file, read_file, get_diff`,
@@ -693,6 +708,7 @@ export function buildPlanDirective(
   expectedNonce: string,
   securityAuthPaths: string[] = [],
   enabledPersonas: Array<{ id: string; charter: string }> = [],
+  bypassDiffOnlyPaths: string[] = [],
 ): string {
   const personaCharterLines = enabledPersonas.length > 0
     ? [
@@ -703,10 +719,20 @@ export function buildPlanDirective(
       ]
     : [];
 
+  const bypassLines = bypassDiffOnlyPaths.length > 0
+    ? [
+        `=== CLASSIFICATION & DIFF-ONLY BYPASS ===`,
+        `The following ${bypassDiffOnlyPaths.length} file(s) are classified as lockfiles or data files that bypass deep multi-turn review: ${bypassDiffOnlyPaths.join(', ')}.`,
+        `Lockfiles and data files receive diff-only validation and do not need dedicated review tasks. Do not evaluate full raw files, JSON files, or lockfiles in detail.`,
+        ``,
+      ]
+    : [];
+
   return [
     `=== PLAN TURN ===`,
     ...personaCharterLines,
-    `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset files do not need their own task). Do not propose independent review tasks solely for binary files or compressed archives (e.g. .gz, .tar, .zip, images, binaries) whose patch text is unavailable; binary assets are handled by routed lanes and do not consume task slots.`,
+    ...bypassLines,
+    `Propose a bounded review task plan covering every changed code file listed above (${changedFilePaths.length} file(s) total; documentation/asset/bypass files do not need their own task). Do not propose independent review tasks solely for binary files, lockfiles (e.g. mix.lock, package-lock.json), JSON data files, or compressed archives (e.g. .gz, .tar, .zip, images, binaries) whose patch text is unavailable; binary assets are handled by routed lanes and do not consume task slots.`,
     // Ids are specified with positive examples ONLY. This line used to read
     // '(for example "security-auth", not "T1")'. Naming the rejected form
     // inside the instruction primes it: models emitted exactly `T1`..`T7`,
@@ -714,7 +740,9 @@ export function buildPlanDirective(
     // after its single corrective turn. Describe the shape wanted and show
     // conforming ids; never quote a non-conforming one.
     `Each task names an id matching [a-z][a-z0-9_-]* -- a short lowercase kebab-case slug naming what the task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape". Each task also names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
-    `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
+    `Use at most ${maxTasks} tasks. Every non-documentation, non-binary, non-bypass changed file must be covered by at least one task.`,
+    `=== TURN BUDGET & STEERING (binding) ===`,
+    `You operate under a strict budget of 20 interaction turns maximum across the entire review. Tool execution turns do NOT count against your budget; you have freedom to prioritize and collect necessary evidence with tools. Do not evaluate full raw files, JSON files, or lockfiles in detail.`,
     // The security floor is enforced against `classifyPathByHeuristic`, a
     // deterministic model-independent classification of the real changed
     // paths, and a miss fails the whole plan closed with NO corrective turn
@@ -745,6 +773,7 @@ function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: num
     `Rationale: ${task.rationale}`,
     ``,
     `Investigate this task only. You may request read-only tools as {"tool":"tool_name","args":{}} (e.g. read_file, symbol_search, ct_impact, knowledge_search, advise_blocker).`,
+    `STEERING: You operate under a 20-turn interaction budget across the review. Tool executions (tool turns) do NOT count against this turn budget. Prioritize your turns and collect what you need using tools. Do not evaluate full raw files, lockfiles, or JSON files in detail; rely on diff patches.`,
     `When done, return the final result object with the exact top-level fields "nonce", "task" (must equal "${task.id}"), "status" (COMPLETE or BLOCKED), and "findings" (an array; empty if none) -- no other fields, no Markdown fences.`,
     `Use BLOCKED only when you genuinely cannot complete this task with the tools and evidence available; BLOCKED is recorded as a failed lane, never as a pass.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
@@ -852,6 +881,7 @@ interface PlanPhaseOutcome {
   tasks: ReviewTask[];
   messages: OpenRouterMessage[];
   turnsUsed: number;
+  toolTurns: number;
   turnUsages: LaneTurnUsage[];
 }
 
@@ -882,6 +912,7 @@ async function runPlanPhase(input: {
   let messages = [...input.messages];
   const turnUsages: LaneTurnUsage[] = [];
   let turnsUsed = 0;
+  let toolTurns = 0;
   let correctionUsed = false;
   const localMaxTurns = Math.min(COMPOSED_PLAN_MAX_TURNS, Math.max(1, input.turnsRemaining()));
 
@@ -916,6 +947,7 @@ async function runPlanPhase(input: {
 
     const parsed = parseNativeTurn(turn.content);
     if (parsed?.isToolCall) {
+      toolTurns += 1;
       const result = await runReadOnlyTool(parsed.tool as string, parsed.args, {
         changedFiles: input.changedFilesForTools,
         repoFileProvider: input.repoFileProvider,
@@ -964,7 +996,7 @@ async function runPlanPhase(input: {
     });
 
     if (validation.valid) {
-      return { tasks: validation.tasks, messages, turnsUsed, turnUsages };
+      return { tasks: validation.tasks, messages, turnsUsed, toolTurns, turnUsages };
     }
 
     // Security floor and an empty plan on a real code diff are never correctable: a diff whose
@@ -1044,6 +1076,7 @@ async function runTaskWorkPhase(input: {
   const turnUsages = input.progressState?.turnUsages ?? [];
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
+  let modelTurns = 0;
   let correctionAttempts = 0;
   let freshRecoveryUsed = false;
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
@@ -1055,11 +1088,19 @@ async function runTaskWorkPhase(input: {
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
 
-  for (let iter = 0; iter < localMaxTurns; iter++) {
+  // Tool executions do not count against the model interaction turn budget.
+  // Safety bound on tool turns per task prevents unbounded tool loops.
+  const MAX_TOOL_TURNS_PER_TASK = 20;
+  const MAX_TOTAL_TURNS_PER_TASK = localMaxTurns + MAX_TOOL_TURNS_PER_TASK;
+
+  for (let iter = 0; iter < MAX_TOTAL_TURNS_PER_TASK; iter++) {
     if (input.turnsRemaining() <= 0) return exhausted('total_turn_budget_exhausted');
-    const isLastLocalTurn = iter === localMaxTurns - 1;
-    const finalizing = correctionAttempts > 0 || iter >= localMaxTurns - finalizationTurns;
-    if (correctionAttempts === 0 && iter === localMaxTurns - finalizationTurns) {
+    if (modelTurns >= localMaxTurns) return exhausted('task_turn_budget_exhausted');
+
+    const remainingModelTurns = localMaxTurns - modelTurns;
+    const isLastLocalTurn = remainingModelTurns <= 1;
+    const finalizing = correctionAttempts > 0 || remainingModelTurns <= finalizationTurns || toolTurns >= MAX_TOOL_TURNS_PER_TASK;
+    if (correctionAttempts === 0 && remainingModelTurns === finalizationTurns && !taskMessages.some((m) => typeof m.content === 'string' && m.content.startsWith('TASK_FINALIZATION'))) {
       taskMessages = [...taskMessages, { role: 'user', content: buildTaskFinalizationDirective(input.task, expectedNonce) }];
     }
     const responseFormat = finalizing ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
@@ -1111,6 +1152,8 @@ async function runTaskWorkPhase(input: {
       }];
       continue;
     }
+
+    modelTurns += 1;
 
     const candidate = parsed?.finalObject;
     let contractFailure: TaskContractFailure | undefined;
@@ -1315,7 +1358,43 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const model = spec.model;
     const inactivityTimeoutMs = configuredInactivityTimeoutMs(spec.review_timeout_s, TURN_IDLE_MS);
 
-    const domainLanes = classifyDomainLanesByHeuristic(effectiveFiles);
+    const maxFileSize = resolveMaxFileSize(config);
+    const isPotentiallyFastShip = !containsExecutableOrSensitiveCode(effectiveFiles, { maxFileSize });
+
+    let classifierResult: ClassifierResult | null = null;
+    if (isPotentiallyFastShip && (config.quorum || 1) <= 1) {
+      try {
+        classifierResult = await classifyReviewScope({
+          config,
+          changedFiles: effectiveFiles,
+          candidatePersonas: enabledPersonas.map((p) => ({ id: p.id, charter: p.charter, paths: [] })),
+          repository,
+          headSha,
+          client,
+          jobId,
+          requestPolicy,
+          signal,
+        });
+      } catch (classErr: any) {
+        throwIfPanelAborted(signal);
+        logger.warn('[composed] pre-flight classifier failed; proceeding with full review', {
+          repository,
+          headSha,
+          error: classErr?.message,
+        });
+      }
+      if (classifierResult?.fastShip) {
+        logger.info(`Fast-ship approved by classifier for ${repository}#${headSha}: ${classifierResult.rationale}`);
+        const fastShipResult = buildFastShipPanelResult(classifierResult, headSha, config.quorum);
+        return {
+          ...fastShipResult,
+          applicablePersonaIds: enabledPersonas.map((p) => p.id),
+          panelWallClockMs: Date.now() - panelStartedAt,
+        };
+      }
+    }
+
+    const domainLanes = classifierResult?.domainLanes || classifyDomainLanesByHeuristic(effectiveFiles);
     const preCheckEvidence = await gatherPreCheckEvidence(config, effectiveFiles, options.workspaceRoot, signal, repoFileProvider);
     const zoektConfig = mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt);
 
@@ -1337,6 +1416,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     // base-policy-projected (see `resolveWorkerConfig` in `../config/publishingWorkerConfig.ts`).
     const maxTasks = resolveComposedMaxTasks(config.composed?.max_tasks);
     const effectiveFilePaths = effectiveFiles.map((f) => f.path);
+    const bypassDiffOnlyPaths = effectiveFilePaths.filter(isBypassDiffOnlyPath);
 
     // Mint the plan nonce ONCE and keep it, so the returned object can be bound back to this
     // exact request. Generating it inline in the directive would embed a value nothing retains,
@@ -1357,6 +1437,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
               planNonce,
               effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
               enabledPersonas,
+              bypassDiffOnlyPaths,
             ),
           },
         ],
@@ -1364,8 +1445,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     ];
 
     const totalTurnBudget = resolveComposedEngineMaxTurns(process.env, config.composed?.max_turns_total);
-    let totalTurnsUsed = 0;
-    const remainingBudget = () => totalTurnBudget - totalTurnsUsed;
+    let totalModelTurnsUsed = 0;
+    const remainingBudget = () => totalTurnBudget - totalModelTurnsUsed;
     const timeoutMs = Math.max(1, deadline.timeoutMs - (Date.now() - panelStartedAt));
 
     const planStartedAt = Date.now();
@@ -1410,19 +1491,117 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       provider: providerId, model, required: true, durationMs: Date.now() - planStartedAt, turn: planOutcome.turnsUsed,
       usage: progressUsage(planOutcome.turnUsages),
     });
-    totalTurnsUsed += planOutcome.turnsUsed;
+    const planModelTurns = Math.max(1, planOutcome.turnsUsed - planOutcome.toolTurns);
+    totalModelTurnsUsed += planModelTurns;
     span.setAttribute('review_yeti.composed.task_count', planOutcome.tasks.length);
 
     // Persistent backbone after planning: head (cached) + exactly one plan receipt line. The
     // plan's own tool-call turns and corrective turn are discarded -- the engine already holds
     // the validated `ReviewTask[]` and restates each task's own detail on that task's own turn;
     // nothing is lost, only the model's now-irrelevant intermediate turns.
-    let persistentMessages: OpenRouterMessage[] = [
+    const persistentMessages: OpenRouterMessage[] = [
       baseMessages[0],
       baseMessages[1],
       { role: 'assistant', content: 'Plan accepted.' },
       { role: 'user', content: `[PLAN COMPLETE -- ${planOutcome.tasks.length} task(s) planned]` },
     ];
+
+    const maxConcurrency = Math.min(
+      resolveMaxConcurrentLanes(process.env),
+      planOutcome.tasks.length || 1,
+    );
+
+    type TaskResultSlot =
+      | { type: 'outcome'; outcome: TaskOutcome }
+      | { type: 'skipped' };
+
+    const taskSlots = new Array<TaskResultSlot>(planOutcome.tasks.length);
+    let nextTaskIdx = 0;
+    let reservedModelTurns = planModelTurns;
+
+    async function taskWorker(): Promise<void> {
+      while (true) {
+        throwIfPanelAborted(signal);
+        const i = nextTaskIdx++;
+        if (i >= planOutcome.tasks.length) break;
+
+        const task = planOutcome.tasks[i];
+        const diagnosticLane = composedTaskDiagnosticLane(i);
+        if (totalTurnBudget - reservedModelTurns <= 0) {
+          options.progress?.emit({
+            task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
+          });
+          taskSlots[i] = { type: 'skipped' };
+          continue;
+        }
+
+        reservedModelTurns += 1;
+        const taskStartedAt = Date.now();
+        options.progress?.emit({
+          task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
+          provider: providerId, model, required: true,
+        });
+        const taskTurnUsages: LaneTurnUsage[] = [];
+        let outcome: TaskOutcome;
+        try {
+          outcome = await runTaskWorkPhase({
+            maxTurnsPerTask: config.composed?.max_turns_per_task,
+            deadlineAtMs: composedDeadlineAtMs,
+            now: deadline.now,
+            task,
+            taskIndex: i,
+            totalTasks: planOutcome.tasks.length,
+            client,
+            model,
+            providerId,
+            baseMessages: persistentMessages,
+            changedFilesForTools: toolFiles,
+            ...(requestCapBytes ? { requestCapBytes } : {}),
+            timeoutMs,
+            inactivityTimeoutMs,
+            requestPolicy,
+            jobId,
+            signal,
+            repoFileProvider,
+            zoektConfig,
+            turnsRemaining: remainingBudget,
+            progress: options.progress,
+            progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
+          });
+        } catch (error) {
+          options.progress?.emit({
+            task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
+            turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
+            usage: progressUsage(taskTurnUsages),
+          });
+          throw error;
+        }
+
+        const taskUsage = progressUsage(outcome.turnUsages);
+        options.progress?.emit({
+          task: 'composed_task',
+          status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
+          role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
+          durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
+          turn: outcome.turnUsages.length,
+          ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
+          usage: taskUsage,
+        });
+
+        const actualModelTurns = outcome.type === 'complete' || outcome.type === 'blocked'
+          ? Math.max(1, outcome.turnUsages.length - outcome.toolTurns)
+          : Math.max(1, outcome.turnUsages.length - (outcome.diagnostics?.toolTurns ?? 0));
+        totalModelTurnsUsed += actualModelTurns;
+        reservedModelTurns += (actualModelTurns - 1);
+        taskSlots[i] = { type: 'outcome', outcome };
+      }
+    }
+
+    const workerCount = Math.min(maxConcurrency, planOutcome.tasks.length);
+    const workers = Array.from({ length: workerCount }, () => taskWorker());
+    await Promise.all(workers);
 
     const personas: PersonaLaneResult[] = [];
     const optionalFailures: PanelResult['optionalFailures'] = [];
@@ -1431,74 +1610,12 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
 
     for (let i = 0; i < planOutcome.tasks.length; i++) {
       const task = planOutcome.tasks[i];
-      const diagnosticLane = composedTaskDiagnosticLane(i);
-      if (remainingBudget() <= 0) {
-        // Never started. Record the reason off the published roster and keep walking.
-        options.progress?.emit({
-          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
-        });
+      const slot = taskSlots[i];
+      if (!slot || slot.type === 'skipped') {
         unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
         continue;
       }
-      const taskStartedAt = Date.now();
-      options.progress?.emit({
-        task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
-        provider: providerId, model, required: true,
-      });
-      const taskTurnUsages: LaneTurnUsage[] = [];
-      let outcome: TaskOutcome;
-      try {
-        outcome = await runTaskWorkPhase({
-          maxTurnsPerTask: config.composed?.max_turns_per_task,
-          deadlineAtMs: composedDeadlineAtMs,
-          now: deadline.now,
-          task,
-          taskIndex: i,
-          totalTasks: planOutcome.tasks.length,
-          client,
-          model,
-          providerId,
-          baseMessages: persistentMessages,
-          changedFilesForTools: toolFiles,
-          ...(requestCapBytes ? { requestCapBytes } : {}),
-          timeoutMs,
-          inactivityTimeoutMs,
-          requestPolicy,
-          jobId,
-          signal,
-          repoFileProvider,
-          zoektConfig,
-          turnsRemaining: remainingBudget,
-          progress: options.progress,
-          progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
-        });
-      } catch (error) {
-        options.progress?.emit({
-          task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
-          turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
-          usage: progressUsage(taskTurnUsages),
-        });
-        throw error;
-      }
-      const taskUsage = progressUsage(outcome.turnUsages);
-      options.progress?.emit({
-        task: 'composed_task',
-        status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
-        role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
-        durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
-        turn: outcome.turnUsages.length,
-        ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
-        usage: taskUsage,
-      });
-      totalTurnsUsed += outcome.turnUsages.length;
-
-      // Fold the PLAN phase's own real provider spend into the first task lane that actually
-      // produces a lane result, so total cost/token telemetry (summed by the caller from
-      // `personas[].turnUsages`/`aggregateUsage`) is not silently undercounted merely because the
-      // plan has no lane of its own to be attributed to. Attribution to a single lane is
-      // imperfect; dropping real spend from the total is worse.
+      const outcome = slot.outcome;
       const turnUsagesForLane = !planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')
         ? [...planOutcome.turnUsages, ...outcome.turnUsages]
         : outcome.turnUsages;
@@ -1521,25 +1638,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           aggregateUsage: sumAggregateUsage(turnUsagesForLane),
           toolCalls: outcome.toolCalls,
         });
-        persistentMessages = [
-          ...persistentMessages,
-          { role: 'assistant', content: `Task ${task.id} complete.` },
-          { role: 'user', content: `[TASK ${task.id} COMPLETE -- ${outcome.findings.length} finding(s) recorded]` },
-        ];
       } else if (outcome.type === 'blocked') {
         optionalFailures.push({
           id: task.id,
           error: `Task ${task.id} (${task.dimension}) reported BLOCKED for path(s) [${task.paths.join(', ')}]: ${task.question}`,
           failureClass: 'contract',
         });
-        persistentMessages = [
-          ...persistentMessages,
-          { role: 'assistant', content: `Task ${task.id} blocked.` },
-          { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
-        ];
       } else {
-        // Ran and returned no verdict. Off the published roster, so it cannot
-        // satisfy coverage, and it is not an approval. Later tasks still run.
         const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics);
         unreportedLanes.push(failure);
         logger.warn('[composed] task finalization incomplete', {
