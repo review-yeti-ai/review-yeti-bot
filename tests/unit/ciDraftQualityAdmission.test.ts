@@ -69,7 +69,7 @@ function assertQualityClasses(workflow: Workflow): void {
   for (const id of quality) {
     const job = workflow.jobs[id];
     expect(job.permissions).toEqual(id === 'test' ? {} : { contents: 'read' });
-    expect(JSON.stringify(job)).not.toMatch(/secrets\.|CT_REVIEW_BOT_APP|calltelemetry\/ct-review-actions|\b(?:kubectl|doctl)\b/u);
+    expect(JSON.stringify(job)).not.toMatch(/\bsecrets(?:\s|\\[nrt])*(?:\.|\[)|CT_REVIEW_BOT_APP|calltelemetry\/ct-review-actions|\b(?:kubectl|doctl)\b/iu);
   }
   const build = workflow.jobs['legacy-runtime'].steps.find(step => step.uses?.startsWith('docker/build-push-action@'));
   expect(build?.with).toMatchObject({ load: true, push: false });
@@ -156,6 +156,26 @@ describe('public draft quality admission', () => {
     }
     expect(admitted('review', { name: 'repository_dispatch', action: 'review-requested' }, paid)).toBe(true);
   });
+
+  it.each([
+    '${{ secrets.SOME_TOKEN }}',
+    "${{ secrets['SOME_TOKEN'] }}",
+    "${{ secrets [ 'SOME_TOKEN' ] }}",
+    "${{ SECRETS['SOME_TOKEN'] }}",
+    '${{ SeCrEtS . SOME_TOKEN }}',
+    "${{ secrets\t['SOME_TOKEN'] }}",
+    "${{\n secrets\r\n[\t'SOME_TOKEN'\t] }}",
+    "${{ secrets[format('SOME_{0}', 'TOKEN')] }}",
+  ].flatMap(expression => ['job-env', 'step-env', 'step-with'].map(location => ({ location, expression }))))(
+    'rejects planted quality secret access at $location: $expression', ({ location, expression }) => {
+      const secret = structuredClone(ci);
+      const job = secret.jobs.build;
+      if (location === 'job-env') Object.assign(job, { env: { TOKEN: expression } });
+      if (location === 'step-env') Object.assign(job.steps[0], { env: { TOKEN: expression } });
+      if (location === 'step-with') job.steps[0].with = { ...job.steps[0].with, token: expression };
+      expect(() => assertQualityClasses(secret), location).toThrow();
+    },
+  );
 
   it('detects planted draft suppression, unwanted triggers, write grants, and publishing', () => {
     const suppression = structuredClone(ci); suppression.jobs.typecheck.if = "github.event.pull_request.draft == false";
