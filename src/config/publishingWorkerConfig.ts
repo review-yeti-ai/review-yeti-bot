@@ -13,7 +13,7 @@ export { isTriggerActionAllowed, type TriggerActionOptions };
 // binding outer constraint.
 export const PUBLISHING_MAX_TURNS = 15;
 export const PUBLISHING_IDLE_TIMEOUT_SECONDS = 180;
-export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 1800;
+export const PUBLISHING_OVERALL_TIMEOUT_SECONDS = 3000;
 
 let cachedCompiledIndex: CompiledDomainIndex | null = null;
 
