@@ -63,13 +63,19 @@ function admitted(id: string, event: Event, workflow = ci, dependencies = needs(
   return evaluateGuard(job.if, event, dependencies);
 }
 
+function workflowStrings(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || typeof value !== 'object') return '';
+  return Object.entries(value).flatMap(([key, nested]) => [key, workflowStrings(nested)]).join('\n');
+}
+
 function assertQualityClasses(workflow: Workflow): void {
   expect(Object.keys(workflow.jobs).sort()).toEqual([...quality, ...publication].sort());
   expect(workflow.permissions).toBeUndefined();
   for (const id of quality) {
     const job = workflow.jobs[id];
     expect(job.permissions).toEqual(id === 'test' ? {} : { contents: 'read' });
-    expect(JSON.stringify(job)).not.toMatch(/\bsecrets(?:\s|\\[nrt])*(?:\.|\[)|CT_REVIEW_BOT_APP|calltelemetry\/ct-review-actions|\b(?:kubectl|doctl)\b/iu);
+    expect(workflowStrings(job)).not.toMatch(/\bsecrets\b|CT_REVIEW_BOT_APP|calltelemetry\/ct-review-actions|\b(?:kubectl|doctl)\b/iu);
   }
   const build = workflow.jobs['legacy-runtime'].steps.find(step => step.uses?.startsWith('docker/build-push-action@'));
   expect(build?.with).toMatchObject({ load: true, push: false });
@@ -166,13 +172,19 @@ describe('public draft quality admission', () => {
     "${{ secrets\t['SOME_TOKEN'] }}",
     "${{\n secrets\r\n[\t'SOME_TOKEN'\t] }}",
     "${{ secrets[format('SOME_{0}', 'TOKEN')] }}",
-  ].flatMap(expression => ['job-env', 'step-env', 'step-with'].map(location => ({ location, expression }))))(
+    '${{ toJSON(secrets) }}',
+    '${{ secrets }}',
+    '${{ toJSON(SECRETS) }}',
+    '${{\n toJSON(\tSeCrEtS\r\n) }}',
+    "${{ format('{0}', toJSON(secrets)) }}",
+  ].flatMap(expression => ['job-env', 'step-env', 'step-with', 'step-run'].map(location => ({ location, expression }))))(
     'rejects planted quality secret access at $location: $expression', ({ location, expression }) => {
       const secret = structuredClone(ci);
       const job = secret.jobs.build;
       if (location === 'job-env') Object.assign(job, { env: { TOKEN: expression } });
       if (location === 'step-env') Object.assign(job.steps[0], { env: { TOKEN: expression } });
       if (location === 'step-with') job.steps[0].with = { ...job.steps[0].with, token: expression };
+      if (location === 'step-run') job.steps.push({ name: 'Counterfactual secret output', run: `printf '%s' "${expression}"` });
       expect(() => assertQualityClasses(secret), location).toThrow();
     },
   );
