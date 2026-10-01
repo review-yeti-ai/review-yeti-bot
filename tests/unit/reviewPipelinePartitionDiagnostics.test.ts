@@ -236,11 +236,45 @@ function loadPartitionReducer() {
   return createRequire(import.meta.url)(filename);
 }
 
+type TerminalDiagnostics = {
+  responseStatus?: number | null;
+  errorCode?: string | null;
+  generationIdDigest?: string | null;
+  routerAttempt?: number | null;
+  responseMode?: 'stream' | 'buffered' | null;
+  outputShape?: string | null;
+  finishReason?: string | null;
+  findingsSource?: string | null;
+  contentSizeBucket?: string | null;
+  reasoningSizeBucket?: string | null;
+  outputContract?: {
+    policyDeclared: string; requestObserved: string;
+    providerSupported: string; terminalParsed: boolean;
+  } | null;
+};
+
 function diagnosticLane(kind: 'failed' | 'successful', recoveryAction: string | null) {
   const failed = kind === 'failed';
   const provider = failed ? 'anthropic' : 'openai';
   const transport = failed ? 'anthropic-failed' : 'openai-successful';
   const requestFingerprint = (failed ? 'a' : 'b').repeat(64);
+  const terminalDiagnostics: TerminalDiagnostics = {
+    responseStatus: failed ? 200 : 201,
+    errorCode: failed ? 'parse_failed' : 'recovered_rate_limit',
+    generationIdDigest: (failed ? 'e' : 'f').repeat(64),
+    routerAttempt: failed ? 2 : 1,
+    responseMode: failed ? 'stream' : 'buffered',
+    outputShape: failed ? 'no_json' : 'direct_json_object',
+    finishReason: failed ? 'length' : 'stop',
+    findingsSource: failed ? 'none' : 'content',
+    contentSizeBucket: failed ? 'empty' : 'small',
+    reasoningSizeBucket: failed ? 'oversize' : 'empty',
+    outputContract: {
+      policyDeclared: failed ? 'json_schema' : 'json_object',
+      requestObserved: failed ? 'json_schema' : 'json_object',
+      providerSupported: failed ? 'unreported' : 'accepted', terminalParsed: !failed,
+    },
+  };
   return {
     personaId: 'testing', findings: [], decision: failed ? 'ERROR' : 'APPROVE',
     ...(failed ? { error: 'Model response contained no parseable findings JSON.' } : {}),
@@ -253,14 +287,56 @@ function diagnosticLane(kind: 'failed' | 'successful', recoveryAction: string | 
       ttftMs: failed ? 137 : 23, requestFingerprint,
       outputShape: failed ? 'no_json' : 'direct_json_object',
       finishReason: failed ? 'length' : 'stop',
+      responseStatus: terminalDiagnostics.responseStatus,
+      generationIdDigest: terminalDiagnostics.generationIdDigest,
+      responseMode: terminalDiagnostics.responseMode,
     }],
     recoveryAction,
     failureClass: failed ? 'malformed_output' : null,
-    outputShape: failed ? 'no_json' : 'direct_json_object',
-    finishReason: failed ? 'length' : 'stop',
     contentPresent: !failed, reasoningPresent: failed,
-    responseStatus: 200, attemptCount: 1,
+    ...terminalDiagnostics, attemptCount: 1,
   };
+}
+
+function laterFailedLane(recoveryAction: string | null) {
+  const lane = { ...diagnosticLane('failed', recoveryAction), ttftMs: 149,
+    responseStatus: 206, errorCode: 'later_parse_failed', generationIdDigest: 'c'.repeat(64),
+    routerAttempt: 3, responseMode: 'buffered' as const,
+    outputShape: 'truncated_json', finishReason: 'content_filter', findingsSource: 'reasoning',
+    contentSizeBucket: 'tiny', reasoningSizeBucket: 'large',
+    outputContract: { policyDeclared: 'json_object', requestObserved: 'json_object',
+      providerSupported: 'rejected', terminalParsed: false } };
+  lane.responseAttempts = [{ ...lane.responseAttempts[0], ttftMs: lane.ttftMs,
+    responseStatus: lane.responseStatus, generationIdDigest: lane.generationIdDigest,
+    responseMode: lane.responseMode, outputShape: lane.outputShape, finishReason: lane.finishReason }];
+  return lane;
+}
+
+function expectTerminalAttribution(result: any, receipt: any, lane: ReturnType<typeof diagnosticLane>) {
+  // All fixture values are valid literal contracts; absence must become null,
+  // never a sibling's value. Do not use production normalizers as the oracle.
+  const expected = {
+    responseStatus: lane.responseStatus ?? null,
+    errorCode: lane.errorCode ?? null,
+    generationIdDigest: lane.generationIdDigest ?? null,
+    routerAttempt: lane.routerAttempt ?? null,
+    responseMode: lane.responseMode ?? null,
+    outputShape: lane.outputShape ?? null, finishReason: lane.finishReason ?? 'missing',
+    findingsSource: lane.findingsSource ?? null,
+    contentSizeBucket: lane.contentSizeBucket ?? null, reasoningSizeBucket: lane.reasoningSizeBucket ?? null,
+    outputContract: lane.outputContract ?? {
+      policyDeclared: 'unknown', requestObserved: 'unknown', providerSupported: 'unreported', terminalParsed: false,
+    },
+  };
+  expect(result).toMatchObject(expected);
+  expect(receipt).toMatchObject(expected);
+}
+
+function withoutNullableDiagnostics(lane: ReturnType<typeof diagnosticLane>, absent: null | undefined) {
+  return { ...lane, responseStatus: absent, errorCode: absent,
+    generationIdDigest: absent, routerAttempt: absent, responseMode: absent,
+    outputShape: absent, finishReason: absent, findingsSource: absent,
+    contentSizeBucket: absent, reasoningSizeBucket: absent, outputContract: absent };
 }
 
 function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[]) {
@@ -271,22 +347,28 @@ function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[]) {
 }
 
 function expectFailedAttribution(result: any, receipt: any, failed: ReturnType<typeof diagnosticLane>) {
+  expectTerminalAttribution(result, receipt, failed);
   expect(result).toMatchObject({
     decision: 'ERROR', transport: failed.transport, provider: failed.provider, model: failed.model,
     ttftMs: failed.ttftMs, routerMetadata: failed.routerMetadata,
     recoveryAction: failed.recoveryAction, requestFingerprint: failed.requestFingerprint,
+    contentPresent: failed.contentPresent, reasoningPresent: failed.reasoningPresent,
   });
   expect(result.responseAttempts).toHaveLength(1);
   expect(result.responseAttempts[0]).toMatchObject({
     transport: failed.provider, provider: failed.provider, ttftMs: failed.ttftMs,
     requestFingerprint: failed.requestFingerprint, outcome: 'malformed_output',
+    responseStatus: failed.responseAttempts[0].responseStatus,
+    responseMode: failed.responseAttempts[0].responseMode,
+    generationIdDigest: failed.responseAttempts[0].generationIdDigest,
   });
   expect(receipt).toMatchObject({
     configuredTransport: failed.provider, resolvedProvider: failed.provider,
     modelDigest: createHash('sha256').update(failed.model).digest('hex'),
     routerMetadata: failed.routerMetadata, recoveryAction: failed.recoveryAction,
     requestFingerprint: failed.requestFingerprint,
-    failureClass: 'malformed_output', outputShape: 'no_json', finishReason: 'length',
+    failureClass: 'malformed_output',
+    contentPresent: failed.contentPresent, reasoningPresent: failed.reasoningPresent,
   });
 }
 
@@ -300,12 +382,29 @@ describe('production partition reducer attribution and recovery branches', () =>
     [true, 'rate_limit_retry', null],
   ] as const)('binds two real failed runs with reversed=%s and recovery=%s/%s', (reversed, firstRecovery, lastRecovery) => {
     const first = diagnosticLane('failed', firstRecovery);
-    const last = { ...diagnosticLane('failed', lastRecovery), ttftMs: 149 };
-    last.responseAttempts = [{ ...last.responseAttempts[0], ttftMs: last.ttftMs }];
+    const last = laterFailedLane(lastRecovery);
     const lanes = reversed ? [last, first] : [first, last];
     const { result, receipt } = reduceDiagnosticLanes(lanes);
     expectFailedAttribution(result, receipt, lanes[0]);
     expect(result.error).toBe(lanes[0].error);
+  });
+
+  it.each([
+    ['first', null], ['last', null], ['first', undefined], ['last', undefined],
+  ] as const)('keeps all missing %s failed diagnostics absent=%s instead of borrowing success', (order, absent) => {
+    const failed = withoutNullableDiagnostics(diagnosticLane('failed', null), absent);
+    const successful = diagnosticLane('successful', 'rate_limit_retry');
+    const { result, receipt } = reduceDiagnosticLanes(order === 'first' ? [failed, successful] : [successful, failed]);
+    expectFailedAttribution(result, receipt, failed);
+    expect(result.recoveryAction).toBeNull();
+    expect(receipt.recoveryAction).toBeNull();
+  });
+
+  it.each([null, undefined])('keeps absent=%s first-error diagnostics instead of borrowing later failure', (absent) => {
+    const failed = withoutNullableDiagnostics(diagnosticLane('failed', null), absent);
+    const { result, receipt } = reduceDiagnosticLanes([failed, laterFailedLane('structured_output_fallback')]);
+    expectFailedAttribution(result, receipt, failed);
+    expect(result.error).toBe(failed.error);
   });
 
   it.each([
@@ -324,7 +423,7 @@ describe('production partition reducer attribution and recovery branches', () =>
 
   it('keeps the first failure representative when a later failure has distinct metadata', () => {
     const first = diagnosticLane('failed', 'rate_limit_retry');
-    const last = { ...diagnosticLane('failed', 'structured_output_fallback'), ttftMs: 149,
+    const last = { ...laterFailedLane('structured_output_fallback'),
       transport: 'gemini-failed', provider: 'gemini', error: 'Fixture last malformed response.',
       routerMetadata: { strategy: 'last-failure', region: 'eu', attempt: 3 },
       model: 'fixture-last-failure-model', requestFingerprint: 'c'.repeat(64) };
@@ -339,13 +438,34 @@ describe('production partition reducer attribution and recovery branches', () =>
     const base = diagnosticLane('successful', recoveryOrder === 'first' ? 'rate_limit_retry' : null);
     const last = { ...diagnosticLane('successful', 'structured_output_fallback'),
       transport: 'anthropic-last', provider: 'anthropic', model: 'fixture-last-success', ttftMs: 999,
-      routerMetadata: { strategy: 'last', region: 'eu', attempt: 4 }, requestFingerprint: 'd'.repeat(64) };
-    const { result } = reduceDiagnosticLanes([base, last]);
+      routerMetadata: { strategy: 'last', region: 'eu', attempt: 4 }, requestFingerprint: 'd'.repeat(64),
+      responseStatus: 202, errorCode: 'last_success_recovered', generationIdDigest: 'd'.repeat(64),
+      routerAttempt: 4, responseMode: 'stream' as const, reasoningPresent: true,
+      outputShape: 'fenced_json_object', finishReason: 'tool_calls', findingsSource: 'reasoning',
+      contentSizeBucket: 'medium', reasoningSizeBucket: 'tiny',
+      outputContract: { policyDeclared: 'json_schema', requestObserved: 'json_schema',
+        providerSupported: 'unreported', terminalParsed: true } };
+    const { result, receipt } = reduceDiagnosticLanes([base, last]);
+    // Transport/model/attempts come from base; terminal diagnostics come from last.
+    expectTerminalAttribution(result, receipt, last);
+    expect(result).toMatchObject({ contentPresent: true, reasoningPresent: true });
+    expect(receipt).toMatchObject({ contentPresent: true, reasoningPresent: true });
     expect(result).toMatchObject({
       decision: 'APPROVE', transport: base.transport, provider: base.provider, model: base.model,
       ttftMs: base.ttftMs, routerMetadata: base.routerMetadata,
       requestFingerprint: base.requestFingerprint, responseAttempts: base.responseAttempts,
       recoveryAction: recoveryOrder === 'first' ? 'rate_limit_retry' : 'structured_output_fallback',
     });
+  });
+
+  it.each([null, undefined])('all-success absent=%s last diagnostics do not borrow populated base', (absent) => {
+    const base = diagnosticLane('successful', 'rate_limit_retry');
+    const last = withoutNullableDiagnostics(diagnosticLane('successful', null), absent);
+    const { result, receipt } = reduceDiagnosticLanes([base, last]);
+    expectTerminalAttribution(result, receipt, last);
+    expect(result).toMatchObject({ decision: 'APPROVE', transport: base.transport,
+      provider: base.provider, model: base.model, responseAttempts: base.responseAttempts,
+      recoveryAction: 'rate_limit_retry' });
+    expect(receipt.recoveryAction).toBe('rate_limit_retry');
   });
 });
