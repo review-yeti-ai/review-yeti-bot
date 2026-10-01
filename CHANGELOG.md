@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.104.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.2...v1.104.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* bound schema bootstrap and stabilize qualification fixtures ([#1232](https://github.com/review-yeti-ai/review-yeti-bot/issues/1232)) ([8b24f57](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b24f57922f04822de15d4e8cf7f22ec5b94e12c))
+
 ## [1.104.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.1...v1.104.2) (2026-10-01)
 
 
