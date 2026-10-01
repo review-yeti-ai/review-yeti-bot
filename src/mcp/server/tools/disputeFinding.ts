@@ -6,7 +6,6 @@
  */
 
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -15,6 +14,11 @@ import {
 } from '../mcpTypes';
 import { canAccessRepository, McpRbacError } from '../mcpRbac';
 import type { ReviewModelClient } from '../../../gateway/openRouterClient';
+import {
+  extractReviewFindingEntries,
+  findReviewFindingRecord,
+  newestReviewRowsPerRun,
+} from './findingIdentity';
 
 export const DisputeFindingInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
@@ -212,6 +216,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
       let matchedRow: any = null;
       let parsedPayload: any = null;
       let allFindingsOnPr: any[] = [];
+      const findingRecords: Array<{ finding: any; personaId: string; runId: string; row: any; payload: any }> = [];
 
       if (deps.queryableDatabase) {
         let rows: any[] = [];
@@ -265,11 +270,10 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           }
         }
 
-        for (const row of rows) {
+        for (const row of newestReviewRowsPerRun(rows)) {
           const runId = String(row.run_id || 'run-1');
           const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
           const candidateFindings: any[] = [];
-
           if (Array.isArray(payload?.findings)) {
             candidateFindings.push(...payload.findings);
           }
@@ -280,27 +284,22 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
             }
           }
 
-          for (const f of candidateFindings) {
-            allFindingsOnPr.push(f);
-            const filePath = String(f.path || f.file_path || f.file || '');
-            const lineEnd = Number(f.line_end || f.line || 1);
-            const lineStart = Number(f.line_start || f.startLine || lineEnd);
-            const title = String(f.title || '');
+          allFindingsOnPr.push(...candidateFindings);
+          findingRecords.push(
+            ...extractReviewFindingEntries(payload, { includeAlternateSources: true }).map((entry) => ({
+              ...entry,
+              runId,
+              row,
+              payload,
+            }))
+          );
+        }
 
-            const hashId = createHash('sha256')
-              .update(`${runId}:${filePath}:${lineStart}:${title}`)
-              .digest('hex')
-              .slice(0, 16);
-
-            if (
-              !matchedFinding &&
-              (f.finding_id === finding_id || f.id === finding_id || hashId === finding_id)
-            ) {
-              matchedFinding = f;
-              matchedRow = row;
-              parsedPayload = payload;
-            }
-          }
+        const matchedRecord = findReviewFindingRecord(findingRecords, finding_id);
+        if (matchedRecord) {
+          matchedFinding = matchedRecord.finding;
+          matchedRow = matchedRecord.row;
+          parsedPayload = matchedRecord.payload;
         }
       }
 
