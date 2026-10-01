@@ -809,10 +809,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileCancellation(
 		LastTransitionTime: metav1.Now(),
 	})
 
-	// CRITICAL ORDER OF OPERATIONS:
-	// Commit PhaseCancelled to the API server before deleting the worker Job.
-	// This ensures that subsequent reconciles see the terminal phase and do not
-	// misinterpret the missing Job as a WorkerJobMissing failure.
+	// Commit PhaseCancelled before deleting worker Job to avoid WorkerJobMissing.
 	if err := r.Status().Update(ctx, review); err != nil {
 		return ctrl.Result{}, err
 	}
