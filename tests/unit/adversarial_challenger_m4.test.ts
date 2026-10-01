@@ -275,90 +275,20 @@ index 1111111..2222222 100644
     });
 
     // --- 3. dispute_finding ---
-    it('EMP-INB-05: dispute_finding invokes model client for technical rebuttal and updates ledger on overruled', async () => {
-      let updatedPayload: any = null;
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string, params: any[]) => {
-          if (sql.includes('FROM review_runs r') && sql.includes('JOIN review_worker_completions c')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-1',
-                  execution_attempt: 1,
-                  payload: {
-                    findings: [
-                      {
-                        finding_id: 'f-dispute-1',
-                        severity: 'P1',
-                        title: 'Potential race condition in cache update',
-                        status: 'ACTIVE',
-                      },
-                    ],
-                  },
-                },
-              ],
-            };
-          }
-          if (sql.includes('UPDATE review_worker_completions')) {
-            updatedPayload = JSON.parse(params[0]);
-            return { rows: [] };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const mockModel = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            verdict: 'overruled',
-            reasoning: 'The cache update is guarded by an atomic mutex confirmed in line 12.',
-            confidence: 0.94,
-          }),
-        }),
-      };
-
+    it('EMP-INB-05: dispute_finding requests a fresh review without invoking adjudication or mutating source state', async () => {
+      const mockModel = { complete: vi.fn() };
       const notifySpy = vi.fn();
-
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModel,
-        notifyResourceUpdated: notifySpy,
-      });
-
+      const tool = createDisputeFindingTool({ modelClient: mockModel, notifyResourceUpdated: notifySpy });
       const caller: McpAuthenticatedCaller = {
-        authType: 'static_token',
-        isAdmin: true,
-        allowedRepositories: null,
-        callerId: 'admin',
-        tokenDigest: 'd',
+        authType: 'static_token', isAdmin: true, allowedRepositories: null, callerId: 'admin', tokenDigest: 'd',
       };
-
-      const res = await tool.execute(
-        {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
-          pr_number: 10,
-          finding_id: 'f-dispute-1',
-          counter_argument: 'Cache update is serialized using a dedicated Mutex lock instantiated in line 12.',
-        },
-        { caller }
-      );
-
-      const data = JSON.parse((res as any).content[0].text);
-      expect(data.verdict).toBe('overruled');
-      expect(data.confidence).toBe(0.94);
-      expect(data.remaining_blockers).toBe(0);
-
-      // Verify DB update
-      expect(mockDb.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE review_worker_completions'),
-        expect.any(Array)
-      );
-      expect(updatedPayload.findings[0].status).toBe('OVERRULED');
-
-      // Verify SSE resource update notifications were emitted
-      expect(notifySpy).toHaveBeenCalledWith('review-yeti://findings/calltelemetry/cisco-cdr/10');
-      expect(notifySpy).toHaveBeenCalledWith('review-yeti://runs/calltelemetry/cisco-cdr/10');
+      await expect(tool.execute({
+        owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 10, finding_id: 'f-dispute-1',
+        counter_argument: 'Cache update is serialized using a dedicated Mutex lock instantiated in line 12.',
+      }, { caller, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' } }))
+        .rejects.toThrow('Fresh finding review is temporarily unavailable');
+      expect(mockModel.complete).not.toHaveBeenCalled();
+      expect(notifySpy).not.toHaveBeenCalled();
     });
 
     it('EMP-INB-06: dispute_finding rejects low-effort arguments immediately with upheld verdict via defaultAdjudicateFinding heuristics', async () => {

@@ -4,7 +4,7 @@
  * Requirements-driven opaque-box tests exercising all core features:
  * 1. Model-Backed preflight_diff_review (safe bypass, AST radius, secrets, SQLi, DeepSeek)
  * 2. Model-Backed generate_fix_diff (unified diff, hunk headers, additions, deletions, DB lookup)
- * 3. Model-Backed dispute_finding (technical rebuttal, dismissive rebuttal, model eval, blockers)
+ * 3. Authenticated dispute_finding requests (fail-closed without accepted completion evidence)
  * 4. Model-Backed explain_finding (inquiry, non-compliant fix, compliant fix, tenancy, 404)
  * 5. trigger_review Engine Selection (default panel, composed, panel, 409 conflict)
  * 6. Outbound Fleet MCP Discovery & Execution (ct-impact, ct-knowledge, blocker-quorum, rbac)
@@ -264,9 +264,9 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
   });
 
   // ===========================================================================
-  // Feature 3: Model-Backed dispute_finding
+  // Feature 3: dispute_finding requires an accepted completion and transaction pool
   // ===========================================================================
-  describe('Feature 3: Model-Backed dispute_finding', () => {
+  describe('Feature 3: dispute_finding request-only contract', () => {
     let findingId: string;
 
     beforeEach(() => {
@@ -288,7 +288,7 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       findingId = f.finding_id;
     });
 
-    it('TC-T1-DIS-01: accepts substantive technical justification and overrules finding', async () => {
+    it('TC-T1-DIS-01: fails closed without accepted completion evidence and leaves the finding unchanged', async () => {
       const res = await env.callTool('dispute_finding', {
         owner: 'calltelemetry',
         repo: 'cisco-cdr',
@@ -297,16 +297,12 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
         counter_argument: 'The buffer is bounded by an LRU cache limited to 500 items configured in CacheManager, preventing memory leaks.',
       });
 
-      expect(res.status).toBe(200);
-      expect(res.result).toBeDefined();
-      expect(res.result.finding_id).toBe(findingId);
-      expect(res.result.disputed).toBe(true);
-      expect(res.result.verdict).toBe('overruled');
-      expect(res.result.remaining_blockers).toBe(0);
-      expect(res.result.reasoning).toMatch(/Technical mitigation/i);
+      expect(res.error?.message).toMatch(/temporarily unavailable/i);
+      expect(env.db.findings.find((finding) => finding.finding_id === findingId)?.status).toBe('OPEN');
+      expect(env.deepSeek.disputeCalls).toHaveLength(0);
     });
 
-    it('TC-T1-DIS-02: rejects dismissive low-effort rebuttal and upholds blocker finding', async () => {
+    it('TC-T1-DIS-02: does not adjudicate a dismissive argument in the request tool', async () => {
       const res = await env.callTool('dispute_finding', {
         owner: 'calltelemetry',
         repo: 'cisco-cdr',
@@ -315,14 +311,12 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
         counter_argument: 'Whatever not a bug ignore this',
       });
 
-      expect(res.status).toBe(200);
-      expect(res.result).toBeDefined();
-      expect(res.result.verdict).toBe('upheld');
-      expect(res.result.remaining_blockers).toBe(1);
-      expect(res.result.reasoning).toMatch(/lacks technical evidence/i);
+      expect(res.error?.message).toMatch(/temporarily unavailable/i);
+      expect(env.db.findings.find((finding) => finding.finding_id === findingId)?.status).toBe('OPEN');
+      expect(env.deepSeek.disputeCalls).toHaveLength(0);
     });
 
-    it('TC-T1-DIS-03: invokes DeepSeek model adjudication callback with technical context', async () => {
+    it('TC-T1-DIS-03: never invokes the advisory model callback from the MCP request path', async () => {
       env.deepSeek.options.disputeDecision = {
         verdict: 'overruled',
         reasoning: 'DeepSeek Quorum verified ADR 0564 compliance in surrounding module context.',
@@ -336,13 +330,12 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
         counter_argument: 'Surrounding module uses bounded worker channels with backpressure per ADR 0564.',
       });
 
-      expect(res.status).toBe(200);
-      expect(env.deepSeek.disputeCalls.length).toBe(1);
-      expect(res.result.verdict).toBe('overruled');
-      expect(res.result.reasoning).toContain('DeepSeek Quorum verified ADR 0564 compliance');
+      expect(res.error?.message).toMatch(/temporarily unavailable/i);
+      expect(env.deepSeek.disputeCalls).toHaveLength(0);
+      expect(env.db.findings.find((finding) => finding.finding_id === findingId)?.status).toBe('OPEN');
     });
 
-    it('TC-T1-DIS-04: recalculates remaining blockers in ledger when finding is overruled', async () => {
+    it('TC-T1-DIS-04: does not change the ledger blocker when a review source is unavailable', async () => {
       const res = await env.callTool('dispute_finding', {
         owner: 'calltelemetry',
         repo: 'cisco-cdr',
@@ -351,11 +344,11 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
         counter_argument: 'Verified LRU bounds are present in cache.ts:32 with 100 max entries.',
       });
 
-      expect(res.result.verdict).toBe('overruled');
-      expect(res.result.remaining_blockers).toBe(0);
+      expect(res.error?.message).toMatch(/temporarily unavailable/i);
+      expect(env.db.findings.find((finding) => finding.finding_id === findingId)?.status).toBe('OPEN');
     });
 
-    it('TC-T1-DIS-05: throws when disputing nonexistent finding ID in repository', async () => {
+    it('TC-T1-DIS-05: does not reveal whether a finding exists when source evidence is unavailable', async () => {
       const res = await env.callTool('dispute_finding', {
         owner: 'calltelemetry',
         repo: 'cisco-cdr',
@@ -364,8 +357,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
         counter_argument: 'Technical justification for nonexistent finding.',
       });
 
-      expect(res.error).toBeDefined();
-      expect(res.error.message).toMatch(/was not found in review ledger/i);
+      expect(res.error?.message).toMatch(/temporarily unavailable/i);
+      expect(res.error?.message).not.toContain('unknown-finding-xyz');
     });
   });
 

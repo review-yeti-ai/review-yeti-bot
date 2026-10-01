@@ -62,7 +62,8 @@ import {
   loadSameHeadReviewSource, readPullRequestIdentity, verifyReviewablePullRequest,
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
-import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
+import { canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
+import type { DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
@@ -1544,9 +1545,17 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     let resumedCheckpoint: ReviewExecutionCheckpoint | null = null;
+    let disputedFindingRechecks: DisputedFindingRecheck[] = [];
     if (authoritative && configuredReviewEngine === 'composed' && deps.reviewCheckpoint) {
-      try { resumedCheckpoint = await deps.reviewCheckpoint.read(deps.signal); }
+      try {
+        const read = await deps.reviewCheckpoint.read(deps.signal);
+        resumedCheckpoint = read.checkpoint;
+        disputedFindingRechecks = read.disputedFindingRechecks;
+      }
       catch (error) {
+        if (identity.executionAttempt > 1) {
+          throw new Error('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+        }
         // A resume-store outage before evidence collection must not prevent a fresh full review.
         // Writes remain enabled below, so a recovered store can still checkpoint this attempt.
         logger.error('Exact-head review checkpoint could not be read; starting a full review', {
@@ -1562,6 +1571,26 @@ export async function runPublishingReviewWorker(
       || resumedCheckpoint.policyDigest !== value(env, 'REVIEW_POLICY_DIGEST')
       || resumedCheckpoint.configDigest !== value(env, 'REVIEW_CONFIG_DIGEST'))) {
       throw new Error('Review execution checkpoint does not match this exact-head review');
+    }
+    if (disputedFindingRechecks.length > 0) {
+      if (!resumedCheckpoint) throw new Error('Disputed finding re-review has no exact-head task checkpoint');
+      const planDigest = sha256(canonicalJson(resumedCheckpoint.plan));
+      for (const recheck of disputedFindingRechecks) {
+        if (recheck.runId !== identity.runId || recheck.repositoryId !== identity.repositoryId
+          || recheck.owner !== identity.owner || recheck.repo !== identity.repoName
+          || recheck.prNumber !== identity.prNumber || recheck.headSha !== identity.headSha
+          || recheck.baseSha !== identity.baseSha || recheck.policyDigest !== value(env, 'REVIEW_POLICY_DIGEST')
+          || recheck.configDigest !== value(env, 'REVIEW_CONFIG_DIGEST')
+          || recheck.sourceExecutionAttempt >= identity.executionAttempt || recheck.sourcePlanDigest !== planDigest
+          || !resumedCheckpoint.plan.some((task) => task.id === recheck.taskId && task.id === recheck.personaId)) {
+          throw new Error('Disputed finding re-review does not match this exact-head task checkpoint');
+        }
+      }
+      const requestedTaskIds = new Set(disputedFindingRechecks.map((recheck) => recheck.taskId));
+      resumedCheckpoint = {
+        ...resumedCheckpoint,
+        completedTasks: resumedCheckpoint.completedTasks.filter((task) => !requestedTaskIds.has(task.id)),
+      };
     }
     // Set only after the composed engine revalidates the stored plan and findings against this
     // exact diff. A syntactically valid but unusable stored checkpoint must never be rendered by
@@ -2013,6 +2042,7 @@ export async function runPublishingReviewWorker(
           ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
           ...(mapReduce ? { mapReduce } : {}),
           ...(composedCheckpoint ? { checkpoint: composedCheckpoint } : {}),
+          ...(disputedFindingRechecks.length > 0 ? { disputedFindingRechecks } : {}),
           // REL-1139 (ADR 0687): default off; skips only the moderator call, never a lane or the
           // arbiter. Eligibility is logged on every run either way.
           ...(skipEmptyModerationEnabledFor(env, identity.repo) ? { skipEmptyModeration: true } : {}),

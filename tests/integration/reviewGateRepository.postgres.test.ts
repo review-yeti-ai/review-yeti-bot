@@ -1,4 +1,4 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
@@ -37,6 +37,9 @@ import {
   type WorkerReviewCompletion,
 MAX_COMPLETION_BYTES,
 } from '../../src/review/workerReviewCompletion';
+import { canonicalJson, sha256 } from '../../src/review/reviewCore';
+import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
+import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
 
 const databaseUrl = postgresDatabaseUrl();
 const describeWithPostgres = describeWithPostgresShared;
@@ -1040,6 +1043,126 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const resolve = vi.fn(async (_gate: StoredReviewGate) => trusted);
       return { id, repository, gate, event, trusted, resolve };
     }
+
+    async function disputedGateCompletionFixture(receiptPersisted: boolean) {
+      const id = runId(1265);
+      const task = { id: 'security-auth', dimension: 'security' as const, paths: ['src/example.ts'],
+        question: 'Does the authorization boundary hold?', rationale: 'The changed path controls tenant access.' };
+      const plan = [task];
+      const sourceFinding = { severity: 'P1' as const, path: 'src/example.ts', line: 1,
+        title: 'The original authorization finding', body: 'The original result lacks a trusted tenant binding.' };
+      const sourceCoordinates = coordinatesFor(id, 1, 2);
+      const currentCoordinates = coordinatesFor(id, 2, 3);
+      const sourceCompletion: WorkerReviewCompletion = {
+        version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: REPOSITORY_ID,
+        owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+        configDigest: CONFIG_DIGEST, executionAttempt: 2,
+        result: { version: 'WorkerReviewResult.v1', completedAt: new Date(COMPLETED_AT - 20_000).toISOString(),
+          personas: [{ id: task.id, decision: 'FINDINGS', status: 'COMPLETE', findings: [sourceFinding] }],
+          taskPlan: plan, coverageComplete: true, quorumSatisfied: true },
+      };
+      const sourceDigest = workerReviewCompletionDigest(sourceCompletion);
+      const sourceJson = JSON.stringify(sourceCompletion);
+      const findingId = getReviewFindingId(id, task.id, sourceFinding);
+      const counterArgument = 'The service rechecks this task from a fresh authenticated provider response.';
+      const unsigned = {
+        requestId: randomUUID(), runId: id, sourceExecutionAttempt: 2, sourceContentDigest: sourceDigest,
+        sourcePlanDigest: sha256(canonicalJson(plan)), sourceGateAttemptId: sourceCoordinates.attemptId,
+        repositoryId: REPOSITORY_ID, owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+        configDigest: CONFIG_DIGEST, findingId, personaId: task.id, taskId: task.id,
+        finding: sourceFinding, counterArgument, counterArgumentDigest: sha256(counterArgument),
+      };
+      const requestDigest = disputedFindingRecheckDigest(unsigned);
+
+      // This fixture pins the production a2→a3 numbering: logical run generations are 1→2,
+      // while the worker executions and Gate IDs are g1-e2→g2-e3.
+      await insertRun(id, 2, 2);
+      await pool!.query(`UPDATE review_runs SET status = 'running', stage = 'personas' WHERE run_id = $1`, [id]);
+      await pool!.query(`UPDATE review_dispatch_outbox SET status = 'projected', worker_token_digest = $2
+        WHERE run_id = $1`, [id, WORKER_PROOF.workerTokenDigest]);
+      await pool!.query(`INSERT INTO review_gate_attempts
+        (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
+         coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
+         current_attempt, worker_result_digest, decision)
+        VALUES ($1, $2, 1, 2, $3, 42, $4, $5::jsonb, $6, 72001, 'bound', 'failure', 1, 1, false, $7,
+          '{"status":"failure","eligible":false,"reason":"blocking-findings"}'::jsonb)`,
+      [sourceCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(sourceCoordinates),
+        deriveReviewGateExternalId(sourceCoordinates), sourceDigest]);
+      await pool!.query(`INSERT INTO review_worker_completions
+        (run_id, execution_attempt, content_digest, payload, byte_length)
+        VALUES ($1, 2, $2, $3::jsonb, $4)`,
+      [id, sourceDigest, sourceJson, Buffer.byteLength(sourceJson, 'utf8')]);
+      await pool!.query(`INSERT INTO review_finding_rechecks
+        (request_id, run_id, source_execution_attempt, source_content_digest, source_plan_digest,
+         source_gate_attempt_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
+         policy_digest, config_digest, finding_id, persona_id, task_id, finding, counter_argument,
+         counter_argument_digest, request_digest, requested_by)
+        VALUES ($1, $2, 2, $3, $4, $5, $6, $7, $8, 42, $9, $10, $11, $12, $13, $14, $15,
+          $16::jsonb, $17, $18, $19, 'rel1265-gate-test')`,
+      [unsigned.requestId, id, sourceDigest, unsigned.sourcePlanDigest, sourceCoordinates.attemptId,
+        REPOSITORY_ID, unsigned.owner, unsigned.repo, unsigned.headSha, unsigned.baseSha, unsigned.policyDigest,
+        CONFIG_DIGEST, findingId, task.id, task.id, JSON.stringify(sourceFinding), counterArgument,
+        unsigned.counterArgumentDigest, requestDigest]);
+      await pool!.query(`INSERT INTO review_gate_attempts
+        (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
+         coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
+         current_attempt)
+        VALUES ($1, $2, 2, 3, $3, 42, $4, $5::jsonb, $6, 72002, 'bound', 'queued', 0, -1, true)`,
+      [currentCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(currentCoordinates),
+        deriveReviewGateExternalId(currentCoordinates)]);
+
+      if (receiptPersisted) {
+        const checkpoint = {
+          version: 'ReviewExecutionCheckpoint.v1', runId: id, repositoryId: REPOSITORY_ID,
+          owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
+          headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+          configDigest: CONFIG_DIGEST, executionAttempt: 3, revision: 1, plan,
+          completedTasks: [{ id: task.id, findings: [] }], satisfiedFindingRecheckIds: [unsigned.requestId],
+        };
+        const json = JSON.stringify(checkpoint);
+        await pool!.query(`INSERT INTO review_execution_checkpoints
+          (run_id, execution_attempt, revision, head_sha, config_digest, payload, byte_length)
+          VALUES ($1, 3, 1, $2, $3, $4::jsonb, $5)`,
+        [id, 'a'.repeat(40), CONFIG_DIGEST, json, Buffer.byteLength(json, 'utf8')]);
+      }
+
+      const event: WorkerReviewCompletion = {
+        version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: REPOSITORY_ID,
+        owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+        configDigest: CONFIG_DIGEST, executionAttempt: 3,
+        result: { version: 'WorkerReviewResult.v1', completedAt: new Date(COMPLETED_AT - 10_000).toISOString(),
+          personas: [{ id: task.id, decision: 'APPROVE', status: 'COMPLETE', findings: [] }],
+          taskPlan: plan, coverageComplete: true, quorumSatisfied: true },
+      };
+      const trusted: TrustedGateCompletionContext = {
+        current: { repositoryId: REPOSITORY_ID, prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+          policyDigest: 'c'.repeat(64), open: true, draft: false },
+        coverage: { expectedPersonaIds: [task.id], reviewEngine: 'composed', composedChangedPaths: ['src/example.ts'],
+          composedMaxTasks: 1, changedFiles: [{ path: 'src/example.ts', patch: '@@ -0,0 +1 @@\n+export const access = true;\n' }],
+          coverageComplete: true, quorumSatisfied: true },
+      };
+      const repository = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'disabled' });
+      const resolve = vi.fn(async (_gate: StoredReviewGate) => trusted);
+      return { id, repository, event, resolve, requestId: unsigned.requestId };
+    }
+
+    it.each([false, true])('requires a durable completed-task re-review receipt before Gate SHIP (receipt=%s)', async (receiptPersisted) => {
+      const { id, repository, event, resolve, requestId } = await disputedGateCompletionFixture(receiptPersisted);
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+      const state = await snapshot(id);
+      expect(state.run.status).toBe(receiptPersisted ? 'succeeded' : 'failed');
+      expect(state.gates).toHaveLength(2);
+      const current = state.gates.find((gate: any) => gate.current_attempt);
+      expect(current.decision).toMatchObject(receiptPersisted
+        ? { status: 'success', eligible: true }
+        : { status: 'failure', eligible: false, reason: 'invalid-evidence' });
+      expect(current.worker_result_digest).toBe(workerReviewCompletionDigest(event));
+      expect(state.outbox.status).toBe('projected');
+      expect(requestId).toMatch(/^[0-9a-f-]{36}$/u);
+    });
 
     function expectTerminalState(
       state: Awaited<ReturnType<typeof snapshot>>,

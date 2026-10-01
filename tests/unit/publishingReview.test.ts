@@ -3242,7 +3242,9 @@ describe('telemetry integration with protected composed closeout', () => {
       options.progress.emit({ task: 'panel', status: 'completed' });
       return f.partial;
     });
-    const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: { read: vi.fn(async () => null), write },
+    const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: {
+      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
+    },
       reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
       sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
     try {

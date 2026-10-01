@@ -24,6 +24,8 @@ import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 import { TokenLedger, meterModelClient } from '../../telemetry/tokenLedger';
 import { initTelemetry, clearSpans, getRecentSpans } from '../../telemetry';
+import { canonicalJson, sha256 } from '../../review/reviewCore';
+import { disputedFindingRecheckDigest, type DisputedFindingRecheckUnsigned } from '../../review/disputedFindingRecheck';
 
 const mockYaml = `
 version: 3
@@ -82,6 +84,191 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it.each(['COMPLETE', 'BLOCKED'] as const)(
+    're-runs only the disputed task and records satisfaction only for %s output', async (status) => {
+      const authTask = { id: 'auth-guard', dimension: 'security' as const,
+        paths: ['src/auth/guard.ts'], question: 'Is the guard safe?', rationale: 'Changed authorization code.' };
+      const testsTask = { id: 'tests', dimension: 'testing' as const,
+        paths: ['src/auth/guard.ts'], question: 'Are the tests adequate?', rationale: 'The changed guard needs coverage.' };
+      const plan = [authTask, testsTask];
+      const priorAuthFinding = { severity: 'P1' as const, path: 'src/auth/guard.ts', line: 2,
+        title: 'Prior disputed finding', body: 'This finding must be independently checked again.' };
+      const priorTestsFinding = { severity: 'P2' as const, path: 'src/auth/guard.ts', line: 1,
+        title: 'Unrelated checkpoint finding', body: 'This completed task remains valid checkpoint evidence.' };
+      const unsigned: DisputedFindingRecheckUnsigned = {
+        requestId: '00000000-0000-4000-8000-000000000126',
+        runId: `run_${'1'.repeat(32)}`,
+        sourceExecutionAttempt: 1,
+        sourceContentDigest: 'd'.repeat(64),
+        sourcePlanDigest: sha256(canonicalJson(plan)),
+        sourceGateAttemptId: 'source-gate-attempt',
+        repositoryId: 123,
+        owner: 'acme',
+        repo: 'reviewer-fixture',
+        prNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        policyDigest: 'c'.repeat(64),
+        configDigest: 'd'.repeat(64),
+        findingId: 'source-finding-id',
+        personaId: authTask.id,
+        taskId: authTask.id,
+        finding: { severity: 'P1', path: priorAuthFinding.path, line: priorAuthFinding.line,
+          title: priorAuthFinding.title, body: priorAuthFinding.body },
+        counterArgument: 'The route enforces the authenticated organization before reading this tenant record.',
+        counterArgumentDigest: sha256('The route enforces the authenticated organization before reading this tenant record.'),
+      };
+      const recheck = { ...unsigned, requestDigest: disputedFindingRecheckDigest(unsigned) };
+      const saved: any[] = [];
+      const complete = vi.fn(async (payload: any) => {
+        const text = lastText(payload.messages);
+        expect(text).not.toContain('PLAN TURN');
+        expect(text).toContain('=== UNTRUSTED DISPUTED-FINDING EVIDENCE ===');
+        expect(text).toContain(unsigned.counterArgument);
+        expect(text).toContain(priorAuthFinding.title);
+        const nonce = nonceFrom(text);
+        return fakeResponse(JSON.stringify({ nonce, task: authTask.id, status, findings: [] }));
+      });
+      const result = await executeComposedReview({
+        config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+        headSha: 'a'.repeat(40), client: { complete },
+        disputedFindingRechecks: [recheck],
+        checkpoint: {
+          resumed: { version: 'ReviewExecutionCheckpoint.v1', runId: unsigned.runId, repositoryId: 123,
+            owner: 'acme', repo: 'reviewer-fixture', prNumber: 42, headSha: unsigned.headSha,
+            baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+            executionAttempt: 2, revision: 5, plan,
+            completedTasks: [
+              { id: authTask.id, findings: [priorAuthFinding] },
+              { id: testsTask.id, findings: [priorTestsFinding] },
+            ] },
+          save: async (snapshot) => { saved.push(structuredClone(snapshot)); },
+        },
+      });
+
+      expect(complete).toHaveBeenCalledOnce();
+      expect(lastText(complete.mock.calls[0]![0].messages)).toContain(`Task id: ${authTask.id}`);
+      if (status === 'COMPLETE') {
+        expect(result.personas.find((lane) => lane.id === authTask.id)?.findings).toEqual([]);
+        expect(result.personas.find((lane) => lane.id === testsTask.id)?.findings).toEqual([priorTestsFinding]);
+        expect(saved.at(-1)).toMatchObject({
+          satisfiedFindingRecheckIds: [unsigned.requestId],
+          completedTasks: [
+            { id: testsTask.id, findings: [priorTestsFinding] },
+            { id: authTask.id, findings: [] },
+          ],
+        });
+      } else {
+        expect(result.optionalFailures?.some((lane) => lane.id === authTask.id)).toBe(true);
+        expect(saved.some((snapshot) => snapshot.satisfiedFindingRecheckIds?.includes(unsigned.requestId))).toBe(false);
+        expect(saved.at(-1)?.completedTasks).toEqual([{ id: testsTask.id, findings: [priorTestsFinding] }]);
+      }
+    },
+  );
+
+  it('waits for an acknowledged satisfied-recheck checkpoint before returning a clean result', async () => {
+    const task = { id: 'auth', dimension: 'security' as const, paths: ['src/auth/guard.ts'],
+      question: 'Is the authorization guard safe?', rationale: 'It protects the changed tenant boundary.' };
+    const plan = [task];
+    const priorFinding = { severity: 'P1' as const, path: 'src/auth/guard.ts', line: 2,
+      title: 'Prior finding', body: 'The original completion found an authorization gap.' };
+    const argument = 'The handler now binds the tenant before reading this record.';
+    const unsigned: DisputedFindingRecheckUnsigned = {
+      requestId: '00000000-0000-4000-8000-000000000127', runId: `run_${'2'.repeat(32)}`,
+      sourceExecutionAttempt: 1, sourceContentDigest: 'd'.repeat(64), sourcePlanDigest: sha256(canonicalJson(plan)),
+      sourceGateAttemptId: 'historical-g1-e2', repositoryId: 123, owner: 'acme', repo: 'reviewer-fixture',
+      prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+      configDigest: 'd'.repeat(64), findingId: 'source-finding', personaId: task.id, taskId: task.id,
+      finding: { severity: 'P1', path: priorFinding.path, line: priorFinding.line,
+        title: priorFinding.title, body: priorFinding.body },
+      counterArgument: argument, counterArgumentDigest: sha256(argument),
+    };
+    const recheck = { ...unsigned, requestDigest: disputedFindingRecheckDigest(unsigned) };
+    let releaseReceipt!: () => void;
+    const receiptWrite = new Promise<void>((resolve) => { releaseReceipt = resolve; });
+    let receiptWriteStarted!: () => void;
+    const started = new Promise<void>((resolve) => { receiptWriteStarted = resolve; });
+    const save = vi.fn(async (snapshot: any) => {
+      if (snapshot.satisfiedFindingRecheckIds?.includes(unsigned.requestId)) {
+        receiptWriteStarted();
+        await receiptWrite;
+      }
+    });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      return fakeResponse(JSON.stringify({ nonce: nonceFrom(text), task: task.id, status: 'COMPLETE', findings: [] }));
+    });
+    let returned = false;
+    const review = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: unsigned.headSha, client: { complete },
+      disputedFindingRechecks: [recheck], checkpoint: {
+        resumed: { version: 'ReviewExecutionCheckpoint.v1', runId: unsigned.runId, repositoryId: 123,
+          owner: unsigned.owner, repo: unsigned.repo, prNumber: unsigned.prNumber, headSha: unsigned.headSha,
+          baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+          executionAttempt: 2, revision: 4, plan, completedTasks: [{ id: task.id, findings: [priorFinding] }] },
+        save,
+      },
+    }).then((result) => { returned = true; return result; });
+
+    await started;
+    expect(complete).toHaveBeenCalledOnce();
+    expect(returned).toBe(false);
+    releaseReceipt();
+    const result = await review;
+    expect(returned).toBe(true);
+    expect(result.personas).toMatchObject([{ id: task.id, decision: 'APPROVE', findings: [] }]);
+    expect(save.mock.calls.at(-1)?.[0]).toMatchObject({ satisfiedFindingRecheckIds: [unsigned.requestId],
+      completedTasks: [{ id: task.id, findings: [] }] });
+  });
+
+  it('does not return a clean result when the satisfied-recheck checkpoint write is rejected', async () => {
+    const task = { id: 'auth', dimension: 'security' as const, paths: ['src/auth/guard.ts'],
+      question: 'Is the authorization guard safe?', rationale: 'It protects the changed tenant boundary.' };
+    const plan = [task];
+    const argument = 'The handler binds the authenticated tenant before reading this record.';
+    const unsigned: DisputedFindingRecheckUnsigned = {
+      requestId: '00000000-0000-4000-8000-000000000128', runId: `run_${'3'.repeat(32)}`,
+      sourceExecutionAttempt: 1, sourceContentDigest: 'd'.repeat(64), sourcePlanDigest: sha256(canonicalJson(plan)),
+      sourceGateAttemptId: 'historical-g1-e2', repositoryId: 123, owner: 'acme', repo: 'reviewer-fixture',
+      prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+      configDigest: 'd'.repeat(64), findingId: 'source-finding', personaId: task.id, taskId: task.id,
+      finding: { severity: 'P1', path: task.paths[0]!, line: 2, title: 'Prior finding', body: 'Original finding.' },
+      counterArgument: argument, counterArgumentDigest: sha256(argument),
+    };
+    const recheck = { ...unsigned, requestDigest: disputedFindingRecheckDigest(unsigned) };
+    const save = vi.fn(async (snapshot: any) => {
+      if (snapshot.satisfiedFindingRecheckIds?.includes(unsigned.requestId)) throw new Error('checkpoint unavailable');
+    });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      return fakeResponse(JSON.stringify({ nonce: nonceFrom(text), task: task.id, status: 'COMPLETE', findings: [] }));
+    });
+    await expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: unsigned.headSha, client: { complete },
+      disputedFindingRechecks: [recheck], checkpoint: {
+        resumed: { version: 'ReviewExecutionCheckpoint.v1', runId: unsigned.runId, repositoryId: 123,
+          owner: unsigned.owner, repo: unsigned.repo, prNumber: unsigned.prNumber, headSha: unsigned.headSha,
+          baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+          executionAttempt: 2, revision: 4, plan, completedTasks: [] },
+        save,
+      },
+    })).rejects.toThrow('Disputed finding re-review receipt was not durably checkpointed');
+    expect(complete).toHaveBeenCalledOnce();
+  });
+
+  it('fails closed instead of returning a zero-lane result while a disputed task is pending', async () => {
+    const client = { complete: vi.fn() };
+    await expect(executeComposedReview({
+      config: parseAndValidateConfig(mockYaml.replace('paths: ["**/*"]', 'paths: ["src/**"]')) as any,
+      changedFiles: [{ path: 'docs/overview.md', patch: '@@ -1 +1 @@\n+Documentation only.' }],
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client,
+      disputedFindingRechecks: [{ requestId: '00000000-0000-4000-8000-000000000126' } as any],
+    })).rejects.toThrow('cannot be skipped as a zero-lane review');
+    expect(client.complete).not.toHaveBeenCalled();
+  });
+
   it('orders security and CI/IaC review work before lower-risk tasks deterministically', () => {
     const ordered = orderReviewTasksByRisk([
       { id: 'tests', dimension: 'testing', paths: ['tests/a.test.ts'], question: 'Tests?', rationale: 'Changed.' },

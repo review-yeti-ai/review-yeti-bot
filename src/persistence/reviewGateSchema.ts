@@ -93,4 +93,35 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     CHECK (byte_length > 0 AND byte_length <= ${MAX_REVIEW_CHECKPOINT_BYTES});
   CREATE INDEX IF NOT EXISTS review_execution_checkpoints_updated_at_idx
     ON review_execution_checkpoints (updated_at);
+  -- A dispute is a request for a fresh provider review, never a mutation of
+  -- an immutable completion or its published Gate. Requests are bounded per
+  -- logical run and bound to their source completion, task plan, and Gate.
+  CREATE TABLE IF NOT EXISTS review_finding_rechecks (
+    request_id UUID PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+    source_execution_attempt INTEGER NOT NULL CHECK (source_execution_attempt > 0),
+    source_content_digest VARCHAR(64) NOT NULL CHECK (source_content_digest ~ '^[a-f0-9]{64}$'),
+    source_plan_digest VARCHAR(64) NOT NULL CHECK (source_plan_digest ~ '^[a-f0-9]{64}$'),
+    source_gate_attempt_id TEXT NOT NULL REFERENCES review_gate_attempts(attempt_id),
+    repository_id BIGINT NOT NULL CHECK (repository_id > 0),
+    owner TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL CHECK (pr_number > 0),
+    head_sha VARCHAR(40) NOT NULL CHECK (head_sha ~ '^[a-f0-9]{40}$'),
+    base_sha VARCHAR(40) NOT NULL CHECK (base_sha ~ '^[a-f0-9]{40}$'),
+    policy_digest VARCHAR(64) NOT NULL CHECK (policy_digest ~ '^[a-f0-9]{64}$'),
+    config_digest VARCHAR(64) NOT NULL CHECK (config_digest ~ '^[a-f0-9]{64}$'),
+    finding_id TEXT NOT NULL,
+    persona_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    finding JSONB NOT NULL,
+    counter_argument TEXT NOT NULL CHECK (length(counter_argument) BETWEEN 1 AND 10000),
+    counter_argument_digest VARCHAR(64) NOT NULL CHECK (counter_argument_digest ~ '^[a-f0-9]{64}$'),
+    request_digest VARCHAR(64) NOT NULL CHECK (request_digest ~ '^[a-f0-9]{64}$'),
+    requested_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (run_id, source_execution_attempt, task_id)
+  );
+  CREATE INDEX IF NOT EXISTS review_finding_rechecks_run_created_idx
+    ON review_finding_rechecks (run_id, created_at DESC);
 `;

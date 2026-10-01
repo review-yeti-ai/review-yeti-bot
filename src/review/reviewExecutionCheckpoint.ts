@@ -66,11 +66,18 @@ const checkpointSchema = z.object({
   configDigest: digest,
   executionAttempt: positiveInteger,
   revision: positiveInteger,
+  /** Append-only worker receipt ids for completed dispute-triggered task re-reviews. */
+  satisfiedFindingRecheckIds: z.array(z.string().uuid()).max(8).optional(),
   plan: z.array(taskSchema).min(1).max(MAX_TASKS_HARD_CAP),
   completedTasks: z.array(completedTaskSchema).max(MAX_TASKS_HARD_CAP),
 }).strict().superRefine((value, context) => {
   const planIds = new Set(value.plan.map((task) => task.id));
   const completedIds = new Set<string>();
+  const recheckIds = value.satisfiedFindingRecheckIds ?? [];
+  if (new Set(recheckIds).size !== recheckIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['satisfiedFindingRecheckIds'],
+      message: 'satisfied disputed finding receipt ids must be unique' });
+  }
   for (const [index, task] of value.completedTasks.entries()) {
     if (!planIds.has(task.id)) context.addIssue({ code: z.ZodIssueCode.custom,
       path: ['completedTasks', index, 'id'], message: 'completed task is absent from plan' });

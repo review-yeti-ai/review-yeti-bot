@@ -273,335 +273,41 @@ describe('Empirical Challenger Suite: generate_fix_diff & dispute_finding (Miles
   // =========================================================================
   // Challenge Area 2: dispute_finding (Quorum, Recount & SSE)
   // =========================================================================
-  describe('Challenge Area 2: dispute_finding & Quorum Adjudication', () => {
-    it('2.1 Quorum Adjudication Matrix: distinguishes dismissals from verifiable technical arguments', () => {
-      const mockFinding = { finding_id: 'f-sec', title: 'Potential Insecure Deserialization' };
+  describe('Challenge Area 2: dispute_finding fresh-review requests', () => {
+    const input = {
+      owner: TEST_OWNER, repo: TEST_REPO, pr_number: TEST_PR,
+      finding_id: 'source-finding-e2e',
+      counter_argument: 'The handler binds the authenticated repository before it reads tenant data.',
+    };
 
-      // Rebuttals that MUST be upheld (rejected dispute)
-      const dismissals = [
-        'ignore',
-        'ignore this',
-        'whatever',
-        'not a bug',
-        'dont care',
-        'wont fix',
-        'skip',
-        'override',
-        'stfu',
-        'false positive',
-        'this is fine',
-        'not important',
-        'leave it',
-        'looks good to me',
-        'short string',
-      ];
-
-      for (const text of dismissals) {
-        const res = defaultAdjudicateFinding(mockFinding, text);
-        expect(res.verdict).toBe('upheld');
-        expect(res.reasoning).toContain('lacks technical evidence');
-      }
-
-      // Rebuttals that MUST be overruled (accepted dispute)
-      const validCounterArguments = [
-        'The input is deserialized using strict JSON parser with a fixed schema validator preventing proto pollution.',
-        'Architecture Decision Record ADR 0594 explicitly designates this module as an internal zero-trust adapter.',
-        'Benchmark results in docs/perf.md demonstrate that this caching layer is bounded to 10,000 entries.',
-        'This parameter is already sanitized at line 45 using sqlStringEscape and verified by test/sanitizer.test.ts.',
-      ];
-
-      for (const text of validCounterArguments) {
-        const res = defaultAdjudicateFinding(mockFinding, text);
-        expect(res.verdict).toBe('overruled');
-        expect(res.reasoning).toContain('overruled and resolved');
-      }
+    it('keeps the legacy heuristic helper advisory and outside the request path', () => {
+      const finding = { finding_id: 'f-sec', title: 'Potential insecure deserialization' };
+      expect(defaultAdjudicateFinding(finding, 'not a bug').verdict).toBe('upheld');
+      expect(defaultAdjudicateFinding(finding,
+        'Strict JSON parsing and schema validation prevent prototype pollution.').verdict).toBe('overruled');
     });
 
-    it('2.2 Database State Mutation: marks status OVERRULED and resolved true on acceptance', async () => {
-      const findingId = 'blocker-vuln-1';
-      const initialPayload = {
-        findings: [
-          {
-            finding_id: findingId,
-            title: 'Critical Vulnerability',
-            severity: 'P0',
-            status: 'OPEN',
-            resolved: false,
-          },
-        ],
-      };
-
-      let updatedPayloadStr = '';
-      let disputeRecordInserted: any = null;
-
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string, params: any[]) => {
-          if (sql.includes('SELECT c.run_id')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-state-1',
-                  execution_attempt: 1,
-                  payload: JSON.stringify(initialPayload),
-                },
-              ],
-            };
-          }
-          if (sql.includes('UPDATE review_worker_completions')) {
-            updatedPayloadStr = params[0];
-            return { rowCount: 1 };
-          }
-          if (sql.includes('INSERT INTO review_finding_disputes')) {
-            disputeRecordInserted = params;
-            return { rowCount: 1 };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const tool = createDisputeFindingTool({ queryableDatabase: mockDb });
-      const counterArg =
-        'This endpoint requires TLS client mutual authentication at the ingress gateway, neutralizing unauthenticated access.';
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: counterArg,
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.verdict).toBe('overruled');
-      expect(data.disputed).toBe(true);
-
-      // Verify payload was updated
-      expect(updatedPayloadStr).toBeTruthy();
-      const updatedPayload = JSON.parse(updatedPayloadStr);
-      const mutatedFinding = updatedPayload.findings[0];
-      expect(mutatedFinding.status).toBe('OVERRULED');
-      expect(mutatedFinding.resolved).toBe(true);
-      expect(mutatedFinding.dispute_reasoning).toContain('overruled and resolved');
-      expect(mutatedFinding.counter_argument).toBe(counterArg);
-
-      // Verify dispute ledger record
-      expect(disputeRecordInserted).toBeDefined();
-      expect(disputeRecordInserted[0]).toBe(findingId);
-      expect(disputeRecordInserted[5]).toBe('overruled');
+    it('requires repository-scoped authorization and never calls an adjudicator or emits mutation events', async () => {
+      const modelClient = { complete: vi.fn() };
+      const notifyResourceUpdated = vi.fn();
+      const tool = createDisputeFindingTool({ modelClient, notifyResourceUpdated });
+      await expect(tool.execute(input, {
+        caller: createMockCaller(),
+        authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
+      })).rejects.toThrow('Fresh finding review is temporarily unavailable');
+      expect(modelClient.complete).not.toHaveBeenCalled();
+      expect(notifyResourceUpdated).not.toHaveBeenCalled();
     });
 
-    it('2.3 Blocker Recalculation: correctly counts remaining P0/P1 blockers while ignoring P2/P3/resolved', async () => {
-      const findingsList = [
-        { finding_id: 'p0-blocker', severity: 'P0', status: 'OPEN', resolved: false },
-        { finding_id: 'p1-blocker', severity: 'P1', status: 'OPEN', resolved: false },
-        { finding_id: 'p2-advisory', severity: 'P2', status: 'OPEN', resolved: false },
-        { finding_id: 'p3-info', severity: 'P3', status: 'OPEN', resolved: false },
-        { finding_id: 'p0-already-resolved', severity: 'P0', status: 'RESOLVED', resolved: true },
-      ];
-
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string) => {
-          if (sql.includes('SELECT c.run_id')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-count-1',
-                  execution_attempt: 1,
-                  payload: JSON.stringify({ findings: findingsList }),
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const tool = createDisputeFindingTool({ queryableDatabase: mockDb });
-
-      // Overrule p0-blocker: remaining should be 1 (only p1-blocker left)
-      const res1: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: 'p0-blocker',
-          counter_argument: 'Guarded by upstream API Gateway rate limiter and validation.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data1 = JSON.parse(res1.content[0].text);
-      expect(data1.verdict).toBe('overruled');
-      expect(data1.remaining_blockers).toBe(1);
-
-      // Now overrule p1-blocker: remaining should be 0
-      findingsList[0].status = 'OVERRULED';
-      findingsList[0].resolved = true;
-
-      const res2: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: 'p1-blocker',
-          counter_argument: 'Architecture Decision Record ADR 012 permits this pattern.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data2 = JSON.parse(res2.content[0].text);
-      expect(data2.verdict).toBe('overruled');
-      expect(data2.remaining_blockers).toBe(0);
-    });
-
-    it('2.4 SSE Real-Time Emissions: emits notifications on both findings and runs URIs on overruling', async () => {
-      const notifySpy = vi.fn();
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-sse-1',
-              execution_attempt: 1,
-              payload: JSON.stringify({
-                findings: [
-                  { finding_id: 'sse-p0', severity: 'P0', status: 'OPEN', resolved: false },
-                ],
-              }),
-            },
-          ],
-        }),
-      };
-
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        notifyResourceUpdated: notifySpy,
-      });
-
-      // 1. Overruled finding MUST trigger 2 SSE events
-      await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: 'sse-p0',
-          counter_argument: 'Valid architectural mitigation and verified context provided.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      expect(notifySpy).toHaveBeenCalledTimes(2);
-      expect(notifySpy).toHaveBeenCalledWith(`review-yeti://findings/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
-      expect(notifySpy).toHaveBeenCalledWith(`review-yeti://runs/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
-
-      notifySpy.mockClear();
-
-      // 2. Upheld finding MUST NOT trigger SSE events
-      await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: 'sse-p0',
-          counter_argument: 'ignore this',
-        },
-        { caller: createMockCaller() }
-      );
-
-      expect(notifySpy).not.toHaveBeenCalled();
-    });
-
-    it('2.5 End-to-End Router SSE Protocol: verifies active session receives resource update events over HTTP SSE stream', async () => {
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string) => {
-          if (sql.includes('SELECT c.run_id')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-e2e-sse',
-                  execution_attempt: 1,
-                  payload: JSON.stringify({
-                    findings: [
-                      { finding_id: 'e2e-f1', severity: 'P1', status: 'OPEN', resolved: false },
-                    ],
-                  }),
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const router: RemoteMcpRouter = createRemoteMcpRouter({
-        db: mockDb,
-        authenticator: {
-          authenticate: vi.fn(async () => createMockCaller(true)),
-          checkRepositoryAccess: vi.fn(() => true),
-        } as any,
-      });
-
-      const app = express();
-      app.use(express.json());
-      app.use('/api/mcp', router);
-
-      // Create synthetic SSE session and subscribe to both URIs
-      const deliveredEvents: any[] = [];
-      const mockSseStream: any = {
-        writableEnded: false,
-        write: vi.fn((data: string) => {
-          const match = data.match(/data: ({.*})/);
-          if (match) {
-            deliveredEvents.push(JSON.parse(match[1]));
-          }
-          return true;
-        }),
-      };
-
-      const session = router.sessionManager.createSession(mockSseStream);
-      session.subscriptions.add(`review-yeti://findings/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
-      session.subscriptions.add(`review-yeti://runs/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
-
-      // Invoke dispute_finding via JSON-RPC POST /api/mcp
-      const response = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({
-          jsonrpc: '2.0',
-          id: 99,
-          method: 'tools/call',
-          params: {
-            name: 'dispute_finding',
-            arguments: {
-              owner: TEST_OWNER,
-              repo: TEST_REPO,
-              pr_number: TEST_PR,
-              finding_id: 'e2e-f1',
-              counter_argument:
-                'Technical mitigation verified: Memory bounds are strictly enforced by LRU cache adapter.',
-            },
-          },
-        });
-
-      expect(response.status).toBe(200);
-      expect(response.body.error).toBeUndefined();
-
-      // Verify delivered SSE notifications
-      expect(deliveredEvents).toHaveLength(2);
-      expect(deliveredEvents[0]).toEqual({
-        jsonrpc: '2.0',
-        method: 'notifications/resources/updated',
-        params: { uri: `review-yeti://findings/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}` },
-      });
-      expect(deliveredEvents[1]).toEqual({
-        jsonrpc: '2.0',
-        method: 'notifications/resources/updated',
-        params: { uri: `review-yeti://runs/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}` },
-      });
-
-      router.destroy();
+    it('rejects a caller whose repository grant does not include the target before source access', async () => {
+      const query = vi.fn();
+      const tool = createDisputeFindingTool({ transactionPool: { connect: vi.fn() } as any,
+        queryableDatabase: { query } });
+      await expect(tool.execute(input, {
+        caller: { ...createMockCaller(false), allowedRepositories: new Set(['other/repository']) },
+        authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
+      })).rejects.toThrow(/denied|access/i);
+      expect(query).not.toHaveBeenCalled();
     });
   });
 });

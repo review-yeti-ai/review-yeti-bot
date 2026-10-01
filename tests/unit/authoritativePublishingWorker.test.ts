@@ -141,7 +141,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     f.deps.now = Date.now;
     f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
     const write = vi.fn(async () => 2);
-    f.deps.reviewCheckpoint = { read: vi.fn(async () => null), write };
+    f.deps.reviewCheckpoint = { read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write };
     let entered!: () => void;
     const started = new Promise<void>((resolve) => { entered = resolve; });
     f.deps.composedReviewRunner = vi.fn(async (options) => {
