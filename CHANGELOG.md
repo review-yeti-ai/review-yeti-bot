@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.103.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.2...v1.103.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** preserve draft validation on ready transition ([#1218](https://github.com/review-yeti-ai/review-yeti-bot/issues/1218)) ([2da96c5](https://github.com/review-yeti-ai/review-yeti-bot/commit/2da96c531946e35adf396346f1a6b41f8194f0fb))
+
 ## [1.103.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.1...v1.103.2) (2026-10-01)
 
 
