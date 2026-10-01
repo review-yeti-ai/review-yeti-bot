@@ -2898,3 +2898,28 @@ describe('operational telemetry terminal callback counterfactual',()=>{
     expect(vi.getTimerCount()).toBe(0); vi.useRealTimers();
   });
 });
+
+
+it('keeps content-free answered-call observations in the native thrown-infrastructure receipt',async()=>{
+  const content=JSON.stringify({schema:'calltelemetry.review-policy.v1',review_yeti:{personas:'security,testing',budget:{max_investigation_turns:1}}});
+  const transport={baseUrl:'https://gateway.example.invalid/v1',model:'prepared-review-model'};
+  const prepared=preparePublishingPolicy({content,source:{repositoryId:987,repository:'example/policy',sha:'e'.repeat(40),path:'policy/review.json',contentDigest:createHash('sha256').update(content).digest('hex')}},transport);
+  const input=env({REVIEW_AUTHORITATIVE_GATE:'true',REVIEW_EXECUTION_ATTEMPT:'3',REVIEW_POLICY_DIGEST:prepared.policy.effectivePolicyDigest,
+    REVIEW_CONFIG_DIGEST:prepared.policy.effectiveConfigDigest,REVIEW_PREPARED_CONFIG_JSON:JSON.stringify({version:'PreparedReviewExecution.v1',config:prepared.config,transport}),
+    REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/api/dispatch/completion',REVIEW_MODEL:transport.model,OPENAI_BASE_URL:transport.baseUrl,
+    GITHUB_PUBLISH_TOKEN:'ghs_fake',REVIEW_REPOSITORY_VISIBILITY:'PRIVATE',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+900_000).toISOString()});
+  const reportReviewResult=vi.fn(async()=>{});
+  const client={complete:vi.fn(async()=>({model:transport.model,content:'SECRET response',usage:{prompt:11,completion:7,total:18},costUSD:null,raw:{}}))};
+  const original=new OpenRouterConnectionError('SECRET transport detail');
+  const panelRunner=vi.fn(async(input:any)=>{await input.client.complete({model:transport.model,messages:[],timeoutMs:1000});throw original;});
+  const result=await runPublishingReviewWorker(input,deps({client,panelRunner,reviewCompletion:{reportReviewResult},zoektGrounding:vi.fn(async()=>({})),
+    sourceLoader:vi.fn(async()=>({baseSha:BASE,headSha:HEAD,diff:DIFF,diffDigest:createHash('sha256').update(DIFF).digest('hex'),githubReads:3}))}) as never);
+  expect(result).toMatchObject({verdict:'INCOMPLETE',conclusion:'failure',failureClass:'transport'});
+  expect(reportReviewResult).toHaveBeenCalledOnce();
+  const event=reportReviewResult.mock.calls[0][0] as any;
+  expect(event).toMatchObject({runId:input.REVIEW_RUN_ID,headSha:HEAD,executionAttempt:3,result:{coverageComplete:true,quorumSatisfied:false,
+    failureDiagnostics:{operationalTelemetry:{cause:'unknown',providerCalls:{started:1,completed:1,failed:0,aborted:0,inflight:0},responseUsage:{availability:'partial',totals:{totalTokens:18}},panel:{invoked:true}}}}});
+  expect(event.result.failureDiagnostics.operationalTelemetry.phaseCounts.persona_lane.started).toBe(0);
+  expect(event.result.personas.every((persona:any)=>persona.status==='ERROR'&&persona.errorClass==='transport')).toBe(true);
+  expect(JSON.stringify(event.result.failureDiagnostics.operationalTelemetry)).not.toContain('SECRET');
+});

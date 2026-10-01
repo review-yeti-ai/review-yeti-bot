@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import {
   createGetReviewStatusTool,
@@ -460,4 +460,12 @@ describe('operational enrichment privacy and unknown compatibility',()=>{
     expect(data).not.toHaveProperty('operational_telemetry'); expect(JSON.stringify(data)).not.toContain('SECRET');
     expect(data.verdict).toBe(scenario==='running'?'RUNNING':'FAILED'); if(scenario==='running'||scenario==='no-gate')expect(reads).toBe(0);
   });
+});
+
+
+it('rejects invalid status coordinates before any database or metadata read',async()=>{
+  const query=vi.fn();
+  await expect(createGetReviewStatusTool({query}).execute({owner:'example',repo:'repo',pull_number:42,head_sha:'SECRET invalid head'}))
+    .rejects.toThrow('Invalid arguments:');
+  expect(query).not.toHaveBeenCalled();
 });
