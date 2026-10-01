@@ -73,7 +73,8 @@ import {
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import {
   buildWorkerFailureDiagnostics,
-  normalizeOperationalTelemetry, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
+  normalizeOperationalTelemetry,
+  type WorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint, WorkerCompletionHttpError,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
@@ -1204,7 +1205,7 @@ export async function runPublishingReviewWorker(
     // this call came from the `isRecoverableIncompletePanel` branch below,
     // from a 502/503 provider outage, or from a thrown infrastructure-incomplete
     // panel (REL-1124), never inferred from `failureClass` alone.
-    const diagnostics = authoritativeInfrastructureBody?.failureDiagnostics
+    const diagnostics: WorkerFailureDiagnostics = authoritativeInfrastructureBody?.failureDiagnostics
       ?? (thrownInfrastructure
         // A legacy provider_5xx never reaches here (it keeps the REL-620 path above).
         ? thrownInfrastructureDiagnostics(thrownInfrastructure, INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail)

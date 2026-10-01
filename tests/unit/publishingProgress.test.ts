@@ -254,7 +254,7 @@ describe('bounded operational timeout observations', () => {
     const saved=reporter.snapshot?.(); expect(saved).toMatchObject({cause:'unknown',providerCalls:{started:1,completed:1,inflight:0},responseUsage:{availability:'known',responses:1,totals:{promptTokens:11,completionTokens:7,totalTokens:18,cachedTokens:2,costUSD:0.004}},panel:{invoked:true,wallClockMs:0}});
     clock=150; reporter.emit({task:'composed_task',status:'blocked',lane:'SECRET path/phone',model:'SECRET model'});
     expect(saved!.recentEvents).toHaveLength(3); expect(reporter.snapshot?.()!.recentEvents).toHaveLength(4);
-    expect(JSON.stringify(reporter.snapshot?.())).not.toMatch(/security_lane|provider/model|private|SECRET|phone/);
+    expect(JSON.stringify(reporter.snapshot?.())).not.toMatch(/security_lane|provider.model|private|SECRET|phone/);
     expect(reporter.snapshot?.()!.panel.wallClockMs).toBe(50);
   });
   it('records aborted invocations once and ignores a late returned response without inventing usage', async () => {

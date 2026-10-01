@@ -1078,13 +1078,13 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const progress=createPublishingProgress({runId:id,executionAttempt:5},{sink:()=>{}});
       await progress.instrument({complete:async()=>({model:'safe',content:'SECRET',usage:{prompt:11,completion:7,total:18,cached:2},costUSD:0.004,raw:{}})}).complete({model:'safe',messages:[],timeoutMs:1000});
       const operationalTelemetry=progress.snapshot?.();
-      event.result.personas=event.result.personas.map(lane=>({...lane,decision:'ERROR',status:'ERROR',errorClass:'timeout',findings:[]}));
+      event.result.personas=event.result.personas.map(lane=>({...lane,id:'prepared-static-'+lane.id,decision:'ERROR',status:'ERROR',errorClass:'timeout',findings:[]}));
       event.result.coverageComplete=false; event.result.quorumSatisfied=false;
       event.result.failureDiagnostics={reason:'worker_terminal_deadline_exceeded',logTail:'timeout',...(operationalTelemetry?{operationalTelemetry}:{})};
       expect(await repository.recordWorkerResult(event,WORKER_PROOF,resolve,COMPLETED_AT)).toBe('recorded');
       const state=await snapshot(id);expect(state.run.status).toBe('failed'); expect(state.gates[0].decision.reason).toBe('invalid-evidence');
       expect(state.gates[0].evidence).toBeNull(); expect(state.run.failure_diagnostics.operationalTelemetry).toMatchObject({providerCalls:{completed:1},responseUsage:{totals:{totalTokens:18}}});
-      const get=async()=>JSON.parse((await createGetReviewStatusTool(pool!).execute({owner:event.owner,repo:event.repo,pull_number:42,head_sha:event.headSha})).content[0].text as string);
+      const get=async()=>JSON.parse(((await createGetReviewStatusTool(pool!).execute({owner:event.owner,repo:event.repo,pull_number:42,head_sha:event.headSha})).content[0] as {text:string}).text);
       const current=await get();expect(current.operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);expect(current.verdict).toBe('FAILED');
       expect(JSON.stringify(current.operational_telemetry)).not.toContain('SECRET');
       await pool!.query("UPDATE review_runs SET failure_diagnostics=jsonb_set(failure_diagnostics,'{executionAttempt}','4') WHERE run_id=$1",[id]);

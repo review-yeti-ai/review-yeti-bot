@@ -1676,7 +1676,7 @@ describe('runPublishingReviewWorker', () => {
       repositoryId: 1339040553, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 2795,
       headSha: HEAD, baseSha: BASE, policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
       executionAttempt: 2, checkId: 4242, failureClass: 'rate_limit',
-      diagnostics: { reason: 'provider_rate_limited', logTail: '429 [REDACTED]' },
+      diagnostics: { reason: 'provider_rate_limited', logTail: '429 [REDACTED]', operationalTelemetry: expect.objectContaining({cause:'unknown',providerCalls:{started:0,completed:0,failed:0,aborted:0,inflight:0},panel:{invoked:true,wallClockMs:0}}) },
     });
     expect(log.mock.calls).toEqual([
       ['Failed to publish the fail-closed conclusion', {
@@ -2890,7 +2890,7 @@ describe('operational telemetry terminal callback counterfactual',()=>{
     const rejected=expect(task).rejects.toBeInstanceOf(PanelDeadlineExceededError);
     await vi.advanceTimersByTimeAsync(100); await rejected;
     expect(client.complete).toHaveBeenCalledTimes(2);
-    const event=completion.reportTerminalFailure.mock.calls[0]![0] as any;
+    const event=(completion.reportTerminalFailure.mock.calls as unknown as any[][])[0]![0] as any;
     expect(event).toMatchObject({runId:input.REVIEW_RUN_ID,headSha:HEAD,executionAttempt:1,failureClass:'timeout',diagnostics:{reason:'worker_terminal_deadline_exceeded'}});
     expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
     expect(event.diagnostics.operationalTelemetry).toMatchObject({cause:'unknown',providerCalls:{started:2,completed:1,aborted:1,inflight:0},responseUsage:{availability:'known',responses:1,totals:{totalTokens:18}},panel:{invoked:true},ledger:{basis:'returned_responses_including_shadow',availability:'partial',calls:1,totalTokens:18}});

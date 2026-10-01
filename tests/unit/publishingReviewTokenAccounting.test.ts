@@ -194,7 +194,7 @@ it('retains explicitly partial returned-response ledger totals on failure withou
   const completion={reportTerminalFailure:vi.fn(async()=>{}),reportTerminalSuccess:vi.fn(async()=>{}),reportReviewEvidence:vi.fn(async()=>{})};
   const d=deps(CALLS,{throwAfter:new Error('invalid structured output')});
   await expect(runPublishingReviewWorker({...env(),REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/completion'}, {...d,completion} as never)).rejects.toThrow();
-  const event=completion.reportTerminalFailure.mock.calls[0]![0] as any;
+  const event=(completion.reportTerminalFailure.mock.calls as unknown as any[][])[0]![0] as any;
   expect(event.diagnostics.operationalTelemetry).toMatchObject({cause:'unknown',providerCalls:{started:8,completed:7,failed:1},ledger:{basis:'returned_responses_including_shadow',availability:'partial',calls:7,totalTokens:1620}});
   expect(event.diagnostics.operationalTelemetry.responseUsage.availability).toBe('partial');
   expect(JSON.stringify(event.diagnostics.operationalTelemetry)).not.toMatch(/arch-lane|sec-lane|byLane|byOther/);

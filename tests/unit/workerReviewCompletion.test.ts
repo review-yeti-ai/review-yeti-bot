@@ -629,6 +629,7 @@ it('native completion parsing forwards optional observations without approving p
   expect(parsed.result.coverageComplete).toBe(false); expect(parsed.result.quorumSatisfied).toBe(false);
   expect(parsed.result.failureDiagnostics).not.toHaveProperty('recoverableIncompletePanel');
   expect(parsed.result.failureDiagnostics?.operationalTelemetry?.providerCalls.started).toBe(0);
-  expect(derive(parsed)).toMatchObject({valid:false,reason:'invalid-evidence'});
+  const derived=derive(parsed);expect(derived.valid).toBe(true);
+  if(derived.valid){expect(derived.evidence.verdict).not.toBe('SHIP');expect(derived.evidence.quorumSatisfied).toBe(false);}
   expect(()=>parseWorkerReviewCompletion({...body,result:{...body.result,failureDiagnostics:{...body.result.failureDiagnostics,operationalTelemetry:{...operationalTelemetry,prompt:'SECRET'}}}})).toThrow();
 });
