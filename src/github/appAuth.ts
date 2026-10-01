@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { logger } from '../utils/logger';
-import { GitHubInstallationClient } from './installationClient';
+import type { GitHubInstallationClient } from './installationClient';
 
 export interface GitHubAppAuthConfig {
   appId: string;
@@ -423,6 +423,7 @@ export async function createEphemeralChatClient(
 ): Promise<GitHubInstallationClient> {
   const tokenResult = await mintEphemeralChatToken(installationId, options, fetchFn);
   const baseUrl = options.baseUrl || process.env.GITHUB_API_BASE_URL || 'https://api.github.com';
+  const { GitHubInstallationClient } = await import('./installationClient');
   return new GitHubInstallationClient({
     token: tokenResult.token,
     baseUrl,
