@@ -194,7 +194,9 @@ async function readOperationalTelemetry(db: ReviewStatusDbClient, row: any): Pro
        WHERE r.run_id=$1 AND r.head_sha=$2 AND r.status='failed'
          AND g.attempt_id=$3 AND g.current_attempt=true
          AND g.review_generation=r.attempt AND g.execution_attempt=o.execution_attempt+1
-         AND g.head_sha=r.head_sha AND g.base_sha=r.base_sha
+         AND g.coordinates->>'headSha'=r.head_sha AND g.coordinates->>'baseSha'=r.base_sha
+         AND g.coordinates->>'policyDigest'=r.effective_policy_digest
+         AND w.payload->>'configDigest'=r.effective_config_digest
          AND g.worker_result_digest IS NOT NULL AND g.worker_result_digest=r.result_digest
          AND w.content_digest=g.worker_result_digest
          AND r.failure_diagnostics->>'executionAttempt'=g.execution_attempt::text
