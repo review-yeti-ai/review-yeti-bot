@@ -81,6 +81,14 @@ export interface ComposedTaskFailureDiagnostics {
   lastToolOutcome: 'none' | 'returned' | 'requested_after_finalization';
 }
 
+/** Fixed, content-free diagnostic emitted when an injected composed retention write fails. */
+export interface ComposedTaskRetentionFailureNotice {
+  stage: 'plan' | 'outcome';
+  code: 'request_invalid' | 'write_failed' | 'ack_invalid';
+  /** Zero-based engine-owned task index; null identifies the plan barrier. */
+  taskIndex: number | null;
+}
+
 /** Sum of every `LaneTurnUsage` entry for a lane -- the true per-lane total, as opposed to the
  * single-turn `usage`/`promptTokens`/`completionTokens`/`totalTokens` fields below, which have
  * always reflected only the lane's terminal turn. */

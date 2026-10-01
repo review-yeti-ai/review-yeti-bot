@@ -12,6 +12,13 @@ import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 import { TokenLedger, meterModelClient } from '../../telemetry/tokenLedger';
+import {
+  COMPOSED_TASK_RETENTION_ACK_VERSION,
+  ComposedTaskRetentionError,
+  createComposedTaskOutcomeRetentionRequest,
+  createComposedTaskPlanRetentionRequest,
+  validateComposedTaskRetentionAck,
+} from '../composedTaskRetention';
 
 const mockYaml = `
 version: 3
@@ -1206,6 +1213,638 @@ describe('executeComposedReview', () => {
     });
     return { complete, workTurns };
   }
+
+  const retentionSelectors = {
+    repository: 'acme/reviewer-fixture',
+    prNumber: 17,
+    headSha: 'a'.repeat(40),
+    baseSha: 'b'.repeat(40),
+  };
+
+  function retentionAck(stage: 'plan' | 'outcome', request: any, receiptDigest: string, extra: Record<string, unknown> = {}) {
+    return {
+      version: COMPOSED_TASK_RETENTION_ACK_VERSION,
+      stage,
+      status: 'recorded',
+      requestDigest: request.requestDigest,
+      receiptDigest,
+      ...extra,
+    };
+  }
+
+  function retentionRoutedClient(
+    events: string[],
+    decide: (taskId: string, text: string, nonce: string) => string | Promise<string> = (taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }),
+    tasks = threeTasks(),
+  ) {
+    const providerTasks: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN') || text.includes('PLAN_CORRECTION')) {
+        events.push('provider:plan');
+        return fakeResponse(JSON.stringify({ nonce, tasks }));
+      }
+      const workDirective = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = tasks.find((task) => workDirective.includes(`Task id: ${task.id}`))?.id;
+      if (!taskId) throw new Error('fixture did not identify the engine-selected task');
+      providerTasks.push(taskId);
+      events.push(`provider:${taskId}`);
+      return fakeResponse(await decide(taskId, text, nonce));
+    });
+    return { complete, providerTasks };
+  }
+
+  function recordingRetention(events: string[]) {
+    const requests: any[] = [];
+    const port = {
+      persistPlan: vi.fn(async (request: any) => {
+        events.push('retain:plan');
+        requests.push(request);
+        return retentionAck('plan', request, '1'.repeat(64));
+      }),
+      persistOutcome: vi.fn(async (request: any) => {
+        events.push(`retain:${request.evidence.taskId}:${request.evidence.status}`);
+        requests.push(request);
+        return retentionAck('outcome', request, '2'.repeat(64));
+      }),
+    };
+    return { port, requests };
+  }
+
+  function coercibleString(expected: string) {
+    const toString = vi.fn(() => expected);
+    const value = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(value, 'toString', { configurable: true, get: toString });
+    return { value, toString };
+  }
+
+  function validOutcomeInput() {
+    return {
+      selectors: retentionSelectors,
+      planDigest: 'a'.repeat(64),
+      taskIndex: 0,
+      taskId: 'task-1',
+      status: 'exhausted' as const,
+      diagnostics: {
+        reason: 'task_turn_budget_exhausted' as const,
+        turnsUsed: 0,
+        correctionAttempts: 0,
+        toolTurns: 0,
+        finishReason: null,
+        lastToolOutcome: 'none' as const,
+      },
+      usage: {
+        turnsUsed: 0,
+        physicalCalls: null,
+        correctionAttempts: 0,
+        toolTurns: 0,
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        cachedTokens: 0,
+        durationMs: 0,
+        costUSD: 0,
+      },
+    };
+  }
+
+  it.each(['repository', 'headSha', 'baseSha'] as const)('rejects coercible selector %s without invoking its getter', (field) => {
+    const hostile = coercibleString(field === 'repository' ? 'acme/reviewer-fixture' : 'a'.repeat(40));
+    const selectors = { ...retentionSelectors, [field]: hostile.value };
+    expect(() => createComposedTaskPlanRetentionRequest({
+      selectors: selectors as any, changedPaths: CODE_FILES.map((file) => file.path), tasks: threeTasks() as any,
+    }))
+      .toThrow(ComposedTaskRetentionError);
+    expect(hostile.toString).not.toHaveBeenCalled();
+  });
+
+  it.each(['planDigest', 'taskId'] as const)('rejects coercible outcome %s without invoking its getter', (field) => {
+    const hostile = coercibleString(field === 'planDigest' ? 'a'.repeat(64) : 'task-1');
+    const outcome = { ...validOutcomeInput(), [field]: hostile.value };
+    expect(() => createComposedTaskOutcomeRetentionRequest(outcome as any)).toThrow(ComposedTaskRetentionError);
+    expect(hostile.toString).not.toHaveBeenCalled();
+  });
+
+  it('rejects coercible diagnostic enums and JSON hooks without invoking caller getters', () => {
+    const hostileStatus = coercibleString('none');
+    const badDiagnostic = {
+      ...validOutcomeInput(),
+      diagnostics: { ...validOutcomeInput().diagnostics, lastToolOutcome: hostileStatus.value },
+    };
+    expect(() => createComposedTaskOutcomeRetentionRequest(badDiagnostic as any)).toThrow(ComposedTaskRetentionError);
+    expect(hostileStatus.toString).not.toHaveBeenCalled();
+
+    const toJSON = vi.fn(() => ({ secret: 'must not be serialized' }));
+    const unsafeTitle = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(unsafeTitle, 'toJSON', { enumerable: true, get: toJSON });
+    const complete = {
+      ...validOutcomeInput(),
+      status: 'complete' as const,
+      diagnostics: undefined,
+      findings: [{ severity: 'P1', path: 'src/auth.ts', line: 1, title: unsafeTitle, body: 'fixture' }],
+    };
+    let capturedError: unknown;
+    try {
+      createComposedTaskOutcomeRetentionRequest(complete as any);
+    } catch (error) {
+      capturedError = error;
+    }
+    expect(toJSON).not.toHaveBeenCalled();
+    expect(capturedError).toBeInstanceOf(ComposedTaskRetentionError);
+  });
+
+  it('persists the accepted normalized plan before task work and each complete result before progress/output advances', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }), [threeTasks()[0]]);
+    const retention = recordingRetention(events);
+    const progress = createPublishingProgress({ runId: 'run-retention-order', executionAttempt: 1 }, {
+      sink: (event) => {
+        if (['composed_plan', 'composed_task'].includes(String(event.task))) {
+          events.push(`progress:${event.lane}:${event.status}`);
+        }
+      },
+    });
+    const result = await executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete },
+      retention: { port: retention.port }, progress,
+    });
+
+    expect(events).toEqual([
+      'progress:composed-plan:started', 'provider:plan', 'retain:plan', 'progress:composed-plan:completed',
+      'progress:composed-task-1:started', 'provider:task-1', 'retain:task-1:complete', 'progress:composed-task-1:completed',
+    ]);
+    expect(providerTasks).toEqual(['task-1']);
+    expect(result.applicablePersonaIds).toEqual(['task-1']);
+    expect(result.personas).toMatchObject([{ id: 'task-1', decision: 'APPROVE', findings: [], toolTurns: 0 }]);
+    expect(result).not.toHaveProperty('retention');
+    const [planRequest, outcomeRequest] = retention.requests;
+    expect(Object.keys(planRequest).sort()).toEqual(['evidence', 'requestDigest', 'selectors', 'stage', 'version']);
+    expect(planRequest.evidence.tasks).toEqual([threeTasks()[0]]);
+    expect(JSON.stringify(planRequest)).not.toMatch(/policy|build|context|provider|prompt|tool/i);
+    expect(Object.isFrozen(planRequest)).toBe(true);
+    expect(Object.isFrozen(planRequest.evidence.tasks[0].paths)).toBe(true);
+    expect(outcomeRequest.evidence.planDigest).toBe('1'.repeat(64));
+    expect(outcomeRequest.evidence.usage).toMatchObject({
+      turnsUsed: 1, physicalCalls: null, correctionAttempts: 0, toolTurns: 0, costUSD: 0.001,
+    });
+  });
+
+  it('persists a normalized BLOCKED outcome before adding the existing optional failure', async () => {
+    const events: string[] = [];
+    const task = threeTasks()[0];
+    const { complete } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: task.id, status: 'BLOCKED', findings: [] }), [task]);
+    const retention = recordingRetention(events);
+    const result = await executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port },
+    });
+
+    expect(events).toEqual(['provider:plan', 'retain:plan', 'provider:task-1', 'retain:task-1:blocked']);
+    expect(retention.requests[1].evidence).toMatchObject({
+      status: 'blocked', taskIndex: 0,
+      usage: { turnsUsed: 1, physicalCalls: null, correctionAttempts: 0, toolTurns: 0 },
+    });
+    expect(retention.requests[1].evidence).not.toHaveProperty('findings');
+    expect(result.optionalFailures).toHaveLength(1);
+    expect(result.personas).toEqual([]);
+  });
+
+  it('retains task one before an interrupted task two and never advances to task three', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, async (taskId, _text, nonce) => {
+      if (taskId === 'task-2') throw new Error('private provider failure text');
+      return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
+    });
+    const retention = recordingRetention(events);
+
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port },
+    })).rejects.toThrow();
+
+    expect(providerTasks).toEqual(['task-1', 'task-2']);
+    expect(events).toContain('retain:task-1:complete');
+    expect(events).not.toContain('retain:task-2:complete');
+    expect(events).not.toContain('provider:task-3');
+    expect(retention.port.persistOutcome).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call the next task provider after an invalid outcome ACK', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementationOnce(async (request: any) => {
+      events.push('retain:task-1:complete');
+      return retentionAck('outcome', request, '2'.repeat(64), { requestDigest: 'f'.repeat(64) });
+    });
+
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port },
+    })).rejects.toMatchObject({ name: 'ComposedTaskRetentionError', failureCode: 'ack_invalid', stage: 'outcome' });
+
+    expect(providerTasks).toEqual(['task-1']);
+    expect(events).not.toContain('provider:task-2');
+    expect(retention.port.persistOutcome).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles an aborted in-flight plan write and ignores its late ACK before task work', async () => {
+    const controller = new AbortController();
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }), [threeTasks()[0]]);
+    let started!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { started = resolve; });
+    let releaseLateAck!: (value: ReturnType<typeof validateComposedTaskRetentionAck>) => void;
+    let pendingRequest: any;
+    const retention = recordingRetention(events);
+    retention.port.persistPlan.mockImplementationOnce((request: any) => {
+      pendingRequest = request;
+      events.push('retain:plan:pending');
+      started();
+      return new Promise<ReturnType<typeof validateComposedTaskRetentionAck>>((resolve) => { releaseLateAck = resolve; });
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: 'run-retention-abort-plan', executionAttempt: 1 }, {
+      sink: (event) => progress.push(`${event.lane}:${event.status}`),
+    });
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, signal: controller.signal,
+      retention: { port: retention.port }, progress: reporter,
+    });
+    const settled = run.then(() => 'resolved', () => 'rejected');
+    await writeStarted;
+    controller.abort();
+    const stateBeforeLateAck = await Promise.race([
+      settled,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 40)),
+    ]);
+    releaseLateAck(retentionAck('plan', pendingRequest, '1'.repeat(64)) as ReturnType<typeof validateComposedTaskRetentionAck>);
+    await run.catch(() => undefined);
+
+    expect(stateBeforeLateAck).toBe('rejected');
+    expect(providerTasks).toEqual([]);
+    expect(progress).not.toContain('composed-plan:completed');
+    expect(progress).not.toContain('composed-task-1:started');
+  });
+
+  it('settles an aborted in-flight task write and ignores its late ACK before task two', async () => {
+    const controller = new AbortController();
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    let started!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { started = resolve; });
+    let releaseLateAck!: (value: ReturnType<typeof validateComposedTaskRetentionAck>) => void;
+    let pendingRequest: any;
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementationOnce((request: any) => {
+      pendingRequest = request;
+      events.push('retain:task-1:pending');
+      started();
+      return new Promise<ReturnType<typeof validateComposedTaskRetentionAck>>((resolve) => { releaseLateAck = resolve; });
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: 'run-retention-abort-outcome', executionAttempt: 1 }, {
+      sink: (event) => progress.push(`${event.lane}:${event.status}`),
+    });
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, signal: controller.signal,
+      retention: { port: retention.port }, progress: reporter,
+    });
+    const settled = run.then(() => 'resolved', () => 'rejected');
+    await writeStarted;
+    controller.abort();
+    const stateBeforeLateAck = await Promise.race([
+      settled,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 40)),
+    ]);
+    releaseLateAck(retentionAck('outcome', pendingRequest, '2'.repeat(64)) as ReturnType<typeof validateComposedTaskRetentionAck>);
+    await run.catch(() => undefined);
+
+    expect(stateBeforeLateAck).toBe('rejected');
+    expect(providerTasks).toEqual(['task-1']);
+    expect(progress).not.toContain('composed-task-1:completed');
+    expect(progress).not.toContain('composed-task-2:started');
+  });
+
+  it('rechecks that the selected head is still current after plan and task ACKs', async () => {
+    const headEvents: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(headEvents, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    const retention = recordingRetention(headEvents);
+    let headChecks = 0;
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete },
+      isCurrentHead: () => ++headChecks === 1,
+      retention: { port: retention.port },
+    })).rejects.toThrow(/stale run aborted/u);
+    expect(headChecks).toBe(2);
+    expect(providerTasks).toEqual([]);
+
+    const outcomeEvents: string[] = [];
+    const outcomeClient = retentionRoutedClient(outcomeEvents, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    const outcomeRetention = recordingRetention(outcomeEvents);
+    headChecks = 0;
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete: outcomeClient.complete },
+      isCurrentHead: () => ++headChecks < 3,
+      retention: { port: outcomeRetention.port },
+    })).rejects.toThrow(/stale run aborted/u);
+    expect(headChecks).toBe(3);
+    expect(outcomeClient.providerTasks).toEqual(['task-1']);
+    expect(outcomeEvents).not.toContain('provider:task-2');
+  });
+
+  it('rechecks the same admitted deadline after a successful plan ACK', async () => {
+    const deadlineEvents: string[] = [];
+    const deadlineClient = retentionRoutedClient(deadlineEvents, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }), [threeTasks()[0]]);
+    const deadlineRetention = recordingRetention(deadlineEvents);
+    const startedAt = Date.now();
+    const deadlineAtMs = startedAt + 10_000;
+    let admittedNow = startedAt;
+    deadlineRetention.port.persistPlan.mockImplementationOnce(async (request: any) => {
+      admittedNow = deadlineAtMs;
+      return retentionAck('plan', request, '1'.repeat(64));
+    });
+    const deadlineProgress: string[] = [];
+    const reporter = createPublishingProgress({ runId: 'run-retention-deadline', executionAttempt: 1 }, {
+      sink: (event) => deadlineProgress.push(`${event.lane}:${event.status}`),
+    });
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete: deadlineClient.complete },
+      deadlineBudget: { deadlineAtMs, timeoutMs: 10_000, terminalBound: true }, deadlineNow: () => admittedNow,
+      retention: { port: deadlineRetention.port }, progress: reporter,
+    })).rejects.toThrow();
+    expect(deadlineClient.providerTasks).toEqual([]);
+    expect(deadlineProgress).not.toContain('composed-plan:completed');
+  });
+
+  it('does not retry a write or replay provider work after an ACK is lost', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }), [threeTasks()[0]]);
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementationOnce(async (request: any) => {
+      events.push('retained-before-lost-ack');
+      retention.requests.push(request);
+      throw new Error('private database details');
+    });
+    const onFailure = vi.fn();
+
+    const result = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port, onFailure },
+    });
+    await expect(result).rejects.toMatchObject({ name: 'ComposedTaskRetentionError', failureCode: 'write_failed' });
+
+    expect(providerTasks).toEqual(['task-1']);
+    expect(retention.port.persistOutcome).toHaveBeenCalledTimes(1);
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(onFailure.mock.calls[0][0]).toEqual({ stage: 'outcome', code: 'write_failed', taskIndex: 0 });
+    expect(Object.isFrozen(onFailure.mock.calls[0][0])).toBe(true);
+    expect(JSON.stringify(onFailure.mock.calls[0][0])).not.toContain('private database details');
+  });
+
+  it('consumes rejected asynchronous failure diagnostics without changing the bounded failure', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementationOnce(async () => {
+      throw new Error('private database details');
+    });
+    const unhandled: string[] = [];
+    const onUnhandledRejection = () => unhandled.push('observed');
+    const diagnosticRejection = Symbol();
+    const notices: unknown[] = [];
+    const onFailure = (notice: unknown) => {
+      notices.push(notice);
+      return Promise.reject(diagnosticRejection);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+
+    try {
+      const failure = await executeComposedReview({
+        config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+        prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+        headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port, onFailure },
+      }).then(() => undefined, (error: unknown) => error);
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+      expect(failure).toBeInstanceOf(ComposedTaskRetentionError);
+      expect(failure).toMatchObject({
+        name: 'ComposedTaskRetentionError', code: 'composed_task_retention_failed',
+        stage: 'outcome', failureCode: 'write_failed', taskIndex: 0,
+      });
+      expect((failure as Error).message).toBe('Composed task retention failed (outcome:write_failed)');
+      expect(notices).toEqual([{ stage: 'outcome', code: 'write_failed', taskIndex: 0 }]);
+      expect(unhandled).toEqual([]);
+      expect(providerTasks).toEqual(['task-1']);
+      expect(retention.port.persistOutcome).toHaveBeenCalledTimes(1);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+  });
+
+  it('does not wait for a pending failure diagnostic before rejecting retention failure', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementationOnce(async () => {
+      throw new Error('private database details');
+    });
+    let releaseDiagnostic!: () => void;
+    const pendingDiagnostic = new Promise<void>((resolve) => { releaseDiagnostic = resolve; });
+    const onFailure = vi.fn(() => pendingDiagnostic);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      const result = executeComposedReview({
+        config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+        prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+        headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port, onFailure },
+      }).then(() => undefined, (error: unknown) => error);
+      const settled = await Promise.race([
+        result,
+        new Promise<'delayed'>((resolve) => { timeout = setTimeout(() => resolve('delayed'), 1_000); }),
+      ]);
+      expect(settled).toBeInstanceOf(ComposedTaskRetentionError);
+      expect(providerTasks).toEqual(['task-1']);
+      expect(onFailure).toHaveBeenCalledTimes(1);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      releaseDiagnostic();
+    }
+  });
+
+  it.each([
+    ['wrong stage', (request: any) => retentionAck('outcome', request, '3'.repeat(64))],
+    ['conflicting evidence digest', (request: any) => retentionAck('plan', request, '3'.repeat(64), { requestDigest: 'f'.repeat(64) })],
+    ['unknown acknowledgement field', (request: any) => retentionAck('plan', request, '3'.repeat(64), { details: 'not allowed' })],
+  ])('rejects malformed or conflicting plan ACKs (%s) before task work', async (_label, makeAck) => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }), [threeTasks()[0]]);
+    const retention = recordingRetention(events);
+    retention.port.persistPlan.mockImplementationOnce(async (request: any) => {
+      events.push('retain:plan');
+      return makeAck(request);
+    });
+
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port },
+    })).rejects.toMatchObject({ name: 'ComposedTaskRetentionError', failureCode: 'ack_invalid', stage: 'plan' });
+    expect(providerTasks).toEqual([]);
+    expect(events).toEqual(['provider:plan', 'retain:plan']);
+  });
+
+  it('validates and freezes the copied ACK instead of retaining the port object', () => {
+    const source = retentionAck('plan', { requestDigest: 'a'.repeat(64) }, 'b'.repeat(64));
+    const ack = validateComposedTaskRetentionAck(source, 'plan', 'a'.repeat(64), null);
+    expect(Object.isFrozen(ack)).toBe(true);
+    expect(ack).not.toBe(source);
+    expect(ack.receiptDigest).toBe('b'.repeat(64));
+    expect(() => validateComposedTaskRetentionAck({ ...source, status: 'conflict' }, 'plan', 'a'.repeat(64), null))
+      .toThrow(ComposedTaskRetentionError);
+  });
+
+  it('rejects coercible ACK statuses without invoking caller code', () => {
+    const toString = vi.fn(() => 'recorded');
+    const source = {
+      version: COMPOSED_TASK_RETENTION_ACK_VERSION,
+      stage: 'plan',
+      status: { toString },
+      requestDigest: 'a'.repeat(64),
+      receiptDigest: 'b'.repeat(64),
+    };
+    expect(() => validateComposedTaskRetentionAck(source, 'plan', 'a'.repeat(64), null))
+      .toThrow(ComposedTaskRetentionError);
+    expect(toString).not.toHaveBeenCalled();
+  });
+
+  it('retains exhausted tasks, including those not started when the turn budget is spent', async () => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, (_taskId, _text, nonce) =>
+      JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] }));
+    const retention = recordingRetention(events);
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 2, max_turns_per_task: 1 };
+    const progress = createPublishingProgress({ runId: 'run-retention-budget', executionAttempt: 1 }, {
+      sink: (event) => {
+        events.push(`progress:${event.lane ?? 'panel'}:${event.status}`);
+      },
+    });
+    const result = await executeComposedReview({
+      config: cfg, changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port }, progress,
+    });
+
+    expect(providerTasks).toEqual(['task-1']);
+    const exhausted = retention.requests.find((request) => request.stage === 'outcome' && request.evidence.taskId === 'task-2');
+    expect(exhausted.evidence).toMatchObject({
+      status: 'exhausted', diagnostics: { reason: 'total_turn_budget_exhausted', turnsUsed: 0, correctionAttempts: 0, toolTurns: 0 },
+      usage: { turnsUsed: 0, physicalCalls: null, correctionAttempts: 0, toolTurns: 0, costUSD: 0 },
+    });
+    const skipped = events.indexOf('progress:composed-task-2:skipped');
+    expect(skipped).toBeGreaterThan(-1);
+    expect(events.indexOf('retain:task-2:exhausted')).toBeLessThan(skipped);
+    expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual(['task-2', 'task-3']);
+  });
+
+  it('preserves actual tool/correction counts and unknown cost in a complete outcome', async () => {
+    const events: string[] = [];
+    const task = threeTasks()[0];
+    let workTurns = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [task] }));
+      workTurns += 1;
+      if (workTurns === 1) return { ...fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } })), costUSD: null };
+      if (workTurns === 2) return { ...fakeResponse('not a final result'), costUSD: null };
+      return { ...fakeResponse(JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE', findings: [] })), costUSD: null };
+    });
+    const retention = recordingRetention(events);
+    const cfg: any = config();
+    cfg.composed = { max_turns_per_task: 4 };
+    await executeComposedReview({
+      config: cfg, changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete }, retention: { port: retention.port },
+    });
+
+    const result = retention.requests.find((request) => request.stage === 'outcome');
+    expect(result.evidence.usage).toMatchObject({ turnsUsed: 3, physicalCalls: null, correctionAttempts: 1, toolTurns: 1, costUSD: null });
+  });
+
+  it('keeps current-head and abort fences fail-closed with retention injected', async () => {
+    const stale = recordingRetention([]);
+    const neverCall = vi.fn(async () => fakeResponse('{}'));
+    await expect(executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete: neverCall }, isCurrentHead: () => false,
+      retention: { port: stale.port },
+    })).rejects.toThrow();
+    expect(neverCall).not.toHaveBeenCalled();
+    expect(stale.port.persistPlan).not.toHaveBeenCalled();
+
+    const events: string[] = [];
+    const controller = new AbortController();
+    let workStarted!: () => void;
+    const started = new Promise<void>((resolve) => { workStarted = resolve; });
+    const raw = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [threeTasks()[0]] }));
+      workStarted();
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        payload.signal?.addEventListener('abort', () => reject(new Error('private abort')), { once: true });
+      });
+    });
+    const retention = recordingRetention(events);
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: retentionSelectors.repository,
+      prNumber: retentionSelectors.prNumber, baseSha: retentionSelectors.baseSha,
+      headSha: retentionSelectors.headSha, client: { complete: raw }, signal: controller.signal,
+      retention: { port: retention.port },
+    });
+    const rejected = expect(run).rejects.toThrow();
+    await started;
+    controller.abort();
+    await rejected;
+    expect(retention.port.persistPlan).toHaveBeenCalledTimes(1);
+    expect(retention.port.persistOutcome).not.toHaveBeenCalled();
+  });
 
   it('keeps later lanes running when a middle task produces no verdict', async () => {
     const { complete, workTurns } = routedClient((taskId, _text, nonce) => {

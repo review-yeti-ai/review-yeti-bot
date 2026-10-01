@@ -125,6 +125,13 @@ import type {
   PanelResult,
   PersonaLaneResult,
 } from './types';
+import {
+  persistComposedTaskOutcome,
+  persistComposedTaskPlan,
+  summarizeComposedTaskUsage,
+  type ComposedTaskRetention,
+  type ComposedTaskRetentionSelectors,
+} from './composedTaskRetention';
 
 export interface ComposedReviewOptions {
   config: CtReviewConfigV3;
@@ -161,6 +168,8 @@ export interface ComposedReviewOptions {
    * so it does not chunk; it makes the same shared decision and discloses a context over budget.
    */
   mapReduce?: MapReduceInput;
+  /** Internal service-owned write barrier. Absence preserves ordinary CLI behavior and is not a durable receipt. */
+  retention?: ComposedTaskRetention;
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,9 +1009,9 @@ async function runPlanPhase(input: {
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
-  | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics };
+  | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
+  | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; durationMs: number };
 
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
@@ -1049,7 +1058,7 @@ async function runTaskWorkPhase(input: {
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
   const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
-    type: 'exhausted', turnUsages,
+    type: 'exhausted', turnUsages, durationMs: Date.now() - startedAt,
     diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
   });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
@@ -1183,9 +1192,9 @@ async function runTaskWorkPhase(input: {
 
     const durationMs = Date.now() - startedAt;
     if (candidate.status === 'BLOCKED') {
-      return { type: 'blocked', turnUsages, toolCalls: toolCallsLog, toolTurns, durationMs };
+      return { type: 'blocked', turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
     }
-    return { type: 'complete', findings, turnUsages, toolCalls: toolCallsLog, toolTurns, durationMs };
+    return { type: 'complete', findings, turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
   }
 
   return exhausted('task_turn_budget_exhausted');
@@ -1219,6 +1228,39 @@ export function unreportedLaneFailure(
   };
 }
 
+function composedRetentionSelectors(options: ComposedReviewOptions): ComposedTaskRetentionSelectors {
+  // These are selectors only. The authenticated adapter owns and resolves every
+  // trusted run/policy/build/context value independently of this engine payload.
+  return {
+    repository: options.repository,
+    prNumber: options.prNumber as number,
+    headSha: options.headSha,
+    baseSha: options.baseSha as string,
+  };
+}
+
+async function persistWithRunFences<T>(
+  options: ComposedReviewOptions,
+  deadline: ReturnType<typeof createPanelDeadlineSignal>,
+  write: () => Promise<T>,
+): Promise<T> {
+  deadline.check();
+  // Defer invocation until after the cancellation listener is installed. The
+  // same admitted signal/cutoff used by provider calls races the write; no new
+  // persistence timeout is minted. `raceWithPanelAbort` removes its listener
+  // and consumes a late rejection, while this caller ignores any late ACK.
+  const pending = Promise.resolve().then(() => {
+    deadline.check();
+    return write();
+  });
+  const result = await raceWithPanelAbort(pending, deadline.signal);
+  deadline.check();
+  if (options.isCurrentHead && !options.isCurrentHead()) {
+    throw new PanelConfigurationError(`stale run aborted for ${options.repository}#${options.headSha}`);
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -1248,6 +1290,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let mapReducePlan: MapReducePlan | null = null;
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
+    const retention = options.retention;
+    const retentionSelectors = retention ? composedRetentionSelectors(options) : null;
     const signal = deadline.signal;
     throwIfPanelAborted(signal);
     const repositoryVisibility = normalizeRepositoryVisibility(options.repositoryVisibility ?? 'UNKNOWN');
@@ -1374,6 +1418,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       provider: providerId, model, required: true,
     });
     let planOutcome: PlanPhaseOutcome;
+    let retainedPlanDigest: string | null = null;
     try {
       planOutcome = await runPlanPhase({
         client,
@@ -1397,6 +1442,15 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         turnsRemaining: remainingBudget,
         progress: options.progress,
       });
+      if (retention) {
+        const acknowledgement = await persistWithRunFences(options, deadline, () =>
+          persistComposedTaskPlan(retention, {
+            selectors: retentionSelectors!,
+            changedPaths: effectiveFilePaths,
+            tasks: planOutcome.tasks,
+          }));
+        retainedPlanDigest = acknowledgement.receiptDigest;
+      }
     } catch (error) {
       options.progress?.emit({
         task: 'composed_plan', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_plan', lane: 'composed-plan',
@@ -1433,6 +1487,26 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const task = planOutcome.tasks[i];
       const diagnosticLane = composedTaskDiagnosticLane(i);
       if (remainingBudget() <= 0) {
+        const diagnostics: ComposedTaskFailureDiagnostics = {
+          reason: 'total_turn_budget_exhausted',
+          turnsUsed: 0,
+          correctionAttempts: 0,
+          toolTurns: 0,
+          finishReason: null,
+          lastToolOutcome: 'none',
+        };
+        if (retention) {
+          await persistWithRunFences(options, deadline, () =>
+            persistComposedTaskOutcome(retention, {
+              selectors: retentionSelectors!,
+              planDigest: retainedPlanDigest!,
+              taskIndex: i,
+              taskId: task.id,
+              status: 'exhausted',
+              diagnostics,
+              usage: summarizeComposedTaskUsage([], 0, 0, 0),
+            }));
+        }
         // Never started. Record the reason off the published roster and keep walking.
         options.progress?.emit({
           task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
@@ -1482,12 +1556,45 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         });
         throw error;
       }
+      if (retention) {
+        try {
+          const diagnostics = outcome.type === 'exhausted' ? outcome.diagnostics : undefined;
+          const correctionAttempts = outcome.type === 'exhausted'
+            ? outcome.diagnostics.correctionAttempts : outcome.correctionAttempts;
+          const toolTurns = outcome.type === 'exhausted'
+            ? outcome.diagnostics.toolTurns : outcome.toolTurns;
+          await persistWithRunFences(options, deadline, () =>
+            persistComposedTaskOutcome(retention, {
+              selectors: retentionSelectors!,
+              planDigest: retainedPlanDigest!,
+              taskIndex: i,
+              taskId: task.id,
+              status: outcome.type,
+              ...(outcome.type === 'complete' ? { findings: outcome.findings } : {}),
+              ...(diagnostics ? { diagnostics } : {}),
+              usage: summarizeComposedTaskUsage(
+                outcome.turnUsages,
+                correctionAttempts,
+                toolTurns,
+                outcome.durationMs,
+              ),
+            }));
+        } catch (error) {
+          options.progress?.emit({
+            task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
+            turn: outcome.turnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
+            usage: progressUsage(outcome.turnUsages),
+          });
+          throw error;
+        }
+      }
       const taskUsage = progressUsage(outcome.turnUsages);
       options.progress?.emit({
         task: 'composed_task',
         status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
         role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
-        durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
+        durationMs: outcome.durationMs,
         turn: outcome.turnUsages.length,
         ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
         usage: taskUsage,
