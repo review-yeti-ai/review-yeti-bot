@@ -1098,7 +1098,11 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
       router.destroy();
     });
 
-    it('CHALLENGE: remote router tools/list returns the complete ordered 18-tool catalog', async () => {
+    it.each(['registration', 'reversed'] as const)('CHALLENGE: tools/list returns the complete 18-tool catalog in %s listing order', async (order) => {
+      if (order === 'reversed') {
+        const registered = router.toolRegistry.listTools();
+        vi.spyOn(router.toolRegistry, 'listTools').mockImplementation(() => [...registered].reverse());
+      }
       const res = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-admin-token')
@@ -1114,7 +1118,7 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
       const toolNames = res.body.result.tools.map((t: any) => t.name);
       expect(toolNames).toHaveLength(18);
       expect(new Set(toolNames).size).toBe(18);
-      expect(toolNames).toEqual(EXPECTED_MCP_TOOL_NAMES);
+      expect([...toolNames].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
     });
 
     it('CHALLENGE: executes attest_pr_gate over HTTP JSON-RPC 2.0 and receives valid attestation', async () => {

@@ -438,19 +438,82 @@ describe('K8sJobRunner Execution Lifecycle & Receipt Retrieval (Milestone 2)', (
       }
     });
 
-    it('executeJob returns success: false when receipt outcome is failed or unknown', async () => {
+    it.each(['failed', 'unknown'] as const)('executeJob returns success: false when receipt outcome is %s across a clock boundary', async (outcome) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const beforeDispatch = new Date('2026-10-01T00:00:00.000Z');
+      vi.setSystemTime(beforeDispatch);
       const runner = new K8sJobRunner({ forceSimulation: true });
-      // Mock retrieveExecutionReceipt to return a valid failed receipt
-      const workRequest = runner.buildWorkRequest(baseSpec);
-      const failedReceipt = generateSimulationReceipt(workRequest, { outcome: 'failed' as any });
+      try {
+        // A separately built sample is deliberately from the previous second;
+        // the fixture must bind the receipt to the ACTUAL dispatched request.
+        const preDispatchSample = runner.buildWorkRequest(baseSpec);
+        vi.setSystemTime(new Date(beforeDispatch.getTime() + 1000));
 
-      vi.spyOn(runner, 'retrieveExecutionReceipt').mockResolvedValueOnce(failedReceipt);
-      const result = await runner.executeJob(baseSpec);
+        const dispatch = vi.spyOn(runner, 'dispatchJob');
+        const completion = vi.spyOn(runner, 'waitForJobCompletion');
+        const validation = vi.spyOn(runner, 'validateExecutionReceipt');
+        const retrieval = vi.spyOn(runner, 'retrieveExecutionReceipt').mockImplementationOnce(
+          async (_jobName, actualRequest) => {
+            if (!('schema' in actualRequest) || actualRequest.schema !== 'ct-agent-work-request.v1') {
+              throw new Error('Fixture expected the actual dispatched work request');
+            }
+            return generateSimulationReceipt(actualRequest, { outcome });
+          },
+        );
+        const result = await runner.executeJob(baseSpec);
 
-      expect(result.success).toBe(false);
-      expect(result.receipt?.outcome).toBe('failed');
-      expect(result.error).toContain("Execution receipt outcome was 'failed'");
-      expect(result.diagnostics?.[0].code).toBe('EXECUTION_FAILED');
+        expect(result.success).toBe(false);
+        expect(result.receipt?.outcome).toBe(outcome);
+        expect(result.error).toContain(`Execution receipt outcome was '${outcome}'`);
+        expect(result.diagnostics?.[0].code).toBe('EXECUTION_FAILED');
+        expect(result.requestDigest).not.toBe(requestDigest(preDispatchSample));
+        expect(result.receipt?.request_digest).toBe(result.requestDigest);
+        expect(retrieval).toHaveBeenCalledTimes(1);
+        expect(retrieval.mock.calls[0][1]).toBe(result.workRequest);
+        expect(validation).toHaveBeenCalledTimes(1);
+        expect(validation).toHaveBeenCalledWith(result.receipt, result.workRequest,
+          { now: expect.any(String) });
+        expect(dispatch).toHaveBeenCalledTimes(1);
+        expect(completion).toHaveBeenCalledTimes(1);
+        const callOrder = [dispatch, completion, retrieval, validation]
+          .map((spy) => spy.mock.invocationCallOrder[0]);
+        for (let index = 1; index < callOrder.length; index++) {
+          expect(callOrder[index - 1]).toBeLessThan(callOrder[index]);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['failed', 'unknown'] as const)('rejects a %s receipt from a separately rebuilt request before interpreting its outcome', async (outcome) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const beforeDispatch = new Date('2026-10-01T00:00:00.000Z');
+      vi.setSystemTime(beforeDispatch);
+      const runner = new K8sJobRunner({ forceSimulation: true });
+      try {
+        const previousRequest = runner.buildWorkRequest(baseSpec);
+        const previousReceipt = generateSimulationReceipt(previousRequest, { outcome });
+        vi.setSystemTime(new Date(beforeDispatch.getTime() + 1000));
+        const validation = vi.spyOn(runner, 'validateExecutionReceipt');
+        vi.spyOn(runner, 'retrieveExecutionReceipt').mockResolvedValueOnce(previousReceipt);
+
+        const result = await runner.executeJob(baseSpec);
+
+        // Same nine-field scope and a structurally valid non-success receipt;
+        // only the new request's canonical timestamps/digest differ.
+        expect(result.workRequest.scope).toEqual(previousRequest.scope);
+        expect(result.workRequest.created_at).not.toBe(previousRequest.created_at);
+        expect(previousReceipt.request_digest).not.toBe(result.requestDigest);
+        expect(result.success).toBe(false);
+        expect(result.receipt?.outcome).toBe(outcome);
+        expect(result.error).toBe('Receipt validation failed: REQUEST_DRIFT');
+        expect(result.diagnostics?.[0].code).toBe('REQUEST_DRIFT');
+        expect(validation).toHaveBeenCalledTimes(1);
+        expect(validation).toHaveBeenCalledWith(previousReceipt, result.workRequest,
+          { now: expect.any(String) });
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('retrieveExecutionReceipt retrieves from isolated child and attempt directory', async () => {

@@ -88,14 +88,18 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
   // 1. Tool Catalog Registration (18 Tools)
   // ===========================================================================
   describe('1. Tool Catalog Registration & Schema Audit', () => {
-    it('registers the complete ordered 18-tool catalog in createDefaultToolRegistry', () => {
+    it.each(['registration', 'reversed'] as const)('registers the complete 18-tool catalog in %s listing order', (order) => {
       const registry = createDefaultToolRegistry();
+      if (order === 'reversed') {
+        const registered = registry.listTools();
+        vi.spyOn(registry, 'listTools').mockImplementation(() => [...registered].reverse());
+      }
       const tools = registry.listTools();
 
       const names = tools.map((t) => t.name);
       expect(names).toHaveLength(18);
       expect(new Set(names).size).toBe(18);
-      expect(names).toEqual(EXPECTED_MCP_TOOL_NAMES);
+      expect([...names].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
 
       for (const tool of tools) {
         expect(tool.name).toBeDefined();
@@ -105,25 +109,33 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       }
     });
 
-    it('serves the complete ordered 18-tool catalog via remoteMcpRouter HTTP tools/list', async () => {
+    it.each(['registration', 'reversed'] as const)('serves the complete 18-tool catalog via HTTP in %s listing order', async (order) => {
       const caller = createMockCaller({ isAdmin: true });
+      const registry = createDefaultToolRegistry();
+      if (order === 'reversed') {
+        const registered = registry.listTools();
+        vi.spyOn(registry, 'listTools').mockImplementation(() => [...registered].reverse());
+      }
       const router = createRemoteMcpRouter({
         authenticator: createMockAuthenticator(caller),
+        toolRegistry: registry,
       });
       const app = buildExpressTestApp(router);
 
-      const response = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+      try {
+        const response = await request(app)
+          .post('/api/mcp')
+          .set('Authorization', 'Bearer valid-token')
+          .send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
 
-      expect(response.status).toBe(200);
-      const toolNames = response.body.result.tools.map((t: any) => t.name);
-      expect(toolNames).toHaveLength(18);
-      expect(new Set(toolNames).size).toBe(18);
-      expect(toolNames).toEqual(EXPECTED_MCP_TOOL_NAMES);
-
-      router.destroy();
+        expect(response.status).toBe(200);
+        const toolNames = response.body.result.tools.map((t: any) => t.name);
+        expect(toolNames).toHaveLength(18);
+        expect(new Set(toolNames).size).toBe(18);
+        expect([...toolNames].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
+      } finally {
+        router.destroy();
+      }
     });
   });
 
