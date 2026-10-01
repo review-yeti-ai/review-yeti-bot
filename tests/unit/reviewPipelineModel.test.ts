@@ -234,7 +234,6 @@ describe('SSE terminal choice reduction', () => {
     expect(result.choices[0].index).toBe(0);
     expect(result.choices[0].message.content).toBe('{"findings":[]}');
     expect(result.usage).toEqual(usage.usage);
-    expect(result.usage).toEqual(usage.usage);
   });
 
   it.each([
