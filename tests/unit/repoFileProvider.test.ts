@@ -94,6 +94,14 @@ describe('GitHubInstallationClient.getFileTree', () => {
 
 
 describe('pinned source identities', () => {
+  it('encodes filename query characters without allowing them to override the pinned ref', async () => {
+    const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
+    (client as any).request = vi.fn(async () => ({ encoding: 'base64', content: 'eA==' }));
+    expect(await client.getFileContent('o', 'r', 'src/name ?ref=main&#%.ts', 'a'.repeat(40))).toBe('x');
+    expect((client as any).request).toHaveBeenCalledExactlyOnceWith(
+      '/repos/o/r/contents/src/name%20%3Fref%3Dmain%26%23%25.ts?ref=' + 'a'.repeat(40));
+  });
+
   it('returns the verified distinct merge base and rejects malformed commit identities before I/O', async () => {
     const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
     const base = 'a'.repeat(40), head = 'b'.repeat(40), old = 'c'.repeat(40);
