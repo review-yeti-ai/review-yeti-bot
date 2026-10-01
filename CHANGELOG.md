@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.104.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.0...v1.104.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **API-3377:** retain findings on graceful composed retries ([#1227](https://github.com/review-yeti-ai/review-yeti-bot/issues/1227)) ([75c5afb](https://github.com/review-yeti-ai/review-yeti-bot/commit/75c5afb27f8590775639f2d7593bf5b4a5a9d936))
+
 ## [1.104.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.3...v1.104.0) (2026-10-01)
 
 
