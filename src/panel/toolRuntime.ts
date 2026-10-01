@@ -266,7 +266,7 @@ export async function runReadOnlyTool(
             const sliced = sliceLines(raw);
             const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
             const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
-            if (truncated) isExhaustive = false;
+
             const prefixNote = sliced.sliced
               ? `${tName === 'get_diff' ? 'Patch lines' : 'Lines'} ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
               : '';
