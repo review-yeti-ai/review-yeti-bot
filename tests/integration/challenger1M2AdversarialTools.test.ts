@@ -503,10 +503,12 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
 
       expect(content.found).toBe(false);
       expect(content.verdict).toBe('PENDING');
-      expect(content.phase).toBe('queued');
+      expect(content.phase).toBe('unknown');
       expect(content.attempt_id).toBeNull();
       expect(content.check_run).toBeNull();
       expect(content.active_worker).toBeNull();
+      expect(content.run_id).toBeUndefined();
+      expect(content.timing).toBeUndefined();
       expect(content.message).toContain('No review run found for exampleorg/example-api PR #99999999');
     });
 
