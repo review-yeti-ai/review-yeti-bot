@@ -8396,6 +8396,10 @@ async function main() {
           const anyError = laneRuns.find((r) => r.decision === 'ERROR');
           const lastRun = laneRuns.at(-1) || {};
           const baseRun = laneRuns[0] || {};
+          // Terminal diagnostics must describe the same failed partition as its
+          // bounded response attempts, not a successful sibling. Findings, usage
+          // totals and the inherited coverage fields remain unchanged.
+          const diagnosticRun = anyError || lastRun;
 
           let totalCost = null;
           const numericCosts = laneRuns.map((r) => normalizeCost(r.cost)).filter((c) => c !== null);
@@ -8407,6 +8411,15 @@ async function main() {
 
           return {
             ...baseRun,
+            ...(anyError ? {
+              transport: anyError.transport,
+              provider: anyError.provider,
+              model: anyError.model,
+              ttftMs: anyError.ttftMs,
+              routerMetadata: anyError.routerMetadata,
+              requestFingerprint: anyError.requestFingerprint,
+              responseAttempts: normalizeModelResponseAttempts(anyError.responseAttempts),
+            } : {}),
             personaId: persona.id,
             displayName: persona.name,
             findings: allFindings,
@@ -8417,20 +8430,21 @@ async function main() {
             latencyMs: totalLatencyMs,
             retryReasons,
             failureClass: anyError ? (normalizeTelemetryOutcomeClass(anyError.failureClass) || 'unknown') : null,
-            responseStatus: normalizeTelemetryStatus(anyError?.responseStatus ?? lastRun.responseStatus),
-            errorCode: normalizeTelemetryErrorCode(anyError?.errorCode ?? lastRun.errorCode),
-            generationIdDigest: normalizeTelemetryIdentifier(lastRun.generationIdDigest),
-            routerAttempt: normalizeTelemetryAttemptCount(lastRun.routerAttempt),
-            recoveryAction: normalizeTelemetryRecoveryAction(laneRuns.find((r) => r.recoveryAction)?.recoveryAction),
-            outputShape: normalizeFindingsOutputShape(lastRun.outputShape),
-            finishReason: normalizeModelFinishReason(lastRun.finishReason),
-            responseMode: normalizeResponseMode(lastRun.responseMode),
-            findingsSource: normalizeFindingsSource(lastRun.findingsSource),
-            contentPresent: laneRuns.some((r) => r.contentPresent === true),
-            reasoningPresent: laneRuns.some((r) => r.reasoningPresent === true),
-            contentSizeBucket: normalizeResponseSizeBucket(lastRun.contentSizeBucket),
-            reasoningSizeBucket: normalizeResponseSizeBucket(lastRun.reasoningSizeBucket),
-            outputContract: normalizeOutputContractTelemetry(lastRun.outputContract),
+            responseStatus: normalizeTelemetryStatus(diagnosticRun.responseStatus),
+            errorCode: normalizeTelemetryErrorCode(diagnosticRun.errorCode),
+            generationIdDigest: normalizeTelemetryIdentifier(diagnosticRun.generationIdDigest),
+            routerAttempt: normalizeTelemetryAttemptCount(diagnosticRun.routerAttempt),
+            recoveryAction: normalizeTelemetryRecoveryAction(anyError
+              ? anyError.recoveryAction : laneRuns.find((r) => r.recoveryAction)?.recoveryAction),
+            outputShape: normalizeFindingsOutputShape(diagnosticRun.outputShape),
+            finishReason: normalizeModelFinishReason(diagnosticRun.finishReason),
+            responseMode: normalizeResponseMode(diagnosticRun.responseMode),
+            findingsSource: normalizeFindingsSource(diagnosticRun.findingsSource),
+            contentPresent: anyError ? anyError.contentPresent === true : laneRuns.some((r) => r.contentPresent === true),
+            reasoningPresent: anyError ? anyError.reasoningPresent === true : laneRuns.some((r) => r.reasoningPresent === true),
+            contentSizeBucket: normalizeResponseSizeBucket(diagnosticRun.contentSizeBucket),
+            reasoningSizeBucket: normalizeResponseSizeBucket(diagnosticRun.reasoningSizeBucket),
+            outputContract: normalizeOutputContractTelemetry(diagnosticRun.outputContract),
             decision: anyError ? 'ERROR' : (allFindings.length === 0 ? 'APPROVE' : 'FINDINGS'),
             error: anyError ? anyError.error : undefined,
           };
