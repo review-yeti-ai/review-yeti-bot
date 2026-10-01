@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.101.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.6...v1.101.7) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** run ordinary quality checks on public drafts ([#1195](https://github.com/review-yeti-ai/review-yeti-bot/issues/1195)) ([2a4ddf3](https://github.com/review-yeti-ai/review-yeti-bot/commit/2a4ddf369d54de2f231dc7beafa09f18f7654408))
+* **panel:** refill composed task slots as turns are refunded ([#1205](https://github.com/review-yeti-ai/review-yeti-bot/issues/1205)) ([944ebaa](https://github.com/review-yeti-ai/review-yeti-bot/commit/944ebaa8a9f1d4f6e1551b5318a2e587e483cb21))
+
 ## [1.101.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.5...v1.101.6) (2026-10-01)
 
 
