@@ -210,7 +210,15 @@ jobs:
 
   build:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # PEG EXCEPTION -- memory-bound, not CPU-bound. Pegging this job to 2 vCPU
+    # OOM'd `next build` on PR #1247 (job 110616268666):
+    #   FATAL ERROR: Ineffective mark-compacts near heap limit
+    #   Allocation failed - JavaScript heap out of memory
+    # at ~2.0 GB RSS, 32s into `npm run build` -> `next build`. This is the one
+    # job in the workflow where the larger SKU buys RAM rather than cores, so it
+    # keeps 4 vCPU. Do not peg this again without first giving the build a
+    # bounded NODE_OPTIONS heap that fits the 2-vCPU box.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: read

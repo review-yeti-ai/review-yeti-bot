@@ -27,6 +27,7 @@ function receipt(result: GoProcessResult) {
 
 describe('embedded operator Go qualification workflow', () => {
   const vitest = workflow.jobs.vitest;
+  const build = workflow.jobs.build;
   const steps = vitest.steps as Array<Record<string, any>>;
   const setupGoIndex = steps.findIndex((step) =>
     step.uses === 'actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16');
@@ -108,6 +109,17 @@ describe('embedded operator Go qualification workflow', () => {
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
+  });
+
+  it('keeps the memory-bound build job on the larger SKU', () => {
+    // The one deliberate PEG EXCEPTION in this workflow. Pegging `build` to
+    // 2 vCPU OOM'd `next build` on PR #1247 (job 110616268666): "Ineffective
+    // mark-compacts near heap limit ... JavaScript heap out of memory" at
+    // ~2.0 GB RSS. The larger SKU buys RAM here, not cores. This assertion
+    // exists so a future blanket "make everything 2 vCPU" sweep has to
+    // consciously delete the exception rather than inherit it.
+    expect(build['runs-on']).toBe('blacksmith-4vcpu-ubuntu-2404');
+    expect(build['timeout-minutes']).toBe(15);
   });
 
   it('parses only a successful conventional Go version readback', () => {
