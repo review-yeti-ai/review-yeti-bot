@@ -17,13 +17,50 @@ async function findStaticSqlInjection(
   const textContent = result.content.find((content) => content.type === 'text');
   if (!textContent || textContent.type !== 'text') throw new Error('Preflight returned no text result');
   const payload = JSON.parse(textContent.text);
-  return payload.findings.find((finding: { finding_id: string }) =>
+  const finding = payload.findings.find((finding: { finding_id: string }) =>
     finding.finding_id.startsWith('pref-sqli-')
   );
+  if (finding) expect(payload.eligible_to_ship).toBe(false);
+  return finding;
 }
 
 describe('preflight SQL injection static screening precision', () => {
   it.each([
+    {
+      label: 'keyword property division cannot swallow later unsafe SQL',
+      line: 'const ratio = obj.return / 2; const query = "SELECT * FROM users WHERE id = " + req.id; const next = 1 / 2;',
+      expected: true,
+    },
+    {
+      label: 'keyword method division cannot swallow later unsafe SQL',
+      line: 'const ratio = obj.if(enabled) / 2; const query = "SELECT * FROM users WHERE id = " + req.id; const next = 1 / 2;',
+      expected: true,
+    },
+    {
+      label: 'postfix increment division cannot swallow later unsafe SQL',
+      line: 'const ratio = count++ / 2; const query = "SELECT * FROM users WHERE id = " + req.id; const next = 1 / 2;',
+      expected: true,
+    },
+    {
+      label: 'a real return-statement regex does not hide later unsafe SQL',
+      line: String.raw`function pattern() { return /https?:\/\//; } const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
+      label: 'dynamic SQL executed in a template expression remains visible',
+      line: 'const rendered = `${db.query("SELECT * FROM users WHERE id = " + req.id)}`;',
+      expected: true,
+    },
+    {
+      label: 'a parameterized query inside a template expression keeps its values separate',
+      line: 'const rendered = `${db.query("SELECT * FROM users WHERE id = $1", [req.id + 1])}`;',
+      expected: false,
+    },
+    {
+      label: 'a nonexecuting SQL example in template text remains static',
+      line: 'const example = `db.query("SELECT * FROM users WHERE id = " + req.id)`;',
+      expected: false,
+    },
     {
       label: 'a bound deadline SQL expression with arithmetic inside its literal',
       line: 'const deadlineSql = "SELECT pg_sleep(GREATEST(0, EXTRACT(EPOCH FROM ($1::timestamptz - clock_timestamp()))) + 0.03) FROM review_runs WHERE run_id = $2";',
@@ -195,6 +232,30 @@ describe('preflight SQL injection static screening precision', () => {
       expected: false,
     },
     {
+      label: 'an escaped-slash regex before unsafe SQL does not become a line comment',
+      filePath: 'src/query.ts',
+      line: String.raw`const pattern = /https?:\/\//; const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
+      label: 'regex character classes and escaped delimiters preserve later SQL analysis',
+      filePath: 'src/query.ts',
+      line: String.raw`const pattern = /[a-z\/]+https?:\/\//; const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
+      label: 'ordinary division remains an operator rather than a regex literal',
+      filePath: 'src/query.ts',
+      line: 'const ratio = numerator / denominator; const query = "SELECT * FROM users WHERE id = " + req.id;',
+      expected: true,
+    },
+    {
+      label: 'a regex expression after a control condition does not hide later SQL',
+      filePath: 'src/query.ts',
+      line: String.raw`if (enabled) /https?:\/\//.test(url); const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
       label: 'Python f-string interpolation follows Python source syntax',
       filePath: 'src/query.py',
       line: `query = f"SELECT * FROM users WHERE id = {request.args['id']}"`,
@@ -237,5 +298,12 @@ describe('preflight SQL injection static screening precision', () => {
     } else {
       expect(finding).toBeUndefined();
     }
+  });
+
+  it('retains the dynamic tail in a long static SQL fragment chain', async () => {
+    const fragments = ['"SELECT * "', ...Array.from({ length: 96 }, () => '"column"'), '" FROM users WHERE id = "'];
+    const line = `const query = ${fragments.join(' + ')} + req.id;`;
+    const finding = await findStaticSqlInjection(line);
+    expect(finding).toMatchObject({ severity: 'P0', category: 'Security' });
   });
 });

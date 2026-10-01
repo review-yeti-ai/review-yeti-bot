@@ -361,7 +361,7 @@ export interface PreflightDiffReviewDependencies {
 }
 
 type PreflightSqlToken = {
-  kind: 'string' | 'identifier' | 'number' | 'punctuation';
+  kind: 'string' | 'regex' | 'identifier' | 'number' | 'punctuation';
   text: string;
   value?: string;
   interpolated?: boolean;
@@ -385,11 +385,128 @@ function preflightSourceLanguage(filePath: string): PreflightSourceLanguage {
   return 'other';
 }
 
-function tokenizePreflightSourceLine(line: string, language: PreflightSourceLanguage): PreflightSqlToken[] {
-  const tokens: PreflightSqlToken[] = [];
+const REGEX_PREFIX_KEYWORDS = new Set([
+  'await', 'case', 'delete', 'do', 'else', 'in', 'instanceof', 'new', 'of',
+  'return', 'throw', 'typeof', 'void', 'yield',
+]);
+const REGEX_CONTROL_CONDITION_KEYWORDS = new Set(['for', 'if', 'while', 'with']);
+
+function followsJavascriptControlCondition(tokens: PreflightSqlToken[]): boolean {
+  if (tokens[tokens.length - 1]?.text !== ')') return false;
+  let nesting = 0;
+  for (let index = tokens.length - 1; index >= 0; index--) {
+    if (tokens[index].text === ')') nesting++;
+    if (tokens[index].text === '(' && --nesting === 0) {
+      const conditionOwner = tokens[index - 1];
+      return conditionOwner?.kind === 'identifier' &&
+        tokens[index - 2]?.text !== '.' &&
+        REGEX_CONTROL_CONDITION_KEYWORDS.has(conditionOwner.text);
+    }
+  }
+  return false;
+}
+
+function canStartJavascriptRegex(tokens: PreflightSqlToken[]): boolean {
+  const previous = tokens[tokens.length - 1];
+  if (!previous) return true;
+  if (
+    previous.kind === 'identifier' &&
+    tokens[tokens.length - 2]?.text !== '.' &&
+    REGEX_PREFIX_KEYWORDS.has(previous.text)
+  ) return true;
+  if (previous.text === ')') return followsJavascriptControlCondition(tokens);
+  if (
+    previous.kind === 'punctuation' &&
+    ['(', '[', '{', ',', ':', ';', '=', '!', '?', '&', '|', '^', '~', '*', '%', '+', '-', '<', '>'].includes(previous.text)
+  ) return true;
+  return previous.text === '>' && tokens[tokens.length - 2]?.text === '=';
+}
+
+function javascriptRegexLiteralEnd(line: string, start: number): number | undefined {
+  let inCharacterClass = false;
+  for (let index = start + 1; index < line.length; index++) {
+    const character = line[index];
+    if (character === '\\') {
+      index++;
+      continue;
+    }
+    if (inCharacterClass) {
+      if (character === ']') inCharacterClass = false;
+      continue;
+    }
+    if (character === '[') {
+      inCharacterClass = true;
+      continue;
+    }
+    if (character === '/') {
+      let end = index + 1;
+      while (/[A-Za-z]/.test(line[end] || '')) end++;
+      return end;
+    }
+  }
+  return undefined;
+}
+
+type PreflightLexicalFrame = {
+  kind: 'code';
+  tokens: PreflightSqlToken[];
+  templateExpression: boolean;
+  braces: number;
+} | {
+  kind: 'template';
+  token: PreflightSqlToken;
+  literalStart: number | undefined;
+  literalParts: string[];
+};
+
+function tokenizePreflightSourceLine(line: string, language: PreflightSourceLanguage): PreflightSqlToken[][] {
+  const tokenScopes: PreflightSqlToken[][] = [[]];
+  const frames: PreflightLexicalFrame[] = [
+    { kind: 'code', tokens: tokenScopes[0], templateExpression: false, braces: 0 },
+  ];
   let index = 0;
 
+  const finishTemplate = (frame: Extract<PreflightLexicalFrame, { kind: 'template' }>) => {
+    if (frame.literalStart !== undefined) frame.literalParts.push(line.slice(frame.literalStart, index));
+    // Preserve only literal segments here. Executable substitutions have their
+    // own token scope, so nested templates do not copy their ancestors' bodies.
+    frame.token.value = frame.literalParts.join(' ');
+    frame.token.text = `\`${frame.token.value}\``;
+  };
+
+  // An explicit stack handles nested templates/objects without recursion or a
+  // silent depth/byte cutoff. The existing diff byte bound also bounds frames.
   while (index < line.length) {
+    const frame = frames[frames.length - 1];
+    if (frame.kind === 'template') {
+      if (line[index] === '\\') {
+        index += 2;
+      } else if (line[index] === '`') {
+        finishTemplate(frame);
+        frames.pop();
+        index++;
+      } else if (line.startsWith('${', index)) {
+        frame.literalParts.push(line.slice(frame.literalStart!, index));
+        frame.literalStart = undefined;
+        frame.token.interpolated = true;
+        const expressionTokens: PreflightSqlToken[] = [];
+        tokenScopes.push(expressionTokens);
+        frames.push({ kind: 'code', tokens: expressionTokens, templateExpression: true, braces: 0 });
+        index += 2;
+      } else {
+        index++;
+      }
+      continue;
+    }
+
+    const tokens = frame.tokens;
+    if (frame.templateExpression && line[index] === '}' && frame.braces === 0) {
+      frames.pop();
+      const template = frames[frames.length - 1];
+      if (template.kind === 'template') template.literalStart = index + 1;
+      index++;
+      continue;
+    }
     if (/\s/.test(line[index])) {
       index++;
       continue;
@@ -403,12 +520,27 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
       index = commentEnd + 2;
       continue;
     }
+    if (language === 'javascript' && line[index] === '/' && canStartJavascriptRegex(tokens)) {
+      const regexEnd = javascriptRegexLiteralEnd(line, index);
+      if (regexEnd !== undefined) {
+        tokens.push({ kind: 'regex', text: line.slice(index, regexEnd) });
+        index = regexEnd;
+        continue;
+      }
+    }
 
     const pythonStringPrefix = language === 'python'
       ? /^(?:f|fr|rf)(?=["'])/i.exec(line.slice(index, index + 3))?.[0]
       : undefined;
     if (pythonStringPrefix) index += pythonStringPrefix.length;
     const quote = line[index];
+    if (language === 'javascript' && quote === '`') {
+      const token: PreflightSqlToken = { kind: 'string', text: '`', value: '', interpolated: false };
+      tokens.push(token);
+      frames.push({ kind: 'template', token, literalStart: index + 1, literalParts: [] });
+      index++;
+      continue;
+    }
     if (quote === '"' || quote === "'" || quote === '`') {
       const delimiter = quote !== '`' && line.startsWith(quote.repeat(3), index) ? quote.repeat(3) : quote;
       const contentStart = index + delimiter.length;
@@ -420,7 +552,6 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
           index += 2;
           continue;
         }
-        if (language === 'javascript' && quote === '`' && char === '$' && line[index + 1] === '{') interpolated = true;
         if (pythonStringPrefix && char === '{' && line[index + 1] === '{') {
           index += 2;
           continue;
@@ -465,11 +596,25 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
       continue;
     }
 
-    tokens.push({ kind: 'punctuation', text: line[index] });
-    index++;
+    if (frame.templateExpression) {
+      if (line[index] === '{') frame.braces++;
+      if (line[index] === '}') frame.braces--;
+    }
+    // Keep postfix increment/decrement indivisible: their final +/- is not a
+    // binary operator that admits a regex operand after a completed value.
+    const punctuation = language === 'javascript' && (line.startsWith('++', index) || line.startsWith('--', index))
+      ? line.slice(index, index + 2)
+      : line[index];
+    tokens.push({ kind: 'punctuation', text: punctuation });
+    index += punctuation.length;
   }
 
-  return tokens;
+  // A diff line may end inside a multiline template. Keep all code tokens
+  // already observed instead of dropping an unfinished substitution's calls.
+  for (const frame of frames) {
+    if (frame.kind === 'template') finishTemplate(frame);
+  }
+  return tokenScopes;
 }
 
 function hasSqlSelectFromShape(tokens: PreflightSqlToken[], language: PreflightSourceLanguage): boolean {
@@ -540,45 +685,33 @@ function tokenNestingDepths(tokens: PreflightSqlToken[]): number[] {
   return depths;
 }
 
-function expressionContainingToken(
+type PreflightExpressionRange = { start: number; end: number };
+
+function indexPreflightExpressionRanges(
   tokens: PreflightSqlToken[],
   depths: number[],
-  tokenIndex: number,
-): PreflightSqlToken[] {
-  const depth = depths[tokenIndex];
-  let start = 0;
-  let end = tokens.length;
-
-  for (let index = tokenIndex - 1; index >= 0; index--) {
-    const token = tokens[index];
-    if (token.text === ';' || (token.text === ',' && depths[index] === depth)) {
-      start = index + 1;
-      break;
-    }
-    if (['(', '[', '{'].includes(token.text) && depths[index] + 1 === depth) {
-      start = index + 1;
-      break;
-    }
+): PreflightExpressionRange[] {
+  const ranges = Array.from({ length: tokens.length }, () => ({ start: 0, end: tokens.length }));
+  const startAtDepth: number[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    const depth = depths[index];
+    ranges[index].start = startAtDepth[depth] ?? 0;
+    if (['(', '[', '{'].includes(tokens[index].text)) startAtDepth[depth + 1] = index + 1;
+    if (tokens[index].text === ',') startAtDepth[depth] = index + 1;
   }
 
-  for (let index = tokenIndex + 1; index < tokens.length; index++) {
-    const token = tokens[index];
-    if (
-      token.text === ';' ||
-      (token.text === ',' && depths[index] === depth) ||
-      ([')', ']', '}'].includes(token.text) && depths[index] === depth)
-    ) {
-      end = index;
-      break;
+  const endAtDepth: number[] = [];
+  for (let index = tokens.length - 1; index >= 0; index--) {
+    const depth = depths[index];
+    ranges[index].end = endAtDepth[depth] ?? tokens.length;
+    if (tokens[index].text === ',' || [')', ']', '}'].includes(tokens[index].text)) {
+      endAtDepth[depth] = index;
     }
   }
-
-  return tokens.slice(start, end);
+  return ranges;
 }
 
-function hasUnsafeSqlConstruction(line: string, filePath: string): boolean {
-  const language = preflightSourceLanguage(filePath);
-  const tokens = tokenizePreflightSourceLine(line, language);
+function hasUnsafeSqlConstruction(tokens: PreflightSqlToken[], language: PreflightSourceLanguage): boolean {
   let statement: PreflightSqlToken[] = [];
 
   const statementHasUnsafeConstruction = (parts: PreflightSqlToken[]): boolean => {
@@ -590,10 +723,20 @@ function hasUnsafeSqlConstruction(line: string, filePath: string): boolean {
 
     const matchingIndexes = matchingParenthesisIndexes(parts);
     const nestingDepths = tokenNestingDepths(parts);
+    const expressionRanges = indexPreflightExpressionRanges(parts, nestingDepths);
+    const expressionShapeCache = new Map<string, boolean>();
+    const expressionHasSqlShape = (tokenIndex: number): boolean => {
+      const range = expressionRanges[tokenIndex];
+      const key = `${range.start}:${range.end}`;
+      if (expressionShapeCache.has(key)) return expressionShapeCache.get(key)!;
+      const matches = hasSqlSelectFromShape(parts.slice(range.start, range.end), language);
+      expressionShapeCache.set(key, matches);
+      return matches;
+    };
+
     for (let index = 0; index < parts.length; index++) {
       if (parts[index].kind !== 'string' || !parts[index].interpolated) continue;
-      const expression = expressionContainingToken(parts, nestingDepths, index);
-      if (hasSqlSelectFromShape(expression, language)) return true;
+      if (expressionHasSqlShape(index)) return true;
     }
 
     const dynamicPrefix = [0];
@@ -604,7 +747,7 @@ function hasUnsafeSqlConstruction(line: string, filePath: string): boolean {
     for (let index = 0; index < parts.length; index++) {
       if (parts[index].text !== '+') continue;
       if (language === 'sql' && !hasDynamicSqlExecution) continue;
-      if (!hasSqlSelectFromShape(expressionContainingToken(parts, nestingDepths, index), language)) continue;
+      if (!expressionHasSqlShape(index)) continue;
       if (
         hasDynamicSqlOperand(parts, matchingIndexes, dynamicPrefix, index - 1, -1) ||
         hasDynamicSqlOperand(parts, matchingIndexes, dynamicPrefix, index + 1, 1)
@@ -620,13 +763,13 @@ function hasUnsafeSqlConstruction(line: string, filePath: string): boolean {
       if (close > index + 2) {
         const argumentsTokens = parts.slice(index + 2, close);
         const methodReceiverCall = parts[index - 1]?.text === '.';
-        // For a method call, inspect only its containing expression: this keeps a
-        // separate bound SQL argument outside the query-string construction scope.
-        const constructionTokens = methodReceiverCall
-          ? expressionContainingToken(parts, nestingDepths, index)
-          : argumentsTokens;
+        // A method receiver is part of the containing expression; function-style
+        // concat must prove SQL shape from its own arguments.
+        const hasQueryShape = methodReceiverCall
+          ? expressionHasSqlShape(index)
+          : hasSqlSelectFromShape(argumentsTokens, language);
         if (
-          hasSqlSelectFromShape(constructionTokens, language) &&
+          hasQueryShape &&
           dynamicPrefix[close] - dynamicPrefix[index + 2] > 0
         ) return true;
       }
@@ -645,6 +788,93 @@ function hasUnsafeSqlConstruction(line: string, filePath: string): boolean {
   }
 
   return statementHasUnsafeConstruction(statement);
+}
+
+function isUnmodifiedTopLevelRegexBinding(
+  tokens: PreflightSqlToken[],
+  depths: number[],
+  receiverIndex: number,
+  callNameIndex: number,
+): boolean {
+  const receiver = tokens[receiverIndex];
+  if (
+    receiver?.kind !== 'identifier' ||
+    depths[receiverIndex] !== 0 ||
+    depths[callNameIndex] !== 0 ||
+    ['.', ']', ')'].includes(tokens[receiverIndex - 1]?.text || '')
+  ) return false;
+
+  for (let declarationIndex = 0; declarationIndex + 4 < receiverIndex; declarationIndex++) {
+    const keyword = tokens[declarationIndex];
+    if (
+      depths[declarationIndex] !== 0 ||
+      keyword.kind !== 'identifier' ||
+      !['const', 'let', 'var'].includes(keyword.text) ||
+      tokens[declarationIndex + 1]?.text !== receiver.text ||
+      tokens[declarationIndex + 2]?.text !== '=' ||
+      tokens[declarationIndex + 3]?.kind !== 'regex' ||
+      tokens[declarationIndex + 4]?.text !== ';'
+    ) continue;
+
+    // Only exempt the first bare use after a simple regex initializer. An
+    // intervening substitution executes in a separate token scope and can
+    // mutate this binding, so it cannot establish an unmodified receiver.
+    const interveningUse = tokens.some((token, index) =>
+      index > declarationIndex + 3 &&
+      index < receiverIndex &&
+      ((token.kind === 'identifier' && token.text === receiver.text) ||
+        (token.kind === 'string' && token.interpolated === true))
+    );
+    return !interveningUse;
+  }
+  return false;
+}
+
+function isRegexExecMethod(
+  tokens: PreflightSqlToken[],
+  matchingIndexes: number[],
+  depths: number[],
+  callNameIndex: number,
+): boolean {
+  if (tokens[callNameIndex - 1]?.text !== '.') return false;
+  let receiverIndex = callNameIndex - 2;
+  if (tokens[receiverIndex]?.text === ')') {
+    const openIndex = matchingIndexes[receiverIndex];
+    if (openIndex >= 0 && openIndex + 2 === receiverIndex) receiverIndex = openIndex + 1;
+  }
+  if (tokens[receiverIndex]?.kind === 'regex') return true;
+  return isUnmodifiedTopLevelRegexBinding(tokens, depths, receiverIndex, callNameIndex);
+}
+
+function hasUnsafeCommandConstruction(tokens: PreflightSqlToken[]): boolean {
+  const matchingIndexes = matchingParenthesisIndexes(tokens);
+  const depths = tokenNestingDepths(tokens);
+  const commandCalls = new Set(['exec', 'spawn', 'execsync']);
+
+  for (let index = 0; index + 1 < tokens.length; index++) {
+    if (tokens[index].kind !== 'identifier' || !commandCalls.has(tokens[index].text.toLowerCase())) continue;
+    if (tokens[index + 1].text !== '(') continue;
+    if (
+      tokens[index].text.toLowerCase() === 'exec' &&
+      isRegexExecMethod(tokens, matchingIndexes, depths, index)
+    ) continue;
+
+    const close = matchingIndexes[index + 1];
+    if (close < index + 2) continue;
+    for (let argumentIndex = index + 2; argumentIndex < close; argumentIndex++) {
+      const argument = tokens[argumentIndex];
+      if (
+        argument.kind === 'string' &&
+        (argument.interpolated === true || /\$\{[^}]+\}/.test(argument.value || ''))
+      ) return true;
+      if (argument.kind === 'identifier' && /(?:req|query|body|userInput)/i.test(argument.text)) return true;
+      if (argument.text === '+' && (
+        tokens[argumentIndex - 1]?.kind === 'identifier' ||
+        tokens[argumentIndex + 1]?.kind === 'identifier'
+      )) return true;
+    }
+  }
+  return false;
 }
 
 export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependencies = {}) {
@@ -718,10 +948,11 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
 
       // Static security rules (Secrets, Tokens, SQLi, Shell injection)
       const SECRET_PATTERN = /(?:sk-[a-zA-Z0-9_-]{20,}|ghp_[a-zA-Z0-9]{36}|AIza[0-9A-Za-z-_]{35}|bearer\s+[a-zA-Z0-9._-]{24,})/i;
-      const CMDI_PATTERN = /(?:exec|spawn|execSync)\s*\([^)]*(?:req|query|body|userInput|[a-zA-Z0-9_]+\s*\+|\+\s*[a-zA-Z0-9_]+|\$\{[^}]+\})/i;
 
       for (const file of parsedFiles) {
         for (const added of file.addedLines) {
+          const sourceLanguage = preflightSourceLanguage(file.path);
+          const sourceTokenScopes = tokenizePreflightSourceLine(added.text, sourceLanguage);
           if (SECRET_PATTERN.test(added.text)) {
             findings.push({
               finding_id: `pref-sec-${file.path}-${added.line}`,
@@ -735,7 +966,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
             });
           }
 
-          if (hasUnsafeSqlConstruction(added.text, file.path)) {
+          if (sourceTokenScopes.some((tokens) => hasUnsafeSqlConstruction(tokens, sourceLanguage))) {
             findings.push({
               finding_id: `pref-sqli-${file.path}-${added.line}`,
               severity: 'P0',
@@ -748,7 +979,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
             });
           }
 
-          if (CMDI_PATTERN.test(added.text)) {
+          if (sourceTokenScopes.some(hasUnsafeCommandConstruction)) {
             findings.push({
               finding_id: `pref-cmdi-${file.path}-${added.line}`,
               severity: 'P0',
