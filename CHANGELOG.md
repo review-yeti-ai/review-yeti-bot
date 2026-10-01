@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.111.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.110.0...v1.111.0) (2026-10-01)
+
+
+### Features
+
+* classify verified deletion evidence with advisory JEV questions (REL-1081) ([#1245](https://github.com/review-yeti-ai/review-yeti-bot/issues/1245)) ([c39ef3d](https://github.com/review-yeti-ai/review-yeti-bot/commit/c39ef3d54c30b37f8ec52cb95836b176b4df4772))
+
 ## [1.110.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.109.0...v1.110.0) (2026-10-01)
 
 
