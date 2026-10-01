@@ -482,6 +482,37 @@ describe('executeComposedReview', () => {
   });
 
   // --- Mutation target 3: "make a BLOCKED task count as a pass" must go red -------------------
+  it('can investigate related reviewed-head files in one tool turn and still requires a nonce-bound result', async () => {
+    let workCalls = 0;
+    const repoFileProvider = {
+      findFiles: vi.fn(), readFile: vi.fn(async (path: string) => `current source for ${path}`),
+    };
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      if (workCalls === 1) {
+        return fakeResponse(JSON.stringify({ tool: 'read_files', args: { files: [
+          { path: 'src/auth/guard.ts' }, { path: 'src/config.ts' },
+        ] } }));
+      }
+      const transcript = JSON.stringify(payload.messages);
+      expect(transcript).toContain('current source for src/auth/guard.ts');
+      expect(transcript).toContain('current source for src/config.ts');
+      expect(transcript).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+      // Tool results are evidence only; this provider result is the sole task completion.
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete }, repoFileProvider });
+    expect(complete).toHaveBeenCalledTimes(3); // one plan, one batch, one required final result
+    expect(repoFileProvider.readFile).toHaveBeenCalledTimes(2);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 1 }]);
+    expect(result.personas[0].toolCalls).toMatchObject([{ tool: 'read_files', scope: 'full-repository', exhaustive: true }]);
+  });
+
   it('records a BLOCKED task as a failed lane, never a pass', async () => {
     const complete = vi.fn(async (payload: any) => {
       const text = lastText(payload.messages);
