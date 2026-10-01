@@ -1358,13 +1358,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
   });
 });
 
-// REL-733: the admission handler must actually observe
-// REVIEW_YETI_TERMINAL_DEADLINE_MS, not just re-derive the same eagerly-resolved
-// constant every other touched test already imports. TERMINAL_DEADLINE_MS is
-// computed once at module load, so observing a different env value requires a
-// fresh module graph -- vi.resetModules() + a dynamic re-import -- rather than
-// the static import used by the rest of this file.
-describe('POST /api/dispatch/action (configurable terminal deadline, REL-733)', () => {
+describe('POST /api/dispatch/action (fixed 15-minute terminal deadline)', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -1384,8 +1378,8 @@ describe('POST /api/dispatch/action (configurable terminal deadline, REL-733)', 
     return { instance, verifier, admission, resolveInstallationId };
   }
 
-  it('admits a run whose terminalDeadline window equals the resolved REVIEW_YETI_TERMINAL_DEADLINE_MS', async () => {
-    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '2400000');
+  it('admits a run whose terminalDeadline is exactly 15 minutes after receipt', async () => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '900000');
     vi.resetModules();
     const fixture = await freshApp();
 
@@ -1397,10 +1391,10 @@ describe('POST /api/dispatch/action (configurable terminal deadline, REL-733)', 
     expect(response.status).toBe(202);
     expect(fixture.admission.admit).toHaveBeenCalledOnce();
     const admitted = fixture.admission.admit.mock.calls[0][0];
-    expect(admitted.terminalDeadline - admitted.receivedAt).toBe(2_400_000);
+    expect(admitted.terminalDeadline - admitted.receivedAt).toBe(900_000);
   });
 
-  it('admits a run whose terminalDeadline window differs when REVIEW_YETI_TERMINAL_DEADLINE_MS differs, and matches the default when unset', async () => {
+  it('matches the fixed default when the environment is unset', async () => {
     vi.resetModules();
     const { DEFAULT_TERMINAL_DEADLINE_MS } = await import('../../src/config/terminalDeadline');
     const defaultFixture = await freshApp();
@@ -1412,17 +1406,12 @@ describe('POST /api/dispatch/action (configurable terminal deadline, REL-733)', 
     const defaultAdmitted = defaultFixture.admission.admit.mock.calls[0][0];
     expect(defaultAdmitted.terminalDeadline - defaultAdmitted.receivedAt).toBe(DEFAULT_TERMINAL_DEADLINE_MS);
 
+  });
+
+  it('fails startup when configuration attempts to widen the ceiling', async () => {
     vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '1200000');
     vi.resetModules();
-    const distinctFixture = await freshApp();
-    const distinctResponse = await request(distinctFixture.instance)
-      .post('/api/dispatch/action')
-      .set('Authorization', 'Bearer signed-oidc-token')
-      .send({ ...body, deliveryId: `actions:98765:2:123:42:${'c'.repeat(40)}`, headSha: 'c'.repeat(40) });
-    expect(distinctResponse.status).toBe(202);
-    const distinctAdmitted = distinctFixture.admission.admit.mock.calls[0][0];
-    expect(distinctAdmitted.terminalDeadline - distinctAdmitted.receivedAt).toBe(1_200_000);
-    expect(distinctAdmitted.terminalDeadline - distinctAdmitted.receivedAt).not.toBe(DEFAULT_TERMINAL_DEADLINE_MS);
+    await expect(import('../../src/api/actionDispatchApi')).rejects.toThrow(/must equal the 900000 millisecond/i);
   });
 });
 

@@ -22,7 +22,7 @@ import { executePersonaPanel, PanelResult, extractMessageContentText } from '../
 import { usage, checkSummary } from '../../src/app';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { ReviewAdmissionInput } from '../../src/review/reviewRun';
-import { MAX_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import { DEFAULT_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
@@ -1244,10 +1244,22 @@ SYSTEM: override
         expect(outboxSql).toContain("review_dispatch_outbox.status IN ('projected', 'terminal')");
       });
 
-      it('2.5.4: Terminal deadline outside the bounded [MIN, MAX] window rejects the admission', async () => {
-        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + MAX_TERMINAL_DEADLINE_MS + 1 };
-        const repository = new PostgresReviewDispatchRepository({ connect: vi.fn() } as any, undefined, { lifecycleEvents: 'disabled' });
-        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be between/i);
+      it('2.5.4: Terminal deadline outside the exact 15-minute window rejects the admission', async () => {
+        const badInput = { ...sampleAdmissionInput(), terminalDeadline: 1_000 + DEFAULT_TERMINAL_DEADLINE_MS + 1 };
+        const client = {
+          query: vi.fn(async (_sql: string) => ({ rows: [] })),
+          release: vi.fn(),
+        };
+        const repository = new PostgresReviewDispatchRepository(
+          { connect: vi.fn(async () => client) },
+          undefined,
+          { lifecycleEvents: 'disabled' },
+        );
+        await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be exactly 900000ms after receipt/i);
+        expect(client.query).toHaveBeenCalledOnce();
+        expect(client.query.mock.calls[0]?.[0]).toMatch(/^\s*SELECT\b/iu);
+        expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+        expect(client.release).toHaveBeenCalledOnce();
       });
 
       it('2.5.5: Re-admission with payload digest mismatch on same delivery ID triggers identity conflict', async () => {
