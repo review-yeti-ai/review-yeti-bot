@@ -344,7 +344,7 @@ describe('OpenAI gateway is the admitted transport', () => {
 
     expect(config.reviewers.fallback).toBe('none');
     expect(config.default_max_turns).toBe(15);
-    expect(config.reviewers.overall_timeout_s).toBe(3000);
+    expect(config.reviewers.overall_timeout_s).toBe(1200);
     expect(config.reviewers.providers).toEqual([expect.objectContaining({
       id: 'bifrost',
       enabled: true,
@@ -543,6 +543,39 @@ describe('runPublishingReviewWorker', () => {
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('failure');
     expect(receipt.blockingFindingCount).toBe(1);
+  });
+
+  it('publishes every collected finding during graceful composed closeout and reports INCOMPLETE', async () => {
+    const composedReviewRunner = vi.fn(async () => ({
+      taskPlan: [
+        { id: 'security-auth', dimension: 'security', paths: ['src/a.ts'], question: 'Safe?', rationale: 'Risk.' },
+        { id: 'testing', dimension: 'testing', paths: ['src/a.ts'], question: 'Covered?', rationale: 'Tests.' },
+      ],
+      applicablePersonaIds: ['security-auth', 'testing'],
+      personas: [{ id: 'security-auth', required: true, providerId: 'bifrost', model: 'test',
+        decision: 'FINDINGS', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+          title: 'Preserved defect', body: 'This validated finding must survive the evidence cutoff.' }],
+        usage: null, costUSD: null, durationMs: 1 }],
+      optionalFailures: [],
+      unreportedLanes: [{ id: 'testing', error: 'evidence cutoff', failureClass: 'timeout' }],
+      gracefulExit: { reason: 'evidence_deadline', completedTaskIds: ['security-auth'], pendingTaskIds: ['testing'], checkpointRevision: 2 },
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false },
+      moderator: { providerId: 'bifrost', model: 'none', decision: 'RECONCILED', findings: [], usage: null, costUSD: null, durationMs: 0 },
+      arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'canonical', usage: null, costUSD: null, durationMs: 0 },
+    }));
+    const d = deps({ composedReviewRunner });
+
+    const receipt = await runPublishingReviewWorker(env({
+      REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }),
+    }), d as never);
+
+    expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1,
+      blockingFindingCount: 1, failureClass: 'timeout' });
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+      conclusion: 'failure', title: 'Review Yeti: INCOMPLETE (partial evidence published)',
+      summary: expect.stringContaining('final closeout preserved and published 1 validated finding(s)'),
+      text: expect.stringContaining('Preserved defect'),
+    }));
   });
 
   it('fails raw publication when an applicable optional lane exhausts its budget', async () => {
@@ -2617,7 +2650,7 @@ describe('REL-1211 absolute publishing budget', () => {
   const start = Date.parse('2026-09-30T16:00:50Z');
   const clean = () => ({ applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [] }], optionalFailures: [],
     quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true }, arbiter: { verdict: 'SHIP' } });
-  const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 121_000 + remaining).toISOString() });
+  const deadlineEnv = (remaining: number) => ({ REVIEW_TERMINAL_DEADLINE: new Date(start + 300_000 + remaining).toISOString() });
   const jevEnv = { REVIEW_YETI_JEV_SHADOW: 'true', TYPESAFE_BASE_URL: 'https://api.typesafe.example/v1/systemone',
     TYPESAFE_MODEL: 'jev-latest', TYPESAFE_API_KEY: 'ts-test-key', TYPESAFE_MODEL_PIN: 'jev-1.13.0' };
   beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(start); });

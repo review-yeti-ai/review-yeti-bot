@@ -33,8 +33,8 @@ jobs:
     if: ${{ github.event_name == 'repository_dispatch' || (github.event.pull_request.state == 'open' && !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     # Caller-side hard backstop: no direct self-review or repository-dispatch path may run
-    # longer than the central Review Yeti contract's fifteen-minute ceiling.
-    timeout-minutes: 15
+    # longer than the central 20-minute evidence + 5-minute closeout contract.
+    timeout-minutes: 25
     steps:
       - name: Checkout Review Runner (this repository)
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -149,8 +149,8 @@ jobs:
           transport-destination: ${{ steps.transport.outputs.destination }}
           lane-timeout-ms: ${{ vars.REVIEW_LANE_TIMEOUT_MS }}
           # REL-1113: lane re-attempts after an infrastructure failure must finish inside this job's
-          # 15-minute `timeout-minutes`, leaving room for setup and publication: 13 minutes.
-          action-budget-ms: '780000'
+          # Stop evidence work at minute 20; the final five minutes belong to synthesis/publication.
+          action-budget-ms: '1200000'
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.
           github-token: ${{ secrets.REVIEW_BOT_TOKEN || secrets.GITHUB_TOKEN }}

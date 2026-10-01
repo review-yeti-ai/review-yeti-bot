@@ -8,6 +8,7 @@ import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository
 import { sha256 } from '../../src/review/reviewCore';
 import {
   LEGACY_MAX_TERMINAL_DEADLINE_MS,
+  LEGACY_MIN_TERMINAL_DEADLINE_MS,
   DEFAULT_TERMINAL_DEADLINE_MS,
   TERMINAL_DEADLINE_MS,
 } from '../../src/config/terminalDeadline';
@@ -575,7 +576,7 @@ describe('PostgresReviewDispatchRepository', () => {
   it('rejects a terminal deadline outside both new and persisted bounds before opening a transaction', async () => {
     const connect = vi.fn();
     const repository = new PostgresReviewDispatchRepository({ connect } as any);
-    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + DEFAULT_TERMINAL_DEADLINE_MS - 1 }))
+    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + LEGACY_MIN_TERMINAL_DEADLINE_MS - 1 }))
       .rejects.toThrow(/terminal deadline must be exactly/i);
     await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + LEGACY_MAX_TERMINAL_DEADLINE_MS + 1 }))
       .rejects.toThrow(/terminal deadline must be exactly/i);

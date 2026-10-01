@@ -1,4 +1,5 @@
 import { MAX_COMPLETION_BYTES } from '../review/workerReviewCompletion';
+import { MAX_REVIEW_CHECKPOINT_BYTES } from '../review/reviewExecutionCheckpoint';
 
 /** Additive schema for the service-owned check publication outbox. No consumer
  * protection or CI admission is activated by installing these tables. */
@@ -70,4 +71,26 @@ export const REVIEW_GATE_SCHEMA_SQL = `
     CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPLETION_BYTES});
   CREATE INDEX IF NOT EXISTS review_worker_completions_created_at_idx
     ON review_worker_completions (created_at);
+  -- Mutable, monotonic exact-head progress for one logical review run. Unlike
+  -- terminal completions this row may advance while a worker is alive; a
+  -- strictly increasing revision prevents a slower concurrent task callback
+  -- from replacing a newer snapshot. It survives worker Jobs and attempts so
+  -- an exact-head retry can resume completed review tasks.
+  CREATE TABLE IF NOT EXISTS review_execution_checkpoints (
+    run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
+    execution_attempt INTEGER NOT NULL CHECK (execution_attempt > 0),
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    head_sha VARCHAR(40) NOT NULL,
+    config_digest VARCHAR(64) NOT NULL,
+    payload JSONB NOT NULL,
+    byte_length INTEGER NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  ALTER TABLE review_execution_checkpoints
+    DROP CONSTRAINT IF EXISTS review_execution_checkpoints_byte_length_check;
+  ALTER TABLE review_execution_checkpoints
+    ADD CONSTRAINT review_execution_checkpoints_byte_length_check
+    CHECK (byte_length > 0 AND byte_length <= ${MAX_REVIEW_CHECKPOINT_BYTES});
+  CREATE INDEX IF NOT EXISTS review_execution_checkpoints_updated_at_idx
+    ON review_execution_checkpoints (updated_at);
 `;
