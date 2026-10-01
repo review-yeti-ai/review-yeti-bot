@@ -617,6 +617,49 @@ describe('guarded gateway input budgeting', () => {
       .toThrow(/complete, bounded file and hunk coverage/u);
   });
 
+  it('rejects a manager that shifts a zero-new-count range past its preceding-line anchor', () => {
+    const path = 'src/zero-new-anchor.ts';
+    const fileHeader = 'diff --git a/' + path + ' b/' + path + '\n'
+      + 'index 0000000..1111111 100644\n'
+      + '--- a/' + path + '\n'
+      + '+++ b/' + path + '\n';
+    const body = ['-old-line', '+new-line'];
+    const patch = fileHeader + '@@ -5 +5 @@\n' + body.join('\n') + '\n';
+    const expectedHunks = ['@@ -5,1 +4,0 @@\n-old-line', '@@ -5,0 +5,1 @@\n+new-line'];
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expectedHunks.map((hunk) => hunk.length + 1));
+    const request = {
+      files: [{ path, patch, status: 'modified' }],
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    };
+    const partitionManager = {
+      createPartitionPlan: (...args: any[]) => {
+        const plan = structuredClone(shaPartitionManager.createPartitionPlan(...args));
+        let changed = false;
+        for (const partition of plan.partitions) {
+          for (const planned of partition.files) {
+            if (planned.path !== path) continue;
+            const lines = planned.patch.split('\n');
+            const headerIndex = lines.findIndex((line: string) => /^@@ -5,1 \+\d+,0 @@/u.test(line));
+            if (headerIndex < 0) continue;
+            lines[headerIndex] = lines[headerIndex].replace(/^@@ -5,1 \+\d+,0/u, '@@ -5,1 +5,0');
+            planned.patch = lines.join('\n');
+            changed = true;
+          }
+          partition.totalChars = partition.files.reduce((sum: number, planned: any) => sum + planned.patch.length, 0);
+        }
+        if (!changed) throw new Error('zero-new-count fixture hunk was not found');
+        return plan;
+      },
+    };
+
+    expect(patch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => pipeline.createReviewPartitionPlan({ ...request, partitionManager }))
+      .toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
   it('rejects a marker-only split hunk instead of detaching the no-newline marker', () => {
     const path = 'src/no-newline.ts';
     const fileHeader = 'diff --git a/' + path + ' b/' + path + '\n'
