@@ -10,6 +10,7 @@ import {
   OPERATOR_MODULE as operatorModule,
   parseGoVersion,
   readOperatorGoTestNameAllowlist,
+  readOperatorGoAssertionManifest,
   type GoProcessResult,
 } from '../support/operatorGoFailureReceipt';
 
@@ -738,8 +739,11 @@ describe('Challenger M2-2 Empirical Stress Suite', () => {
       const versionResult = spawnSync('go', ['version'], { cwd: operatorDir, encoding: 'utf8', timeout: 5000 });
       const goVersion = parseGoVersion(versionResult);
       const sourceTestNames = readOperatorGoTestNameAllowlist(operatorDir);
+      const sourceAssertionManifest = readOperatorGoAssertionManifest(operatorDir);
       const result = spawnSync('go', ['test', './...'], { cwd: operatorDir, encoding: 'utf8', timeout: 180000 });
-      const receipt = goFailureReceipt(result, { goVersion, sourceTestNames });
+      const receipt = goFailureReceipt(result, {
+        goVersion, sourceTestNames, operatorDirectory: operatorDir, sourceAssertionManifest,
+      });
       if (receipt.failureClass !== 'success') throw new Error(`Operator Go suite failed: ${JSON.stringify(receipt)}`);
       expect(result.stdout.includes(`${operatorModule}/controllers`)).toBe(true);
       expect(result.stdout.includes('FAIL')).toBe(false);
