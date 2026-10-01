@@ -94,6 +94,21 @@ describe('GitHubInstallationClient.getFileTree', () => {
 
 
 describe('pinned source identities', () => {
+  it('retries failed merge-base and source lookups instead of caching rejected promises', async () => {
+    const getMergeBase = vi.fn().mockRejectedValueOnce(new Error('compare 503')).mockResolvedValue('b'.repeat(40));
+    const getFileContent = vi.fn().mockResolvedValue('verified old source');
+    const provider = createRepoFileProvider({ getMergeBase, getFileContent } as unknown as GitHubInstallationClient,
+      'o', 'r', 'a'.repeat(40), { baseSha: 'c'.repeat(40), changedFiles: [] });
+    await expect(provider.readFileAt!('x', 'merge-base')).rejects.toThrow('compare 503');
+    expect(await provider.readFileAt!('x', 'merge-base')).toEqual({ sha: 'b'.repeat(40), content: 'verified old source' });
+    expect(getMergeBase).toHaveBeenCalledTimes(2); expect(getFileContent).toHaveBeenCalledTimes(1);
+    const getHead = vi.fn().mockRejectedValueOnce(new Error('contents 503')).mockResolvedValue('verified head');
+    const headProvider = createRepoFileProvider({ getFileContent: getHead } as unknown as GitHubInstallationClient, 'o', 'r', 'a'.repeat(40));
+    await expect(headProvider.readFileAt!('x', 'head')).rejects.toThrow('contents 503');
+    expect(await headProvider.readFileAt!('x', 'head')).toEqual({ sha: 'a'.repeat(40), content: 'verified head' });
+    expect(getHead).toHaveBeenCalledTimes(2);
+  });
+
   it('encodes filename query characters without allowing them to override the pinned ref', async () => {
     const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
     (client as any).request = vi.fn(async () => ({ encoding: 'base64', content: 'eA==' }));
