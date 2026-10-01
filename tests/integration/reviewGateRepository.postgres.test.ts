@@ -1089,6 +1089,19 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const get=async()=>JSON.parse(((await createGetReviewStatusTool(pool!).execute({owner:event.owner,repo:event.repo,pull_number:42,head_sha:event.headSha})).content[0] as {text:string}).text);
       const current=await get();expect(current.operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);expect(current.verdict).toBe('FAILED');
       expect(JSON.stringify(current.operational_telemetry)).not.toContain('SECRET');
+      expect(current.operational_telemetry).toMatchObject({cause:'unknown',panel:{invoked:false},phaseCounts:{persona_lane:{started:0},composed_task:{started:0}}});
+      // A stored observation cannot be projected from an unauthenticated digest,
+      // another config, or a gate which stopped being current. Status still fails closed.
+      for(const [tamper,restore] of [
+        ["UPDATE review_worker_completions SET content_digest=repeat('f',64) WHERE run_id=$1","UPDATE review_worker_completions SET content_digest=$2 WHERE run_id=$1"],
+        ["UPDATE review_worker_completions SET payload=jsonb_set(payload,'{configDigest}',to_jsonb(repeat('f',64))) WHERE run_id=$1","UPDATE review_worker_completions SET payload=jsonb_set(payload,'{configDigest}',to_jsonb($2::text)) WHERE run_id=$1"],
+        ["UPDATE review_gate_attempts SET current_attempt=false WHERE run_id=$1","UPDATE review_gate_attempts SET current_attempt=true WHERE run_id=$1"],
+      ] as const) {
+        await pool!.query(tamper,[id]);
+        try { const guarded=await get(); expect(guarded).not.toHaveProperty('operational_telemetry'); expect(guarded.verdict).toBe('FAILED'); }
+        finally { await pool!.query(restore,restore.includes('$2')?[id,restore.includes('content_digest')?state.gates[0].worker_result_digest:event.configDigest]:[id]); }
+        expect((await get()).operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);
+      }
       await pool!.query("UPDATE review_runs SET failure_diagnostics=jsonb_set(failure_diagnostics,'{executionAttempt}','4') WHERE run_id=$1",[id]);
       expect(await get()).not.toHaveProperty('operational_telemetry');
     });
