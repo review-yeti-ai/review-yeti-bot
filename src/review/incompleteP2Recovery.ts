@@ -67,6 +67,8 @@ const sourceSchema = z.object({
   gateCheckId: positiveInteger,
   rawFindingCount: z.number().int().min(0).max(MAX_INCOMPLETE_P2_RECOVERY_FINDINGS).safe(),
   canonicalFindingCount: z.number().int().min(0).max(MAX_INCOMPLETE_P2_RECOVERY_FINDINGS).safe(),
+  /** Immutable receipt for the composed checkpoint validated when this context was admitted. */
+  gracefulCheckpointReceipt: z.object({ revision: positiveInteger, digest }).strict().optional(),
 }).strict();
 
 const findingWithProvenanceSchema = z.object({
@@ -82,6 +84,7 @@ const findingWithProvenanceSchema = z.object({
 const contextContentObjectSchema = z.object({
   version: z.literal(INCOMPLETE_P2_RECOVERY_CONTEXT_VERSION),
   ...identitySchema.shape,
+  gracefulComposedContinuation: z.literal(true).optional(),
   sources: z.array(sourceSchema).min(1).max(MAX_INCOMPLETE_P2_RECOVERY_PRIOR_ATTEMPTS),
   findings: z.array(findingWithProvenanceSchema).min(1).max(MAX_INCOMPLETE_P2_RECOVERY_FINDINGS),
 }).strict();
@@ -101,6 +104,9 @@ function validateContextContent(
     sources.set(source.executionAttempt, source);
     if (source.canonicalFindingCount > source.rawFindingCount) {
       issue.addIssue({ code: z.ZodIssueCode.custom, path: ['sources', index, 'canonicalFindingCount'], message: 'canonical count cannot exceed raw count' });
+    }
+    if ((context.gracefulComposedContinuation === true) !== (source.gracefulCheckpointReceipt !== undefined)) {
+      issue.addIssue({ code: z.ZodIssueCode.custom, path: ['sources', index, 'gracefulCheckpointReceipt'], message: 'graceful checkpoint receipt does not match context mode' });
     }
   });
 

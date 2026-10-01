@@ -396,3 +396,76 @@ export {
   type GenerateFixDiffInput,
   type GenerateFixDiffOutput,
 } from './generateFixDiff';
+
+// =============================================================================
+// 10. query_active_jobs
+// =============================================================================
+
+export const QueryActiveJobsInputSchema = z.object({
+  owner: z.string().trim().min(1).max(255).optional(),
+  repo: z.string().trim().min(1).max(255).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+}).strict();
+
+export type QueryActiveJobsInput = z.infer<typeof QueryActiveJobsInputSchema>;
+
+// =============================================================================
+// 11. get_cloudflare_status
+// =============================================================================
+
+export const GetCloudflareStatusInputSchema = z.object({
+  repo: z.string().trim().optional(),
+}).strict();
+
+export type GetCloudflareStatusInput = z.infer<typeof GetCloudflareStatusInputSchema>;
+
+// =============================================================================
+// 12. get_billable_runtime_report
+// =============================================================================
+
+export const GetBillableRuntimeReportInputSchema = z.object({
+  owner: z.string().trim().optional(),
+  repo: z.string().trim().optional(),
+  pull_number: z.number().int().positive().optional(),
+  days: z.number().int().positive().max(90).optional(),
+  runner_tier: z.string().trim().optional(),
+}).strict();
+
+export type GetBillableRuntimeReportInput = z.infer<typeof GetBillableRuntimeReportInputSchema>;
+
+// =============================================================================
+// 13. get_runtime_metrics
+// =============================================================================
+
+export const GetRuntimeMetricsInputSchema = z.object({
+  repo: z.string().trim().optional(),
+  window_hours: z.number().int().positive().max(720).optional(),
+  comparison_mode: z.boolean().optional(),
+}).strict();
+
+export type GetRuntimeMetricsInput = z.infer<typeof GetRuntimeMetricsInputSchema>;
+
+// =============================================================================
+// 14. get_analytics_dashboard
+// =============================================================================
+
+export const GetAnalyticsDashboardInputSchema = z.object({
+  repo: z.string().trim().optional(),
+  timeframe_days: z.number().int().positive().max(90).optional(),
+}).strict();
+
+export type GetAnalyticsDashboardInput = z.infer<typeof GetAnalyticsDashboardInputSchema>;
+
+// =============================================================================
+// 15. purge_cache
+// =============================================================================
+
+export const PurgeCacheInputSchema = z.object({
+  pr_number: z.number().int().positive().optional(),
+  max_age_seconds: z.number().int().positive().optional(),
+  repo: z.string().trim().optional(),
+  dry_run: z.boolean().optional(),
+}).strict();
+
+export type PurgeCacheInput = z.infer<typeof PurgeCacheInputSchema>;
+

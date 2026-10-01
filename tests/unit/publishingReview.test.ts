@@ -7,7 +7,8 @@ import * as publishingProgress from '../../src/telemetry/publishingProgress';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
-import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
+import { MAX_PERSONAS, MAX_TEXT_CHARACTERS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import {
   classifyFailure,
   createOpenAIPublishingConfig,
@@ -1956,6 +1957,88 @@ describe('real composed plan rejection reaches fail-closed publication', () => {
           failureClass: expected, diagnostics: expect.not.objectContaining({ recoverableIncompletePanel: true }),
         }));
         expect(reportReviewResult).not.toHaveBeenCalled();
+      }
+    });
+  }
+});
+
+describe('real composed findings-stop reaches canonical fail-closed publication', () => {
+  for (const authoritative of [false, true]) {
+    it.each(['P0', 'P2'] as const)('never publishes incomplete %s finding-stop as SHIP (authoritative=' + authoritative + ')', async (severity) => {
+      const policy = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+        personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 3 },
+      } });
+      const input = env({ REVIEW_YETI_POLICY_JSON: policy });
+      const serviceDecisions: Array<ReturnType<typeof evaluateReviewGate>> = [];
+      const reportReviewResult = vi.fn(async (event: unknown) => {
+        // Exercise the existing service's pure re-derivation/Gate policy, not a DB or live App.
+        const derived = deriveCanonicalWorkerReviewEvidence(event, {
+          expectedCoordinates: { runId: input.REVIEW_RUN_ID!, repositoryId: Number(input.REVIEW_REPOSITORY_ID),
+            owner: 'calltelemetry', repo: 'ct-meta', prNumber: 2795, headSha: HEAD, baseSha: BASE,
+            policyDigest: input.REVIEW_POLICY_DIGEST!, configDigest: input.REVIEW_CONFIG_DIGEST!, executionAttempt: 1 },
+          expectedPersonaIds: ['sec-lane', 'qual-lane'], changedFiles: parseChangedFiles(DIFF).files,
+          coverageComplete: true, quorumSatisfied: true, reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
+        });
+        expect(derived.valid).toBe(true);
+        if (!derived.valid) throw new Error('Unexpected invalid local completion fixture');
+        const candidate = { repositoryId: Number(input.REVIEW_REPOSITORY_ID), prNumber: 2795,
+          headSha: HEAD, baseSha: BASE, policyDigest: input.REVIEW_POLICY_DIGEST! };
+        serviceDecisions.push(evaluateReviewGate({ candidate, current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }));
+      });
+      const reportTerminalSuccess = vi.fn(async () => undefined);
+      if (authoritative) {
+        const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+        const prepared = preparePublishingPolicy({ content: policy, source: {
+          repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+          contentDigest: createHash('sha256').update(policy).digest('hex'),
+        } }, transport);
+        Object.assign(input, { REVIEW_AUTHORITATIVE_GATE: 'true',
+          REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+          REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/completion',
+          REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest });
+      }
+      const tasks = ['contract', 'architecture', 'testing', 'performance'].map((dimension, index) => ({
+        id: `task-${index + 1}`, dimension, paths: ['src/a.ts'], question: `Review ${dimension}?`, rationale: 'Changed source.',
+      }));
+      const complete = vi.fn(async (request: { messages: Array<{ content: unknown }> }) => {
+        const text = JSON.stringify(request.messages);
+        const nonce = [...text.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+        expect(nonce).toBeTruthy();
+        if (text.includes('PLAN TURN')) return { model: 'fixture', content: JSON.stringify({ nonce, tasks }),
+          usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0.001, raw: {} };
+        expect(text).toContain('Task id: task-1');
+        return { model: 'fixture', content: JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE',
+          findings: Array.from({ length: severity === 'P2' ? 25 : 1 }, (_, index) => ({ severity, path: 'src/a.ts', line: 1,
+            title: `Finding ${index}`, body: `Local fixture ${index}.` })) }),
+          usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0.001, raw: {} };
+      });
+      const d = deps({ client: { complete }, zoektGrounding: vi.fn(async () => ({})),
+        ...(authoritative ? { reviewCompletion: { reportReviewResult } } : { completion: { reportTerminalSuccess } }) });
+      const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
+      try {
+        // Real executeComposedReview and real computeArbitration; only I/O/publication seams are local fixtures.
+        const receipt = await runPublishingReviewWorker(input, d);
+        expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure', findingCount: severity === 'P2' ? 25 : 1,
+          coverage: { expectedLaneCount: 4, completedLaneCount: 1, rosterValid: false, quorumSatisfied: false, fullPanelComplete: false } });
+        expect(receipt.personas?.map((lane) => lane.id)).toEqual(['task-1']);
+        expect(receipt.metrics?.tokenAccounting?.total).toMatchObject({ calls: 2, totalTokens: 40 });
+        expect(complete).toHaveBeenCalledTimes(2);
+        expect(d.panelRunner).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(reportTerminalSuccess).not.toHaveBeenCalled();
+        if (authoritative) {
+          expect(serviceDecisions).toEqual([{ status: 'failure', eligible: false, reason: 'incomplete-review' }]);
+          expect(reportReviewResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ result: expect.objectContaining({
+            // This field is path/evidence coverage, not task completion. The unchanged service
+            // contract also receives the whole plan, missing task lanes, and false quorum.
+            coverageComplete: true, quorumSatisfied: false, taskPlan: expect.arrayContaining(tasks),
+            personas: [expect.objectContaining({ id: 'task-1' })],
+          }) }));
+          expect(reportReviewResult.mock.invocationCallOrder[0]).toBeLessThan(d.checkClient.completeCheck.mock.invocationCallOrder[0]);
+        }
+        expect(d.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: BLOCK' }));
+      } finally {
+        fetch.mockRestore();
       }
     });
   }

@@ -1,5 +1,9 @@
 import { isRecoverableFailureTitle, REVIEW_GATE_CHECK_NAME } from './reviewCheckIdentity';
-import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from './incompleteRosterSummary';
+import {
+  formatIncompleteRosterGateSummary,
+  parseGracefulComposedSummary,
+  parseIncompleteRosterSummary,
+} from './incompleteRosterSummary';
 
 export const MAX_RECOVERABLE_REVIEW_GENERATION = 3;
 export const REVIEW_WORKER_CHECK_NAME = 'Review Yeti';
@@ -18,6 +22,8 @@ export interface ReviewGenerationRecoveryRequest {
   expectedAppId: number;
   /** Candidate classification only; durable findings are checked before admission. */
   incompleteP2Recovery?: true;
+  /** Internal-only, service-derived mode for the single graceful composed retry. */
+  gracefulComposedContinuation?: true;
 }
 
 export interface ReviewGenerationRecoveryEvidence {
@@ -30,11 +36,14 @@ export interface ReviewGenerationRecoveryEvidence {
   legacyIncompleteRoster?: {
     workerSummary: string;
     workerCompletedAt: string;
+    gracefulComposedPartial?: true;
     /** The actual App-owned worker start time, retained so later retries can
      * derive adjacent worker windows without rewriting earlier receipts. */
     workerStartedAt?: string;
     /** The next actual worker bounds older Gate history; absent for the latest worker. */
     nextWorkerStartedAt?: string;
+    /** Service-created digest of the composed checkpoint validated at admission. */
+    gracefulCheckpointReceipt?: { revision: number; digest: string };
     gateChecks: unknown[];
   };
 }
@@ -97,6 +106,25 @@ function hasP2FindingSummary(
     && /^[1-9][0-9]*$/u.test(counts.rawFindingCountText);
 }
 
+function hasGracefulComposedProof(
+  request: ReviewGenerationRecoveryRequest,
+  proof: ReviewGenerationRecoveryEvidence['legacyIncompleteRoster'],
+): boolean {
+  if (request.gracefulComposedContinuation !== true || proof?.gracefulComposedPartial !== true
+    || typeof proof.workerSummary !== 'string') return false;
+  const checkpointReceipt = proof.gracefulCheckpointReceipt;
+  if (checkpointReceipt !== undefined
+    && (!Number.isSafeInteger(checkpointReceipt.revision) || checkpointReceipt.revision <= 0
+      || typeof checkpointReceipt.digest !== 'string' || !/^[a-f0-9]{64}$/u.test(checkpointReceipt.digest))) return false;
+  const counts = parseGracefulComposedSummary(proof.workerSummary, request.headSha);
+  if (!counts || counts.canonicalFindingCount <= 0 || counts.rawFindingCount <= 0) return false;
+  const newest = selectIncompleteRecoveryGate(request, proof);
+  const output = record(newest?.output);
+  return newest?.conclusion === 'failure'
+    && output?.title === 'Review Yeti Gate: Failed (incomplete panel)'
+    && output.summary === formatIncompleteRosterGateSummary(counts.expectedLanes, counts.completedLanes);
+}
+
 /** The latest real Gate within the exact worker's lifetime boundary. Never search
  * backwards past a newer conflicting result to find a convenient failure. */
 export function selectIncompleteRecoveryGate(
@@ -127,7 +155,7 @@ export function selectIncompleteRecoveryGate(
     if (!newest || completedAt(gate.completed_at) > completedAt(newest.completed_at)
       || (completedAt(gate.completed_at) === completedAt(newest.completed_at) && (id as number) > (newest.id as number))) newest = gate;
   }
-  if (request.incompleteP2Recovery === true && newest) {
+  if ((request.incompleteP2Recovery === true || request.gracefulComposedContinuation === true) && newest) {
     const decisionFields = (value: Record<string, unknown>) => {
       const output = record(value.output);
       return JSON.stringify([value.external_id, value.status, value.conclusion, output?.title, output?.summary]);
@@ -149,7 +177,9 @@ export function validateReviewGenerationRecoveryRequest(
     || !Number.isSafeInteger(request.expectedAppId) || request.expectedAppId <= 0
     || !Number.isSafeInteger(request.expectedGeneration)
     || request.expectedGeneration < 2
-    || request.expectedGeneration > MAX_RECOVERABLE_REVIEW_GENERATION) refuse();
+    || request.expectedGeneration > MAX_RECOVERABLE_REVIEW_GENERATION
+    || (request.incompleteP2Recovery === true && request.gracefulComposedContinuation === true)
+    || (request.gracefulComposedContinuation === true && request.expectedGeneration !== 2)) refuse();
 }
 
 function validateReviewGenerationRecoveryEvidenceInternal(
@@ -162,28 +192,39 @@ function validateReviewGenerationRecoveryEvidenceInternal(
   for (let index = 0; index < evidence.length; index += 1) {
     const entry = evidence[index];
     const generation = index + 1;
+    const checkpointReceipt = entry?.legacyIncompleteRoster?.gracefulCheckpointReceipt;
+    if (checkpointReceipt !== undefined && request.gracefulComposedContinuation !== true) refuse();
     const recoverableFailure = isRecoverableFailureTitle(entry?.title)
       || (entry?.title === 'Review Yeti: BLOCK'
         && (request.incompleteP2Recovery !== true || generation === request.expectedGeneration - 1
           || entry.legacyIncompleteRoster?.nextWorkerStartedAt !== undefined)
         && hasLegacyIncompleteRosterProof(request, entry.legacyIncompleteRoster));
+    const gracefulComposedFailure = request.gracefulComposedContinuation === true
+      && generation === 1
+      && entry?.title === 'Review Yeti: INCOMPLETE (partial evidence published)'
+      && entry.conclusion === 'failure'
+      && hasGracefulComposedProof(request, entry.legacyIncompleteRoster);
     const markerBoundLegacyP2StartOmission = allowPersistedLegacyP2StartOmission
       && generation === request.expectedGeneration - 1
       && entry?.title === 'Review Yeti: BLOCK'
       && entry.legacyIncompleteRoster?.workerStartedAt === undefined
       && hasP2FindingSummary(request, entry.legacyIncompleteRoster);
-    const p2WorkerIntervalValid = request.incompleteP2Recovery !== true
-      || entry?.title !== 'Review Yeti: BLOCK'
+    const requiresWorkerInterval = request.incompleteP2Recovery === true
+      || request.gracefulComposedContinuation === true;
+    const intervalProof = entry?.legacyIncompleteRoster;
+    const p2WorkerIntervalValid = !requiresWorkerInterval
+      || (entry?.title !== 'Review Yeti: BLOCK'
+        && entry?.title !== 'Review Yeti: INCOMPLETE (partial evidence published)')
       || generation < request.expectedGeneration - 1
-      || (Number.isFinite(completedAt(entry.legacyIncompleteRoster?.workerStartedAt))
-        && completedAt(entry.legacyIncompleteRoster?.workerStartedAt)
-          <= completedAt(entry.legacyIncompleteRoster?.workerCompletedAt))
+      || (Number.isFinite(completedAt(intervalProof?.workerStartedAt))
+        && completedAt(intervalProof?.workerStartedAt)
+        <= completedAt(intervalProof?.workerCompletedAt))
       || markerBoundLegacyP2StartOmission;
     if (entry?.generation !== generation
       || !Number.isSafeInteger(entry.checkId) || entry.checkId <= 0
       || entry.externalId !== `${request.runId}:a${generation}`
       || !RECOVERABLE_WORKER_CONCLUSIONS.has(entry.conclusion)
-      || !recoverableFailure || !p2WorkerIntervalValid) refuse();
+      || (!recoverableFailure && !gracefulComposedFailure) || !p2WorkerIntervalValid) refuse();
   }
   return evidence;
 }
@@ -224,7 +265,7 @@ export function evaluateReviewGenerationRecoveryLedger(
     const generation = (value: unknown) => Number(/:a([1-9][0-9]*)$/u.exec(String(record(value)?.external_id))?.[1] ?? 0);
     return generation(left) - generation(right);
   });
-  if (request.incompleteP2Recovery === true) {
+  if (request.incompleteP2Recovery === true || request.gracefulComposedContinuation === true) {
     const workers = orderedRows.map(record).filter((row) => row?.external_id !== `merge-group:${request.headSha}`);
     let previousCompleted = -Infinity;
     for (const worker of workers) {
@@ -274,6 +315,18 @@ export function evaluateReviewGenerationRecoveryLedger(
         if (!Number.isFinite(completedAt(row.started_at))) refuse();
         entry.legacyIncompleteRoster.workerStartedAt = String(row.started_at);
       }
+    }
+    if (output.title === 'Review Yeti: INCOMPLETE (partial evidence published)'
+      && request.gracefulComposedContinuation === true) {
+      if (typeof output.summary !== 'string' || typeof row.completed_at !== 'string'
+        || !Number.isFinite(completedAt(row.started_at))) refuse();
+      entry.legacyIncompleteRoster = {
+        workerSummary: output.summary,
+        workerCompletedAt: row.completed_at,
+        workerStartedAt: String(row.started_at),
+        gracefulComposedPartial: true,
+        gateChecks,
+      };
     }
     evidence.push(entry);
   }
