@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.105.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.105.0...v1.105.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **mcp:** align compute_plane aliases in getCloudflareStatus ([8703f63](https://github.com/review-yeti-ai/review-yeti-bot/commit/8703f6344dc8df039c4177ae19c96d6d69e4935e))
+
+## [1.105.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.4...v1.105.0) (2026-10-01)
+
+
+### Features
+
+* **mcp:** surface compute_plane in getCloudflareStatus ([6c960d7](https://github.com/review-yeti-ai/review-yeti-bot/commit/6c960d701d94d83387dffa17e1c025a8913b8797))
+
 ## [1.104.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.3...v1.104.4) (2026-10-01)
 
 
