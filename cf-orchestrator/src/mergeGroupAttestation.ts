@@ -23,6 +23,7 @@ import type { Env } from './types.js';
 
 export const DEFAULT_REQUIRED_APP_ID = '4385771';
 export const REQUIRED_CHECK_NAME = 'Review Yeti';
+export const ATTESTATION_CHECK_TITLE = 'Review Yeti (Merge Group Attestation)';
 
 export interface MergeGroupPayload {
   action: string;
@@ -854,34 +855,48 @@ export async function evaluateCompositeDeltaHazards(params: {
     }
   }
 
-  // Precompile matchers once per modified symbol to avoid quadratic RegExp re-creation
-  const symbolMatchers = new Map<string, (line: string) => boolean>();
-  for (const sym of deletedOrModifiedSymbols.keys()) {
-    symbolMatchers.set(sym, createSymbolMatcher(sym));
-  }
+  if (deletedOrModifiedSymbols.size > 0) {
+    // Precompile matchers and a single combined union regex for fast O(1) line rejection
+    const symbolMatchers = new Map<string, (line: string) => boolean>();
+    const escapedSymbols: string[] = [];
+    for (const sym of deletedOrModifiedSymbols.keys()) {
+      symbolMatchers.set(sym, createSymbolMatcher(sym));
+      escapedSymbols.push(escapeRegex(sym));
+    }
+    const fastUnionRegex = new RegExp(`(?:${escapedSymbols.join('|')})`);
 
-  for (const [prNum, files] of filesByPr.entries()) {
-    for (const f of files) {
-      if (f.patch) {
+    for (const [prNum, files] of filesByPr.entries()) {
+      for (const f of files) {
+        if (!f.patch) continue;
         const addedLines = f.patch
           .split('\n')
           .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-          .map((l) => l.slice(1));
+          .map((l) => l.slice(1))
+          .filter((l) => !isNonCallerLine(l));
 
-        for (const [symbol, origin] of deletedOrModifiedSymbols.entries()) {
-          if (origin.prNumber !== prNum) {
-            const matcher = symbolMatchers.get(symbol)!;
-            const callsSymbol = addedLines.some((l) => matcher(l));
-            if (callsSymbol) {
-              const originLabel = origin.prNumber === 0 ? baseLabel : `PR #${origin.prNumber} (${origin.file})`;
-              const currentLabel = prNum === 0 ? baseLabel : `PR #${prNum} (${f.filename})`;
-              hazards.push({
-                type: 'contract_break',
-                file: f.filename,
-                prNumber: prNum === 0 ? origin.prNumber : prNum,
-                conflictingPrNumber: prNum === 0 ? 0 : origin.prNumber,
-                description: `Incompatible contract change: ${currentLabel} invokes symbol "${symbol}" modified/deleted in ${originLabel}`,
-              });
+        if (addedLines.length === 0) continue;
+
+        const reportedSymbolsInFile = new Set<string>();
+
+        for (const line of addedLines) {
+          // Fast path: if the line doesn't match any modified symbol, skip immediately
+          if (!fastUnionRegex.test(line)) continue;
+
+          for (const [symbol, origin] of deletedOrModifiedSymbols.entries()) {
+            if (origin.prNumber !== prNum && !reportedSymbolsInFile.has(symbol) && line.includes(symbol)) {
+              const matcher = symbolMatchers.get(symbol)!;
+              if (matcher(line)) {
+                reportedSymbolsInFile.add(symbol);
+                const originLabel = origin.prNumber === 0 ? baseLabel : `PR #${origin.prNumber} (${origin.file})`;
+                const currentLabel = prNum === 0 ? baseLabel : `PR #${prNum} (${f.filename})`;
+                hazards.push({
+                  type: 'contract_break',
+                  file: f.filename,
+                  prNumber: prNum === 0 ? origin.prNumber : prNum,
+                  conflictingPrNumber: prNum === 0 ? 0 : origin.prNumber,
+                  description: `Incompatible contract change: ${currentLabel} invokes symbol "${symbol}" modified/deleted in ${originLabel}`,
+                });
+              }
             }
           }
         }
@@ -964,6 +979,68 @@ export async function publishMergeGroupCheckRun(params: {
 }
 
 /**
+ * Helper to construct and publish a blocked failure check-run and outcome, ensuring
+ * uniform check-run titles, blocker reasons, and failure telemetry across all failure paths.
+ */
+async function createBlockedOutcome(params: {
+  owner: string;
+  repo: string;
+  headSha: string;
+  token?: string;
+  summary: string;
+  constituentPrs?: number[];
+  bypassedHazardScan?: boolean;
+  hazards?: HazardFinding[];
+  fetchFn?: typeof fetch;
+  skipPublish?: boolean;
+  checkRunError?: string;
+}): Promise<AttestationOutcome> {
+  const {
+    owner,
+    repo,
+    headSha,
+    token,
+    summary,
+    constituentPrs = [],
+    bypassedHazardScan = false,
+    hazards,
+    fetchFn = fetch,
+    skipPublish = false,
+  } = params;
+
+  let checkRunId: number | undefined;
+  let checkRunError: string | undefined = params.checkRunError;
+
+  if (!skipPublish && token) {
+    const pubRes = await publishMergeGroupCheckRun({
+      owner,
+      repo,
+      headSha,
+      token,
+      conclusion: 'failure',
+      title: ATTESTATION_CHECK_TITLE,
+      summary,
+      fetchFn,
+    });
+    checkRunId = pubRes.checkRunId;
+    checkRunError = pubRes.error;
+  }
+
+  return {
+    status: 'blocked',
+    headSha,
+    conclusion: 'failure',
+    title: ATTESTATION_CHECK_TITLE,
+    summary,
+    constituentPrs,
+    bypassedHazardScan,
+    hazards,
+    checkRunId,
+    checkRunError,
+  };
+}
+
+/**
  * Master handler for `merge_group` webhook events in Review Yeti.
  * Executes constituent verification, composite delta hazard scanning, and direct check-run publication.
  */
@@ -1009,29 +1086,14 @@ export async function handleMergeGroupAttestation(
   const currentPrNumber = extractPrNumberFromHeadRef(headRef);
 
   if (!baseBranch || !currentPrNumber) {
-    const summary = `Merge group attestation blocked: Failed to parse base_ref ("${baseRef}") or PR number from head_ref ("${headRef}")`;
-    const pubRes = await publishMergeGroupCheckRun({
+    return await createBlockedOutcome({
       owner,
       repo,
       headSha,
       token,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
-      summary,
+      summary: `Merge group attestation blocked: Failed to parse base_ref ("${baseRef}") or PR number from head_ref ("${headRef}")`,
       fetchFn,
     });
-
-    return {
-      status: 'blocked',
-      headSha,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
-      summary,
-      constituentPrs: [],
-      bypassedHazardScan: false,
-      checkRunId: pubRes.checkRunId,
-      checkRunError: pubRes.error,
-    };
   }
 
   // 1. Resolve constituent PRs through merge queue GraphQL API
@@ -1045,29 +1107,15 @@ export async function handleMergeGroupAttestation(
   });
 
   if (!queueResult.passed) {
-    const summary = `Merge group attestation blocked: ${queueResult.blockerReason}`;
-    const pubRes = await publishMergeGroupCheckRun({
+    return await createBlockedOutcome({
       owner,
       repo,
       headSha,
       token,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
-      summary,
+      summary: `Merge group attestation blocked: ${queueResult.blockerReason}`,
+      constituentPrs: queueResult.prs.map((p) => p.number),
       fetchFn,
     });
-
-    return {
-      status: 'blocked',
-      headSha,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
-      summary,
-      constituentPrs: queueResult.prs.map((p) => p.number),
-      bypassedHazardScan: false,
-      checkRunId: pubRes.checkRunId,
-      checkRunError: pubRes.error,
-    };
   }
 
   const constituentPrs = queueResult.prs;
@@ -1100,29 +1148,15 @@ export async function handleMergeGroupAttestation(
 
   for (const res of checkResults) {
     if (!res.verification.passed) {
-      const summary = `Merge group attestation blocked: ${res.verification.blockerReason}`;
-      const pubRes = await publishMergeGroupCheckRun({
+      return await createBlockedOutcome({
         owner,
         repo,
         headSha,
         token,
-        conclusion: 'failure',
-        title: 'Review Yeti (Merge Group Attestation)',
-        summary,
+        summary: `Merge group attestation blocked: ${res.verification.blockerReason}`,
+        constituentPrs: constituentPrs.map((p) => p.number),
         fetchFn,
       });
-
-      return {
-        status: 'blocked',
-        headSha,
-        conclusion: 'failure',
-        title: 'Review Yeti (Merge Group Attestation)',
-        summary,
-        constituentPrs: constituentPrs.map((p) => p.number),
-        bypassedHazardScan: false,
-        checkRunId: pubRes.checkRunId,
-        checkRunError: pubRes.error,
-      };
     }
   }
 
@@ -1139,30 +1173,16 @@ export async function handleMergeGroupAttestation(
   });
 
   if (!hazardResult.passed) {
-    const summary = `Merge group attestation blocked due to speculative composite delta hazards:\n\n${hazardResult.diagnosticSummary}`;
-    const pubRes = await publishMergeGroupCheckRun({
+    return await createBlockedOutcome({
       owner,
       repo,
       headSha,
       token,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
-      summary,
+      summary: `Merge group attestation blocked due to speculative composite delta hazards:\n\n${hazardResult.diagnosticSummary}`,
+      constituentPrs: constituentPrs.map((p) => p.number),
+      hazards: hazardResult.hazards,
       fetchFn,
     });
-
-    return {
-      status: 'blocked',
-      headSha,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
-      summary,
-      constituentPrs: constituentPrs.map((p) => p.number),
-      bypassedHazardScan: false,
-      hazards: hazardResult.hazards,
-      checkRunId: pubRes.checkRunId,
-      checkRunError: pubRes.error,
-    };
   }
 
   // 4. Attestation Success: Publish successful check run directly to GitHub API
@@ -1179,29 +1199,29 @@ export async function handleMergeGroupAttestation(
     headSha,
     token,
     conclusion: 'success',
-    title: 'Review Yeti (Merge Group Attestation)',
+    title: ATTESTATION_CHECK_TITLE,
     summary,
     fetchFn,
   });
 
   if (!pubResult.success) {
-    return {
-      status: 'blocked',
+    return await createBlockedOutcome({
+      owner,
+      repo,
       headSha,
-      conclusion: 'failure',
-      title: 'Review Yeti (Merge Group Attestation)',
       summary: `Merge group attestation failed to publish check-run: ${pubResult.error}`,
       constituentPrs: constituentPrs.map((p) => p.number),
       bypassedHazardScan: hazardResult.bypassed,
+      skipPublish: true,
       checkRunError: pubResult.error,
-    };
+    });
   }
 
   return {
     status: 'attested',
     headSha,
     conclusion: 'success',
-    title: 'Review Yeti (Merge Group Attestation)',
+    title: ATTESTATION_CHECK_TITLE,
     summary,
     constituentPrs: constituentPrs.map((p) => p.number),
     bypassedHazardScan: hazardResult.bypassed,
