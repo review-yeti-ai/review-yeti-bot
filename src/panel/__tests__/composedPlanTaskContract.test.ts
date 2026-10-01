@@ -119,6 +119,12 @@ describe('composed plan task-field contract clarity', () => {
 
   it('captures a valid correction after a blank plan and includes the full nonce/path/task contract in both requests', async () => {
     const requests: any[] = [];
+    const correctedTask = {
+      ...validTask(),
+      id: 'security-auth-corrected',
+      question: 'Does the actual corrected task preserve its own supplied question?',
+      rationale: 'Corrected model values are deliberately distinct from the prompt example.',
+    };
     const complete = vi.fn(async (request: any) => {
       requests.push(request);
       const latest = requestLastText(request);
@@ -133,10 +139,10 @@ describe('composed plan task-field contract clarity', () => {
         }] }));
       }
       if (latest.includes('PLAN_CORRECTION')) {
-        return fakeResponse(JSON.stringify({ nonce, tasks: [validTask()] }));
+        return fakeResponse(JSON.stringify({ nonce, tasks: [correctedTask] }));
       }
       if (latest.includes('WORK TURN')) {
-        return fakeResponse(JSON.stringify({ nonce, task: 'security-auth-example', status: 'COMPLETE', findings: [] }));
+        return fakeResponse(JSON.stringify({ nonce, task: correctedTask.id, status: 'COMPLETE', findings: [] }));
       }
       throw new Error('unexpected engine request phase');
     });
@@ -163,7 +169,8 @@ describe('composed plan task-field contract clarity', () => {
     expectTaskContractGuidance(correctionText, nonce);
     expect(correctionText).toContain('missing or blank question or rationale');
     expect(correctionText).toContain('security-auth-example');
-    expect(result.personas).toMatchObject([{ id: 'security-auth-example', decision: 'APPROVE', findings: [] }]);
+    expect(result.taskPlan).toEqual([correctedTask]);
+    expect(result.personas).toMatchObject([{ id: correctedTask.id, decision: 'APPROVE', findings: [] }]);
   });
 
   it('rejects a second invalid plan after exactly one correction and makes no task request', async () => {
