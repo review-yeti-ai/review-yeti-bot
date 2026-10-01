@@ -279,6 +279,8 @@ function createZoektSearchTool({ identity, indexDir, config = {}, spawnImpl = de
         // Successful search is complete only within the indexed set. Exclusions,
         // size limits and unverified index provenance prevent global absence claims.
         exhaustive: Boolean(!result.truncated && config.indexScope?.complete === true
+          && typeof identity?.repository === 'string' && identity.repository.length > 0
+          && /^[0-9a-f]{40}$/.test(identity?.headSha || '')
           && identity?.repository === config.indexScope?.repository
           && identity?.headSha === config.indexScope?.headSha),
         byteCount: result.byteCount,

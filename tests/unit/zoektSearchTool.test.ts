@@ -297,14 +297,30 @@ describe('Zoekt completeness and shared direct session', () => {
 
 
 describe('trusted scoped completeness identity', () => {
-  it.each([['matching', identity.headSha, true], ['stale', 'b'.repeat(40), false]])('requires %s snapshot for an exhaustive indexed set', async (_name, headSha, exhaustive) => {
+  it.each([undefined, {}, { repository: identity.repository }, { headSha: identity.headSha },
+    { repository: '', headSha: identity.headSha }, { repository: identity.repository, headSha: 'short' },
+  ])('never certifies absence with missing or malformed identity %j', async (unverifiedIdentity) => {
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const tool = createZoektSearchTool({ identity: unverifiedIdentity, indexDir: '/idx',
+      config: { indexScope: { ...unverifiedIdentity, complete: true } }, fsImpl: fakeFsAvailable(), spawnImpl });
+    expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'consumer' })).toMatchObject({ exhaustive: false });
+  });
+  it.each([
+    ['matching', identity.repository, identity.headSha, true],
+    ['stale', identity.repository, 'b'.repeat(40), false],
+    ['foreign repository', 'other/repo', identity.headSha, false],
+  ])('requires %s snapshot for an exhaustive indexed set', async (_name, repository, headSha, exhaustive) => {
     const spawnImpl = vi.fn(() => {
       const child = makeFakeChild();
       queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
       return child;
     });
     const tool = createZoektSearchTool({ identity, indexDir: '/idx',
-      config: { indexScope: { repository: identity.repository, headSha, complete: true } }, fsImpl: fakeFsAvailable(), spawnImpl });
+      config: { indexScope: { repository, headSha, complete: true } }, fsImpl: fakeFsAvailable(), spawnImpl });
     expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'consumer' }))
       .toMatchObject({ status: 'ok', queryComplete: true, exhaustive });
   });
