@@ -3162,6 +3162,8 @@ it('keeps configured-deadline panel failure telemetry before any provider call a
       } else {
         expect(event.diagnostics).not.toHaveProperty('operationalTelemetry');
       }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(Date.now()).toBe(Date.parse('2026-10-01T08:00:00Z'));
       expect(vi.getTimerCount()).toBe(0);
     }
   } finally {
