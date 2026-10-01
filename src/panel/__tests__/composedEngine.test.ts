@@ -1765,18 +1765,18 @@ describe('executeComposedReview', () => {
 
   describe('resolveComposedEngineMaxFindings', () => {
     it('defaults to 25 when unconfigured', () => {
-      expect(resolveComposedEngineMaxFindings({}, undefined)).toBe(25);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, undefined)).toBe(25);
     });
 
     it('honours configured max_findings_total narrowed by policy', () => {
-      expect(resolveComposedEngineMaxFindings({}, 10)).toBe(10);
-      expect(resolveComposedEngineMaxFindings({}, 50)).toBe(50);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, 10)).toBe(10);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, 50)).toBe(50);
     });
 
     it('honours operator env overrides bounded by hard cap', () => {
-      expect(resolveComposedEngineMaxFindings({ COMPOSED_ENGINE_MAX_FINDINGS: '15' }, 50)).toBe(15);
-      expect(resolveComposedEngineMaxFindings({ REVIEW_YETI_MAX_FINDINGS: '30' }, undefined)).toBe(30);
-      expect(resolveComposedEngineMaxFindings({ COMPOSED_ENGINE_MAX_FINDINGS: '9999' }, undefined)).toBe(500);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', COMPOSED_ENGINE_MAX_FINDINGS: '15' }, 50)).toBe(15);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', REVIEW_YETI_MAX_FINDINGS: '30' }, undefined)).toBe(30);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', COMPOSED_ENGINE_MAX_FINDINGS: '9999' }, undefined)).toBe(500);
     });
   });
 
@@ -1866,4 +1866,3 @@ describe('executeComposedReview', () => {
     expect(arbitration.verdict).toBe('BLOCK');
   });
 });
-
