@@ -1,4 +1,4 @@
-import { MAX_PINNED_SOURCE_BYTES } from './toolLimits';
+import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
 import type { GitHubInstallationClient } from '../github/installationClient';
 import { logger } from '../utils/logger';
 import type { RepoFileProvider } from './panelEngine';

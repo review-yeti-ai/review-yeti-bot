@@ -94,6 +94,18 @@ describe('GitHubInstallationClient.getFileTree', () => {
 
 
 describe('pinned source identities', () => {
+  it('returns the verified distinct merge base and rejects malformed commit identities before I/O', async () => {
+    const client = Object.create(GitHubInstallationClient.prototype) as GitHubInstallationClient;
+    const base = 'a'.repeat(40), head = 'b'.repeat(40), old = 'c'.repeat(40);
+    (client as any).request = vi.fn(async () => ({ base_commit: { sha: base }, merge_base_commit: { sha: old } }));
+    expect(await client.getMergeBase('o', 'r', base, head)).toBe(old);
+    expect((client as any).request).toHaveBeenCalledExactlyOnceWith(`/repos/o/r/compare/${base}...${head}?per_page=1`);
+    for (const pair of [['short', head], [base, 'short']]) {
+      await expect(client.getMergeBase('o', 'r', pair[0], pair[1])).rejects.toThrow('Invalid source identity');
+    }
+    expect((client as any).request).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     { sha: 'c'.repeat(40), encoding: 'base64', content: 'eA==' },
     { sha: 'a'.repeat(40), encoding: 'none', content: 'x' },

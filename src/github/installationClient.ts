@@ -1,4 +1,4 @@
-import { MAX_PINNED_SOURCE_BYTES } from '../panel/toolLimits';
+import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
