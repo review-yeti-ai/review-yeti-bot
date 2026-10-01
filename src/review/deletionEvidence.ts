@@ -28,7 +28,14 @@ function enabled(env: NodeJS.ProcessEnv, repository: string): boolean {
 export function deletionInventory(files: File[]): Entry[] {
   return files.flatMap((file) => {
     const patch = file.patch ?? '';
-    const removedLines = patch.split('\n').filter((line) => line.startsWith('-') && !line.startsWith('---')).length;
+    // Headers only occur outside hunks. Inside a hunk, even `--- comment`
+    // or `----` is removed content (SQL comments and YAML separators).
+    let inHunk = false, removedLines = 0;
+    for (const line of patch.split('\n')) {
+      if (line.startsWith('diff --git ')) inHunk = false;
+      else if (/^@@ -/u.test(line)) inHunk = true;
+      else if (inHunk && line.startsWith('-')) removedLines += 1;
+    }
     const rename = /^rename from (.+)$/mu.exec(patch)?.[1];
     if (!removedLines && !rename && !/^deleted file mode /mu.test(patch)) return [];
     const oldPath = rename ? unquoteGitPath(rename) : file.path;

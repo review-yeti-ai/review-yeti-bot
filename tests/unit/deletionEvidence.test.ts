@@ -24,6 +24,13 @@ const outcome = (model = 'jev-test') => ({ status: 'ok', model, durationMs: 1,
   } });
 
 describe('deletion evidence replay', () => {
+  it.each(['----', '--- comment', '--- a/content'])('counts dash-prefixed removed content inside a hunk: %s', (removed) => {
+    const changed = { path: 'settings.yaml', patch: `--- a/settings.yaml\n+++ b/settings.yaml\n@@ -1,2 +1 @@\n key: value\n${removed}` };
+    expect(deletionInventory([changed])[0].removedLines).toBe(1);
+    expect(setup([changed]).runtime.manifest().totalFiles).toBe(1);
+    expect(deletionInventory([{ path: 'headers-only', patch: '--- a/x\n+++ b/x' }])).toEqual([]);
+  });
+
   it('excludes additions and context-only changes from the deletion inventory', () => {
     const addition = { path: 'added.ts', patch: '--- /dev/null\n+++ b/added.ts\n@@ -0,0 +1 @@\n+export const x = 1;' };
     const context = { path: 'same.ts', patch: '@@ -1 +1 @@\n unchanged' };
