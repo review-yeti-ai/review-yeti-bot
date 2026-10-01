@@ -241,7 +241,8 @@ export interface RepoFileProvider {
   /** Pinned source sides; merge-base is verified against the admitted base/head. */
   readFileAt?(path: string, side: 'head' | 'merge-base'): Promise<{ content: string | null; sha: string }>;
   /** Original admitted patch, independent of shrinking or prompt packing. */
-  readDiff?(path: string): { patch: string; originalPatchLength?: number } | null;
+  readDiff?(path: string): { patch: string; originalPatchLength?: number;
+    identity?: { repository: string; baseSha: string; headSha: string } } | null;
   /**
    * Whether the repository tree behind findFiles was truncated by the API. GitHub
    * truncates recursive trees past ~100k entries, and a zero-hit search over a

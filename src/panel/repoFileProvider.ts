@@ -67,7 +67,8 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
     },
     readDiff(path) {
       const file = originals.get(path);
-      return typeof file?.patch === 'string' ? { patch: file.patch, originalPatchLength: file.originalPatchLength } : null;
+      return typeof file?.patch === 'string' ? { patch: file.patch, originalPatchLength: file.originalPatchLength,
+        identity: { repository: `${owner}/${repo}`, baseSha: evidence!.baseSha, headSha } } : null;
     },
     async findFiles(query: string): Promise<string[]> {
       const { paths, truncated } = await loadTree();

@@ -32,6 +32,7 @@ export async function readEvidencePage(
   throwIfPanelAborted(context.signal);
   let text: string;
   let sha: string | undefined;
+  let identity: { repository: string; baseSha: string; headSha: string } | undefined;
   try {
     if (tool === 'get_diff_page') {
       const original = context.repoFileProvider?.readDiff
@@ -41,6 +42,7 @@ export async function readEvidencePage(
         return result({ status: 'unavailable', reason: 'original_diff_unavailable', path });
       }
       text = original.patch;
+      identity = original.identity;
     } else {
       if (!context.repoFileProvider?.readFileAt) return result({ status: 'unavailable', reason: 'pinned_source_unavailable', path });
       const source = await raceWithPanelAbort(context.repoFileProvider.readFileAt(path, args.side), context.signal);
@@ -55,12 +57,12 @@ export async function readEvidencePage(
     return result({ status: 'unavailable', reason: 'source_lookup_failed', path });
   }
   throwIfPanelAborted(context.signal);
-  const digest = createHash('sha256').update(text).digest('hex');
+  const digest = createHash('sha256').update(JSON.stringify({ identity, sha, side: args.side, path, text })).digest('hex');
   if (args.digest !== undefined && args.digest !== digest) return result({ status: 'invalid', reason: 'evidence_digest_mismatch', path });
   const startOffset = args.startOffset ?? 0;
   if (startOffset > text.length) return result({ status: 'invalid', reason: 'offset_out_of_range', path });
   const endOffset = Math.min(text.length, startOffset + (args.maxChars ?? 16_000));
-  return result({ status: 'ok', path, ...(sha ? { sha, side: args.side } : {}), digest,
+  return result({ status: 'ok', path, ...(sha ? { sha, side: args.side } : {}), ...(identity ? { identity } : {}), digest,
     offsetUnit: 'utf16-code-units', totalChars: text.length, startOffset, endOffset,
     nextOffset: endOffset < text.length ? endOffset : null,
     pageComplete: true, content: text.slice(startOffset, endOffset),
