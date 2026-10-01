@@ -129,6 +129,7 @@ function runZoektQuery({ zoektBinaryPath, indexDir, query, maxFindResults, maxRe
     let usedBytes = 0;
     let timedOut = false;
     let killedForBounds = false;
+    let incompleteRecords = false;
     let stderrTail = '';
 
     const cleanupAndKill = () => {
@@ -148,22 +149,25 @@ function runZoektQuery({ zoektBinaryPath, indexDir, query, maxFindResults, maxRe
     const rl = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
     rl.on('line', (line) => {
       if (!line || matches.length >= maxFindResults || usedBytes >= maxResultBytes) return;
-      if (Buffer.byteLength(line, 'utf8') > MAX_STDOUT_LINE_BYTES) return;
+      if (Buffer.byteLength(line, 'utf8') > MAX_STDOUT_LINE_BYTES) { incompleteRecords = true; return; }
       let record;
       try {
         record = JSON.parse(line);
       } catch (_error) {
+        incompleteRecords = true;
         return;
       }
       const path = typeof record?.FileName === 'string' ? record.FileName : null;
+      if (!Array.isArray(record?.LineMatches)) incompleteRecords = true;
       const lineMatches = Array.isArray(record?.LineMatches) ? record.LineMatches : [];
-      if (!path) return;
+      if (!path) { incompleteRecords = true; return; }
       for (const lineMatch of lineMatches) {
         if (matches.length >= maxFindResults || usedBytes >= maxResultBytes) break;
-        if (lineMatch?.FileName === true) continue; // filename-only match, not a text line
+        if (lineMatch?.FileName === true) { incompleteRecords = true; continue; } // filename-only match, not a text line
         const decoded = decodeBase64Utf8(lineMatch?.Line);
         const bounded = boundedText(decoded, Math.min(MAX_LINE_BYTES, Math.max(0, maxResultBytes - usedBytes)));
-        if (!bounded.text) continue;
+        if (bounded.truncated) incompleteRecords = true;
+        if (!bounded.text) { incompleteRecords = true; continue; }
         matches.push({
           path,
           line: Number.isInteger(lineMatch?.LineNumber) ? lineMatch.LineNumber : null,
@@ -208,7 +212,7 @@ function runZoektQuery({ zoektBinaryPath, indexDir, query, maxFindResults, maxRe
       finish({
         ok: true,
         matches,
-        truncated: killedForBounds || matches.length >= maxFindResults || usedBytes >= maxResultBytes,
+        truncated: incompleteRecords || killedForBounds || matches.length >= maxFindResults || usedBytes >= maxResultBytes,
         byteCount: usedBytes,
       });
     });
@@ -224,7 +228,7 @@ function runZoektQuery({ zoektBinaryPath, indexDir, query, maxFindResults, maxRe
 function createZoektSearchTool({ identity, indexDir, config = {}, spawnImpl = defaultSpawn, fsImpl = fs } = {}) {
   const effectiveConfig = resolveZoektSearchConfig(config);
   let calls = 0;
-  const receipt = (extra = {}) => ({ identity: identity ? { ...identity } : undefined, tool: TOOL_NAME, ...extra });
+  const receipt = (extra = {}) => ({ identity: identity ? { ...identity } : undefined, tool: TOOL_NAME, indexScope: config.indexScope, ...extra });
 
   const indexAvailable = () => {
     if (typeof indexDir !== 'string' || !indexDir) return false;
@@ -271,6 +275,12 @@ function createZoektSearchTool({ identity, indexDir, config = {}, spawnImpl = de
         matches: result.matches,
         matchCount: result.matches.length,
         truncated: result.truncated,
+        queryComplete: !result.truncated,
+        // Successful search is complete only within the indexed set. Exclusions,
+        // size limits and unverified index provenance prevent global absence claims.
+        exhaustive: Boolean(!result.truncated && config.indexScope?.complete === true
+          && identity?.repository === config.indexScope?.repository
+          && identity?.headSha === config.indexScope?.headSha),
         byteCount: result.byteCount,
       }),
     };
@@ -290,14 +300,24 @@ function createZoektSearchTool({ identity, indexDir, config = {}, spawnImpl = de
 /**
  * Direct invocation helper for panel engine and MCP runners.
  */
+const directSessions = new WeakMap();
 async function executeZoektSearch(args = {}, config = {}, options = {}) {
-  const tool = createZoektSearchTool({
-    identity: options?.identity,
+  // Grounded configs share the run-owned identity even when an engine merges
+  // config views. Do not reset the call budget on every tool invocation.
+  const key = config?.identity && typeof config.identity === 'object' ? config.identity : config;
+  const binding = JSON.stringify([options?.identity || config?.identity,
+    options?.indexDir || config?.indexDir || process.env.ZOEKT_INDEX_DIR]);
+  const session = key && typeof key === 'object' ? directSessions.get(key) : undefined;
+  if (session && session.binding !== binding) return { status: 'unavailable', reason: 'index_identity_changed' };
+  let tool = session?.tool;
+  if (!tool) tool = createZoektSearchTool({
+    identity: options?.identity || config?.identity,
     indexDir: options?.indexDir || config?.indexDir || process.env.ZOEKT_INDEX_DIR,
     config,
     spawnImpl: options?.spawnImpl,
     fsImpl: options?.fsImpl,
   });
+  if (key && typeof key === 'object') directSessions.set(key, { tool, binding });
   return tool.call(TOOL_NAME, args, options);
 }
 

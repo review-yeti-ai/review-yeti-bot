@@ -28,7 +28,7 @@ const MAX_LIMITS = Object.freeze({
   fileLimitBytes: 8 * 1024 * 1024,
   shardLimitBytes: 512 * 1024 * 1024,
 });
-// Directories that are never source evidence and routinely dominate a fresh
+// Directories omitted from this index because they routinely dominate a fresh
 // checkout's disk footprint (dependency trees, compiled build output). Kept
 // narrow and additive to zoekt-index's own ".git,.hg,.svn" default.
 const DEFAULT_IGNORE_DIRS = ['node_modules', '_build', 'deps', 'dist', 'build', '.elixir_ls'];
@@ -135,7 +135,11 @@ async function buildZoektIndex({ workdir, indexDir, config = {}, signal } = {}) 
       try {
         shardCount = fs.readdirSync(indexDir).filter((entry) => entry.endsWith('.zoekt')).length;
       } catch (_) { /* leave shardCount at 0, still report ok */ }
-      finish({ status: 'ok', indexDir, shardCount });
+      finish({ status: 'ok', indexDir, shardCount, indexScope: {
+        complete: false, excludedDirectories: ['.git', '.hg', '.svn', ...resolved.ignoreDirs],
+        fileLimitBytes: resolved.fileLimitBytes,
+        limitations: ['directory_exclusions', 'file_size_limit', 'indexer_language_and_binary_filters'],
+      } });
     });
     timer = setTimeout(() => terminate('index_build_timeout'), resolved.timeoutMs);
     signal?.addEventListener?.('abort', onAbort, { once: true });

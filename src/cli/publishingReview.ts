@@ -937,7 +937,7 @@ export interface PublishingReviewDeps {
     enabled: boolean;
     signal?: AbortSignal;
     zoektIndexBinaryPath?: string;
-  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
+  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> }>;
   /**
    * Full-repository grounding for a persona's `find_files`/`read_file` tools (see
    * `RepoFileProvider` in `../panel/panelEngine` and `createRepoFileProvider` in
@@ -1769,7 +1769,7 @@ export async function runPublishingReviewWorker(
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
     const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
     const panelDeadline = createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now);
-    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
+    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> } = {};
     // Receipt ownership cannot depend on which continuation wins the abort race:
     // the producer can resolve before cancellation while delivery still loses.
     let resolvedGroundingReceipt: typeof zoektScratchRoot | undefined;
@@ -1832,9 +1832,9 @@ export async function runPublishingReviewWorker(
       // enrichment, never a precondition of the review.
       zoektScratchRoot = await runInSpan('review_yeti_zoekt_index_build', async (span) => {
         const buildStart = deps.now ? deps.now() : Date.now();
-        let result: { indexDir?: string; scratchDir?: string; reason?: string };
+        let result: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> };
         try {
-          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string }>(() => {
+          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> }>(() => {
             panelDeadline.check();
             return zoektGrounding({
             repository: identity.repo,
@@ -1897,6 +1897,8 @@ export async function runPublishingReviewWorker(
               zoekt: {
                 ...((workerConfig as { evidence?: { zoekt?: Record<string, unknown> } }).evidence?.zoekt ?? {}),
                 indexDir: zoektIndexDir,
+                identity: { repository: identity.repo, headSha: identity.headSha },
+                indexScope: zoektScratchRoot.indexScope,
                 ...zoektBinaryOverride,
               },
             },
