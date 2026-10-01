@@ -33,6 +33,7 @@ import {
 } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
+import { createDeletionEvidenceRuntime } from '../review/deletionEvidence';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
@@ -938,7 +939,7 @@ export interface PublishingReviewDeps {
     enabled: boolean;
     signal?: AbortSignal;
     zoektIndexBinaryPath?: string;
-  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
+  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> }>;
   /**
    * Full-repository grounding for a persona's `find_files`/`read_file` tools (see
    * `RepoFileProvider` in `../panel/panelEngine` and `createRepoFileProvider` in
@@ -1671,7 +1672,7 @@ export async function runPublishingReviewWorker(
       try {
         const factory = deps.repoFileProviderFactory
           || ((input: { token: string; owner: string; repo: string; headSha: string }) => createRepoFileProvider(
-            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha,
+            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha, { baseSha: identity.baseSha, changedFiles },
           ));
         repoFileProvider = factory({
           token: repoReadToken,
@@ -1798,7 +1799,7 @@ export async function runPublishingReviewWorker(
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
     const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
     const panelDeadline = createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now);
-    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
+    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> } = {};
     // Receipt ownership cannot depend on which continuation wins the abort race:
     // the producer can resolve before cancellation while delivery still loses.
     let resolvedGroundingReceipt: typeof zoektScratchRoot | undefined;
@@ -1861,9 +1862,9 @@ export async function runPublishingReviewWorker(
       // enrichment, never a precondition of the review.
       zoektScratchRoot = await runInSpan('review_yeti_zoekt_index_build', async (span) => {
         const buildStart = deps.now ? deps.now() : Date.now();
-        let result: { indexDir?: string; scratchDir?: string; reason?: string };
+        let result: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> };
         try {
-          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string }>(() => {
+          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> }>(() => {
             panelDeadline.check();
             return zoektGrounding({
             repository: identity.repo,
@@ -1918,19 +1919,37 @@ export async function runPublishingReviewWorker(
       // worker never needs to know that policy.
       const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
       const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
+      // Resolve once: both the explicit run session and the engine see the
+      // same limits, binary, identity and index coverage metadata.
+      const resolvedZoektConfig = {
+        ...(workerConfig as any).pre_checks?.zoekt,
+        ...(workerConfig as any).evidence?.zoekt,
+        ...zoektBinaryOverride,
+        indexDir: zoektIndexDir,
+        identity: { repository: identity.repo, headSha: identity.headSha },
+        indexScope: zoektScratchRoot.indexScope,
+      };
+      const zoektSearchSession = zoektIndexDir ? require('../mcp/zoektSearchTool').createZoektSearchTool({
+        identity: resolvedZoektConfig.identity,
+        indexDir: zoektIndexDir,
+        config: resolvedZoektConfig,
+      }) : undefined;
       const groundedConfig = zoektIndexDir
         ? {
             ...workerConfig,
             evidence: {
               ...(workerConfig as { evidence?: Record<string, unknown> }).evidence,
-              zoekt: {
-                ...((workerConfig as { evidence?: { zoekt?: Record<string, unknown> } }).evidence?.zoekt ?? {}),
-                indexDir: zoektIndexDir,
-                ...zoektBinaryOverride,
-              },
+              zoekt: { ...resolvedZoektConfig, searchSession: zoektSearchSession },
             },
           }
         : workerConfig;
+      if (repoFileProvider) {
+        const deletionEvidence = createDeletionEvidenceRuntime({ files: changedFiles, provider: repoFileProvider,
+          repository: identity.repo, headSha: identity.headSha, env,
+          zoektConfig: (groundedConfig as any).evidence?.zoekt, signal: panelDeadline.signal });
+        repoFileProvider.deletionManifest = deletionEvidence.manifest;
+        repoFileProvider.deletionEvidence = deletionEvidence.evidence;
+      }
       // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
       // cutoff. Late setup cannot mint another relative window for either engine.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is

@@ -1,3 +1,4 @@
+import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
@@ -970,13 +971,40 @@ export class GitHubInstallationClient {
     return files;
   }
 
+  /** Resolve the old side of a three-dot PR diff; the branch tip is not its old side. */
+  async getMergeBase(owner: string, repo: string, baseSha: string, headSha: string): Promise<string> {
+    if (![baseSha, headSha].every((sha) => /^[0-9a-f]{40}$/u.test(sha))) throw new Error('Invalid source identity');
+    const comparison = await this.request(`/repos/${owner}/${repo}/compare/${baseSha}...${headSha}?per_page=1`);
+    if (comparison?.base_commit?.sha !== baseSha || !/^[0-9a-f]{40}$/u.test(comparison?.merge_base_commit?.sha || '')) {
+      throw new Error('Merge-base source identity mismatch');
+    }
+    return comparison.merge_base_commit.sha;
+  }
+
   async getFileContent(owner: string, repo: string, path: string, ref?: string, options: { notFoundIsEmpty?: boolean } = {}): Promise<string | null> {
     try {
-      const url = `/repos/${owner}/${repo}/contents/${path}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
+      // A repository filename may contain query or fragment characters. It
+      // must never reinterpret the pinned ref or truncate the contents path.
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+      const url = `/repos/${owner}/${repo}/contents/${encodedPath}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
       const data = await this.request(url);
       if (data.encoding === 'base64' && typeof data.content === 'string') {
         return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
       }
+      // The contents endpoint omits inline bytes above 1 MiB. Fetch the exact
+      // blob it names, within the same admitted source bound, rather than return
+      // its empty placeholder as verified source.
+      if (data.encoding === 'none' && /^[0-9a-f]{40}$/u.test(data.sha || '')
+        && Number.isSafeInteger(data.size) && data.size <= MAX_PINNED_SOURCE_BYTES) {
+        const blob = await this.request(`/repos/${owner}/${repo}/git/blobs/${data.sha}`);
+        if (blob.sha !== data.sha || blob.encoding !== 'base64' || typeof blob.content !== 'string') {
+          throw new Error('Source blob identity mismatch');
+        }
+        const bytes = Buffer.from(blob.content.replace(/\n/g, ''), 'base64');
+        if (bytes.length !== data.size || bytes.length > MAX_PINNED_SOURCE_BYTES) throw new Error('Source blob size mismatch');
+        return bytes.toString('utf8');
+      }
+      if (data.encoding === 'none') return null;
       if (typeof data.content === 'string') {
         return data.content;
       }

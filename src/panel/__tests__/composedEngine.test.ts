@@ -1925,7 +1925,7 @@ describe('executeComposedReview', () => {
       }
       if (turn === 2) {
         expect(text).toContain('[PI_TOOL_RESULT]');
-        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: true]');
+        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: false]');
         toolResultSeen = true;
         return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
       }
@@ -2092,6 +2092,18 @@ describe('executeComposedReview', () => {
       expect(prefix).toContain('export function guard()');
       expect(prefix).not.toContain('export function migrate()');
       expect(prefix).not.toContain('export function Button()');
+    });
+
+    it('recovers an assigned contract omitted by global planner packing without including unrelated files', () => {
+      const prefix = buildTaskScopedPrefix({
+        task: { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' },
+        effectiveFiles: [multiFiles[2]], originalFiles: multiFiles,
+        domainLanes: { 'src/auth/guard.ts': 'security_auth' }, repository: 'acme/test-repo',
+        headSha: 'abc1234', repositoryVisibility: 'PUBLIC', rules: [], preCheckEvidence: {},
+      });
+      expect(prefix).toContain('export function guard()');
+      expect(prefix).not.toContain('export function Button()');
+      expect(prefix).not.toContain('export function migrate()');
     });
   });
 

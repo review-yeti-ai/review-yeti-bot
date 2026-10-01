@@ -1416,6 +1416,42 @@ func TestBuildWorkerJobRefusesMalformedJevConfig(t *testing.T) {
 	}
 }
 
+func TestBuildWorkerJobDeletionEvidenceFlag(t *testing.T) {
+	now := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	initial, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnv(initial.Spec.Template.Spec.Containers[0], job.JevEvidenceEnv) {
+		t.Fatal("evidence questions must default off")
+	}
+	input.Publishing.JevEvidence = "owner/repo,owner/other"
+	active, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envValue(active.Spec.Template.Spec.Containers[0], job.JevEvidenceEnv) != input.Publishing.JevEvidence {
+		t.Fatal("allowlist not projected")
+	}
+	review.Spec.PublicationMode = "disabled"
+	disabled, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnv(disabled.Spec.Template.Spec.Containers[0], job.JevEvidenceEnv) {
+		t.Fatal("receipt-only job received classifier flag")
+	}
+	review.Spec.PublicationMode = "app-gate"
+	input.Publishing.JevEvidence = "owner/repo\n"
+	if _, err := job.BuildWorkerJob(input); err == nil {
+		t.Fatal("malformed allowlist accepted")
+	}
+}
+
 // REL-1079: REVIEW_YETI_DIFF_SHRINK was inert in production because the
 // operator builds a fixed worker env and never forwarded it. It must reach the
 // app-gate worker verbatim when configured, stay absent when not, and never
