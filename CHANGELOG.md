@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.106.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.105.1...v1.106.0) (2026-10-01)
+
+
+### Features
+
+* retain content-free terminal review telemetry ([#1210](https://github.com/review-yeti-ai/review-yeti-bot/issues/1210)) ([42e89e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/42e89e46c05866e476593885b162259b731e4b89))
+
 ## [1.105.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.105.0...v1.105.1) (2026-10-01)
 
 
