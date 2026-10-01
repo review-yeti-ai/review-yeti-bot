@@ -102,7 +102,22 @@ jobs:
     needs: test-plan
     if: needs.test-plan.outputs.shard-count != '0'
     name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # PEG DECLINED -- CPU-bound. Measured same-SHA on PR #1247 (run 36936581206)
+    # against the 4-vCPU main-branch baseline (runs 36936596114 / 36935551103).
+    # The node_modules sticky disk was WARM in the 2-vCPU run ("node_modules is
+    # warm ... skipping npm ci"), so this is CPU, not a cold-cache artifact:
+    #
+    #   shard   4vcpu   2vcpu   stretch   norm_4vcpu   norm_2vcpu
+    #   1/4      137s    289s    2.11x        548          578
+    #   2/4      145s    335s    2.31x        580          670
+    #   3/4      103s    221s    2.15x        412          442
+    #   4/4       90s    208s    2.31x        360          416
+    #
+    # Every shard stretches past the 2x budget where a vCPU cut starts losing on
+    # normalized compute (wall x vCPU), so 2 vCPU is the more expensive choice
+    # here even though the wall-clock saving looks like a win. Stage B of the
+    # main gate pegs WORKERS to nproc, so shard wall time tracks cores directly.
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     # Headroom for a cold node_modules disk (a lockfile change) on top of a full shard.
     timeout-minutes: 25
     permissions:

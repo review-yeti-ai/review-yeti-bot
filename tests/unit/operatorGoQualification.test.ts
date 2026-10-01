@@ -99,13 +99,12 @@ describe('embedded operator Go qualification workflow', () => {
   });
 
   it('leaves the existing Vitest job boundary and timeout intact', () => {
-    // The boundary under test is this job's shape (its own job, read-only
-    // permissions, no container, 25-minute ceiling), not its SKU. The SKU moved
-    // 4 -> 2 vCPU because an observed shard is 84-124s and the runner was never
-    // the binding constraint; every job in this workflow mounts a
-    // lockfile-keyed node_modules sticky disk, so a shard is startup- and
-    // I/O-bound rather than CPU-bound.
-    expect(vitest['runs-on']).toBe('blacksmith-2vcpu-ubuntu-2404');
+    // PEG DECLINED. The SKU stays at 4 vCPU because the shards are CPU-bound:
+    // measured same-SHA on PR #1247 against the 4-vCPU main baseline, every
+    // shard stretched 2.11x-2.31x, past the 2x budget where a vCPU cut loses on
+    // normalized compute (wall x vCPU). The node_modules sticky disk was warm in
+    // the 2-vCPU run, so this is CPU and not a cold-cache artifact.
+    expect(vitest['runs-on']).toBe('blacksmith-4vcpu-ubuntu-2404');
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
