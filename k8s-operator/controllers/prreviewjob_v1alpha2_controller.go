@@ -55,9 +55,9 @@ const (
 	MaxV1Alpha2ReconcileConcurrencyCap     = 64
 	v1Alpha2RequeueAfter                   = 5 * time.Second
 	v1Alpha2PVCCreateRequeue               = 1 * time.Second
-	workerCreationReserved           = "WorkerCreationReserved"
-	terminalOutcomeFinalizer         = "review-yeti.ai/terminal-outcome"
-	failurePublicationCondition      = "FailurePublication"
+	workerCreationReserved                 = "WorkerCreationReserved"
+	terminalOutcomeFinalizer               = "review-yeti.ai/terminal-outcome"
+	failurePublicationCondition            = "FailurePublication"
 
 	ConditionFencingEpochMismatch = reviewv1alpha2.ConditionFencingEpochMismatch
 	ConditionStaleWorkerLease     = reviewv1alpha2.ConditionStaleWorkerLease
@@ -1996,9 +1996,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
 
 func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob) error {
 	window := review.Spec.TerminalDeadline.Sub(review.Spec.ReceivedAt.Time)
-	exactWindow := time.Duration(job.MaxTerminalDeadlineSeconds) * time.Second
-	if window != exactWindow {
-		return errors.New("terminal deadline must be exactly 15 minutes after receivedAt")
+	minimumWindow := time.Duration(job.MinTerminalDeadlineSeconds) * time.Second
+	maximumWindow := time.Duration(job.MaxTerminalDeadlineSeconds) * time.Second
+	if window < minimumWindow || window > maximumWindow {
+		return errors.New("terminal deadline must be between 15 and 60 minutes after receivedAt")
 	}
 	if review.Namespace != job.Namespace {
 		return fmt.Errorf("review must run in namespace %q", job.Namespace)

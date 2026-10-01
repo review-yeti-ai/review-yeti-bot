@@ -719,7 +719,7 @@ func TestPRReviewJobV1Alpha2ReconcilerExpiresBeforeCreatingResources(t *testing.
 	}
 }
 
-// Pin the exact 15-minute admission invariant through Reconcile independently
+// Pin the bounded 15-to-60-minute admission invariant through Reconcile independently
 // from pkg/job's validation.
 func TestPRReviewJobV1Alpha2ReconcilerValidatesProjectionWindow(t *testing.T) {
 	received := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
@@ -732,10 +732,10 @@ func TestPRReviewJobV1Alpha2ReconcilerValidatesProjectionWindow(t *testing.T) {
 		{name: "one second under", window: 899 * time.Second, wantInvalid: true},
 		{name: "legacy queued one second under", window: 899 * time.Second, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
 		{name: "exactly fifteen minutes", window: 900 * time.Second, wantInvalid: false},
-		{name: "one second over", window: 901 * time.Second, wantInvalid: true},
-		{name: "legacy unmarked window", window: 35 * time.Minute, wantInvalid: true},
-		{name: "legacy queued window", window: 35 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
-		{name: "one hour queued window", window: 60 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
+		{name: "inside configured range", window: 35 * time.Minute, wantInvalid: false},
+		{name: "upper boundary", window: 60 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: false},
+		{name: "one second above upper boundary", window: 60*time.Minute + time.Second, wantInvalid: true},
+		{name: "queued within configured range", window: 35 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			scheme := v1alpha2Scheme(t)

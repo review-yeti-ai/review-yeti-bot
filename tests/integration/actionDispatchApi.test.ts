@@ -1358,7 +1358,7 @@ describe('POST /api/dispatch/action authoritative publishing', () => {
   });
 });
 
-describe('POST /api/dispatch/action (fixed 15-minute terminal deadline)', () => {
+describe('POST /api/dispatch/action (configured 15–60 minute terminal deadline)', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
@@ -1378,8 +1378,12 @@ describe('POST /api/dispatch/action (fixed 15-minute terminal deadline)', () => 
     return { instance, verifier, admission, resolveInstallationId };
   }
 
-  it('admits a run whose terminalDeadline is exactly 15 minutes after receipt', async () => {
-    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '900000');
+  it.each([
+    { label: 'minimum', configuredMs: '900000', expectedMs: 900_000 },
+    { label: 'interior', configuredMs: '2100000', expectedMs: 2_100_000 },
+    { label: 'maximum', configuredMs: '3600000', expectedMs: 3_600_000 },
+  ])('admits the configured $label terminal window', async ({ configuredMs, expectedMs }) => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', configuredMs);
     vi.resetModules();
     const fixture = await freshApp();
 
@@ -1391,7 +1395,7 @@ describe('POST /api/dispatch/action (fixed 15-minute terminal deadline)', () => 
     expect(response.status).toBe(202);
     expect(fixture.admission.admit).toHaveBeenCalledOnce();
     const admitted = fixture.admission.admit.mock.calls[0][0];
-    expect(admitted.terminalDeadline - admitted.receivedAt).toBe(900_000);
+    expect(admitted.terminalDeadline - admitted.receivedAt).toBe(expectedMs);
   });
 
   it('matches the fixed default when the environment is unset', async () => {
@@ -1408,10 +1412,11 @@ describe('POST /api/dispatch/action (fixed 15-minute terminal deadline)', () => 
 
   });
 
-  it('fails startup when configuration attempts to widen the ceiling', async () => {
-    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '1200000');
+  it('fails startup when configuration exceeds the supported maximum', async () => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '3600001');
     vi.resetModules();
-    await expect(import('../../src/api/actionDispatchApi')).rejects.toThrow(/must equal the 900000 millisecond/i);
+    await expect(import('../../src/api/actionDispatchApi'))
+      .rejects.toThrow(/must be an integer between 900000 and 3600000 milliseconds/i);
   });
 });
 
