@@ -251,7 +251,11 @@ describe('Zoekt completeness and shared direct session', () => {
         indexScope: { excludedDirectories: ['build'] } });
   });
 
-  it.each(['{bad json', JSON.stringify({ LineMatches: [] })])('discloses discarded records as incomplete', async (record) => {
+  it.each(['{bad json', JSON.stringify({ LineMatches: [] }),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: 'oops' }),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: [{ FileName: true }] }),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: [{ Line: '', LineNumber: 1 }] }),
+  ])('discloses discarded records as incomplete', async (record) => {
     const spawnImpl = vi.fn(() => {
       const child = makeFakeChild();
       queueMicrotask(() => { child.stdout.write(record + '\n'); child.stdout.end(); child.emit('exit', 0); });
