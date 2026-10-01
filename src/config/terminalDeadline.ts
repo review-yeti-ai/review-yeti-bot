@@ -2,7 +2,8 @@
  * Single source of truth for the review terminal deadline window.
  *
  * The DOKS execution lane admits a review with `terminalDeadline = receivedAt
- * + 15 minutes`, then hands the worker Job only the *remainder* of that window
+ * + configured window` (15 minutes by default, bounded at 60 minutes), then
+ * hands the worker Job only the *remainder* of that window
  * as `activeDeadlineSeconds`. Queue wait, capacity wait, image pull, review,
  * persistence, and publication all consume the same admitted budget. This is
  * intentionally a hard end-to-end service ceiling, not a worker-only timer.
@@ -12,37 +13,50 @@
  * persistence invariant), and `reviewJobProjection` (the Kubernetes
  * projection) -- and the Go operator (`k8s-operator/pkg/job` and its
  * controller) enforces its own copy against the same CR. All of them MUST
- * agree on the same window or a valid admission fails projection. This module
- * is the only place the TypeScript side computes it. The Go operator and CRD
- * enforce the same exact value; keep them in lockstep.
+ * agree on the same configured admission window or a valid admission fails
+ * projection. This module is the only place the TypeScript side resolves it.
+ * The Go operator and CRD enforce the same supported range; keep them in
+ * lockstep.
  */
 
 const ENV_VAR = 'REVIEW_YETI_TERMINAL_DEADLINE_MS';
 
 /**
- * Default and only accepted value: 15 minutes end to end.
+ * Minimum supported admission window and production default: 15 minutes.
  */
 export const DEFAULT_TERMINAL_DEADLINE_MS = 900_000;
 
 /**
- * Upper bound used only to finish runs persisted before the exact 15-minute
- * invariant shipped. It must never be used for admission or projection.
+ * Maximum supported admission window: 60 minutes. New admissions use the
+ * exact configured value; this upper bound also preserves compatibility with
+ * already-admitted longer runs.
  */
-export const LEGACY_MAX_TERMINAL_DEADLINE_MS = 3_600_000;
+export const MAX_TERMINAL_DEADLINE_MS = 3_600_000;
+
+/** Minimum accepted admission value. */
+export const MIN_TERMINAL_DEADLINE_MS = DEFAULT_TERMINAL_DEADLINE_MS;
+
+/** Retained name for the persisted-row recovery bound. */
+export const LEGACY_MAX_TERMINAL_DEADLINE_MS = MAX_TERMINAL_DEADLINE_MS;
 
 /**
  * Resolves the terminal-deadline window from `REVIEW_YETI_TERMINAL_DEADLINE_MS`,
- * falling back to `DEFAULT_TERMINAL_DEADLINE_MS` when unset. Throws on a value
- * other than the exact service ceiling, so a deployment cannot silently widen
- * the production SLA through configuration.
+ * falling back to `DEFAULT_TERMINAL_DEADLINE_MS` when unset. Only decimal
+ * integer milliseconds in the inclusive 15–60 minute range are accepted.
  */
 export function resolveTerminalDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[ENV_VAR];
   if (raw === undefined || raw.trim() === '') return DEFAULT_TERMINAL_DEADLINE_MS;
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value !== DEFAULT_TERMINAL_DEADLINE_MS) {
+  const normalized = raw.trim();
+  const value = Number(normalized);
+  if (
+    !/^\d+$/u.test(normalized)
+    || !Number.isSafeInteger(value)
+    || value < MIN_TERMINAL_DEADLINE_MS
+    || value > MAX_TERMINAL_DEADLINE_MS
+  ) {
     throw new Error(
-      `${ENV_VAR} must equal the ${DEFAULT_TERMINAL_DEADLINE_MS} millisecond end-to-end review ceiling (got ${JSON.stringify(raw)})`,
+      `${ENV_VAR} must be an integer between ${MIN_TERMINAL_DEADLINE_MS} and ${MAX_TERMINAL_DEADLINE_MS} milliseconds (got ${JSON.stringify(raw)})`,
     );
   }
   return value;
@@ -52,12 +66,10 @@ export function resolveTerminalDeadlineMs(env: NodeJS.ProcessEnv = process.env):
 export const TERMINAL_DEADLINE_MS = resolveTerminalDeadlineMs();
 
 /**
- * Validates that `terminalDeadline - receivedAt` is exactly 15 minutes -- the
- * same invariant the CRD's CEL rule and the Go operator enforce. Shared by
- * `reviewDispatchRepository`'s persistence invariant and
- * `reviewJobProjection`'s Kubernetes projection invariant so the two
- * cannot drift apart from each other the way they drifted from the CRD
- * before REL-733.
+ * Validates that `terminalDeadline - receivedAt` equals this process's
+ * configured admission window. New admissions use this exact check before
+ * persistence. The CRD and Go operator enforce the broader supported 15–60
+ * minute range for durable projections.
  */
 export function assertTerminalDeadlineWindow(receivedAt: number, terminalDeadline: number): void {
   const window = terminalDeadline - receivedAt;
@@ -65,16 +77,17 @@ export function assertTerminalDeadlineWindow(receivedAt: number, terminalDeadlin
     !Number.isFinite(receivedAt)
     || !Number.isFinite(terminalDeadline)
     || !Number.isFinite(window)
-    || window !== DEFAULT_TERMINAL_DEADLINE_MS
+    || window !== TERMINAL_DEADLINE_MS
   ) {
-    throw new Error(`terminal deadline must be exactly ${DEFAULT_TERMINAL_DEADLINE_MS}ms after receipt`);
+    throw new Error(`terminal deadline must be exactly ${TERMINAL_DEADLINE_MS}ms after receipt`);
   }
 }
 
 /**
- * Validates a previously persisted run so recovery can close pre-migration
- * 15–60-minute attempts. New admissions and Kubernetes projections must use
- * `assertTerminalDeadlineWindow` instead.
+ * Validates a previously persisted run so dispatch can project it and recovery
+ * can close it after the process configuration changes. New admissions must
+ * use `assertTerminalDeadlineWindow`; projections preserve the stored window
+ * within this supported range.
  */
 export function assertPersistedTerminalDeadlineWindow(receivedAt: number, terminalDeadline: number): void {
   const window = terminalDeadline - receivedAt;
@@ -82,11 +95,11 @@ export function assertPersistedTerminalDeadlineWindow(receivedAt: number, termin
     !Number.isFinite(receivedAt)
     || !Number.isFinite(terminalDeadline)
     || !Number.isFinite(window)
-    || window < DEFAULT_TERMINAL_DEADLINE_MS
-    || window > LEGACY_MAX_TERMINAL_DEADLINE_MS
+    || window < MIN_TERMINAL_DEADLINE_MS
+    || window > MAX_TERMINAL_DEADLINE_MS
   ) {
     throw new Error(
-      `persisted terminal deadline must be between ${DEFAULT_TERMINAL_DEADLINE_MS}ms and ${LEGACY_MAX_TERMINAL_DEADLINE_MS}ms after receipt`,
+      `persisted terminal deadline must be between ${MIN_TERMINAL_DEADLINE_MS}ms and ${MAX_TERMINAL_DEADLINE_MS}ms after receipt`,
     );
   }
 }

@@ -279,7 +279,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
       const data = JSON.parse(content.text);
       expect(data.found).toBe(false);
       expect(data.verdict).toBe('PENDING');
-      expect(data.phase).toBe('queued');
+      expect(data.phase).toBe('unknown');
       expect(data.run_id).toBeNull();
       expect(data.check_run).toBeNull();
     });

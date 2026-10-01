@@ -245,7 +245,9 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
         expect(data.head_sha).toBe(HEAD);
         expect(data.verdict).toBe('FAILED');
         expect(data.check_run).toBeNull();
+        expect(data.attempt_id).toBe('review-attempt-42-1');
         expect(data.timing).toEqual({
+          basis: 'control_plane_lifecycle',
           received_at: RECEIVED, created_at: CREATED, burst_started_at: CREATED,
           dispatched_at: null, started_at: null, completed_at: COMPLETED,
           cancel_requested_at: '2026-09-30T13:13:08.000Z',

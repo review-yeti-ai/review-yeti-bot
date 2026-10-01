@@ -158,7 +158,12 @@ function deps(over: Record<string, unknown> = {}) {
 
 describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', () => {
   it("never lets shadow findings gate the published verdict, even when severe enough to flip it", async () => {
-    const d = deps();
+    const composedCalls: Array<Record<string, unknown>> = [];
+    const composedReviewRunner = vi.fn(async (options: Record<string, unknown>) => {
+      composedCalls.push(options);
+      return severeComposedResult();
+    });
+    const d = deps({ composedReviewRunner: composedReviewRunner as never });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     // The panel itself is clean: if the three severe shadow P1s ever leaked into
     // `rawRoster.lanes`/`computeArbitration`, this would read BLOCK/failure instead.
@@ -167,6 +172,22 @@ describe('shadow mode (review_engine: shadow) -- non-gating composed evidence', 
     expect(receipt.blockingFindingCount).toBe(0);
     expect(receipt.findingCount).toBe(0);
     expect(d.composedReviewRunner).toHaveBeenCalledTimes(1);
+    expect(composedCalls[0]).toMatchObject({ publisherShadow: true });
+  });
+
+  it('does not mark the gating composed engine invocation as publisher shadow work', async () => {
+    const composedCalls: Array<Record<string, unknown>> = [];
+    const composedReviewRunner = vi.fn(async (options: Record<string, unknown>) => {
+      composedCalls.push(options);
+      return severeComposedResult();
+    });
+    const d = deps({ composedReviewRunner: composedReviewRunner as never });
+    const composedPolicy = SHADOW_POLICY_JSON.replace('"shadow"', '"composed"');
+
+    await runPublishingReviewWorker(env({ REVIEW_YETI_POLICY_JSON: composedPolicy }), d as never);
+
+    expect(composedCalls).toHaveLength(1);
+    expect(composedCalls[0]).not.toHaveProperty('publisherShadow');
   });
 
   it("swallows a composed-engine throw and still publishes the panel's verdict", async () => {

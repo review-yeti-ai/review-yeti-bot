@@ -918,9 +918,9 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
   }
 
   /**
-   * Read-only compatibility path for a delivery admitted before the exact
-   * 15-minute ceiling shipped. It cannot insert, retry, supersede, or update
-   * policy state: a legacy-width request is valid only when this exact durable
+   * Read-only compatibility path for a delivery admitted under a different
+   * supported window. It cannot insert, retry, supersede, or update policy
+   * state: a different-width request is valid only when this exact durable
    * delivery already exists and still matches its immutable identity.
    */
   private async readPersistedLegacyDuplicate(input: ReviewAdmissionInput): Promise<ReviewAdmission> {

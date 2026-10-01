@@ -1,6 +1,6 @@
 import type { PublicationMode } from '../review/reviewRun';
 import { parsePreparedReviewExecution } from '../review/preparedPublishingPolicy';
-import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
+import { assertPersistedTerminalDeadlineWindow } from '../config/terminalDeadline';
 
 const exactSha = /^[a-f0-9]{40}$/u;
 const exactDigest = /^[a-f0-9]{64}$/u;
@@ -180,7 +180,11 @@ export function buildReviewJobProjection(
   if (!Number.isFinite(input.receivedAt) || !Number.isFinite(input.terminalDeadline) || !Number.isFinite(now)) {
     throw new Error('review projection timestamps must be finite');
   }
-  assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
+  // This projection is built from the durable admission row, which can outlive
+  // a deployment configuration change. New admissions are checked against the
+  // current configured window in the repository; projection must preserve the
+  // stored window as long as it remains inside the shared supported range.
+  assertPersistedTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
   if (now < input.receivedAt) throw new Error('projection time cannot precede admission receipt');
   if (input.terminalDeadline - now < 120_000) {
     throw new Error('at least 120 seconds must remain before projection');
