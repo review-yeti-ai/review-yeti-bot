@@ -27,6 +27,9 @@ describe('original evidence pages', () => {
       originalChangedFiles: [{ path: 'x', patch: 'full patch' }] };
     expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, context)).content).toBe('full patch');
     expect((await runReadOnlyTool('get_diff', { path: 'x' }, context)).toolOutput).not.toContain('full patch');
+    const provider = createRepoFileProvider({} as GitHubInstallationClient, 'o', 'r', HEAD);
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, { ...context, repoFileProvider: provider })).content)
+      .toBe('full patch');
   });
 
   it('hashes a stable source once across pages and invalidates changed content', async () => {

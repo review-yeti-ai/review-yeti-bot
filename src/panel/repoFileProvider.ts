@@ -1,4 +1,4 @@
-import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
+import { MAX_PINNED_SOURCE_BYTES, MAX_SOURCE_CACHE_BYTES, MAX_SOURCE_CACHE_ENTRIES } from '../utils/sourceLimits';
 import type { GitHubInstallationClient } from '../github/installationClient';
 import { logger } from '../utils/logger';
 import type { RepoFileProvider } from './panelEngine';
@@ -54,7 +54,7 @@ export function createRepoFileProvider(github: GitHubInstallationClient, owner: 
           if (sourceCache.get(key) === current) {
             current.bytes = Buffer.byteLength(content ?? '', 'utf8');
             sourceBytes += current.bytes;
-            while (sourceBytes > 16_000_000 || sourceCache.size > 32) {
+            while (sourceBytes > MAX_SOURCE_CACHE_BYTES || sourceCache.size > MAX_SOURCE_CACHE_ENTRIES) {
               const oldest = sourceCache.keys().next().value;
               if (oldest === undefined) break;
               sourceBytes -= sourceCache.get(oldest)!.bytes;

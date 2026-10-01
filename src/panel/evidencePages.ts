@@ -1,4 +1,4 @@
-import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
+import { MAX_PINNED_SOURCE_BYTES, MAX_SOURCE_CACHE_BYTES, MAX_SOURCE_CACHE_ENTRIES } from '../utils/sourceLimits';
 import { createHash } from 'node:crypto';
 import type { ToolRuntimeContext, ToolRuntimeResult } from './toolRuntime';
 import { classifyUnavailablePatch } from '../review/patchAvailability';
@@ -19,7 +19,7 @@ function evidenceDigest(owner: object, key: string, text: string): string {
   cache.delete(key);
   if (bytes <= MAX_PINNED_SOURCE_BYTES) cache.set(key, { text, digest, bytes });
   let total = [...cache.values()].reduce((sum, entry) => sum + entry.bytes, 0);
-  while (cache.size > 32 || total > 16_000_000) {
+  while (cache.size > MAX_SOURCE_CACHE_ENTRIES || total > MAX_SOURCE_CACHE_BYTES) {
     const oldest = cache.keys().next().value!;
     total -= cache.get(oldest)!.bytes; cache.delete(oldest);
   }
@@ -54,8 +54,8 @@ export async function readEvidencePage(
   let identity: { repository: string; baseSha: string; headSha: string } | undefined;
   try {
     if (tool === 'get_diff_page') {
-      const original = context.repoFileProvider?.readDiff
-        ? context.repoFileProvider.readDiff(path) : (context.originalChangedFiles ?? context.changedFiles).find((file) => file.path === path);
+      const original = context.repoFileProvider?.readDiff?.(path)
+        ?? (context.originalChangedFiles ?? context.changedFiles).find((file) => file.path === path);
       if (typeof original?.patch !== 'string' || classifyUnavailablePatch(original.patch) !== null
         || (original.originalPatchLength ?? 0) > original.patch.length) {
         return result({ status: 'unavailable', reason: 'original_diff_unavailable', path });
