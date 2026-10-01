@@ -401,6 +401,9 @@ export async function runReadOnlyTool(
           zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig, { signal: options?.signal, session: options?.zoektConfig?.searchSession }),
           options?.signal,
         );
+        // This is a wire-envelope guard, not the index completeness policy:
+        // reject a contradictory receipt even if its producer says exhaustive.
+        // Index exclusions and revision checks remain owned by the search tool.
         isExhaustive = zoektRes.status === 'ok' && zoektRes.exhaustive === true && zoektRes.truncated !== true;
         toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: ${isExhaustive}]\n${JSON.stringify(zoektRes, null, 2)}`;
       } catch (err: any) {

@@ -255,6 +255,8 @@ describe('Zoekt completeness and shared direct session', () => {
     JSON.stringify({ FileName: 'a.ts', LineMatches: 'oops' }),
     JSON.stringify({ FileName: 'a.ts', LineMatches: [{ FileName: true }] }),
     JSON.stringify({ FileName: 'a.ts', LineMatches: [{ Line: '', LineNumber: 1 }] }),
+    'x'.repeat(4 * 1024 * 1024 + 1),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: [{ Line: Buffer.from('x'.repeat(501)).toString('base64'), LineNumber: 1 }] }),
   ])('discloses discarded records as incomplete', async (record) => {
     const spawnImpl = vi.fn(() => {
       const child = makeFakeChild();
