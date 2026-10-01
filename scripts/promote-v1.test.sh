@@ -658,16 +658,9 @@ if [[ "$(grep -Fc 'inputs.execution_backend ||' "$repo_root/.github/workflows/re
   exit 1
 fi
 
-# The hourly passthrough alarm must describe both backend contracts honestly:
-# legacy local publishes skipped compatibility checks, while DOKS publishes no
-# check and leaves protected merge blocked.
-# shellcheck disable=SC2016
-grep -Fq 'REVIEW_YETI_EXECUTION_BACKEND: ${{ vars.REVIEW_YETI_EXECUTION_BACKEND || '\''local'\'' }}' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
-grep -Fq 'No Review Yeti check is published' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
-grep -Fq 'protected raw App check remains unsatisfied' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
-grep -Fq 'Legacy hosted/local passthrough publishes skipped Review Yeti and compatibility Gate checks' "$repo_root/.github/workflows/passthrough-drift-alarm.yml"
-if grep -Fq "Every consumer repository's required Review Yeti check is publishing" "$repo_root/.github/workflows/passthrough-drift-alarm.yml"; then
-  echo "passthrough alarm must not claim universal neutral-check publication" >&2
+# Hourly passthrough drift alarm has been decommissioned
+if [[ -f "$repo_root/.github/workflows/passthrough-drift-alarm.yml" ]]; then
+  echo "passthrough-drift-alarm.yml has been retired and must not exist" >&2
   exit 1
 fi
 if grep -Fq 'Publishing Check Run' "$repo_root/.github/workflows/review-yeti.yml"; then

@@ -8,8 +8,7 @@ name: v1 promotion drift alarm
 # moves `v1` itself — promotion stays the exclusive writer.
 
 on:
-  schedule:
-    - cron: "23 * * * *" # hourly at :23
+  # Hourly schedule retired: 24 runs/day polling loop replaced by on-demand dispatch
   workflow_dispatch: {}
 
 permissions:
