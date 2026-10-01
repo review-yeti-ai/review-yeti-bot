@@ -16,14 +16,12 @@ concurrency:
   # The nightly run gets its own group. Sharing main's would let it replace a main push run that
   # is still pending behind a running one, and that push run is the one that publishes images.
   group: ct-review-system-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
-  # Cancel superseded runs on branches, never on main. Since releases became unattended
-  # (ADR 0513) every merge to main is followed within seconds by a release-please commit, so
-  # main's own post-merge validation was routinely cancelled mid-suite. A cancelled required
-  # check reads as neither pass nor fail: it is exactly the shape that hides a real failure,
-  # and it already did once here -- a genuine red on main was surrounded by cancellations and
-  # looked like more of the same. Branch runs keep cancelling; that is free runner time and
-  # nothing depends on their history.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  # Never cancel main or the nightly run. A ready_for_review event shares its PR's
+  # concurrency group with the active draft run; let the ready run queue rather than cancel
+  # that run, whose required fail-closed aggregate would then see cancelled prerequisites.
+  # This can temporarily queue duplicate validation. It is not a no-cancellation promise:
+  # a later synchronize or other superseding branch event can still cancel or replace work.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.action == 'ready_for_review') }}
 
 jobs:
   # Ordinary quality checks run while the author prepares a draft. Paid native
