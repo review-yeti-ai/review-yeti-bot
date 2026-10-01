@@ -8,7 +8,7 @@
  * - Tier 2: Boundary & Corner Cases (F1 to F12 boundary analysis, 60 tests)
  * - Tier 3: Cross-Feature Combinations (8 pairwise interaction workflows)
  * - Tier 4: Real-World Application Scenarios (6 full-lifecycle end-to-end runs)
- * Total: 134 Tests
+ * Total: 135 Tests
  *
  * NOTE: Go CRD validation and operator reconciliation behaviors tested in this file are
  * evaluated using TypeScript contract simulation models (`validateGoCRDSpecCEL` and
@@ -20,6 +20,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { execSync } from 'child_process';
+import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 import {
   K8sJobRunner,
   computeRequestDigest,
@@ -235,7 +236,7 @@ export const ConditionUnknownEffectPending = 'UnknownEffectPending';
 
 export function makeValidGoPRReviewJob(overrides?: Partial<GoPRReviewJobSpec>): GoPRReviewJob {
   const now = new Date('2026-09-27T18:00:00.000Z');
-  const deadline = new Date(now.getTime() + 900 * 1000); // exact 15-minute end-to-end budget
+  const deadline = new Date(now.getTime() + 900 * 1000); // 15-minute default end-to-end budget
   return {
     apiVersion: 'review.example.com/v1alpha2',
     kind: 'PRReviewJob',
@@ -342,10 +343,10 @@ export function validateGoCRDSpecCEL(
   const tRec = new Date(spec.receivedAt).getTime();
   const tDead = new Date(spec.terminalDeadline).getTime();
   const diffSec = (tDead - tRec) / 1000;
-  if (diffSec !== 900) {
+  if (diffSec < MIN_TERMINAL_DEADLINE_MS / 1_000 || diffSec > MAX_TERMINAL_DEADLINE_MS / 1_000) {
     return {
       valid: false,
-      error: 'terminalDeadline must be exactly 15 minutes after receivedAt',
+      error: 'terminalDeadline must be between 15 and 60 minutes after receivedAt',
     };
   }
 
@@ -504,6 +505,26 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
   afterEach(() => {
     process.env = envBackup;
     vi.restoreAllMocks();
+  });
+
+  it('validates the CRD terminal deadline across the supported 15–60 minute range', () => {
+    const job = makeValidGoPRReviewJob();
+    const receivedAt = new Date(job.spec.receivedAt).getTime();
+    for (const window of [MIN_TERMINAL_DEADLINE_MS, 2_100_000, MAX_TERMINAL_DEADLINE_MS]) {
+      const candidate = makeValidGoPRReviewJob({
+        terminalDeadline: new Date(receivedAt + window).toISOString(),
+      });
+      expect(validateGoCRDSpecCEL(candidate.spec).valid).toBe(true);
+    }
+    for (const window of [MIN_TERMINAL_DEADLINE_MS - 1, MAX_TERMINAL_DEADLINE_MS + 1]) {
+      const candidate = makeValidGoPRReviewJob({
+        terminalDeadline: new Date(receivedAt + window).toISOString(),
+      });
+      expect(validateGoCRDSpecCEL(candidate.spec)).toEqual({
+        valid: false,
+        error: 'terminalDeadline must be between 15 and 60 minutes after receivedAt',
+      });
+    }
   });
 
   // =========================================================================

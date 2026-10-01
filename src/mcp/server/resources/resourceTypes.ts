@@ -12,7 +12,7 @@ export interface ReviewRunResourceData {
   found: boolean;
   run_id: string | null;
   head_sha: string | null;
-  phase: 'queued' | 'evaluating_personas' | 'arbitration' | 'completed';
+  phase: 'queued' | 'running' | 'evaluating_personas' | 'arbitration' | 'completed' | 'unknown';
   verdict: 'SHIP' | 'NACK' | 'COMMENT' | 'FIX_FIRST' | 'PENDING' | 'RUNNING' | 'FAILED';
   attempt_id: string | null;
   check_run: {

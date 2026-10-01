@@ -28,7 +28,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
       expect(res.found).toBe(false);
       expect(res.run_id).toBeNull();
       expect(res.head_sha).toBeNull();
-      expect(res.phase).toBe('queued');
+      expect(res.phase).toBe('unknown');
       expect(res.verdict).toBe('PENDING');
       expect(res.attempt_id).toBeNull();
       expect(res.check_run).toBeNull();
@@ -46,7 +46,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
       expect(mockDb.query).toHaveBeenCalledTimes(1);
       expect(res.found).toBe(false);
       expect(res.verdict).toBe('PENDING');
-      expect(res.phase).toBe('queued');
+      expect(res.phase).toBe('unknown');
       expect(res.run_id).toBeNull();
       expect(res.head_sha).toBeNull();
       expect(res.attempt_id).toBeNull();
@@ -68,7 +68,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
       expect(mockDb.query).toHaveBeenCalledTimes(2);
       expect(res.found).toBe(false);
       expect(res.verdict).toBe('PENDING');
-      expect(res.phase).toBe('queued');
+      expect(res.phase).toBe('unknown');
       expect(res.run_id).toBeNull();
     });
 
@@ -102,6 +102,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
             rows: [
               {
                 run_id: 'run-phase-test',
+                head_sha: 'a'.repeat(40),
                 owner: 'exampleorg',
                 repo: 'example-api',
                 pr_number: 10,
@@ -136,6 +137,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
             rows: [
               {
                 run_id: 'run-verdict',
+                head_sha: 'a'.repeat(40),
                 owner: 'exampleorg',
                 repo: 'example-api',
                 pr_number: 1,
@@ -168,6 +170,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
             rows: [
               {
                 run_id: 'run-desired',
+                head_sha: 'a'.repeat(40),
                 owner: 'exampleorg',
                 repo: 'example-api',
                 pr_number: 1,
@@ -196,6 +199,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
             rows: [
               {
                 run_id: 'run-status',
+                head_sha: 'a'.repeat(40),
                 owner: 'exampleorg',
                 repo: 'example-api',
                 pr_number: 1,
@@ -215,6 +219,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
           rows: [
             {
               run_id: 'run-check',
+                head_sha: 'a'.repeat(40),
               owner: 'exampleorg',
               repo: 'example-api',
               pr_number: 77,
