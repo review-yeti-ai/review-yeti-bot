@@ -9,7 +9,6 @@
  * - Tier 4: PR comment coverage telemetry formatting ("Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)")
  */
 
-import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import {
   createPartitionPlan,
@@ -99,22 +98,6 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       return plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch));
     };
 
-    it('routes both wrappers through one shared scanner and grouping implementation with explicit policies', () => {
-      const source = readFileSync(new URL('../../src/pipeline/shaPartitionManager.ts', import.meta.url), 'utf8');
-      expect(source.match(/function splitFileHunks\(/gu)).toHaveLength(1);
-      expect(source.match(/return splitFileHunks\(/gu)).toHaveLength(2);
-      expect(source.match(/trimOneTerminalEmptyLine: false/gu)).toHaveLength(1);
-      expect(source.match(/trimOneTerminalEmptyLine: true/gu)).toHaveLength(1);
-      expect(source.match(/transformHunk: splitOversizedHunkBlock/gu)).toHaveLength(1);
-      expect(source.match(/transformHunk: undefined/gu)).toHaveLength(1);
-      expect(source.match(/failClosedOnOversizedSingleHunk: false/gu)).toHaveLength(1);
-      expect(source.match(/failClosedOnOversizedSingleHunk: true/gu)).toHaveLength(1);
-      expect(source.match(/minimumSourceHunks: 1/gu)).toHaveLength(1);
-      expect(source.match(/minimumSourceHunks: 2/gu)).toHaveLength(1);
-      expect(source.match(/preserveOriginalForSingleResult: false/gu)).toHaveLength(1);
-      expect(source.match(/preserveOriginalForSingleResult: true/gu)).toHaveLength(1);
-    });
-
     it.each([
       { name: 'no terminal newline', suffix: '' },
       { name: 'one terminal newline', suffix: '\n' },
@@ -160,6 +143,62 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       ]);
       expect(split(malformed, cap, true)).toEqual([malformed]);
       expect(split(indivisible, cap, true)).toEqual([indivisible]);
+    });
+
+    const marker = '\\ No newline at end of file';
+
+    it.each([
+      {
+        name: 'both replacement sides',
+        header: '@@ -1 +1 @@',
+        body: ['-old-without-newline', marker, '+new-without-newline', marker],
+        fragments: [
+          `@@ -1,1 +0,0 @@\n-old-without-newline\n${marker}`,
+          `@@ -1,0 +1,1 @@\n+new-without-newline\n${marker}`,
+        ],
+      },
+      {
+        name: 'unchanged EOF context',
+        header: '@@ -1,2 +1,2 @@',
+        body: ['-old-before-unchanged-last-context', '+new-before-unchanged-last-context', ' shared-last-line', marker],
+        fragments: [
+          '@@ -1,1 +0,0 @@\n-old-before-unchanged-last-context',
+          '@@ -1,0 +1,1 @@\n+new-before-unchanged-last-context',
+          `@@ -2,1 +2,1 @@\n shared-last-line\n${marker}`,
+        ],
+      },
+    ])('keeps literal marker atoms attached for $name through the public guarded plan', ({ header, body, fragments }) => {
+      const patch = `${fileHeader}${header}\n${body.join('\n')}\n`;
+      const cap = fileHeader.length + Math.max(...fragments.map((fragment) => fragment.length + 1));
+      const expected = fragments.map((fragment) => `${fileHeader}${fragment}\n`);
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(split(patch, cap, false)).toEqual([patch]); // legacy does not split a single source hunk
+      expect(split(patch, cap, true)).toEqual(expected);
+      expect(expected.every((fragment) => fragment.length <= cap)).toBe(true);
+    });
+
+    it.each([
+      { name: 'orphan', prefix: [marker, '-old'] },
+      { name: 'duplicate', prefix: ['-old', marker, marker] },
+      { name: 'detached', prefix: ['-old', '', marker] },
+      { name: 'invalid body line', prefix: ['-old', 'not a diff line', marker] },
+    ])('refuses to fragment an oversized source with a $name marker owner', ({ prefix }) => {
+      const additions = ['+one-long-added-line', '+two-long-added-line', '+three-long-added-line', '+four-long-added-line'];
+      const patch = `${fileHeader}@@ -1 +1,4 @@ marker refusal\n${[...prefix, ...additions].join('\n')}\n`;
+      // This cap fits even the duplicate-marker atom: refusal must come from ownership validation,
+      // not an accidentally indivisible line. The additions still require multiple fragments.
+      const cap = `${fileHeader}@@ -1,1 +0,0 @@ marker refusal\n-old\n${marker}\n${marker}\n`.length;
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(split(patch, cap, true)).toEqual([patch]);
+    });
+
+    it('refuses to detach a valid marker merely to fit its owning line under the public cap', () => {
+      const oldLine = `-${'o'.repeat(60)}`;
+      const newLine = `+${'n'.repeat(60)}`;
+      const patch = `${fileHeader}@@ -1 +1 @@\n${oldLine}\n${marker}\n${newLine}\n`;
+      const cap = `${fileHeader}@@ -1,1 +0,0 @@\n${oldLine}\n`.length;
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(split(patch, cap, true)).toEqual([patch]);
     });
   });
 

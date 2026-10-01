@@ -96,17 +96,20 @@ export function parseUnifiedHunk(hunk: string): ParsedUnifiedHunk | null {
   return { oldStart, oldCount, newStart, newCount, section: match[5], body };
 }
 
+/** A marker belongs only to the immediately preceding diff line, never another marker. */
+function canOwnNoNewlineMarker(previousLine: string | undefined): boolean {
+  return previousLine !== undefined
+    && (previousLine.startsWith(' ') || previousLine.startsWith('+') || previousLine.startsWith('-'));
+}
+
 function unifiedHunkCounts(lines: string[]): { oldCount: number; newCount: number } | null {
   let oldCount = 0;
   let newCount = 0;
   let actualDiffLineCount = 0;
-  // This canonical owner-state rule is also used by the guarded Action validator; hunkLineAtoms
-  // keeps an accepted marker attached to that same line when a fragment boundary is chosen.
-  let previousLineCanOwnNoNewlineMarker = false;
-  for (const line of lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     if (line === '\\ No newline at end of file') {
-      if (!previousLineCanOwnNoNewlineMarker) return null;
-      previousLineCanOwnNoNewlineMarker = false;
+      if (!canOwnNoNewlineMarker(lines[index - 1])) return null;
       continue;
     }
     if (line.startsWith(' ')) {
@@ -120,18 +123,17 @@ function unifiedHunkCounts(lines: string[]): { oldCount: number; newCount: numbe
       return null;
     }
     actualDiffLineCount += 1;
-    previousLineCanOwnNoNewlineMarker = true;
   }
   return actualDiffLineCount > 0 ? { oldCount, newCount } : null;
 }
 
 function hunkLineAtoms(body: string[]): string[][] | null {
   const atoms: string[][] = [];
-  for (const line of body) {
+  for (let index = 0; index < body.length; index += 1) {
+    const line = body[index];
     if (line === '\\ No newline at end of file') {
-      const previous = atoms.at(-1);
-      if (!previous || previous.includes(line)) return null;
-      previous.push(line);
+      if (!canOwnNoNewlineMarker(body[index - 1])) return null;
+      atoms[atoms.length - 1].push(line);
     } else {
       atoms.push([line]);
     }
