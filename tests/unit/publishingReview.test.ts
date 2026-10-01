@@ -3135,6 +3135,40 @@ describe('operational telemetry terminal callback counterfactual',()=>{
 });
 
 
+it('keeps configured-deadline panel failure telemetry before any provider call and leaves unobserved legacy diagnostics optional', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-01T08:00:00Z'));
+  try {
+    for (const deadlineConfigured of [true, false]) {
+      const original = new Error('fixture pre-provider panel failure');
+      const completion = { reportTerminalFailure: vi.fn(async (_event: Parameters<HttpWorkerCompletionAdapter['reportTerminalFailure']>[0]) => undefined) };
+      const client = { complete: vi.fn(async () => { throw new Error('unexpected provider invocation'); }) };
+      const panelRunner = vi.fn(async () => { throw original; });
+      const input = env(deadlineConfigured ? { REVIEW_TERMINAL_DEADLINE: new Date(Date.now() + 900_000).toISOString() } : {});
+      await expect(runPublishingReviewWorker(input, deps({ client, panelRunner, completion,
+        zoektGrounding: vi.fn(async () => ({})) }) as never)).rejects.toBe(original);
+      expect(panelRunner).toHaveBeenCalledOnce();
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+      const event = completion.reportTerminalFailure.mock.calls[0]![0];
+      expect(event).toMatchObject({ runId: input.REVIEW_RUN_ID, headSha: HEAD, executionAttempt: 1, failureClass: 'internal_error' });
+      if (deadlineConfigured) {
+        expect(event.diagnostics).toMatchObject({ operationalTelemetry: {
+          panel: { invoked: true },
+          providerCalls: { started: 0, completed: 0, failed: 0, aborted: 0, inflight: 0 },
+          responseUsage: { availability: 'unknown', responses: 0, totals: {} },
+          phaseCounts: { panel: { started: 1, completed: 0, failed: 1, aborted: 0 } },
+        } });
+      } else {
+        expect(event.diagnostics).not.toHaveProperty('operationalTelemetry');
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it('keeps content-free answered-call observations in the native thrown-infrastructure receipt',async()=>{
   const content=JSON.stringify({schema:'calltelemetry.review-policy.v1',review_yeti:{personas:'security,testing',budget:{max_investigation_turns:1}}});
   const transport={baseUrl:'https://gateway.example.invalid/v1',model:'prepared-review-model'};
