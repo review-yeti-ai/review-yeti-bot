@@ -48,6 +48,40 @@ export const SAFE_TXT_BASENAMES = new Set([
 ]);
 
 /**
+ * Known dependency lockfile basenames. Lockfiles and large data files bypass deep multi-turn
+ * LLM review and full raw file loading, receiving diff-only validation instead.
+ */
+export const LOCKFILE_BASENAMES = new Set([
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'mix.lock',
+  'gemfile.lock',
+  'cargo.lock',
+  'poetry.lock',
+  'composer.lock',
+  'flake.lock',
+  'go.sum',
+  'shrinkwrap.json',
+]);
+
+/**
+ * Returns true if a file path is a dependency lockfile or pure data/JSON file that bypasses
+ * deep multi-turn LLM evaluation and receives diff-only inspection.
+ */
+export function isBypassDiffOnlyPath(filePath: string): boolean {
+  const p = (filePath || '').toLowerCase().replace(/\\/g, '/').trim();
+  if (!p) return false;
+  const baseName = p.split('/').pop() || p;
+  if (LOCKFILE_BASENAMES.has(baseName)) return true;
+  if (baseName.endsWith('.lock') || baseName.endsWith('.sum')) return true;
+  if (baseName.endsWith('.json') && baseName !== 'package.json' && baseName !== 'tsconfig.json') {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Classify a changed file path into a primary domain lane using deterministic heuristics.
  * Zero-token, instant, fail-closed classification.
  */
