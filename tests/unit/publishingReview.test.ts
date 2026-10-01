@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
-import { createPanelDeadlineSignal, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
+import { workerFailureClasses } from '../../src/types/workerFailure';
 import type { WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
@@ -1803,6 +1804,34 @@ describe('identity and failure classification', () => {
     expect(classifyFailure(new Error('unexpected invariant violation'))).toBe('internal_error');
   });
 
+  it.each(workerFailureClasses)('preserves the actual panel error declared class %s instead of inferring it from wording', (failureClass) => {
+    const error = new PanelConfigurationError('unexpected invariant violation', { failureClass });
+    expect(classifyFailure(error)).toBe(failureClass);
+  });
+
+  it.each([
+    { name: 'PanelConfigurationError', message: 'unexpected invariant violation', failureClass: 'contract' },
+    Object.assign(new Error('unexpected invariant violation'), { failureClass: 'contract' }),
+    Object.assign(new Error('unexpected invariant violation'), { failureClass: 'SHIP' }),
+    new PanelConfigurationError('unexpected invariant violation'),
+    new PanelConfigurationError('unexpected invariant violation', { failureClass: 'SHIP' as never }),
+  ])('does not trust undeclared or out-of-contract failure-class claims (%#)', (error) => {
+    expect(classifyFailure(error)).toBe('internal_error');
+  });
+
+  it.each([
+    [new PanelDeadlineExceededError(1_000), 'timeout'],
+    [new OpenRouterTimeoutError('deadline'), 'timeout'],
+    [new OpenRouterConnectionError('socket closed'), 'transport'],
+    [new OpenRouterResponseError('unauthorized', 401), 'auth'],
+    [new OpenRouterResponseError('busy', 429), 'rate_limit'],
+    [new OpenRouterResponseError('upstream failed', 503), 'provider_error'],
+    [new UpstreamCapacityRejectionError('bifrost', 'queue full'), 'rate_limit'],
+  ])('keeps the typed deadline/gateway precedence even with a conflicting declaration (%#)', (error, expected) => {
+    Object.defineProperty(error, 'failureClass', { value: 'contract' });
+    expect(classifyFailure(error)).toBe(expected);
+  });
+
   it('classifies a GitHub HTTP 406 qualification-read failure as contract, never internal_error', () => {
     const failureClass = classifyFailure(new GitHubQualificationReadError('GitHub qualification read failed HTTP 406', 2, 406));
     expect(failureClass).toBe('contract');
@@ -1840,6 +1869,95 @@ describe('identity and failure classification', () => {
   ])('classifies typed gateway error %s as %s', (error, expected) => {
     expect(classifyFailure(error)).toBe(expected);
   });
+});
+
+describe('real composed plan rejection reaches fail-closed publication', () => {
+  const policy = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+    personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 3 },
+  } });
+  const cases = [
+    ['invalid_task_fields', [5, 5], 'contract'],
+    ['nonce', [5, 5], 'contract'],
+    ['coverage_gap', [5, 5], 'contract'],
+    ['invalid_task_fields', [0, 5], 'provider_error'],
+    ['nonce', [5, 0], 'provider_error'],
+    ['coverage_gap', [0, 0], 'provider_error'],
+  ] as const;
+
+  for (const authoritative of [false, true]) {
+    it.each(cases)('publishes the engine-declared %s rejection (%j tokens, %s; authoritative=' + authoritative + ')', async (reason, completionTokens, expected) => {
+      const input = env({ REVIEW_YETI_POLICY_JSON: policy });
+      const reportTerminalFailure = vi.fn(async () => undefined);
+      const reportReviewResult = vi.fn(async () => undefined);
+      if (authoritative) {
+        const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+        const prepared = preparePublishingPolicy({ content: policy, source: {
+          repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+          contentDigest: createHash('sha256').update(policy).digest('hex'),
+        } }, transport);
+        Object.assign(input, {
+          REVIEW_AUTHORITATIVE_GATE: 'true',
+          REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+          REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/completion',
+          REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest,
+          REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+        });
+      }
+      const diff = DIFF + 'diff --git a/src/b.ts b/src/b.ts\n@@ -1 +1 @@\n-old\n+new\n';
+      let turn = 0;
+      const complete = vi.fn(async (request: { messages: Array<{ content: unknown }> }) => {
+        const text = JSON.stringify(request.messages);
+        const nonce = text.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/u)?.[1];
+        expect(nonce).toBeTruthy();
+        expect(text).toContain('PLAN TURN');
+        expect(text).not.toContain('WORK TURN');
+        const tokens = completionTokens[turn++];
+        expect(tokens).toBeDefined();
+        return { model: 'fixture-model', content: JSON.stringify({
+          nonce: reason === 'nonce' ? 'fixture-wrong-nonce' : nonce,
+          tasks: [{ id: 'contract-api', dimension: 'contract',
+            paths: reason === 'coverage_gap' ? ['src/a.ts'] : ['src/a.ts', 'src/b.ts'],
+            question: reason === 'invalid_task_fields' ? '' : 'Does the API preserve its contract?',
+            rationale: 'Changed API source.' }],
+        }), usage: { prompt: 10, completion: tokens, total: 10 + tokens }, costUSD: null, raw: {} };
+      });
+      // Only transport/read/publication seams are fixtures; no composed runner override.
+      const d = deps({ client: { complete },
+        sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })),
+        zoektGrounding: vi.fn(async () => ({})),
+        ...(authoritative ? { reviewCompletion: { reportReviewResult } }
+          : { completion: { reportTerminalFailure } }),
+      });
+      const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
+      const error = await runPublishingReviewWorker(input, d).then(() => undefined, (failure: unknown) => failure);
+      expect(error).toBeInstanceOf(PanelConfigurationError);
+      expect(error).toMatchObject({ failureClass: expected });
+      expect((error as Error).message).toContain(reason === 'nonce' ? 'plan "nonce" did not match' : `(${reason})`);
+      expect(classifyFailure(error)).toBe(expected);
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(d.panelRunner).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(d.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        conclusion: 'failure', checkId: 4242,
+      }));
+      if (authoritative) {
+        expect(reportReviewResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          result: expect.objectContaining({ coverageComplete: false, quorumSatisfied: false,
+            personas: [
+              { id: 'sec-lane', decision: 'ERROR', status: 'ERROR', errorClass: expected, findings: [] },
+              { id: 'qual-lane', decision: 'ERROR', status: 'ERROR', errorClass: expected, findings: [] },
+            ],
+          }),
+        }));
+        expect(reportTerminalFailure).not.toHaveBeenCalled();
+      } else {
+        expect(reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+          failureClass: expected, diagnostics: expect.not.objectContaining({ recoverableIncompletePanel: true }),
+        }));
+        expect(reportReviewResult).not.toHaveBeenCalled();
+      }
+    });
+  }
 });
 
 describe('worker terminal failure adapter', () => {
