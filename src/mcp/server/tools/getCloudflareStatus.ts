@@ -94,6 +94,9 @@ export function createGetCloudflareStatusTool(options?: { cfOrchestratorUrl?: st
           active_runner: 'cloudflare',
           default_runner: 'cloudflare',
           supported_runners: ['cloudflare', 'digitalocean'],
+          aliases: {
+            digitalocean: ['mars', 'do'],
+          },
         },
       });
     },
