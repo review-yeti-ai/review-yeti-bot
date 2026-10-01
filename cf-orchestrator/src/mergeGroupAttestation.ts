@@ -374,13 +374,12 @@ export async function fetchAllCheckRunsForCommit(params: {
 }
 
 /**
- * Verifies that a constituent PR possesses a valid, successful, App-owned Review Yeti check.
- * Replicates the exact criteria from the validated shell script:
- * - name == REQUIRED_CONTEXT
- * - app.id == REQUIRED_APP_ID
+ * Verifies that a constituent PR possesses a valid, successful, App-owned Review Yeti check:
+ * - name == REQUIRED_CHECK_NAME ('Review Yeti')
+ * - app.id == REQUIRED_APP_ID (4385771)
  * - external_id matches ^run_[a-f0-9]{32}:a[1-9][0-9]*$ (excludes synthetic merge-group attestations)
  * - started_at is non-empty string and id is number
- * - newest review (sorted by started_at, then id) has status completed and conclusion success
+ * - newest review (sorted chronologically by started_at, with numeric id tie-breaker) has status 'completed' and conclusion 'success'
  */
 export function verifyConstituentChecks(
   checks: CheckRunRecord[],
@@ -634,33 +633,35 @@ export function isNonCallerLine(line: string): boolean {
   return false;
 }
 
-export function lineCallsSymbol(line: string, symbol: string): boolean {
-  if (isNonCallerLine(line)) return false;
-
-  const sanitized = sanitizeCodeLine(line);
-  if (!sanitized) return false;
-
-  for (const prefix of STANDARD_LIBRARY_MODULE_PREFIXES) {
-    if (sanitized.includes(`${prefix}${symbol}`)) {
-      return false;
-    }
-  }
-
+export function createSymbolMatcher(symbol: string): (line: string) => boolean {
   const escaped = escapeRegex(symbol);
-
-  // 1. Elixir pipe invocation (e.g. `data |> authenticate`, `data |> Auth.authenticate()`)
   const pipePattern = new RegExp(`\\|>\\s*(?:[a-zA-Z0-9_]+\\.)*${escaped}(?![a-zA-Z0-9_!?:])`);
-  if (pipePattern.test(sanitized)) return true;
-
-  // 2. Elixir function capture (e.g. `&authenticate/1`, `&Auth.authenticate/2`)
   const capturePattern = new RegExp(`&\\s*(?:[a-zA-Z0-9_]+\\.)*${escaped}\\/\\d+`);
-  if (capturePattern.test(sanitized)) return true;
-
-  // 3. Standard function/method invocation
   const pattern = new RegExp(
     `(?<![:a-zA-Z0-9_])${escaped}(?![a-zA-Z0-9_!?:]|\\s*->|\\s*do\\b)(?:\\s*\\(|\\s+[^=,\\s])`
   );
-  return pattern.test(sanitized);
+  const prefixesWithSymbol = STANDARD_LIBRARY_MODULE_PREFIXES.map((prefix) => `${prefix}${symbol}`);
+
+  return (line: string): boolean => {
+    if (isNonCallerLine(line)) return false;
+
+    const sanitized = sanitizeCodeLine(line);
+    if (!sanitized) return false;
+
+    for (const prefixWithSym of prefixesWithSymbol) {
+      if (sanitized.includes(prefixWithSym)) {
+        return false;
+      }
+    }
+
+    if (pipePattern.test(sanitized)) return true;
+    if (capturePattern.test(sanitized)) return true;
+    return pattern.test(sanitized);
+  };
+}
+
+export function lineCallsSymbol(line: string, symbol: string): boolean {
+  return createSymbolMatcher(symbol)(line);
 }
 
 /**
@@ -701,21 +702,23 @@ export async function evaluateCompositeDeltaHazards(params: {
   const filesByPr = new Map<number, Array<{ filename: string; patch?: string; status?: string }>>();
 
   try {
-    // Fetch changed files for all constituent PRs
-    for (const pr of constituentPrs) {
-      if (mockPrFiles && mockPrFiles.has(pr.number)) {
-        filesByPr.set(pr.number, mockPrFiles.get(pr.number)!);
-      } else {
-        const files = await fetchAllChangedFilesForPr({
-          owner,
-          repo,
-          prNumber: pr.number,
-          token,
-          fetchFn,
-        });
-        filesByPr.set(pr.number, files);
-      }
-    }
+    // Fetch changed files for all constituent PRs concurrently
+    await Promise.all(
+      constituentPrs.map(async (pr) => {
+        if (mockPrFiles && mockPrFiles.has(pr.number)) {
+          filesByPr.set(pr.number, mockPrFiles.get(pr.number)!);
+        } else {
+          const files = await fetchAllChangedFilesForPr({
+            owner,
+            repo,
+            prNumber: pr.number,
+            token,
+            fetchFn,
+          });
+          filesByPr.set(pr.number, files);
+        }
+      })
+    );
 
     // Fetch or mock base drift files (represented by PR 0 / main drift)
     if (hasBaseDrift || (mockPrFiles && mockPrFiles.has(0)) || mockBaseDriftFiles) {
@@ -851,6 +854,12 @@ export async function evaluateCompositeDeltaHazards(params: {
     }
   }
 
+  // Precompile matchers once per modified symbol to avoid quadratic RegExp re-creation
+  const symbolMatchers = new Map<string, (line: string) => boolean>();
+  for (const sym of deletedOrModifiedSymbols.keys()) {
+    symbolMatchers.set(sym, createSymbolMatcher(sym));
+  }
+
   for (const [prNum, files] of filesByPr.entries()) {
     for (const f of files) {
       if (f.patch) {
@@ -861,7 +870,8 @@ export async function evaluateCompositeDeltaHazards(params: {
 
         for (const [symbol, origin] of deletedOrModifiedSymbols.entries()) {
           if (origin.prNumber !== prNum) {
-            const callsSymbol = addedLines.some((l) => lineCallsSymbol(l, symbol));
+            const matcher = symbolMatchers.get(symbol)!;
+            const callsSymbol = addedLines.some((l) => matcher(l));
             if (callsSymbol) {
               const originLabel = origin.prNumber === 0 ? baseLabel : `PR #${origin.prNumber} (${origin.file})`;
               const currentLabel = prNum === 0 ? baseLabel : `PR #${prNum} (${f.filename})`;
@@ -989,7 +999,10 @@ export async function handleMergeGroupAttestation(
     throw new Error('Bad Request: Missing or invalid repository owner/name in payload');
   }
 
-  const token = env.GITHUB_TOKEN || 'app-token-4385771';
+  const token = env.GITHUB_TOKEN;
+  if (!token) {
+    throw new Error('Configuration error: GITHUB_TOKEN is not set');
+  }
   const requiredAppId = env.GITHUB_APP_ID || DEFAULT_REQUIRED_APP_ID;
 
   const baseBranch = normalizeBaseBranch(baseRef);
@@ -1059,46 +1072,35 @@ export async function handleMergeGroupAttestation(
 
   const constituentPrs = queueResult.prs;
 
-  // 2. Verify all constituent PRs possess exact-head Review Yeti checks
-  for (const pr of constituentPrs) {
-    let checks: CheckRunRecord[] = [];
-    try {
-      checks = await fetchAllCheckRunsForCommit({
-        owner,
-        repo,
-        commitSha: pr.head_sha,
-        token,
-        fetchFn,
-      });
-    } catch (err: any) {
-      const summary = `Merge group attestation blocked: Failed to fetch check-runs for PR #${pr.number} at ${pr.head_sha}: ${err?.message || String(err)}`;
-      const pubRes = await publishMergeGroupCheckRun({
-        owner,
-        repo,
-        headSha,
-        token,
-        conclusion: 'failure',
-        title: 'Review Yeti (Merge Group Attestation)',
-        summary,
-        fetchFn,
-      });
+  // 2. Verify all constituent PRs possess exact-head Review Yeti checks concurrently
+  const checkResults = await Promise.all(
+    constituentPrs.map(async (pr) => {
+      try {
+        const checks = await fetchAllCheckRunsForCommit({
+          owner,
+          repo,
+          commitSha: pr.head_sha,
+          token,
+          fetchFn,
+        });
+        const verification = verifyConstituentChecks(checks, pr.number, pr.head_sha, requiredAppId);
+        return { pr, verification, error: null };
+      } catch (err: any) {
+        return {
+          pr,
+          verification: {
+            passed: false,
+            blockerReason: `Failed to fetch check-runs for PR #${pr.number} at ${pr.head_sha}: ${err?.message || String(err)}`,
+          },
+          error: err,
+        };
+      }
+    })
+  );
 
-      return {
-        status: 'blocked',
-        headSha,
-        conclusion: 'failure',
-        title: 'Review Yeti (Merge Group Attestation)',
-        summary,
-        constituentPrs: constituentPrs.map((p) => p.number),
-        bypassedHazardScan: false,
-        checkRunId: pubRes.checkRunId,
-        checkRunError: pubRes.error,
-      };
-    }
-
-    const verification = verifyConstituentChecks(checks, pr.number, pr.head_sha, requiredAppId);
-    if (!verification.passed) {
-      const summary = `Merge group attestation blocked: ${verification.blockerReason}`;
+  for (const res of checkResults) {
+    if (!res.verification.passed) {
+      const summary = `Merge group attestation blocked: ${res.verification.blockerReason}`;
       const pubRes = await publishMergeGroupCheckRun({
         owner,
         repo,

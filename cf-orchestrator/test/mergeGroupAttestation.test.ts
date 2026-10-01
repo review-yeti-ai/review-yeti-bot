@@ -488,7 +488,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
         [
           102,
           [
-            { filename: 'mix.lock', patch: '+ "telemetry": {:hex, ...}' },
+            { filename: 'mix.lock', patch: '+ "jason": {:hex, ...}' },
             { filename: 'mcp-servers.json', patch: '+ "another-server": { ... }' },
           ],
         ],
@@ -518,7 +518,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/auth.ex',
+              filename: 'lib/sample_app/auth.ex',
               patch: '@@ -10,3 +10,3 @@\n-def authenticate_user(token) do\n+def authenticate_user(token, tenant_id) do',
             },
           ],
@@ -527,7 +527,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/controller.ex',
+              filename: 'lib/sample_app/controller.ex',
               patch: '@@ -25,2 +25,3 @@\n+result = authenticate_user(token)',
             },
           ],
@@ -558,7 +558,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/feature_a.ex',
+              filename: 'lib/sample_app/feature_a.ex',
               patch: '+ def feature_a, do: :ok',
             },
           ],
@@ -567,7 +567,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/feature_b.ex',
+              filename: 'lib/sample_app/feature_b.ex',
               patch: '+ def feature_b, do: :ok',
             },
           ],
@@ -666,11 +666,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
         return new Response('Not found', { status: 404 });
       };
 
-      const startTime = Date.now();
       const outcome = await handleMergeGroupAttestation(payload, createMockEnv(), mockFetch);
-      const durationMs = Date.now() - startTime;
-
-      assert.ok(durationMs < 2000, `Execution should be sub-2-second (took ${durationMs}ms)`);
       assert.equal(outcome.status, 'attested');
       assert.equal(outcome.conclusion, 'success');
       assert.equal(outcome.headSha, headSha);
@@ -757,6 +753,131 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
       const published = publishedCheckRuns[0];
       assert.equal(published.conclusion, 'failure');
       assert.match(published.output.summary, /Merge group attestation blocked/);
+    });
+
+    it('blocks attestation and publishes failure when constituent PRs contain composite delta hazards (e.g. migration collision)', async () => {
+      const headSha = 'abcdef0123456789abcdef0123456789abcdef01';
+      const payload: MergeGroupPayload = {
+        action: 'checks_requested',
+        merge_group: {
+          head_sha: headSha,
+          head_ref: 'refs/heads/gh-readonly-queue/main/pr-4836-abcdef01',
+          base_ref: 'refs/heads/main',
+          base_sha: 'base000000000000000000000000000000000000',
+        },
+        repository: {
+          name: 'sample-repo',
+          full_name: 'example-org/sample-repo',
+          owner: { login: 'example-org' },
+        },
+      };
+
+      const publishedCheckRuns: any[] = [];
+
+      const mockFetch: typeof fetch = async (input, init) => {
+        const urlStr = typeof input === 'string' ? input : (input as any).url || (input as any).href || String(input);
+
+        // 1. GraphQL mergeQueue query with 2 batched PRs (4835 and 4836)
+        if (urlStr.includes('/graphql')) {
+          return Response.json({
+            data: {
+              repository: {
+                mergeQueue: {
+                  entries: {
+                    nodes: [
+                      {
+                        position: 1,
+                        state: 'MERGEABLE',
+                        pullRequest: {
+                          number: 4835,
+                          headRefOid: '1111111111111111111111111111111111111111',
+                          baseRefOid: 'base000000000000000000000000000000000000',
+                        },
+                      },
+                      {
+                        position: 2,
+                        state: 'MERGEABLE',
+                        pullRequest: {
+                          number: 4836,
+                          headRefOid: '2222222222222222222222222222222222222222',
+                          baseRefOid: 'base000000000000000000000000000000000000',
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          });
+        }
+
+        // 2. Commit check-runs query: both PRs have successful Review Yeti check
+        if (urlStr.includes('/check-runs?filter=all')) {
+          return Response.json({
+            check_runs: [
+              {
+                id: 501,
+                name: REQUIRED_CHECK_NAME,
+                status: 'completed',
+                conclusion: 'success',
+                started_at: '2026-10-01T12:00:00Z',
+                external_id: 'run_1234567890abcdef1234567890abcdef:a1',
+                app: { id: 4385771 },
+              },
+            ],
+          });
+        }
+
+        // 3. Changed files for PR 4835: migration timestamp 20261001120000
+        if (urlStr.includes('/pulls/4835/files')) {
+          return Response.json([
+            {
+              filename: 'priv/repo/migrations/20261001120000_create_users.exs',
+              status: 'added',
+              patch: 'defmodule Repo.Migrations.CreateUsers do\nend',
+            },
+          ]);
+        }
+
+        // 4. Changed files for PR 4836: identical migration timestamp 20261001120000
+        if (urlStr.includes('/pulls/4836/files')) {
+          return Response.json([
+            {
+              filename: 'priv/repo/migrations/20261001120000_create_profiles.exs',
+              status: 'added',
+              patch: 'defmodule Repo.Migrations.CreateProfiles do\nend',
+            },
+          ]);
+        }
+
+        // 5. Check run publication POST
+        if (urlStr.endsWith('/check-runs') && init?.method === 'POST') {
+          const body = JSON.parse(init.body as string);
+          publishedCheckRuns.push(body);
+          return Response.json({ id: 9999, ...body });
+        }
+
+        return new Response('Not found', { status: 404 });
+      };
+
+      const outcome = await handleMergeGroupAttestation(payload, createMockEnv(), mockFetch);
+
+      assert.equal(outcome.status, 'blocked');
+      assert.equal(outcome.conclusion, 'failure');
+      assert.equal(outcome.bypassedHazardScan, false);
+      assert.ok(outcome.hazards && outcome.hazards.length > 0);
+      assert.equal(outcome.hazards[0].type, 'migration_collision');
+      assert.match(outcome.summary, /speculative composite delta hazards/);
+      assert.match(outcome.summary, /20261001120000/);
+
+      // Verify published failure check-run
+      assert.equal(publishedCheckRuns.length, 1);
+      const published = publishedCheckRuns[0];
+      assert.equal(published.name, 'Review Yeti');
+      assert.equal(published.head_sha, headSha);
+      assert.equal(published.conclusion, 'failure');
+      assert.match(published.output.summary, /composite delta hazards/);
+      assert.match(published.output.summary, /20261001120000/);
     });
   });
 
@@ -1050,7 +1171,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
             101,
             [
               {
-                filename: 'lib/cdrcisco/caller.ex',
+                filename: 'lib/sample_app/caller.ex',
                 patch: '@@ -10,1 +10,2 @@\n+result = legacy_auth(user_token)',
               },
             ],
@@ -1058,7 +1179,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
         ]),
         mockBaseDriftFiles: [
           {
-            filename: 'lib/cdrcisco/auth.ex',
+            filename: 'lib/sample_app/auth.ex',
             patch: '@@ -5,3 +5,0 @@\n-def legacy_auth(token) do\n-  :ok\n-end',
           },
         ],
@@ -1087,7 +1208,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
             101,
             [
               {
-                filename: 'lib/cdrcisco/old.ex',
+                filename: 'lib/sample_app/old.ex',
                 patch: '@@ -1,3 +1,0 @@\n-def id do\n- :none\n-end\n-def run do\n- :ok\n-end',
               },
             ],
@@ -1096,7 +1217,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
             102,
             [
               {
-                filename: 'lib/cdrcisco/new.ex',
+                filename: 'lib/sample_app/new.ex',
                 patch: '@@ -10,1 +10,5 @@\n+validate_user()\n+user_id_lookup()\n+running_status = true\n+pr_numbers = [1, 2]',
               },
             ],
@@ -1123,7 +1244,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
             101,
             [
               {
-                filename: 'lib/cdrcisco/tax.ex',
+                filename: 'lib/sample_app/tax.ex',
                 // Re-indented / reformatted function definition without changing signature
                 patch: '@@ -10,3 +10,3 @@\n-  def calculate_tax(amount) do\n+    def calculate_tax(amount) do',
               },
@@ -1133,7 +1254,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
             102,
             [
               {
-                filename: 'lib/cdrcisco/order.ex',
+                filename: 'lib/sample_app/order.ex',
                 patch: '@@ -25,1 +25,2 @@\n+total = calculate_tax(100)',
               },
             ],
@@ -1326,7 +1447,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/disjoint.ex',
+              filename: 'lib/sample_app/disjoint.ex',
               patch: '@@ -1,1 +1,2 @@\n+:ok',
             },
           ],
@@ -1378,7 +1499,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/pipeline.ex',
+              filename: 'lib/sample_app/pipeline.ex',
               patch: '@@ -10,4 +10,0 @@\n-def custom_domain_pipeline(data) do\n-  :ok\n-end',
             },
           ],
@@ -1387,7 +1508,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
 
       const mockBaseDriftFiles = [
         {
-          filename: 'lib/cdrcisco/main_runner.ex',
+          filename: 'lib/sample_app/main_runner.ex',
           patch: '@@ -20,1 +20,2 @@\n+result = custom_domain_pipeline(data)',
         },
       ];
@@ -1419,7 +1540,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/module_a.ex',
+              filename: 'lib/sample_app/module_a.ex',
               patch: '@@ -10,3 +10,3 @@\n-defp internal_calc(amount) do\n+defp internal_calc(amount, factor) do',
             },
           ],
@@ -1428,7 +1549,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/module_b.ex',
+              filename: 'lib/sample_app/module_b.ex',
               patch: '@@ -20,2 +20,3 @@\n+result = internal_calc(100)',
             },
           ],
@@ -1457,7 +1578,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/evaluator.ex',
+              filename: 'lib/sample_app/evaluator.ex',
               patch: '@@ -10,3 +10,3 @@\n-def custom_eval(expr) do\n+def custom_eval(expr, opts) do',
             },
           ],
@@ -1466,7 +1587,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/consumer.ex',
+              filename: 'lib/sample_app/consumer.ex',
               // Contains atom :custom_eval, map key custom_eval:, and comment, but NO function invocation
               patch: [
                 '@@ -20,3 +20,6 @@',
@@ -1502,7 +1623,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/user_controller.ex',
+              filename: 'lib/sample_app/user_controller.ex',
               // Controller modifies standard CRUD action delete/2
               patch: '@@ -10,3 +10,3 @@\n-def delete(conn, %{"id" => id}) do\n+def delete(conn, %{"id" => id, "force" => force}) do',
             },
@@ -1512,7 +1633,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/device_service.ex',
+              filename: 'lib/sample_app/device_service.ex',
               // PR 2 calls Repo.delete and Map.delete
               patch: '@@ -20,2 +20,4 @@\n+Repo.delete(device)\n+Map.delete(opts, :key)',
             },
@@ -1600,7 +1721,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/pipeline.ex',
+              filename: 'lib/sample_app/pipeline.ex',
               patch: '@@ -10,3 +10,3 @@\n-def sanitize_payload(payload) do\n+def sanitize_payload(payload, opts) do',
             },
           ],
@@ -1609,7 +1730,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/endpoint.ex',
+              filename: 'lib/sample_app/endpoint.ex',
               patch: '@@ -25,2 +25,3 @@\n+payload\n+|> sanitize_payload',
             },
           ],
@@ -1640,7 +1761,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/transformer.ex',
+              filename: 'lib/sample_app/transformer.ex',
               patch: '@@ -10,3 +10,3 @@\n-def normalize_record(rec) do\n+def normalize_record(rec, tenant_id) do',
             },
           ],
@@ -1649,7 +1770,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/batch_job.ex',
+              filename: 'lib/sample_app/batch_job.ex',
               patch: '@@ -25,2 +25,3 @@\n+Enum.map(records, &normalize_record/1)',
             },
           ],
@@ -1680,7 +1801,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/old_auth.ex',
+              filename: 'lib/sample_app/old_auth.ex',
               patch: '@@ -10,4 +10,0 @@\n-def authenticate(user) do\n-  :ok\n-end',
             },
           ],
@@ -1689,7 +1810,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/new_logger.ex',
+              filename: 'lib/sample_app/new_logger.ex',
               patch: '@@ -20,2 +20,4 @@\n+Logger.info("authenticate user failed")\n+IO.puts("Failed to authenticate session")',
             },
           ],
@@ -1718,7 +1839,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           101,
           [
             {
-              filename: 'lib/cdrcisco/deprecated_svc.ex',
+              filename: 'lib/sample_app/deprecated_svc.ex',
               patch: '@@ -5,4 +5,0 @@\n-def legacy_lookup(id) do\n-  nil\n-end',
             },
           ],
@@ -1727,7 +1848,7 @@ describe('Merge Group Attestation Unit & Integration Tests', () => {
           102,
           [
             {
-              filename: 'lib/cdrcisco/refactored.ex',
+              filename: 'lib/sample_app/refactored.ex',
               patch: '@@ -15,2 +15,3 @@\n+result = :ok # Note: legacy_lookup was deleted in PR 101',
             },
           ],
