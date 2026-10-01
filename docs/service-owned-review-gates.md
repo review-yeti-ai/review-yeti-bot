@@ -63,6 +63,20 @@ recovered generation is never re-executed and never converted into approval.
 `SHIP` remains only the terminal review verdict/check conclusion; it does not
 dispatch a workflow, merge, deploy, release, or trigger any other action.
 
+An ordinary MCP retry may continue one graceful composed partial review with
+findings from `a1` to `a2` for the same immutable identity. The service derives
+the generation, rereads the App-owned worker and Gate checks, and persists the
+matching completion, checkpoint receipt, and findings archive under the PR
+lock before allocating the continuation. Its immutable checkpoint receipt
+remains verifiable after `a2` replaces the run's current checkpoint. Missing,
+mismatched, or malformed prior evidence, blocking findings, and a later
+no-result continuation are refused before allocation. This path emits
+`review.lifecycle.retrying` with `graceful_composed_continuation`; it does not
+emit the state-loss `generation_reconciled` event. The final review still
+requires valid coverage and quorum, and the published partial remains
+fail-closed. Existing explicit incomplete-P2 recovery and ordinary
+zero-finding checkpoint continuation retain their admission rules.
+
 `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION` is the service-side rollout fence.
 It defaults to `false`: missing central app-gate generation remains temporarily
 compatible, but a supplied value still receives the transactional comparison

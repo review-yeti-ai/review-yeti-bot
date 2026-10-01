@@ -100,7 +100,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
   // SUITE 1: Tool Registry & Discovery Verification (tools/list)
   // =========================================================================
   describe('Suite 1: Tool Registry & Discovery Verification', () => {
-    it('TC-REG-001: Enumerates exactly 12 registered core tools', async () => {
+    it('TC-REG-001: Enumerates exactly 18 registered core tools', async () => {
       const res = await request(app)
         .post('/api/mcp')
         .set('Authorization', `Bearer ${validToken}`)
@@ -108,7 +108,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       expect(res.status).toBe(200);
       expect(res.body.result).toBeDefined();
-      expect(res.body.result.tools).toHaveLength(12);
+      expect(res.body.result.tools).toHaveLength(18);
 
       const toolNames = res.body.result.tools.map((t: any) => t.name);
       expect(toolNames).toEqual([
@@ -124,6 +124,12 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         'dispute_finding',
         'attest_pr_gate',
         'reply_review_thread',
+        'query_active_jobs',
+        'get_cloudflare_status',
+        'get_billable_runtime_report',
+        'get_runtime_metrics',
+        'get_analytics_dashboard',
+        'purge_cache',
       ]);
     });
 
@@ -1448,6 +1454,158 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe(MCP_ERRORS.FORBIDDEN);
+    });
+  });
+
+  // =========================================================================
+  // SUITE 12: Cloudflare & Analytics Suite Tools Verification
+  // =========================================================================
+  describe('Suite 12: Cloudflare Edge & Analytics Suite Tools', () => {
+    it('TC-CF-001: query_active_jobs returns active jobs format', async () => {
+      mockDb.query.mockResolvedValueOnce({
+        rows: [
+          {
+            run_id: 'run_123',
+            owner: 'calltelemetry',
+            repo: 'cisco-cdr',
+            pr_number: 5293,
+            head_sha: '1ce2836bf3',
+            status: 'running',
+            created_at: new Date().toISOString(),
+            received_at: new Date().toISOString(),
+            burst_started_at: new Date().toISOString(),
+            terminal_deadline: new Date(Date.now() + 600000).toISOString(),
+          },
+        ],
+      });
+
+      const res = await request(app)
+        .post('/api/mcp')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 1201,
+          method: 'tools/call',
+          params: {
+            name: 'query_active_jobs',
+            arguments: { repo: 'cisco-cdr' },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result).toBeDefined();
+      const data = JSON.parse(res.body.result.content[0].text);
+      expect(data.active_jobs).toHaveLength(1);
+      expect(data.active_jobs[0].pr_number).toBe(5293);
+    });
+
+    it('TC-CF-002: get_cloudflare_status returns edge status structure', async () => {
+      const res = await request(app)
+        .post('/api/mcp')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 1202,
+          method: 'tools/call',
+          params: {
+            name: 'get_cloudflare_status',
+            arguments: { repo: 'calltelemetry/cisco-cdr' },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result).toBeDefined();
+      const data = JSON.parse(res.body.result.content[0].text);
+      expect(data.repoGate).toBeDefined();
+      expect(data.r2WorkspaceCache).toBeDefined();
+      expect(data.r2WorkspaceCache.retentionPolicy).toBe('aggressive_1_hour_pr_ttl');
+    });
+
+    it('TC-CF-003: get_billable_runtime_report returns cost metrics', async () => {
+      const res = await request(app)
+        .post('/api/mcp')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 1203,
+          method: 'tools/call',
+          params: {
+            name: 'get_billable_runtime_report',
+            arguments: { repo: 'calltelemetry/cisco-cdr' },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result).toBeDefined();
+      const data = JSON.parse(res.body.result.content[0].text);
+      expect(data.summary).toBeDefined();
+      expect(data.summary.total_spend_usd).toBeGreaterThanOrEqual(0);
+      expect(data.summary.total_runs).toBeGreaterThanOrEqual(1);
+    });
+
+    it('TC-CF-004: get_runtime_metrics returns p50, p90, p99 percentiles', async () => {
+      const res = await request(app)
+        .post('/api/mcp')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 1204,
+          method: 'tools/call',
+          params: {
+            name: 'get_runtime_metrics',
+            arguments: { repo: 'calltelemetry/cisco-cdr' },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result).toBeDefined();
+      const data = JSON.parse(res.body.result.content[0].text);
+      expect(data.percentiles_wall_latency_ms).toBeDefined();
+      expect(data.percentiles_wall_latency_ms.p50).toBeGreaterThanOrEqual(0);
+      expect(data.percentiles_wall_latency_ms.p90).toBeGreaterThanOrEqual(0);
+      expect(data.percentiles_wall_latency_ms.p99).toBeGreaterThanOrEqual(0);
+    });
+
+    it('TC-CF-005: get_analytics_dashboard returns high-level review health', async () => {
+      const res = await request(app)
+        .post('/api/mcp')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 1205,
+          method: 'tools/call',
+          params: {
+            name: 'get_analytics_dashboard',
+            arguments: { repo: 'calltelemetry/cisco-cdr' },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result).toBeDefined();
+      const data = JSON.parse(res.body.result.content[0].text);
+      expect(data.kpis).toBeDefined();
+      expect(data.sla).toBeDefined();
+    });
+
+    it('TC-CF-006: purge_cache purges expired or specific PR archives', async () => {
+      const res = await request(app)
+        .post('/api/mcp')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({
+          jsonrpc: '2.0',
+          id: 1206,
+          method: 'tools/call',
+          params: {
+            name: 'purge_cache',
+            arguments: { pr_number: 5293 },
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.result).toBeDefined();
+      const data = JSON.parse(res.body.result.content[0].text);
+      expect(data.ok).toBe(true);
+      expect(data.prNumber).toBe(5293);
     });
   });
 });
