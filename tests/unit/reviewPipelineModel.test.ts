@@ -272,12 +272,16 @@ describe('SSE terminal choice reduction', () => {
     await expect(pipeline.readChatCompletionResponse(streamResponse([frame]), true)).rejects.toThrow('empty_sse');
   });
 
-  it('preserves a final provider error envelope even when a terminal choice was retained', async () => {
+  it.each([
+    ['reader', false], ['reader', true], ['text', false], ['text', true],
+  ] as const)('preserves provider errors on the %s path with usage tail=%s', async (mode, usageTail) => {
     const error = { code: 'fixture_error', message: 'fixture failure' };
     const result = await pipeline.readChatCompletionResponse(streamResponse([
-      content, { choices: [terminal] }, { error },
-    ]), true);
+      content, { choices: [terminal] }, { error }, ...(usageTail ? [usage] : []),
+    ], mode), true);
     expect(result.error).toEqual(error);
+    expect(result.choices[0].finish_reason).toBe('stop');
+    if (usageTail) expect(result.usage).toEqual(usage.usage);
   });
 
   it.each(['malformed', 'parsed', 'provider_error', 'provider_error_tail'] as const)(
