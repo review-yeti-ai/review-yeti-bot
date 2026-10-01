@@ -12,7 +12,7 @@ name: Review Bot
 # same code path third-party consumers get via `uses: review-yeti-ai/review-yeti-bot@v1`.
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
   repository_dispatch:
     types: [review-requested, re-review-requested, dispatch-review]
 
@@ -28,6 +28,9 @@ concurrency:
 jobs:
   review:
     name: Execute AI Review Pipeline
+    # Idle draft edits prepare a candidate. Ready promotion or an explicit
+    # public-side request admits the paid native review.
+    if: ${{ github.event_name == 'repository_dispatch' || (github.event.pull_request.state == 'open' && !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
     # Caller-side hard backstop: no direct self-review or repository-dispatch path may run
     # longer than the central Review Yeti contract's fifteen-minute ceiling.
@@ -100,6 +103,9 @@ jobs:
         id: review
         uses: ./
         with:
+          # Keep the public repository on its existing public-side engine even
+          # if a future action release changes its default backend.
+          execution-backend: local
           repo: ${{ github.event.client_payload.target_repo || github.repository }}
           pr-number: ${{ github.event.client_payload.pr_number || github.event.pull_request.number }}
           personas: ${{ vars.ACTIVE_PERSONAS }}
