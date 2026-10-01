@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createDeletionEvidenceRuntime, deletionInventory } from '../../src/review/deletionEvidence';
 import { runReadOnlyTool } from '../../src/panel/toolRuntime';
-import type { JevAsker } from '../../src/gateway/jevClient';
+import { JevClient, type JevAsker } from '../../src/gateway/jevClient';
 
 const HEAD = 'a'.repeat(40), OLD = 'b'.repeat(40), repository = 'owner/repo';
 const file = (path: string, mode = '100644') => ({ path, patch: `deleted file mode ${mode}\n@@ -1 +0,0 @@\n-export function guardTenant() { return true; }` });
@@ -24,6 +24,26 @@ const outcome = (model = 'jev-test') => ({ status: 'ok', model, durationMs: 1,
   } });
 
 describe('deletion evidence replay', () => {
+  it('activates the real client seam through aliases and exact repository allowlists', async () => {
+    const ask = vi.spyOn(JevClient.prototype, 'ask').mockResolvedValue(outcome() as any);
+    try {
+      for (const flag of ['true', '1', 'on', 'all', '*', repository, 'owner/other,owner/repo', ' OWNER/REPO ']) {
+        const { runtime } = setup(undefined, { env: { NODE_ENV: 'test', REVIEW_YETI_JEV_EVIDENCE: flag,
+          TYPESAFE_BASE_URL: 'https://jev.example.invalid', TYPESAFE_MODEL: 'jev-test',
+          TYPESAFE_API_KEY: 'test-key', TYPESAFE_MODEL_PIN: 'jev-test' } });
+        expect((await runtime.evidence('old.ts') as any).classification.status).toBe('ok');
+      }
+      expect(ask).toHaveBeenCalledTimes(8);
+      for (const flag of ['', ' ', 'off', 'owner/repository', 'owner/other']) {
+        const { runtime } = setup(undefined, { env: { NODE_ENV: 'test', REVIEW_YETI_JEV_EVIDENCE: flag,
+          TYPESAFE_BASE_URL: 'https://jev.example.invalid', TYPESAFE_MODEL: 'jev-test',
+          TYPESAFE_API_KEY: 'test-key', TYPESAFE_MODEL_PIN: 'jev-test' } });
+        expect((await runtime.evidence('old.ts') as any).classification.reason).toBe('disabled');
+      }
+      expect(ask).toHaveBeenCalledTimes(8);
+    } finally { ask.mockRestore(); }
+  });
+
   it('accounts for every file beyond the former 40-file cap, with distinct path obligations', () => {
     const { runtime } = setup(Array.from({ length: 64 }, (_, i) => file(`retired/${i}.ts`)));
     let offset: number | null = 0, digest: string | undefined;
