@@ -19,6 +19,7 @@
  * not exist anywhere" -- that is the documented root cause of a real false-positive class in this
  * system.
  */
+import { readEvidencePage } from './evidencePages';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { ASTParser } from '../indexer/astParser';
 import {
@@ -36,6 +37,7 @@ import { createPathMatcher, isGlobQuery, normalizeRepoPath } from './pathMatch';
 /** Read-only inputs a tool call may need. Mirrors the subset of `invoke()`'s options the original block closed over. */
 export interface ToolRuntimeContext {
   changedFiles: any[];
+  originalChangedFiles?: any[];
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: any;
   signal?: AbortSignal;
@@ -117,6 +119,27 @@ export async function runReadOnlyTool(
   args: any,
   context: ToolRuntimeContext,
 ): Promise<ToolRuntimeResult> {
+  if (toolName === 'deletion_manifest' || toolName === 'deletion_evidence') {
+    const scope = 'pinned-deletion-evidence';
+    const response = (value: unknown) => ({ toolOutput: JSON.stringify(value), toolScope: scope, isExhaustive: false });
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return response({ status: 'invalid' });
+    throwIfPanelAborted(context.signal);
+    if (toolName === 'deletion_manifest') {
+      if (Object.keys(args).some((key) => !['offset', 'limit', 'digest'].includes(key))
+        || (args.digest !== undefined && (typeof args.digest !== 'string' || !/^[0-9a-f]{64}$/u.test(args.digest)))
+        || (args.offset > 0 && args.digest === undefined)
+        || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 0))
+        || (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 24))) return response({ status: 'invalid' });
+      return response(context.repoFileProvider?.deletionManifest?.(args.offset ?? 0, args.limit ?? 24, args.digest) ?? { status: 'unavailable' });
+    }
+    if (Object.keys(args).some((key) => key !== 'path') || typeof args.path !== 'string'
+      || !args.path.trim() || args.path.length > 4096 || args.path.includes('\0') || args.path.split(/[\\/]/u).includes('..')) return response({ status: 'invalid' });
+    if (!context.repoFileProvider?.deletionEvidence) return response({ status: 'unavailable' });
+    const packet = await raceWithPanelAbort(context.repoFileProvider.deletionEvidence(normalizeRepoPath(args.path)), context.signal);
+    throwIfPanelAborted(context.signal);
+    return response(packet);
+  }
+  if (toolName === 'read_file_page' || toolName === 'get_diff_page') return readEvidencePage(toolName, args, context);
   if (toolName === 'read_files') return readFiles(args, context);
   const toolCall = { tool: toolName, args };
   const options = context;

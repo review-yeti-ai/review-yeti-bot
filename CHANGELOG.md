@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.111.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.110.0...v1.111.0) (2026-10-01)
+
+
+### Features
+
+* classify verified deletion evidence with advisory JEV questions (REL-1081) ([#1245](https://github.com/review-yeti-ai/review-yeti-bot/issues/1245)) ([c39ef3d](https://github.com/review-yeti-ai/review-yeti-bot/commit/c39ef3d54c30b37f8ec52cb95836b176b4df4772))
+
+## [1.110.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.109.0...v1.110.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** publish GitHub PR reviews and inline suggestions from review workflow ([907b633](https://github.com/review-yeti-ai/review-yeti-bot/commit/907b6333577c3696bc94a832dcc3858980b5be4d))
+
+## [1.109.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.108.0...v1.109.0) (2026-10-01)
+
+
+### Features
+
+* page original diffs and pinned deleted source (REL-1077) ([#1244](https://github.com/review-yeti-ai/review-yeti-bot/issues/1244)) ([9c7c4df](https://github.com/review-yeti-ai/review-yeti-bot/commit/9c7c4df6c3ab58540e59ea25e8bda5f32870b160))
+
+## [1.108.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.107.0...v1.108.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** add merge-group webhook attestation with composite delta hazard scan ([#1243](https://github.com/review-yeti-ai/review-yeti-bot/issues/1243)) ([792fa99](https://github.com/review-yeti-ai/review-yeti-bot/commit/792fa999b0e3fa2c1a7c5be23b2963c8267b8d4e))
+
 ## [1.107.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.106.0...v1.107.0) (2026-10-01)
 
 

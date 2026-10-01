@@ -176,14 +176,16 @@ func TestPublishingConfigFromEnvReadsTransport(t *testing.T) {
 func TestPublishingConfigFromEnvReadsJev(t *testing.T) {
 	t.Setenv("REVIEW_YETI_JEV_SECRET_NAME", "")
 	t.Setenv("REVIEW_YETI_JEV_SHADOW", "")
+	t.Setenv("REVIEW_YETI_JEV_EVIDENCE", "")
 	config := publishingConfigFromEnv()
-	if config.JevSecretName != "" || config.JevShadow != "" {
+	if config.JevSecretName != "" || config.JevShadow != "" || config.JevEvidence != "" {
 		t.Fatalf("unset Jev config must stay empty: %+v", config)
 	}
 	t.Setenv("REVIEW_YETI_JEV_SECRET_NAME", " review-yeti-typesafe ")
 	t.Setenv("REVIEW_YETI_JEV_SHADOW", "on")
+	t.Setenv("REVIEW_YETI_JEV_EVIDENCE", " owner/repo ")
 	config = publishingConfigFromEnv()
-	if config.JevSecretName != "review-yeti-typesafe" || config.JevShadow != "on" {
+	if config.JevSecretName != "review-yeti-typesafe" || config.JevShadow != "on" || config.JevEvidence != "owner/repo" {
 		t.Fatalf("Jev config not read: %+v", config)
 	}
 }

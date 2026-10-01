@@ -33,6 +33,7 @@ import {
 } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
+import { createDeletionEvidenceRuntime } from '../review/deletionEvidence';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
@@ -387,7 +388,9 @@ export {
 };
 export type { OpenAITransportConfig };
 
-const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
+export const BLOCKING_SEVERITIES = new Set(
+  process.env.REVIEW_YETI_REQUIRE_ADVISORY === 'false' ? ['P0', 'P1'] : ['P0', 'P1', 'P2']
+);
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
@@ -1642,7 +1645,7 @@ export async function runPublishingReviewWorker(
       try {
         const factory = deps.repoFileProviderFactory
           || ((input: { token: string; owner: string; repo: string; headSha: string }) => createRepoFileProvider(
-            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha,
+            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha, { baseSha: identity.baseSha, changedFiles },
           ));
         repoFileProvider = factory({
           token: repoReadToken,
@@ -1913,6 +1916,13 @@ export async function runPublishingReviewWorker(
             },
           }
         : workerConfig;
+      if (repoFileProvider) {
+        const deletionEvidence = createDeletionEvidenceRuntime({ files: changedFiles, provider: repoFileProvider,
+          repository: identity.repo, headSha: identity.headSha, env,
+          zoektConfig: (groundedConfig as any).evidence?.zoekt, signal: panelDeadline.signal });
+        repoFileProvider.deletionManifest = deletionEvidence.manifest;
+        repoFileProvider.deletionEvidence = deletionEvidence.evidence;
+      }
       // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
       // cutoff. Late setup cannot mint another relative window for either engine.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is

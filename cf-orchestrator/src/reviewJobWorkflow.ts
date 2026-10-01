@@ -4,6 +4,7 @@ import type { Env, ReviewRunSpec } from './types.js';
 import { type ContainerRunner, CloudflareContainerRunner } from './runners/containerRunner.js';
 import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
+import { buildGitHubReviewPayload } from './reviewPublisher.js';
 
 export interface ReceiptAuditRecord {
   runId: string;
@@ -361,6 +362,36 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           runnerCost: containerOutcome.runnerCost,
           recordedAt: new Date().toISOString(),
         });
+
+        // Publish PR Review & Inline Suggestions to GitHub
+        if (tokenInfo?.token && !tokenInfo.token.startsWith('ghs_dummy_')) {
+          const verdict = (receiptPayload.verdict || (containerOutcome.status === 'succeeded' ? 'success' : 'action_required')) as 'success' | 'action_required' | 'neutral';
+          const summaryMarkdown = receiptPayload.summaryMarkdown || receiptPayload.summary || `## Review Yeti Verdict: ${String(verdict).toUpperCase()}`;
+          const findings = receiptPayload.findings || [];
+
+          const reviewPayload = buildGitHubReviewPayload({
+            commitId: headSha,
+            verdict,
+            summaryMarkdown,
+            findings,
+            runnerCost: containerOutcome.runnerCost,
+          });
+
+          try {
+            await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/reviews`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${tokenInfo.token}`,
+                'User-Agent': 'review-yeti-cf-orchestrator',
+                'Content-Type': 'application/json',
+                Accept: 'application/vnd.github.v3+json',
+              },
+              body: JSON.stringify(reviewPayload),
+            });
+          } catch (err) {
+            console.warn('Failed to publish PR review to GitHub:', err);
+          }
+        }
       });
 
       if (dispatchError) {

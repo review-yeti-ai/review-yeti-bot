@@ -1,0 +1,9 @@
+# Initial retrieval and advisory-question replay
+
+Observed 2026-10-01 against ct-meta #3715's original failed head `45b2df19d13420a9dc0aea5154295c3e7852c8ce`. The local old side is its parent `2c53cb32eb9e28a1a87aebb7f3384ab0778e62eb`; this is **not proof of the historical admitted base/merge-base**. The reproduced diff has 64 files and 852,061 characters, differing from the historical check's reported extent. These records evaluate the frozen head/parent pair only.
+
+Both variants inventory 62 paths containing removals, verify 44 old-source content/mode groups and retain 310 separate path obligations. Seven paths have supported AST extraction; 43 are sensitive. The largest model packet is 11,127 characters, while deterministic extraction inspected 1,611,382 source bytes. Original contents and provider credentials remained in local process memory and are absent from these records.
+
+The advisory JEV variant completed 32 calls at the configured model pin, 184–662 ms each, with 88,951 input and 4,981 output tokens and $0.003735942 reported token cost. Thirty subsequent paths received explicit `question_budget_exhausted`, without being removed from the inventory or gaining completion authority. All 32 contract questions returned `unknown`. The deterministic variant made no classifier calls. All obligations remained `review_required` in both variants.
+
+Head Zoekt search was disabled in this local replay; this is not a measurement of the deployed search path or a complete consumer investigation. The corpus has not been human-adjudicated. These are initial transport, extent, grouping and abstention observations, **not safety calibration, defect recall, full-review completion, production throughput or main-model savings**. Durable obligation verification, subordinate content chunks and calibrated cheap resolution remain acceptance work in the plan. JEV has no verdict authority.
