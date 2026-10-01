@@ -492,6 +492,13 @@ describe('source-bound operator native assertion observations', () => {
     const result = assertionReceipt({ status: 1, signal: null, stdout: '', stderr });
     expectNoAssertionObservation(result, '', stderr);
   });
+
+  it('withholds a valid stdout observation when stderr is not empty', () => {
+    const stdout = nativeAssertionOutput(lifecycleTemplates[4].message);
+    const stderr = 'go: downloading github.com/example/mod v1.0.0\n';
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr });
+    expectNoAssertionObservation(result, stdout, stderr);
+  });
 });
 
 describe('operator receipt defensive source and process neighbors', () => {
