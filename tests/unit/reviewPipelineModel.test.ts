@@ -170,6 +170,20 @@ describe('SSE terminal choice reduction', () => {
   const content = { choices: [{ index: 0, delta: { content: '{"findings":[]}', reasoning_content: 'fixture reasoning' } }] };
   const terminal = { index: 0, delta: {}, finish_reason: 'stop', logprobs: { content: [] } };
   const usage = { choices: [], usage: { prompt_tokens: 7, completion_tokens: 13, total_tokens: 20 } };
+  const invalidFinishReasonValues = [
+    { label: 'empty string', value: '' },
+    { label: 'whitespace string', value: ' \t  ' },
+    { label: 'null', value: null },
+    { label: 'false', value: false },
+    { label: 'zero', value: 0 },
+    { label: 'true', value: true },
+    { label: 'number', value: 7 },
+    { label: 'object', value: { reason: 'stop' } },
+    { label: 'array', value: [] },
+    { label: 'missing', value: undefined },
+  ] as const;
+  const invalidFinishReasonCases = (['reader', 'text'] as const).flatMap((mode) =>
+    invalidFinishReasonValues.map(({ label, value }) => ({ mode, label, value })));
 
   it.each([
     ['reader', 'stop'], ['reader', 'length'], ['text', 'stop'], ['text', 'length'],
@@ -252,6 +266,23 @@ describe('SSE terminal choice reduction', () => {
     expect(JSON.stringify(result)).not.toContain('unselected choice');
   });
 
+  it.each(invalidFinishReasonCases)(
+    'preserves the selected terminal choice on the $mode path after an invalid $label finish_reason tail',
+    async ({ mode, value }) => {
+      const result = await pipeline.readChatCompletionResponse(streamResponse([
+        content,
+        { choices: [terminal] },
+        { choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: value }] },
+        usage,
+      ], mode), true);
+      expect(result.choices).toEqual([{
+        ...terminal,
+        message: { content: '{"findings":[]}', reasoning: 'fixture reasoning' },
+      }]);
+      expect(result.usage).toEqual(usage.usage);
+    },
+  );
+
   it('ignores control and malformed frames without clearing actual terminal metadata', async () => {
     const wire = `data: ${JSON.stringify(content)}\n\ndata: ${JSON.stringify({ choices: [terminal] })}\n\n`
       + ': keepalive\n\nevent: completion\n\ndata:\n\ndata: {\n\ndata: [DONE]\n\n';
@@ -283,6 +314,27 @@ describe('SSE terminal choice reduction', () => {
     expect(result.choices[0].finish_reason).toBe('stop');
     if (usageTail) expect(result.usage).toEqual(usage.usage);
   });
+
+  it.each(['reader', 'text'] as const)(
+    'retains an earlier provider error across later falsey error frames on the %s path',
+    async (mode) => {
+      const providerError = { code: 'fixture_error', message: 'fixture failure' };
+      const result = await pipeline.readChatCompletionResponse(streamResponse([
+        content,
+        { choices: [terminal] },
+        { error: providerError },
+        { error: null },
+        { error: '' },
+        { error: 0 },
+        { error: false },
+        usage,
+      ], mode), true);
+      expect(result.error).toEqual(providerError);
+      expect(result.choices[0]).toMatchObject(terminal);
+      expect(result.choices[0].message.content).toBe('{"findings":[]}');
+      expect(result.usage).toEqual(usage.usage);
+    },
+  );
 
   it.each(['malformed', 'parsed', 'provider_error', 'provider_error_tail'] as const)(
     'retains terminal diagnostics through the real %s lane without leaking raw output', async (outcome) => {
