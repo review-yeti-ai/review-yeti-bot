@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.102.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.0...v1.102.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve typed panel failure classification ([#1212](https://github.com/review-yeti-ai/review-yeti-bot/issues/1212)) ([720c5e2](https://github.com/review-yeti-ai/review-yeti-bot/commit/720c5e23be214723834601264f5fd31e27f6d1a6))
+
 ## [1.102.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.9...v1.102.0) (2026-10-01)
 
 
