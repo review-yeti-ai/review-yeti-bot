@@ -353,7 +353,8 @@ export class GitHubInstallationClient {
       const output = row !== null && typeof row === 'object'
         ? (row as Record<string, unknown>).output : undefined;
       return output !== null && typeof output === 'object'
-        && (output as Record<string, unknown>).title === 'Review Yeti: BLOCK';
+        && ['Review Yeti: BLOCK', 'Review Yeti: INCOMPLETE (partial evidence published)']
+          .includes(String((output as Record<string, unknown>).title));
     })
       ? await this.readRecoveryCheckInventory(input, REVIEW_GATE_CHECK_NAME) : [];
     return evaluateReviewGenerationRecoveryLedger(input, rows, gateChecks);
