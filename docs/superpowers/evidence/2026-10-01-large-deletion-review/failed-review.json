@@ -1,0 +1,134 @@
+{
+  "observed_at_utc": "2026-10-01T20:08:45.448848+00:00",
+  "source": "live VictoriaLogs queried read-only through Kubernetes service proxy",
+  "historical_pod": "ct-review-d6289ddcfc7659d674fd76134df9dbaf-worker-tmp57",
+  "row_count": 323,
+  "jev": {
+    "outcome_counts": {
+      "ok": 40,
+      "file_cap": 24
+    },
+    "reported_cost_usd": 0.005733924,
+    "latency_ms_min": 128.0,
+    "latency_ms_max": 268.0
+  },
+  "events": [
+    {
+      "_time": "2026-10-01T19:33:09.666Z",
+      "_msg": "Publishing review worker completed",
+      "providerCalls": "73",
+      "tokensTotal": "1275197",
+      "tokensPrompt": "1251469",
+      "tokensCompletion": "23728",
+      "prNumber": "3715",
+      "runId": "run_d6289ddcfc7659d674fd76134df9dbaf"
+    },
+    {
+      "_time": "2026-10-01T19:33:09.666Z",
+      "_msg": "Review token accounting",
+      "providerCalls": "73",
+      "tokensTotal": "1275197",
+      "tokensPrompt": "1251469",
+      "tokensCompletion": "23728",
+      "tokenCostUSD": "0.661339",
+      "prNumber": "3715",
+      "headSha": "45b2df19d13420a9dc0aea5154295c3e7852c8ce",
+      "runId": "run_d6289ddcfc7659d674fd76134df9dbaf"
+    },
+    {
+      "_time": "2026-10-01T19:33:09.665Z",
+      "_msg": "Jev triage shadow summary",
+      "event": "jev_triage_shadow_summary",
+      "status": "completed",
+      "asked": "40",
+      "ok": "40",
+      "outcomes.ok": "40",
+      "outcomes.file_cap": "24",
+      "cost_usd": "0.005733924",
+      "wall_ms": "115801",
+      "model_pin": "jev-1.13.0",
+      "prNumber": "3715",
+      "headSha": "45b2df19d13420a9dc0aea5154295c3e7852c8ce",
+      "runId": "run_d6289ddcfc7659d674fd76134df9dbaf",
+      "files": "64"
+    },
+    {
+      "_time": "2026-10-01T19:33:02.612Z",
+      "_msg": "Map-reduce review chunked lane content",
+      "runId": "run_d6289ddcfc7659d674fd76134df9dbaf",
+      "chunks": "0"
+    },
+    {
+      "_time": "2026-10-01T19:33:02.598Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "security-plugin-manifests",
+      "turnCount": "16",
+      "dimension": "security",
+      "diagnosticLane": "composed-task-7"
+    },
+    {
+      "_time": "2026-10-01T19:32:33.058Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "agent-configs-and-eval-cases",
+      "turnCount": "2",
+      "dimension": "contract",
+      "diagnosticLane": "composed-task-8"
+    },
+    {
+      "_time": "2026-10-01T19:32:32.024Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "go-cpu-feature-mask",
+      "turnCount": "16",
+      "dimension": "dependencies",
+      "diagnosticLane": "composed-task-4"
+    },
+    {
+      "_time": "2026-10-01T19:32:27.919Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "tests-and-fixtures",
+      "turnCount": "2",
+      "dimension": "testing",
+      "diagnosticLane": "composed-task-6"
+    },
+    {
+      "_time": "2026-10-01T19:32:26.001Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "avs-ova-esxi-proof",
+      "turnCount": "2",
+      "dimension": "architecture",
+      "diagnosticLane": "composed-task-5"
+    },
+    {
+      "_time": "2026-10-01T19:32:21.558Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "shell-proof-receipts",
+      "turnCount": "16",
+      "dimension": "security",
+      "diagnosticLane": "composed-task-2"
+    },
+    {
+      "_time": "2026-10-01T19:32:21.245Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "shell-factory-lifecycle",
+      "turnCount": "16",
+      "dimension": "security",
+      "diagnosticLane": "composed-task-1"
+    },
+    {
+      "_time": "2026-10-01T19:31:38.683Z",
+      "_msg": "[composed] task completed",
+      "event": "composed_task_completed",
+      "taskId": "python-checkpoint-preflight",
+      "turnCount": "2",
+      "dimension": "contract",
+      "diagnosticLane": "composed-task-3"
+    }
+  ]
+}
