@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { operationalTelemetrySchema } from '../../src/review/workerCompletion';
 import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { createPanelDeadlineSignal, validateFindings, PanelFindingsValidationError } from '../../src/panel/panelEngine';
 import {
@@ -311,5 +312,43 @@ describe('bounded operational timeout observations', () => {
     expect(reporter.snapshot?.()).toMatchObject({providerCalls:{completed:1},responseUsage:{availability:'unknown'}});
     reporter.emit({task:'future-secret',status:'raw-prompt'} as never);
     expect(reporter.snapshot?.()!.eventCount).toBe(2);
+  });
+});
+
+
+describe('response usage availability producer and schema agreement', () => {
+  const noSamples = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0 };
+  const oneSample = { promptTokens: 1, completionTokens: 1, totalTokens: 1, cachedTokens: 1, costUSD: 1 };
+  const fullUsage = { prompt: 11, completion: 7, total: 18, cached: 2 };
+  const fullTotals = { promptTokens: 11, completionTokens: 7, totalTokens: 18, cachedTokens: 2, costUSD: 0.004 };
+  const cases = [
+    { name: 'no returned responses', inputs: [], availability: 'unknown', samples: noSamples, totals: {} },
+    { name: 'returned response with no numeric usage', inputs: [[null, undefined]], availability: 'unknown', samples: noSamples, totals: {} },
+    { name: 'all observed numeric zeros', inputs: [[{ prompt: 0, completion: 0, total: 0, cached: 0 }, 0]], availability: 'known', samples: oneSample,
+      totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0 } },
+    { name: 'only an observed cached-token zero', inputs: [[{ cached: 0 }, undefined]], availability: 'partial',
+      samples: { ...noSamples, cachedTokens: 1 }, totals: { cachedTokens: 0 } },
+    { name: 'two fully observed responses', inputs: [[fullUsage, 0.004], [fullUsage, 0.004]], availability: 'known',
+      samples: { promptTokens: 2, completionTokens: 2, totalTokens: 2, cachedTokens: 2, costUSD: 2 },
+      totals: { promptTokens: 22, completionTokens: 14, totalTokens: 36, cachedTokens: 4, costUSD: 0.008 } },
+    { name: 'second response missing cost', inputs: [[fullUsage, 0.004], [fullUsage, undefined]], availability: 'partial',
+      samples: { promptTokens: 2, completionTokens: 2, totalTokens: 2, cachedTokens: 2, costUSD: 1 },
+      totals: { promptTokens: 22, completionTokens: 14, totalTokens: 36, cachedTokens: 4, costUSD: 0.004 } },
+    { name: 'second response with no observations', inputs: [[fullUsage, 0.004], [null, undefined]], availability: 'partial', samples: oneSample, totals: fullTotals },
+  ];
+
+  it.each(cases)('preserves $name through the strict wire boundary', async ({ inputs, availability, samples, totals }) => {
+    const reporter = createPublishingProgress({ runId: 'run-availability', executionAttempt: 1 }, { sink: () => {} });
+    for (const [usage, costUSD] of inputs) {
+      const response = { ...providerResponse(), usage, costUSD } as unknown as OpenRouterResponse;
+      await reporter.instrument({ complete: async () => response }).complete(request());
+    }
+    const snapshot = reporter.snapshot?.();
+    expect(snapshot).toBeDefined();
+    expect(snapshot?.responseUsage).toEqual({ availability, responses: inputs.length, samples, totals });
+    expect(snapshot?.providerCalls).toEqual({ started: inputs.length, completed: inputs.length, failed: 0, aborted: 0, inflight: 0 });
+    expect(operationalTelemetrySchema.parse(snapshot)).toEqual(snapshot);
+    expect(JSON.stringify(snapshot)).not.toContain('private provider response');
+    expect(JSON.stringify(snapshot)).not.toContain('private prompt content');
   });
 });

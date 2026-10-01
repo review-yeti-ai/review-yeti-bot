@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
-import { normalizeOperationalTelemetry } from '../../src/review/workerCompletion';
+import { normalizeOperationalTelemetry, operationalTelemetrySchema, type OperationalTelemetry } from '../../src/review/workerCompletion';
 import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src/review/workerReviewCompletion';
 import {
   buildDurableWorkerFailureDiagnostics,
@@ -555,4 +555,59 @@ describe('operational failure diagnostics shared boundary',()=>{
     Object.defineProperty(value,'cause',{get(){throw new Error('SECRET');}});
     expect(normalizeOperationalTelemetry(value)).toBeUndefined();
   });
+});
+
+
+describe('strict response usage availability agreement', () => {
+  const zero = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0 };
+  const one = { promptTokens: 1, completionTokens: 1, totalTokens: 1, cachedTokens: 1, costUSD: 1 };
+  const totals = { promptTokens: 0, completionTokens: 0, totalTokens: 0, cachedTokens: 0, costUSD: 0 };
+  const cases: Array<{ name: string; responseUsage: OperationalTelemetry['responseUsage'] }> = [
+    { name: 'zero responses', responseUsage: { availability: 'unknown', responses: 0, samples: zero, totals: {} } },
+    { name: 'positive responses without samples', responseUsage: { availability: 'unknown', responses: 1, samples: zero, totals: {} } },
+    { name: 'fully observed zeros', responseUsage: { availability: 'known', responses: 1, samples: one, totals } },
+    { name: 'cached-token zero alone', responseUsage: { availability: 'partial', responses: 1, samples: { ...zero, cachedTokens: 1 }, totals: { cachedTokens: 0 } } },
+    { name: 'two fully observed responses', responseUsage: { availability: 'known', responses: 2,
+      samples: { promptTokens: 2, completionTokens: 2, totalTokens: 2, cachedTokens: 2, costUSD: 2 }, totals } },
+    { name: 'second response missing cost', responseUsage: { availability: 'partial', responses: 2,
+      samples: { promptTokens: 2, completionTokens: 2, totalTokens: 2, cachedTokens: 2, costUSD: 1 }, totals } },
+    { name: 'second response without samples', responseUsage: { availability: 'partial', responses: 2, samples: one, totals } },
+  ];
+  function fixture(responseUsage: OperationalTelemetry['responseUsage']): OperationalTelemetry {
+    const baseline = createPublishingProgress({ runId: 'run-schema-availability', executionAttempt: 1 }, { sink: () => {} }).snapshot!()!;
+    return { ...baseline, responseUsage, providerCalls: { started: responseUsage.responses, completed: responseUsage.responses, failed: 0, aborted: 0, inflight: 0 } };
+  }
+
+  it.each(cases)('accepts only the observed availability for $name', ({ responseUsage }) => {
+    const value = fixture(responseUsage);
+    expect(operationalTelemetrySchema.parse(value)).toEqual(value);
+    expect(normalizeOperationalTelemetry(value)).toEqual(value);
+    for (const availability of ['unknown', 'partial', 'known'] as const) {
+      if (availability === responseUsage.availability) continue;
+      const invalid = { ...value, responseUsage: { ...responseUsage, availability } };
+      expect(operationalTelemetrySchema.safeParse(invalid).success).toBe(false);
+      expect(normalizeOperationalTelemetry(invalid)).toBeUndefined();
+    }
+  });
+
+  it.each(['promptTokens', 'completionTokens', 'totalTokens', 'cachedTokens', 'costUSD'] as const)(
+    'still refuses %s samples above response count when availability matches', (key) => {
+      const value = fixture({ availability: 'partial', responses: 1, samples: { ...one, [key]: 2 }, totals });
+      expect(operationalTelemetrySchema.safeParse(value).success).toBe(false);
+      expect(normalizeOperationalTelemetry(value)).toBeUndefined();
+    },
+  );
+
+  it.each(['promptTokens', 'completionTokens', 'totalTokens', 'cachedTokens', 'costUSD'] as const)(
+    'still requires totals parity for observed %s zero', (key) => {
+      const missingTotal: OperationalTelemetry['responseUsage']['totals'] = { ...totals };
+      delete missingTotal[key];
+      const value = fixture({ availability: 'known', responses: 1, samples: one, totals: missingTotal });
+      expect(operationalTelemetrySchema.safeParse(value).success).toBe(false);
+      expect(normalizeOperationalTelemetry(value)).toBeUndefined();
+      const unobserved = fixture({ availability: 'unknown', responses: 1, samples: zero, totals: { [key]: 0 } });
+      expect(operationalTelemetrySchema.safeParse(unobserved).success).toBe(false);
+      expect(normalizeOperationalTelemetry(unobserved)).toBeUndefined();
+    },
+  );
 });
