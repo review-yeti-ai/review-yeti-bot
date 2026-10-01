@@ -249,7 +249,7 @@ worker:
     size: 1Gi
     storageClassName: ""
 
-  activeDeadlineSeconds: 840
+  activeDeadlineSeconds: 1440
   # ttlSecondsAfterFinished is the TTL a *succeeded* worker Job is patched
   # down to once the operator observes success (REL-896). A worker is always
   # built with failedTtlSecondsAfterFinished first, since the outcome is not

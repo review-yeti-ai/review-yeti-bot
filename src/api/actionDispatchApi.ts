@@ -42,6 +42,8 @@ import { createIncrementalBaseHandler } from './incrementalBaseRoute';
 import { createIncompleteP2RecoveryHandler, type IncompleteP2RecoveryQueryable } from './incompleteP2RecoveryRoute';
 import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
 import { createVerdictCacheBaseHandler } from './verdictCacheBaseRoute';
+import { createReviewExecutionCheckpointHandler } from './reviewExecutionCheckpointRoute';
+import type { Queryable as ReviewCheckpointQueryable } from '../persistence/incrementalPriorReview';
 
 
 export interface ActionOidcVerifier {
@@ -76,6 +78,8 @@ export interface ActionDispatchRouterOptions {
   incompleteP2Recovery?: IncompleteP2RecoveryQueryable;
   /** REL-1085: the stored record a worker's verdict cache may plan from. */
   verdictCacheBase?: VerdictCacheBaseLookup;
+  /** Durable exact-head task progress for graceful timeout/resume. */
+  reviewCheckpoint?: ReviewCheckpointQueryable;
   now?: () => number;
 }
 
@@ -475,6 +479,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
   if (options.incrementalBase) router.post('/incremental-base', createIncrementalBaseHandler(options.incrementalBase));
   if (options.incompleteP2Recovery) router.post('/incomplete-p2-recovery', createIncompleteP2RecoveryHandler(options.incompleteP2Recovery));
   if (options.verdictCacheBase) router.post('/verdict-cache-base', createVerdictCacheBaseHandler(options.verdictCacheBase));
+  if (options.reviewCheckpoint) router.post('/review-checkpoint', createReviewExecutionCheckpointHandler(options.reviewCheckpoint));
   router.get('/status', handleRunStatus);
 
   return router;

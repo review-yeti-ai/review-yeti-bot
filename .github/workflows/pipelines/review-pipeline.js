@@ -171,7 +171,7 @@ const DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS = 4_096;
 // Streaming responses need both an inactivity watchdog and a total generation
 // budget. Stall/inactivity re-arms on every SSE chunk (reasoning or content).
 // timeout_ms is the connect/request envelope for callers that do not set an
-// explicit max_wall_clock_ms; a live thinking stream may use the full 15-minute
+// explicit max_wall_clock_ms; a live thinking stream may use the full bounded
 // ceiling so small and large diffs share one contract instead of a short cap.
 const DEFAULT_STREAM_MAX_WALL_CLOCK_MS = 900_000;
 
@@ -188,7 +188,7 @@ function resolveStreamTotalTimeoutMs(transport, attemptTimeoutMs, streamEnabled)
 
 // Node's built-in fetch is undici. Its default headersTimeout/bodyTimeout is 300s
 // and is independent of AbortSignal watchdogs. Ollama withholds HTTP headers until
-// the first reasoning token, so a 15-minute generation clock is useless if undici
+// the first reasoning token, so a long generation clock is useless if undici
 // kills the socket at 300s. 0 disables those client timers; the pipeline's
 // headerDeadlineMs / stall / max_wall_clock AbortControllers remain the owners.
 const STREAMING_FETCH_DISPATCHER_OPTIONS = Object.freeze({
@@ -587,7 +587,7 @@ async function callOpenRouterSdk({ baseUrl, apiKey, requestBody, fetchImpl, sign
     apiKey,
     serverURL: baseUrl,
     httpClient,
-    // The review pipeline owns retry-after, model fallback, and the 15-minute ceiling.
+    // The review pipeline owns retry-after, model fallback, and the evidence-phase ceiling.
     retryConfig: { strategy: 'none' },
   });
   try {
@@ -6093,7 +6093,7 @@ function computeArbitrationQuorum(personaResults, expectedPersonas = personaResu
  * re-attempt that cannot finish inside this budget is never started, so the job ends with an
  * accurate INCOMPLETE instead of being killed mid-retry with no outcome at all.
  */
-const DEFAULT_ACTION_BUDGET_MS = 780_000;
+const DEFAULT_ACTION_BUDGET_MS = 1_200_000;
 const PIPELINE_START_MS = Date.now();
 
 function resolveActionDeadlineMs(env = process.env, startMs = PIPELINE_START_MS) {

@@ -380,8 +380,6 @@ describe('work-conserving composed task scheduling', () => {
       deadlineBudget: { deadlineAtMs, timeoutMs: 1_000, terminalBound: true },
       deadlineNow: () => Date.now(),
     });
-    const rejectedRun = expect(run).rejects.toThrow();
-
     await planStarted.promise;
     // The admitted deadline keeps running during planning; task calls must abort at the original
     // one-second cutoff rather than receive a fresh window after planning completes.
@@ -389,10 +387,23 @@ describe('work-conserving composed task scheduling', () => {
     planGate.resolve();
     await allInitialTasksStarted.promise;
     await vi.advanceTimersByTimeAsync(400);
-    await rejectedRun;
+    const result = await run;
     expect(startedTasks).toEqual(new Set(['task-1', 'task-2', 'task-3']));
     expect(abortedTasks).toEqual(startedTasks);
     expect(activeCalls).toBe(0);
+    expect(result.gracefulExit).toEqual({
+      reason: 'evidence_deadline',
+      completedTaskIds: [],
+      pendingTaskIds: ['task-1', 'task-2', 'task-3', 'task-4'],
+    });
+    expect(result.quorum.satisfied).toBe(false);
+    expect(result.optionalFailures).toEqual([]);
+    expect(result.unreportedLanes?.map((lane) => [lane.id, lane.failureClass])).toEqual([
+      ['task-1', 'timeout'],
+      ['task-2', 'timeout'],
+      ['task-3', 'timeout'],
+      ['task-4', 'timeout'],
+    ]);
   });
 
   it('keeps composed concurrency capped by the operator and publisher shadow at one', () => {

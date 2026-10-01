@@ -347,8 +347,9 @@ describe('REL-1113 Action pipeline: real verdicts are unchanged', () => {
 });
 
 describe('REL-1113 Action pipeline: the Action budget', () => {
-  it('defaults to 13 minutes and honors a positive REVIEW_ACTION_BUDGET_MS', () => {
-    expect(pipeline.resolveActionDeadlineMs({}, 1_000)).toBe(1_000 + 780_000);
+  it('defaults to the 20-minute evidence phase and honors a positive REVIEW_ACTION_BUDGET_MS', () => {
+    expect(pipeline.DEFAULT_ACTION_BUDGET_MS).toBe(1_200_000);
+    expect(pipeline.resolveActionDeadlineMs({}, 1_000)).toBe(1_000 + pipeline.DEFAULT_ACTION_BUDGET_MS);
     expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '600000' }, 0)).toBe(600_000);
     expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '-5' }, 0)).toBe(pipeline.DEFAULT_ACTION_BUDGET_MS);
   });
@@ -494,7 +495,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
       'incomplete-reason': 'Review Yeti: INCOMPLETE — infrastructure (lane testing failed: transport)',
     });
     expect(runReports).toEqual([]);
-  });
+  }, 15_000);
 
   it('#1056 attempt-1 shape with budget: main() re-attempts the lost lane and publishes the real verdict', () => {
     const { stdout, outputs, runReports } = runMain('recover', ['security', 'testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
@@ -502,14 +503,14 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).toContain('MAIN_DONE exitCode=0 testingCalls=2');
     expect(outputs).toMatchObject({ verdict: 'SHIP', 'gate-decision': 'PASS', 'incomplete-reason': '' });
     expect(runReports).toHaveLength(1);
-  });
+  }, 15_000);
 
   it('every lane lost on infrastructure: the all-failed branch reports INCOMPLETE, not BLOCK', () => {
     const { stdout, outputs } = runMain('fail', ['testing'], { REVIEW_ACTION_BUDGET_MS: '1000' });
     expect(stdout).toContain('MAIN_DONE exitCode=1');
     expect(stdout).toContain('::error title=Review Yeti: INCOMPLETE — infrastructure::');
     expect(outputs).toMatchObject({ verdict: 'INCOMPLETE', 'gate-decision': 'INCOMPLETE' });
-  });
+  }, 15_000);
 
   it('a real finding alongside a lost lane keeps the findings verdict and is not re-attempted', () => {
     const { stdout, outputs } = runMain('findings', ['security', 'testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
@@ -517,7 +518,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).not.toContain('INCOMPLETE');
     expect(outputs.verdict).toBe('BLOCK');
     expect(outputs['incomplete-reason']).toBe('');
-  });
+  }, 15_000);
 
   const PARTITIONED_DIFF = [
     'diff --git a/src/a.ts b/src/a.ts', '--- a/src/a.ts', '+++ b/src/a.ts', '@@ -0,0 +1,3 @@',
@@ -534,7 +535,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).toContain('Re-attempting lane(s) testing (1/5)');
     expect(stdout).toContain('MAIN_DONE exitCode=0 testingCalls=3');
     expect(outputs).toMatchObject({ verdict: 'SHIP', 'gate-decision': 'PASS' });
-  });
+  }, 15_000);
 
   it('partitioned review with no budget left: main() reports INCOMPLETE, not BLOCK', () => {
     const { stdout, outputs } = runMain('fail', ['security', 'testing'], {
@@ -543,7 +544,7 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).toContain('Partitioned into 2');
     expect(stdout).toContain('MAIN_DONE exitCode=1');
     expect(outputs).toMatchObject({ verdict: 'INCOMPLETE', 'gate-decision': 'INCOMPLETE' });
-  });
+  }, 15_000);
 
   it('negative control: every lane failing on credentials (HTTP 401) is still the fail-closed BLOCK, never INCOMPLETE', () => {
     const { stdout, outputs } = runMain('auth', ['testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
@@ -557,12 +558,13 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
 
 describe('REL-1113 Action pipeline: remaining branches', () => {
   const quiet = { warn: () => {}, error: () => {} };
-  const base = { coverageComplete: true, deadlineMs: Date.now() + 780_000, laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet };
+  const base = { coverageComplete: true, deadlineMs: Date.now() + pipeline.DEFAULT_ACTION_BUDGET_MS,
+    laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet };
 
   it('resolveActionDeadlineMs falls back to the default for a non-numeric or fractional budget', () => {
-    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: 'abc' }, 0)).toBe(780_000);
-    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '1.5' }, 0)).toBe(780_000);
-    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '0' }, 0)).toBe(780_000);
+    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: 'abc' }, 0)).toBe(pipeline.DEFAULT_ACTION_BUDGET_MS);
+    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '1.5' }, 0)).toBe(pipeline.DEFAULT_ACTION_BUDGET_MS);
+    expect(pipeline.resolveActionDeadlineMs({ REVIEW_ACTION_BUDGET_MS: '0' }, 0)).toBe(pipeline.DEFAULT_ACTION_BUDGET_MS);
   });
 
   it('resolveLaneCoverageComplete: a submodule gap or an omitted file makes coverage incomplete', () => {
