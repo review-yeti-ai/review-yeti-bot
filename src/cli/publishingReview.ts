@@ -77,7 +77,9 @@ import {
 } from '../review/publicationFailurePolicy';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import {
-  buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
+  buildWorkerFailureDiagnostics,
+  normalizeOperationalTelemetry,
+  type WorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint, WorkerCompletionHttpError,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
@@ -126,7 +128,7 @@ import {
 import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAvailability';
 import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
-import { createPublishingProgress } from '../telemetry/publishingProgress';
+import { createPublishingProgress, type PublishingProgressReporter } from '../telemetry/publishingProgress';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -1116,6 +1118,30 @@ export async function runPublishingReviewWorker(
   const startedAt = new Date(now()).toISOString();
   // REL-1132: every provider call this run makes goes through `client` below, which records it here.
   const tokenLedger = new TokenLedger();
+  let executionProgress: PublishingProgressReporter | undefined;
+  // Optional diagnostics cannot change native closeout or turn malformed observations into evidence.
+  const safeOperationalSnapshot = (reporter: PublishingProgressReporter | undefined = executionProgress) => {
+    try { return normalizeOperationalTelemetry(reporter?.snapshot?.()); }
+    catch { return undefined; }
+  };
+  const captureOperationalTelemetry = (failureClass: WorkerTerminalFailure['failureClass']) => {
+    try {
+      const unfinished = safeOperationalSnapshot();
+      if (unfinished?.panel.invoked && unfinished.phaseCounts.panel.completed
+        + unfinished.phaseCounts.panel.failed + unfinished.phaseCounts.panel.aborted === 0) {
+        executionProgress?.emit({ task: 'panel', status: failureClass === 'timeout' ? 'aborted' : 'failed' });
+      }
+      const telemetry = safeOperationalSnapshot();
+      if (!telemetry || !(telemetry.providerCalls.started > 0 || value(env, 'REVIEW_TERMINAL_DEADLINE'))) return undefined;
+      const total = tokenLedger.snapshot().total;
+      if (total.calls > 0) {
+        const withLedger = normalizeOperationalTelemetry({ ...telemetry,
+          ledger: { basis: 'returned_responses_including_shadow', availability: 'partial', ...total } });
+        if (withLedger?.ledger) telemetry.ledger = withLedger.ledger;
+      }
+      return telemetry;
+    } catch { return undefined; }
+  };
   const logTokenAccounting = (): void => {
     if (tokenLedger.calls === 0) return;
     try {
@@ -1215,7 +1241,7 @@ export async function runPublishingReviewWorker(
     // this call came from the `isRecoverableIncompletePanel` branch below,
     // from a 502/503 provider outage, or from a thrown infrastructure-incomplete
     // panel (REL-1124), never inferred from `failureClass` alone.
-    const diagnostics = authoritativeInfrastructureBody?.failureDiagnostics
+    const diagnostics: WorkerFailureDiagnostics = authoritativeInfrastructureBody?.failureDiagnostics
       ?? (thrownInfrastructure
         // A legacy provider_5xx never reaches here (it keeps the REL-620 path above).
         ? thrownInfrastructureDiagnostics(thrownInfrastructure, INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail)
@@ -1224,6 +1250,8 @@ export async function runPublishingReviewWorker(
           recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,
           ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
         }));
+    const operationalTelemetry = captureOperationalTelemetry(failureClass);
+    if (operationalTelemetry) diagnostics.operationalTelemetry = operationalTelemetry;
     const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
       ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
       : undefined;
@@ -1582,6 +1610,20 @@ export async function runPublishingReviewWorker(
     // Phase events describe only this gating publisher execution. Shadow review remains separate
     // non-gating evidence; the existing token ledger continues to account for its provider spend.
     const progress = createPublishingProgress(identity);
+    const emitProgress = progress.emit;
+    progress.emit = (event) => {
+      try {
+        if (event.task === 'panel') {
+          const phase = safeOperationalSnapshot(progress)?.phaseCounts.panel;
+          // Publisher and native composed engine share this phase; a late canceled result is not a second terminal event.
+          if (phase && ((event.status === 'started' && phase.started > 0)
+            || (['completed', 'failed', 'aborted'].includes(event.status)
+              && phase.completed + phase.failed + phase.aborted > 0))) return;
+        }
+        emitProgress(event);
+      } catch { /* optional progress must never change the publication outcome */ }
+    };
+    executionProgress = progress;
     const client = meterModelClient(progress.instrument(modelClient), tokenLedger);
     const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });
 
@@ -1947,6 +1989,7 @@ export async function runPublishingReviewWorker(
       panelDeadline.check();
       const panelOperation = Promise.resolve().then(() => {
           panelDeadline.check();
+          progress.emit({task:'panel',status:'started'});
           return panelRunner({
           config: groundedConfig,
           changedFiles,
@@ -2007,6 +2050,7 @@ export async function runPublishingReviewWorker(
           error: lateError instanceof Error ? lateError.message : String(lateError),
         }));
       }
+      progress.emit({ task: 'panel', status: panelResult.gracefulExit ? 'aborted' : 'completed' });
       if (!panelResult.gracefulExit) panelDeadline.check();
       const diffShrinkDisclosure = panelResult.diffShrink ?? null;
       if (diffShrinkDisclosure) {
@@ -2464,6 +2508,7 @@ export async function runPublishingReviewWorker(
     // the service's completion contract accepts. Built once and reported on
     // both paths: the authoritative gate re-arbitrates from it; the legacy
     // terminal success carries it as evidence so the service can keep it.
+    const gracefulOperationalTelemetry = gracefulPartial ? captureOperationalTelemetry('timeout') : undefined;
     const buildReviewResult = (options: { includeShadow?: boolean; includeRoster?: boolean } = {}) => {
       const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
@@ -2562,6 +2607,7 @@ export async function runPublishingReviewWorker(
           quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict && !gracefulPartial,
           ...(gracefulPartial ? { failureDiagnostics: {
             reason: 'review_evidence_deadline',
+            ...(gracefulOperationalTelemetry ? { operationalTelemetry: gracefulOperationalTelemetry } : {}),
             logTail: `Evidence cutoff reached with ${panelResult.gracefulExit?.completedTaskIds.length ?? 0} completed and ${panelResult.gracefulExit?.pendingTaskIds.length ?? 0} pending task(s).${panelResult.gracefulExit?.checkpointPersistenceFailed ? ' Checkpoint persistence failed.' : ''}`,
             recoverableIncompletePanel: false,
           } } : unreportedNoVerdict ? { failureDiagnostics: {
