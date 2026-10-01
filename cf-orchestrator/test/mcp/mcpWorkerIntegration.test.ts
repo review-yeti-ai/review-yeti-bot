@@ -190,4 +190,74 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
     assert.equal(resourceBody.error.code, -32000);
     assert.ok(resourceBody.error.message.includes('requires authentication'));
   });
+
+  it('allows public read-only tools and blocks mutating tools when PUBLIC_READ_MCP="true"', async () => {
+    const publicEnv = {
+      ENVIRONMENT: 'production',
+      PARALLEL_MODE: 'true',
+      PUBLIC_READ_MCP: 'true',
+    };
+
+    // 1. Read-only tool execution succeeds without token
+    const readReq = new Request('https://review-yeti.test/api/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'pub-read-1',
+        method: 'tools/call',
+        params: {
+          name: 'review_yeti_get_runtime_metrics',
+          arguments: { repo: 'example-api', windowHours: 24 },
+        },
+      }),
+    });
+    const readRes = await worker.fetch(readReq, publicEnv as any);
+    assert.equal(readRes.status, 200);
+    const readData = (await readRes.json()) as any;
+    assert.ok(readData.result.content);
+    assert.ok(readData.result.content[0].text.includes('Review Yeti Runtime Latency'));
+
+    // 2. Resources read succeeds without token
+    const resReq = new Request('https://review-yeti.test/api/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'pub-res-1',
+        method: 'resources/read',
+        params: { uri: 'reviewyeti://analytics/dashboard' },
+      }),
+    });
+    const resRes = await worker.fetch(resReq, publicEnv as any);
+    assert.equal(resRes.status, 200);
+
+    // 3. Mutating tool execution is strictly rejected with 401 even when PUBLIC_READ_MCP="true"
+    const mutateReq = new Request('https://review-yeti.test/api/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'pub-mutate-1',
+        method: 'tools/call',
+        params: {
+          name: 'review_yeti_trigger_review',
+          arguments: { owner: 'exampleorg', repo: 'example-api', prNumber: 5318 },
+        },
+      }),
+    });
+    const mutateRes = await worker.fetch(mutateReq, publicEnv as any);
+    assert.equal(mutateRes.status, 401);
+  });
+
+  it('routes /mcp identically to /api/mcp', async () => {
+    const req = new Request('https://review-yeti.test/mcp', {
+      method: 'GET',
+    });
+    const res = await worker.fetch(req, {} as any);
+    assert.equal(res.status, 200);
+    const data = (await res.json()) as any;
+    assert.equal(data.name, 'review-yeti-cf-orchestrator');
+    assert.equal(data.toolsCount, 9);
+  });
 });
