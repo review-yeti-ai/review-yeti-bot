@@ -1,12 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   COMPOSED_TASK_CONCURRENCY_CEILING,
+  buildTaskScopedFiles,
+  buildTaskScopedPrefix,
   executeComposedReview,
   orderReviewTasksByRisk,
+  resolveComposedEngineMaxFindings,
   resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
 import { TASK_ID_PATTERN } from '../../reviewTaskContract';
+import { isBypassDiffOnlyPath } from '../../pathDomainContract';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -1759,5 +1763,277 @@ describe('executeComposedReview', () => {
     } finally {
       execSpy.mockRestore();
     }
+  });
+
+  describe('resolveComposedEngineMaxFindings', () => {
+    it('defaults to 25 when unconfigured', () => {
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, undefined)).toBe(25);
+    });
+
+    it('honours configured max_findings_total narrowed by policy', () => {
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, 10)).toBe(10);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, 50)).toBe(50);
+    });
+
+    it('honours operator env overrides bounded by hard cap', () => {
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', COMPOSED_ENGINE_MAX_FINDINGS: '15' }, 50)).toBe(15);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', REVIEW_YETI_MAX_FINDINGS: '30' }, undefined)).toBe(30);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', COMPOSED_ENGINE_MAX_FINDINGS: '9999' }, undefined)).toBe(500);
+    });
+  });
+
+  describe('isBypassDiffOnlyPath', () => {
+    it('identifies lockfiles as bypass paths', () => {
+      expect(isBypassDiffOnlyPath('package-lock.json')).toBe(true);
+      expect(isBypassDiffOnlyPath('mix.lock')).toBe(true);
+      expect(isBypassDiffOnlyPath('yarn.lock')).toBe(true);
+      expect(isBypassDiffOnlyPath('pnpm-lock.yaml')).toBe(true);
+      expect(isBypassDiffOnlyPath('sub/dir/cargo.lock')).toBe(true);
+      expect(isBypassDiffOnlyPath('go.sum')).toBe(true);
+    });
+
+    it('identifies json data files as bypass paths while preserving package.json and tsconfig.json', () => {
+      expect(isBypassDiffOnlyPath('data/fixtures.json')).toBe(true);
+      expect(isBypassDiffOnlyPath('package.json')).toBe(false);
+      expect(isBypassDiffOnlyPath('tsconfig.json')).toBe(false);
+    });
+
+    it('does not classify source code as bypass', () => {
+      expect(isBypassDiffOnlyPath('src/auth/guard.ts')).toBe(false);
+      expect(isBypassDiffOnlyPath('lib/cdrcisco/telemetry.ex')).toBe(false);
+    });
+  });
+
+  it('finalizes review early and populates all personas when max findings threshold is reached', async () => {
+    const started: string[] = [];
+    const completedTasks: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(6) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error(`missing task id in work directive: ${directive.slice(0, 100)}`);
+      started.push(taskId);
+
+      // Task 1 returns 25 findings
+      if (taskId === 'task-1') {
+        const findings = Array.from({ length: 25 }, (_, i) => ({
+          title: `Finding ${i + 1}`,
+          severity: 'P1',
+          path: 'src/auth/guard.ts',
+          line: 1,
+          startLine: null,
+          body: `Critical issue ${i + 1}`,
+          suggestion: null,
+          replacementCode: null,
+        }));
+        completedTasks.push(taskId);
+        return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings }));
+      }
+
+      // Other tasks take longer or return clean
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      completedTasks.push(taskId);
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({
+      config: config(),
+      changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    }));
+
+    // Quorum must be satisfied and all 6 tasks accounted for in personas
+    expect(result.quorum.satisfied).toBe(true);
+    expect(result.personas).toHaveLength(6);
+    expect(result.unreportedLanes).toEqual([]);
+    expect(result.arbiter.verdict).toBe('BLOCK');
+    expect(result.arbiter.rationale).toContain('Max review findings limit (25) reached');
+
+    // Task 1 should have its 25 findings
+    const task1Persona = result.personas.find((p) => p.id === 'task-1');
+    expect(task1Persona?.findings).toHaveLength(25);
+    expect(task1Persona?.decision).toBe('FINDINGS');
+
+    // Downstream canonical arbitration should compute BLOCK
+    const arbitration = computeArbitration(result.personas, result.applicablePersonaIds!.length, {
+      changedFiles: CODE_FILES,
+      coverageComplete: true,
+      panelSize: 1,
+    });
+    expect(arbitration.verdict).toBe('BLOCK');
+  });
+
+  describe('buildTaskScopedFiles and buildTaskScopedPrefix', () => {
+    const multiFiles = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() {}' },
+      { path: 'src/db/migrate.ts', patch: '@@ -1,1 +1,2 @@\n+export function migrate() {}' },
+      { path: 'src/ui/button.tsx', patch: '@@ -1,1 +1,2 @@\n+export function Button() {}' },
+    ];
+
+    it('scopes effective files strictly to task paths when paths match', () => {
+      const task = { id: 'task-auth', dimension: 'security' as const, paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' };
+      const scoped = buildTaskScopedFiles(task, multiFiles);
+      expect(scoped).toEqual([multiFiles[0]]);
+    });
+
+    it('falls back to all effective files when task paths are unassigned or empty', () => {
+      const task = { id: 'task-arch', dimension: 'architecture' as const, paths: [], question: 'Overall arch?', rationale: 'Arch.' };
+      const scoped = buildTaskScopedFiles(task, multiFiles);
+      expect(scoped).toEqual(multiFiles);
+    });
+
+    it('builds a scoped prefix containing only assigned file diffs and sets task scope header', () => {
+      const task = { id: 'task-auth', dimension: 'security' as const, paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' };
+      const prefix = buildTaskScopedPrefix({
+        task,
+        effectiveFiles: multiFiles,
+        domainLanes: { 'src/auth/guard.ts': 'security_auth', 'src/db/migrate.ts': 'data_persistence', 'src/ui/button.tsx': 'ui_frontend' },
+        repository: 'acme/test-repo',
+        headSha: 'abc1234',
+        repositoryVisibility: 'PUBLIC',
+        rules: ['Rule 1'],
+        preCheckEvidence: {},
+      });
+
+      expect(prefix).toContain('TASK SCOPE: src/auth/guard.ts');
+      expect(prefix).toContain('export function guard()');
+      expect(prefix).not.toContain('export function migrate()');
+      expect(prefix).not.toContain('export function Button()');
+    });
+  });
+
+  it('isolates subagent swarm context so tasks only receive diffs for their assigned paths', async () => {
+    const multiFiles = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() {}' },
+      { path: 'src/db/migrate.ts', patch: '@@ -1,1 +1,2 @@\n+export function migrate() {}' },
+    ];
+    const taskAuthMessages: any[] = [];
+    const taskDbMessages: any[] = [];
+
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      const text = lastText(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' },
+            { id: 'task-db', dimension: 'architecture', paths: ['src/db/migrate.ts'], question: 'DB safe?', rationale: 'DB.' },
+          ],
+        }));
+      }
+
+      if (text.includes('Task id: task-auth')) {
+        taskAuthMessages.push(...payload.messages);
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-auth', status: 'COMPLETE', findings: [] }));
+      }
+      if (text.includes('Task id: task-db')) {
+        taskDbMessages.push(...payload.messages);
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-db', status: 'COMPLETE', findings: [] }));
+      }
+
+      return fakeResponse(JSON.stringify({ nonce, task: 'unknown', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: multiFiles,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(result.personas).toHaveLength(2);
+    expect(result.personas.map((p) => p.decision)).toEqual(['APPROVE', 'APPROVE']);
+
+    // Verify task-auth only received guard.ts diff and NOT migrate.ts diff
+    const authTranscript = JSON.stringify(taskAuthMessages);
+    expect(authTranscript).toContain('export function guard()');
+    expect(authTranscript).not.toContain('export function migrate()');
+
+    // Verify task-db only received migrate.ts diff and NOT guard.ts diff
+    const dbTranscript = JSON.stringify(taskDbMessages);
+    expect(dbTranscript).toContain('export function migrate()');
+    expect(dbTranscript).not.toContain('export function guard()');
+  });
+
+  it('finalizes review early and blocks immediately when a P0 blocker finding is found', async () => {
+    let taskAuthExecuted = false;
+    let taskDbExecuted = false;
+
+    const multiFiles = [
+      { path: 'src/auth/guard.ts', patch: '@@ -1,1 +1,2 @@\n+export function guard() { return true; }' },
+      { path: 'src/db/migrate.ts', patch: '@@ -1,1 +1,2 @@\n+export function migrate() { return true; }' },
+    ];
+
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      const text = lastText(payload.messages);
+      if (text.includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({
+          nonce,
+          tasks: [
+            { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' },
+            { id: 'task-db', dimension: 'architecture', paths: ['src/db/migrate.ts'], question: 'DB safe?', rationale: 'DB.' },
+          ],
+        }));
+      }
+
+      if (text.includes('Task id: task-auth')) {
+        taskAuthExecuted = true;
+        return fakeResponse(JSON.stringify({
+          nonce,
+          task: 'task-auth',
+          status: 'COMPLETE',
+          findings: [
+            {
+              path: 'src/auth/guard.ts',
+              line: 1,
+              severity: 'P0',
+              title: 'Critical bypass',
+              body: 'Authentication check is unconditionally bypassed.',
+            },
+          ],
+        }));
+      }
+
+      if (text.includes('Task id: task-db')) {
+        taskDbExecuted = true;
+        return fakeResponse(JSON.stringify({ nonce, task: 'task-db', status: 'COMPLETE', findings: [] }));
+      }
+
+      return fakeResponse(JSON.stringify({ nonce, task: 'unknown', status: 'COMPLETE', findings: [] }));
+    });
+
+    const result = await executeComposedReview({
+      config: config(),
+      changedFiles: multiFiles,
+      repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40),
+      client: { complete },
+    });
+
+    expect(taskAuthExecuted).toBe(true);
+    // Quorum is satisfied because unstarted/aborted tasks are populated with clean approvals
+    expect(result.personas).toHaveLength(2);
+    expect(result.unreportedLanes).toEqual([]);
+
+    const taskAuthPersona = result.personas.find((p) => p.id === 'task-auth');
+    expect(taskAuthPersona?.decision).toBe('FINDINGS');
+    expect(taskAuthPersona?.findings).toHaveLength(1);
+    expect(taskAuthPersona?.findings[0].severity).toBe('P0');
+
+    // Downstream canonical arbitration must compute BLOCK
+    const arbitration = computeArbitration(result.personas, result.applicablePersonaIds!.length, {
+      changedFiles: CODE_FILES,
+      coverageComplete: true,
+      panelSize: 1,
+    });
+    expect(arbitration.verdict).toBe('BLOCK');
   });
 });

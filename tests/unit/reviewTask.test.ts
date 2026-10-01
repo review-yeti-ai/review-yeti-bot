@@ -246,6 +246,14 @@ describe('validateTaskPlan', () => {
     expect(result.valid).toBe(true);
   });
 
+  it('allows lockfiles and data files to bypass task plan coverage when reviewable code paths exist', () => {
+    const result = validateTaskPlan(
+      plan([task({ paths: [API_FILE] }), task({ id: 'util-task', dimension: 'testing', paths: [UTIL_FILE] })]),
+      ctx({ changedFiles: [API_FILE, UTIL_FILE, 'package-lock.json', 'mix.lock', 'data/seeds.json'] }),
+    );
+    expect(result.valid).toBe(true);
+  });
+
   it('supports the corrective-turn path: a coverage-gap plan re-validates clean once the gap is closed', () => {
     const context = ctx();
     const incomplete = plan([task({ paths: [API_FILE] })]);
