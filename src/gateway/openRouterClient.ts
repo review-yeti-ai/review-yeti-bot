@@ -1709,7 +1709,7 @@ async function createOpenRouterSdkClient(options: {
     serverURL: options.baseUrl,
     httpClient,
     // Retry policy belongs to the review pipeline, where it is bounded and telemetry-aware.
-    // Disable the SDK's default one-hour 5xx retry loop so it cannot violate the 15-minute CI cap.
+    // Disable the SDK's default one-hour 5xx retry loop so it cannot outlive the configured terminal deadline.
     retryConfig: { strategy: 'none' },
   });
   client.getRawResponse = async () => {
