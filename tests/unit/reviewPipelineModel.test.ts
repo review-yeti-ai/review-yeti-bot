@@ -158,6 +158,150 @@ describe('bounded model output-shape telemetry', () => {
   });
 });
 
+describe('SSE terminal choice reduction', () => {
+  function streamResponse(frames: unknown[], mode: 'reader' | 'text' = 'reader') {
+    const wire = frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('')
+      + 'data: [DONE]\n\n';
+    return mode === 'reader'
+      ? new Response(wire, { headers: { 'content-type': 'text/event-stream' } })
+      : { headers: new Headers({ 'content-type': 'text/event-stream' }), text: async () => wire };
+  }
+
+  const content = { choices: [{ index: 0, delta: { content: '{"findings":[]}', reasoning_content: 'fixture reasoning' } }] };
+  const terminal = { index: 0, delta: {}, finish_reason: 'stop', logprobs: { content: [] } };
+  const usage = { choices: [], usage: { prompt_tokens: 7, completion_tokens: 13, total_tokens: 20 } };
+
+  it.each([
+    ['reader', 'stop'], ['reader', 'length'], ['text', 'stop'], ['text', 'length'],
+  ] as const)('retains %s-path %s terminal choice across usage-only tails', async (mode, finishReason) => {
+    const observed = { ...terminal, finish_reason: finishReason };
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      content, { choices: [observed] }, usage, { ...usage, id: 'usage-tail' },
+    ], mode), true);
+    expect(result.usage).toEqual(usage.usage);
+    expect(result.id).toBe('usage-tail');
+    expect(result.choices).toEqual([{
+      ...observed,
+      message: { content: '{"findings":[]}', reasoning: 'fixture reasoning' },
+    }]);
+  });
+
+  it.each(['reader', 'text'] as const)('preserves an ordinary final terminal frame on the %s path', async (mode) => {
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      content, { choices: [terminal], usage: usage.usage },
+    ], mode), true);
+    expect(result.usage).toEqual(usage.usage);
+    expect(result.choices[0]).toMatchObject(terminal);
+    expect(result.choices[0].message.content).toBe('{"findings":[]}');
+  });
+
+  it('retains the latest observed terminal choice rather than the first one', async () => {
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      content, { choices: [terminal] }, { choices: [{ ...terminal, finish_reason: 'length' }] }, usage,
+    ]), true);
+    expect(result.choices[0].finish_reason).toBe('length');
+  });
+
+  it.each([null, undefined])('does not invent a terminal reason from a %s finish', async (finishReason) => {
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      { choices: [{ index: 0, finish_reason: finishReason, delta: { content: '{"findings":[]}' } }] }, usage,
+    ]), true);
+    expect(normalizeModelFinishReason(result.choices[0].finish_reason)).toBe('missing');
+    expect(result.choices[0].message.content).toBe('{"findings":[]}');
+    expect(result.usage).toEqual(usage.usage);
+  });
+
+  it.each([
+    { choices: [] },
+    { choices: [null, { index: 1, finish_reason: 'length', delta: { content: 'unselected choice' } }] },
+    { choices: ['not a choice'] },
+    { choices: [[]] },
+    { choices: [{ index: 0, delta: {}, finish_reason: null }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: 7 }] },
+  ])('does not replace terminal metadata with a nonterminal/invalid tail %j', async (tail) => {
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      content, { choices: [terminal] }, tail, usage,
+    ]), true);
+    expect(result.choices[0]).toMatchObject(terminal);
+    expect(result.choices[0].message.content).toBe('{"findings":[]}');
+    expect(JSON.stringify(result)).not.toContain('unselected choice');
+  });
+
+  it('ignores control and malformed frames without clearing actual terminal metadata', async () => {
+    const wire = `data: ${JSON.stringify(content)}\n\ndata: ${JSON.stringify({ choices: [terminal] })}\n\n`
+      + ': keepalive\n\nevent: completion\n\ndata:\n\ndata: {\n\ndata: [DONE]\n\n';
+    const result = await pipeline.readChatCompletionResponse(
+      new Response(wire, { headers: { 'content-type': 'text/event-stream' } }), true,
+    );
+    expect(result.choices[0]).toMatchObject(terminal);
+    expect(result.choices[0].message.content).toBe('{"findings":[]}');
+  });
+
+  it.each([
+    usage,
+    { choices: [{ index: 0, delta: { role: 'assistant' } }] },
+    { choices: [terminal] },
+    { choices: [null] },
+    { error: { code: 'fixture_error', message: 'fixture failure' } },
+  ])('keeps an output-free stream fail-closed for %j', async (frame) => {
+    await expect(pipeline.readChatCompletionResponse(streamResponse([frame]), true)).rejects.toThrow('empty_sse');
+  });
+
+  it('preserves a final provider error envelope even when a terminal choice was retained', async () => {
+    const error = { code: 'fixture_error', message: 'fixture failure' };
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      content, { choices: [terminal] }, { error },
+    ]), true);
+    expect(result.error).toEqual(error);
+  });
+
+  it.each(['malformed', 'parsed', 'provider_error', 'provider_error_tail'] as const)(
+    'retains terminal diagnostics through the real %s lane without leaking raw output', async (outcome) => {
+      const calls: any[] = [];
+      const reasoning = 'private fixture reasoning not retained in telemetry';
+      const providerError = outcome === 'provider_error' || outcome === 'provider_error_tail';
+      const finishReason = outcome === 'malformed' ? 'length' : 'stop';
+      const output = outcome === 'malformed' ? '{"findings":[' : '{"findings":[]}';
+      const res = await reviewWithModel(testingPersona, diffFiles, { repo: 'o/r' }, null, {
+        guardedGatewayDestination: true,
+        circuitBreaker: new pipeline.RunTransportCircuitBreaker(),
+        transports: [{
+          name: 'openrouter', baseUrl: 'https://gateway.example/v1', apiKey: 'fixture-key',
+          model: 'pr-reviewer', stream: true, reasoningEffort: 'high',
+        }],
+        fetchImplementation: async (_url: string, init: any) => {
+          calls.push(JSON.parse(init.body));
+          return streamResponse([
+            { choices: [{ index: 0, delta: { content: output, reasoning_content: reasoning } }] },
+            { choices: [{ index: 0, delta: {}, finish_reason: finishReason }] },
+            usage,
+            ...(providerError ? [{ error: { code: 'fixture_error', message: 'fixture failure' } }] : []),
+            ...(outcome === 'provider_error_tail' ? [usage] : []),
+          ]);
+        },
+      });
+      expect(res.decision).toBe(outcome === 'parsed' ? 'APPROVE' : 'ERROR');
+      expect(res.findings).toEqual([]);
+      expect(calls).toHaveLength(outcome === 'malformed' ? 2 : 1);
+      if (!providerError) {
+        expect(res.responseAttempts).toHaveLength(calls.length);
+        for (const attempt of res.responseAttempts) {
+          expect(attempt).toMatchObject({
+            outcome: outcome === 'parsed' ? 'parsed' : 'malformed_output',
+            finishReason, outputTokens: 13, maxOutputTokens: 24_576,
+            responseMode: 'stream', contentPresent: true, reasoningPresent: true,
+          });
+        }
+      }
+      expect(calls.every((body) => body.max_tokens === 24_576)).toBe(true);
+      expect(JSON.stringify(res.responseAttempts)).not.toContain(reasoning);
+      expect(JSON.stringify(res.responseAttempts)).not.toContain(output);
+      expect(pipeline.buildProviderTelemetryReceipt([res], { repo: 'o/r', prNumber: 1, headSha: 'a'.repeat(40) }).lanes[0].failureClass)
+        .toBe(outcome === 'parsed' ? null : outcome === 'malformed' ? 'malformed_output' : 'provider_error');
+    },
+  );
+});
+
 describe('resolveModelConfig', () => {
   it('reports disabled when no API key is present', () => {
     const cfg = resolveModelConfig({});

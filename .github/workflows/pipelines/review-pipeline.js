@@ -3691,6 +3691,9 @@ async function readChatCompletionResponse(
   const chunks = [];
   const reasoningChunks = [];
   let latest = null;
+  let streamedChoice = null;
+  let terminalChoice = null;
+  let streamedError = null;
   let streamedRouterMetadata = null;
   let pending = '';
   let eventData = [];
@@ -3707,10 +3710,16 @@ async function readChatCompletionResponse(
     try {
       const payload = JSON.parse(data);
       latest = payload;
+      if (payload?.error) streamedError = payload.error;
       if (payload?.openrouter_metadata && typeof payload.openrouter_metadata === 'object') {
         streamedRouterMetadata = payload.openrouter_metadata;
       }
       const choice = payload?.choices?.[0];
+      if (choice && typeof choice === 'object' && !Array.isArray(choice)) {
+        streamedChoice = choice;
+        const finishReason = choice.finish_reason ?? choice.finishReason;
+        if (typeof finishReason === 'string' && finishReason.trim()) terminalChoice = choice;
+      }
       const delta = contentFragments(choice?.delta?.content);
       const message = contentFragments(choice?.message?.content);
       const deltaReasoning = reasoningFragments(
@@ -3874,9 +3883,11 @@ async function readChatCompletionResponse(
   }
 
   if (chunks.length === 0 && reasoningChunks.length === 0) throw new Error('empty_sse');
-  const lastChoice = latest?.choices?.[0] || {};
+  // Usage-only tails update accounting, not observed terminal choices or provider errors.
+  const lastChoice = terminalChoice || streamedChoice || {};
   return {
     ...(latest || {}),
+    ...(streamedError ? { error: streamedError } : {}),
     ...(streamedRouterMetadata ? { openrouter_metadata: streamedRouterMetadata } : {}),
     choices: [{
       ...lastChoice,
