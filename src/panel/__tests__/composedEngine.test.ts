@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { executeComposedReview, unreportedLaneFailure } from '../composedEngine';
+import { executeComposedReview, resolveComposedTaskConcurrency, unreportedLaneFailure } from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
 import { projectPublishingRosterBounds } from '../../cli/publishingReview';
 import { parseAndValidateConfig } from '../../config/configLoader';
@@ -70,6 +70,13 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it('caps composed task concurrency at three, honors lower operator limits, and keeps publisher shadow serial', () => {
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '8' })).toBe(3);
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '2' })).toBe(2);
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '1' })).toBe(1);
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '16' }, true)).toBe(1);
+  });
+
   it.each(['plan', 'work'] as const)('cancels the active %s provider request when the review aborts', async (phase) => {
     const controller = new AbortController();
     let transportCancelled = false;
@@ -1175,6 +1182,185 @@ describe('executeComposedReview', () => {
       { id: 'task-3', dimension: 'architecture', paths: ['src/auth/guard.ts'], question: 'Does the third change fail closed?', rationale: 'third' },
     ];
   }
+
+  function manyTasks(count: number) {
+    const dimensions = ['security', 'testing', 'architecture'] as const;
+    return Array.from({ length: count }, (_, index) => ({
+      id: `task-${index + 1}`,
+      dimension: dimensions[index % dimensions.length],
+      paths: ['src/auth/guard.ts'],
+      question: `Review change ${index + 1}?`,
+      rationale: `bounded fixture ${index + 1}`,
+    }));
+  }
+
+  function responseForTask(payload: any, taskId: string) {
+    return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), task: taskId, status: 'COMPLETE', findings: [] }));
+  }
+
+  async function withMaxTaskConcurrency<T>(work: () => Promise<T>): Promise<T> {
+    vi.stubEnv('REVIEW_YETI_MAX_CONCURRENT_LANES', '8');
+    try {
+      return await work();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
+
+  it('runs three tasks concurrently and folds results in accepted plan order', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const started: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(6) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error(`missing task id in work directive: ${directive.slice(0, 100)}`);
+      started.push(taskId);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      // Complete out of order within the first cohort; output remains in plan order.
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, 4 - Number(taskId.slice(5))) * 4));
+      active -= 1;
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }));
+
+    expect(maxActive).toBe(3);
+    expect(started).toEqual(manyTasks(6).map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(6).map((task) => task.id));
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
+  it('keeps publisher-owned shadow work serial even when the ordinary task ceiling is three', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(3) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error('missing task id in shadow fixture');
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete }, publisherShadow: true }));
+
+    expect(maxActive).toBe(1);
+    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(3).map((task) => task.id));
+  });
+
+  it('refunds unused cohort reservations before admitting waiting tasks without exceeding the total turn cap', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-composed-budget-cohorts', executionAttempt: 1 }, { sink: (event) => events.push(event) });
+    const started: string[] = [];
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 5, max_turns_per_task: 2 };
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(5) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error('missing task id in budget fixture');
+      started.push(taskId);
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: progress.instrument({ complete }), progress }));
+
+    // Plan consumes one turn. The first cohort reserves two full ceilings (2+2) and uses 1+1;
+    // after refund task-3 gets a full 2-turn slot and task-4 uses the final partial turn.
+    expect(started).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect((result.personas ?? []).reduce((sum, lane) => sum + (lane.turnUsages?.length ?? 0), 0)).toBe(5);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-5', failureClass: 'budget_exhausted' }]);
+    expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', lane: 'composed-task-5', status: 'skipped', rejectionCode: 'budget_exhausted' }));
+  });
+
+  it('does not give a waiting task a premature partial reservation before an earlier task refunds turns', async () => {
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 21, max_turns_per_task: 12 };
+    let taskTwoTurns = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(2) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (taskId === 'task-1') return responseForTask(payload, taskId);
+      if (taskId !== 'task-2') throw new Error('unexpected task in starvation fixture');
+      taskTwoTurns += 1;
+      if (taskTwoTurns <= 9) {
+        return fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } }));
+      }
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }));
+
+    expect(taskTwoTurns).toBe(10); // Exceeds the 8 turns left after task-1's initial reservation.
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2']);
+    expect(result.personas[1].turnsCount).toBe(10);
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
+  it('aborts and settles active siblings after a fatal task error without starting later tasks', async () => {
+    const started = new Set<string>();
+    const aborted = new Set<string>();
+    let releaseAllStarted!: () => void;
+    const startedBarrier = new Promise<void>((resolve) => { releaseAllStarted = resolve; });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(4) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error('missing task id in fatal fixture');
+      started.add(taskId);
+      if (started.size === 3) releaseAllStarted();
+      if (taskId === 'task-1') {
+        await startedBarrier;
+        throw new Error('synthetic fatal task failure');
+      }
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        if (payload.signal?.aborted) {
+          aborted.add(taskId);
+          reject(payload.signal.reason ?? new Error('aborted'));
+          return;
+        }
+        payload.signal?.addEventListener('abort', () => {
+          aborted.add(taskId);
+          reject(payload.signal.reason ?? new Error('aborted'));
+        }, { once: true });
+      });
+    });
+
+    await withMaxTaskConcurrency(() => expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }))
+      .rejects.toThrow('synthetic fatal task failure'));
+
+    expect(started).toEqual(new Set(['task-1', 'task-2', 'task-3']));
+    expect(aborted).toEqual(new Set(['task-2', 'task-3']));
+    expect(complete).toHaveBeenCalledTimes(4); // one plan request plus the three-task first cohort
+  });
 
   function issuedNonce(messages: any[]): string {
     const text = messages.map((message) => {

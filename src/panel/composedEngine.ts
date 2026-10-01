@@ -72,6 +72,7 @@ import {
   type MapReducePlan,
 } from '../review/mapReduceReview';
 import { classifyDomainLanesByHeuristic, DomainLane } from './classifierEngine';
+import { resolveMaxConcurrentLanes } from './laneConcurrency';
 import {
   buildDiffSection,
   buildPanelResponseFormat,
@@ -137,6 +138,8 @@ export interface ComposedReviewOptions {
   client: ReviewModelClient;
   /** Optional publisher-owned diagnostics context; absent for local/direct engine callers. */
   progress?: PublishingProgressReporter;
+  /** Publisher-only: shadow evidence stays serial and never raises its model-call footprint. */
+  publisherShadow?: boolean;
   jobId?: string;
   requestPolicy?: PanelRequestPolicy;
   isCurrentHead?: () => boolean;
@@ -187,8 +190,23 @@ export const COMPOSED_PLAN_MAX_TURNS = 4;
 export const COMPOSED_TASK_MAX_TURNS = 12;
 /** Hard cap on dynamic per-task turns even for multi-path tasks. */
 export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
+/** Keep parallel composed work bounded even when the wider panel cap is raised. */
+export const COMPOSED_TASK_CONCURRENCY_CEILING = 3;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
+
+/**
+ * Composed tasks share one admitted review budget. Respect an operator's lower lane ceiling,
+ * cap ordinary composed work at three, and keep publisher-owned shadow work serial so adding
+ * shadow evidence does not increase its existing model-call footprint.
+ */
+export function resolveComposedTaskConcurrency(
+  env: Record<string, string | undefined> = process.env,
+  publisherShadow = false,
+): number {
+  if (publisherShadow) return 1;
+  return Math.min(COMPOSED_TASK_CONCURRENCY_CEILING, resolveMaxConcurrentLanes(env));
+}
 
 /**
  * Per-task turn ceiling. Policy NARROWS only: a value above the dynamic engine ceiling is ignored
@@ -996,7 +1014,7 @@ async function runPlanPhase(input: {
 }
 
 // ---------------------------------------------------------------------------
-// WORK phase -- one task at a time, engine-owned cursor
+// WORK phase -- one isolated task branch, engine-owned cursor
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
@@ -1428,123 +1446,189 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const optionalFailures: PanelResult['optionalFailures'] = [];
     const unreportedLanes: NonNullable<PanelResult['unreportedLanes']> = [];
     let planUsageFolded = false;
+    const taskConcurrency = resolveComposedTaskConcurrency(process.env, options.publisherShadow === true);
+    type ReservedTask = { task: ReviewTask; index: number; reservedTurns: number };
+    type SettledTask = ReservedTask & { outcome: TaskOutcome };
+    let nextTaskIndex = 0;
 
-    for (let i = 0; i < planOutcome.tasks.length; i++) {
-      const task = planOutcome.tasks[i];
-      const diagnosticLane = composedTaskDiagnosticLane(i);
-      if (remainingBudget() <= 0) {
-        // Never started. Record the reason off the published roster and keep walking.
-        options.progress?.emit({
-          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
-        });
-        unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
-        continue;
-      }
+    const skipForBudget = (index: number) => {
+      const task = planOutcome.tasks[index];
+      options.progress?.emit({
+        task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(index),
+        provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
+      });
+      unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
+    };
+
+    const runReservedTask = async (reserved: ReservedTask, taskBaseMessages: OpenRouterMessage[], taskSignal: AbortSignal): Promise<SettledTask> => {
+      const { task, index, reservedTurns } = reserved;
+      const diagnosticLane = composedTaskDiagnosticLane(index);
       const taskStartedAt = Date.now();
       options.progress?.emit({
         task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
         provider: providerId, model, required: true,
       });
       const taskTurnUsages: LaneTurnUsage[] = [];
-      let outcome: TaskOutcome;
       try {
-        outcome = await runTaskWorkPhase({
+        const outcome = await runTaskWorkPhase({
           maxTurnsPerTask: config.composed?.max_turns_per_task,
           deadlineAtMs: composedDeadlineAtMs,
           now: deadline.now,
           task,
-          taskIndex: i,
+          taskIndex: index,
           totalTasks: planOutcome.tasks.length,
           client,
           model,
           providerId,
-          baseMessages: persistentMessages,
+          baseMessages: taskBaseMessages,
           changedFilesForTools: toolFiles,
           ...(requestCapBytes ? { requestCapBytes } : {}),
           timeoutMs,
           inactivityTimeoutMs,
           requestPolicy,
           jobId,
-          signal,
+          signal: taskSignal,
           repoFileProvider,
           zoektConfig,
-          turnsRemaining: remainingBudget,
+          // The shared budget counts both completed and in-flight allocations. Each task may spend
+          // only its reserved slice; the unused portion is refunded after the whole cohort settles.
+          turnsRemaining: () => reservedTurns - taskTurnUsages.length,
           progress: options.progress,
           progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
         });
+        options.progress?.emit({
+          task: 'composed_task',
+          status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
+          role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
+          durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
+          turn: outcome.turnUsages.length,
+          ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
+          usage: progressUsage(outcome.turnUsages),
+        });
+        return { ...reserved, outcome };
       } catch (error) {
         options.progress?.emit({
-          task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
+          task: 'composed_task', status: taskSignal.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
           provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
-          turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
+          turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, taskSignal),
           usage: progressUsage(taskTurnUsages),
         });
         throw error;
       }
-      const taskUsage = progressUsage(outcome.turnUsages);
-      options.progress?.emit({
-        task: 'composed_task',
-        status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
-        role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
-        durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
-        turn: outcome.turnUsages.length,
-        ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
-        usage: taskUsage,
-      });
-      totalTurnsUsed += outcome.turnUsages.length;
+    };
 
-      // Fold the PLAN phase's own real provider spend into the first task lane that actually
-      // produces a lane result, so total cost/token telemetry (summed by the caller from
-      // `personas[].turnUsages`/`aggregateUsage`) is not silently undercounted merely because the
-      // plan has no lane of its own to be attributed to. Attribution to a single lane is
-      // imperfect; dropping real spend from the total is worse.
-      const turnUsagesForLane = !planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')
-        ? [...planOutcome.turnUsages, ...outcome.turnUsages]
-        : outcome.turnUsages;
-      if (!planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')) planUsageFolded = true;
+    while (nextTaskIndex < planOutcome.tasks.length) {
+      throwIfPanelAborted(signal);
+      let reservationBudget = remainingBudget();
+      if (reservationBudget <= 0) {
+        while (nextTaskIndex < planOutcome.tasks.length) skipForBudget(nextTaskIndex++);
+        break;
+      }
 
-      if (outcome.type === 'complete') {
-        personas.push({
-          id: task.id,
-          required: true,
-          providerId,
-          model,
-          decision: outcome.findings.length > 0 ? 'FINDINGS' : 'APPROVE',
-          findings: outcome.findings,
-          usage: null,
-          costUSD: sumAggregateUsage(turnUsagesForLane).costUSD || null,
-          durationMs: outcome.durationMs,
-          turnsCount: outcome.turnUsages.length,
-          toolTurns: outcome.toolTurns,
-          turnUsages: turnUsagesForLane,
-          aggregateUsage: sumAggregateUsage(turnUsagesForLane),
-          toolCalls: outcome.toolCalls,
-        });
-        persistentMessages = [
-          ...persistentMessages,
-          { role: 'assistant', content: `Task ${task.id} complete.` },
-          { role: 'user', content: `[TASK ${task.id} COMPLETE -- ${outcome.findings.length} finding(s) recorded]` },
-        ];
-      } else if (outcome.type === 'blocked') {
-        optionalFailures.push({
-          id: task.id,
-          error: `Task ${task.id} (${task.dimension}) reported BLOCKED for path(s) [${task.paths.join(', ')}]: ${task.question}`,
-          failureClass: 'contract',
-        });
-        persistentMessages = [
-          ...persistentMessages,
-          { role: 'assistant', content: `Task ${task.id} blocked.` },
-          { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
-        ];
-      } else {
-        // Ran and returned no verdict. Off the published roster, so it cannot
-        // satisfy coverage, and it is not an approval. Later tasks still run.
-        const failure = unreportedLaneFailure(task, 'exhausted', outcome.diagnostics);
-        unreportedLanes.push(failure);
-        logger.warn('[composed] task finalization incomplete', {
-          event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
-        });
+      // Reserve in plan order, without exceeding either a task's existing dynamic ceiling or
+      // the remaining review-wide budget. Work is admitted in cohorts so unused turns are
+      // refunded before tasks waiting behind the current cohort are considered.
+      const cohort: ReservedTask[] = [];
+      while (cohort.length < taskConcurrency && nextTaskIndex < planOutcome.tasks.length && reservationBudget > 0) {
+        const task = planOutcome.tasks[nextTaskIndex];
+        const fullTaskCeiling = resolveTaskTurnCeiling(
+          config.composed?.max_turns_per_task,
+          COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+          task.paths?.length || 1,
+        );
+        // Do not starve a later task with a partial reservation merely because an earlier task
+        // has not refunded unused turns yet. Admit full dynamic ceilings in parallel; if no task
+        // fits an empty cohort, let the first task consume the same partial remainder it would
+        // have received under the prior serial scheduler.
+        if (fullTaskCeiling > reservationBudget && cohort.length > 0) break;
+        const reservedTurns = fullTaskCeiling <= reservationBudget
+          ? fullTaskCeiling
+          : resolveTaskTurnCeiling(config.composed?.max_turns_per_task, reservationBudget, task.paths?.length || 1);
+        cohort.push({ task, index: nextTaskIndex, reservedTurns });
+        reservationBudget -= reservedTurns;
+        nextTaskIndex += 1;
+      }
+
+      const cohortAbort = new AbortController();
+      const onPanelAbort = () => cohortAbort.abort(signal?.reason);
+      if (signal?.aborted) cohortAbort.abort(signal.reason);
+      else signal?.addEventListener('abort', onPanelAbort, { once: true });
+      const cohortPromises = cohort.map((reserved) => runReservedTask(reserved, persistentMessages, cohortAbort.signal));
+      let settled: SettledTask[];
+      try {
+        settled = await Promise.all(cohortPromises);
+      } catch (error) {
+        // A thrown task failure remains fatal as it was in the serial engine. Stop siblings and
+        // wait for every started wrapper to settle before returning the error; no task request is
+        // intentionally left running in the background.
+        cohortAbort.abort(error);
+        await Promise.allSettled(cohortPromises);
+        while (nextTaskIndex < planOutcome.tasks.length) {
+          options.progress?.emit({
+            task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(nextTaskIndex),
+            provider: providerId, model, required: true, rejectionCode: 'aborted',
+          });
+          nextTaskIndex += 1;
+        }
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', onPanelAbort);
+      }
+
+      // Actual use, not reserved capacity, is charged. A task that finalizes early releases its
+      // remainder here for the next cohort while aggregate spend still cannot exceed the cap.
+      totalTurnsUsed += settled.reduce((used, item) => used + item.outcome.turnUsages.length, 0);
+
+      // Preserve the accepted plan's deterministic order for lane output and persistent receipt
+      // lines even when tasks in the cohort finish in a different order.
+      for (const { task, outcome } of settled) {
+        // Fold the PLAN phase's real provider spend into the first task lane that produces a
+        // result, retaining the existing cost/token accounting contract.
+        const turnUsagesForLane = !planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')
+          ? [...planOutcome.turnUsages, ...outcome.turnUsages]
+          : outcome.turnUsages;
+        if (!planUsageFolded && (outcome.type === 'complete' || outcome.type === 'blocked')) planUsageFolded = true;
+
+        if (outcome.type === 'complete') {
+          personas.push({
+            id: task.id,
+            required: true,
+            providerId,
+            model,
+            decision: outcome.findings.length > 0 ? 'FINDINGS' : 'APPROVE',
+            findings: outcome.findings,
+            usage: null,
+            costUSD: sumAggregateUsage(turnUsagesForLane).costUSD || null,
+            durationMs: outcome.durationMs,
+            turnsCount: outcome.turnUsages.length,
+            toolTurns: outcome.toolTurns,
+            turnUsages: turnUsagesForLane,
+            aggregateUsage: sumAggregateUsage(turnUsagesForLane),
+            toolCalls: outcome.toolCalls,
+          });
+          persistentMessages = [
+            ...persistentMessages,
+            { role: 'assistant', content: `Task ${task.id} complete.` },
+            { role: 'user', content: `[TASK ${task.id} COMPLETE -- ${outcome.findings.length} finding(s) recorded]` },
+          ];
+        } else if (outcome.type === 'blocked') {
+          optionalFailures.push({
+            id: task.id,
+            error: `Task ${task.id} (${task.dimension}) reported BLOCKED for path(s) [${task.paths.join(', ')}]: ${task.question}`,
+            failureClass: 'contract',
+          });
+          persistentMessages = [
+            ...persistentMessages,
+            { role: 'assistant', content: `Task ${task.id} blocked.` },
+            { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
+          ];
+        } else {
+          // Exhausted work remains absent from the returned roster and cannot satisfy coverage.
+          unreportedLanes.push(unreportedLaneFailure(task, 'exhausted', outcome.diagnostics));
+          logger.warn('[composed] task finalization incomplete', {
+            event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
+          });
+        }
       }
     }
 
