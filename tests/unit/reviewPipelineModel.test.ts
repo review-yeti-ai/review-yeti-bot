@@ -195,6 +195,30 @@ describe('SSE terminal choice reduction', () => {
     expect(result.choices[0].message.content).toBe('{"findings":[]}');
   });
 
+  it.each([
+    ['reader', 'stop', false], ['reader', 'length', false],
+    ['text', 'stop', false], ['text', 'length', false],
+    ['reader', 'stop', true], ['reader', 'length', true],
+    ['text', 'stop', true], ['text', 'length', true],
+  ] as const)('retains camelCase %s-path %s terminal with nonterminal tail=%s', async (mode, finishReason, nonterminalTail) => {
+    const observed = { index: 0, delta: {}, finishReason, logprobs: { content: [] } };
+    const result = await pipeline.readChatCompletionResponse(streamResponse([
+      content, { choices: [observed] }, usage,
+      ...(nonterminalTail ? [{ choices: [{ index: 0, delta: { role: 'assistant' }, logprobs: null }] }] : []),
+      // Keep actual latest accounting separate from the retained terminal choice.
+      { ...usage, id: 'camelcase-usage-tail' },
+    ], mode), true);
+    expect(result.choices).toEqual([{
+      ...observed,
+      message: { content: '{"findings":[]}', reasoning: 'fixture reasoning' },
+    }]);
+    expect(result.choices[0].finishReason).toBe(finishReason);
+    expect(result.choices[0]).not.toHaveProperty('finish_reason');
+    expect(normalizeModelFinishReason(result.choices[0].finishReason)).toBe(finishReason);
+    expect(result.usage).toEqual(usage.usage);
+    expect(result.id).toBe('camelcase-usage-tail');
+  });
+
   it('retains the latest observed terminal choice rather than the first one', async () => {
     const result = await pipeline.readChatCompletionResponse(streamResponse([
       content, { choices: [terminal] }, { choices: [{ ...terminal, finish_reason: 'length' }] }, usage,
