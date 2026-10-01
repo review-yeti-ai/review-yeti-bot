@@ -488,8 +488,9 @@ export async function persistComposedTaskOutcome(
   let request: ComposedTaskOutcomeRetentionRequest;
   try {
     request = createComposedTaskOutcomeRetentionRequest(input);
-  } catch {
-    fail(retention, 'outcome', 'request_invalid', null);
+  } catch (error) {
+    fail(retention, 'outcome', 'request_invalid',
+      error instanceof ComposedTaskRetentionError ? error.taskIndex : null);
   }
   return persist(retention, 'outcome', input.taskIndex, request, () => retention.port.persistOutcome(request));
 }

@@ -22,6 +22,7 @@ import {
   ComposedTaskRetentionError,
   createComposedTaskOutcomeRetentionRequest,
   createComposedTaskPlanRetentionRequest,
+  persistComposedTaskOutcome,
   validateComposedTaskRetentionAck,
 } from '../composedTaskRetention';
 
@@ -1507,6 +1508,21 @@ describe('executeComposedReview', () => {
       },
     };
   }
+
+  it.each([[0, 0], [7, 7], [-1, null], [8, null]] as const)(
+    'preserves only the bounded task index %s in rejected outcome diagnostics', async (taskIndex, expected) => {
+      const input = validOutcomeInput();
+      const onFailure = vi.fn();
+      const port = recordingRetention([]).port;
+      await expect(persistComposedTaskOutcome({ port, onFailure }, {
+        ...input, taskIndex, usage: { ...input.usage, promptTokens: NaN },
+      })).rejects.toMatchObject({ stage: 'outcome', failureCode: 'request_invalid', taskIndex: expected });
+      expect(onFailure).toHaveBeenCalledExactlyOnceWith({
+        stage: 'outcome', code: 'request_invalid', taskIndex: expected,
+      });
+      expect(port.persistOutcome).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['repository', 'headSha', 'baseSha'] as const)('rejects coercible selector %s without invoking its getter', (field) => {
     const hostile = coercibleString(field === 'repository' ? 'acme/reviewer-fixture' : 'a'.repeat(40));
