@@ -9,6 +9,7 @@
  * - Tier 4: PR comment coverage telemetry formatting ("Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)")
  */
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi } from 'vitest';
 import {
   createPartitionPlan,
@@ -78,6 +79,87 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       expect(rangeStart(1, 2, 1, 1)).toBe(2); // second inserted line
       expect(rangeStart(2, 0, 0, 0)).toBe(2); // pure deletion at source end
       expect(rangeStart(3, 2, 2, 0)).toBe(4); // zero new-side range after two old lines
+    });
+  });
+
+  describe('shared legacy and guarded hunk scanner compatibility', () => {
+    const filePath = 'src/shared-scan.ts';
+    const fileHeader = `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n`;
+    const firstHunk = '@@ -1,1 +1,1 @@ first\n-old\n+new';
+    const secondHunk = '@@ -2,1 +2,1 @@ second\n-old\n+new';
+
+    const split = (patch: string, safeDiffChars: number, guarded: boolean) => {
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch,
+        originalChars: patch.length,
+        compactedChars: patch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, guarded ? { splitOversizedHunksAtLines: true } : {});
+      return plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch));
+    };
+
+    it('routes both wrappers through one shared scanner and grouping implementation with explicit policies', () => {
+      const source = readFileSync(new URL('../../src/pipeline/shaPartitionManager.ts', import.meta.url), 'utf8');
+      expect(source.match(/function splitFileHunks\(/gu)).toHaveLength(1);
+      expect(source.match(/return splitFileHunks\(/gu)).toHaveLength(2);
+      expect(source.match(/trimOneTerminalEmptyLine: false/gu)).toHaveLength(1);
+      expect(source.match(/trimOneTerminalEmptyLine: true/gu)).toHaveLength(1);
+      expect(source.match(/transformHunk: splitOversizedHunkBlock/gu)).toHaveLength(1);
+      expect(source.match(/transformHunk: undefined/gu)).toHaveLength(1);
+      expect(source.match(/failClosedOnOversizedSingleHunk: false/gu)).toHaveLength(1);
+      expect(source.match(/failClosedOnOversizedSingleHunk: true/gu)).toHaveLength(1);
+      expect(source.match(/minimumSourceHunks: 1/gu)).toHaveLength(1);
+      expect(source.match(/minimumSourceHunks: 2/gu)).toHaveLength(1);
+      expect(source.match(/preserveOriginalForSingleResult: false/gu)).toHaveLength(1);
+      expect(source.match(/preserveOriginalForSingleResult: true/gu)).toHaveLength(1);
+    });
+
+    it.each([
+      { name: 'no terminal newline', suffix: '' },
+      { name: 'one terminal newline', suffix: '\n' },
+      { name: 'two terminal newlines', suffix: '\n\n' },
+    ])('returns a one-hunk legacy patch byte-for-byte with $name', ({ suffix }) => {
+      const patch = `${fileHeader}${firstHunk}${suffix}`;
+      expect(split(patch, patch.length - 1, false)).toEqual([patch]);
+    });
+
+    it.each([
+      { name: 'no terminal newline', suffix: '', legacyTail: '\n', guardedTail: '\n' },
+      { name: 'one terminal newline', suffix: '\n', legacyTail: '\n\n', guardedTail: '\n' },
+      { name: 'two terminal newlines', suffix: '\n\n', legacyTail: '\n\n\n', guardedTail: '\n\n' },
+    ])('preserves literal legacy bytes and guarded one-line transport normalization for $name', ({ suffix, legacyTail, guardedTail }) => {
+      const patch = `${fileHeader}${firstHunk}\n${secondHunk}${suffix}`;
+
+      const legacyCap = fileHeader.length + Math.max(firstHunk.length, secondHunk.length + suffix.length) + 1;
+      expect(patch.length).toBeGreaterThan(legacyCap);
+      expect(split(patch, legacyCap, false)).toEqual([
+        `${fileHeader}${firstHunk}\n`,
+        `${fileHeader}${secondHunk}${legacyTail}`,
+      ]);
+
+      const guardedResidualNewlines = Math.max(0, suffix.length - 1);
+      const guardedCap = fileHeader.length + Math.max(firstHunk.length, secondHunk.length + guardedResidualNewlines) + 1;
+      expect(patch.length).toBeGreaterThan(guardedCap);
+      expect(split(patch, guardedCap, true)).toEqual([
+        `${fileHeader}${firstHunk}\n`,
+        `${fileHeader}${secondHunk}${guardedTail}`,
+      ]);
+    });
+
+    it('retains whole-hunk legacy overflow but fails closed for malformed or indivisible guarded hunks', () => {
+      const oversizedBody = `+${'x'.repeat(180)}`;
+      const oversizedHunk = `@@ -0,0 +1,1 @@ indivisible\n${oversizedBody}`;
+      const malformed = `${fileHeader}@@ -1,2 +1,2 @@ malformed\n${oversizedBody}`;
+      const indivisible = `${fileHeader}${oversizedHunk}`;
+      const cap = fileHeader.length + 80;
+
+      expect(split(`${fileHeader}${firstHunk}\n${oversizedHunk}`, cap, false)).toEqual([
+        `${fileHeader}${firstHunk}\n`,
+        `${fileHeader}${oversizedHunk}\n`,
+      ]);
+      expect(split(malformed, cap, true)).toEqual([malformed]);
+      expect(split(indivisible, cap, true)).toEqual([indivisible]);
     });
   });
 

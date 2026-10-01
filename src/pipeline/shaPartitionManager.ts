@@ -239,96 +239,34 @@ function splitOversizedHunkBlock(fileHeader: string, hunkBlock: string, safeDiff
   return fragments.length > 1 ? fragments : [hunkBlock];
 }
 
-/**
- * Splits an oversized diff patch at existing hunk boundaries. This legacy helper is also used
- * by map-reduce chunking, whose behavior remains whole-hunk-only.
- */
-export function splitOversizedFileHunks(
-  file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
-  safeDiffChars: number
-): PartitionFile[] {
-  const patch = file.patch;
-  if (!patch || patch.length <= safeDiffChars || !patch.includes('@@')) {
-    return [file];
-  }
-
-  const lines = patch.split('\n');
-  const headerLines: string[] = [];
-  const hunkBlocks: string[] = [];
-  let currentHunk: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith('@@') && line.includes('@@')) {
-      if (currentHunk.length > 0) {
-        hunkBlocks.push(currentHunk.join('\n'));
-        currentHunk = [];
-      }
-      currentHunk.push(line);
-    } else if (currentHunk.length > 0) {
-      currentHunk.push(line);
-    } else {
-      headerLines.push(line);
-    }
-  }
-
-  if (currentHunk.length > 0) {
-    hunkBlocks.push(currentHunk.join('\n'));
-  }
-
-  const fileHeader = headerLines.length > 0 ? headerLines.join('\n') + '\n' : '';
-  if (hunkBlocks.length <= 1) return [file];
-
-  const resultFiles: PartitionFile[] = [];
-  let currentHunkGroup: string[] = [];
-  let currentGroupChars = fileHeader.length;
-
-  for (const hunk of hunkBlocks) {
-    const hunkChars = hunk.length + 1;
-    if (currentHunkGroup.length > 0 && currentGroupChars + hunkChars > safeDiffChars) {
-      const combinedPatch = fileHeader + currentHunkGroup.join('\n') + '\n';
-      resultFiles.push({
-        path: file.path,
-        patch: combinedPatch,
-        originalChars: combinedPatch.length,
-        compactedChars: combinedPatch.length,
-        status: file.status,
-      });
-      currentHunkGroup = [hunk];
-      currentGroupChars = fileHeader.length + hunkChars;
-    } else {
-      currentHunkGroup.push(hunk);
-      currentGroupChars += hunkChars;
-    }
-  }
-
-  if (currentHunkGroup.length > 0) {
-    const combinedPatch = fileHeader + currentHunkGroup.join('\n') + '\n';
-    resultFiles.push({
-      path: file.path,
-      patch: combinedPatch,
-      originalChars: combinedPatch.length,
-      compactedChars: combinedPatch.length,
-      status: file.status,
-    });
-  }
-
-  return resultFiles;
+interface SharedHunkSplitOptions {
+  /** Legacy keeps all split lines; guarded admission removes exactly one terminal transport line. */
+  trimOneTerminalEmptyLine: boolean;
+  /** Only guarded admission transforms an oversized source hunk into bounded line fragments. */
+  transformHunk?: (fileHeader: string, hunkBlock: string, safeDiffChars: number) => string[];
+  /** Guarded admission must return the original file if any indivisible hunk still exceeds the cap. */
+  failClosedOnOversizedSingleHunk: boolean;
+  /** Legacy only partitions files that originally contain multiple hunks. */
+  minimumSourceHunks: number;
+  /** Guarded admission returns the original when normalization still yields one group. */
+  preserveOriginalForSingleResult: boolean;
 }
 
 /**
- * Guarded gateway admission opts into bounded line-level hunk fragments when a single hunk is
- * larger than the unchanged diff cap. Every fragment has recomputed unified-diff ranges. Invalid
- * hunks and indivisible lines remain intact so the caller's strict validator rejects them.
+ * Shared header/hunk scanner and partition grouping for both legacy map-reduce and guarded
+ * admission. The wrappers supply their historical line-ending and per-hunk policies explicitly;
+ * grouping counts each hunk's inter-hunk/final newline exactly once as hunk.length + 1.
  */
-function splitOversizedFileHunksForGuardedAdmission(
+function splitFileHunks(
   file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
-  safeDiffChars: number
+  safeDiffChars: number,
+  options: SharedHunkSplitOptions,
 ): PartitionFile[] {
   const patch = file.patch;
   if (!patch || patch.length <= safeDiffChars || !patch.includes('@@')) return [file];
 
   const lines = patch.split('\n');
-  if (lines.at(-1) === '') lines.pop();
+  if (options.trimOneTerminalEmptyLine && lines.at(-1) === '') lines.pop();
   const headerLines: string[] = [];
   const hunkBlocks: string[] = [];
   let currentHunk: string[] = [];
@@ -348,15 +286,18 @@ function splitOversizedFileHunksForGuardedAdmission(
   if (currentHunk.length > 0) hunkBlocks.push(currentHunk.join('\n'));
 
   const fileHeader = headerLines.length > 0 ? headerLines.join('\n') + '\n' : '';
-  if (hunkBlocks.length === 0) return [file];
-  const boundedHunks = hunkBlocks.flatMap((hunk) => splitOversizedHunkBlock(fileHeader, hunk, safeDiffChars));
+  if (hunkBlocks.length < options.minimumSourceHunks) return [file];
+  let boundedHunks = hunkBlocks;
+  if (options.transformHunk) {
+    const transformHunk = options.transformHunk;
+    boundedHunks = hunkBlocks.flatMap((hunk) => transformHunk(fileHeader, hunk, safeDiffChars));
+  }
   const resultFiles: PartitionFile[] = [];
   let currentHunkGroup: string[] = [];
-  let currentHunkChars = 0;
-  const buildPatch = (hunks: string[]) => `${fileHeader}${hunks.join('\n')}\n`;
+  let currentGroupChars = fileHeader.length;
   const flushHunkGroup = () => {
     if (currentHunkGroup.length === 0) return;
-    const combinedPatch = buildPatch(currentHunkGroup);
+    const combinedPatch = `${fileHeader}${currentHunkGroup.join('\n')}\n`;
     resultFiles.push({
       path: file.path,
       patch: combinedPatch,
@@ -365,22 +306,56 @@ function splitOversizedFileHunksForGuardedAdmission(
       status: file.status,
     });
     currentHunkGroup = [];
-    currentHunkChars = 0;
+    currentGroupChars = fileHeader.length;
   };
 
   for (const hunk of boundedHunks) {
-    const candidateGroupCount = currentHunkGroup.length + 1;
-    const candidateChars = fileHeader.length + currentHunkChars + hunk.length + candidateGroupCount;
+    const hunkChars = hunk.length + 1;
+    const candidateChars = currentGroupChars + hunkChars;
     if (currentHunkGroup.length > 0 && candidateChars > safeDiffChars) flushHunkGroup();
 
-    const singleHunkChars = fileHeader.length + hunk.length + 1;
-    if (singleHunkChars > safeDiffChars) return [file];
+    if (options.failClosedOnOversizedSingleHunk && currentGroupChars + hunkChars > safeDiffChars) return [file];
     currentHunkGroup.push(hunk);
-    currentHunkChars += hunk.length;
+    currentGroupChars += hunkChars;
   }
 
   flushHunkGroup();
-  return resultFiles.length > 1 ? resultFiles : [file];
+  return options.preserveOriginalForSingleResult && resultFiles.length <= 1 ? [file] : resultFiles;
+}
+
+/**
+ * Splits oversized patches at existing hunk boundaries for legacy map-reduce callers. It
+ * preserves terminal empty split lines and intentionally allows an oversized indivisible hunk.
+ */
+export function splitOversizedFileHunks(
+  file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
+  safeDiffChars: number
+): PartitionFile[] {
+  return splitFileHunks(file, safeDiffChars, {
+    trimOneTerminalEmptyLine: false,
+    transformHunk: undefined,
+    failClosedOnOversizedSingleHunk: false,
+    minimumSourceHunks: 2,
+    preserveOriginalForSingleResult: false,
+  });
+}
+
+/**
+ * Guarded gateway admission opts into bounded line-level hunk fragments when a single hunk is
+ * larger than the unchanged diff cap. Every fragment has recomputed unified-diff ranges. Invalid
+ * hunks and indivisible lines remain intact so the caller's strict validator rejects them.
+ */
+function splitOversizedFileHunksForGuardedAdmission(
+  file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
+  safeDiffChars: number
+): PartitionFile[] {
+  return splitFileHunks(file, safeDiffChars, {
+    trimOneTerminalEmptyLine: true,
+    transformHunk: splitOversizedHunkBlock,
+    failClosedOnOversizedSingleHunk: true,
+    minimumSourceHunks: 1,
+    preserveOriginalForSingleResult: true,
+  });
 }
 
 /**
