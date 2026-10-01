@@ -80,6 +80,21 @@ func (c *CapacityLedger) Client() client.Client {
 //   - (true, nil): slot was successfully acquired (or was already held by this review).
 //   - (false, nil): capacity limit reached (active slots >= maxSlots).
 //   - (false, err): an error occurred (e.g. apierrors.IsConflict if a concurrent update raced).
+func slotKey(namespace, name string) string {
+	if namespace == "" {
+		return name
+	}
+	return fmt.Sprintf("%s/%s", namespace, name)
+}
+
+func parseSlotKey(key string) (namespace, name string) {
+	parts := strings.SplitN(key, "/", 2)
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
+	return DefaultCapacityLedgerNamespace, parts[0]
+}
+
 func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2.PRReviewJob, maxSlots int) (bool, error) {
 	if review == nil || review.Name == "" {
 		return false, errors.New("cannot acquire capacity slot for nil or unnamed review")
@@ -98,6 +113,8 @@ func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2
 		Name:      CapacityLedgerLeaseName,
 	}
 
+	targetKey := slotKey(review.Namespace, review.Name)
+
 	// Retry on conflict up to 5 times. If another thread won the slot and capacity
 	// is now reached, the subsequent attempt immediately observes len(activeSlots) >= maxSlots
 	// and returns (false, nil). If conflict persists across all retries, the conflict error
@@ -110,7 +127,7 @@ func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2
 		err := c.client.Get(ctx, leaseKey, lease)
 		if apierrors.IsNotFound(err) {
 			// Initialize the singleton Lease with this review claimed
-			initialSlots := []string{review.Name}
+			initialSlots := []string{targetKey}
 			data, err := json.Marshal(initialSlots)
 			if err != nil {
 				return false, fmt.Errorf("marshal initial slots: %w", err)
@@ -147,19 +164,40 @@ func (c *CapacityLedger) AcquireSlot(ctx context.Context, review *reviewv1alpha2
 		activeSlots := c.parseActiveSlots(lease)
 
 		// Idempotency: check if this review already holds a slot
-		for _, name := range activeSlots {
-			if name == review.Name {
+		for _, s := range activeSlots {
+			if s == targetKey || s == review.Name {
 				return true, nil
 			}
 		}
 
-		// Capacity check: if active slots already at or above limit, deny admission
+		// Capacity check: if active slots already at or above limit, check for stale entries
 		if len(activeSlots) >= maxSlots {
-			return false, nil
+			// Self-healing prune: verify if existing slot holders are still active in the cluster
+			var liveSlots []string
+			for _, s := range activeSlots {
+				ns, n := parseSlotKey(s)
+				var rev reviewv1alpha2.PRReviewJob
+				getErr := c.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: n}, &rev)
+				if getErr != nil {
+					if apierrors.IsNotFound(getErr) {
+						continue // review deleted, prune slot
+					}
+					liveSlots = append(liveSlots, s)
+					continue
+				}
+				if rev.DeletionTimestamp != nil || isTerminalPhase(rev.Status.Phase) {
+					continue // terminating or terminal review, prune slot
+				}
+				liveSlots = append(liveSlots, s)
+			}
+			activeSlots = liveSlots
+			if len(activeSlots) >= maxSlots {
+				return false, nil
+			}
 		}
 
 		// Add this review to active slots
-		activeSlots = append(activeSlots, review.Name)
+		activeSlots = append(activeSlots, targetKey)
 		data, err := json.Marshal(activeSlots)
 		if err != nil {
 			return false, fmt.Errorf("marshal active slots: %w", err)
@@ -191,11 +229,11 @@ func (c *CapacityLedger) ReleaseSlot(ctx context.Context, review *reviewv1alpha2
 	if review == nil {
 		return nil
 	}
-	return c.ReleaseSlotByName(ctx, review.Name)
+	return c.ReleaseSlotByName(ctx, review.Namespace, review.Name)
 }
 
-// ReleaseSlotByName atomically removes the named review from the active slots ledger.
-func (c *CapacityLedger) ReleaseSlotByName(ctx context.Context, reviewName string) error {
+// ReleaseSlotByName atomically removes the named review in the given namespace from the active slots ledger.
+func (c *CapacityLedger) ReleaseSlotByName(ctx context.Context, namespace, reviewName string) error {
 	if reviewName == "" {
 		return nil
 	}
@@ -210,6 +248,8 @@ func (c *CapacityLedger) ReleaseSlotByName(ctx context.Context, reviewName strin
 		Name:      CapacityLedgerLeaseName,
 	}
 
+	targetKey := slotKey(namespace, reviewName)
+
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		lease := &coordinationv1.Lease{}
 		err := c.client.Get(ctx, leaseKey, lease)
@@ -223,11 +263,11 @@ func (c *CapacityLedger) ReleaseSlotByName(ctx context.Context, reviewName strin
 		activeSlots := c.parseActiveSlots(lease)
 		found := false
 		newSlots := make([]string, 0, len(activeSlots))
-		for _, name := range activeSlots {
-			if name == reviewName {
+		for _, s := range activeSlots {
+			if s == targetKey || s == reviewName {
 				found = true
 			} else {
-				newSlots = append(newSlots, name)
+				newSlots = append(newSlots, s)
 			}
 		}
 

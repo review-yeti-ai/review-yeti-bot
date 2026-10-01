@@ -117,7 +117,24 @@ func (c *AppGateReceiptCoordinator) QueryReceipt(
 }
 
 func (c *AppGateReceiptCoordinator) Forget(key string) {
+	if c == nil {
+		return
+	}
 	c.cache.Delete(key)
+}
+
+// ForgetReview evicts all cached receipts and pending flight entries for the specified review.
+func (c *AppGateReceiptCoordinator) ForgetReview(namespace, name string) {
+	if c == nil {
+		return
+	}
+	prefix := fmt.Sprintf("%s/%s/", namespace, name)
+	c.cache.Range(func(k, v any) bool {
+		if keyStr, ok := k.(string); ok && strings.HasPrefix(keyStr, prefix) {
+			c.cache.Delete(keyStr)
+		}
+		return true
+	})
 }
 
 // Action-dispatch owns the durable completion/gate predicate and authenticates

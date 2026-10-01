@@ -138,9 +138,6 @@ func (r *PRReviewJobV1Alpha2Reconciler) getCapacityLedger() *CapacityLedger {
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) getReceiptCoordinator() *AppGateReceiptCoordinator {
-	if r.ReceiptCoordinator != nil {
-		return r.ReceiptCoordinator
-	}
 	r.coordinatorOnce.Do(func() {
 		if r.ReceiptCoordinator == nil {
 			r.ReceiptCoordinator = NewAppGateReceiptCoordinator(r)
@@ -149,12 +146,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) getReceiptCoordinator() *AppGateReceiptC
 	return r.ReceiptCoordinator
 }
 
+func (r *PRReviewJobV1Alpha2Reconciler) forgetReceipt(namespace, name string) {
+	if coord := r.getReceiptCoordinator(); coord != nil {
+		coord.ForgetReview(namespace, name)
+	}
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var review reviewv1alpha2.PRReviewJob
 	err := r.getCachedThenLive(ctx, req.NamespacedName, &review)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			_ = r.getCapacityLedger().ReleaseSlotByName(ctx, req.Name)
+			_ = r.getCapacityLedger().ReleaseSlotByName(ctx, req.Namespace, req.Name)
+			r.forgetReceipt(req.Namespace, req.Name)
 			return ctrl.Result{}, r.releaseOrphanedWorkerObservation(ctx, req)
 		}
 		return ctrl.Result{}, err
@@ -167,6 +171,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 	// branch in this function assumes a review that is not being deleted.
 	if review.DeletionTimestamp != nil {
 		_ = r.getCapacityLedger().ReleaseSlot(ctx, &review)
+		r.forgetReceipt(review.Namespace, review.Name)
 		return r.reconcileRunSecretDeletion(ctx, &review)
 	}
 	// Attach the cleanup guard as early as possible so no admission window
@@ -216,6 +221,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcile(ctx context.Context, req ctrl.
 	}
 	if isTerminalPhase(review.Status.Phase) {
 		_ = r.getCapacityLedger().ReleaseSlot(ctx, &review)
+		r.forgetReceipt(review.Namespace, review.Name)
 		return r.reconcileTerminalWorkspace(ctx, &review)
 	}
 	if review.Spec.CancelRequested != nil && *review.Spec.CancelRequested {
@@ -1802,6 +1808,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileTerminalDeletion(
 // race) must not surface that as an error.
 func (r *PRReviewJobV1Alpha2Reconciler) deleteTerminalReview(ctx context.Context, review *reviewv1alpha2.PRReviewJob) (ctrl.Result, error) {
 	_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
+	if review != nil {
+		r.forgetReceipt(review.Namespace, review.Name)
+	}
 	if review.Status.ReceiptDigest == "" || review.Status.ReceiptEvidenceRef == "" {
 		if _, err := r.ensureReceiptAuditability(ctx, review, nil, r.clock()); err != nil {
 			return ctrl.Result{}, err
@@ -1845,6 +1854,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileRunSecretDeletion(
 	review *reviewv1alpha2.PRReviewJob,
 ) (ctrl.Result, error) {
 	_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
+	if review != nil {
+		r.forgetReceipt(review.Namespace, review.Name)
+	}
 	if !controllerutil.ContainsFinalizer(review, runSecretCleanupFinalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -2036,6 +2048,9 @@ func (r *PRReviewJobV1Alpha2Reconciler) setPhase(ctx context.Context, review *re
 	}
 	if isTerminalPhase(phase) {
 		_ = r.getCapacityLedger().ReleaseSlot(ctx, review)
+		if review != nil {
+			r.forgetReceipt(review.Namespace, review.Name)
+		}
 	}
 	return r.Status().Update(ctx, review)
 }
