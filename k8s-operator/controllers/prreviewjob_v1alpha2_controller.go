@@ -330,17 +330,17 @@ func (r *PRReviewJobV1Alpha2Reconciler) queueForCapacity(
 	ctx context.Context,
 	review *reviewv1alpha2.PRReviewJob,
 	now time.Time,
-	limit int,
+	message string,
 ) (ctrl.Result, error) {
 	meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
 		Type:               "CapacityExceeded",
 		Status:             metav1.ConditionTrue,
 		Reason:             "CapacityExceeded",
-		Message:            fmt.Sprintf("waiting for one of %d worker slots", limit),
+		Message:            message,
 		ObservedGeneration: review.Generation,
 		LastTransitionTime: metav1.NewTime(now),
 	})
-	if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", fmt.Sprintf("waiting for one of %d worker slots", limit)); err != nil {
+	if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", message); err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
@@ -370,18 +370,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 				LastTransitionTime: metav1.NewTime(now),
 			})
 		}
-		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-			Type:               "CapacityExceeded",
-			Status:             metav1.ConditionTrue,
-			Reason:             "CapacityExceeded",
-			Message:            "waiting for an older worker admission candidate",
-			ObservedGeneration: review.Generation,
-			LastTransitionTime: metav1.NewTime(now),
-		})
-		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+		return r.queueForCapacity(ctx, review, now, "waiting for an older worker admission candidate")
 	}
 
 	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit, admission.activeWorkers)
@@ -399,7 +388,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 				LastTransitionTime: metav1.NewTime(now),
 			})
 		}
-		return r.queueForCapacity(ctx, review, now, limit)
+		return r.queueForCapacity(ctx, review, now, fmt.Sprintf("waiting for one of %d worker slots", limit))
 	}
 
 	leaseResult, err := workspace.NewLeaseManager(r.Client).Acquire(
@@ -538,18 +527,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		return ctrl.Result{}, err
 	}
 	if admission.olderWaiting {
-		meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
-			Type:               "CapacityExceeded",
-			Status:             metav1.ConditionTrue,
-			Reason:             "CapacityExceeded",
-			Message:            "waiting for an older worker admission candidate",
-			ObservedGeneration: review.Generation,
-			LastTransitionTime: metav1.NewTime(now),
-		})
-		if err := r.setPhase(ctx, review, reviewv1alpha2.PhaseQueued, "CapacityExceeded", "waiting for an older worker admission candidate"); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{RequeueAfter: v1Alpha2RequeueAfter}, nil
+		return r.queueForCapacity(ctx, review, now, "waiting for an older worker admission candidate")
 	}
 
 	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit, admission.activeWorkers)
@@ -557,7 +535,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 		return ctrl.Result{}, err
 	}
 	if !acquired {
-		return r.queueForCapacity(ctx, review, now, limit)
+		return r.queueForCapacity(ctx, review, now, fmt.Sprintf("waiting for one of %d worker slots", limit))
 	}
 
 	pvcName := ""
@@ -918,6 +896,16 @@ func workerContractMessage(review *reviewv1alpha2.PRReviewJob, prefix string) st
 	return fmt.Sprintf("%s worker Job does not match the immutable %s contract", prefix, mode)
 }
 
+func receiptLookupRequeue(err error) (ctrl.Result, error) {
+	if errors.Is(err, ErrReceiptLookupPending) {
+		return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
+	}
+	if errors.Is(err, errTemporaryReceiptLookup) {
+		return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, err
+	}
+	return ctrl.Result{}, err
+}
+
 func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context, review *reviewv1alpha2.PRReviewJob, worker *batchv1.Job, now time.Time) (ctrl.Result, error) {
 	jobCreatedAt := metav1.NewTime(now)
 	if !worker.CreationTimestamp.Time.IsZero() {
@@ -1004,19 +992,10 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	// Ensure ReceiptDigest and ReceiptEvidenceRef are populated
 	auditRecorded, err := r.ensureReceiptAuditability(ctx, review, worker, now)
 	if err != nil {
-		if errors.Is(err, ErrReceiptLookupPending) {
-			if terminationRecorded || auditRecorded {
-				_ = r.Status().Update(ctx, review)
-			}
-			return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
+		if terminationRecorded || auditRecorded {
+			_ = r.Status().Update(ctx, review)
 		}
-		if errors.Is(err, errTemporaryReceiptLookup) {
-			if terminationRecorded || auditRecorded {
-				_ = r.Status().Update(ctx, review)
-			}
-			return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, err
-		}
-		return ctrl.Result{}, err
+		return receiptLookupRequeue(err)
 	}
 
 	if terminationRecorded || auditRecorded {
@@ -1214,13 +1193,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileFailurePublication(
 			base := worker.DeepCopy()
 			ready, err := r.prepareFinishedWorkerRelease(ctx, review, worker)
 			if err != nil {
-				if errors.Is(err, ErrReceiptLookupPending) {
-					return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, nil
-				}
-				if errors.Is(err, errTemporaryReceiptLookup) {
-					return ctrl.Result{RequeueAfter: 500 * time.Millisecond}, err
-				}
-				return ctrl.Result{}, err
+				return receiptLookupRequeue(err)
 			}
 			if ready {
 				controllerutil.RemoveFinalizer(worker, terminalOutcomeFinalizer)

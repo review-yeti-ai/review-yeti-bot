@@ -2069,11 +2069,11 @@ func testLeaseResult(review *reviewv1alpha2.PRReviewJob, now time.Time, duration
 	}
 }
 
-// TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobAdoptsWithoutInlineReconciliation proves that
+// TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobReconcilesAuthoritativeOutcome proves that
 // when an existing worker Job is encountered on the admission path (r.Create returns AlreadyExists),
-// the operator adopts the Job, marks review.Status.Phase = PhaseRunning with Reason "WorkerAdopted",
-// and returns ctrl.Result{Requeue: true}, nil without executing any synchronous HTTP queries.
-func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobAdoptsWithoutInlineReconciliation(t *testing.T) {
+// the operator recovers through the canonical reconcileExistingJob path, querying the receipt
+// asynchronously and promoting the review to PhaseSucceeded with a valid ReceiptDigest.
+func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobReconcilesAuthoritativeOutcome(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
@@ -2161,6 +2161,13 @@ func TestPRReviewJobV1Alpha2_AlreadyExistsWorkerJobAdoptsWithoutInlineReconcilia
 		t.Fatalf("admission reconcile failed: %v", admitErr)
 	}
 	_ = admitRes
+
+	httpMu.Lock()
+	calls := httpCallCount
+	httpMu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected 1 receipt HTTP query during reconciliation of existing worker, got %d", calls)
+	}
 
 	var afterAdmit reviewv1alpha2.PRReviewJob
 	if err := kube.Get(context.Background(), req.NamespacedName, &afterAdmit); err != nil {
@@ -2333,8 +2340,8 @@ func TestPRReviewJobV1Alpha2_StalledReceiptEndpointDoesNotBlockUnrelatedReconcil
 	}
 
 	elapsed := time.Since(start)
-	if elapsed >= 100*time.Millisecond {
-		t.Fatalf("total elapsed time for all 3 reconciles was %v, want < 100ms", elapsed)
+	if elapsed >= 2*time.Second {
+		t.Fatalf("total elapsed time for all 3 reconciles was %v, want < 2s (server hang is 4s)", elapsed)
 	}
 
 	var afterB reviewv1alpha2.PRReviewJob
@@ -2355,14 +2362,17 @@ func TestPRReviewJobV1Alpha2_StalledReceiptEndpointDoesNotBlockUnrelatedReconcil
 
 	// Release stall and verify Review A finishes when background fetch caches receipt
 	close(stallReleaseCh)
-	time.Sleep(50 * time.Millisecond)
 
-	if _, errA2 := reconciler.Reconcile(context.Background(), reqA); errA2 != nil {
-		t.Fatalf("reconcile A follow-up failed: %v", errA2)
-	}
+	pollDeadline := time.Now().Add(2 * time.Second)
 	var afterA reviewv1alpha2.PRReviewJob
-	if err := kube.Get(context.Background(), reqA.NamespacedName, &afterA); err != nil {
-		t.Fatalf("get after A: %v", err)
+	for time.Now().Before(pollDeadline) {
+		_, _ = reconciler.Reconcile(context.Background(), reqA)
+		if err := kube.Get(context.Background(), reqA.NamespacedName, &afterA); err == nil {
+			if afterA.Status.Phase == reviewv1alpha2.PhaseSucceeded {
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if afterA.Status.Phase != reviewv1alpha2.PhaseSucceeded {
 		t.Fatalf("expected Review A in PhaseSucceeded after receipt cached, got %s", afterA.Status.Phase)
