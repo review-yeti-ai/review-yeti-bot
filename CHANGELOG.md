@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.0...v1.101.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** batch related source reads within one investigation turn ([#1185](https://github.com/review-yeti-ai/review-yeti-bot/issues/1185)) ([b680f7a](https://github.com/review-yeti-ai/review-yeti-bot/commit/b680f7a1be82372eb99d8e59635ecd96181d2f4d))
+
 ## [1.101.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.14...v1.101.0) (2026-10-01)
 
 
