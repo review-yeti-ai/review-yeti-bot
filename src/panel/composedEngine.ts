@@ -6,13 +6,12 @@
  * diff, over ALL effective files, with no persona narrowing and unscoped pre-check evidence) built
  * exactly once. The engine sends a PLAN turn over that prefix asking for a bounded `ReviewTask[]`
  * (see `./reviewTask.ts`), validates it deterministically (never trusting the model's own account
- * of completeness), then walks an ENGINE-OWNED task cursor -- the model never chooses the order and
- * never self-reports "done" for free. Each task gets its own short, branched sub-conversation (tool
- * calls via `./toolRuntime.ts`, compacted via `./messageWindow.ts` if it runs long); once that task
- * finalizes, its branch is discarded and the persistent conversation gains exactly one receipt line
- * (`[TASK <id> COMPLETE -- N finding(s) recorded]`), never the accumulated turns. That is what keeps
- * many tasks affordable in one context: the persistent conversation carries the plan and the
- * *current* task's evidence, never the full history of every prior task's investigation.
+ * of completeness), then dispatches ENGINE-OWNED task branches -- the model never chooses the order
+ * and never self-reports "done" for free. Each task gets its own short, independently budgeted
+ * sub-conversation (tool calls via `./toolRuntime.ts`, compacted via `./messageWindow.ts` if it runs
+ * long). The branches share the accepted plan and absolute review deadline, but not another task's
+ * accumulated turns. That is what keeps many tasks affordable in one context while allowing the
+ * planned work to run concurrently instead of multiplying the review's wall-clock time.
  *
  * This module must never import from `../panel/panelEngine.ts`'s persona/moderator/arbiter
  * internals (`runPersona`, `executePersonaPanel`) and must not change their behaviour -- those
@@ -90,6 +89,7 @@ import {
   isEmptyCompletionError,
   transportRetryDelayMs,
   isTransientLaneTransportError,
+  mapConcurrentSettled,
   panelDelay,
   EMPTY_COMPLETION_MAX_ATTEMPTS,
   EMPTY_COMPLETION_RETRY_DELAY_MS,
@@ -196,6 +196,8 @@ export const COMPOSED_PLAN_MAX_TURNS = 4;
 export const COMPOSED_TASK_MAX_TURNS = 12;
 /** Hard cap on dynamic per-task turns even for multi-path tasks. */
 export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
+/** Preserve three-way review parallelism without unbounded provider/RSS fan-out. */
+export const COMPOSED_TASK_CONCURRENCY = 3;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
 
@@ -251,6 +253,39 @@ export function resolveComposedEngineMaxTurns(
     return Math.min(configuredMaxTurnsTotal as number, COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS);
   }
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
+}
+
+/**
+ * Divide the remaining review-wide turn budget among planned tasks before any branch starts.
+ * Round-robin allocation gives every funded task a chance to report instead of allowing an early
+ * task to consume the budget serially. Each allocation is still capped by the task's dynamic and
+ * policy ceilings, and the sum can never exceed `availableTurns`.
+ */
+export function allocateComposedTaskTurnBudgets(
+  tasks: Array<Pick<ReviewTask, 'paths'>>,
+  availableTurns: number,
+  policyMaxTurnsPerTask?: number,
+): number[] {
+  const remaining = Number.isSafeInteger(availableTurns) ? Math.max(0, availableTurns) : 0;
+  const desired = tasks.map((task) => resolveTaskTurnCeiling(
+    policyMaxTurnsPerTask,
+    COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+    task.paths?.length || 1,
+  ));
+  const allocations = tasks.map(() => 0);
+  let unallocated = remaining;
+
+  while (unallocated > 0) {
+    let advanced = false;
+    for (let i = 0; i < allocations.length && unallocated > 0; i++) {
+      if (allocations[i] >= desired[i]) continue;
+      allocations[i] += 1;
+      unallocated -= 1;
+      advanced = true;
+    }
+    if (!advanced) break;
+  }
+  return allocations;
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,7 +1040,7 @@ async function runPlanPhase(input: {
 }
 
 // ---------------------------------------------------------------------------
-// WORK phase -- one task at a time, engine-owned cursor
+// WORK phase -- one independently budgeted engine-owned task branch
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
@@ -1467,11 +1502,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     totalTurnsUsed += planOutcome.turnsUsed;
     span.setAttribute('review_yeti.composed.task_count', planOutcome.tasks.length);
 
-    // Persistent backbone after planning: head (cached) + exactly one plan receipt line. The
-    // plan's own tool-call turns and corrective turn are discarded -- the engine already holds
-    // the validated `ReviewTask[]` and restates each task's own detail on that task's own turn;
+    // Shared backbone after planning: head (cached) + exactly one plan receipt line. The plan's
+    // own tool-call turns and corrective turn are discarded -- the engine already holds the
+    // validated `ReviewTask[]` and restates each task's own detail on that task's own branch;
     // nothing is lost, only the model's now-irrelevant intermediate turns.
-    let persistentMessages: OpenRouterMessage[] = [
+    const taskBaseMessages: OpenRouterMessage[] = [
       baseMessages[0],
       baseMessages[1],
       { role: 'assistant', content: 'Plan accepted.' },
@@ -1483,122 +1518,160 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const unreportedLanes: NonNullable<PanelResult['unreportedLanes']> = [];
     let planUsageFolded = false;
 
-    for (let i = 0; i < planOutcome.tasks.length; i++) {
-      const task = planOutcome.tasks[i];
-      const diagnosticLane = composedTaskDiagnosticLane(i);
-      if (remainingBudget() <= 0) {
-        const diagnostics: ComposedTaskFailureDiagnostics = {
-          reason: 'total_turn_budget_exhausted',
-          turnsUsed: 0,
-          correctionAttempts: 0,
-          toolTurns: 0,
-          finishReason: null,
-          lastToolOutcome: 'none',
-        };
+    // Allocate before dispatch so concurrent branches cannot race a shared decrementing counter.
+    // The accepted plan order remains the deterministic output order. Up to three funded branches
+    // run together and share the same absolute terminal deadline; larger plans enter the bounded
+    // worker pool instead of opening an unbounded provider/RSS fan-out.
+    const taskTurnBudgets = allocateComposedTaskTurnBudgets(
+      planOutcome.tasks,
+      remainingBudget(),
+      config.composed?.max_turns_per_task,
+    );
+    span.setAttribute('review_yeti.composed.dispatch_mode', 'bounded_parallel');
+    span.setAttribute('review_yeti.composed.concurrency_limit', COMPOSED_TASK_CONCURRENCY);
+    span.setAttribute('review_yeti.composed.funded_task_count', taskTurnBudgets.filter((budget) => budget > 0).length);
+    type CompletedTaskRun = {
+      task: ReviewTask;
+      outcome: TaskOutcome | null;
+    };
+    // A failed barrier cannot authorize another task on the freed pool slot.
+    // Already-dispatched siblings still settle under the same admitted signal/deadline.
+    let fatalTaskError: { reason: unknown } | undefined;
+    const settledTaskRuns = await mapConcurrentSettled(
+      planOutcome.tasks,
+      COMPOSED_TASK_CONCURRENCY,
+      async (task, taskIndex): Promise<CompletedTaskRun> => {
         if (retention) {
-          await persistWithRunFences(options, deadline, () =>
-            persistComposedTaskOutcome(retention, {
-              selectors: retentionSelectors!,
-              planDigest: retainedPlanDigest!,
-              taskIndex: i,
-              taskId: task.id,
-              status: 'exhausted',
-              diagnostics,
-              usage: summarizeComposedTaskUsage([], 0, 0, 0),
-            }));
+          if (fatalTaskError) throw fatalTaskError.reason;
+          try {
+            deadline.check();
+            if (options.isCurrentHead && !options.isCurrentHead()) {
+              throw new PanelConfigurationError(`stale run aborted for ${repository}#${headSha}`);
+            }
+          } catch (reason) {
+            fatalTaskError ??= { reason };
+            throw reason;
+          }
         }
-        // Never started. Record the reason off the published roster and keep walking.
+        const diagnosticLane = composedTaskDiagnosticLane(taskIndex);
+        const taskBudget = taskTurnBudgets[taskIndex];
+        if (taskBudget <= 0) {
+          if (retention) {
+            try {
+              await persistWithRunFences(options, deadline, () =>
+                persistComposedTaskOutcome(retention, {
+                  selectors: retentionSelectors!,
+                  planDigest: retainedPlanDigest!,
+                  taskIndex,
+                  taskId: task.id,
+                  status: 'exhausted',
+                  diagnostics: {
+                    reason: 'total_turn_budget_exhausted', turnsUsed: 0, correctionAttempts: 0,
+                    toolTurns: 0, finishReason: null, lastToolOutcome: 'none',
+                  },
+                  usage: summarizeComposedTaskUsage([], 0, 0, 0),
+                }));
+            } catch (reason) {
+              fatalTaskError ??= { reason };
+              throw reason;
+            }
+          }
+          options.progress?.emit({
+            task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
+          });
+          return { task, outcome: null };
+        }
+
+        const taskStartedAt = Date.now();
         options.progress?.emit({
-          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
+          task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
+          provider: providerId, model, required: true,
         });
-        unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
-        continue;
-      }
-      const taskStartedAt = Date.now();
-      options.progress?.emit({
-        task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
-        provider: providerId, model, required: true,
-      });
-      const taskTurnUsages: LaneTurnUsage[] = [];
-      let outcome: TaskOutcome;
-      try {
-        outcome = await runTaskWorkPhase({
-          maxTurnsPerTask: config.composed?.max_turns_per_task,
-          deadlineAtMs: composedDeadlineAtMs,
-          now: deadline.now,
-          task,
-          taskIndex: i,
-          totalTasks: planOutcome.tasks.length,
-          client,
-          model,
-          providerId,
-          baseMessages: persistentMessages,
-          changedFilesForTools: toolFiles,
-          ...(requestCapBytes ? { requestCapBytes } : {}),
-          timeoutMs,
-          inactivityTimeoutMs,
-          requestPolicy,
-          jobId,
-          signal,
-          repoFileProvider,
-          zoektConfig,
-          turnsRemaining: remainingBudget,
-          progress: options.progress,
-          progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
-        });
-      } catch (error) {
-        options.progress?.emit({
-          task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
-          turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
-          usage: progressUsage(taskTurnUsages),
-        });
-        throw error;
-      }
-      if (retention) {
+        const taskTurnUsages: LaneTurnUsage[] = [];
         try {
-          const diagnostics = outcome.type === 'exhausted' ? outcome.diagnostics : undefined;
-          const correctionAttempts = outcome.type === 'exhausted'
-            ? outcome.diagnostics.correctionAttempts : outcome.correctionAttempts;
-          const toolTurns = outcome.type === 'exhausted'
-            ? outcome.diagnostics.toolTurns : outcome.toolTurns;
-          await persistWithRunFences(options, deadline, () =>
-            persistComposedTaskOutcome(retention, {
-              selectors: retentionSelectors!,
-              planDigest: retainedPlanDigest!,
-              taskIndex: i,
-              taskId: task.id,
-              status: outcome.type,
-              ...(outcome.type === 'complete' ? { findings: outcome.findings } : {}),
-              ...(diagnostics ? { diagnostics } : {}),
-              usage: summarizeComposedTaskUsage(
-                outcome.turnUsages,
-                correctionAttempts,
-                toolTurns,
-                outcome.durationMs,
-              ),
-            }));
+          const outcome = await runTaskWorkPhase({
+            maxTurnsPerTask: config.composed?.max_turns_per_task,
+            deadlineAtMs: composedDeadlineAtMs,
+            now: deadline.now,
+            task,
+            taskIndex,
+            totalTasks: planOutcome.tasks.length,
+            client,
+            model,
+            providerId,
+            baseMessages: taskBaseMessages,
+            changedFilesForTools: toolFiles,
+            ...(requestCapBytes ? { requestCapBytes } : {}),
+            timeoutMs,
+            inactivityTimeoutMs,
+            requestPolicy,
+            jobId,
+            signal,
+            repoFileProvider,
+            zoektConfig,
+            turnsRemaining: () => taskBudget - taskTurnUsages.length,
+            progress: options.progress,
+            progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
+          });
+          if (retention) {
+            const diagnostics = outcome.type === 'exhausted' ? outcome.diagnostics : undefined;
+            const correctionAttempts = outcome.type === 'exhausted'
+              ? outcome.diagnostics.correctionAttempts : outcome.correctionAttempts;
+            const toolTurns = outcome.type === 'exhausted'
+              ? outcome.diagnostics.toolTurns : outcome.toolTurns;
+            // Retain before terminal progress AND before this callback returns its pool slot.
+            // Each funded sibling owns its independent outcome; no sequential cross-task barrier.
+            await persistWithRunFences(options, deadline, () =>
+              persistComposedTaskOutcome(retention, {
+                selectors: retentionSelectors!,
+                planDigest: retainedPlanDigest!,
+                taskIndex,
+                taskId: task.id,
+                status: outcome.type,
+                ...(outcome.type === 'complete' ? { findings: outcome.findings } : {}),
+                ...(diagnostics ? { diagnostics } : {}),
+                usage: summarizeComposedTaskUsage(
+                  outcome.turnUsages, correctionAttempts, toolTurns, outcome.durationMs,
+                ),
+              }));
+          }
+          options.progress?.emit({
+            task: 'composed_task',
+            status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
+            role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
+            durationMs: outcome.durationMs,
+            turn: outcome.turnUsages.length,
+            ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
+            usage: progressUsage(outcome.turnUsages),
+          });
+          return { task, outcome };
         } catch (error) {
+          if (retention) fatalTaskError ??= { reason: error };
           options.progress?.emit({
             task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
             provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
-            turn: outcome.turnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
-            usage: progressUsage(outcome.turnUsages),
+            turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
+            usage: progressUsage(taskTurnUsages),
           });
           throw error;
         }
+      },
+    );
+
+    // The pool waits for every branch to settle before propagating a fatal branch error; otherwise
+    // sibling provider requests would continue detached after the review had already returned.
+    const completedTaskRuns: CompletedTaskRun[] = [];
+    for (const settled of settledTaskRuns) {
+      if (settled.status === 'rejected') throw settled.reason;
+      completedTaskRuns.push(settled.value);
+    }
+
+    for (const { task, outcome } of completedTaskRuns) {
+      if (!outcome) {
+        unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
+        continue;
       }
-      const taskUsage = progressUsage(outcome.turnUsages);
-      options.progress?.emit({
-        task: 'composed_task',
-        status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
-        role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
-        durationMs: outcome.durationMs,
-        turn: outcome.turnUsages.length,
-        ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
-        usage: taskUsage,
-      });
       totalTurnsUsed += outcome.turnUsages.length;
 
       // Fold the PLAN phase's own real provider spend into the first task lane that actually
@@ -1628,22 +1701,12 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           aggregateUsage: sumAggregateUsage(turnUsagesForLane),
           toolCalls: outcome.toolCalls,
         });
-        persistentMessages = [
-          ...persistentMessages,
-          { role: 'assistant', content: `Task ${task.id} complete.` },
-          { role: 'user', content: `[TASK ${task.id} COMPLETE -- ${outcome.findings.length} finding(s) recorded]` },
-        ];
       } else if (outcome.type === 'blocked') {
         optionalFailures.push({
           id: task.id,
           error: `Task ${task.id} (${task.dimension}) reported BLOCKED for path(s) [${task.paths.join(', ')}]: ${task.question}`,
           failureClass: 'contract',
         });
-        persistentMessages = [
-          ...persistentMessages,
-          { role: 'assistant', content: `Task ${task.id} blocked.` },
-          { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
-        ];
       } else {
         // Ran and returned no verdict. Off the published roster, so it cannot
         // satisfy coverage, and it is not an approval. Later tasks still run.
@@ -1668,13 +1731,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       unreportedLanes,
       zeroLaneNonEvidence: false,
       panelWallClockMs: Date.now() - panelStartedAt,
-      // One composed context is one reviewer. `quorum` here describes this engine's own
-      // single-context execution, not the arbitration threshold -- `panelSize: 1` at the
+      // One composed plan with independently budgeted task branches is one reviewer. `quorum`
+      // here describes this engine's own execution, not the arbitration threshold -- `panelSize: 1` at the
       // arbitration call site (see `src/cli/publishingReview.ts`) is what actually prevents a
       // longer task plan from silently raising the P1 blocking threshold; this field must not be
       // read as a substitute for that.
       quorum: { required: 1, distinctProviders: [providerId], satisfied: true },
-      // Cross-lane reconciliation is intra-context here (the engine-owned task cursor + the
+      // Cross-lane reconciliation is intra-review here (the engine-owned accepted task plan +
       // deterministic `clusterFindings` dedupe at arbitration time), so there is no separate
       // moderator/arbiter provider turn to run. These are zero-cost stubs kept only so every
       // existing type and fixture expecting a `PanelResult` shape stays valid; the caller's
