@@ -3151,7 +3151,7 @@ it('keeps configured-deadline panel failure telemetry before any provider call a
       expect(client.complete).not.toHaveBeenCalled();
       expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
       const event = completion.reportTerminalFailure.mock.calls[0]![0];
-      expect(event).toMatchObject({ runId: input.REVIEW_RUN_ID, headSha: HEAD, executionAttempt: 1, failureClass: 'internal_error' });
+      expect(event).toMatchObject({ runId: input.REVIEW_RUN_ID, headSha: HEAD, executionAttempt: 1, failureClass: 'provider_error' });
       if (deadlineConfigured) {
         expect(event.diagnostics).toMatchObject({ operationalTelemetry: {
           panel: { invoked: true },
