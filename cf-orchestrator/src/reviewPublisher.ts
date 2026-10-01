@@ -42,9 +42,14 @@ export interface GitHubReviewPayload {
  * Formats a single finding with optional ```suggestion markdown block.
  */
 export function formatSuggestionBody(finding: InlineFindingSuggestion): string {
-  const badge = finding.severity === 'P0' || finding.severity === 'P1'
-    ? `🚨 **[${finding.severity}]**`
-    : `💡 **[${finding.severity}]**`;
+  let badge: string;
+  if (finding.severity === 'P0' || finding.severity === 'P1') {
+    badge = `🚨 **[${finding.severity}]**`;
+  } else if (finding.severity === 'P2') {
+    badge = `⚠️ **[${finding.severity} - Required to address]**`;
+  } else {
+    badge = `💡 **[${finding.severity}]**`;
+  }
 
   let body = `${badge} **${finding.title}**\n\n${finding.description.trim()}`;
 
@@ -79,12 +84,13 @@ export function buildGitHubReviewPayload(params: {
     body = `${body.trim()}\n\n---\n\n${costSection}`;
   }
 
-  // Map verdict to GitHub PR review event
+  // Map verdict to GitHub PR review event.
+  // P0, P1, and P2 advisory findings are all required to address and block merge.
+  const hasBlockers = findings.some(f => f.severity === 'P0' || f.severity === 'P1' || f.severity === 'P2');
   let event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' = 'COMMENT';
   if (verdict === 'success') {
-    event = 'APPROVE';
+    event = hasBlockers ? 'REQUEST_CHANGES' : 'APPROVE';
   } else if (verdict === 'action_required') {
-    const hasBlockers = findings.some(f => f.severity === 'P0' || f.severity === 'P1');
     event = hasBlockers ? 'REQUEST_CHANGES' : 'COMMENT';
   }
 
