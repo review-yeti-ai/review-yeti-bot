@@ -22,7 +22,8 @@
  *    deliberate: a `neutral` check does not block a merge, so an outage that
  *    published `neutral` would silently stop enforcing.
  */
-import { createPanelDeadlineSignal, executePersonaPanel, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { createPanelDeadlineSignal, executePersonaPanel, PanelConfigurationError, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
+import { workerFailureClasses } from '../types/workerFailure';
 import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
 import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
 import { executeComposedReview } from '../panel/composedEngine';
@@ -790,6 +791,10 @@ export function classifyFailure(error: unknown): WorkerTerminalFailure['failureC
     if (error.status === 429) return 'rate_limit';
     return 'provider_error';
   }
+  // Preserve the panel's closed typed diagnosis, not a caller-supplied field on an arbitrary error.
+  if (error instanceof PanelConfigurationError
+    && error.failureClass !== undefined
+    && workerFailureClasses.includes(error.failureClass)) return error.failureClass;
   const message = error instanceof Error ? error.message : String(error);
   if (/contract is invalid/iu.test(message)) return 'contract';
   // A non-renderable diff is a contract violation, not the internal_error catch-all.
