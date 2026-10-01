@@ -24,6 +24,17 @@ const outcome = (model = 'jev-test') => ({ status: 'ok', model, durationMs: 1,
   } });
 
 describe('deletion evidence replay', () => {
+  it('keeps binary deletions and failed source reads unavailable', async () => {
+    const binary = { path: 'x.bin', patch: 'deleted file mode 100644\nBinary files a/x.bin and b/x.bin differ' };
+    expect(deletionInventory([binary])[0].available).toBe(false);
+    const blocked = setup([binary]);
+    expect(await blocked.runtime.evidence('x.bin')).toMatchObject({ status: 'unavailable', reason: 'original_evidence_unavailable' });
+    expect(blocked.provider.readFileAt).not.toHaveBeenCalled();
+    const failed = setup();
+    failed.provider.readFileAt.mockRejectedValue(new Error('source read failed'));
+    expect(await failed.runtime.evidence('old.ts')).toMatchObject({ status: 'unavailable', reason: 'source_lookup_failed' });
+  });
+
   it('activates the real client seam through aliases and exact repository allowlists', async () => {
     const ask = vi.spyOn(JevClient.prototype, 'ask').mockResolvedValue(outcome() as any);
     try {
