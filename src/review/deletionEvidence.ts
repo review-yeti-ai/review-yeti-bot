@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { basename } from 'node:path';
 import { ASTParser } from '../indexer/astParser';
 import type { RepoFileProvider } from '../panel/panelEngine';
-import { raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelEngine';
+import { raceWithPanelAbort, throwIfPanelAborted } from '../panel/panelAbort';
 import { classifyUnavailablePatch } from './patchAvailability';
 import { isSecuritySensitivePath } from './securitySensitivePaths';
 import { unquoteGitPath } from './changedFiles';
