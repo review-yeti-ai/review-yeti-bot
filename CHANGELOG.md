@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.103.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.0...v1.103.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **worker:** verify runtime manifest file integrity ([#1208](https://github.com/review-yeti-ai/review-yeti-bot/issues/1208)) ([72f08c0](https://github.com/review-yeti-ai/review-yeti-bot/commit/72f08c01f3b587e902d70b31632acc5e258e5a1b))
+
 ## [1.103.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.1...v1.103.0) (2026-10-01)
 
 
