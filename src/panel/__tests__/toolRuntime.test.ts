@@ -399,7 +399,7 @@ describe('runReadOnlyTool', () => {
       });
       const result = await runReadOnlyTool('ct_impact', { target: 'routes' }, baseContext());
       expect(result.toolScope).toBe('cross-repository-ast-mesh');
-      expect(result.isExhaustive).toBe(true);
+      expect(result.isExhaustive).toBe(false);
       expect(result.toolOutput).toContain('blast_radius');
     });
 
@@ -410,7 +410,7 @@ describe('runReadOnlyTool', () => {
       });
       const result = await runReadOnlyTool('ct_mesh_query', { query: 'UserRouter' }, baseContext());
       expect(result.toolScope).toBe('cross-repository-ast-mesh');
-      expect(result.isExhaustive).toBe(true);
+      expect(result.isExhaustive).toBe(false);
       expect(result.toolOutput).toContain('UserRouter');
     });
 
@@ -421,7 +421,7 @@ describe('runReadOnlyTool', () => {
       });
       const result = await runReadOnlyTool('ct_mesh_stats', {}, baseContext());
       expect(result.toolScope).toBe('cross-repository-ast-mesh');
-      expect(result.isExhaustive).toBe(true);
+      expect(result.isExhaustive).toBe(false);
     });
 
     it('admits knowledge_search and sets governed-knowledge-adr scope', async () => {

@@ -58,6 +58,7 @@ DEBOUNCE_WINDOW_SECONDS = "60"
 PARALLEL_FILE_CONCURRENCY = "5"
 RUNNER_TYPE = "cloudflare" # Cloudflare Containers (default; falls back to DigitalOcean if CONTAINERS binding is not attached)
 DO_AGENT_ID = "review-yeti-swarm" # Secondary option when RUNNER_TYPE is "digitalocean" or when used as fallback
+PUBLIC_READ_MCP = "true" # Enables public read access to status, metrics, reports, dashboards
 
 # Cron trigger for 1-hour aggressive R2 workspace cache purge
 [triggers]
