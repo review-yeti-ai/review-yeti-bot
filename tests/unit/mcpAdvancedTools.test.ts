@@ -28,6 +28,26 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
   const TEST_REPO = 'ct-review-bot';
   const TEST_PR = 123;
   const TEST_HEAD_SHA = '0123456789abcdef0123456789abcdef01234567';
+  const EXPECTED_MCP_TOOL_NAMES = [
+    'get_review_status',
+    'get_review_findings',
+    'get_model_matrix',
+    'trigger_review',
+    'cancel_review',
+    'watch_review_progress',
+    'preflight_diff_review',
+    'explain_finding',
+    'generate_fix_diff',
+    'dispute_finding',
+    'attest_pr_gate',
+    'reply_review_thread',
+    'query_active_jobs',
+    'get_cloudflare_status',
+    'get_billable_runtime_report',
+    'get_runtime_metrics',
+    'get_analytics_dashboard',
+    'purge_cache',
+  ];
 
   function createMockCaller(options: {
     isAdmin?: boolean;
@@ -65,31 +85,21 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
   }
 
   // ===========================================================================
-  // 1. Tool Catalog Registration (12 Tools)
+  // 1. Tool Catalog Registration (18 Tools)
   // ===========================================================================
   describe('1. Tool Catalog Registration & Schema Audit', () => {
-    it('registers exactly 12 tools in createDefaultToolRegistry', () => {
+    it.each(['registration', 'reversed'] as const)('registers the complete 18-tool catalog in %s listing order', (order) => {
       const registry = createDefaultToolRegistry();
+      if (order === 'reversed') {
+        const registered = registry.listTools();
+        vi.spyOn(registry, 'listTools').mockImplementation(() => [...registered].reverse());
+      }
       const tools = registry.listTools();
 
-      expect(tools).toHaveLength(12);
       const names = tools.map((t) => t.name);
-      expect(names).toEqual(
-        expect.arrayContaining([
-          'get_review_status',
-          'get_review_findings',
-          'get_model_matrix',
-          'trigger_review',
-          'cancel_review',
-          'watch_review_progress',
-          'preflight_diff_review',
-          'explain_finding',
-          'generate_fix_diff',
-          'dispute_finding',
-          'attest_pr_gate',
-          'reply_review_thread',
-        ])
-      );
+      expect(names).toHaveLength(18);
+      expect(new Set(names).size).toBe(18);
+      expect([...names].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
 
       for (const tool of tools) {
         expect(tool.name).toBeDefined();
@@ -99,27 +109,33 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       }
     });
 
-    it('serves all 12 tools via tools/list over remoteMcpRouter HTTP endpoint', async () => {
+    it.each(['registration', 'reversed'] as const)('serves the complete 18-tool catalog via HTTP in %s listing order', async (order) => {
       const caller = createMockCaller({ isAdmin: true });
+      const registry = createDefaultToolRegistry();
+      if (order === 'reversed') {
+        const registered = registry.listTools();
+        vi.spyOn(registry, 'listTools').mockImplementation(() => [...registered].reverse());
+      }
       const router = createRemoteMcpRouter({
         authenticator: createMockAuthenticator(caller),
+        toolRegistry: registry,
       });
       const app = buildExpressTestApp(router);
 
-      const response = await request(app)
-        .post('/api/mcp')
-        .set('Authorization', 'Bearer valid-token')
-        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+      try {
+        const response = await request(app)
+          .post('/api/mcp')
+          .set('Authorization', 'Bearer valid-token')
+          .send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
 
-      expect(response.status).toBe(200);
-      expect(response.body.result.tools).toHaveLength(12);
-      const toolNames = response.body.result.tools.map((t: any) => t.name);
-      expect(toolNames).toContain('generate_fix_diff');
-      expect(toolNames).toContain('dispute_finding');
-      expect(toolNames).toContain('attest_pr_gate');
-      expect(toolNames).toContain('reply_review_thread');
-
-      router.destroy();
+        expect(response.status).toBe(200);
+        const toolNames = response.body.result.tools.map((t: any) => t.name);
+        expect(toolNames).toHaveLength(18);
+        expect(new Set(toolNames).size).toBe(18);
+        expect([...toolNames].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
+      } finally {
+        router.destroy();
+      }
     });
   });
 
@@ -1794,4 +1810,3 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
     });
   });
 });
-
