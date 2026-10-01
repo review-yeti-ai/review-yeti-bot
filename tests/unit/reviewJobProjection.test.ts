@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { buildReviewJobProjection, buildRunSecretName, deriveRunSecretExecutionAttempt } from '../../src/k8s/reviewJobProjection';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { sha256 } from '../../src/review/reviewCore';
-import { DEFAULT_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import {
+  MAX_TERMINAL_DEADLINE_MS,
+  MIN_TERMINAL_DEADLINE_MS,
+  TERMINAL_DEADLINE_MS,
+} from '../../src/config/terminalDeadline';
 
 const receivedAt = Date.parse('2026-08-30T20:00:00.000Z');
 const input = {
@@ -196,16 +200,17 @@ describe('buildReviewJobProjection', () => {
     expect(projection.spec.executionAttempt).toBe(maxAttempt);
   });
 
-  it('rejects unknown publication modes and deadline expansion before producing a projection', () => {
+  it('rejects unknown publication modes and deadlines outside the supported range', () => {
     expect(() => buildReviewJobProjection({ ...input, publicationMode: 'enabled' as any }, receivedAt + 60_000))
       .toThrow(/publication mode/i);
-    expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + DEFAULT_TERMINAL_DEADLINE_MS + 1 }, receivedAt + 60_000))
-      .toThrow(/terminal deadline must be exactly/i);
-    // The below-floor rejection is an independent branch from the above-ceiling one
-    // (buildReviewJobProjection has its own copy of this check, separate from
-    // reviewDispatchRepository's), so it needs its own direct assertion here too.
-    expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + DEFAULT_TERMINAL_DEADLINE_MS - 1 }, receivedAt + 60_000))
-      .toThrow(/terminal deadline must be exactly/i);
+    expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }, receivedAt + 60_000))
+      .toThrow(/persisted terminal deadline must be between/i);
+    expect(() => buildReviewJobProjection({ ...input, terminalDeadline: receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }, receivedAt + 60_000))
+      .toThrow(/persisted terminal deadline must be between/i);
+    const persisted35MinuteWindow = receivedAt + 2_100_000;
+    const projection = buildReviewJobProjection({ ...input, terminalDeadline: persisted35MinuteWindow }, receivedAt + 60_000);
+    expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt))
+      .toBe(2_100_000);
     expect(() => buildReviewJobProjection(input, input.terminalDeadline - 119_999))
       .toThrow(/120 seconds/i);
     expect(buildReviewJobProjection(input, input.terminalDeadline - 120_000).metadata.name)

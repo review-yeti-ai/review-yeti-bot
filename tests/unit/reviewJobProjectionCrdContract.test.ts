@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import yaml from 'js-yaml';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
 import {
   DEFAULT_TERMINAL_DEADLINE_MS,
   LEGACY_MAX_TERMINAL_DEADLINE_MS,
+  MAX_TERMINAL_DEADLINE_MS,
+  MIN_TERMINAL_DEADLINE_MS,
   TERMINAL_DEADLINE_MS,
 } from '../../src/config/terminalDeadline';
 import { CANCEL_REASON_MAX_LENGTH } from '../../src/k8s/kubernetesReviewJobProjector';
@@ -106,14 +108,13 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(TERMINAL_DEADLINE_MS);
   });
 
-  // REL-733 follow-up: the exact TypeScript deadline and the CRD's CEL rule are a manually
-  // maintained lockstep invariant (see terminalDeadline.ts's header comment).
+  // REL-733 follow-up: the TypeScript admission range and the CRD's CEL bounds
+  // are a manually maintained lockstep invariant (see terminalDeadline.ts).
   // The Go side pins this via crd_contract_test.go and job_test.go; this is
-  // the TS-side pin, so a drift between the two -- e.g. widening
-  // DEFAULT_TERMINAL_DEADLINE_MS without updating the CRD -- fails here instead
-  // of admitting a run whose window the CRD's CEL rule (or the Go operator's
-  // validateInput) rejects at apply/projection time.
-  it('pins both terminalDeadline CEL rule bounds to the exact TypeScript deadline', () => {
+  // the TS-side pin, so a drift between the two range bounds fails here instead
+  // of admitting a run whose window the CRD's CEL rule (or Go validateInput)
+  // rejects at apply/projection time.
+  it('pins terminalDeadline CEL bounds to the TypeScript supported range', () => {
     const spec = crdSchema().properties.spec;
     const validations = spec['x-kubernetes-validations'] as Array<{ rule: string; message: string }>;
     const deadlineRule = validations.find(
@@ -122,16 +123,23 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(deadlineRule).toBeDefined();
     const boundsInSeconds = [...deadlineRule!.rule.matchAll(/duration\('(\d+)s'\)/gu)].map((match) => Number(match[1]));
     expect(boundsInSeconds).toEqual([
-      DEFAULT_TERMINAL_DEADLINE_MS / 1_000,
-      DEFAULT_TERMINAL_DEADLINE_MS / 1_000,
+      MIN_TERMINAL_DEADLINE_MS / 1_000,
+      MAX_TERMINAL_DEADLINE_MS / 1_000,
     ]);
   });
 
-  it('pins the database-only legacy recovery ceiling to the documented Go migration marker', () => {
+  it('pins the Go admission bounds and persisted recovery ceiling to TypeScript limits', () => {
     const goSource = fs.readFileSync(path.resolve(__dirname, '../../k8s-operator/pkg/job/job.go'), 'utf8');
-    const match = goSource.match(/LegacyPersistedMaxTerminalDeadlineSeconds\s*=\s*int64\((\d+)\)/u);
-    expect(match).not.toBeNull();
-    expect(Number(match![1]) * 1_000).toBe(LEGACY_MAX_TERMINAL_DEADLINE_MS);
+    const minMatch = goSource.match(/MinTerminalDeadlineSeconds\s*=\s*int64\((\d+)\)/u);
+    const maxMatch = goSource.match(/MaxTerminalDeadlineSeconds\s*=\s*int64\((\d+)\)/u);
+    const legacyMaxMatch = goSource.match(/LegacyPersistedMaxTerminalDeadlineSeconds\s*=\s*int64\((\d+)\)/u);
+    expect(minMatch).not.toBeNull();
+    expect(maxMatch).not.toBeNull();
+    expect(legacyMaxMatch).not.toBeNull();
+    expect(Number(minMatch![1]) * 1_000).toBe(MIN_TERMINAL_DEADLINE_MS);
+    expect(Number(maxMatch![1]) * 1_000).toBe(MAX_TERMINAL_DEADLINE_MS);
+    expect(Number(legacyMaxMatch![1]) * 1_000).toBe(LEGACY_MAX_TERMINAL_DEADLINE_MS);
+    expect(DEFAULT_TERMINAL_DEADLINE_MS).toBe(MIN_TERMINAL_DEADLINE_MS);
   });
 
   it('validates public ghcr.io worker image under the CRD pattern', () => {
@@ -167,5 +175,37 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     }, Date.parse(projection.spec.receivedAt) + 60_000);
     expect(retry.spec.runSecretName).toMatch(new RegExp(properties.runSecretName.pattern, 'u'));
     expect(retry.metadata.name).toBe(`ct-review-${'1'.repeat(32)}-a2`);
+  });
+
+  it('projects a persisted 35-minute run after configuration changes to 60 minutes', async () => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', String(MAX_TERMINAL_DEADLINE_MS));
+    vi.resetModules();
+
+    try {
+      const { buildReviewJobProjection: projectPersistedRun } = await import('../../src/k8s/reviewJobProjection');
+      const persistedDeadline = receivedAt + 2_100_000;
+      const priorAdmission = projectPersistedRun({
+        runId: `run_${'1'.repeat(32)}`,
+        deliveryId: 'actions:98765:2:123:42:head',
+        repositoryId: 123,
+        repo: 'calltelemetry/cisco-cdr',
+        prNumber: 42,
+        headSha: 'a'.repeat(40),
+        baseSha: 'b'.repeat(40),
+        receivedAt,
+        terminalDeadline: persistedDeadline,
+        policyDigest: 'c'.repeat(64),
+        configDigest: 'd'.repeat(64),
+        publicationMode: 'disabled',
+        workerImage: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+        namespace: 'ct-review-system',
+      }, receivedAt + 60_000);
+
+      expect(Date.parse(priorAdmission.spec.terminalDeadline) - Date.parse(priorAdmission.spec.receivedAt))
+        .toBe(2_100_000);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 });

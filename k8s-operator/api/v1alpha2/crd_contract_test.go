@@ -78,8 +78,8 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 	if !rules[cancelTransitionRule] {
 		t.Fatal("spec immutability rule (one-way cancelRequested transition) is missing")
 	}
-	if !rules["duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('900s')"] {
-		t.Fatal("exact 15-minute deadline rule is missing")
+	if !rules["duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')"] {
+		t.Fatal("bounded 15-to-60-minute deadline rule is missing")
 	}
 	if !rules["(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')"] {
 		t.Fatal("qualification profile/model rule is missing")
@@ -89,12 +89,12 @@ func TestV1Alpha2CRDIdentityAndClosedSpec(t *testing.T) {
 func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 	spec := loadV1Alpha2CRD(t).Spec.Versions[0].Schema.OpenAPIV3Schema.Properties["spec"]
 	wants := map[string]string{
-		"runId":         `^run_[a-f0-9]{32}$`,
-		"repo":          `^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`,
-		"headSha":       `^[a-f0-9]{40}$`,
-		"baseSha":       `^[a-f0-9]{40}$`,
-		"policyDigest":  `^[a-f0-9]{64}$`,
-		"configDigest":  `^[a-f0-9]{64}$`,
+		"runId":        `^run_[a-f0-9]{32}$`,
+		"repo":         `^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$`,
+		"headSha":      `^[a-f0-9]{40}$`,
+		"baseSha":      `^[a-f0-9]{40}$`,
+		"policyDigest": `^[a-f0-9]{64}$`,
+		"configDigest": `^[a-f0-9]{64}$`,
 		// workerImage pins DIGEST, not registry. The previous pattern named two
 		// CallTelemetry registries, which blocked self-hosted installs outright
 		// while still permitting a mutable tag inside the vendor namespace
