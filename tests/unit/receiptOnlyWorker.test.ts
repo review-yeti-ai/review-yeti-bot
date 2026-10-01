@@ -12,10 +12,7 @@ const executionMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('node:fs/promises', () => fsMocks);
-vi.mock('../../src/panel/panelEngine', () => ({
-  executePersonaPanel: executionMocks.executePersonaPanel,
-  REPO_READ_FILE_MAX_CHARS: 512 * 1024,
-}));
+vi.mock('../../src/panel/panelEngine', () => ({ executePersonaPanel: executionMocks.executePersonaPanel }));
 vi.mock('../../src/github/appAuth', () => ({ getGitHubAppInstallationToken: executionMocks.getGitHubAppInstallationToken }));
 
 import {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { runReadOnlyTool, type ToolRuntimeContext } from '../toolRuntime';
-import { REPO_READ_FILE_MAX_CHARS, type RepoFileProvider } from '../panelEngine';
+import type { RepoFileProvider } from '../panelEngine';
+import { REPO_READ_FILE_MAX_CHARS } from '../toolLimits';
 
 vi.mock('../../mcp/mcpFleetManager', () => ({
   mcpFleetManager: {
@@ -104,6 +105,7 @@ describe('runReadOnlyTool', () => {
       expect(Buffer.byteLength(result.toolOutput, 'utf8')).toBeLessThanOrEqual(REPO_READ_FILE_MAX_CHARS);
       expect(result.toolOutput).not.toContain('\uFFFD');
       expect(result.toolOutput).toContain('BATCH TRUNCATED');
+      expect(result.toolOutput).toContain('EXHAUSTIVE: false | OUTPUT: INCOMPLETE');
       expect(result.toolOutput).toContain('1 remaining file(s) were not read');
       expect(result.isExhaustive).toBe(false);
       expect(repoFileProvider.readFile).toHaveBeenCalledExactlyOnceWith('src/large.ts');
