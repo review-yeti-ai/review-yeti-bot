@@ -211,6 +211,7 @@ describe('get_review_status timing: durable DOKS projection', () => {
     });
 
     expect(data.verdict).toBe('RUNNING');
+    expect(data.schema_version).toBe('ReviewStatus.v2');
     expect(data.phase).toBe('evaluating_personas');
     expect(data.active_worker).toMatchObject({
       identity_kind: 'job',
@@ -306,13 +307,18 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.active_worker).toBeNull();
   });
 
-  it('does not let projection or start evidence override a terminal gate state', async () => {
+  it.each([
+    ['success', 'SHIP'],
+    ['failure', 'FAILED'],
+    ['cancelled', 'FAILED'],
+    ['timed_out', 'FAILED'],
+  ] as const)('does not let projection or start evidence override terminal gate state %s', async (desiredState, expectedVerdict) => {
     const { data } = await runTimingCase(baseRow({
       run_status: 'queued',
       run_stage: 'queued',
       lease_owner: null,
       lease_expires_at: null,
-      desired_state: 'failure',
+      desired_state: desiredState,
       terminal_deadline: new Date(Date.now() + 600_000).toISOString(),
     }), { 'review.lifecycle.started': T2 }, {
       projection: {
@@ -322,7 +328,7 @@ describe('get_review_status timing: durable DOKS projection', () => {
       },
     });
 
-    expect(data.verdict).toBe('FAILED');
+    expect(data.verdict).toBe(expectedVerdict);
     expect(data.phase).toBe('completed');
     expect(data.active_worker).toBeNull();
   });

@@ -6,7 +6,11 @@ import {
 } from '../../src/persistence/reviewDispatchRepository';
 import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
-import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import {
+  LEGACY_MAX_TERMINAL_DEADLINE_MS,
+  MIN_TERMINAL_DEADLINE_MS,
+  TERMINAL_DEADLINE_MS,
+} from '../../src/config/terminalDeadline';
 import { getMetrics } from '../../src/telemetry/metrics';
 import { logger } from '../../src/utils/logger';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
@@ -453,19 +457,46 @@ describe('PostgresReviewDispatchRepository', () => {
   );
 
   it('rejects an admitted window that differs from the fixed 15-minute ceiling', async () => {
-    const connect = vi.fn();
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [] })), release: vi.fn() };
+    const connect = vi.fn(async () => client);
     const repository = new PostgresReviewDispatchRepository({ connect } as any);
     await expect(repository.admit({ ...input(), terminalDeadline: input().terminalDeadline + 1 }))
       .rejects.toThrow(/terminal deadline must be exactly/i);
-    expect(connect).not.toHaveBeenCalled();
+    expect(connect).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query.mock.calls[0]?.[0]).toMatch(/^SELECT runs\.\*/u);
+    expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+    expect(client.release).toHaveBeenCalledOnce();
   });
 
-  it('rejects a terminal deadline outside the bounded [MIN, MAX] window before opening a transaction', async () => {
+  it('returns a persisted 15-60 minute delivery through a read-only duplicate path', async () => {
+    const receivedAt = input().receivedAt;
+    const terminalDeadline = receivedAt + 2_100_000;
+    const persisted = {
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: input().repositoryId,
+      received_at: new Date(receivedAt),
+      terminal_deadline: new Date(terminalDeadline),
+    };
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [persisted] })), release: vi.fn() };
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    const result = await repository.admit({ ...input(), terminalDeadline });
+
+    expect(result).toMatchObject({ status: 'duplicate', receivedAt, terminalDeadline });
+    expect(result.run).toMatchObject({ receivedAt, terminalDeadline });
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a terminal deadline outside both new and persisted bounds before opening a transaction', async () => {
     const connect = vi.fn();
     const repository = new PostgresReviewDispatchRepository({ connect } as any);
     await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }))
       .rejects.toThrow(/terminal deadline must be exactly/i);
-    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }))
+    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + LEGACY_MAX_TERMINAL_DEADLINE_MS + 1 }))
       .rejects.toThrow(/terminal deadline must be exactly/i);
     expect(connect).not.toHaveBeenCalled();
   });

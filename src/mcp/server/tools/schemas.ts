@@ -101,6 +101,8 @@ export interface ReviewTiming {
 }
 
 export interface ReviewStatusOutput {
+  /** Versioned because ReviewStatus.v2 distinguishes Job identity from Pod identity. */
+  schema_version: 'ReviewStatus.v2';
   found: boolean;
   verdict: 'SHIP' | 'NACK' | 'COMMENT' | 'FIX_FIRST' | 'PENDING' | 'RUNNING' | 'FAILED';
   attempt_id: string | null;

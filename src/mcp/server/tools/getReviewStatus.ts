@@ -188,7 +188,7 @@ function isTerminalGateState(value: unknown): boolean {
 
 export const getReviewStatusDefinition: ToolDefinition = {
   name: 'get_review_status',
-  description: 'Retrieve real-time review status, verdict, phase, and check-runs without GitHub scraping.',
+  description: 'Retrieve versioned ReviewStatus.v2 real-time status, verdict, phase, check-runs, and explicit Pod-or-Job worker identity without GitHub scraping.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -215,6 +215,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
 
       if (!db) {
         return buildToolResultJson({
+          schema_version: 'ReviewStatus.v2',
           found: false,
           verdict: 'PENDING',
           attempt_id: null,
@@ -292,6 +293,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
 
       if (!result || result.rows.length === 0) {
         return buildToolResultJson({
+          schema_version: 'ReviewStatus.v2',
           found: false,
           verdict: 'PENDING',
           attempt_id: null,
@@ -395,6 +397,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       const timing = buildReviewTiming(row, markers, row.run_status);
 
       return buildToolResultJson({
+        schema_version: 'ReviewStatus.v2',
         found: true,
         verdict,
         attempt_id: attemptId,
