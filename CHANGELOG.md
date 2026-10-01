@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.104.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.3...v1.104.4) (2026-10-01)
+
+
+### Bug Fixes
+
+* **mcp:** align zero-run savings and dynamic window scaling in runtime reports ([7a4c5a6](https://github.com/review-yeti-ai/review-yeti-bot/commit/7a4c5a60fafddc15a1231990a970b701f3b743d4))
+* **mcp:** clarify shadowParity dataSource in getCloudflareStatus ([40a7f99](https://github.com/review-yeti-ai/review-yeti-bot/commit/40a7f99ee0334b83f1e67417efdcaecc4ec73e55))
+
+## [1.104.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.2...v1.104.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* bound schema bootstrap and stabilize qualification fixtures ([#1232](https://github.com/review-yeti-ai/review-yeti-bot/issues/1232)) ([8b24f57](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b24f57922f04822de15d4e8cf7f22ec5b94e12c))
+
 ## [1.104.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.1...v1.104.2) (2026-10-01)
 
 

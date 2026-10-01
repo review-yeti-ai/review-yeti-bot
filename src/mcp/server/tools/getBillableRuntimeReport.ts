@@ -129,9 +129,9 @@ export function createGetBillableRuntimeReportTool(db?: BillableReportDbClient) 
       const totalTokenCostUSD = Number(items.reduce((acc, it) => acc + it.token_cost_usd, 0).toFixed(4));
       const totalSpendUSD = Number((totalComputeCostUSD + totalTokenCostUSD).toFixed(4));
 
-      // DOKS baseline amortization: $170/month pro-rated
-      const estimatedDoksBaselineCostUSD = Number(((170 / 30) * days).toFixed(2));
-      const netSavingsUSD = Number(Math.max(0, estimatedDoksBaselineCostUSD - totalSpendUSD).toFixed(2));
+      // DOKS baseline amortization: $170/month pro-rated (only applicable when runs exist)
+      const estimatedDoksBaselineCostUSD = totalRuns > 0 ? Number(((170 / 30) * days).toFixed(2)) : 0;
+      const netSavingsUSD = totalRuns > 0 ? Number(Math.max(0, estimatedDoksBaselineCostUSD - totalSpendUSD).toFixed(2)) : 0;
       const savingsPercent = estimatedDoksBaselineCostUSD > 0
         ? Number(((netSavingsUSD / estimatedDoksBaselineCostUSD) * 100).toFixed(1))
         : 0;
