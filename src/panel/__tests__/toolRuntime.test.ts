@@ -27,6 +27,18 @@ describe('runReadOnlyTool', () => {
   });
 
   describe('bounded read_files', () => {
+    it.each([1, 8])('accepts the documented %i-file boundary and reads every requested path', async (count) => {
+      const files = Array.from({ length: count }, (_, index) => ({ path: `src/boundary-${index}.ts` }));
+      const repoFileProvider: RepoFileProvider = {
+        findFiles: vi.fn(), readFile: vi.fn(async (path) => `exact current source: ${path}`),
+      };
+      const result = await runReadOnlyTool('read_files', { files }, baseContext({ repoFileProvider }));
+      expect(vi.mocked(repoFileProvider.readFile).mock.calls).toEqual(files.map(({ path }) => [path]));
+      expect(result).toMatchObject({ toolScope: 'full-repository', isExhaustive: true });
+      for (const { path } of files) expect(result.toolOutput).toContain(`exact current source: ${path}`);
+      expect(result.toolOutput).not.toContain('BATCH TRUNCATED');
+    });
+
     it('returns separate exact-head source ranges in request order without substituting patches', async () => {
       const repoFileProvider: RepoFileProvider = {
         findFiles: vi.fn(),
