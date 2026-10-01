@@ -59,26 +59,13 @@ import (
 func makeM4OCCConcurrencyInterceptor(monitor *ConcurrencyMonitor) interceptor.Funcs {
 	var leaseMu sync.Mutex
 	funcs := monitor.InterceptorFuncs()
-	origUpdate := funcs.Update
+	update := funcs.Update
 	funcs.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 		if _, ok := obj.(*coordinationv1.Lease); ok {
 			leaseMu.Lock()
 			defer leaseMu.Unlock()
 		}
-		if origUpdate != nil {
-			return origUpdate(ctx, c, obj, opts...)
-		}
-		return c.Update(ctx, obj, opts...)
-	}
-	origDelete := funcs.Delete
-	funcs.Delete = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-		if _, ok := obj.(*batchv1.Job); ok {
-			atomic.AddInt32(&monitor.activeJobs, -1)
-		}
-		if origDelete != nil {
-			return origDelete(ctx, c, obj, opts...)
-		}
-		return c.Delete(ctx, obj, opts...)
+		return update(ctx, c, obj, opts...)
 	}
 	return funcs
 }
