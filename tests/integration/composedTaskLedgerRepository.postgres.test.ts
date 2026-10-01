@@ -1,11 +1,13 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest';
 import { Pool } from 'pg';
-import { PostgresStore } from '../../src/persistence/postgresStore';
+import { PostgresStore, ADVISORY_LOCK_ID } from '../../src/persistence/postgresStore';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { PostgresComposedTaskLedgerRepository, COMPOSED_TASK_LEDGER_SCHEMA_SQL } from '../../src/persistence/composedTaskLedgerRepository';
 import { createComposedTaskPlan, createComposedTaskOutcome, MAX_COMPOSED_LEDGER_BYTES } from '../../src/review/composedTaskLedger';
 import { canonicalJson } from '../../src/review/reviewCore';
+import { MAX_TASKS_HARD_CAP } from '../../src/reviewTaskContract';
+import { SCHEMA_MIGRATIONS_TABLE, applySchemaOnce } from '../../src/persistence/schemaMigrationGate';
 import { ledgerFixture } from '../support/composedTaskLedgerFixture';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 import type { ReviewPrTransactionPool } from '../../src/persistence/reviewPrTransaction';
@@ -42,9 +44,19 @@ async function waitPastDeadline(pool: Pool, deadline: string): Promise<void> {
   await pool.query('SELECT pg_sleep($1::double precision)', [0.03]);
 }
 
+function jsonAtByteLength(value: Record<string, unknown>, byteLength: number): string {
+  const emptyPadding = JSON.stringify({ ...value, padding: '' });
+  const paddingBytes = byteLength - Buffer.byteLength(emptyPadding, 'utf8');
+  if (paddingBytes < 0) throw new Error('Fixture cannot fit the requested JSON byte length');
+  const payload = JSON.stringify({ ...value, padding: 'x'.repeat(paddingBytes) });
+  if (Buffer.byteLength(payload, 'utf8') !== byteLength) throw new Error('Fixture byte length is not exact');
+  return payload;
+}
+
 describeWithPostgres('composed task ledger — real PostgreSQL, retention only', () => {
   let pool: Pool;
   let schema = '';
+  let scopedDatabaseUrl = '';
   let store: PostgresStore | undefined;
   let fixture: ReturnType<typeof ledgerFixture>;
   let repository: PostgresComposedTaskLedgerRepository;
@@ -58,8 +70,9 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
     // The production bootstrap, including its existing migration/locking gate.
     const scoped = new URL(databaseUrl);
     scoped.searchParams.set('options', `-c search_path=${schema}`);
+    scopedDatabaseUrl = scoped.toString();
     const previous = process.env.DATABASE_URL;
-    process.env.DATABASE_URL = scoped.toString();
+    process.env.DATABASE_URL = scopedDatabaseUrl;
     store = new PostgresStore();
     try { await store.initialize(); }
     finally {
@@ -131,6 +144,239 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
       plans: 'composed_task_plans', outcomes: 'composed_task_outcomes',
     });
     await pool.query(COMPOSED_TASK_LEDGER_SCHEMA_SQL);
+  });
+
+  // Frozen base554 CREATE layout: retain inline multi-column byte checks so
+  // PostgreSQL, not a synthetic named guard, supplies the historical names.
+  const historicalLedgerSql = (bounds: { planBytes?: number; outcomeBytes?: number;
+    planTasks?: number; outcomeIndex?: number } = {}) => `
+    CREATE TABLE IF NOT EXISTS composed_task_plans (
+      attempt_id TEXT PRIMARY KEY REFERENCES review_gate_attempts(attempt_id) ON DELETE CASCADE,
+      content_digest VARCHAR(64) NOT NULL CHECK (content_digest ~ '^[a-f0-9]{64}$'),
+      payload TEXT NOT NULL CHECK (jsonb_typeof(payload::jsonb) = 'object'),
+      byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= ${bounds.planBytes ?? 1_000_000}
+        AND byte_length = octet_length(payload)),
+      task_count INTEGER NOT NULL CHECK (task_count BETWEEN 1 AND ${bounds.planTasks ?? 8}),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (attempt_id, content_digest),
+      CHECK ((payload::jsonb->>'version' = 'ComposedTaskLedger.v1') IS TRUE),
+      CHECK ((payload::jsonb->'identity'->>'attemptId' = attempt_id) IS TRUE),
+      CHECK ((jsonb_array_length(payload::jsonb->'tasks') = task_count) IS TRUE)
+    );
+    CREATE TABLE IF NOT EXISTS composed_task_outcomes (
+      attempt_id TEXT NOT NULL,
+      plan_digest VARCHAR(64) NOT NULL,
+      task_id TEXT NOT NULL CHECK (task_id ~ '^[a-z][a-z0-9_-]{0,127}$'),
+      task_index INTEGER NOT NULL CHECK (task_index BETWEEN 0 AND ${bounds.outcomeIndex ?? 7}),
+      status TEXT NOT NULL CHECK (status IN ('complete', 'blocked', 'exhausted')),
+      content_digest VARCHAR(64) NOT NULL CHECK (content_digest ~ '^[a-f0-9]{64}$'),
+      payload TEXT NOT NULL CHECK (jsonb_typeof(payload::jsonb) = 'object'),
+      byte_length INTEGER NOT NULL CHECK (byte_length > 0 AND byte_length <= ${bounds.outcomeBytes ?? 1_000_000}
+        AND byte_length = octet_length(payload)),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (attempt_id, task_id), UNIQUE (attempt_id, task_index),
+      FOREIGN KEY (attempt_id, plan_digest) REFERENCES composed_task_plans(attempt_id, content_digest) ON DELETE CASCADE,
+      CHECK ((payload::jsonb->>'version' = 'ComposedTaskOutcome.v1') IS TRUE),
+      CHECK ((payload::jsonb->>'planDigest' = plan_digest) IS TRUE),
+      CHECK ((payload::jsonb->>'taskId' = task_id) IS TRUE), CHECK ((payload::jsonb->>'status' = status) IS TRUE)
+    );
+  ` + COMPOSED_TASK_LEDGER_SCHEMA_SQL.slice(
+    COMPOSED_TASK_LEDGER_SCHEMA_SQL.indexOf('CREATE OR REPLACE FUNCTION composed_task_ledger_reject_update()'));
+
+  const initializeStore = async () => {
+    if (!store || !scopedDatabaseUrl) throw new Error('PostgresStore bootstrap fixture was not initialized');
+    const [testSchema, storeSchema] = await Promise.all([
+      pool.query('SELECT current_schema() AS name'),
+      store.getPool().query('SELECT current_schema() AS name'),
+    ]);
+    expect(testSchema.rows[0]?.name).toBe(schema);
+    expect(storeSchema.rows[0]?.name).toBe(schema);
+    const previous = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = scopedDatabaseUrl;
+    try { await store.initialize(); }
+    finally {
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+  };
+  const readChecks = async () => (await pool.query(`SELECT conrelid::regclass::text AS relation,
+    conname, oid::text AS oid, convalidated, pg_get_constraintdef(oid) AS definition FROM pg_constraint
+    WHERE conrelid IN ('composed_task_plans'::regclass, 'composed_task_outcomes'::regclass)
+      AND contype='c' ORDER BY relation,conname`)).rows;
+  const readMarkers = async () => (await pool.query(`SELECT fingerprint, applied_at
+    FROM ${SCHEMA_MIGRATIONS_TABLE} ORDER BY fingerprint`)).rows;
+  const readEvidence = async () => Promise.all([
+    pool.query('SELECT * FROM composed_task_plans WHERE attempt_id=$1', [fixture.trusted.identity.attemptId]),
+    pool.query('SELECT * FROM composed_task_outcomes WHERE attempt_id=$1 ORDER BY task_id', [fixture.trusted.identity.attemptId]),
+  ]);
+  const expectUnchangedEvidence = async (before: Awaited<ReturnType<typeof readEvidence>>) => {
+    const after = await readEvidence();
+    for (const [index, result] of after.entries()) {
+      expect(result.rows).toHaveLength(before[index].rows.length);
+      for (const [rowIndex, row] of result.rows.entries()) {
+        const { payload: beforePayload, ...beforeMetadata } = before[index].rows[rowIndex];
+        const { payload: afterPayload, ...afterMetadata } = row;
+        expect(Buffer.from(afterPayload, 'utf8').equals(Buffer.from(beforePayload, 'utf8'))).toBe(true);
+        expect(afterMetadata).toEqual(beforeMetadata);
+      }
+    }
+  };
+  const installHistoricalSchema = async (bounds: Parameters<typeof historicalLedgerSql>[0] = {}) => {
+    if (!ownedSchema.test(schema)) throw new Error('Historical fixture schema ownership invalid');
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock($1)', [ADVISORY_LOCK_ID]);
+      await client.query('DROP TABLE composed_task_outcomes; DROP TABLE composed_task_plans');
+      await client.query(`DELETE FROM ${SCHEMA_MIGRATIONS_TABLE}`);
+      // A real schema gate records the exact installed historical fixture DDL;
+      // this is not a fabricated marker or a claim of a full old-image receipt.
+      await applySchemaOnce(client, [historicalLedgerSql(bounds)]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally { client.release(); }
+    const checks = await readChecks();
+    expect(checks.filter(check => check.conname.endsWith('_byte_length_check'))).toHaveLength(0);
+    expect(checks.filter(check => check.definition.includes('octet_length(payload)'))
+      .map(check => check.conname).sort()).toEqual(['composed_task_outcomes_check', 'composed_task_plans_check']);
+    expect(await readMarkers()).toHaveLength(1);
+  };
+  const removeOwnedEvidence = () => pool.query('DELETE FROM composed_task_plans WHERE attempt_id=$1',
+    [fixture.trusted.identity.attemptId]);
+  const insertPlanBytes = async (bytes?: number, taskCount = 1) => {
+    const body = { version: 'ComposedTaskLedger.v1', identity: { attemptId: fixture.trusted.identity.attemptId },
+      tasks: Array.from({ length: taskCount }, (_, index) => ({ id: `task-${index}` })) };
+    const payload = bytes ? jsonAtByteLength(body, bytes) : JSON.stringify(body);
+    return pool.query(`INSERT INTO composed_task_plans (attempt_id,content_digest,payload,byte_length,task_count)
+      VALUES ($1,$2,$3,$4,$5)`, [fixture.trusted.identity.attemptId, 'a'.repeat(64), payload,
+      Buffer.byteLength(payload, 'utf8'), taskCount]);
+  };
+  const insertOutcomeBytes = async (bytes?: number, index = 0) => {
+    const body = { version: 'ComposedTaskOutcome.v1', planDigest: 'a'.repeat(64), taskId: 'task-0', status: 'blocked' };
+    const payload = bytes ? jsonAtByteLength(body, bytes) : JSON.stringify(body);
+    return pool.query(`INSERT INTO composed_task_outcomes
+      (attempt_id,plan_digest,task_id,task_index,status,content_digest,payload,byte_length)
+      VALUES ($1,$2,'task-0',$3,'blocked',$4,$5,$6)`, [fixture.trusted.identity.attemptId, 'a'.repeat(64),
+      index, 'b'.repeat(64), payload, Buffer.byteLength(payload, 'utf8')]);
+  };
+  const replacedBoundNames = new Set(['composed_task_plans_check', 'composed_task_outcomes_check',
+    'composed_task_plans_byte_length_check', 'composed_task_outcomes_byte_length_check',
+    'composed_task_plans_task_count_check', 'composed_task_outcomes_task_index_check']);
+  const unrelatedChecks = (checks: Awaited<ReturnType<typeof readChecks>>) =>
+    checks.filter(check => !replacedBoundNames.has(check.conname));
+
+  it('upgrades the historical inline schema through actual bootstrap without changing unrelated CHECKs', async () => {
+    try {
+      await installHistoricalSchema();
+      await insertPlanBytes(); await insertOutcomeBytes();
+      const before = await readChecks();
+      const evidence = await readEvidence();
+      await initializeStore();
+      const after = await readChecks();
+      expect(after.filter(check => ['composed_task_plans_check', 'composed_task_outcomes_check']
+        .includes(check.conname))).toHaveLength(0);
+      expect(after.filter(check => check.conname.endsWith('_byte_length_check'))).toHaveLength(2);
+      expect(unrelatedChecks(after)).toEqual(unrelatedChecks(before));
+      await expectUnchangedEvidence(evidence);
+      const markers = await readMarkers();
+      expect(markers).toHaveLength(2);
+      await initializeStore();
+      expect(await readChecks()).toEqual(after);
+      expect(await readMarkers()).toEqual(markers);
+      // Preserve the original positive SQL boundaries as well as the new
+      // rollback proofs; these are not normalized aggregate-ledger positives.
+      await removeOwnedEvidence();
+      await expect(insertPlanBytes(MAX_COMPOSED_LEDGER_BYTES, MAX_TASKS_HARD_CAP)).resolves.toMatchObject({ rowCount: 1 });
+      await expect(insertOutcomeBytes(MAX_COMPOSED_LEDGER_BYTES, MAX_TASKS_HARD_CAP - 1)).resolves.toMatchObject({ rowCount: 1 });
+    } finally { await removeOwnedEvidence(); await initializeStore(); }
+  });
+
+  it.each(['plans', 'outcomes'] as const)('retires the narrower historical %s byte guard and accepts the current boundary', async table => {
+    try {
+      await installHistoricalSchema({ planBytes: MAX_COMPOSED_LEDGER_BYTES - 1,
+        outcomeBytes: MAX_COMPOSED_LEDGER_BYTES - 1 });
+      if (table === 'outcomes') await insertPlanBytes();
+      const insertBoundary = () => table === 'plans'
+        ? insertPlanBytes(MAX_COMPOSED_LEDGER_BYTES) : insertOutcomeBytes(MAX_COMPOSED_LEDGER_BYTES);
+      await expect(insertBoundary()).rejects.toMatchObject({ code: '23514', constraint: `composed_task_${table}_check` });
+      const before = await readChecks();
+      await initializeStore();
+      await expect(insertBoundary()).resolves.toMatchObject({ rowCount: 1 });
+      const after = await readChecks();
+      expect(after.filter(check => ['composed_task_plans_check', 'composed_task_outcomes_check']
+        .includes(check.conname))).toHaveLength(0);
+      expect(unrelatedChecks(after)).toEqual(unrelatedChecks(before));
+      expect(await readMarkers()).toHaveLength(2);
+    } finally { await removeOwnedEvidence(); await initializeStore(); }
+  });
+
+  it.each([
+    ['plan bytes', 'composed_task_plans_byte_length_check'],
+    ['plan task count', 'composed_task_plans_task_count_check'],
+    ['outcome bytes', 'composed_task_outcomes_byte_length_check'],
+    ['outcome task index', 'composed_task_outcomes_task_index_check'],
+  ] as const)('rejects historical invalid %s with exact schema/marker/evidence rollback', async (shape, constraint) => {
+    try {
+      await installHistoricalSchema({ planBytes: MAX_COMPOSED_LEDGER_BYTES + 1,
+        outcomeBytes: MAX_COMPOSED_LEDGER_BYTES + 1, planTasks: MAX_TASKS_HARD_CAP + 1,
+        outcomeIndex: MAX_TASKS_HARD_CAP });
+      await insertPlanBytes(shape === 'plan bytes' ? MAX_COMPOSED_LEDGER_BYTES + 1 : undefined,
+        shape === 'plan task count' ? MAX_TASKS_HARD_CAP + 1 : 1);
+      await insertOutcomeBytes(shape === 'outcome bytes' ? MAX_COMPOSED_LEDGER_BYTES + 1 : undefined,
+        shape === 'outcome task index' ? MAX_TASKS_HARD_CAP : 0);
+      const checks = await readChecks();
+      const markers = await readMarkers();
+      const evidence = await readEvidence();
+      for (const result of evidence) expect(result.rows).toHaveLength(1);
+      await expect(initializeStore()).rejects.toMatchObject({ code: '23514', constraint });
+      // Exact OIDs/definitions prove earlier retirements and replacements also
+      // roll back when the last outcome-index CHECK is the failing operation.
+      expect(await readChecks()).toEqual(checks);
+      expect(await readMarkers()).toEqual(markers);
+      await expectUnchangedEvidence(evidence);
+    } finally {
+      await removeOwnedEvidence();
+      await initializeStore();
+      expect(await counts()).toEqual({ plans: 0, outcomes: 0 });
+      expect(await readMarkers()).toHaveLength(2);
+    }
+  });
+
+  it.each([
+    ['plans', 'unrelated'],
+    ['outcomes', 'unrelated'],
+    ['plans', 'altered arithmetic'],
+    ['outcomes', 'altered arithmetic'],
+    ['plans', 'weakened OR'],
+    ['outcomes', 'weakened OR'],
+  ] as const)('fails closed on %s legacy byte name with %s shape', async (table, shape) => {
+    const name = `composed_task_${table}_check`;
+    const expression = shape === 'unrelated' ? "payload <> ''"
+      : shape === 'altered arithmetic'
+        ? `byte_length > 0 AND byte_length <= ${MAX_COMPOSED_LEDGER_BYTES} AND byte_length + 0 = octet_length(payload)`
+        : `(byte_length > 0 AND byte_length <= ${MAX_COMPOSED_LEDGER_BYTES} AND byte_length = octet_length(payload)) OR byte_length = 1`;
+    try {
+      await installHistoricalSchema();
+      await pool.query(`ALTER TABLE composed_task_${table} DROP CONSTRAINT ${name};
+        ALTER TABLE composed_task_${table} ADD CONSTRAINT ${name} CHECK (${expression})`);
+      await insertPlanBytes(); await insertOutcomeBytes();
+      const checks = await readChecks();
+      const markers = await readMarkers();
+      const evidence = await readEvidence();
+      await expect(initializeStore()).rejects.toMatchObject({ code: '23514', constraint: name });
+      expect(await readChecks()).toEqual(checks);
+      expect(await readMarkers()).toEqual(markers);
+      await expectUnchangedEvidence(evidence);
+    } finally {
+      await removeOwnedEvidence();
+      // Undo only the owned malformed fixture AFTER proving fail-closed rollback.
+      await pool.query(`ALTER TABLE composed_task_${table} DROP CONSTRAINT ${name};
+        ALTER TABLE composed_task_${table} ADD CONSTRAINT ${name} CHECK (byte_length > 0
+          AND byte_length <= ${MAX_COMPOSED_LEDGER_BYTES} AND byte_length = octet_length(payload))`);
+      await initializeStore();
+    }
   });
 
   it('persists an immutable plan and one outcome, then reloads through a new repository without granting Gate success', async () => {

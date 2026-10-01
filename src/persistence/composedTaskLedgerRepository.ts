@@ -42,6 +42,56 @@ export const COMPOSED_TASK_LEDGER_SCHEMA_SQL = `
     CHECK ((payload::jsonb->>'planDigest' = plan_digest) IS TRUE),
     CHECK ((payload::jsonb->>'taskId' = task_id) IS TRUE), CHECK ((payload::jsonb->>'status' = status) IS TRUE)
   );
+  -- Existing tables keep their original CHECK expressions until explicit ALTER.
+  -- Original multi-column inline byte checks are auto-named *_check, not
+  -- *_byte_length_check. Retire only their verified historical expressions.
+  -- Hold table locks across validation/drop so concurrent DDL cannot replace
+  -- a recognized guard with an unknown one between those operations.
+  LOCK TABLE composed_task_plans, composed_task_outcomes IN ACCESS EXCLUSIVE MODE;
+  DO $$
+    DECLARE legacy RECORD; kind TEXT; validated BOOLEAN; definition TEXT;
+    BEGIN
+      FOR legacy IN SELECT * FROM (VALUES
+        ('composed_task_plans', 'composed_task_plans_check'),
+        ('composed_task_outcomes', 'composed_task_outcomes_check')
+      ) AS guards(table_name, constraint_name) LOOP
+        SELECT contype, convalidated,
+          regexp_replace(pg_get_constraintdef(oid), '[[:space:]]', '', 'g')
+          INTO kind, validated, definition FROM pg_constraint
+          WHERE conrelid = legacy.table_name::regclass AND conname = legacy.constraint_name;
+        IF FOUND THEN
+          IF kind IS DISTINCT FROM 'c' OR validated IS DISTINCT FROM true OR definition IS NULL
+            OR definition !~ '^CHECK[(][(][(]byte_length>0[)]AND[(]byte_length<=[1-9][0-9]*[)]AND[(]byte_length=octet_length[(]payload[)][)][)][)]$' THEN
+            RAISE EXCEPTION USING ERRCODE = '23514', CONSTRAINT = legacy.constraint_name,
+              MESSAGE = 'unrecognized historical composed task byte check';
+          END IF;
+          EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', legacy.table_name, legacy.constraint_name);
+        END IF;
+      END LOOP;
+    END $$;
+  -- Apply the four current parser-owned bounds once per changed DDL fingerprint.
+  ALTER TABLE composed_task_plans
+    DROP CONSTRAINT IF EXISTS composed_task_plans_byte_length_check;
+  ALTER TABLE composed_task_plans
+    ADD CONSTRAINT composed_task_plans_byte_length_check
+    CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPOSED_LEDGER_BYTES}
+      AND byte_length = octet_length(payload));
+  ALTER TABLE composed_task_plans
+    DROP CONSTRAINT IF EXISTS composed_task_plans_task_count_check;
+  ALTER TABLE composed_task_plans
+    ADD CONSTRAINT composed_task_plans_task_count_check
+    CHECK (task_count BETWEEN 1 AND ${MAX_TASKS_HARD_CAP});
+  ALTER TABLE composed_task_outcomes
+    DROP CONSTRAINT IF EXISTS composed_task_outcomes_byte_length_check;
+  ALTER TABLE composed_task_outcomes
+    ADD CONSTRAINT composed_task_outcomes_byte_length_check
+    CHECK (byte_length > 0 AND byte_length <= ${MAX_COMPOSED_LEDGER_BYTES}
+      AND byte_length = octet_length(payload));
+  ALTER TABLE composed_task_outcomes
+    DROP CONSTRAINT IF EXISTS composed_task_outcomes_task_index_check;
+  ALTER TABLE composed_task_outcomes
+    ADD CONSTRAINT composed_task_outcomes_task_index_check
+    CHECK (task_index BETWEEN 0 AND ${MAX_TASKS_HARD_CAP - 1});
   CREATE OR REPLACE FUNCTION composed_task_ledger_reject_update() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN RAISE EXCEPTION 'composed task ledger is immutable'; END $$;
   DROP TRIGGER IF EXISTS composed_task_plan_immutable ON composed_task_plans;
