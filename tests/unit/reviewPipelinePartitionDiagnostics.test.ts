@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import Module, { createRequire } from 'node:module';
+import { createRequire } from 'node:module';
 import { createScratchOwner, requiredSuiteScratchRoot } from '../support/scratch-lifecycle';
 
 const root = path.resolve(__dirname, '../..');
@@ -229,35 +229,11 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
   });
 });
 
-type SelectorVariant = 'canonical' | 'nullish' | 'whitespace' | 'nullish-whitespace';
-
-// Ordinary assertions call the exported production helper directly. Only the
-// explicit mutation/equivalence controls compile an isolated module variant;
-// neither path extracts a region based on main() names, parameters or layout.
-function loadPartitionReducer(selectionCounterfactual = false, variant: SelectorVariant = 'canonical') {
+// Every assertion calls the same exported helper used by main(). No source
+// extraction, expression matching, runtime mutation or test-only selector port.
+function loadPartitionReducer() {
   const filename = path.join(root, '.github/workflows/pipelines/review-pipeline.js');
-  if (!selectionCounterfactual && variant === 'canonical') {
-    return createRequire(import.meta.url)(filename);
-  }
-  let source = fs.readFileSync(filename, 'utf8');
-  const selection = /const\s+diagnosticRun\s*=\s*anyError\s*(?:\|\||\?\?)\s*lastRun\s*;/g;
-  expect([...source.matchAll(selection)]).toHaveLength(1);
-  if (variant !== 'canonical') {
-    const operator = variant.includes('nullish') ? '??' : '||';
-    const separator = variant.includes('whitespace') ? '\n\t ' : ' ';
-    source = source.replace(selection, `const diagnosticRun${separator}=${separator}anyError${separator}${operator}${separator}lastRun;`);
-  }
-  if (selectionCounterfactual) {
-    // Simulate changing only the representative-failure selection. All failed
-    // diagnostics must follow this binding, while anyError still gates failure.
-    expect([...source.matchAll(selection)]).toHaveLength(1);
-    source = source.replace(selection, "const diagnosticRun = laneRuns.filter((run) => run.decision === 'ERROR').at(-1) || lastRun;");
-  }
-  const fixtureModule = new Module(filename) as any;
-  fixtureModule.filename = filename;
-  fixtureModule.paths = (Module as any)._nodeModulePaths(path.dirname(filename));
-  fixtureModule._compile(source, filename);
-  return fixtureModule.exports;
+  return createRequire(import.meta.url)(filename);
 }
 
 function diagnosticLane(kind: 'failed' | 'successful', recoveryAction: string | null) {
@@ -287,8 +263,8 @@ function diagnosticLane(kind: 'failed' | 'successful', recoveryAction: string | 
   };
 }
 
-function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[], selectionCounterfactual = false, variant: SelectorVariant = 'canonical') {
-  const fixture = loadPartitionReducer(selectionCounterfactual, variant);
+function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[]) {
+  const fixture = loadPartitionReducer();
   const [result] = fixture.aggregatePartitionPersonaResults(lanes.map((lane) => [lane]), [{ id: 'testing', name: 'Testing' }]);
   const receipt = fixture.buildProviderTelemetryReceipt([result], { repo: 'fixture/example', prNumber: 1 });
   return { result, receipt: receipt.lanes[0] };
@@ -316,15 +292,20 @@ function expectFailedAttribution(result: any, receipt: any, failed: ReturnType<t
 
 describe('production partition reducer attribution and recovery branches', () => {
   it.each([
-    ['nullish', false], ['whitespace', false], ['nullish-whitespace', false],
-    ['nullish', true], ['whitespace', true], ['nullish-whitespace', true],
-  ] as const)('supports %s selection formatting with counterfactual=%s', (variant, counterfactual) => {
-    const first = diagnosticLane('failed', 'rate_limit_retry');
-    const last = { ...diagnosticLane('failed', 'structured_output_fallback'), ttftMs: 149 };
+    [false, 'rate_limit_retry', 'structured_output_fallback'],
+    [true, 'rate_limit_retry', 'structured_output_fallback'],
+    [false, null, 'structured_output_fallback'],
+    [true, null, 'structured_output_fallback'],
+    [false, 'rate_limit_retry', null],
+    [true, 'rate_limit_retry', null],
+  ] as const)('binds two real failed runs with reversed=%s and recovery=%s/%s', (reversed, firstRecovery, lastRecovery) => {
+    const first = diagnosticLane('failed', firstRecovery);
+    const last = { ...diagnosticLane('failed', lastRecovery), ttftMs: 149 };
     last.responseAttempts = [{ ...last.responseAttempts[0], ttftMs: last.ttftMs }];
-    const { result, receipt } = reduceDiagnosticLanes([first, last], counterfactual, variant);
-    expectFailedAttribution(result, receipt, counterfactual ? last : first);
-    expect(result.error).toBe(first.error);
+    const lanes = reversed ? [last, first] : [first, last];
+    const { result, receipt } = reduceDiagnosticLanes(lanes);
+    expectFailedAttribution(result, receipt, lanes[0]);
+    expect(result.error).toBe(lanes[0].error);
   });
 
   it.each([
@@ -341,7 +322,7 @@ describe('production partition reducer attribution and recovery branches', () =>
     expect(receipt.recoveryAction).toBe(recoveryAction);
   });
 
-  it('uses one diagnostic selection for failed spread and terminal fields', () => {
+  it('keeps the first failure representative when a later failure has distinct metadata', () => {
     const first = diagnosticLane('failed', 'rate_limit_retry');
     const last = { ...diagnosticLane('failed', 'structured_output_fallback'), ttftMs: 149,
       transport: 'gemini-failed', provider: 'gemini', error: 'Fixture last malformed response.',
@@ -349,10 +330,8 @@ describe('production partition reducer attribution and recovery branches', () =>
       model: 'fixture-last-failure-model', requestFingerprint: 'c'.repeat(64) };
     last.responseAttempts = [{ ...last.responseAttempts[0], transport: last.transport, provider: last.provider,
       ttftMs: last.ttftMs, requestFingerprint: last.requestFingerprint }];
-    const { result, receipt } = reduceDiagnosticLanes([first, last], true);
-    expectFailedAttribution(result, receipt, last);
-    // Primary failure identity/guard still comes from anyError, not the fixture
-    // counterfactual selection. This test does not change production selection.
+    const { result, receipt } = reduceDiagnosticLanes([first, last]);
+    expectFailedAttribution(result, receipt, first);
     expect(result.error).toBe(first.error);
   });
 
