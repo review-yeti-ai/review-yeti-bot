@@ -132,9 +132,18 @@ func (r *PRReviewJobV1Alpha2Reconciler) Reconcile(ctx context.Context, req ctrl.
 
 func (r *PRReviewJobV1Alpha2Reconciler) getCapacityLedger() *CapacityLedger {
 	if r.CapacityLedger != nil {
+		if r.CapacityLedger.Now == nil {
+			r.CapacityLedger.Now = r.clock
+		}
+		if r.CapacityLedger.Reader == nil {
+			r.CapacityLedger.Reader = r.admissionReader()
+		}
 		return r.CapacityLedger
 	}
-	return NewCapacityLedger(r.Client, DefaultCapacityLedgerNamespace)
+	ledger := NewCapacityLedger(r.Client, DefaultCapacityLedgerNamespace)
+	ledger.Reader = r.admissionReader()
+	ledger.Now = r.clock
+	return ledger
 }
 
 func (r *PRReviewJobV1Alpha2Reconciler) getReceiptCoordinator() *AppGateReceiptCoordinator {
@@ -359,6 +368,19 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if admission.activeWorkers >= limit {
+		if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
+			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
+				Type:               reviewv1alpha2.ConditionAwaitingResumption,
+				Status:             metav1.ConditionTrue,
+				Reason:             "PrepCompleted",
+				Message:            "prep phase completed, awaiting model resumption",
+				ObservedGeneration: review.Generation,
+				LastTransitionTime: metav1.NewTime(now),
+			})
+		}
+		return r.queueForCapacity(ctx, review, now, fmt.Sprintf("waiting for one of %d worker slots", limit))
+	}
 	if admission.olderWaiting {
 		if !meta.IsStatusConditionTrue(review.Status.Conditions, reviewv1alpha2.ConditionAwaitingResumption) {
 			meta.SetStatusCondition(&review.Status.Conditions, metav1.Condition{
@@ -373,7 +395,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndResumeContinuationWorker(
 		return r.queueForCapacity(ctx, review, now, "waiting for an older worker admission candidate")
 	}
 
-	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit, admission.activeWorkers)
+	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -526,11 +548,14 @@ func (r *PRReviewJobV1Alpha2Reconciler) admitAndCreateWorker(
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	if admission.activeWorkers >= limit {
+		return r.queueForCapacity(ctx, review, now, fmt.Sprintf("waiting for one of %d worker slots", limit))
+	}
 	if admission.olderWaiting {
 		return r.queueForCapacity(ctx, review, now, "waiting for an older worker admission candidate")
 	}
 
-	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit, admission.activeWorkers)
+	acquired, err := r.getCapacityLedger().AcquireSlot(ctx, review, limit)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -799,6 +824,12 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileCancellation(
 		return ctrl.Result{}, existingErr
 	}
 	if existingErr == nil {
+		if controllerutil.ContainsFinalizer(&existing, terminalOutcomeFinalizer) {
+			controllerutil.RemoveFinalizer(&existing, terminalOutcomeFinalizer)
+			if err := r.Update(ctx, &existing); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		}
 		if existing.DeletionTimestamp == nil {
 			deleteOpts := client.PropagationPolicy(metav1.DeletePropagationForeground)
 			if err := r.Delete(ctx, &existing, deleteOpts); err != nil && !apierrors.IsNotFound(err) {
@@ -921,6 +952,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) reconcileExistingJob(ctx context.Context
 	}
 	timingChanged = timingChanged || podTimingChanged
 	if worker.Status.Succeeded == 0 && worker.Status.Failed == 0 {
+		_ = r.getCapacityLedger().RenewSlot(ctx, review)
 		if review.Status.Phase != reviewv1alpha2.PhaseRunning || review.Status.JobName != worker.Name {
 			review.Status.JobName = worker.Name
 			if review.Spec.RunnerMode == "generic" {
