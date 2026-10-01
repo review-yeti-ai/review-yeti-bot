@@ -231,7 +231,9 @@ describe('SSE terminal choice reduction', () => {
       { choices: [{ index: 0, finish_reason: finishReason, delta: { content: '{"findings":[]}' } }] }, usage,
     ]), true);
     expect(normalizeModelFinishReason(result.choices[0].finish_reason)).toBe('missing');
+    expect(result.choices[0].index).toBe(0);
     expect(result.choices[0].message.content).toBe('{"findings":[]}');
+    expect(result.usage).toEqual(usage.usage);
     expect(result.usage).toEqual(usage.usage);
   });
 
