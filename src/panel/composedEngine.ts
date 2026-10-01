@@ -758,6 +758,7 @@ export function buildTaskScopedFiles(
 export function buildTaskScopedPrefix(input: {
   task: ReviewTask;
   effectiveFiles: Array<{ path: string; patch?: string; content?: string }>;
+  originalFiles?: Array<{ path: string; patch?: string; content?: string }>;
   domainLanes: Record<string, DomainLane>;
   repository: string;
   headSha: string;
@@ -769,8 +770,11 @@ export function buildTaskScopedPrefix(input: {
   preCheckEvidence: { zoekt?: ZoektPreCheckResult; analyzers?: PreCheckSummary; symbolAppendix?: SymbolResolutionAppendixResult };
   inlineTokenBudget?: number;
 }): string {
-  const scopedFiles = buildTaskScopedFiles(input.task, input.effectiveFiles);
-  const scopeLabel = scopedFiles.length === input.effectiveFiles.length
+  // Allocate this task's context from original evidence. A global planner
+  // pack may have omitted a file that this task is explicitly assigned.
+  const sourceFiles = input.originalFiles ?? input.effectiveFiles;
+  const scopedFiles = buildTaskScopedFiles(input.task, sourceFiles);
+  const scopeLabel = scopedFiles.length === sourceFiles.length
     ? 'ALL FILES -- UNSCOPED'
     : `TASK SCOPE: ${scopedFiles.map((f) => f.path).join(', ')}`;
 
@@ -800,7 +804,8 @@ function buildSystemPrompt(repository: string): string {
     `2. WORK: the engine tells you, one at a time, which planned task to execute. You investigate that task's paths (using read-only tools if needed) and report COMPLETE with findings, or BLOCKED if you cannot complete it.`,
     ``,
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
-    `- Code Reading: view_file, read_file, get_diff, get_diff_page, read_file_page`,
+    `- Code Reading: view_file, read_file, get_diff, get_diff_page, read_file_page, deletion_manifest, deletion_evidence`,
+    `For large removals, deletion_manifest({offset:0,limit:24}) inventories groups with per-path obligations. deletion_evidence({path:"<exact path>"}) returns compact old/current source summaries, AST candidates, scoped caller matches and optional JEV answers. Classification never completes an obligation. Preserve path-specific consumers, security and compatibility review even for identical old-source groups.`,
     `get_diff_page args: {"path":"<exact path>","startOffset":0,"maxChars":16000}. Continue at nextOffset and repeat digest; offsets count UTF-16 code units. It reads the original patch even when globally reduced or oversized.`,
     `read_file_page args: {"path":"<exact path>","side":"merge-base","startOffset":0,"maxChars":16000}. Use merge-base for removed source and head for surviving source. A page is not proof all obligations were reviewed.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
@@ -2142,6 +2147,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       const taskScopedPrefixText = buildTaskScopedPrefix({
         task: reserved.task,
         effectiveFiles: budgeted ? budgeted.promptFiles : effectiveFiles,
+        originalFiles: changedFiles,
         ...(budgetPack ? { inlineTokenBudget: budgetPack.inlineTokenBudget } : {}),
         domainLanes,
         repository,
