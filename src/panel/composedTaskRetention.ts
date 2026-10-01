@@ -9,11 +9,16 @@ import {
 } from './reviewTask';
 import { MAX_CHANGED_FILES, MAX_PATH_CHARACTERS } from '../review/reviewEvidenceLimits';
 import { MAX_COMPLETION_BYTES } from '../review/workerReviewCompletion';
-import type {
-  ComposedTaskFailureDiagnostics,
-  ComposedTaskRetentionFailureNotice,
-  LaneTurnUsage,
-  PanelFinding,
+import {
+  COMPOSED_TASK_FAILURE_REASONS,
+  COMPOSED_TASK_FINISH_REASONS,
+  COMPOSED_TASK_LAST_TOOL_OUTCOMES,
+  COMPOSED_TASK_OUTCOME_STATUSES,
+  type ComposedTaskFailureDiagnostics,
+  type ComposedTaskOutcomeStatus,
+  type ComposedTaskRetentionFailureNotice,
+  type LaneTurnUsage,
+  type PanelFinding,
 } from './types';
 
 export const COMPOSED_TASK_RETENTION_REQUEST_VERSION = 'ComposedTaskRetentionRequest.v1' as const;
@@ -68,7 +73,7 @@ export interface ComposedTaskOutcomeRetentionRequest extends RetentionRequestBas
     planDigest: string;
     taskIndex: number;
     taskId: string;
-    status: 'complete' | 'blocked' | 'exhausted';
+    status: ComposedTaskOutcomeStatus;
     findings?: readonly Readonly<PanelFinding>[];
     diagnostics?: Readonly<ComposedTaskFailureDiagnostics>;
     usage: Readonly<ComposedTaskOutcomeRetentionUsage>;
@@ -116,14 +121,10 @@ export class ComposedTaskRetentionError extends Error {
 const SHA256 = /^[a-f0-9]{64}$/u;
 const GIT_SHA = /^[a-f0-9]{40}$/u;
 const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/u;
-const FAILURE_REASONS = new Set<ComposedTaskFailureDiagnostics['reason']>([
-  'total_turn_budget_exhausted', 'task_turn_budget_exhausted', 'non_json_task_result',
-  'tool_requested_during_finalization', 'task_id_mismatch', 'nonce_mismatch', 'invalid_status',
-  'invalid_findings', 'invalid_result_fields',
-]);
-const FINISH_REASONS = new Set<NonNullable<ComposedTaskFailureDiagnostics['finishReason']>>([
-  'stop', 'length', 'content_filter', 'tool_calls', 'function_call', 'unrecognized',
-]);
+const FAILURE_REASONS = new Set<string>(COMPOSED_TASK_FAILURE_REASONS);
+const FINISH_REASONS = new Set<string>(COMPOSED_TASK_FINISH_REASONS);
+const LAST_TOOL_OUTCOMES = new Set<string>(COMPOSED_TASK_LAST_TOOL_OUTCOMES);
+const OUTCOME_STATUSES = new Set<string>(COMPOSED_TASK_OUTCOME_STATUSES);
 
 function ownDataValues(
   value: unknown,
@@ -335,7 +336,7 @@ export function createComposedTaskOutcomeRetentionRequest(input: {
   planDigest: string;
   taskIndex: number;
   taskId: string;
-  status: 'complete' | 'blocked' | 'exhausted';
+  status: ComposedTaskOutcomeStatus;
   findings?: readonly PanelFinding[];
   diagnostics?: ComposedTaskFailureDiagnostics;
   usage: ComposedTaskOutcomeRetentionUsage;
@@ -351,7 +352,7 @@ export function createComposedTaskOutcomeRetentionRequest(input: {
       || typeof values.taskIndex !== 'number' || !Number.isSafeInteger(values.taskIndex)
       || values.taskIndex < 0 || values.taskIndex >= MAX_TASKS_HARD_CAP
       || typeof values.taskId !== 'string' || !TASK_ID_PATTERN.test(values.taskId)
-      || typeof values.status !== 'string' || !['complete', 'blocked', 'exhausted'].includes(values.status)) throw new Error();
+      || typeof values.status !== 'string' || !OUTCOME_STATUSES.has(values.status)) throw new Error();
     const findingsPresent = values.findings !== undefined;
     const diagnosticsPresent = values.diagnostics !== undefined;
     if ((values.status === 'complete') !== findingsPresent
@@ -393,14 +394,14 @@ export function createComposedTaskOutcomeRetentionRequest(input: {
         'reason', 'turnsUsed', 'correctionAttempts', 'toolTurns', 'finishReason', 'lastToolOutcome',
       ]);
       if (!diagnosticFields || typeof diagnosticFields.reason !== 'string'
-        || !FAILURE_REASONS.has(diagnosticFields.reason as ComposedTaskFailureDiagnostics['reason'])
+        || !FAILURE_REASONS.has(diagnosticFields.reason)
         || typeof diagnosticFields.turnsUsed !== 'number' || !Number.isSafeInteger(diagnosticFields.turnsUsed) || diagnosticFields.turnsUsed < 0
         || typeof diagnosticFields.correctionAttempts !== 'number' || !Number.isSafeInteger(diagnosticFields.correctionAttempts) || diagnosticFields.correctionAttempts < 0
         || typeof diagnosticFields.toolTurns !== 'number' || !Number.isSafeInteger(diagnosticFields.toolTurns) || diagnosticFields.toolTurns < 0
         || (diagnosticFields.finishReason !== null && (typeof diagnosticFields.finishReason !== 'string'
-          || !FINISH_REASONS.has(diagnosticFields.finishReason as NonNullable<ComposedTaskFailureDiagnostics['finishReason']>)))
+          || !FINISH_REASONS.has(diagnosticFields.finishReason)))
         || typeof diagnosticFields.lastToolOutcome !== 'string'
-        || !['none', 'returned', 'requested_after_finalization'].includes(diagnosticFields.lastToolOutcome)
+        || !LAST_TOOL_OUTCOMES.has(diagnosticFields.lastToolOutcome)
         || diagnosticFields.turnsUsed !== usage.turnsUsed || diagnosticFields.correctionAttempts !== usage.correctionAttempts
         || diagnosticFields.toolTurns !== usage.toolTurns) throw new Error();
       diagnostics = {

@@ -69,16 +69,31 @@ export interface LaneTurnUsage {
   durationMs: number;
 }
 
+/** Single runtime/type authority for bounded, content-free composed outcomes. */
+export const COMPOSED_TASK_FAILURE_REASONS = Object.freeze([
+  'total_turn_budget_exhausted', 'task_turn_budget_exhausted', 'non_json_task_result',
+  'tool_requested_during_finalization', 'task_id_mismatch', 'nonce_mismatch', 'invalid_status',
+  'invalid_findings', 'invalid_result_fields',
+] as const);
+export const COMPOSED_TASK_FINISH_REASONS = Object.freeze([
+  'stop', 'length', 'content_filter', 'tool_calls', 'function_call', 'unrecognized',
+] as const);
+export const COMPOSED_TASK_LAST_TOOL_OUTCOMES = Object.freeze([
+  'none', 'returned', 'requested_after_finalization',
+] as const);
+export const COMPOSED_TASK_OUTCOME_STATUSES = Object.freeze([
+  'complete', 'blocked', 'exhausted',
+] as const);
+export type ComposedTaskOutcomeStatus = typeof COMPOSED_TASK_OUTCOME_STATUSES[number];
+
 /** Coded finalization evidence only: never provider text, findings, tool arguments or secrets. */
 export interface ComposedTaskFailureDiagnostics {
-  reason: 'total_turn_budget_exhausted' | 'task_turn_budget_exhausted'
-    | 'non_json_task_result' | 'tool_requested_during_finalization'
-    | 'task_id_mismatch' | 'nonce_mismatch' | 'invalid_status' | 'invalid_findings' | 'invalid_result_fields';
+  reason: typeof COMPOSED_TASK_FAILURE_REASONS[number];
   turnsUsed: number;
   correctionAttempts: number;
   toolTurns: number;
-  finishReason: 'stop' | 'length' | 'content_filter' | 'tool_calls' | 'function_call' | 'unrecognized' | null;
-  lastToolOutcome: 'none' | 'returned' | 'requested_after_finalization';
+  finishReason: typeof COMPOSED_TASK_FINISH_REASONS[number] | null;
+  lastToolOutcome: typeof COMPOSED_TASK_LAST_TOOL_OUTCOMES[number];
 }
 
 /** Fixed, content-free diagnostic emitted when an injected composed retention write fails. */
