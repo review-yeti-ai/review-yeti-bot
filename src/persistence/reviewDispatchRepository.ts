@@ -167,6 +167,14 @@ export const SUPERSEDED_PUBLISHING_REASON = 'superseded_publisher_owned_check';
  */
 export const PUBLISHABLE_PUBLICATION_MODES = ['app-gate'] as const;
 
+/** Persistence-owned vocabulary consumed by status projections. */
+export const REVIEW_DISPATCH_OUTBOX_STATUS = {
+  pending: 'pending',
+  claimed: 'claimed',
+  projected: 'projected',
+  terminal: 'terminal',
+} as const;
+
 /**
  * A non-'app-gate' run (currently only 'disabled') has no App check to fail
  * closed: REL-586's publishing reaper exists to fail a check that a worker

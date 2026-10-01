@@ -89,6 +89,7 @@ import {
   isEmptyCompletionError,
   transportRetryDelayMs,
   isTransientLaneTransportError,
+  mapConcurrentSettled,
   panelDelay,
   EMPTY_COMPLETION_MAX_ATTEMPTS,
   EMPTY_COMPLETION_RETRY_DELAY_MS,
@@ -186,6 +187,8 @@ export const COMPOSED_PLAN_MAX_TURNS = 4;
 export const COMPOSED_TASK_MAX_TURNS = 12;
 /** Hard cap on dynamic per-task turns even for multi-path tasks. */
 export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
+/** Preserve three-way review parallelism without unbounded provider/RSS fan-out. */
+export const COMPOSED_TASK_CONCURRENCY = 3;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
 
@@ -1462,85 +1465,90 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let planUsageFolded = false;
 
     // Allocate before dispatch so concurrent branches cannot race a shared decrementing counter.
-    // The accepted plan order remains the deterministic output order, while every funded branch
-    // starts immediately and shares the same absolute terminal deadline.
+    // The accepted plan order remains the deterministic output order. Up to three funded branches
+    // run together and share the same absolute terminal deadline; larger plans enter the bounded
+    // worker pool instead of opening an unbounded provider/RSS fan-out.
     const taskTurnBudgets = allocateComposedTaskTurnBudgets(
       planOutcome.tasks,
       remainingBudget(),
       config.composed?.max_turns_per_task,
     );
-    span.setAttribute('review_yeti.composed.dispatch_mode', 'parallel');
+    span.setAttribute('review_yeti.composed.dispatch_mode', 'bounded_parallel');
+    span.setAttribute('review_yeti.composed.concurrency_limit', COMPOSED_TASK_CONCURRENCY);
     span.setAttribute('review_yeti.composed.funded_task_count', taskTurnBudgets.filter((budget) => budget > 0).length);
     type CompletedTaskRun = {
       task: ReviewTask;
       outcome: TaskOutcome | null;
     };
-    const taskRuns = planOutcome.tasks.map(async (task, taskIndex): Promise<CompletedTaskRun> => {
-      const diagnosticLane = composedTaskDiagnosticLane(taskIndex);
-      const taskBudget = taskTurnBudgets[taskIndex];
-      if (taskBudget <= 0) {
-        options.progress?.emit({
-          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
-        });
-        return { task, outcome: null };
-      }
+    const settledTaskRuns = await mapConcurrentSettled(
+      planOutcome.tasks,
+      COMPOSED_TASK_CONCURRENCY,
+      async (task, taskIndex): Promise<CompletedTaskRun> => {
+        const diagnosticLane = composedTaskDiagnosticLane(taskIndex);
+        const taskBudget = taskTurnBudgets[taskIndex];
+        if (taskBudget <= 0) {
+          options.progress?.emit({
+            task: 'composed_task', status: 'skipped', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
+          });
+          return { task, outcome: null };
+        }
 
-      const taskStartedAt = Date.now();
-      options.progress?.emit({
-        task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
-        provider: providerId, model, required: true,
-      });
-      const taskTurnUsages: LaneTurnUsage[] = [];
-      try {
-        const outcome = await runTaskWorkPhase({
-          maxTurnsPerTask: config.composed?.max_turns_per_task,
-          deadlineAtMs: composedDeadlineAtMs,
-          now: deadline.now,
-          task,
-          taskIndex,
-          totalTasks: planOutcome.tasks.length,
-          client,
-          model,
-          providerId,
-          baseMessages: taskBaseMessages,
-          changedFilesForTools: toolFiles,
-          ...(requestCapBytes ? { requestCapBytes } : {}),
-          timeoutMs,
-          inactivityTimeoutMs,
-          requestPolicy,
-          jobId,
-          signal,
-          repoFileProvider,
-          zoektConfig,
-          turnsRemaining: () => taskBudget - taskTurnUsages.length,
-          progress: options.progress,
-          progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
-        });
+        const taskStartedAt = Date.now();
         options.progress?.emit({
-          task: 'composed_task',
-          status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
-          role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
-          durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
-          turn: outcome.turnUsages.length,
-          ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
-          usage: progressUsage(outcome.turnUsages),
+          task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
+          provider: providerId, model, required: true,
         });
-        return { task, outcome };
-      } catch (error) {
-        options.progress?.emit({
-          task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
-          provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
-          turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
-          usage: progressUsage(taskTurnUsages),
-        });
-        throw error;
-      }
-    });
+        const taskTurnUsages: LaneTurnUsage[] = [];
+        try {
+          const outcome = await runTaskWorkPhase({
+            maxTurnsPerTask: config.composed?.max_turns_per_task,
+            deadlineAtMs: composedDeadlineAtMs,
+            now: deadline.now,
+            task,
+            taskIndex,
+            totalTasks: planOutcome.tasks.length,
+            client,
+            model,
+            providerId,
+            baseMessages: taskBaseMessages,
+            changedFilesForTools: toolFiles,
+            ...(requestCapBytes ? { requestCapBytes } : {}),
+            timeoutMs,
+            inactivityTimeoutMs,
+            requestPolicy,
+            jobId,
+            signal,
+            repoFileProvider,
+            zoektConfig,
+            turnsRemaining: () => taskBudget - taskTurnUsages.length,
+            progress: options.progress,
+            progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
+          });
+          options.progress?.emit({
+            task: 'composed_task',
+            status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
+            role: 'composed_task', lane: diagnosticLane, provider: providerId, model, required: true,
+            durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
+            turn: outcome.turnUsages.length,
+            ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
+            usage: progressUsage(outcome.turnUsages),
+          });
+          return { task, outcome };
+        } catch (error) {
+          options.progress?.emit({
+            task: 'composed_task', status: signal?.aborted ? 'aborted' : 'failed', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, durationMs: Date.now() - taskStartedAt,
+            turn: taskTurnUsages.length, rejectionCode: safePublishingRejectionCode(error, signal),
+            usage: progressUsage(taskTurnUsages),
+          });
+          throw error;
+        }
+      },
+    );
 
-    // Wait for every branch to settle before propagating a fatal branch error; otherwise sibling
-    // provider requests would continue detached after the review had already returned.
-    const settledTaskRuns = await Promise.allSettled(taskRuns);
+    // The pool waits for every branch to settle before propagating a fatal branch error; otherwise
+    // sibling provider requests would continue detached after the review had already returned.
     const completedTaskRuns: CompletedTaskRun[] = [];
     for (const settled of settledTaskRuns) {
       if (settled.status === 'rejected') throw settled.reason;

@@ -1997,10 +1997,7 @@ func (r *PRReviewJobV1Alpha2Reconciler) clock() time.Time {
 func validateProjectionWindow(review *reviewv1alpha2.PRReviewJob) error {
 	window := review.Spec.TerminalDeadline.Sub(review.Spec.ReceivedAt.Time)
 	exactWindow := time.Duration(job.MaxTerminalDeadlineSeconds) * time.Second
-	legacyAdmittedWindow := review.Status.Phase != "" &&
-		window >= time.Duration(job.MinTerminalDeadlineSeconds)*time.Second &&
-		window <= time.Duration(job.LegacyMaxTerminalDeadlineSeconds)*time.Second
-	if window != exactWindow && !legacyAdmittedWindow {
+	if window != exactWindow {
 		return errors.New("terminal deadline must be exactly 15 minutes after receivedAt")
 	}
 	if review.Namespace != job.Namespace {

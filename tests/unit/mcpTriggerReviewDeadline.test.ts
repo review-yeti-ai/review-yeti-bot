@@ -55,4 +55,12 @@ describe('trigger_review terminal deadline parity', () => {
     expect(TERMINAL_DEADLINE_MS).toBe(expectedMs);
     expect(admitted.terminalDeadline - admitted.receivedAt).toBe(TERMINAL_DEADLINE_MS);
   });
+
+  it('rejects an out-of-contract configured window instead of ignoring the shared setting', async () => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '2400000');
+    vi.resetModules();
+
+    await expect(import('../../src/config/terminalDeadline'))
+      .rejects.toThrow(/must equal the 900000 millisecond end-to-end review ceiling/i);
+  });
 });

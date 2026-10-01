@@ -734,9 +734,8 @@ func TestPRReviewJobV1Alpha2ReconcilerValidatesProjectionWindow(t *testing.T) {
 		{name: "exactly fifteen minutes", window: 900 * time.Second, wantInvalid: false},
 		{name: "one second over", window: 901 * time.Second, wantInvalid: true},
 		{name: "legacy unmarked window", window: 35 * time.Minute, wantInvalid: true},
-		{name: "legacy queued window", window: 35 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: false},
-		{name: "legacy upper boundary", window: time.Duration(job.LegacyMaxTerminalDeadlineSeconds) * time.Second, phase: reviewv1alpha2.PhaseQueued, wantInvalid: false},
-		{name: "over legacy upper boundary", window: time.Duration(job.LegacyMaxTerminalDeadlineSeconds+1) * time.Second, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
+		{name: "legacy queued window", window: 35 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
+		{name: "one hour queued window", window: 60 * time.Minute, phase: reviewv1alpha2.PhaseQueued, wantInvalid: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			scheme := v1alpha2Scheme(t)

@@ -491,6 +491,87 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(client.release).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    {
+      name: 'payload identity',
+      overrides: { payload_digest: '0'.repeat(64) },
+      error: /delivery identity conflict/i,
+    },
+    {
+      name: 'repository identity',
+      overrides: { repository_id: 999 },
+      error: /delivery identity conflict/i,
+    },
+    {
+      name: 'publication mode',
+      overrides: { publication_mode: 'app-gate' },
+      error: /publication mode conflict/i,
+    },
+    {
+      name: 'missing durable deadline',
+      overrides: { terminal_deadline: null },
+      error: /missing its terminal deadline/i,
+    },
+    {
+      name: 'durable timing',
+      overrides: { terminal_deadline: new Date(input().receivedAt + 1_800_000) },
+      error: /delivery timing conflict/i,
+    },
+  ])('rejects a legacy duplicate with conflicting $name', async ({ overrides, error }) => {
+    const receivedAt = input().receivedAt;
+    const terminalDeadline = receivedAt + 2_100_000;
+    const persisted = {
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: input().repositoryId,
+      received_at: new Date(receivedAt),
+      terminal_deadline: new Date(terminalDeadline),
+      ...overrides,
+    };
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [persisted] })), release: vi.fn() };
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({ ...input(), terminalDeadline })).rejects.toThrow(error);
+
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an authoritative legacy duplicate whose durable identity changed', async () => {
+    const receivedAt = input().receivedAt;
+    const terminalDeadline = receivedAt + 2_100_000;
+    const legacyInput = {
+      ...input(),
+      terminalDeadline,
+      publicationMode: 'app-gate' as const,
+      authoritativeGate: { expectedAppId: 4385771, prepared: {} },
+    };
+    const persisted = {
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: input().repositoryId,
+      publication_mode: 'app-gate',
+      authoritative_gate_app_id: 4385771,
+      identity_digest: '0'.repeat(64),
+      received_at: new Date(receivedAt),
+      terminal_deadline: new Date(terminalDeadline),
+    };
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [persisted] })), release: vi.fn() };
+    const validateAuthoritativeAdmission = vi.fn(async () => undefined);
+    const repository = new PostgresReviewDispatchRepository(
+      { connect: vi.fn(async () => client) },
+      undefined,
+      { validateAuthoritativeAdmission },
+    );
+
+    await expect((repository as any).readPersistedLegacyDuplicate(legacyInput))
+      .rejects.toThrow(/no longer matches current authoritative identity/i);
+    expect(validateAuthoritativeAdmission).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
   it('rejects a terminal deadline outside both new and persisted bounds before opening a transaction', async () => {
     const connect = vi.fn();
     const repository = new PostgresReviewDispatchRepository({ connect } as any);

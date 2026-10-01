@@ -15,6 +15,7 @@ import {
   projectReviewStatusPhase,
   projectReviewStatusVerdict,
 } from '../reviewStatusVerdict';
+import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchRepository';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
@@ -314,7 +315,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       const terminalDeadline = isoOrNull(row.terminal_deadline);
       const projectionName = typeof projection?.projection_name === 'string'
         ? projection.projection_name.trim() : '';
-      const projectionIsCurrent = projection?.dispatch_status === 'projected'
+      const projectionIsCurrent = projection?.dispatch_status === REVIEW_DISPATCH_OUTBOX_STATUS.projected
         && projectionName.length > 0
         && !isTerminalStatus(row.run_status)
         && !isTerminalGateState(row.desired_state)

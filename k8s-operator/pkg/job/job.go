@@ -185,10 +185,6 @@ const (
 	// side's src/config/terminalDeadline.ts MIN/MAX.
 	MinTerminalDeadlineSeconds = int64(900)
 	MaxTerminalDeadlineSeconds = int64(900)
-	// Recovery-only upper bound for PRReviewJobs that the former admission
-	// contract already placed into a non-empty lifecycle phase. New/unmarked
-	// projections must still use the exact 900-second contract above.
-	LegacyMaxTerminalDeadlineSeconds = int64(3600)
 	// Keep a one-minute publication/failure-conclusion reserve inside the
 	// admitted run deadline. The worker itself may never consume the full
 	// admission window.
