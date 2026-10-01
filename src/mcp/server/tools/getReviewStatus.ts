@@ -8,13 +8,17 @@ import {
   type GetReviewStatusInput,
   type ReviewCheckRun,
   type ReviewActiveWorker,
+  type ReviewActiveProjection,
   type ReviewStatusOutput,
   type ReviewTiming,
 } from './schemas';
 import {
+  isTerminalReviewRunStatus,
+  projectReviewExecutionLiveness,
   projectReviewStatusPhase,
   projectReviewStatusVerdict,
 } from '../reviewStatusVerdict';
+import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
 
 export interface ReviewStatusDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
@@ -57,15 +61,23 @@ const LIFECYCLE_MARKER_KINDS = [
   'review.lifecycle.terminal',
 ];
 
+const DISPATCH_PROJECTION_SQL = `
+  SELECT status AS dispatch_status, projection_name, updated_at AS dispatch_updated_at
+    FROM review_dispatch_outbox
+   WHERE run_id = $1
+`;
+
+interface DispatchProjection {
+  dispatch_status: unknown;
+  projection_name: unknown;
+  dispatch_updated_at: unknown;
+}
+
 /**
  * Statuses in which a run has genuinely terminated. Deliberately an allowlist:
  * an unrecognised future status is treated as NOT terminal, so the conservative
  * failure mode is a null duration rather than an invented one.
  */
-const TERMINAL_RUN_STATUSES = new Set([
-  'succeeded', 'complete', 'completed', 'failed', 'cancelled', 'superseded', 'terminal',
-]);
-
 function isoOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const ms = value instanceof Date ? value.getTime() : Date.parse(String(value));
@@ -93,7 +105,7 @@ export function buildReviewTiming(
   const startedAt = markers.get('review.lifecycle.started') ?? null;
   const terminalMarker = markers.get('review.lifecycle.terminal') ?? null;
 
-  const runIsTerminal = typeof runStatus === 'string' && TERMINAL_RUN_STATUSES.has(runStatus);
+  const runIsTerminal = isTerminalReviewRunStatus(runStatus);
 
   // completed_at is populated ONLY for a genuinely terminal run. This is the
   // load-bearing guard: a still-running review reports null rather than a
@@ -152,9 +164,23 @@ async function readLifecycleMarkers(
   return markers;
 }
 
+async function readDispatchProjection(
+  db: ReviewStatusDbClient,
+  runId: unknown,
+): Promise<DispatchProjection | null> {
+  if (typeof runId !== 'string' || runId.length === 0) return null;
+  try {
+    return (await db.query(DISPATCH_PROJECTION_SQL, [runId])).rows[0] ?? null;
+  } catch {
+    // Older or partial schemas may not have the durable dispatch outbox. The
+    // review row and lifecycle ledger still produce a conservative answer.
+    return null;
+  }
+}
+
 export const getReviewStatusDefinition: ToolDefinition = {
   name: 'get_review_status',
-  description: 'Retrieve real-time review status, verdict, phase, and check-runs without GitHub scraping.',
+  description: 'Retrieve versioned ReviewStatus.v2 real-time status, verdict, phase, check-runs, and explicit Pod-or-Job worker identity without GitHub scraping.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -181,6 +207,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
 
       if (!db) {
         return buildToolResultJson({
+          schema_version: 'ReviewStatus.v2',
           found: false,
           verdict: 'PENDING',
           attempt_id: null,
@@ -188,6 +215,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           phase: 'queued',
           check_run: null,
           active_worker: null,
+          active_projection: null,
           message: 'Database service is unavailable',
         } satisfies ReviewStatusOutput);
       }
@@ -258,6 +286,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
 
       if (!result || result.rows.length === 0) {
         return buildToolResultJson({
+          schema_version: 'ReviewStatus.v2',
           found: false,
           verdict: 'PENDING',
           attempt_id: null,
@@ -265,22 +294,41 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           phase: 'queued',
           check_run: null,
           active_worker: null,
+          active_projection: null,
           message: `No review run found for ${owner}/${repo} PR #${pull_number}`,
         } satisfies ReviewStatusOutput);
       }
 
       const row = result.rows[0];
       const now = Date.now();
+      const [markers, projection] = await Promise.all([
+        readLifecycleMarkers(db, row.run_id, row.attempt_id, row.received_at ?? row.created_at),
+        readDispatchProjection(db, row.run_id),
+      ]);
+      const terminalDeadline = isoOrNull(row.terminal_deadline);
+      const projectionName = typeof projection?.projection_name === 'string'
+        ? projection.projection_name.trim() : '';
+      const durableExecutionStarted = markers.has('review.lifecycle.started');
+      const execution = projectReviewExecutionLiveness({
+        runStatus: row.run_status,
+        desiredState: row.desired_state,
+        hasProjectedWorker: projection?.dispatch_status === REVIEW_DISPATCH_OUTBOX_STATUS.projected
+          && projectionName.length > 0,
+        durableExecutionStarted,
+        terminalDeadlineMs: terminalDeadline === null ? null : Date.parse(terminalDeadline),
+        nowMs: now,
+      });
+      const { effectiveRunStatus, projectionIsCurrent } = execution;
 
       const phase = projectReviewStatusPhase({
         desiredState: row.desired_state,
-        runStatus: row.run_status,
+        runStatus: effectiveRunStatus,
         runStage: row.run_stage,
       });
       const verdict = projectReviewStatusVerdict({
         decision: row.decision,
         desiredState: row.desired_state,
-        runStatus: row.run_status,
+        runStatus: effectiveRunStatus,
       });
 
       const attemptId = row.attempt_id || (row.run_id ? `review-attempt-${pull_number}-${row.attempt || 1}` : null);
@@ -300,7 +348,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         : null;
 
       const leaseExpires = row.lease_expires_at ? new Date(row.lease_expires_at).getTime() : 0;
-      const activeWorker: ReviewActiveWorker | null =
+      const leasedWorker: ReviewActiveWorker | null =
         row.lease_owner && (leaseExpires > now || !row.lease_expires_at)
           ? {
               pod_name: row.lease_owner,
@@ -311,20 +359,43 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
             }
           : null;
 
+      // DOKS releases the short dispatcher lease after it has durably created
+      // the PRReviewJob. From that point onward, the projection row is the
+      // authoritative execution identity and keeps the projected phase live
+      // even though the legacy active_worker field honestly becomes null. The
+      // operator records the current worker Job name in PRReviewJob status,
+      // but that status is not persisted here and continuation jobs do not use
+      // the initial `-worker` suffix. Report only the authoritative projection
+      // identity instead of inventing a Job or Pod identity.
+      const activeProjection: ReviewActiveProjection | null = projectionIsCurrent
+        ? {
+            projection_name: projectionName,
+            started_at: markers.get('review.lifecycle.started')
+              ?? isoOrNull(projection?.dispatch_updated_at)
+              ?? isoOrNull(row.updated_at)
+              ?? isoOrNull(row.created_at)
+              ?? new Date(now).toISOString(),
+            // projectReviewExecutionLiveness can mark a projection current
+            // only when this parsed deadline is non-null and still in the future.
+            terminal_deadline: terminalDeadline!,
+          }
+        : null;
+
       // Timing is computed from the row plus its durable lifecycle markers. The
       // marker read is best-effort and never changes the status answer: if the
       // ledger is unavailable, every duration resolves to null.
-      const markers = await readLifecycleMarkers(db, row.run_id, row.attempt_id, row.received_at ?? row.created_at);
       const timing = buildReviewTiming(row, markers, row.run_status);
 
       return buildToolResultJson({
+        schema_version: 'ReviewStatus.v2',
         found: true,
         verdict,
         attempt_id: attemptId,
         head_sha: row.head_sha,
         phase,
         check_run: checkRun,
-        active_worker: activeWorker,
+        active_worker: leasedWorker,
+        active_projection: activeProjection,
         timing,
       } satisfies ReviewStatusOutput);
     },
