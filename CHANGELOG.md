@@ -1,5 +1,48 @@
 # Changelog
 
+## [1.103.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.1...v1.103.0) (2026-10-01)
+
+
+### Features
+
+* **review:** retain immutable composed tasks under the native fence ([#1181](https://github.com/review-yeti-ai/review-yeti-bot/issues/1181)) ([2ede42f](https://github.com/review-yeti-ai/review-yeti-bot/commit/2ede42fd1cebd611b89dde11e95bcc42a58143f1))
+
+## [1.102.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.0...v1.102.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve typed panel failure classification ([#1212](https://github.com/review-yeti-ai/review-yeti-bot/issues/1212)) ([720c5e2](https://github.com/review-yeti-ai/review-yeti-bot/commit/720c5e23be214723834601264f5fd31e27f6d1a6))
+
+## [1.102.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.9...v1.102.0) (2026-10-01)
+
+
+### Features
+
+* **review:** preserve evidence through graceful closeout ([#1203](https://github.com/review-yeti-ai/review-yeti-bot/issues/1203)) ([29a864f](https://github.com/review-yeti-ai/review-yeti-bot/commit/29a864fee8e607514039d59902085c85451301d0))
+
+## [1.101.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.8...v1.101.9) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve terminal SSE metadata and provider errors ([#1202](https://github.com/review-yeti-ai/review-yeti-bot/issues/1202)) ([d137fc3](https://github.com/review-yeti-ai/review-yeti-bot/commit/d137fc3c326b428f3d1041372a95f34b397dc083))
+
+## [1.101.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.7...v1.101.8) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** pin embedded Go qualification and safe failure evidence ([#1204](https://github.com/review-yeti-ai/review-yeti-bot/issues/1204)) ([d059560](https://github.com/review-yeti-ai/review-yeti-bot/commit/d0595608a7e4e59a4e0fd487057cd004c80516e6))
+
+## [1.101.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.6...v1.101.7) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** run ordinary quality checks on public drafts ([#1195](https://github.com/review-yeti-ai/review-yeti-bot/issues/1195)) ([2a4ddf3](https://github.com/review-yeti-ai/review-yeti-bot/commit/2a4ddf369d54de2f231dc7beafa09f18f7654408))
+* **panel:** refill composed task slots as turns are refunded ([#1205](https://github.com/review-yeti-ai/review-yeti-bot/issues/1205)) ([944ebaa](https://github.com/review-yeti-ai/review-yeti-bot/commit/944ebaa8a9f1d4f6e1551b5318a2e587e483cb21))
+
 ## [1.101.6](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.5...v1.101.6) (2026-10-01)
 
 

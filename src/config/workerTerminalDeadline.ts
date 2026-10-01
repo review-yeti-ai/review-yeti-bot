@@ -15,12 +15,19 @@ export const WORKER_TERMINAL_DEADLINE_ENV = 'REVIEW_TERMINAL_DEADLINE';
 
 /** The worker Job is deleted this long before the terminal deadline (Go `DeadlineReserveSeconds`). */
 export const WORKER_TERMINAL_DEADLINE_RESERVE_MS = 60_000;
-
-/** Existing time inside the Job for the worker receipt (Go `WorkerReceiptReserveSeconds`). */
+/** @deprecated The five-minute closeout reserve supersedes the old separate receipt subtraction. */
 export const WORKER_RECEIPT_RESERVE_MS = 60_000;
-export const WORKER_PANEL_RESERVE_MS = WORKER_TERMINAL_DEADLINE_RESERVE_MS + WORKER_RECEIPT_RESERVE_MS;
-/** Go floors remaining seconds before projecting activeDeadlineSeconds. */
-export const WORKER_DEADLINE_FLOOR_MARGIN_MS = 1_000;
+/** @deprecated Phase cutoffs are exact absolute instants; no extra floor margin is subtracted. */
+export const WORKER_DEADLINE_FLOOR_MARGIN_MS = 0;
+
+/**
+ * The final five minutes belong to synthesis, completion persistence and GitHub publication.
+ * Evidence collection must never borrow from this reserve: otherwise an expensive review can
+ * reach the terminal deadline with useful findings in memory and no time left to render them.
+ */
+export const WORKER_SYNTHESIS_AND_PUBLICATION_RESERVE_MS = 300_000;
+/** Compatibility name retained for callers/tests; this is now the closeout reserve. */
+export const WORKER_PANEL_RESERVE_MS = WORKER_SYNTHESIS_AND_PUBLICATION_RESERVE_MS;
 
 export interface WorkerPanelDeadlineBudget {
   readonly deadlineAtMs: number;
@@ -31,7 +38,7 @@ export interface WorkerPanelDeadlineBudget {
 function configuredPanelTimeoutMs(overallTimeoutSeconds: number): number {
   return Number.isFinite(overallTimeoutSeconds) && overallTimeoutSeconds > 0
     ? Math.max(1, Math.floor(overallTimeoutSeconds * 1_000))
-    : 900_000;
+    : 1_200_000;
 }
 
 /** A fixed work cutoff, never a fresh timeout when passed to a nested engine. */
@@ -47,7 +54,7 @@ export function workerPanelDeadlineBudget(
     throw new Error('Worker lifecycle deadline is invalid');
   }
   const terminalCutoff = terminalAt === undefined ? Infinity
-    : terminalAt - WORKER_PANEL_RESERVE_MS - WORKER_DEADLINE_FLOOR_MARGIN_MS;
+    : terminalAt - WORKER_PANEL_RESERVE_MS;
   const deadlineAtMs = Math.min(nowMs + configuredMs, terminalCutoff);
   return { deadlineAtMs, timeoutMs: Math.max(0, deadlineAtMs - nowMs), terminalBound: terminalCutoff <= nowMs + configuredMs };
 }
@@ -62,7 +69,7 @@ export function workerTerminalDeadlineAtMs(env: Readonly<Record<string, string |
 
 /**
  * The policy is a ceiling, not a fresh admission window. Queueing, image startup and source/setup
- * work consume the admitted deadline too. Leave both existing reserves without changing the
+ * work consume the admitted deadline too. Reserve the final five minutes without changing the
  * digest-bound config. Absence preserves older operator compatibility; an explicit bad deadline
  * must not silently remove this bound. Zero means no panel can start, never the timer's default.
  */

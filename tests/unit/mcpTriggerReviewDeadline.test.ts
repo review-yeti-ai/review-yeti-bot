@@ -11,7 +11,7 @@ describe('trigger_review terminal deadline parity', () => {
   });
 
   it.each([
-    { label: 'default', configuredMs: undefined, expectedMs: 900_000 },
+    { label: 'default', configuredMs: undefined, expectedMs: 1_500_000 },
     { label: 'minimum', configuredMs: '900000', expectedMs: 900_000 },
     { label: 'interior', configuredMs: '2100000', expectedMs: 2_100_000 },
     { label: 'maximum', configuredMs: '3600000', expectedMs: 3_600_000 },

@@ -204,6 +204,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     },
     incrementalBase: new PostgresIncrementalBaseLookup(pool, { maxAgeMs: incrementalMaxAgeMs }),
     incompleteP2Recovery: pool,
+    reviewCheckpoint: pool,
     verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(

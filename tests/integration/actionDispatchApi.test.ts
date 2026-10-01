@@ -1398,7 +1398,7 @@ describe('POST /api/dispatch/action (configured 15–60 minute terminal deadline
     expect(admitted.terminalDeadline - admitted.receivedAt).toBe(expectedMs);
   });
 
-  it('matches the fixed default when the environment is unset', async () => {
+  it('uses the 25-minute default when the environment is unset', async () => {
     vi.resetModules();
     const { DEFAULT_TERMINAL_DEADLINE_MS } = await import('../../src/config/terminalDeadline');
     const defaultFixture = await freshApp();
@@ -1409,6 +1409,7 @@ describe('POST /api/dispatch/action (configured 15–60 minute terminal deadline
     expect(defaultResponse.status).toBe(202);
     const defaultAdmitted = defaultFixture.admission.admit.mock.calls[0][0];
     expect(defaultAdmitted.terminalDeadline - defaultAdmitted.receivedAt).toBe(DEFAULT_TERMINAL_DEADLINE_MS);
+    expect(DEFAULT_TERMINAL_DEADLINE_MS).toBe(1_500_000);
 
   });
 
