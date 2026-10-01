@@ -12,6 +12,24 @@ const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), OLD = 'c'.repeat(40);
 const parse = (value: { toolOutput: string }) => JSON.parse(value.toolOutput);
 
 describe('original evidence pages', () => {
+  it('evicts digest cache entries by count and bytes and declines oversized cache entries', async () => {
+    let text = 'x';
+    const context = { changedFiles: [], repoFileProvider: { readFile: async () => null, findFiles: async () => [],
+      readDiff: () => ({ patch: text }) } };
+    const page = (path: string) => runReadOnlyTool('get_diff_page', { path, maxChars: 1 }, context);
+    vi.mocked(createHash).mockClear();
+    for (let i = 0; i < 33; i++) await page(`p${i}`);
+    await page('p32'); expect(createHash).toHaveBeenCalledTimes(33);
+    await page('p0'); expect(createHash).toHaveBeenCalledTimes(34);
+    text = 'x'.repeat(6_000_000);
+    for (const path of ['large-a', 'large-b', 'large-c']) await page(path);
+    await page('large-c'); expect(createHash).toHaveBeenCalledTimes(37);
+    await page('large-a'); expect(createHash).toHaveBeenCalledTimes(38);
+    text = 'x'.repeat(8_000_001);
+    await page('oversized'); await page('oversized');
+    expect(createHash).toHaveBeenCalledTimes(40);
+  });
+
   it('reports stale offsets and failed source lookups without claiming completion', async () => {
     const context = { changedFiles: [{ path: 'x', patch: 'abc' }], repoFileProvider: {
       readFile: async () => null, findFiles: async () => [], readFileAt: async () => { throw new Error('lookup failed'); },
