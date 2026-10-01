@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.2...v1.101.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* enforce 15-minute review deadline ([#1184](https://github.com/review-yeti-ai/review-yeti-bot/issues/1184)) ([a557775](https://github.com/review-yeti-ai/review-yeti-bot/commit/a55777530a54cd75736815405e02613f1c3f68e3))
+
 ## [1.101.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.1...v1.101.2) (2026-10-01)
 
 
