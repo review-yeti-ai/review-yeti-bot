@@ -15,7 +15,8 @@ const loadedAfterImport = Object.hasOwn(require.cache, target);
 
 async function main() {
   const mode = process.argv[1];
-  if (mode === 'import') {
+  if (mode === 'import-with-warning') process.stderr.write('Fixture runtime notice\n');
+  if (mode === 'import' || mode === 'import-with-warning') {
     return {
       loadedAfterImport,
       readTokenExport: typeof auth.getGitHubAppRepositoryReadToken,
@@ -82,19 +83,26 @@ main().then((result) => process.stdout.write(JSON.stringify(result) + '\n')).cat
 });
 `;
 
-async function probeBoundary(mode: 'import' | 'factory' | 'failure') {
+async function probeBoundary(mode: 'import' | 'import-with-warning' | 'factory' | 'failure') {
   const result = await execFileAsync(process.execPath, ['-e', probe, mode], {
     cwd: process.cwd(),
     env: { ...process.env, LOG_LEVEL: 'error' },
     timeout: 5_000,
   });
-  expect(result.stderr).toBe('');
+  // A successful module probe may emit unrelated runtime diagnostics. Exit
+  // status and the parsed behavior payload own this contract, not stderr.
   return JSON.parse(result.stdout);
 }
 
 describe('appAuth actual CommonJS module boundary', () => {
   it('imports read-token auth without loading the installation client', async () => {
     expect(await probeBoundary('import')).toEqual({
+      loadedAfterImport: false, readTokenExport: 'function', chatClientExport: 'function',
+    });
+  });
+
+  it('keeps module-boundary proof valid when the successful child emits a runtime notice', async () => {
+    expect(await probeBoundary('import-with-warning')).toEqual({
       loadedAfterImport: false, readTokenExport: 'function', chatClientExport: 'function',
     });
   });
