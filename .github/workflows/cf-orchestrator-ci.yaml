@@ -1,0 +1,59 @@
+name: Cloudflare Orchestrator CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cf-orchestrator/**"
+      - ".github/workflows/cf-orchestrator-ci.yaml"
+  pull_request:
+    paths:
+      - "cf-orchestrator/**"
+      - ".github/workflows/cf-orchestrator-ci.yaml"
+
+concurrency:
+  group: cf-orchestrator-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  verify-orchestrator:
+    name: Build, Test & Parity Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cf-orchestrator/package-lock.json
+
+      - name: Install dependencies
+        working-directory: cf-orchestrator
+        run: npm ci
+
+      - name: Compile TypeScript
+        working-directory: cf-orchestrator
+        run: npm run build
+
+      - name: Run Complete Test Suite (Unit, Contract & Adversarial)
+        working-directory: cf-orchestrator
+        run: npm test
+
+      - name: Run End-to-End Integration Suite
+        working-directory: cf-orchestrator
+        run: npm run test:e2e
+
+      - name: Verify Parity Comparison CLI Tool
+        working-directory: cf-orchestrator
+        run: |
+          node scripts/ci/compare-orchestrator-runs.js --help
