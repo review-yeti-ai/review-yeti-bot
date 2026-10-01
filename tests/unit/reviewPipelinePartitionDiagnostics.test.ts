@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import Module from 'node:module';
 import { createScratchOwner, requiredSuiteScratchRoot } from '../support/scratch-lifecycle';
 
 const root = path.resolve(__dirname, '../..');
@@ -20,6 +21,7 @@ const child = String.raw`
 const pipeline = require(process.env.PIPELINE);
 let malformedCalls = 0;
 let successfulCalls = 0;
+const partitionCalls = new Map();
 globalThis.fetch = async (_url, init) => {
   const body = JSON.parse(init.body);
   const prompt = body.messages.map((message) => Array.isArray(message.content)
@@ -33,21 +35,39 @@ globalThis.fetch = async (_url, init) => {
     if (malformed) malformedCalls += 1;
     else successfulCalls += 1;
   }
+  const key = String(firstPartition);
+  const call = (partitionCalls.get(key) || 0) + 1;
+  if (testing) partitionCalls.set(key, call);
+  if (process.env.RECOVERY_FIXTURE && testing && call === 1) {
+    if (!malformed) {
+      return new Response(JSON.stringify({ error: { message: 'fixture rate limit' } }), {
+        status: 429, headers: { 'content-type': 'application/json', 'retry-after': '0.001' },
+      });
+    }
+    if (process.env.RECOVERY_FIXTURE === 'present') {
+      return new Response(JSON.stringify({ error: { message: 'response_format json_schema is not supported' } }), {
+        status: 400, headers: { 'content-type': 'application/json' },
+      });
+    }
+  }
   const content = malformed ? '' : JSON.stringify({ findings: [] });
   const reasoning = malformed ? 'synthetic non-JSON reasoning '.repeat(1_000) : '';
   // These finish reasons are fixture inputs, not claims about the live incident.
   const finish_reason = malformed ? 'length' : 'stop';
   const model = malformed ? 'fixture-malformed-model' : 'fixture-successful-model';
+  const provider = malformed ? 'anthropic' : 'openai';
+  const openrouter_metadata = { strategy: malformed ? 'fallback' : 'primary',
+    region: malformed ? 'eu' : 'us', attempt: malformed ? 2 : 1 };
   const usage = { prompt_tokens: 10, completion_tokens: malformed ? 20 : 1 };
   if (body.stream) {
-    const payload = { model, usage, choices: [{
+    const payload = { model, provider, openrouter_metadata, usage, choices: [{
       delta: { content, reasoning_content: reasoning }, finish_reason,
     }] };
     return new Response('data: ' + JSON.stringify(payload) + '\n\ndata: [DONE]\n\n', {
       status: 200, headers: { 'content-type': 'text/event-stream' },
     });
   }
-  return new Response(JSON.stringify({ model, usage, choices: [{
+  return new Response(JSON.stringify({ model, provider, openrouter_metadata, usage, choices: [{
     message: { content, reasoning_content: reasoning }, finish_reason,
   }] }), { status: 200, headers: { 'content-type': 'application/json' } });
 };
@@ -56,7 +76,7 @@ pipeline.main().then(() => console.log('FIXTURE_CALLS ' + JSON.stringify({
 }))).catch(() => { process.exitCode = 1; });
 `;
 
-function runPartitionedReview(failPartition: 'first' | 'last' | 'none') {
+function runPartitionedReview(failPartition: 'first' | 'last' | 'none', recoveryFixture?: 'present' | 'absent') {
   const scratch = createScratchOwner({
     parentDir: requiredSuiteScratchRoot(),
     prefix: 'partition-diagnostics-',
@@ -81,6 +101,15 @@ function runPartitionedReview(failPartition: 'first' | 'last' | 'none') {
         OPENROUTER_MODEL: 'glm-5.3-flash',
         REVIEW_TRANSPORT_COMPAT: 'opencode',
         FAIL_PARTITION: failPartition,
+        ...(recoveryFixture ? {
+          RECOVERY_FIXTURE: recoveryFixture,
+          REVIEW_YETI_TRANSPORTS: JSON.stringify([{
+            name: 'openai-fixture', provider: 'openai', base_url: 'https://opencode.ai/zen/v1',
+            api_key_env: 'OPENROUTER_API_KEY', model: 'glm-5.3-flash', stream: true,
+            structured_output_mode: 'json_schema',
+            rate_limit: { max_retries: 1, max_retry_after_ms: 100 },
+          }]),
+        } : {}),
         MAX_DIFF_CHARS: '120',
         GITHUB_OUTPUT: path.join(scratch.path, 'output'),
         GITHUB_STEP_SUMMARY: path.join(scratch.path, 'summary.md'),
@@ -140,6 +169,8 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
       contentSizeBucket: 'empty',
       reasoningSizeBucket: 'oversize',
       outputContract: { terminalParsed: false },
+      resolvedProvider: 'anthropic',
+      routerMetadata: { strategy: 'fallback', region: 'eu', attempt: 2 },
     });
     for (const [index, attempt] of testing.responseAttempts.entries()) {
       expect(attempt).toMatchObject({
@@ -168,9 +199,161 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
     expect(testing).toMatchObject({
       attemptCount: 2, failureClass: null, outputShape: 'direct_json_object', finishReason: 'stop',
       findingsSource: 'content', contentPresent: true, reasoningPresent: false,
+      recoveryAction: null,
       outputContract: { terminalParsed: true },
     });
     expect(testing.responseAttempts).toHaveLength(1);
     expect(testing.responseAttempts[0]).toMatchObject({ outcome: 'parsed', finishReason: 'stop' });
+  });
+
+  it.each([
+    ['first', 'present'], ['last', 'present'], ['first', 'absent'], ['last', 'absent'],
+  ] as const)('publishes BLOCK with real %s failure recovery %s', (partition, recovery) => {
+    const { calls, outputs, telemetry, summary, stdout } = runPartitionedReview(partition, recovery);
+    expect(calls).toEqual({ malformedCalls: 2, successfulCalls: 2, exitCode: 0 });
+    expect(outputs).toMatchObject({ verdict: 'BLOCK', 'gate-decision': 'BLOCK', 'merge-eligible': 'false', 'files-omitted': '0' });
+    expect(summary).toContain('Degraded (1/2 personas)');
+    // The actual request loop, not a stamped result, sets these recovery actions:
+    // malformed lane: optional schema fallback; successful sibling: 429 retry.
+    expect(stdout).toContain('honoring bounded Retry-After');
+    const testing = telemetry.lanes.find((lane: any) => lane.personaId === 'testing');
+    expect(testing).toMatchObject({
+      configuredTransport: 'openai', resolvedProvider: 'anthropic',
+      recoveryAction: recovery === 'present' ? 'structured_output_fallback' : null,
+      failureClass: 'malformed_output', outputShape: 'no_json', finishReason: 'length',
+      routerMetadata: { strategy: 'fallback', region: 'eu', attempt: 2 },
+    });
+    expect(testing.responseAttempts).toHaveLength(2);
+    expect(testing.responseAttempts.at(-1)).toMatchObject({ outcome: 'malformed_output', provider: 'anthropic' });
+    expect(JSON.stringify(telemetry)).not.toContain('synthetic non-JSON reasoning');
+  });
+});
+
+// Load the exact reducer from main(), in its real module lexical scope, without
+// adding an exported production API or duplicating its policy in the test. These
+// typed synthetic lane results give attribution fields distinct sibling values;
+// the full main()/parser/publication fixtures above remain the integration proof.
+function loadPartitionReducer(selectionCounterfactual = false) {
+  const filename = path.join(root, '.github/workflows/pipelines/review-pipeline.js');
+  const source = fs.readFileSync(filename, 'utf8');
+  const start = source.indexOf('personaResults = reviewPersonas.map((persona, pIdx) => {');
+  expect(start).toBeGreaterThan(-1);
+  const end = source.indexOf('\n      } else {', start);
+  expect(end).toBeGreaterThan(start);
+  let reducer = source.slice(start, end);
+  if (selectionCounterfactual) {
+    const original = 'const diagnosticRun = anyError || lastRun;';
+    expect(reducer).toContain(original);
+    // Simulate changing only the representative-failure selection. All failed
+    // diagnostics must follow this binding, while anyError still gates failure.
+    reducer = reducer.replace(original, "const diagnosticRun = laneRuns.filter((run) => run.decision === 'ERROR').at(-1) || lastRun;");
+  }
+  const fixtureModule = new Module(filename) as any;
+  fixtureModule.filename = filename;
+  fixtureModule.paths = (Module as any)._nodeModulePaths(path.dirname(filename));
+  fixtureModule._compile(`${source}\nmodule.exports.fixtureReduce = (partitionRuns, reviewPersonas) => {
+    let personaResults;
+    ${reducer}
+    return personaResults;
+  };`, filename);
+  return fixtureModule.exports;
+}
+
+function diagnosticLane(kind: 'failed' | 'successful', recoveryAction: string | null) {
+  const failed = kind === 'failed';
+  const provider = failed ? 'anthropic' : 'openai';
+  const transport = failed ? 'anthropic-failed' : 'openai-successful';
+  const requestFingerprint = (failed ? 'a' : 'b').repeat(64);
+  return {
+    personaId: 'testing', findings: [], decision: failed ? 'ERROR' : 'APPROVE',
+    ...(failed ? { error: 'Model response contained no parseable findings JSON.' } : {}),
+    transport, provider, model: `fixture-${kind}-model`,
+    ttftMs: failed ? 137 : 23,
+    routerMetadata: { strategy: failed ? 'fallback' : 'primary', region: failed ? 'eu' : 'us', attempt: failed ? 2 : 1 },
+    requestFingerprint,
+    responseAttempts: [{
+      attempt: 1, outcome: failed ? 'malformed_output' : 'parsed', transport, provider,
+      ttftMs: failed ? 137 : 23, requestFingerprint,
+      outputShape: failed ? 'no_json' : 'direct_json_object',
+      finishReason: failed ? 'length' : 'stop',
+    }],
+    recoveryAction,
+    failureClass: failed ? 'malformed_output' : null,
+    outputShape: failed ? 'no_json' : 'direct_json_object',
+    finishReason: failed ? 'length' : 'stop',
+    contentPresent: !failed, reasoningPresent: failed,
+    responseStatus: 200, attemptCount: 1,
+  };
+}
+
+function reduceDiagnosticLanes(lanes: ReturnType<typeof diagnosticLane>[], selectionCounterfactual = false) {
+  const fixture = loadPartitionReducer(selectionCounterfactual);
+  const [result] = fixture.fixtureReduce(lanes.map((lane) => [lane]), [{ id: 'testing', name: 'Testing' }]);
+  const receipt = fixture.buildProviderTelemetryReceipt([result], { repo: 'fixture/example', prNumber: 1 });
+  return { result, receipt: receipt.lanes[0] };
+}
+
+function expectFailedAttribution(result: any, receipt: any, failed: ReturnType<typeof diagnosticLane>) {
+  expect(result).toMatchObject({
+    decision: 'ERROR', transport: failed.transport, provider: failed.provider, model: failed.model,
+    ttftMs: failed.ttftMs, routerMetadata: failed.routerMetadata,
+    recoveryAction: failed.recoveryAction, requestFingerprint: failed.requestFingerprint,
+  });
+  expect(result.responseAttempts).toHaveLength(1);
+  expect(result.responseAttempts[0]).toMatchObject({
+    transport: failed.provider, provider: failed.provider, ttftMs: failed.ttftMs,
+    requestFingerprint: failed.requestFingerprint, outcome: 'malformed_output',
+  });
+  expect(receipt).toMatchObject({
+    configuredTransport: failed.provider, resolvedProvider: failed.provider,
+    modelDigest: createHash('sha256').update(failed.model).digest('hex'),
+    routerMetadata: failed.routerMetadata, recoveryAction: failed.recoveryAction,
+    requestFingerprint: failed.requestFingerprint,
+    failureClass: 'malformed_output', outputShape: 'no_json', finishReason: 'length',
+  });
+}
+
+describe('production partition reducer attribution and recovery branches', () => {
+  it.each([
+    ['first', 'structured_output_fallback'], ['last', 'structured_output_fallback'],
+    ['first', null], ['last', null],
+  ] as const)('retains %s failure recoveryAction=%s without borrowing sibling recovery', (order, recoveryAction) => {
+    const failed = diagnosticLane('failed', recoveryAction);
+    const successful = diagnosticLane('successful', 'rate_limit_retry');
+    const { result, receipt } = reduceDiagnosticLanes(order === 'first' ? [failed, successful] : [successful, failed]);
+    expectFailedAttribution(result, receipt, failed);
+    // Explicit absent value, not a truthiness assertion: never borrow the
+    // successful partition's recorded recovery action for the failed lane.
+    expect(result.recoveryAction).toBe(recoveryAction);
+    expect(receipt.recoveryAction).toBe(recoveryAction);
+  });
+
+  it('uses one diagnostic selection for failed spread and terminal fields', () => {
+    const first = diagnosticLane('failed', 'rate_limit_retry');
+    const last = { ...diagnosticLane('failed', 'structured_output_fallback'), ttftMs: 149,
+      transport: 'gemini-failed', provider: 'gemini', error: 'Fixture last malformed response.',
+      routerMetadata: { strategy: 'last-failure', region: 'eu', attempt: 3 },
+      model: 'fixture-last-failure-model', requestFingerprint: 'c'.repeat(64) };
+    last.responseAttempts = [{ ...last.responseAttempts[0], transport: last.transport, provider: last.provider,
+      ttftMs: last.ttftMs, requestFingerprint: last.requestFingerprint }];
+    const { result, receipt } = reduceDiagnosticLanes([first, last], true);
+    expectFailedAttribution(result, receipt, last);
+    // Primary failure identity/guard still comes from anyError, not the fixture
+    // counterfactual selection. This test does not change production selection.
+    expect(result.error).toBe(first.error);
+  });
+
+  it.each(['first', 'last'] as const)('all-success keeps base attribution and the %s recorded recovery', (recoveryOrder) => {
+    const base = diagnosticLane('successful', recoveryOrder === 'first' ? 'rate_limit_retry' : null);
+    const last = { ...diagnosticLane('successful', 'structured_output_fallback'),
+      transport: 'anthropic-last', provider: 'anthropic', model: 'fixture-last-success', ttftMs: 999,
+      routerMetadata: { strategy: 'last', region: 'eu', attempt: 4 }, requestFingerprint: 'd'.repeat(64) };
+    const { result } = reduceDiagnosticLanes([base, last]);
+    expect(result).toMatchObject({
+      decision: 'APPROVE', transport: base.transport, provider: base.provider, model: base.model,
+      ttftMs: base.ttftMs, routerMetadata: base.routerMetadata,
+      requestFingerprint: base.requestFingerprint, responseAttempts: base.responseAttempts,
+      recoveryAction: recoveryOrder === 'first' ? 'rate_limit_retry' : 'structured_output_fallback',
+    });
   });
 });
