@@ -1,0 +1,108 @@
+{
+  "observed_at_utc": "2026-10-01T20:05:04.958613+00:00",
+  "source": "read-only kubectl live worker logs; per-event cost_usd is runtime-reported, not billing reconciliation",
+  "scope": "two running worker log samples; not fleet coverage or calibration proof",
+  "summaries": {
+    "run_43bc884355ea4e977464e6a4c501c73b": {
+      "answers": 8,
+      "cost_usd_reported": 0.0007111019999999999,
+      "latencies_ms": [
+        189,
+        210,
+        209,
+        212,
+        159,
+        177,
+        170,
+        189
+      ],
+      "ok": 8
+    },
+    "run_cf846db6b1d6a0faf772ced5c5b3d9d7": {
+      "answers": 11,
+      "cost_usd_reported": 0.0011985960000000001,
+      "latencies_ms": [
+        199,
+        214,
+        214,
+        219,
+        146,
+        155,
+        168,
+        162,
+        134,
+        148,
+        300
+      ],
+      "ok": 11
+    }
+  },
+  "observations": [
+    "Live worker JEV_SHADOW=all and actual typed answers verified; shadow results do not change review in inspected source.",
+    "No ZOEKT_GROUNDING_ENABLED env on sampled live workers, and no REVIEW_YETI_ZOEKT_GROUNDING_ENABLED on operator; inspected code requires this flag. This establishes per-review fresh grounding not enabled in sampled jobs, not absence of all possible external indexes.",
+    "OCI config lacks source revision label; live ConfigMap source-commit annotation maps matching image to75c5afb27f8590775639f2d7593bf5b4a5a9d936. Inspected that Git commit and verified same Zoekt enable gate and status-only exhaustiveness mapping."
+  ],
+  "worker_deployment_provenance": {
+    "source_commit_annotation": "75c5afb27f8590775639f2d7593bf5b4a5a9d936",
+    "build_run_annotation": "36873828198",
+    "worker_image": "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:38ff300ca7f61efde0ad00061d8f2c27eb7cc545da52a5d226b0ef3626a7f06d",
+    "qualification": "Live ConfigMap provenance annotation and matching running image; not independent build attestation"
+  },
+  "live_pod_config": [
+    {
+      "pod": "ct-review-d53e6480b85fc7827fb5a5a7fed5962a-worker-q57sq",
+      "phase": "Pending",
+      "containers": [
+        {
+          "name": "reviewer-worker",
+          "image": "ghcr.io/review-yeti-ai/review-yeti-worker@sha256:38ff300ca7f61efde0ad00061d8f2c27eb7cc545da52a5d226b0ef3626a7f06d",
+          "flags": [
+            {
+              "name": "REVIEW_YETI_JEV_SHADOW",
+              "value": "all"
+            },
+            {
+              "name": "REVIEW_YETI_BUDGET",
+              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta,calltelemetry/ct-release"
+            },
+            {
+              "name": "REVIEW_YETI_MAP_REDUCE",
+              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+            }
+          ],
+          "typesafe_names": [
+            "TYPESAFE_BASE_URL",
+            "TYPESAFE_MODEL",
+            "TYPESAFE_API_KEY",
+            "TYPESAFE_MODEL_PIN"
+          ]
+        }
+      ]
+    },
+    {
+      "pod": "ct-review-yeti-operator-7959fd656c-mh8tx",
+      "phase": "Running",
+      "containers": [
+        {
+          "name": "operator",
+          "image": "ghcr.io/review-yeti-ai/review-yeti-operator@sha256:5a8a71940365c3d10f6e6679f38e11e98e416bc3bd5299c3eae7d434c912ad89",
+          "flags": [
+            {
+              "name": "REVIEW_YETI_JEV_SHADOW",
+              "value": "all"
+            },
+            {
+              "name": "REVIEW_YETI_BUDGET",
+              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta,calltelemetry/ct-release"
+            },
+            {
+              "name": "REVIEW_YETI_MAP_REDUCE",
+              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+            }
+          ],
+          "typesafe_names": []
+        }
+      ]
+    }
+  ]
+}
