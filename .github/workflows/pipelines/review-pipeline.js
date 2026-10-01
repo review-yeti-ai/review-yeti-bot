@@ -303,12 +303,10 @@ function getStreamingFetchDispatcher(loadAgent = loadUndiciAgentClass) {
   return streamingFetchDispatcher;
 }
 
-// OpenRouter's official SDK is used only for the OpenRouter gateway branch. Direct providers
-// remain on their existing OpenAI-compatible transport because their response contracts and
-// recovery policies are intentionally different. The Action installs this pinned dependency in
-// its own path before this pipeline starts. Preload the module when available so the first
-// transport deadline measures provider work rather than the SDK's one-time module initialization;
-// the guarded load still lets non-OpenRouter callers report a clear error if packaging is broken.
+// OpenRouter's official SDK is used only for the OpenRouter destination. Direct providers remain
+// on their existing OpenAI-compatible transport because their response contracts and recovery
+// policies are intentionally different. The Action installs this pinned dependency in its own
+// path before this pipeline starts.
 let openRouterSdkModule = null;
 
 function loadOpenRouterSdk() {
@@ -322,11 +320,14 @@ function loadOpenRouterSdk() {
   return openRouterSdkModule;
 }
 
-try {
-  openRouterSdkModule = require('@openrouter/sdk');
-} catch (_) {
-  // Keep import-time behavior compatible for callers that do not exercise OpenRouter. The
-  // OpenRouter branch will fail closed with the actionable error from loadOpenRouterSdk().
+function prewarmOpenRouterSdk() {
+  try {
+    loadOpenRouterSdk();
+  } catch (_) {
+    // Keep this prewarm optional for configured OpenRouter-to-direct fallback. The actual
+    // OpenRouter attempt calls loadOpenRouterSdk() again and retains its actionable fail-closed
+    // error if the pinned package is unavailable.
+  }
 }
 
 function mapOpenRouterSdkKeys(value, mapping) {
@@ -4272,6 +4273,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const configuredProvider = resolveConfiguredProvider(transport, transportName, transportBaseUrl);
       // See `resolvesToOpenRouterDestination`: keyed on where the request actually goes.
       const isOpenRouterTransport = resolvesToOpenRouterDestination(transport, transportBaseUrl);
+      if (isOpenRouterTransport) {
+        // Resolve the real destination before initializing its SDK. Prewarm before the provider
+        // heartbeat, attempt, header, and stream watchdog clocks so module startup is not charged
+        // to provider work; non-OpenRouter and no-provider paths never load this optional module.
+        prewarmOpenRouterSdk();
+      }
       const isOllama = isOllamaTransport(transport, transportBaseUrl);
       const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
       const configuredMaxOutputTokens =

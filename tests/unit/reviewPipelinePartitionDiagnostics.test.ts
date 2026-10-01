@@ -791,3 +791,188 @@ describe('production partition reducer attribution and recovery branches', () =>
     expect(receipt.recoveryAction).toBe('rate_limit_retry');
   });
 });
+
+// Observe the real Action entrypoint's module-load and provider/timer boundaries
+// in a credential-free child. The only network seam is the child's fetch stub;
+// this does not call OpenRouter or any configured provider.
+const sdkRouteProbeChild = String.raw`
+const events = [];
+const Module = require('node:module');
+const originalLoad = Module._load;
+Module._load = function observeOpenRouterSdk(request, parent, isMain) {
+  if (request === '@openrouter/sdk') {
+    events.push('openrouter-sdk-load');
+    if (process.env.DENY_OPENROUTER_SDK === 'true') {
+      throw new Error('fixture denied optional OpenRouter SDK load');
+    }
+  }
+  return Reflect.apply(originalLoad, this, [request, parent, isMain]);
+};
+const originalSetInterval = globalThis.setInterval;
+globalThis.setInterval = function observeProviderStart(callback, delay, ...args) {
+  if (delay === 15_000) events.push('provider-heartbeat-timer');
+  return Reflect.apply(originalSetInterval, this, [callback, delay, ...args]);
+};
+globalThis.fetch = async (url) => {
+  const requestUrl = String(url);
+  if (requestUrl.includes('/chat/completions')) {
+    events.push(requestUrl.includes('openrouter.ai')
+      ? 'openrouter-completions-fetch'
+      : requestUrl.includes('api.openai.com')
+        ? 'direct-completions-fetch'
+        : 'gateway-completions-fetch');
+  }
+  return new Response(JSON.stringify({
+    id: 'chatcmpl-fixture', object: 'chat.completion', created: 1_790_000_000,
+    model: 'fixture-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: '{"findings":[]}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const pipeline = require(process.env.PIPELINE);
+events.push('entrypoint-import-complete');
+pipeline.main().then(() => {
+  const exitCode = process.exitCode ?? 0;
+  console.log('SDK_ROUTE_PROBE ' + JSON.stringify({ events, exitCode }));
+  // The child reports the Action's exit code in the fixture record; keep the
+  // harness successful so negative fail-closed cases remain assertable.
+  process.exitCode = 0;
+}).catch(() => { process.exitCode = 1; });
+`;
+
+function runSdkRouteProbe(
+  route: 'none' | 'direct' | 'gateway' | 'openrouter' | 'openrouter-fallback',
+  denySdk = false,
+) {
+  const scratch = createScratchOwner({
+    parentDir: requiredSuiteScratchRoot(),
+    prefix: 'sdk-route-probe-',
+    kind: 'sdk-route-probe-fixture',
+  });
+  try {
+    const openrouterTransport = {
+      name: 'openrouter-fixture', provider: 'openrouter', compat: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',
+      model: 'openai/gpt-4o-mini', stream: false,
+    };
+    const directTransport = {
+      name: 'openai-fixture', provider: 'openai',
+      base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY',
+      model: 'gpt-4o-mini', stream: false,
+    };
+    const transports = route === 'none' ? [] : route === 'openrouter'
+      ? [openrouterTransport]
+      : route === 'openrouter-fallback'
+        ? [openrouterTransport, directTransport]
+        : [route === 'gateway'
+          ? {
+              name: 'gateway-fixture', provider: 'openrouter', compat: 'openrouter',
+              base_url: 'https://gateway.calltelemetry.invalid/v1', api_key_env: 'OPENROUTER_API_KEY',
+              model: 'pr-reviewer', stream: false,
+            }
+          : directTransport];
+    const result = spawnSync(process.execPath, ['-e', sdkRouteProbeChild], {
+      cwd: scratch.path,
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: scratch.path,
+        PIPELINE: path.join(root, '.github/workflows/pipelines/review-pipeline.js'),
+        NODE_ENV: 'test',
+        VITEST: 'true',
+        GITHUB_ACTIONS: 'false',
+        PR_DIFF: diff,
+        ACTIVE_PERSONAS: JSON.stringify(['security', 'testing']),
+        OPENROUTER_API_KEY: route === 'openrouter' || route === 'gateway' || route === 'openrouter-fallback'
+          ? 'fixture-openrouter-key' : '',
+        OPENAI_API_KEY: route === 'direct' || route === 'openrouter-fallback' ? 'fixture-openai-key' : '',
+        DENY_OPENROUTER_SDK: denySdk ? 'true' : 'false',
+        REVIEW_YETI_TRANSPORTS: JSON.stringify(transports),
+        MAX_DIFF_CHARS: '10000',
+        GITHUB_OUTPUT: path.join(scratch.path, 'output'),
+        GITHUB_STEP_SUMMARY: path.join(scratch.path, 'summary.md'),
+        RUNNER_TEMP: scratch.path,
+        CT_REVIEW_CONFIG_DIR: scratch.path,
+        CT_REVIEW_DATA_DIR: scratch.path,
+      },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const output = `${result.stdout}${result.stderr}`;
+    const probeLine = output.split('\n').find((line) => line.startsWith('SDK_ROUTE_PROBE '));
+    expect(probeLine).toBeDefined();
+    const outputs = fs.existsSync(path.join(scratch.path, 'output'))
+      ? Object.fromEntries(fs.readFileSync(path.join(scratch.path, 'output'), 'utf8')
+          .trim().split('\n').filter(Boolean).map((line) => {
+            const separator = line.indexOf('=');
+            return [line.slice(0, separator), line.slice(separator + 1)];
+          }))
+      : {};
+    const telemetryName = fs.readdirSync(scratch.path)
+      .find((name) => name.startsWith('review-yeti-provider-telemetry-'));
+    const telemetry = telemetryName
+      ? JSON.parse(fs.readFileSync(path.join(scratch.path, telemetryName), 'utf8'))
+      : null;
+    return {
+      ...(JSON.parse(probeLine!.slice('SDK_ROUTE_PROBE '.length)) as { events: string[]; exitCode: number }),
+      output,
+      outputs,
+      telemetry,
+    };
+  } finally {
+    // The child is closed before this exact scratch owner is cleaned up.
+    scratch.cleanup();
+  }
+}
+
+describe('OpenRouter SDK initialization follows the selected transport', () => {
+  it.each(['none', 'direct', 'gateway'] as const)('does not initialize the SDK for the %s route', (route) => {
+    const { events } = runSdkRouteProbe(route);
+    expect(events).not.toContain('openrouter-sdk-load');
+    if (route === 'direct') expect(events).toContain('direct-completions-fetch');
+    if (route === 'gateway') expect(events).toContain('gateway-completions-fetch');
+    if (route === 'none') expect(events).not.toContain('direct-completions-fetch');
+  });
+
+  it('prewarms the SDK only after OpenRouter is selected and before provider timing starts', () => {
+    const { events } = runSdkRouteProbe('openrouter');
+    const importComplete = events.indexOf('entrypoint-import-complete');
+    const sdkLoad = events.indexOf('openrouter-sdk-load');
+    const providerTimer = events.indexOf('provider-heartbeat-timer');
+    const providerFetch = events.indexOf('openrouter-completions-fetch');
+    expect(importComplete).toBeGreaterThanOrEqual(0);
+    expect(sdkLoad).toBeGreaterThanOrEqual(0);
+    expect(sdkLoad).toBeGreaterThan(importComplete);
+    expect(providerTimer).toBeGreaterThan(sdkLoad);
+    expect(providerFetch).toBeGreaterThan(providerTimer);
+    expect(events.filter((event) => event === 'openrouter-sdk-load')).toHaveLength(1);
+  });
+
+  it('keeps an OpenRouter-only route fail-closed when the optional SDK cannot load', () => {
+    const { events, exitCode, output, outputs, telemetry } = runSdkRouteProbe('openrouter', true);
+    expect(exitCode).not.toBe(0);
+    expect(outputs.verdict).not.toBe('SHIP');
+    expect(output).toContain('OpenRouter official SDK is unavailable: fixture denied optional OpenRouter SDK load');
+    expect(events).not.toContain('openrouter-completions-fetch');
+    expect(telemetry.lanes).toHaveLength(2);
+    expect(telemetry.lanes.every((lane: any) => lane.failureClass === 'unknown')).toBe(true);
+    expect(telemetry.lanes.every((lane: any) => lane.responseAttempts[0]?.failureClass === 'unknown')).toBe(true);
+  });
+
+  it('uses an already-configured direct fallback when the OpenRouter SDK cannot load', () => {
+    const { events, exitCode, outputs, telemetry } = runSdkRouteProbe('openrouter-fallback', true);
+    expect(exitCode).toBe(0);
+    expect(outputs.verdict).toBe('SHIP');
+    expect(events).toContain('openrouter-sdk-load');
+    expect(events).toContain('direct-completions-fetch');
+    expect(events).not.toContain('openrouter-completions-fetch');
+    expect(telemetry.lanes).toHaveLength(2);
+    expect(telemetry.lanes.every((lane: any) => lane.responseAttempts.some(
+      (attempt: any) => attempt.failureClass === 'unknown' && attempt.outcome === 'transport_error',
+    ))).toBe(true);
+    expect(telemetry.lanes.every((lane: any) => lane.responseAttempts.some(
+      (attempt: any) => attempt.outcome === 'parsed',
+    ))).toBe(true);
+  });
+});
