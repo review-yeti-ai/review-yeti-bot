@@ -135,6 +135,42 @@ describe('status tool and resource lifecycle parity', () => {
     expect((await toolStatus(row(), HEAD.slice(0, 7))).head_sha).toBe(HEAD);
   });
 
+  it.each([64, 40, 7])('accepts a matching %i-character request for a full SHA-256 stored identity', async (length) => {
+    const head = 'abcdef01'.repeat(8);
+    const value = row({ head_sha: head.toUpperCase(), desired_state: 'success', run_status: 'succeeded' });
+    const tool = await toolStatus(value, head.slice(0, length));
+    const resource = await fetchRunResource(args.owner, args.repo, 42, { async query() { return { rows: [value] }; } });
+    for (const status of [tool, resource]) {
+      expect(status.found).toBe(true);
+      expect(status.head_sha).toBe(head.toUpperCase());
+      expect(status.verdict).toBe('SHIP');
+      expect(status.phase).toBe('completed');
+      expect(status.check_run?.id).toBe(1234);
+    }
+  });
+
+  it.each(['a'.repeat(63), 'a'.repeat(65), 'a'.repeat(63) + 'g'])('rejects malformed SHA-256 stored identity %s on both surfaces', async (head) => {
+    const value = row({ head_sha: head, desired_state: 'success', decision: { verdict: 'SHIP' } });
+    const tool = await toolStatus(value, head.slice(0, 7));
+    const resource = await fetchRunResource(args.owner, args.repo, 42, { async query() { return { rows: [value] }; } });
+    for (const status of [tool, resource]) {
+      expect(status.found).toBe(false);
+      expect(status.verdict).toBe('PENDING');
+      expect(status.phase).toBe('unknown');
+      expect(status.check_run).toBeNull();
+      expect(status.attempt_id).toBeNull();
+    }
+  });
+
+  it.each([64, 40, 7])('rejects a stale %i-character requested head against a valid SHA-256 stored identity', async (length) => {
+    const status = await toolStatus(row({ head_sha: 'a'.repeat(64), desired_state: 'success' }), 'b'.repeat(length));
+    expect(status.found).toBe(false);
+    expect(status.verdict).toBe('PENDING');
+    expect(status.phase).toBe('unknown');
+    expect(status.check_run).toBeNull();
+    expect(status.timing).toBeUndefined();
+  });
+
   it('unknown lifecycle cannot become a completed review while its approval verdict remains fail closed', async () => {
     const status = await toolStatus(row({ desired_state: 'future-state', run_status: 'future-status', decision: { verdict: 'SHIP' } }));
     expect(status.phase).toBe('unknown');
