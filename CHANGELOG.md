@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.108.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.107.0...v1.108.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** add merge-group webhook attestation with composite delta hazard scan ([#1243](https://github.com/review-yeti-ai/review-yeti-bot/issues/1243)) ([792fa99](https://github.com/review-yeti-ai/review-yeti-bot/commit/792fa999b0e3fa2c1a7c5be23b2963c8267b8d4e))
+
 ## [1.107.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.106.0...v1.107.0) (2026-10-01)
 
 
