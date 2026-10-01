@@ -31,6 +31,12 @@ export const MAX_TERMINAL_DEADLINE_MS = 900_000;
 export const DEFAULT_TERMINAL_DEADLINE_MS = 900_000;
 
 /**
+ * Upper bound used only to finish runs persisted before the exact 15-minute
+ * invariant shipped. It must never be used for admission or projection.
+ */
+export const LEGACY_MAX_TERMINAL_DEADLINE_MS = 3_600_000;
+
+/**
  * Resolves the terminal-deadline window from `REVIEW_YETI_TERMINAL_DEADLINE_MS`,
  * falling back to `DEFAULT_TERMINAL_DEADLINE_MS` when unset. Throws on a value
  * other than the exact service ceiling, so a deployment cannot silently widen
@@ -68,5 +74,25 @@ export function assertTerminalDeadlineWindow(receivedAt: number, terminalDeadlin
     || window !== DEFAULT_TERMINAL_DEADLINE_MS
   ) {
     throw new Error(`terminal deadline must be exactly ${DEFAULT_TERMINAL_DEADLINE_MS}ms after receipt`);
+  }
+}
+
+/**
+ * Validates a previously persisted run so recovery can close pre-migration
+ * 15–60-minute attempts. New admissions and Kubernetes projections must use
+ * `assertTerminalDeadlineWindow` instead.
+ */
+export function assertPersistedTerminalDeadlineWindow(receivedAt: number, terminalDeadline: number): void {
+  const window = terminalDeadline - receivedAt;
+  if (
+    !Number.isFinite(receivedAt)
+    || !Number.isFinite(terminalDeadline)
+    || !Number.isFinite(window)
+    || window < DEFAULT_TERMINAL_DEADLINE_MS
+    || window > LEGACY_MAX_TERMINAL_DEADLINE_MS
+  ) {
+    throw new Error(
+      `persisted terminal deadline must be between ${DEFAULT_TERMINAL_DEADLINE_MS}ms and ${LEGACY_MAX_TERMINAL_DEADLINE_MS}ms after receipt`,
+    );
   }
 }
