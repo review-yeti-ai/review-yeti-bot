@@ -280,6 +280,9 @@ describe('Zoekt completeness and shared direct session', () => {
     expect(await executeZoektSearch({ query: 'b' }, config, { ...options, indexDir: '/other' }))
       .toMatchObject({ reason: 'session_override_rejected' });
     const controller = new AbortController(); controller.abort();
+    const cancelledSession = createZoektSearchTool({ identity: runIdentity, indexDir: '/idx', config, spawnImpl, fsImpl: fakeFsAvailable() });
+    expect(await executeZoektSearch({ query: 'c' }, config, { session: cancelledSession, signal: controller.signal }))
+      .toMatchObject({ status: 'cancelled' });
     expect(await executeZoektSearch({ query: 'c' }, { identity: { ...identity }, indexDir: '/idx' },
       { spawnImpl, fsImpl: fakeFsAvailable(), signal: controller.signal })).toMatchObject({ status: 'cancelled' });
     expect(spawnImpl).toHaveBeenCalledTimes(1);
