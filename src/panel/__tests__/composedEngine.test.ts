@@ -1223,6 +1223,7 @@ describe('executeComposedReview', () => {
     expect(allocateComposedTaskTurnBudgets(threeTasks(), 5, 4)).toEqual([2, 2, 1]);
     expect(allocateComposedTaskTurnBudgets(threeTasks(), 2, 4)).toEqual([1, 1, 0]);
     expect(allocateComposedTaskTurnBudgets(threeTasks(), 0, 4)).toEqual([0, 0, 0]);
+    expect(allocateComposedTaskTurnBudgets(threeTasks(), 10, 2)).toEqual([2, 2, 2]);
   });
 
   it('dispatches every funded task branch concurrently', async () => {
