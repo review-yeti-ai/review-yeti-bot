@@ -139,7 +139,8 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Number(minMatch![1]) * 1_000).toBe(MIN_TERMINAL_DEADLINE_MS);
     expect(Number(maxMatch![1]) * 1_000).toBe(MAX_TERMINAL_DEADLINE_MS);
     expect(Number(legacyMaxMatch![1]) * 1_000).toBe(LEGACY_MAX_TERMINAL_DEADLINE_MS);
-    expect(DEFAULT_TERMINAL_DEADLINE_MS).toBe(MIN_TERMINAL_DEADLINE_MS);
+    expect(DEFAULT_TERMINAL_DEADLINE_MS).toBe(1_500_000);
+    expect(MIN_TERMINAL_DEADLINE_MS).toBe(900_000);
   });
 
   it('validates public ghcr.io worker image under the CRD pattern', () => {

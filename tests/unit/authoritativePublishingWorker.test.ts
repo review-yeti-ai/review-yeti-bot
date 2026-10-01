@@ -134,6 +134,46 @@ function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string
 }
 
 describe('REL-1198 publishing panel respects the admitted lifecycle window', () => {
+  it('synthesizes and publishes the latest checkpoint when a composed runner ignores cancellation', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    vi.setSystemTime(START);
+    const f = fixture({ reviewEngine: 'composed' });
+    f.deps.now = Date.now;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
+    const write = vi.fn(async () => 2);
+    f.deps.reviewCheckpoint = { read: vi.fn(async () => null), write };
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    f.deps.composedReviewRunner = vi.fn(async (options) => {
+      await options.checkpoint!.save({ revision: 2, plan: [{ id: 'security-auth', dimension: 'security',
+        paths: ['src/a.ts'], question: 'Is authentication safe?', rationale: 'Highest-risk path first.' }],
+      completedTasks: [{ id: 'security-auth', findings: [{ severity: 'P1', path: 'src/a.ts', line: 1,
+        title: 'Preserved checkpoint finding', body: 'The closeout must publish this validated defect.' }] }] });
+      entered();
+      return new Promise<PanelResult>(() => {});
+    });
+    const pending = runPublishingReviewWorker(f.env, f.deps);
+    try {
+      await started;
+      await vi.advanceTimersByTimeAsync(60_000);
+      const receipt = await pending;
+      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1,
+        blockingFindingCount: 1, failureClass: 'timeout' });
+      expect(write).toHaveBeenCalledOnce();
+      const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
+        personas: [expect.objectContaining({ id: 'security-auth', status: 'COMPLETE', findings: [
+          expect.objectContaining({ title: 'Preserved checkpoint finding' }),
+        ] })] });
+      expect(f.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+        conclusion: 'failure', title: 'Review Yeti: INCOMPLETE (partial evidence published)',
+        text: expect.stringContaining('Preserved checkpoint finding'),
+      }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each(['panel', 'composed', 'shadow'] as const)(
     'stops %s before the Job deadline and persists only a fail-closed receipt', async (reviewEngine) => {
       vi.useFakeTimers();
@@ -141,7 +181,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       const f = fixture({ reviewEngine });
       f.deps.now = Date.now;
       // Simulate queue/startup/setup consuming all but three minutes. No map-reduce flag.
-      f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+      f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
       const configBefore = f.env.REVIEW_PREPARED_CONFIG_JSON;
       let entered!: () => void;
       const started = new Promise<void>((resolve) => { entered = resolve; });
@@ -152,10 +192,11 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
       );
       try {
         await started;
-        await vi.advanceTimersByTimeAsync(58_999);
+        await vi.advanceTimersByTimeAsync(59_999);
         expect(f.reportReviewResult).not.toHaveBeenCalled();
         await vi.advanceTimersByTimeAsync(1);
-        // Must leave the existing 60s worker receipt reserve AND 60s gate reserve.
+        await pending;
+        // The evidence phase stops at the exact five-minute closeout boundary.
         expect(f.reportReviewResult).toHaveBeenCalledOnce();
         const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
         expect(event.result.coverageComplete).toBe(false);
@@ -178,7 +219,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     },
   );
 
-  it.each([new Date(START + 120_000).toISOString(), new Date(START - 1).toISOString(), 'invalid'])
+  it.each([new Date(START + 300_000).toISOString(), new Date(START - 1).toISOString(), 'invalid'])
   ('refuses exhausted or malformed lifecycle deadline %s before entering the panel', async (deadline) => {
     const f = fixture();
     f.deps.now = () => START;
@@ -200,7 +241,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     const cleanup = new AbortController();
     f.deps.signal = cleanup.signal;
     f.deps.now = Date.now;
-    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
     f.env.ZOEKT_GROUNDING_ENABLED = 'true';
     f.deps.zoektGrounding = vi.fn(async () => {
       await vi.advanceTimersByTimeAsync(10_000);
@@ -217,7 +258,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     const pending = runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
     try {
       await started;
-      await vi.advanceTimersByTimeAsync(48_999);
+      await vi.advanceTimersByTimeAsync(49_999);
       expect(f.reportReviewResult).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
@@ -247,7 +288,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     vi.setSystemTime(START);
     const f = fixture();
     f.deps.now = Date.now;
-    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
     let groundingSignal: AbortSignal | undefined;
     let releaseGrounding!: (result: { indexDir: string; scratchDir: string }) => void;
     let started!: () => void;
@@ -271,8 +312,8 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     let lateScratch: string | undefined;
     try {
       await groundingStarted;
-      // The absolute deadline is 180s away; both reserves plus the Go floor leave 59s.
-      await vi.advanceTimersByTimeAsync(59_000);
+      // The absolute deadline is 360s away; the protected closeout leaves 60s.
+      await vi.advanceTimersByTimeAsync(60_000);
       expect(groundingSignal?.aborted).toBe(true);
       expect(f.reportReviewResult).toHaveBeenCalledOnce();
       expect(f.panelRunner).not.toHaveBeenCalled();
@@ -310,7 +351,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     const controller = new AbortController();
     f.deps.signal = controller.signal;
     f.deps.now = Date.now;
-    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
     f.env.ZOEKT_GROUNDING_ENABLED = 'true';
     const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-grounding-receipt-race-'));
     fs.writeFileSync(path.join(scratchDir, 'producer-result'), 'must have one cleanup owner');
@@ -367,7 +408,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     vi.setSystemTime(START);
     const f = fixture();
     f.deps.now = Date.now;
-    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 180_000).toISOString();
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
     let groundingSignal: AbortSignal | undefined;
     let started!: () => void;
     const groundingStarted = new Promise<void>((resolve) => { started = resolve; });
@@ -381,7 +422,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     );
     try {
       await groundingStarted;
-      await vi.advanceTimersByTimeAsync(58_999);
+      await vi.advanceTimersByTimeAsync(59_999);
       expect(f.reportReviewResult).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
       expect(await pending).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
@@ -617,7 +658,7 @@ describe('authoritative prepared publishing worker', () => {
         expectedLanes: 0, completedLanes: 0,
         exemption: {
           kind: 'no-reviewable-content',
-          auditDigest: '4bca8f92315809c8ab78c4da64801649301a2cf633449e89ad012c86cbf574eb',
+          auditDigest: '4824a2912f2092547a2d487033c810282a0873cdc119ccc551332708c31098f4',
         },
       },
     });

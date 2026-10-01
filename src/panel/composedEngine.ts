@@ -53,6 +53,8 @@ import {
   type IncrementalReviewScope,
 } from '../review/incrementalReview';
 import {
+  budgetCategoryRank,
+  classifyBudgetCategory,
   COMPOSED_BUDGET_LANE_ID,
   applyLaneBudgetPack,
   attachReviewBudgetDisclosure,
@@ -77,6 +79,7 @@ import {
   buildDiffSection,
   buildPanelResponseFormat,
   createPanelDeadlineSignal,
+  PanelDeadlineExceededError,
   mergeZoektToolConfig,
   PanelConfigurationError,
   personaCoverageError,
@@ -133,6 +136,13 @@ import {
   type ComposedTaskRetention,
   type ComposedTaskRetentionSelectors,
 } from './composedTaskRetention';
+import type { ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
+
+export interface ComposedCheckpointSnapshot {
+  revision: number;
+  plan: ReviewTask[];
+  completedTasks: Array<{ id: string; findings: PanelFinding[] }>;
+}
 
 export interface ComposedReviewOptions {
   config: CtReviewConfigV3;
@@ -173,6 +183,13 @@ export interface ComposedReviewOptions {
   mapReduce?: MapReduceInput;
   /** Internal service-owned write barrier. Absence preserves ordinary CLI behavior and is not a durable receipt. */
   retention?: ComposedTaskRetention;
+  /** Durable exact-head progress. Only validated COMPLETE task results are resumed. */
+  checkpoint?: {
+    resumed: ReviewExecutionCheckpoint | null;
+    /** Synchronous in-process capture used by the protected outer closeout race. */
+    capture?(snapshot: ComposedCheckpointSnapshot): void;
+    save(snapshot: ComposedCheckpointSnapshot): Promise<void>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +220,26 @@ export const COMPOSED_TASK_MAX_TURNS_HARD_CAP = 18;
 export const COMPOSED_TASK_CONCURRENCY_CEILING = 3;
 /** Keep a bounded opportunity to produce a verdict after read-only investigation. */
 const TASK_FINALIZATION_TURNS = 3;
+
+const DIMENSION_RISK_ORDER: Record<ReviewTask['dimension'], number> = {
+  security: 0,
+  contract: 1,
+  dependencies: 2,
+  architecture: 3,
+  performance: 4,
+  testing: 5,
+  licensing: 6,
+};
+
+/** Deterministic, content-independent order: high-risk paths and dimensions run first. */
+export function orderReviewTasksByRisk(tasks: readonly ReviewTask[]): ReviewTask[] {
+  const rank = (task: ReviewTask) => Math.min(
+    ...task.paths.map((path) => budgetCategoryRank(classifyBudgetCategory(path))),
+  );
+  return [...tasks].sort((a, b) => rank(a) - rank(b)
+    || DIMENSION_RISK_ORDER[a.dimension] - DIMENSION_RISK_ORDER[b.dimension]
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
 
 /**
  * Per-task turn ceiling. Policy NARROWS only: a value above the dynamic engine ceiling is ignored
@@ -1221,14 +1258,22 @@ async function runTaskWorkPhase(input: {
 /**
  * `no_budget` — the task never started because the composed turn budget was spent.
  * `exhausted` — the task ran and still produced no verdict.
+ * `evidence_deadline` — the evidence phase ended before this task completed.
  * These records stay off `personas` and `optionalFailures`, so their ids do not
  * enter the published roster. A missing id keeps the review incomplete.
  */
 export function unreportedLaneFailure(
   task: ReviewTask,
-  reason: 'no_budget' | 'exhausted',
+  reason: 'no_budget' | 'exhausted' | 'evidence_deadline',
   diagnostics?: ComposedTaskFailureDiagnostics,
 ): NonNullable<PanelResult['unreportedLanes']>[number] {
+  if (reason === 'evidence_deadline') {
+    return {
+      id: task.id,
+      error: `Task ${task.id} (${task.dimension}) stopped at the evidence cutoff and remains pending for exact-head resume`,
+      failureClass: 'timeout',
+    };
+  }
   if (reason === 'no_budget') {
     return {
       id: task.id,
@@ -1283,11 +1328,91 @@ async function persistWithRunFences<T>(
   return result;
 }
 
+/**
+ * One deterministic owner for the fail-closed fields shared by the composed engine's ordinary
+ * evidence cutoff and the publisher's hard outer-abort fallback. Keeping these fields together
+ * prevents the rendered verdict from changing according to which cancellation boundary won.
+ */
+type ComposedProviderSelectionConfig = {
+  reviewers?: {
+    arbiter?: {
+      order?: readonly ProviderId[];
+    };
+  };
+};
+
+export function resolveComposedProviderId(config: ComposedProviderSelectionConfig): ProviderId {
+  return (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
+}
+
+export function buildGracefulComposedPanelResult(input: {
+  config: ComposedProviderSelectionConfig;
+  snapshot: ComposedCheckpointSnapshot;
+  headSha: string;
+  repositoryVisibility: RepositoryVisibility;
+  panelWallClockMs: number;
+  checkpointPersistenceFailed?: boolean;
+}): PanelResult {
+  const providerId = resolveComposedProviderId(input.config);
+  const completed = new Map(input.snapshot.completedTasks.map((task) => [task.id, task.findings]));
+  const completedTaskIds = input.snapshot.plan.filter((task) => completed.has(task.id)).map((task) => task.id);
+  const pendingTasks = input.snapshot.plan.filter((task) => !completed.has(task.id));
+  return {
+    headSha: input.headSha,
+    repositoryVisibility: input.repositoryVisibility,
+    applicablePersonaIds: input.snapshot.plan.map((task) => task.id),
+    taskPlan: input.snapshot.plan,
+    personas: input.snapshot.plan.flatMap((task) => {
+      const findings = completed.get(task.id);
+      return findings ? [{
+        id: task.id,
+        required: true,
+        providerId,
+        model: 'closeout-checkpoint',
+        decision: findings.length > 0 ? 'FINDINGS' as const : 'APPROVE' as const,
+        findings,
+        usage: null,
+        costUSD: null,
+        durationMs: 0,
+        turnsCount: 0,
+        toolTurns: 0,
+        turnUsages: [],
+        aggregateUsage: sumAggregateUsage([]),
+        toolCalls: [],
+      }] : [];
+    }),
+    optionalFailures: [],
+    unreportedLanes: pendingTasks.map((task) => unreportedLaneFailure(task, 'evidence_deadline')),
+    gracefulExit: {
+      reason: 'evidence_deadline',
+      completedTaskIds,
+      pendingTaskIds: pendingTasks.map((task) => task.id),
+      ...(input.snapshot.revision > 0 ? { checkpointRevision: input.snapshot.revision } : {}),
+      ...(input.checkpointPersistenceFailed ? { checkpointPersistenceFailed: true as const } : {}),
+    },
+    zeroLaneNonEvidence: false,
+    panelWallClockMs: input.panelWallClockMs,
+    quorum: { required: 1, distinctProviders: [providerId], satisfied: false },
+    moderator: { providerId, model: 'none', decision: 'RECONCILED', findings: [],
+      usage: null, costUSD: null, durationMs: 0 },
+    arbiter: { providerId, model: 'none', verdict: 'BLOCK',
+      rationale: 'Evidence cutoff reached; deterministic closeout preserved completed findings and left pending tasks fail-closed.',
+      usage: null, costUSD: null, durationMs: 0 },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 export async function executeComposedReview(options: ComposedReviewOptions): Promise<PanelResult> {
+  // Legacy checkpoint capture/resume has not been qualified under the immutable retention
+  // authority. Reject the combination before planning, progress, or either persistence port.
+  if (options.retention && options.checkpoint !== undefined) {
+    throw new PanelConfigurationError('composed retention does not accept legacy checkpoints', {
+      failureClass: 'contract',
+    });
+  }
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
     options.deadlineBudget, options.deadlineNow);
   // Absolute wall-clock bound for this run, taken from the admitted budget the abort signal uses.
@@ -1373,7 +1498,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const isCurrent = options.isCurrentHead ? options.isCurrentHead() : true;
     if (!isCurrent) throw new PanelConfigurationError(`stale run aborted for ${repository}#${headSha}`);
 
-    const providerId = (config.reviewers?.arbiter?.order?.[0] || 'bifrost') as ProviderId;
+    const providerId = resolveComposedProviderId(config);
     const spec = config.reviewers.providers.find((p) => p.id === providerId && p.enabled);
     if (!spec) {
       throw new PanelConfigurationError(`composed review provider ${providerId} is not enabled`, { failureClass: 'contract' });
@@ -1441,29 +1566,42 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     });
     let planOutcome: PlanPhaseOutcome;
     let retainedPlanDigest: string | null = null;
+    const resumedPlan = options.checkpoint?.resumed
+      ? validateTaskPlan({ tasks: options.checkpoint.resumed.plan }, { changedFiles: effectiveFilePaths, maxTasks })
+      : null;
     try {
-      planOutcome = await runPlanPhase({
-        client,
-        model,
-        providerId,
-        messages: baseMessages,
-        effectiveFilePaths,
-        maxTasks,
-        timeoutMs,
-        inactivityTimeoutMs,
-        requestPolicy,
-        jobId,
-        signal,
-        changedFilesForTools: toolFiles,
-        expectedNonce: planNonce,
-        ...(requestCapBytes ? { requestCapBytes } : {}),
-        deadlineAtMs: composedDeadlineAtMs,
-        now: deadline.now,
-        repoFileProvider,
-        zoektConfig,
-        turnsRemaining: remainingBudget,
-        progress: options.progress,
-      });
+      if (resumedPlan?.valid) {
+        planOutcome = {
+          tasks: orderReviewTasksByRisk(resumedPlan.tasks),
+          messages: baseMessages,
+          turnsUsed: 0,
+          turnUsages: [],
+        };
+      } else {
+        const freshPlan = await runPlanPhase({
+          client,
+          model,
+          providerId,
+          messages: baseMessages,
+          effectiveFilePaths,
+          maxTasks,
+          timeoutMs,
+          inactivityTimeoutMs,
+          requestPolicy,
+          jobId,
+          signal,
+          changedFilesForTools: toolFiles,
+          expectedNonce: planNonce,
+          ...(requestCapBytes ? { requestCapBytes } : {}),
+          deadlineAtMs: composedDeadlineAtMs,
+          now: deadline.now,
+          repoFileProvider,
+          zoektConfig,
+          turnsRemaining: remainingBudget,
+          progress: options.progress,
+        });
+        planOutcome = { ...freshPlan, tasks: orderReviewTasksByRisk(freshPlan.tasks) };
+      }
       if (retention) {
         const acknowledgement = await persistWithRunFences(options, deadline, () =>
           persistComposedTaskPlan(retention, {
@@ -1489,6 +1627,68 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     totalTurnsUsed += planOutcome.turnsUsed;
     span.setAttribute('review_yeti.composed.task_count', planOutcome.tasks.length);
 
+    // Even an unusable stored plan owns its monotonic revision. A replacement plan must advance
+    // past it; restarting at revision 1 would be acknowledged as stale forever by the service.
+    let checkpointRevision = options.checkpoint?.resumed?.revision ?? 0;
+    const completedCheckpointTasks = new Map<string, PanelFinding[]>();
+    if (resumedPlan?.valid && options.checkpoint?.resumed) {
+      const planIds = new Set(planOutcome.tasks.map((task) => task.id));
+      for (const task of options.checkpoint.resumed.completedTasks) {
+        if (!planIds.has(task.id)) continue;
+        try {
+          completedCheckpointTasks.set(task.id, validateFindings(task.findings, toolFiles));
+        } catch {
+          // A stale or invalid checkpoint never becomes review evidence.
+        }
+      }
+    }
+    let checkpointDurableRevision = options.checkpoint?.resumed?.revision ?? 0;
+    let queuedCheckpoint: ComposedCheckpointSnapshot | null = null;
+    let checkpointDrain: Promise<void> | null = null;
+    const drainCheckpoints = async (): Promise<void> => {
+      while (queuedCheckpoint) {
+        const snapshot = queuedCheckpoint;
+        queuedCheckpoint = null;
+        try {
+          await options.checkpoint!.save(snapshot);
+          checkpointDurableRevision = Math.max(checkpointDurableRevision, snapshot.revision);
+        } catch (error) {
+          logger.error('[composed] exact-head checkpoint persistence failed; preserving local evidence for closeout', {
+            event: 'composed_checkpoint_write_failed',
+            revision: snapshot.revision,
+            taskCount: snapshot.completedTasks.length,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    };
+    const scheduleCheckpointDrain = (): void => {
+      if (checkpointDrain) return;
+      checkpointDrain = drainCheckpoints().finally(() => {
+        checkpointDrain = null;
+        if (queuedCheckpoint) scheduleCheckpointDrain();
+      });
+    };
+    const saveCheckpoint = (): void => {
+      if (!options.checkpoint) return;
+      const revision = ++checkpointRevision;
+      const snapshot = {
+        revision,
+        plan: planOutcome.tasks,
+        completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings })),
+      };
+      // Capture locally before any I/O so the outer abort race can synthesize immediately. At
+      // most one write is in flight and queued snapshots coalesce to the newest complete state;
+      // a slow checkpoint service therefore never consumes the evidence-collection budget.
+      options.checkpoint.capture?.(snapshot);
+      queuedCheckpoint = snapshot;
+      scheduleCheckpointDrain();
+    };
+    // Re-emit even a resumed checkpoint only after its plan/findings were revalidated against the
+    // current diff. This also gives the publisher a trusted in-process closeout snapshot before
+    // the first pending provider task begins.
+    if (options.checkpoint) saveCheckpoint();
+
     // Shared backbone after planning: head (cached) + exactly one plan receipt line. The plan's
     // own tool-call turns and corrective turn are discarded -- the engine already holds the
     // validated `ReviewTask[]` and restates each task's own detail on that task's own branch;
@@ -1504,6 +1704,26 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const optionalFailures: PanelResult['optionalFailures'] = [];
     const unreportedLanes: NonNullable<PanelResult['unreportedLanes']> = [];
     let planUsageFolded = false;
+    for (const task of planOutcome.tasks) {
+      const findings = completedCheckpointTasks.get(task.id);
+      if (!findings) continue;
+      personas.push({
+        id: task.id,
+        required: true,
+        providerId,
+        model: 'resumed-exact-head-checkpoint',
+        decision: findings.length > 0 ? 'FINDINGS' : 'APPROVE',
+        findings,
+        usage: null,
+        costUSD: null,
+        durationMs: 0,
+        turnsCount: 0,
+        toolTurns: 0,
+        turnUsages: [],
+        aggregateUsage: sumAggregateUsage([]),
+        toolCalls: [],
+      });
+    }
 
     let persistentMessages: OpenRouterMessage[] = taskBaseMessages;
     const taskConcurrency = resolveComposedTaskConcurrency(process.env, options.publisherShadow === true);
@@ -1521,9 +1741,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     };
     const activeTasks = new Map<number, ActiveTask>();
     const settledTasks = new Map<number, SettledTask>();
+    const pendingTasks = planOutcome.tasks.filter((task) => !completedCheckpointTasks.has(task.id));
     let nextTaskIndex = 0;
     let nextFoldIndex = 0;
     let reservedTurns = 0;
+    let evidenceDeadlineExpired = false;
     const taskAbort = new AbortController();
     const onPanelAbort = () => taskAbort.abort(signal?.reason);
     if (signal?.aborted) taskAbort.abort(signal.reason);
@@ -1538,7 +1760,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     };
 
     const skipForBudget = async (index: number) => {
-      const task = planOutcome.tasks[index];
+      const task = retention ? planOutcome.tasks[index] : pendingTasks[index];
       checkRetentionRun();
       if (retention) {
         await persistWithRunFences(options, deadline, () =>
@@ -1630,6 +1852,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
           usage: progressUsage(outcome.turnUsages),
         });
+        if (outcome.type === 'complete') {
+          completedCheckpointTasks.set(task.id, outcome.findings);
+          saveCheckpoint();
+        }
         return { ...reserved, outcome };
       } catch (error) {
         options.progress?.emit({
@@ -1705,7 +1931,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     };
 
     const skipRemainingForAbort = () => {
-      while (nextTaskIndex < planOutcome.tasks.length) {
+      while (nextTaskIndex < pendingTasks.length) {
         options.progress?.emit({
           task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(nextTaskIndex),
           provider: providerId, model, required: true, rejectionCode: 'aborted',
@@ -1749,8 +1975,34 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       foldReadyTasks();
     };
 
+    const gracefulAbortAndWait = async (error: unknown): Promise<void> => {
+      taskAbort.abort(error);
+      // Preserve every branch that reached a validated result before cancellation. A gap in
+      // plan order must not hide a later completed branch during deterministic closeout.
+      await Promise.allSettled([...activeTasks.values()].map((active) => active.settled));
+      consumeSettledTasks();
+      const ready = [...settledTasks.values()].sort((left, right) => left.index - right.index);
+      settledTasks.clear();
+      for (const result of ready) foldSettledTask(result);
+      for (const active of [...activeTasks.values()].sort((left, right) => left.reserved.index - right.reserved.index)) {
+        unreportedLanes.push(unreportedLaneFailure(active.reserved.task, 'evidence_deadline'));
+      }
+      activeTasks.clear();
+      reservedTurns = 0;
+      while (nextTaskIndex < pendingTasks.length) {
+        const task = pendingTasks[nextTaskIndex];
+        options.progress?.emit({
+          task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(nextTaskIndex),
+          provider: providerId, model, required: true, rejectionCode: 'aborted',
+        });
+        unreportedLanes.push(unreportedLaneFailure(task, 'evidence_deadline'));
+        nextTaskIndex += 1;
+      }
+      evidenceDeadlineExpired = true;
+    };
+
     const launchTask = (index: number, reservation: number) => {
-      const reserved: ReservedTask = { task: planOutcome.tasks[index], index, reservedTurns: reservation };
+      const reserved: ReservedTask = { task: pendingTasks[index], index, reservedTurns: reservation };
       const active: ActiveTask = {
         reserved,
         status: 'running',
@@ -1844,13 +2096,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     };
 
     const runWorkConservingTasks = async () => {
-      while (nextTaskIndex < planOutcome.tasks.length || activeTasks.size > 0) {
+      while (nextTaskIndex < pendingTasks.length || activeTasks.size > 0) {
         throwIfPanelAborted(signal);
         await Promise.resolve();
         checkForFatalTask();
         consumeSettledTasks();
 
-        while (activeTasks.size < taskConcurrency && nextTaskIndex < planOutcome.tasks.length) {
+        while (activeTasks.size < taskConcurrency && nextTaskIndex < pendingTasks.length) {
           throwIfPanelAborted(signal);
           // Drain the current event-loop turn before another admission. A sibling's rejection can
           // still be propagating through async wrappers after a successful sibling wakes the
@@ -1864,7 +2116,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           const remaining = remainingBudget();
           if (remaining <= 0) {
             if (activeTasks.size === 0) {
-              while (nextTaskIndex < planOutcome.tasks.length) await skipForBudget(nextTaskIndex++);
+              while (nextTaskIndex < pendingTasks.length) await skipForBudget(nextTaskIndex++);
             }
             break;
           }
@@ -1874,7 +2126,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
             throw new Error('composed task reservations exceed the remaining review turn budget');
           }
 
-          const task = planOutcome.tasks[nextTaskIndex];
+          const task = pendingTasks[nextTaskIndex];
           const pathCount = task.paths?.length || 1;
           const fullTaskCeiling = resolveTaskTurnCeiling(
             config.composed?.max_turns_per_task,
@@ -1906,7 +2158,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         }
 
         if (activeTasks.size === 0) {
-          if (nextTaskIndex >= planOutcome.tasks.length) break;
+          if (nextTaskIndex >= pendingTasks.length) break;
           // A task should have been launched whenever positive budget and an empty active set
           // remain. Re-enter the dispatch loop rather than sleeping on an empty Promise.race.
           continue;
@@ -1921,12 +2173,32 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       throwIfPanelAborted(signal);
       checkRetentionRun();
     } catch (error) {
-      await abortAndWait(error);
+      const deadlineAbort = error instanceof PanelDeadlineExceededError
+        || signal?.reason instanceof PanelDeadlineExceededError;
+      if (!retention && deadlineAbort) await gracefulAbortAndWait(error);
+      else await abortAndWait(error);
     } finally {
       signal?.removeEventListener('abort', onPanelAbort);
     }
     span.setAttribute('review_yeti.composed.funded_task_count', fundedTaskCount);
 
+    const taskOrder = new Map(planOutcome.tasks.map((task, index) => [task.id, index]));
+    personas.sort((left, right) => (taskOrder.get(left.id) ?? Number.MAX_SAFE_INTEGER)
+      - (taskOrder.get(right.id) ?? Number.MAX_SAFE_INTEGER));
+    if (evidenceDeadlineExpired) {
+      return buildGracefulComposedPanelResult({
+        config,
+        snapshot: {
+          revision: checkpointRevision,
+          plan: planOutcome.tasks,
+          completedTasks: [...completedCheckpointTasks].map(([id, findings]) => ({ id, findings })),
+        },
+        headSha,
+        repositoryVisibility,
+        panelWallClockMs: Date.now() - panelStartedAt,
+        checkpointPersistenceFailed: checkpointDurableRevision < checkpointRevision,
+      });
+    }
     return {
       headSha,
       repositoryVisibility,
@@ -1946,30 +2218,11 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       // longer task plan from silently raising the P1 blocking threshold; this field must not be
       // read as a substitute for that.
       quorum: { required: 1, distinctProviders: [providerId], satisfied: true },
-      // Cross-lane reconciliation is intra-review here (the engine-owned accepted task plan +
-      // deterministic `clusterFindings` dedupe at arbitration time), so there is no separate
-      // moderator/arbiter provider turn to run. These are zero-cost stubs kept only so every
-      // existing type and fixture expecting a `PanelResult` shape stays valid; the caller's
-      // `computeArbitration` call is the actual authority, exactly as it already is for the
-      // fan-out path (the model arbiter's own verdict is ignored there today).
-      moderator: {
-        providerId,
-        model: 'none',
-        decision: 'RECONCILED',
-        findings: [],
-        usage: null,
-        costUSD: null,
-        durationMs: 0,
-      },
-      arbiter: {
-        providerId,
-        model: 'none',
-        verdict: 'SHIP',
+      moderator: { providerId, model: 'none', decision: 'RECONCILED', findings: [],
+        usage: null, costUSD: null, durationMs: 0 },
+      arbiter: { providerId, model: 'none', verdict: 'SHIP',
         rationale: 'Composed engine: cross-task reconciliation is intra-context; the binding verdict is computed by canonical arbitration over the recorded task lanes.',
-        usage: null,
-        costUSD: null,
-        durationMs: 0,
-      },
+        usage: null, costUSD: null, durationMs: 0 },
     };
   }).then((result) => attachDiffShrinkDisclosure(result, diffShrinkDisclosure))
     .then((result) => attachIncrementalDisclosure(result, incrementalDisclosure))

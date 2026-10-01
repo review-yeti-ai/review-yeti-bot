@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   COMPOSED_TASK_CONCURRENCY_CEILING,
   executeComposedReview,
+  orderReviewTasksByRisk,
   resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
@@ -17,6 +18,8 @@ import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 import { TokenLedger, meterModelClient } from '../../telemetry/tokenLedger';
+import { workerPanelDeadlineBudget } from '../../config/workerTerminalDeadline';
+import type { ReviewTask } from '../reviewTask';
 import {
   COMPOSED_TASK_RETENTION_ACK_VERSION,
   ComposedTaskRetentionError,
@@ -83,6 +86,16 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it('orders security and CI/IaC review work before lower-risk tasks deterministically', () => {
+    const ordered = orderReviewTasksByRisk([
+      { id: 'tests', dimension: 'testing', paths: ['tests/a.test.ts'], question: 'Tests?', rationale: 'Changed.' },
+      { id: 'source', dimension: 'performance', paths: ['src/a.ts'], question: 'Fast?', rationale: 'Changed.' },
+      { id: 'ci-contract', dimension: 'contract', paths: ['.github/workflows/review.yml'], question: 'Safe?', rationale: 'CI.' },
+      { id: 'auth', dimension: 'security', paths: ['src/auth/token.ts'], question: 'Secure?', rationale: 'Auth.' },
+    ]);
+    expect(ordered.map((task) => task.id)).toEqual(['auth', 'ci-contract', 'source', 'tests']);
+  });
+
   it('caps composed task concurrency at three, honors lower operator limits, and keeps publisher shadow serial', () => {
     expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '8' })).toBe(3);
     expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '2' })).toBe(2);
@@ -375,6 +388,107 @@ describe('executeComposedReview', () => {
       { role: 'composed_plan', lane: 'composed-plan', turn: 1 },
       { role: 'composed_task', lane: 'composed-task-1', turn: 1 },
     ]);
+  });
+
+  it('returns completed evidence at the evidence cutoff and resumes only pending exact-head tasks', async () => {
+    vi.useFakeTimers();
+    const saved: any[] = [];
+    let pendingStarted!: () => void;
+    const pendingCall = new Promise<void>((resolve) => { pendingStarted = resolve; });
+    const firstComplete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth?', rationale: 'Risk first.' },
+        { id: 'tests', dimension: 'testing', paths: ['src/auth/guard.ts'], question: 'Tests?', rationale: 'Coverage.' },
+      ] }));
+      if (text.includes('Task id: auth')) return fakeResponse(JSON.stringify({ nonce, task: 'auth', status: 'COMPLETE', findings: [] }));
+      pendingStarted();
+      return new Promise<OpenRouterResponse>(() => undefined);
+    });
+    const startedAt = Date.now();
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+      client: { complete: firstComplete }, deadlineBudget: { deadlineAtMs: startedAt + 100,
+        timeoutMs: 100, terminalBound: true }, deadlineNow: () => Date.now(),
+      checkpoint: { resumed: null, save: async (snapshot) => { saved.push(structuredClone(snapshot)); } },
+    });
+    await pendingCall;
+    await vi.advanceTimersByTimeAsync(101);
+    const partial = await run;
+    expect(partial.gracefulExit).toMatchObject({ reason: 'evidence_deadline', completedTaskIds: ['auth'], pendingTaskIds: ['tests'] });
+    expect(partial.personas.map((lane) => lane.id)).toEqual(['auth']);
+    expect(partial.unreportedLanes).toEqual([expect.objectContaining({ id: 'tests', failureClass: 'timeout' })]);
+    expect(saved.at(-1)).toMatchObject({ revision: 2, completedTasks: [{ id: 'auth', findings: [] }] });
+
+    const resumeCalls = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      expect(text).not.toContain('PLAN TURN');
+      const nonce = nonceFrom(text);
+      return fakeResponse(JSON.stringify({ nonce, task: 'tests', status: 'COMPLETE', findings: [] }));
+    });
+    const resumed = await executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+      client: { complete: resumeCalls }, checkpoint: {
+        resumed: { version: 'ReviewExecutionCheckpoint.v1', runId: `run_${'1'.repeat(32)}`, repositoryId: 1,
+          owner: 'acme', repo: 'reviewer-fixture', prNumber: 1, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+          policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), executionAttempt: 2,
+          ...saved.at(-1) },
+        save: async (snapshot) => { saved.push(structuredClone(snapshot)); },
+      },
+    });
+    expect(resumeCalls).toHaveBeenCalledTimes(1);
+    expect(resumed.gracefulExit).toBeUndefined();
+    expect(resumed.personas.map((lane) => lane.id)).toEqual(['auth', 'tests']);
+    vi.useRealTimers();
+  });
+
+  it('does not spend the evidence budget waiting for durable checkpoint I/O', async () => {
+    vi.useFakeTimers();
+    const captured: number[] = [];
+    const persisted: number[] = [];
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    let pendingStarted!: () => void;
+    const pendingCall = new Promise<void>((resolve) => { pendingStarted = resolve; });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth?', rationale: 'Risk first.' },
+        { id: 'tests', dimension: 'testing', paths: ['src/auth/guard.ts'], question: 'Tests?', rationale: 'Coverage.' },
+      ] }));
+      if (text.includes('Task id: auth')) return fakeResponse(JSON.stringify({ nonce, task: 'auth', status: 'COMPLETE', findings: [] }));
+      pendingStarted();
+      return new Promise<OpenRouterResponse>(() => undefined);
+    });
+    const startedAt = Date.now();
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+      client: { complete }, deadlineBudget: { deadlineAtMs: startedAt + 100, timeoutMs: 100, terminalBound: true },
+      deadlineNow: () => Date.now(), checkpoint: {
+        resumed: null,
+        capture: (snapshot) => { captured.push(snapshot.revision); },
+        save: async (snapshot) => { persisted.push(snapshot.revision); await writeGate; },
+      },
+    });
+
+    await pendingCall;
+    expect(persisted).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(101);
+    const partial = await run;
+    expect(partial.gracefulExit).toMatchObject({
+      completedTaskIds: ['auth'], pendingTaskIds: ['tests'], checkpointPersistenceFailed: true,
+    });
+    expect(captured).toEqual([1, 2]);
+    expect(persisted).toEqual([1]);
+
+    releaseWrite();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(persisted).toEqual([1, 2]);
+    vi.useRealTimers();
   });
 
   it('keeps model-produced task ids and response model names out of publishing progress and token labels', async () => {
@@ -1252,8 +1366,9 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }));
 
     expect(maxActive).toBe(3);
-    expect(started).toEqual(manyTasks(6).map((task) => task.id));
-    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(6).map((task) => task.id));
+    const expectedOrder = orderReviewTasksByRisk(manyTasks(6)).map((task) => task.id);
+    expect(started).toEqual(expectedOrder);
+    expect(result.personas.map((lane) => lane.id)).toEqual(expectedOrder);
     expect(result.unreportedLanes).toEqual([]);
   });
 
@@ -1279,7 +1394,8 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete }, publisherShadow: true }));
 
     expect(maxActive).toBe(1);
-    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(3).map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id))
+      .toEqual(orderReviewTasksByRisk(manyTasks(3)).map((task) => task.id));
   });
 
   it('refunds unused cohort reservations before admitting waiting tasks without exceeding the total turn cap', async () => {
@@ -1305,8 +1421,8 @@ describe('executeComposedReview', () => {
 
     // Plan consumes one turn. The first cohort reserves two full ceilings (2+2) and uses 1+1;
     // after refund task-3 gets a full 2-turn slot and task-4 uses the final partial turn.
-    expect(started).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect(started).toEqual(['task-1', 'task-4', 'task-3', 'task-2']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-4', 'task-3', 'task-2']);
     expect((result.personas ?? []).reduce((sum, lane) => sum + (lane.turnUsages?.length ?? 0), 0)).toBe(5);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-5', failureClass: 'budget_exhausted' }]);
     expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', lane: 'composed-task-5', status: 'skipped', rejectionCode: 'budget_exhausted' }));
@@ -1377,8 +1493,8 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }))
       .rejects.toThrow('synthetic fatal task failure'));
 
-    expect(started).toEqual(new Set(['task-1', 'task-2', 'task-3']));
-    expect(aborted).toEqual(new Set(['task-2', 'task-3']));
+    expect(started).toEqual(new Set(['task-1', 'task-4', 'task-3']));
+    expect(aborted).toEqual(new Set(['task-4', 'task-3']));
     expect(complete).toHaveBeenCalledTimes(4); // one plan request plus the three-task first cohort
   });
 
@@ -1431,11 +1547,20 @@ describe('executeComposedReview', () => {
     };
   }
 
+  // Barrier/refund controls need equal risk so a distinct ordering feature cannot change
+  // which numbered sibling is held. Mixed-risk admission/indexing is asserted separately.
+  function retentionBarrierTasks(count = 3) {
+    return Array.from({ length: count }, (_, index) => ({
+      id: `task-${index + 1}`, dimension: 'security', paths: ['src/auth/guard.ts'],
+      question: `Is barrier branch ${index + 1} safe?`, rationale: `barrier branch ${index + 1}`,
+    }));
+  }
+
   function retentionRoutedClient(
     events: string[],
     decide: (taskId: string, text: string, nonce: string) => string | Promise<string> = (taskId, _text, nonce) =>
       JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }),
-    tasks = threeTasks(),
+    tasks = retentionBarrierTasks(),
   ) {
     const providerTasks: string[] = [];
     const complete = vi.fn(async (payload: any) => {
@@ -1522,7 +1647,7 @@ describe('executeComposedReview', () => {
 
   it('holds cohort reservations until every own ACK settles before admitting the fourth branch', async () => {
     const events: string[] = [];
-    const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
     retention.port.persistOutcome.mockImplementation(async (request: any) => {
@@ -1567,7 +1692,7 @@ describe('executeComposedReview', () => {
     for (const taskId of ['task-1', 'task-2', 'task-3']) {
       expect(progress.indexOf(`composed-${taskId}:completed`)).toBeLessThan(progress.indexOf('composed-task-4:started'));
     }
-    expect(result.personas.map((lane) => lane.id)).toEqual(fourTasks().map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id)).toEqual(retentionBarrierTasks(4).map((task) => task.id));
     expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
     expect(retention.port.persistOutcome).toHaveBeenCalledTimes(4);
   });
@@ -1578,7 +1703,7 @@ describe('executeComposedReview', () => {
     const { complete, providerTasks } = retentionRoutedClient(events, async (taskId, _text, nonce) => {
       if (taskId !== 'task-1') await siblings.promise;
       return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
-    }, fourTasks());
+    }, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     const failedAck = deferred<void>();
     retention.port.persistOutcome.mockImplementationOnce(async () => {
@@ -1612,7 +1737,7 @@ describe('executeComposedReview', () => {
   it.each(['write failure', 'invalid ACK'] as const)(
     'aborts held sibling ACKs after %s without awaiting never-settling raw producers', async (failure) => {
       const events: string[] = [];
-      const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+      const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
       const retention = recordingRetention(events);
       const held: Array<{ request: any; ack: ReturnType<typeof deferred<any>> }> = [];
       const allHeld = deferred<void>();
@@ -1664,7 +1789,7 @@ describe('executeComposedReview', () => {
   it.each(['head changes', 'original deadline expires'] as const)(
     'fences all held ACK slots when %s without detaching siblings or admitting task four', async (change) => {
       const events: string[] = [];
-      const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+      const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
       const retention = recordingRetention(events);
       const held: Array<{ request: any; ack: ReturnType<typeof deferred<any>> }> = [];
       const allHeld = deferred<void>();
@@ -1877,7 +2002,7 @@ describe('executeComposedReview', () => {
     const { complete, providerTasks } = retentionRoutedClient(events, async (taskId, _text, nonce) => {
       if (taskId === 'task-2') throw new Error('private provider failure text');
       return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
-    }, fourTasks());
+    }, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     const cfg: any = config();
     cfg.composed = { max_tasks: 4 };
@@ -1898,7 +2023,7 @@ describe('executeComposedReview', () => {
 
   it('does not call the queued fourth provider after an invalid outcome ACK', async () => {
     const events: string[] = [];
-    const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     const cfg: any = config();
     cfg.composed = { max_tasks: 4 };
@@ -1963,7 +2088,7 @@ describe('executeComposedReview', () => {
   it('settles all aborted in-flight task writes and ignores late ACKs before the queued fourth task', async () => {
     const controller = new AbortController();
     const events: string[] = [];
-    const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
     let started!: () => void;
     const writeStarted = new Promise<void>((resolve) => { started = resolve; });
     const held: Array<{ request: any; ack: ReturnType<typeof deferred<any>> }> = [];
@@ -2319,7 +2444,7 @@ describe('executeComposedReview', () => {
       if (taskId === 'task-4') fourthStarted.resolve();
       if (!retained && (taskId === 'task-1' || taskId === 'task-3')) await releaseProviders.promise;
       return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
-    }, fourTasks());
+    }, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     retention.port.persistOutcome.mockImplementation(async (request: any) => {
       if (request.evidence.taskId === 'task-1' || request.evidence.taskId === 'task-3') {
@@ -2359,7 +2484,7 @@ describe('executeComposedReview', () => {
       await run.catch(() => undefined);
     }
     const result = await run;
-    expect(result.personas.map((lane) => lane.id)).toEqual(fourTasks().map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id)).toEqual(retentionBarrierTasks(4).map((task) => task.id));
     expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
     expect(complete).toHaveBeenCalledTimes(5);
     expect(retention.port.persistPlan).toHaveBeenCalledTimes(retained ? 1 : 0);
@@ -2373,7 +2498,7 @@ describe('executeComposedReview', () => {
     const previous = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
     process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = String(pool);
     const events: string[] = [];
-    const initialIds = fourTasks().slice(0, pool).map((task) => task.id);
+    const initialIds = retentionBarrierTasks(4).slice(0, pool).map((task) => task.id);
     const heldProviders = new Map(initialIds.map((id) => [id, deferred<void>()]));
     const heldAcks = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
     const initialHeld = deferred<void>();
@@ -2392,7 +2517,7 @@ describe('executeComposedReview', () => {
         }
         return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
       } finally { activeCalls -= 1; }
-    }, fourTasks());
+    }, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     retention.port.persistOutcome.mockImplementation(async (request: any) => {
       if (initialIds.includes(request.evidence.taskId)) {
@@ -2435,7 +2560,7 @@ describe('executeComposedReview', () => {
     const result = await run;
     expect(maxActiveCalls).toBeLessThanOrEqual(pool);
     expect(activeCalls).toBe(0);
-    expect(result.personas.map((lane) => lane.id)).toEqual(fourTasks().map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id)).toEqual(retentionBarrierTasks(4).map((task) => task.id));
     expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
     expect(complete).toHaveBeenCalledTimes(5);
   });
@@ -2456,7 +2581,7 @@ describe('executeComposedReview', () => {
         return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
       }
       return JSON.stringify({ tool: 'read_file', args: { path: 'src/auth/guard.ts' } });
-    }, threeTasks().slice(0, 2));
+    }, retentionBarrierTasks(2));
     const retention = recordingRetention(events);
     retention.port.persistOutcome.mockImplementation(async (request: any) => {
       retention.requests.push(request);
@@ -2550,7 +2675,7 @@ describe('executeComposedReview', () => {
     const events: string[] = [];
     const allHeld = deferred<void>();
     const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
-    const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
     const retention = recordingRetention(events);
     retention.port.persistOutcome.mockImplementation(async (request: any) => {
       const ack = deferred<any>();
@@ -2594,6 +2719,263 @@ describe('executeComposedReview', () => {
     }
   });
 
+  it.each([
+    { pool: 1, failure: 'cancel' }, { pool: 2, failure: 'cancel' }, { pool: 3, failure: 'cancel' },
+    { pool: 1, failure: 'fatal ACK' }, { pool: 2, failure: 'fatal ACK' }, { pool: 3, failure: 'fatal ACK' },
+  ])('joins retained pool $pool after $failure without a late ACK bridge or new cohort', async ({ pool, failure }) => {
+    const previous = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+    process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = String(pool);
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
+    const retention = recordingRetention(events);
+    const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
+    const initialHeld = deferred<void>();
+    const controller = new AbortController();
+    const progress: string[] = [];
+    const lastInitialId = `task-${pool}`;
+    const reporter = createPublishingProgress({ runId: `run-joined-${pool}-${failure === 'cancel' ? 'cancel' : 'fatal-ack'}`, executionAttempt: 1 }, {
+      sink: (event) => {
+        progress.push(`${event.lane ?? 'panel'}:${event.status}`);
+        if (failure === 'fatal ACK' && pool > 1 && event.lane === 'composed-task-1' && event.status === 'completed') {
+          queueMicrotask(() => held.get(lastInitialId)!.ack.reject(new Error('fixture ACK write failed')));
+        }
+      },
+    });
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      const ack = deferred<any>();
+      held.set(request.evidence.taskId, { request, ack });
+      if (held.size === pool) initialHeld.resolve();
+      return ack.promise;
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+    let settled = false;
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, retention: { port: retention.port }, signal: controller.signal, progress: reporter,
+    }).finally(() => { settled = true; });
+    const rejected = failure === 'cancel' ? expect(run).rejects.toMatchObject({ name: 'PanelCancellationError', message: 'review panel was cancelled' })
+      : expect(run).rejects.toMatchObject({ name: 'ComposedTaskRetentionError', failureCode: 'write_failed', taskIndex: pool - 1 });
+    try {
+      await initialHeld.promise;
+      expect(providerTasks).toEqual(Array.from({ length: pool }, (_, index) => `task-${index + 1}`));
+      expect(progress.filter((event) => /^composed-task-\d+:completed$/u.test(event))).toEqual([]);
+      if (failure === 'cancel') controller.abort(new Error('fixture cancellation'));
+      else if (pool === 1) held.get('task-1')!.ack.reject(new Error('fixture ACK write failed'));
+      else {
+        const first = held.get('task-1')!;
+        first.ack.resolve(retentionAck('outcome', first.request, '2'.repeat(64)));
+      }
+      await rejected;
+      expect(settled).toBe(true);
+      expect(complete).toHaveBeenCalledTimes(1 + pool);
+      expect(retention.port.persistOutcome).toHaveBeenCalledTimes(pool);
+      expect(progress).not.toContain(`composed-task-${pool + 1}:started`);
+      expect(progress).not.toContain('panel:completed');
+      const frozen = [...progress];
+      for (const { request, ack } of held.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await flushBranches();
+      expect(progress).toEqual(frozen);
+    } finally {
+      controller.abort(new Error('fixture cleanup'));
+      for (const { request, ack } of held.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await run.catch(() => undefined);
+      if (previous === undefined) delete process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+      else process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = previous;
+    }
+  });
+
+  it.each([
+    'resumed null', 'capture/save only', 'capture only', 'save only',
+    'complete legacy checkpoint', 'invalid saved plan', 'empty option', 'null option',
+  ] as const)('rejects retained legacy checkpoint %s before PLAN or either port effect', async (variant) => {
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events);
+    const retention = recordingRetention(events);
+    const capture = vi.fn();
+    const save = vi.fn(async () => undefined);
+    const resumed = {
+      version: 'ReviewExecutionCheckpoint.v1', runId: `run_${'1'.repeat(32)}`,
+      repositoryId: 1, owner: 'acme', repo: 'reviewer-fixture', prNumber: 17,
+      headSha: retentionSelectors.headSha, baseSha: retentionSelectors.baseSha,
+      policyDigest: '3'.repeat(64), configDigest: '4'.repeat(64),
+      executionAttempt: 2, revision: 7, plan: threeTasks(),
+      completedTasks: threeTasks().map((task) => ({ id: task.id, findings: [] })),
+    };
+    const options: Record<typeof variant, unknown> = {
+      'resumed null': { resumed: null, capture, save },
+      'capture/save only': { capture, save },
+      'capture only': { capture },
+      'save only': { save },
+      'complete legacy checkpoint': { resumed, capture, save },
+      'invalid saved plan': { resumed: { ...resumed, plan: [] }, capture, save },
+      'empty option': {},
+      'null option': null,
+    };
+    const progress = vi.fn();
+    const reporter = createPublishingProgress({ runId: 'run-retained-checkpoint-denied', executionAttempt: 1 }, {
+      sink: progress,
+    });
+    const error = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      ...retentionSelectors, client: { complete }, retention: { port: retention.port },
+      checkpoint: options[variant] as any, progress: reporter,
+    }).then(() => undefined, (failure: unknown) => failure);
+    expect(error).toBeInstanceOf(PanelConfigurationError);
+    expect(error).toMatchObject({ failureClass: 'contract',
+      message: 'composed retention does not accept legacy checkpoints' });
+    expect(complete).not.toHaveBeenCalled();
+    expect(providerTasks).toEqual([]);
+    expect(retention.port.persistPlan).not.toHaveBeenCalled();
+    expect(retention.port.persistOutcome).not.toHaveBeenCalled();
+    expect(capture).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(progress).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 2, 3])('freezes retained risk order before plan ACK and keeps full-array indexes at pool %s', async (pool) => {
+    const oldPool = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+    process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = String(pool);
+    const tasks: ReviewTask[] = [
+      { id: 'task-tests', dimension: 'testing', paths: ['test/cache.test.ts'], question: 'Covered?', rationale: 'Tests.' },
+      { id: 'task-cache', dimension: 'performance', paths: ['src/cache.ts'], question: 'Fast?', rationale: 'Cache.' },
+      { id: 'task-ci', dimension: 'contract', paths: ['.github/workflows/build.yml'], question: 'Safe?', rationale: 'CI.' },
+      { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Secure?', rationale: 'Auth.' },
+    ];
+    const expectedIds = ['task-auth', 'task-ci', 'task-cache', 'task-tests'];
+    const changedFiles = tasks.map((task) => ({ path: task.paths[0], patch: '@@ -1 +1 @@\n-old\n+new' }));
+    const events: string[] = [];
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, tasks);
+    const retention = recordingRetention(events);
+    const planHeld = deferred<void>();
+    const planAck = deferred<any>();
+    let planRequest: any;
+    retention.port.persistPlan.mockImplementationOnce(async (request: any) => {
+      retention.requests.push(request);
+      planRequest = request;
+      planHeld.resolve();
+      return planAck.promise;
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+    const run = executeComposedReview({ config: cfg, changedFiles, ...retentionSelectors,
+      client: { complete }, retention: { port: retention.port } });
+    void run.catch(() => undefined);
+    try {
+      await planHeld.promise;
+      expect(planRequest.evidence.tasks.map((task: any) => task.id)).toEqual(expectedIds);
+      expect(planRequest).toEqual(createComposedTaskPlanRetentionRequest({
+        selectors: retentionSelectors, changedPaths: changedFiles.map((file) => file.path),
+        tasks: [tasks[3], tasks[2], tasks[1], tasks[0]],
+      }));
+      expect(providerTasks).toEqual([]);
+      expect(retention.port.persistOutcome).not.toHaveBeenCalled();
+    } finally {
+      if (planRequest) planAck.resolve(retentionAck('plan', planRequest, '1'.repeat(64)));
+      await run.catch(() => undefined);
+      if (oldPool === undefined) delete process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+      else process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = oldPool;
+    }
+    const result = await run;
+    expect(providerTasks).toEqual(expectedIds);
+    expect(result.taskPlan?.map((task) => task.id)).toEqual(expectedIds);
+    expect(result.personas.map((lane) => lane.id)).toEqual(expectedIds);
+    expect(retention.requests.filter((request) => request.stage === 'outcome').map((request) => ({
+      id: request.evidence.taskId, index: request.evidence.taskIndex, planDigest: request.evidence.planDigest,
+    }))).toEqual(expectedIds.map((id, index) => ({ id, index, planDigest: '1'.repeat(64) })));
+    expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
+  });
+
+  it.each([
+    { retained: false, pool: 1 }, { retained: false, pool: 2 }, { retained: false, pool: 3 },
+    { retained: true, pool: 1 }, { retained: true, pool: 2 }, { retained: true, pool: 3 },
+  ])('keeps inherited cutoff hard only for retention=$retained at pool $pool after an accepted task', async ({ retained, pool }) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    const start = Date.parse('2026-10-01T12:00:00Z');
+    vi.setSystemTime(start);
+    const oldPool = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+    process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = String(pool);
+    const controller = new AbortController();
+    const budget = workerPanelDeadlineBudget(1200, {
+      REVIEW_TERMINAL_DEADLINE: new Date(start + 360_000).toISOString(),
+    }, start);
+    expect(budget).toEqual({ deadlineAtMs: start + 60_000, timeoutMs: 60_000, terminalBound: true });
+    const events: string[] = [];
+    const retention = recordingRetention(events);
+    const providerTasks: string[] = [];
+    const holding = new Set<string>();
+    const aborted = new Set<string>();
+    const allHolding = deferred<void>();
+    const holdingCount = retained ? Math.max(1, pool - 1) : pool;
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        await vi.advanceTimersByTimeAsync(600);
+        return fakeResponse(JSON.stringify({ nonce, tasks: fourTasks() }));
+      }
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? '';
+      const taskId = fourTasks().find((task) => directive.includes(`Task id: ${task.id}`))?.id;
+      if (!taskId) throw new Error('missing cutoff fixture task');
+      providerTasks.push(taskId);
+      if (taskId === 'task-1') return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+      holding.add(taskId);
+      if (holding.size === holdingCount) allHolding.resolve();
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        const stop = () => { aborted.add(taskId); reject(payload.signal.reason); };
+        if (payload.signal.aborted) stop();
+        else payload.signal.addEventListener('abort', stop, { once: true });
+      });
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: `run-inherited-cutoff-${retained}-${pool}`, executionAttempt: 1 }, {
+      sink: (event) => progress.push(`${event.lane ?? 'panel'}:${event.status}`),
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 10, max_turns_per_task: 1 };
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, progress: reporter, signal: controller.signal,
+      deadlineBudget: budget, deadlineNow: Date.now,
+      ...(retained ? { retention: { port: retention.port } } : {}),
+    });
+    let settled = false;
+    const observation = run.then((result) => ({ result, error: undefined }),
+      (error: unknown) => ({ result: undefined, error })).finally(() => { settled = true; });
+    try {
+      await allHolding.promise;
+      await flushBranches();
+      expect(progress).toContain('composed-task-1:completed');
+      expect(Date.now()).toBe(start + 600);
+      await vi.advanceTimersByTimeAsync(59_399);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const actual = await observation;
+      if (retained) {
+        expect(actual.error).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+        expect(actual.result).toBeUndefined();
+        expect(retention.port.persistPlan).toHaveBeenCalledOnce();
+        expect(retention.port.persistOutcome).toHaveBeenCalledOnce();
+      } else {
+        expect(actual.error).toBeUndefined();
+        expect(actual.result).toMatchObject({ gracefulExit: { reason: 'evidence_deadline', completedTaskIds: ['task-1'] },
+          quorum: { satisfied: false }, arbiter: { verdict: 'BLOCK' } });
+        expect(actual.result?.unreportedLanes?.map((lane) => lane.id)).toEqual(['task-4', 'task-3', 'task-2']);
+        expect(retention.port.persistPlan).not.toHaveBeenCalled();
+        expect(retention.port.persistOutcome).not.toHaveBeenCalled();
+      }
+      expect(aborted).toEqual(holding);
+      expect(Date.now()).toBe(budget.deadlineAtMs);
+      const frozen = [...progress];
+      await flushBranches();
+      expect(progress).toEqual(frozen);
+      expect(providerTasks).toHaveLength(retained ? Math.max(2, pool) : pool + 1);
+    } finally {
+      controller.abort();
+      await observation;
+      if (oldPool === undefined) delete process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+      else process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = oldPool;
+      vi.useRealTimers();
+    }
+  });
+
   it('expires held cohort ACKs at the original deadline including planning time', async () => {
     vi.useFakeTimers();
     const events: string[] = [];
@@ -2601,7 +2983,7 @@ describe('executeComposedReview', () => {
     const planGate = deferred<void>();
     const allHeld = deferred<void>();
     const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
-    const routed = retentionRoutedClient(events, undefined, fourTasks());
+    const routed = retentionRoutedClient(events, undefined, retentionBarrierTasks(4));
     const complete = vi.fn(async (payload: any) => {
       if (lastText(payload.messages).includes('PLAN TURN')) { planStarted.resolve(); await planGate.promise; }
       return routed.complete(payload);
@@ -2679,7 +3061,7 @@ describe('executeComposedReview', () => {
     });
 
     expect(maxActiveWorkCalls).toBe(3);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3', 'task-2']);
   });
 
   it('bounds larger plans to three concurrent provider branches', async () => {
@@ -2716,7 +3098,7 @@ describe('executeComposedReview', () => {
     });
 
     expect(maxActiveWorkCalls).toBe(COMPOSED_TASK_CONCURRENCY_CEILING);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-4', 'task-3', 'task-2']);
   });
 
   it('keeps later lanes running when a middle task produces no verdict', async () => {
@@ -2735,7 +3117,7 @@ describe('executeComposedReview', () => {
       client: { complete },
     });
 
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(workTurns).toEqual(['task-1', 'task-3', 'task-2']);
     expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-3']);
     expect(result.personas.every((lane) => lane.decision === 'APPROVE')).toBe(true);
     expect(result.optionalFailures ?? []).toEqual([]);
@@ -2750,7 +3132,7 @@ describe('executeComposedReview', () => {
   });
 
   it('preserves completed and later tasks when a middle task exhausts its fresh contract recovery', async () => {
-    const { complete, workTurns } = routedClient((taskId, _text, nonce) => taskId === 'task-2'
+    const { complete, workTurns } = routedClient((taskId, _text, nonce) => taskId === 'task-3'
       ? 'SYNTHETIC_REASONING_WITHOUT_VERDICT'
       : JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
     const cfg = config();
@@ -2759,11 +3141,11 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
     // Task 1 uses only one of its reserved turns, which is refunded before task 2 starts.
     // Task 2 can therefore use its full dynamic ceiling and remains bounded by the total cap.
-    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
-    expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
+    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-3', 'task-3', 'task-3']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2']);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-3', failureClass: 'malformed_output',
       error: expect.stringContaining('non_json_task_result') }]);
-    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-2']);
     expect(complete).toHaveBeenCalledTimes(6);
   });
 
@@ -2780,7 +3162,7 @@ describe('executeComposedReview', () => {
       client: { complete },
     });
 
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(workTurns).toEqual(['task-1', 'task-3', 'task-2']);
     expect(result.personas).toEqual([]);
     expect(result.optionalFailures ?? []).toEqual([]);
     expect((result.unreportedLanes ?? []).map((lane) => lane.failureClass)).toEqual([

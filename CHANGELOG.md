@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.103.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.1...v1.103.0) (2026-10-01)
+
+
+### Features
+
+* **review:** retain immutable composed tasks under the native fence ([#1181](https://github.com/review-yeti-ai/review-yeti-bot/issues/1181)) ([2ede42f](https://github.com/review-yeti-ai/review-yeti-bot/commit/2ede42fd1cebd611b89dde11e95bcc42a58143f1))
+
+## [1.102.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.102.0...v1.102.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve typed panel failure classification ([#1212](https://github.com/review-yeti-ai/review-yeti-bot/issues/1212)) ([720c5e2](https://github.com/review-yeti-ai/review-yeti-bot/commit/720c5e23be214723834601264f5fd31e27f6d1a6))
+
+## [1.102.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.9...v1.102.0) (2026-10-01)
+
+
+### Features
+
+* **review:** preserve evidence through graceful closeout ([#1203](https://github.com/review-yeti-ai/review-yeti-bot/issues/1203)) ([29a864f](https://github.com/review-yeti-ai/review-yeti-bot/commit/29a864fee8e607514039d59902085c85451301d0))
+
 ## [1.101.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.8...v1.101.9) (2026-10-01)
 
 

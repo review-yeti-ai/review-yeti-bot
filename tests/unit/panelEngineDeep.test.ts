@@ -2532,9 +2532,9 @@ describe('REL-1211 absolute panel deadline', () => {
     const parent = new AbortController();
     const remove = vi.spyOn(parent.signal, 'removeEventListener');
     const deadline = createPanelDeadlineSignal(NaN, parent.signal);
-    expect(deadline.timeoutMs).toBe(900_000);
+    expect(deadline.timeoutMs).toBe(1_200_000);
     deadline.check(); deadline.cleanup();
-    await vi.advanceTimersByTimeAsync(900_000);
+    await vi.advanceTimersByTimeAsync(1_200_000);
     parent.abort();
     expect(deadline.signal.aborted).toBe(false);
     expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
