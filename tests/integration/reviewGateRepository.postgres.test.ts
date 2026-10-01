@@ -179,6 +179,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           lease_owner TEXT,
           lease_expires_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE review_dispatch_outbox (

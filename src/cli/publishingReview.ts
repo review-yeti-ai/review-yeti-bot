@@ -1215,6 +1215,11 @@ export async function runPublishingReviewWorker(
           ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
         }));
     // One immutable, content-free snapshot for both native and legacy terminal boundaries.
+    const unfinishedPanel = executionProgress?.snapshot?.();
+    if(unfinishedPanel?.panel.invoked && unfinishedPanel.phaseCounts.panel.completed
+      + unfinishedPanel.phaseCounts.panel.failed + unfinishedPanel.phaseCounts.panel.aborted === 0) {
+      executionProgress?.emit({task:'panel',status:failureClass==='timeout'?'aborted':'failed'});
+    }
     const operationalTelemetry = executionProgress?.snapshot?.();
     if (operationalTelemetry && (operationalTelemetry.providerCalls.started > 0 || value(env, 'REVIEW_TERMINAL_DEADLINE'))) {
       const total=tokenLedger.snapshot().total;

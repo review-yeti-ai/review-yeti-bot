@@ -2,7 +2,7 @@ import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '.
 import { resolveCachedTokens } from '../gateway/openRouterClient';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { logger } from '../utils/logger';
-import { normalizeOperationalTelemetry, type OperationalTelemetry } from '../review/workerCompletion';
+import { normalizeOperationalTelemetry, operationalTelemetryEventSchema, type OperationalTelemetry } from '../review/workerCompletion';
 
 export type PublishingProgressRole = 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task' | 'other';
 export type PublishingProgressStatus = 'started' | 'completed' | 'failed' | 'aborted' | 'skipped' | 'blocked' | 'rejected';
@@ -250,8 +250,11 @@ export function createPublishingProgress(
   const now = options.now || Date.now;
   let callSequence = 0;
   let panelStartedAt: number | undefined;
+  let panelFinishedAt: number | undefined;
+  const emptyPhase=()=>({started:0,completed:0,failed:0,aborted:0,skipped:0,blocked:0,rejected:0});
   const observed: OperationalTelemetry = {
     version:'OperationalTelemetry.v1', basis:'observed_worker_client', cause:'unknown', eventCount:0, eventsDropped:0, recentEvents:[],
+    phaseCounts:{panel:emptyPhase(),persona_lane:emptyPhase(),composed_plan:emptyPhase(),composed_task:emptyPhase(),provider_call:emptyPhase(),provider_output:emptyPhase()},
     providerCalls:{started:0,completed:0,failed:0,aborted:0,inflight:0},
     responseUsage:{availability:'unknown',responses:0,samples:{promptTokens:0,completionTokens:0,totalTokens:0,cachedTokens:0,costUSD:0},totals:{}},
     panel:{invoked:false},
@@ -281,12 +284,14 @@ export function createPublishingProgress(
         ...(typeof event.durationMs==='number'&&Number.isSafeInteger(event.durationMs)&&event.durationMs>=0&&event.durationMs<=86_400_000?{durationMs:event.durationMs}:{}),
         ...(isSafePublishingRejectionCode(event.rejectionCode)?{rejectionCode:event.rejectionCode}:{}),
       };
-      const parsed=normalizeOperationalTelemetry({...observed, eventCount:1,eventsDropped:0,recentEvents:[candidate]});
+      const parsed=operationalTelemetryEventSchema.safeParse(candidate);
       // Validate enums with the shared schema before retaining anything.
-      if(!parsed)return;
-      observed.eventCount++; observed.recentEvents.push(parsed.recentEvents[0]);
+      if(!parsed.success)return;
+      observed.eventCount++; observed.phaseCounts[parsed.data.task][parsed.data.status]++;
+      observed.recentEvents.push(parsed.data);
       if(observed.recentEvents.length>16){observed.recentEvents.shift();observed.eventsDropped++;}
       if(event.task==='panel'&&event.status==='started'){observed.panel.invoked=true;panelStartedAt=now();}
+      if(event.task==='panel'&&['completed','failed','aborted'].includes(event.status)&&panelStartedAt!==undefined&&panelFinishedAt===undefined)panelFinishedAt=now();
     } catch { /* observations are optional */ }
   };
   const snapshot = (): OperationalTelemetry | undefined => {
@@ -294,7 +299,7 @@ export function createPublishingProgress(
       const copy=JSON.parse(JSON.stringify(observed)) as OperationalTelemetry;
       const samples=Object.values(copy.responseUsage.samples);
       copy.responseUsage.availability=copy.responseUsage.responses>0&&samples.every(n=>n===copy.responseUsage.responses)?'known':samples.some(n=>n>0)?'partial':'unknown';
-      if(panelStartedAt!==undefined){const elapsed=now()-panelStartedAt;if(Number.isSafeInteger(elapsed)&&elapsed>=0&&elapsed<=86_400_000)copy.panel.wallClockMs=elapsed;}
+      if(panelStartedAt!==undefined){const elapsed=(panelFinishedAt ?? now())-panelStartedAt;if(Number.isSafeInteger(elapsed)&&elapsed>=0&&elapsed<=86_400_000)copy.panel.wallClockMs=elapsed;}
       return normalizeOperationalTelemetry(copy);
     } catch { return undefined; }
   };

@@ -47,14 +47,12 @@ export const delegatedFailureReasons = [
 
 export type DelegatedFailureReason = typeof delegatedFailureReasons[number];
 
-/** Content-free observations, never an inferred provider cause or retry decision. */
-export const operationalTelemetrySchema = z.object({
-  version: z.literal('OperationalTelemetry.v1'),
-  basis: z.literal('observed_worker_client'),
-  cause: z.literal('unknown'),
-  eventCount: z.number().int().nonnegative().safe(),
-  eventsDropped: z.number().int().nonnegative().safe(),
-  recentEvents: z.array(z.object({
+const operationalStatusCountsSchema = z.object({
+  started:z.number().int().nonnegative().safe(), completed:z.number().int().nonnegative().safe(),
+  failed:z.number().int().nonnegative().safe(), aborted:z.number().int().nonnegative().safe(),
+  skipped:z.number().int().nonnegative().safe(), blocked:z.number().int().nonnegative().safe(), rejected:z.number().int().nonnegative().safe(),
+}).strict();
+export const operationalTelemetryEventSchema = z.object({
     task: z.enum(['panel', 'persona_lane', 'composed_plan', 'composed_task', 'provider_call', 'provider_output']),
     status: z.enum(['started', 'completed', 'failed', 'aborted', 'skipped', 'blocked', 'rejected']),
     role: z.enum(['persona', 'moderator', 'arbiter', 'classifier', 'map_reduce_reduce', 'composed_plan', 'composed_task', 'other']).optional(),
@@ -65,7 +63,19 @@ export const operationalTelemetrySchema = z.object({
       'configuration', 'budget_exhausted', 'internal_error', 'contract', 'auth', 'unknown', 'invalid_task_output',
       'findings_contract_invalid', 'finding_path_invalid', 'finding_path_not_changed', 'finding_line_invalid',
       'finding_line_not_added', 'finding_line_unanchorable', 'finding_severity_invalid']).optional(),
-  }).strict()).max(16),
+  }).strict();
+
+/** Content-free observations, never an inferred provider cause or retry decision. */
+export const operationalTelemetrySchema = z.object({
+  version: z.literal('OperationalTelemetry.v1'),
+  basis: z.literal('observed_worker_client'),
+  cause: z.literal('unknown'),
+  eventCount: z.number().int().nonnegative().safe(),
+  eventsDropped: z.number().int().nonnegative().safe(),
+  recentEvents: z.array(operationalTelemetryEventSchema).max(16),
+  phaseCounts:z.object({panel:operationalStatusCountsSchema,persona_lane:operationalStatusCountsSchema,
+    composed_plan:operationalStatusCountsSchema,composed_task:operationalStatusCountsSchema,
+    provider_call:operationalStatusCountsSchema,provider_output:operationalStatusCountsSchema}).strict(),
   providerCalls: z.object({
     started: z.number().int().nonnegative().safe(), completed: z.number().int().nonnegative().safe(),
     failed: z.number().int().nonnegative().safe(), aborted: z.number().int().nonnegative().safe(),
@@ -86,8 +96,13 @@ export const operationalTelemetrySchema = z.object({
     cachedTokens:z.number().int().nonnegative().safe(), costUSD:z.number().min(0).max(1_000_000_000)}).strict().optional(),
 }).strict().superRefine((value, ctx) => {
   const calls=value.providerCalls;
+  const samples=Object.values(value.responseUsage.samples);
+  const availability=value.responseUsage.responses>0&&samples.every(n=>n===value.responseUsage.responses)?'known':samples.some(n=>n>0)?'partial':'unknown';
   if (calls.started !== calls.completed + calls.failed + calls.aborted + calls.inflight
     || value.responseUsage.responses !== calls.completed
+    || value.responseUsage.availability !== availability
+    || Object.values(value.phaseCounts).flatMap(x=>Object.values(x)).reduce((a,b)=>a+b,0)!==value.eventCount
+    || Object.entries(value.responseUsage.samples).some(([key,n])=>(n>0)!==Object.hasOwn(value.responseUsage.totals,key))
     || value.eventCount !== value.eventsDropped + value.recentEvents.length
     || Object.values(value.responseUsage.samples).some(n=>n>value.responseUsage.responses)
     || Buffer.byteLength(JSON.stringify(value),'utf8')>8192) ctx.addIssue({code:z.ZodIssueCode.custom,message:'inconsistent or oversized operational telemetry'});

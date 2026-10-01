@@ -189,8 +189,14 @@ async function readOperationalTelemetry(db: ReviewStatusDbClient, row: any): Pro
     const result=await db.query(`
       SELECT r.failure_diagnostics->'operationalTelemetry' AS operational_telemetry
         FROM review_runs r JOIN review_gate_attempts g ON g.run_id=r.run_id
+        JOIN review_dispatch_outbox o ON o.run_id=r.run_id
+        JOIN review_worker_completions w ON w.run_id=r.run_id AND w.execution_attempt=g.execution_attempt
        WHERE r.run_id=$1 AND r.head_sha=$2 AND r.status='failed'
          AND g.attempt_id=$3 AND g.current_attempt=true
+         AND g.review_generation=r.attempt AND g.execution_attempt=o.execution_attempt+1
+         AND g.head_sha=r.head_sha AND g.base_sha=r.base_sha
+         AND g.worker_result_digest IS NOT NULL AND g.worker_result_digest=r.result_digest
+         AND w.content_digest=g.worker_result_digest
          AND r.failure_diagnostics->>'executionAttempt'=g.execution_attempt::text
          AND r.failure_diagnostics->>'failureClass' IS NOT NULL
        LIMIT 1
