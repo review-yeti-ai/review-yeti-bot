@@ -123,6 +123,23 @@ describe('deletion evidence replay', () => {
     expect(await runtime.evidence('old.ts')).toMatchObject({ classification: { status: 'unavailable', authority: 'none' }, resolution: 'review_required' });
   });
 
+  it('abstains on a choice outside the closed vocabulary, including inherited property names', async () => {
+    const answer = outcome(); answer.answers.category.choice = '__proto__';
+    const { runtime } = setup(undefined, { asker: { ask: async () => answer } as unknown as JevAsker, modelPin: 'jev-test' });
+    expect(await runtime.evidence('old.ts')).toMatchObject({ classification: { status: 'unavailable', reason: 'malformed' }, resolution: 'review_required' });
+  });
+
+  it('discloses the question budget cap without dropping later files or their obligations', async () => {
+    const ask = vi.fn(async () => outcome());
+    const { runtime } = setup(Array.from({ length: 33 }, (_, i) => file(`old-${i}.ts`)),
+      { asker: { ask } as unknown as JevAsker, modelPin: 'jev-test' });
+    let last: any;
+    for (let i = 0; i < 33; i++) last = await runtime.evidence(`old-${i}.ts`);
+    expect(ask).toHaveBeenCalledTimes(32);
+    expect(last).toMatchObject({ classification: { reason: 'question_budget_exhausted', authority: 'none' }, resolution: 'review_required' });
+    expect(runtime.manifest().totalFiles).toBe(33);
+  });
+
   it('cancellation stops before retrieval and never returns a completed classification', async () => {
     const controller = new AbortController(); controller.abort();
     const { runtime, provider } = setup(undefined, { signal: controller.signal });

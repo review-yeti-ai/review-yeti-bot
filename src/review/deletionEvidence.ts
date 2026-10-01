@@ -153,7 +153,7 @@ export function createDeletionEvidenceRuntime(input: {
             if (outcome.model !== modelPin) return { status: 'unavailable', reason: 'model_pin_mismatch', authority: 'none' };
             for (const [id, question] of Object.entries(questions)) {
               const answer = outcome.answers[id];
-              if (!answer || answer.type !== 'choice' || question.type !== 'choice' || !(answer.choice in question.criteria)) {
+              if (!answer || answer.type !== 'choice' || question.type !== 'choice' || !Object.hasOwn(question.criteria, answer.choice)) {
                 return { status: 'unavailable', reason: 'malformed', authority: 'none' };
               }
             }
