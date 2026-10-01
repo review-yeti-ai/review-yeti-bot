@@ -91,30 +91,24 @@ function parseUnifiedHunk(hunk: string): ParsedUnifiedHunk | null {
   if (![oldStart, oldCount, newStart, newCount].every(Number.isSafeInteger)) return null;
 
   const body = lines;
-  let actualOldCount = 0;
-  let actualNewCount = 0;
-  for (const line of body) {
-    if (line === '\\ No newline at end of file') continue;
-    if (line.startsWith(' ')) {
-      actualOldCount += 1;
-      actualNewCount += 1;
-    } else if (line.startsWith('+')) {
-      actualNewCount += 1;
-    } else if (line.startsWith('-')) {
-      actualOldCount += 1;
-    } else {
-      return null;
-    }
-  }
-  if (actualOldCount !== oldCount || actualNewCount !== newCount) return null;
+  const counts = unifiedHunkCounts(body);
+  if (!counts || counts.oldCount !== oldCount || counts.newCount !== newCount) return null;
   return { oldStart, oldCount, newStart, newCount, section: match[5], body };
 }
 
 function unifiedHunkCounts(lines: string[]): { oldCount: number; newCount: number } | null {
   let oldCount = 0;
   let newCount = 0;
+  let actualDiffLineCount = 0;
+  // Keep this owner-state rule aligned with parseDiffHunkForCoverage(); hunkLineAtoms then
+  // keeps the accepted marker attached to that same line when a fragment boundary is chosen.
+  let previousLineCanOwnNoNewlineMarker = false;
   for (const line of lines) {
-    if (line === '\\ No newline at end of file') continue;
+    if (line === '\\ No newline at end of file') {
+      if (!previousLineCanOwnNoNewlineMarker) return null;
+      previousLineCanOwnNoNewlineMarker = false;
+      continue;
+    }
     if (line.startsWith(' ')) {
       oldCount += 1;
       newCount += 1;
@@ -125,8 +119,10 @@ function unifiedHunkCounts(lines: string[]): { oldCount: number; newCount: numbe
     } else {
       return null;
     }
+    actualDiffLineCount += 1;
+    previousLineCanOwnNoNewlineMarker = true;
   }
-  return { oldCount, newCount };
+  return actualDiffLineCount > 0 ? { oldCount, newCount } : null;
 }
 
 function hunkLineAtoms(body: string[]): string[][] | null {
@@ -148,10 +144,10 @@ function formatUnifiedHunkFragment(
   oldStart: number,
   newStart: number,
   body: string[],
-): string | null {
-  const counts = unifiedHunkCounts(body);
-  if (!counts) return null;
-  return `@@ -${oldStart},${counts.oldCount} +${newStart},${counts.newCount} @@${hunk.section}\n${body.join('\n')}`;
+  counts: { oldCount: number; newCount: number },
+): string {
+  const header = `@@ -${oldStart},${counts.oldCount} +${newStart},${counts.newCount} @@${hunk.section}\n`;
+  return `${header}${body.join('\n')}`;
 }
 
 function unifiedFragmentRangeStart(
@@ -182,36 +178,48 @@ function splitOversizedHunkBlock(fileHeader: string, hunkBlock: string, safeDiff
   let newConsumed = 0;
   let bodyOldCount = 0;
   let bodyNewCount = 0;
+  let bodyChars = 0;
 
-  const makeFragment = (lines: string[], oldOffset: number, newOffset: number): string | null => {
-    const counts = unifiedHunkCounts(lines);
-    if (!counts) return null;
-    return formatUnifiedHunkFragment(
-      hunk,
-      unifiedFragmentRangeStart(hunk.oldStart, hunk.oldCount, oldOffset, counts.oldCount),
-      unifiedFragmentRangeStart(hunk.newStart, hunk.newCount, newOffset, counts.newCount),
-      lines,
-    );
+  const atomBodyChars = (atom: string[]): number => atom.reduce((total, line) => total + line.length, atom.length - 1);
+  const candidateFits = (
+    oldOffset: number,
+    newOffset: number,
+    oldCount: number,
+    newCount: number,
+    candidateBodyChars: number,
+  ): boolean => {
+    const oldStart = unifiedFragmentRangeStart(hunk.oldStart, hunk.oldCount, oldOffset, oldCount);
+    const newStart = unifiedFragmentRangeStart(hunk.newStart, hunk.newCount, newOffset, newCount);
+    const header = `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${hunk.section}\n`;
+    return fileHeader.length + header.length + candidateBodyChars + 1 <= safeDiffChars;
   };
   const flush = () => {
     if (body.length === 0) return;
-    const fragment = makeFragment(body, oldConsumed, newConsumed);
-    if (fragment) fragments.push(fragment);
+    const fragment = formatUnifiedHunkFragment(
+      hunk,
+      unifiedFragmentRangeStart(hunk.oldStart, hunk.oldCount, oldConsumed, bodyOldCount),
+      unifiedFragmentRangeStart(hunk.newStart, hunk.newCount, newConsumed, bodyNewCount),
+      body,
+      { oldCount: bodyOldCount, newCount: bodyNewCount },
+    );
+    fragments.push(fragment);
     oldConsumed += bodyOldCount;
     newConsumed += bodyNewCount;
     body = [];
     bodyOldCount = 0;
     bodyNewCount = 0;
+    bodyChars = 0;
   };
 
   for (const atom of atoms) {
     const atomCounts = unifiedHunkCounts(atom);
     if (!atomCounts) return [hunkBlock];
-    const candidateBody = [...body, ...atom];
-    const candidate = makeFragment(candidateBody, oldConsumed, newConsumed);
-    if (!candidate) return [hunkBlock];
-    if (`${fileHeader}${candidate}\n`.length <= safeDiffChars) {
-      body = candidateBody;
+    const nextOldCount = bodyOldCount + atomCounts.oldCount;
+    const nextNewCount = bodyNewCount + atomCounts.newCount;
+    const nextBodyChars = bodyChars + (body.length > 0 ? 1 : 0) + atomBodyChars(atom);
+    if (candidateFits(oldConsumed, newConsumed, nextOldCount, nextNewCount, nextBodyChars)) {
+      body.push(...atom);
+      bodyChars = nextBodyChars;
       bodyOldCount += atomCounts.oldCount;
       bodyNewCount += atomCounts.newCount;
       continue;
@@ -219,11 +227,12 @@ function splitOversizedHunkBlock(fileHeader: string, hunkBlock: string, safeDiff
 
     if (body.length === 0) return [hunkBlock];
     flush();
-    const firstAtom = makeFragment(atom, oldConsumed, newConsumed);
-    if (!firstAtom || `${fileHeader}${firstAtom}\n`.length > safeDiffChars) return [hunkBlock];
+    const firstAtomChars = atomBodyChars(atom);
+    if (!candidateFits(oldConsumed, newConsumed, atomCounts.oldCount, atomCounts.newCount, firstAtomChars)) return [hunkBlock];
     body = [...atom];
     bodyOldCount = atomCounts.oldCount;
     bodyNewCount = atomCounts.newCount;
+    bodyChars = firstAtomChars;
   }
   flush();
 
@@ -343,27 +352,10 @@ function splitOversizedFileHunksForGuardedAdmission(
   const boundedHunks = hunkBlocks.flatMap((hunk) => splitOversizedHunkBlock(fileHeader, hunk, safeDiffChars));
   const resultFiles: PartitionFile[] = [];
   let currentHunkGroup: string[] = [];
+  let currentHunkChars = 0;
   const buildPatch = (hunks: string[]) => `${fileHeader}${hunks.join('\n')}\n`;
-
-  for (const hunk of boundedHunks) {
-    const candidateGroup = [...currentHunkGroup, hunk];
-    if (currentHunkGroup.length > 0 && buildPatch(candidateGroup).length > safeDiffChars) {
-      const combinedPatch = buildPatch(currentHunkGroup);
-      resultFiles.push({
-        path: file.path,
-        patch: combinedPatch,
-        originalChars: combinedPatch.length,
-        compactedChars: combinedPatch.length,
-        status: file.status,
-      });
-      currentHunkGroup = [hunk];
-    } else {
-      currentHunkGroup = candidateGroup;
-    }
-    if (buildPatch(currentHunkGroup).length > safeDiffChars) return [file];
-  }
-
-  if (currentHunkGroup.length > 0) {
+  const flushHunkGroup = () => {
+    if (currentHunkGroup.length === 0) return;
     const combinedPatch = buildPatch(currentHunkGroup);
     resultFiles.push({
       path: file.path,
@@ -372,7 +364,22 @@ function splitOversizedFileHunksForGuardedAdmission(
       compactedChars: combinedPatch.length,
       status: file.status,
     });
+    currentHunkGroup = [];
+    currentHunkChars = 0;
+  };
+
+  for (const hunk of boundedHunks) {
+    const candidateGroupCount = currentHunkGroup.length + 1;
+    const candidateChars = fileHeader.length + currentHunkChars + hunk.length + candidateGroupCount;
+    if (currentHunkGroup.length > 0 && candidateChars > safeDiffChars) flushHunkGroup();
+
+    const singleHunkChars = fileHeader.length + hunk.length + 1;
+    if (singleHunkChars > safeDiffChars) return [file];
+    currentHunkGroup.push(hunk);
+    currentHunkChars += hunk.length;
   }
+
+  flushHunkGroup();
   return resultFiles.length > 1 ? resultFiles : [file];
 }
 

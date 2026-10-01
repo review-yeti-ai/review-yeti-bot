@@ -1940,6 +1940,8 @@ function parseDiffHunkForCoverage(hunkText) {
   let actualOldCount = 0;
   let actualNewCount = 0;
   let actualDiffLineCount = 0;
+  // This guarded validator mirrors the producer's owner-state check; exact body slices below
+  // make a marker's source-line ownership part of lossless coverage, not only its line counts.
   let previousLineCanOwnNoNewlineMarker = false;
   for (const line of body) {
     if (line === '\\ No newline at end of file') {

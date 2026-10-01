@@ -9,7 +9,7 @@
  * - Tier 4: PR comment coverage telemetry formatting ("Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)")
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   createPartitionPlan,
   detectFileStatus,
@@ -337,6 +337,75 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       }
     });
 
+    it('accounts for decimal count growth at the exact JS-character cap', () => {
+      const filePath = 'src/decimal-count-growth.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = Array.from({ length: 10 }, () => ' x');
+      const sourcePatch = `${fileHeader}@@ -1,10 +1,10 @@\n${body.join('\n')}\n`;
+      const firstNine = `@@ -1,9 +1,9 @@\n${body.slice(0, 9).join('\n')}`;
+      const safeDiffChars = fileHeader.length + firstNine.length + 1 + 3;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = plan.partitions.flatMap((partition) => partition.files);
+
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+      expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''))).toEqual([
+        firstNine,
+        '@@ -10,1 +10,1 @@\n x',
+      ]);
+      expect(pieces.every((piece) => piece.patch.length <= safeDiffChars)).toBe(true);
+      expect('@@ -1,10 +1,10 @@\n' + body.join('\n')).toHaveLength(firstNine.length + 5);
+    });
+
+    it('fails closed when a range-start digit makes the next indivisible atom exceed the cap', () => {
+      const filePath = 'src/decimal-start-growth.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = ['+same-width-line', '+same-width-line'];
+      const sourcePatch = `${fileHeader}@@ -0,0 +9,2 @@\n${body.join('\n')}\n`;
+      const firstFragment = '@@ -0,0 +9,1 @@\n+same-width-line';
+      const safeDiffChars = fileHeader.length + firstFragment.length + 1;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = plan.partitions.flatMap((partition) => partition.files);
+
+      expect(firstFragment.length + fileHeader.length + 1).toBe(safeDiffChars);
+      expect('@@ -0,0 +10,1 @@\n+same-width-line'.length + fileHeader.length + 1).toBe(safeDiffChars + 1);
+      expect(pieces).toHaveLength(1);
+      expect(pieces[0].patch).toBe(sourcePatch);
+    });
+
+    it('uses UTF-16 code-unit lengths for an exact-cap supplementary-character atom', () => {
+      const filePath = 'src/js-character-cap.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const first = '@@ -0,0 +1,1 @@\n+🧪';
+      const second = '@@ -0,0 +2,1 @@\n+';
+      const sourcePatch = `${fileHeader}@@ -0,0 +1,2 @@\n+🧪\n+\n`;
+      const safeDiffChars = fileHeader.length + Math.max(first.length, second.length) + 1;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = plan.partitions.flatMap((partition) => partition.files);
+
+      expect('🧪'.length).toBe(2);
+      expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''))).toEqual([first, second]);
+      expect(pieces.every((piece) => piece.patch.length <= safeDiffChars)).toBe(true);
+      expect(Math.max(...pieces.map((piece) => piece.patch.length))).toBe(safeDiffChars);
+    });
+
     it('keeps a no-newline marker attached to its source line while splitting', () => {
       const filePath = 'src/no-newline.ts';
       const fileHeader = 'diff --git a/' + filePath + ' b/' + filePath + '\n'
@@ -367,6 +436,80 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, '')))
         .toEqual(expectedFragments);
       expect(pieces.some((piece) => piece.patch.trimEnd().endsWith('\n' + marker))).toBe(true);
+    });
+
+    it('bounds joined-code-unit materialization while splitting a large single hunk', () => {
+      const filePath = 'src/large-linear-hunk.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = Array.from({ length: 360 }, (_unused, index) =>
+        ` context-${String(index).padStart(4, '0')}-${'x'.repeat(40)}`);
+      const sourcePatch = `${fileHeader}@@ -1,360 +1,360 @@ large body\n${body.join('\n')}\n`;
+      const safeDiffChars = fileHeader.length + 900;
+      const originalJoin = Array.prototype.join;
+      let joinedCodeUnits = 0;
+      let plan: PartitionPlan | undefined;
+      const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: any[], separator?: string) {
+        const joined = originalJoin.apply(this, [separator]);
+        joinedCodeUnits += joined.length;
+        return joined;
+      });
+      try {
+        plan = createPartitionPlan([{
+          path: filePath,
+          patch: sourcePatch,
+          originalChars: sourcePatch.length,
+          compactedChars: sourcePatch.length,
+          status: 'modified',
+        }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      } finally {
+        joinSpy.mockRestore();
+      }
+
+      expect(plan).toBeDefined();
+      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
+      expect(plan!.partitions.every((partition) => partition.totalChars <= safeDiffChars)).toBe(true);
+      const emittedContextLines = plan!.partitions.flatMap((partition) => partition.files)
+        .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith(' context-')));
+      expect(emittedContextLines).toEqual(body);
+    });
+
+    it('bounds joined-code-unit materialization while grouping many small hunks', () => {
+      const filePath = 'src/many-linear-hunks.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const hunks = Array.from({ length: 900 }, (_unused, index) =>
+        `@@ -${index + 1},1 +${index + 1},1 @@ section-${index}\n context-${String(index).padStart(4, '0')}`);
+      const sourcePatch = `${fileHeader}${hunks.join('\n')}\n`;
+      const safeDiffChars = fileHeader.length + 900;
+      const originalJoin = Array.prototype.join;
+      let joinedCodeUnits = 0;
+      let plan: PartitionPlan | undefined;
+      const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: any[], separator?: string) {
+        const joined = originalJoin.apply(this, [separator]);
+        joinedCodeUnits += joined.length;
+        return joined;
+      });
+      try {
+        plan = createPartitionPlan([{
+          path: filePath,
+          patch: sourcePatch,
+          originalChars: sourcePatch.length,
+          compactedChars: sourcePatch.length,
+          status: 'modified',
+        }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      } finally {
+        joinSpy.mockRestore();
+      }
+
+      expect(plan).toBeDefined();
+      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
+      expect(plan!.partitions.every((partition) => partition.totalChars <= safeDiffChars)).toBe(true);
+      const emittedHunks = plan!.partitions.flatMap((partition) => partition.files)
+        .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith('@@')));
+      const emittedContextLines = plan!.partitions.flatMap((partition) => partition.files)
+        .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith(' context-')));
+      expect(emittedHunks).toEqual(hunks.map((hunk) => hunk.split('\n')[0]));
+      expect(emittedContextLines).toEqual(Array.from({ length: 900 }, (_unused, index) =>
+        ` context-${String(index).padStart(4, '0')}`));
     });
 
     it('TEST_T2_06: empty input files returns single partition with 0 files and 100% coverage', () => {

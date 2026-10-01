@@ -236,6 +236,231 @@ function loadPartitionReducer() {
   return createRequire(import.meta.url)(filename);
 }
 
+function createGuardedPartitionPlan(sourcePatch: string, safeDiffCapacityChars: number, partitionManager?: any) {
+  const pipeline = loadPartitionReducer();
+  const input = {
+    files: [{
+      path: 'src/partition-parity.ts',
+      patch: sourcePatch,
+      originalChars: sourcePatch.length,
+      compactedChars: sourcePatch.length,
+      status: 'modified',
+    }],
+    baseSha: 'a'.repeat(40),
+    headSha: 'b'.repeat(40),
+    safeDiffCapacityChars,
+    modelConfig: {
+      guardedGatewayDestination: true,
+      model: pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
+    },
+    ...(partitionManager ? { partitionManager } : {}),
+  };
+  return pipeline.createReviewPartitionPlan(input);
+}
+
+function hunksFromPartitionPatch(patch: string, fileHeader: string): string[] {
+  const lines = patch.slice(fileHeader.length).replace(/\n+$/u, '').split('\n');
+  const hunks: string[] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      if (current.length > 0) hunks.push(current.join('\n'));
+      current = [line];
+    } else if (current.length > 0) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) hunks.push(current.join('\n'));
+  return hunks;
+}
+
+describe('guarded partition producer and validator stay in lossless parity', () => {
+  const filePath = 'src/partition-parity.ts';
+  const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+  const marker = '\\ No newline at end of file';
+
+  it.each([
+    {
+      name: 'zero old range at insertion start',
+      sourceHeader: '@@ -0,0 +1,2 @@',
+      body: ['+inserted-one', '+inserted-two'],
+      expected: [
+        '@@ -0,0 +1,1 @@\n+inserted-one',
+        '@@ -0,0 +2,1 @@\n+inserted-two',
+      ],
+    },
+    {
+      name: 'zero old range at insertion end',
+      sourceHeader: '@@ -2,0 +3,2 @@',
+      body: ['+inserted-one', '+inserted-two'],
+      expected: [
+        '@@ -2,0 +3,1 @@\n+inserted-one',
+        '@@ -2,0 +4,1 @@\n+inserted-two',
+      ],
+    },
+    {
+      name: 'zero new range for pure deletion',
+      sourceHeader: '@@ -3,2 +2,0 @@',
+      body: ['-removed-one', '-removed-two'],
+      expected: [
+        '@@ -3,1 +2,0 @@\n-removed-one',
+        '@@ -4,1 +2,0 @@\n-removed-two',
+      ],
+    },
+    {
+      name: 'mixed insertion with a zero-side fragment between context lines',
+      sourceHeader: '@@ -1,2 +1,4 @@',
+      body: [' context-before', '+inserted-one', '+inserted-two', ' context-after'],
+      expected: [
+        '@@ -1,1 +1,1 @@\n context-before',
+        '@@ -1,0 +2,1 @@\n+inserted-one',
+        '@@ -1,0 +3,1 @@\n+inserted-two',
+        '@@ -2,1 +4,1 @@\n context-after',
+      ],
+    },
+    {
+      name: 'omitted single counts in replacement',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-line', '+new-line'],
+      expected: [
+        '@@ -1,1 +0,0 @@\n-old-line',
+        '@@ -1,0 +1,1 @@\n+new-line',
+      ],
+    },
+    {
+      name: 'no-newline marker stays in the atom owned by its preceding deletion',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-without-newline', marker, '+new-with-newline'],
+      expected: [
+        `@@ -1,1 +0,0 @@\n-old-without-newline\n${marker}`,
+        '@@ -1,0 +1,1 @@\n+new-with-newline',
+      ],
+    },
+    {
+      name: 'no-newline marker stays in the atom owned by its preceding addition',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-with-newline', '+new-without-newline', marker],
+      expected: [
+        '@@ -1,1 +0,0 @@\n-old-with-newline',
+        `@@ -1,0 +1,1 @@\n+new-without-newline\n${marker}`,
+      ],
+    },
+    {
+      name: 'both replacement sides own their separate no-newline markers',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-without-newline', marker, '+new-without-newline', marker],
+      expected: [
+        `@@ -1,1 +0,0 @@\n-old-without-newline\n${marker}`,
+        `@@ -1,0 +1,1 @@\n+new-without-newline\n${marker}`,
+      ],
+    },
+    {
+      name: 'context owns its no-newline marker without consuming an extra range line',
+      sourceHeader: '@@ -1,2 +1,2 @@',
+      body: ['-old-before-unchanged-last-context', '+new-before-unchanged-last-context', ' shared-last-line', marker],
+      expected: [
+        '@@ -1,1 +0,0 @@\n-old-before-unchanged-last-context',
+        '@@ -1,0 +1,1 @@\n+new-before-unchanged-last-context',
+        `@@ -2,1 +2,1 @@\n shared-last-line\n${marker}`,
+      ],
+    },
+  ])('accepts literal canonical ranges for $name', ({ sourceHeader, body, expected }) => {
+    const sourcePatch = `${fileHeader}${sourceHeader}\n${body.join('\n')}\n`;
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+    expect(sourcePatch.length).toBeGreaterThan(safeDiffCapacityChars);
+
+    const plan = createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars);
+    const actual = plan.partitions.flatMap((partition: any) => partition.files)
+      .flatMap((file: any) => hunksFromPartitionPatch(file.patch, fileHeader));
+
+    expect(plan.partitions.length).toBeGreaterThan(1);
+    expect(plan.partitions.every((partition: any) => partition.totalChars <= safeDiffCapacityChars)).toBe(true);
+    // Expected ranges are literal controls independent of either implementation's cursor math.
+    expect(actual).toEqual(expected);
+  });
+
+  it('rejects a producer plan whose zero-count anchor is shifted without changing coverage bytes', () => {
+    const sourceHeader = '@@ -0,0 +1,3 @@';
+    const body = ['+inserted-one', '+inserted-two', '+inserted-three'];
+    const sourcePatch = `${fileHeader}${sourceHeader}\n${body.join('\n')}\n`;
+    const expected = body.map((line, index) => `@@ -0,0 +${index + 1},1 @@\n${line}`);
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+    const pipeline = loadPartitionReducer();
+    const partitionManager = {
+      createPartitionPlan(...args: any[]) {
+        const plan = pipeline.shaPartitionManager.createPartitionPlan(...args);
+        const first = plan.partitions.flatMap((partition: any) => partition.files)[0];
+        first.patch = first.patch.replace(/^@@ -0,0 /mu, '@@ -1,0 ');
+        return plan;
+      },
+    };
+
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars, partitionManager))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+
+  it('rejects moving a no-newline marker to a different changed line in an otherwise valid multi-copy plan', () => {
+    const oldLine = '-old-without-newline';
+    const newLine = '+new-with-newline';
+    const firstHunk = `@@ -1 +1 @@ replacement\n${oldLine}\n${marker}\n${newLine}`;
+    const laterLines = Array.from({ length: 24 }, (_unused, index) => `+later-${index}-${'y'.repeat(20)}`);
+    const laterHunk = `@@ -40,0 +41,24 @@ later insertions\n${laterLines.join('\n')}`;
+    const sourcePatch = `${fileHeader}${firstHunk}\n${laterHunk}\n`;
+    const safeDiffCapacityChars = fileHeader.length + firstHunk.length + 1;
+    const pipeline = loadPartitionReducer();
+    const partitionManager = {
+      createPartitionPlan(...args: any[]) {
+        const plan = pipeline.shaPartitionManager.createPartitionPlan(...args);
+        const target = plan.partitions.flatMap((partition: any) => partition.files)
+          .find((file: any) => file.patch.includes(oldLine));
+        expect(target).toBeDefined();
+        target.patch = target.patch.replace(
+          `${oldLine}\n${marker}\n${newLine}`,
+          `${oldLine}\n${newLine}\n${marker}`,
+        );
+        return plan;
+      },
+    };
+
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars, partitionManager))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+
+  it.each([
+    ['orphaned before any diff line', [marker, '-old', '+new']],
+    ['duplicated after its owning line', ['-old', marker, marker, '+new']],
+  ] as const)('fails closed when source has a %s', (_name, malformedBody) => {
+    const malformedHunk = `@@ -1,1 +1,1 @@ malformed marker control\n${malformedBody.join('\n')}`;
+    const laterLines = Array.from({ length: 24 }, (_unused, index) => `+later-${index}-${'z'.repeat(20)}`);
+    const laterHunk = `@@ -40,0 +41,24 @@ force bounded multi-copy admission\n${laterLines.join('\n')}`;
+    const sourcePatch = `${fileHeader}${malformedHunk}\n${laterHunk}\n`;
+    const safeDiffCapacityChars = fileHeader.length + malformedHunk.length + 160;
+
+    expect(sourcePatch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+
+  it.each([
+    ['incorrect old count', '@@ -1,2 +1,1 @@'],
+    ['incorrect new count', '@@ -1,1 +1,2 @@'],
+    ['unsafe old start', '@@ -9007199254740992,1 +1,1 @@'],
+    ['unsafe new start', '@@ -1,1 +9007199254740992,1 @@'],
+    ['unsafe old count', '@@ -1,9007199254740992 +1,1 @@'],
+    ['unsafe new count', '@@ -1,1 +1,9007199254740992 @@'],
+  ])('fails closed on a source header with %s', (_name, malformedHeader) => {
+    const malformedHunk = `${malformedHeader}\n-old\n+new`;
+    const laterLines = Array.from({ length: 24 }, (_unused, index) => `+later-${index}-${'z'.repeat(20)}`);
+    const laterHunk = `@@ -40,0 +41,24 @@ force bounded multi-copy admission\n${laterLines.join('\n')}`;
+    const sourcePatch = `${fileHeader}${malformedHunk}\n${laterHunk}\n`;
+    const safeDiffCapacityChars = fileHeader.length + malformedHunk.length + 160;
+
+    expect(sourcePatch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+});
+
 type TerminalDiagnostics = {
   responseStatus?: number | null;
   errorCode?: string | null;
