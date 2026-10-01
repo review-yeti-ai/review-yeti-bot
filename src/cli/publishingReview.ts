@@ -1642,7 +1642,7 @@ export async function runPublishingReviewWorker(
       try {
         const factory = deps.repoFileProviderFactory
           || ((input: { token: string; owner: string; repo: string; headSha: string }) => createRepoFileProvider(
-            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha,
+            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha, { baseSha: identity.baseSha, changedFiles },
           ));
         repoFileProvider = factory({
           token: repoReadToken,

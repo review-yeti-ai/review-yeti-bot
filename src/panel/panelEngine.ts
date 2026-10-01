@@ -1,3 +1,7 @@
+import { PanelConfigurationError, PanelStructuredOutputError, PanelCancellationError, PanelInfrastructureError, PanelDeadlineExceededError } from './panelErrors';
+export { PanelConfigurationError, PanelStructuredOutputError, PanelCancellationError, PanelInfrastructureError, PanelDeadlineExceededError } from './panelErrors';
+import { panelAbortError, throwIfPanelAborted, raceWithPanelAbort } from './panelAbort';
+export { throwIfPanelAborted, raceWithPanelAbort } from './panelAbort';
 import crypto from 'node:crypto';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCall } from './nativeTurnProtocol';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
@@ -238,6 +242,11 @@ export interface RepoFileProvider {
   findFiles(query: string): Promise<string[]>;
   /** Full content of a single file at the reviewed head, or null if it does not exist there. */
   readFile(path: string): Promise<string | null>;
+  /** Pinned source sides; merge-base is verified against the admitted base/head. */
+  readFileAt?(path: string, side: 'head' | 'merge-base'): Promise<{ content: string | null; sha: string }>;
+  /** Original admitted patch, independent of shrinking or prompt packing. */
+  readDiff?(path: string): { patch: string; originalPatchLength?: number;
+    identity?: { repository: string; baseSha: string; headSha: string } } | null;
   /**
    * Whether the repository tree behind findFiles was truncated by the API. GitHub
    * truncates recursive trees past ~100k entries, and a zero-hit search over a
@@ -413,105 +422,6 @@ function structuredOutputExample(role: string, nonceValue: string, payload: Reco
   }, null, 2);
 }
 
-export class PanelConfigurationError extends Error {
-  /** Bounded, numeric-only telemetry from the lane's last provider response before it failed
-   * closed, when one was received. Never the free-form message this error already carries. */
-  readonly lastKnownUsage?: LaneTokenUsage;
-  readonly lastKnownModel?: string;
-  /**
-   * Coded classification of why the lane failed, assigned once by the code path that observed
-   * the terminal error (see `classifyPersonaAttemptFailure` and its call sites in `runPersona`).
-   * This is the type-enforced home for a lane's failure reason (REL-892 finding 2): a caller
-   * that only receives this error instance can read `.failureClass` directly instead of
-   * re-deriving it from `.message` later. Optional because not every `PanelConfigurationError`
-   * represents a persona lane failure -- panel-level setup errors (invalid roster, quorum
-   * failure, arbiter failure) do not set it and fall back to `classifyFailure` at the publishing
-   * layer.
-   *
-   * Deliberately NOT included here: `rawCompletionExcerpt`. That field carries actual completion
-   * text (may contain provider prompt/response content) and must stay off this class's public
-   * contract so it can never reach `optionalFailures` or a published check by construction. It is
-   * bolted on as a narrow, explicitly-cast side channel only where it is set and read -- see the
-   * comments at both of those sites.
-   */
-  readonly failureClass?: WorkerFailureClass;
-  readonly failureReason?: string;
-
-  constructor(message: string, lane?: { lastKnownUsage?: LaneTokenUsage; lastKnownModel?: string; failureClass?: WorkerFailureClass; failureReason?: string }) {
-    super(message);
-    this.name = 'PanelConfigurationError';
-    this.lastKnownUsage = lane?.lastKnownUsage;
-    this.lastKnownModel = lane?.lastKnownModel;
-    this.failureClass = lane?.failureClass;
-    this.failureReason = lane?.failureReason;
-  }
-}
-
-/** The provider exhausted the in-conversation correction without a valid result object. */
-/**
- * A provider exhausted the in-conversation correction without a valid result object.
- *
- * Extends `PanelConfigurationError` (rather than `Error` directly) so that when a real provider
- * response *was* received before the parse failure (see `invoke()`'s fence-parse catch), that
- * response's bounded, numeric-only telemetry can be carried on this error through the same
- * constructor-only, type-checked `lastKnownUsage`/`lastKnownModel` fields -- never bolted on
- * after construction via an `as {...}` cast. A caller that only receives this error instance
- * (e.g. `runPersona`'s catch, which never sees a returned `result` on this path) can still read
- * `.lastKnownUsage` / `.lastKnownModel` with compiler-checked confidence that they are the two
- * fields this class declares, not whatever shape happened to be cast onto it.
- */
-export class PanelStructuredOutputError extends PanelConfigurationError {
-  constructor(message: string, lane?: { lastKnownUsage?: LaneTokenUsage; lastKnownModel?: string }) {
-    super(message, lane);
-    this.name = 'PanelStructuredOutputError';
-  }
-}
-
-/** A caller or worker stopped the panel before it produced a binding result. */
-export class PanelCancellationError extends PanelConfigurationError {
-  constructor(message = 'review panel was cancelled') {
-    super(message);
-    this.name = 'PanelCancellationError';
-  }
-}
-
-/**
- * REL-1124: a lane, a required-lane panel, or the arbiter failed closed on the path to the model
- * (transport, gateway 5xx, rate limit, provider timeout), not on anything the model said. A
- * subclass so every `instanceof PanelConfigurationError` fail-closed check is unchanged; its own
- * name so logs and triage stop reporting a gateway outage as a configuration error.
- */
-export class PanelInfrastructureError extends PanelConfigurationError {
-  constructor(message: string, lane?: { lastKnownUsage?: LaneTokenUsage; lastKnownModel?: string; failureClass?: WorkerFailureClass; failureReason?: string }) {
-    super(message, lane);
-    this.name = 'PanelInfrastructureError';
-  }
-}
-
-/** The configured panel deadline elapsed; this is distinct from a provider request timeout. */
-export class PanelDeadlineExceededError extends PanelCancellationError {
-  readonly failureClass = 'timeout' as const;
-  readonly failureReason: string;
-  constructor(timeoutMs: number, terminalBound = false) {
-    super(terminalBound ? 'review panel exceeded admitted terminal model-work deadline'
-      : `review panel exceeded overall timeout of ${Math.ceil(timeoutMs / 1000)}s`);
-    this.name = 'PanelDeadlineExceededError';
-    this.failureReason = terminalBound ? 'worker_terminal_deadline_exceeded' : 'worker_deadline_exceeded';
-  }
-}
-
-function panelAbortError(signal?: AbortSignal): PanelCancellationError {
-  const reason = signal?.reason;
-  return reason instanceof PanelCancellationError
-    ? reason
-    : new PanelCancellationError();
-}
-
-/** Fail closed at every model-loop boundary without exposing an arbitrary abort reason. */
-export function throwIfPanelAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw panelAbortError(signal);
-}
-
 /**
  * Link a caller cancellation signal to the configured panel deadline. Both the
  * timer and the parent listener are removed on completion so a healthy panel
@@ -561,40 +471,6 @@ export function createPanelDeadlineSignal(
       parentSignal?.removeEventListener('abort', onParentAbort);
     },
   };
-}
-
-/** Race a model/tool operation against cancellation and consume a late rejection. */
-export function raceWithPanelAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return operation;
-  if (signal.aborted) {
-    void operation.catch(() => undefined);
-    return Promise.reject(panelAbortError(signal));
-  }
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      void operation.catch(() => undefined);
-      reject(panelAbortError(signal));
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    operation.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (error) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        reject(error);
-      },
-    );
-  });
 }
 
 export function panelDelay(ms: number, signal?: AbortSignal): Promise<void> {
@@ -1670,6 +1546,8 @@ export function buildCompactDiffManifest(
     `Each persona in this container reviews independently based on their domain lane.`,
     `Fetch diff hunks or inspect source context on-demand using:`,
     `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
+    `- get_diff_page: {"tool":"get_diff_page","args":{"path":"<path>","startOffset":0,"maxChars":16000}}; follows nextOffset through the ORIGINAL patch, including oversized single hunks.`,
+    `- read_file_page: {"tool":"read_file_page","args":{"path":"<path>","side":"merge-base","startOffset":0,"maxChars":16000}}; use head for surviving source and merge-base for removed source. Repeat returned digest when continuing.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
     `- ${FIND_FILES_TOOL_GUIDE}`,
     `- zoekt / symbol_search: to audit cross-file symbols across the repository.`,
@@ -1871,7 +1749,7 @@ export function buildScopedDiffSection(
     const affinityTag = isAffinity ? ' (★ YOUR LANE)' : '';
 
     if (skippedSet.has(filePath)) {
-      return `- ${filePath} (SKIPPED: ${filePatchChars(f)} chars > max-file-diff-chars ${maxFileDiffChars}) [${lane}]`;
+      return `- ${filePath} (OVERSIZED: ${filePatchChars(f)} chars; use get_diff_page or read_file_page in bounded pages) [${lane}]`;
     }
     if (indexedSet.has(filePath)) {
       return `- ${filePath} [${lane}]${affinityTag}${statStr} [INDEXED: on-demand get_diff available]`;
@@ -1903,7 +1781,7 @@ export function buildScopedDiffSection(
       ]
     : [
         `=== ALL FILES OVERSIZED ===`,
-        `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars) and cannot be inlined or fetched via get_diff.`,
+        `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`,
       ];
 
   const diffText = [
@@ -2231,6 +2109,7 @@ async function invoke(
     `- IMMEDIATE VERDICT MANDATE (Turn 1): If the pre-injected diff hunks and pre-check evidence provide sufficient context to evaluate code correctness, security, and quality, you MUST render your final findings and verdict IMMEDIATELY on Turn 1.`,
     `- DO NOT invoke get_diff or other tools simply to re-fetch or confirm what is already visible in the inlined diff hunks.`,
     `- TOOL USAGE IS STRICTLY A FALLBACK:`,
+    `  * get_diff_page/read_file_page: Inspect original diff or pinned head/merge-base source in bounded pages; follow nextOffset with the returned digest.`,
     `  * get_diff: Use ONLY for files explicitly marked [INDEXED: on-demand get_diff available] that exceeded the prompt budget.`,
     `  * ${READ_FILE_TOOL_GUIDE}`,
     `  * ${FIND_FILES_TOOL_GUIDE}`,
@@ -2239,7 +2118,7 @@ async function invoke(
     `- IMPORTANT EVIDENCE BOUNDARY: get_diff and text/symbol search tools inspect PR diff content only; a miss does not establish repository-wide absence. Never claim a function, module, or symbol is undefined or missing from a patch-scoped miss; use read_file or zoekt when broader evidence is needed.`,
     `- CLEAN DIFF EMPTY APPROVAL: If the modified code in your domain lane contains no defects, render decision 'APPROVE' with findings: [] immediately on Turn 1. Never invent speculative or stylistic issues simply to produce findings.`,
     `- Permitted Tool Categories:`,
-    `  1. Code Reading: view_file (scope depends on the available exact-path context); read_file (one exact current-head file when the provider is available); get_diff (changed-file patch only)`,
+    `  1. Code Reading: view_file (scope depends on the available exact-path context); read_file (one exact current-head file when the provider is available); get_diff (changed-file patch only); get_diff_page (original patch); read_file_page (pinned head or merge-base source)`,
     `  2. AST Context & Symbols: symbol_search, search_code, grep_search, find_files, code_search_zoekt`,
     `  3. External Documentation (Optional on-demand): ${mcpToolListStr || 'fetch_docs, context7_search'}`,
     `  4. Fleet Architecture, Knowledge & Policy (CallTelemetry ct-mcp):`,
