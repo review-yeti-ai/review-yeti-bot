@@ -75,6 +75,7 @@ function externalFetch(calls, {
   workflow = callerWorkflow,
   callerAttempt = 1,
   checkRuns = [],
+  ignoreCheckAppFilter = false,
 } = {}) {
   return async (url, init) => {
     calls.push({ url, init });
@@ -125,8 +126,11 @@ function externalFetch(calls, {
       return response({ total_count: 0, workflow_runs: [] });
     }
     if (url.includes(`/commits/${headSha}/check-runs?`)) {
-      const requestedAppId = Number(new URL(url).searchParams.get('app_id'));
-      const matchingChecks = checkRuns.filter((row) => row.app.id === requestedAppId);
+      const query = new URL(url).searchParams;
+      const requestedAppId = Number(query.get('app_id'));
+      const requestedName = query.get('check_name');
+      const matchingChecks = checkRuns.filter((row) => row.name === requestedName
+        && (ignoreCheckAppFilter || row.app.id === requestedAppId));
       return response({ total_count: matchingChecks.length, check_runs: matchingChecks });
     }
     if (url.includes(`/contents/${REVIEW_YETI_CALLER_WORKFLOW_PATH}?ref=main`)) {
@@ -134,6 +138,65 @@ function externalFetch(calls, {
     }
     throw new Error(`unexpected URL ${url}`);
   };
+}
+
+function publicInfrastructurePanelCheck(overrides = {}) {
+  return {
+    id: 106985152261,
+    name: 'Review Yeti',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `run_${'3'.repeat(32)}:a1`,
+    started_at: '2026-10-01T10:00:00Z',
+    completed_at: '2026-10-01T10:01:00Z',
+    app: { id: 4552718, slug: 'review-yeti' },
+    output: {
+      title: 'Review Yeti: BLOCK',
+      summary: [
+        `Verdict \`BLOCK\` at \`${headSha}\`.`,
+        'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).',
+        'Coverage: mode=panel; expected lanes=2; completed lanes=1; failed lanes=1; roster valid=true; quorum satisfied=false; full panel complete=false.',
+      ].join('\n'),
+      text: null,
+    },
+    ...overrides,
+  };
+}
+
+function authoritativeInfrastructureGateCheck(overrides = {}) {
+  return {
+    id: 106985152262,
+    name: 'Review Yeti Gate',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `review-yeti-gate:v1:${'4'.repeat(64)}`,
+    started_at: '2026-10-01T10:00:00Z',
+    completed_at: '2026-10-01T10:02:00Z',
+    app: { id: 4385771, slug: 'ct-review-bot' },
+    output: {
+      title: 'Review Yeti Gate: Failed',
+      summary: 'Review Yeti Gate failed: infrastructure-failure. This is not an approval.',
+      text: null,
+    },
+    ...overrides,
+  };
+}
+
+async function validatePublicRetry(checkRuns, options = {}) {
+  const calls = options.calls ?? [];
+  const result = await validateCentralDispatch({
+    payload: { ...externalPayload, request_id: `review-yeti-bot:314:${headSha}:${callerRunId}:2` },
+    targetToken: 'target-installation-token',
+    centralToken: 'central-installation-token',
+    fetchImpl: externalFetch(calls, {
+      callerAttempt: 2,
+      checkRuns,
+      ignoreCheckAppFilter: options.ignoreCheckAppFilter,
+    }),
+  });
+  return { result, calls };
 }
 
 test('admits only the exact public Review Yeti repository and caller path', () => {
@@ -221,6 +284,94 @@ test('public retry reads the dedicated App worker ledger to admit generation 2',
   assert.equal(result.latest_worker_check_id, worker.id);
   const checkCall = calls.find((call) => call.url.includes(`/commits/${headSha}/check-runs?`));
   assert.equal(new URL(checkCall.url).searchParams.get('app_id'), '4552718');
+});
+
+test('public infrastructure recovery pairs raw App 455 with the authoritative Gate App 438', async () => {
+  const { result, calls } = await validatePublicRetry([
+    publicInfrastructurePanelCheck(),
+    authoritativeInfrastructureGateCheck(),
+  ]);
+
+  assert.equal(result.review_generation, 2);
+  assert.equal(result.worker_check_count, 1);
+  const checkQueries = calls
+    .filter(({ url }) => url.includes(`/commits/${headSha}/check-runs?`))
+    .map(({ url }) => {
+      const query = new URL(url).searchParams;
+      return [query.get('check_name'), query.get('app_id')];
+    });
+  assert.deepEqual(checkQueries, [
+    ['Review Yeti', '4552718'],
+    ['Review Yeti Gate', '4385771'],
+  ]);
+});
+
+test('public raw infrastructure BLOCK without its exact authoritative Gate is not recoverable', async () => {
+  const calls = [];
+  await assert.rejects(validatePublicRetry([publicInfrastructurePanelCheck()], { calls }),
+    /a1 worker is not a completed recoverable infrastructure failure/u);
+  const gateQuery = calls.find(({ url }) => url.includes('check_name=Review+Yeti+Gate'))?.url;
+  assert.ok(gateQuery, 'the incomplete worker must cause an exact Gate lookup');
+  assert.equal(new URL(gateQuery).searchParams.get('app_id'), '4385771');
+});
+
+test('public recovery rejects a legacy App 455 Gate even when a mock API returns it', async () => {
+  const legacyGate = authoritativeInfrastructureGateCheck({
+    app: { id: 4552718, slug: 'review-yeti' },
+  });
+  await assert.rejects(validatePublicRetry([publicInfrastructurePanelCheck(), legacyGate], {
+    ignoreCheckAppFilter: true,
+  }), /not an exact-head App-owned gate/u);
+});
+
+test('public recovery rejects swapped raw/Gate publishers', async () => {
+  const swappedRaw = publicInfrastructurePanelCheck({ app: { id: 4385771, slug: 'ct-review-bot' } });
+  const swappedGate = authoritativeInfrastructureGateCheck({
+    app: { id: 4552718, slug: 'review-yeti' },
+  });
+  await assert.rejects(validatePublicRetry([swappedRaw, swappedGate], {
+    ignoreCheckAppFilter: true,
+  }), /not owned by the required Review Yeti App/u);
+});
+
+test('public recovery rejects stale or malformed authoritative Gate identity', async (t) => {
+  for (const [name, gate, expected] of [
+    ['stale head', authoritativeInfrastructureGateCheck({ head_sha: 'c'.repeat(40) }), /not an exact-head App-owned gate/u],
+    ['wrong App slug', authoritativeInfrastructureGateCheck({ app: { id: 4385771, slug: 'review-yeti' } }), /not an exact-head App-owned gate/u],
+    ['malformed external ID', authoritativeInfrastructureGateCheck({ external_id: 'manual:gate' }), /not an exact-head App-owned gate/u],
+  ]) {
+    await t.test(name, async () => {
+      const calls = [];
+      await assert.rejects(validatePublicRetry([publicInfrastructurePanelCheck(), gate], { calls }), expected);
+      const gateQuery = calls.find(({ url }) => url.includes('check_name=Review+Yeti+Gate'))?.url;
+      assert.ok(gateQuery);
+      assert.equal(new URL(gateQuery).searchParams.get('app_id'), '4385771');
+    });
+  }
+});
+
+test('public recovery rejects pending or non-infrastructure authoritative Gate results', async (t) => {
+  for (const [name, gate] of [
+    ['pending Gate', authoritativeInfrastructureGateCheck({
+      status: 'in_progress', conclusion: null, completed_at: null,
+    })],
+    ['different failure reason', authoritativeInfrastructureGateCheck({
+      output: {
+        title: 'Review Yeti Gate: Failed',
+        summary: 'Review Yeti Gate failed: code-findings. This is not an approval.',
+        text: null,
+      },
+    })],
+  ]) {
+    await t.test(name, async () => {
+      const calls = [];
+      await assert.rejects(validatePublicRetry([publicInfrastructurePanelCheck(), gate], { calls }),
+        /a1 worker is not a completed recoverable infrastructure failure/u);
+      const gateQuery = calls.find(({ url }) => url.includes('check_name=Review+Yeti+Gate'))?.url;
+      assert.ok(gateQuery);
+      assert.equal(new URL(gateQuery).searchParams.get('app_id'), '4385771');
+    });
+  }
 });
 
 test('public retry rejects a check with the dedicated App ID but the wrong slug', async () => {

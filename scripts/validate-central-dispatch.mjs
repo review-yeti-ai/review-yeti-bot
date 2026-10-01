@@ -421,11 +421,16 @@ function assertNullableString(value, label) {
   }
 }
 
-function reviewPublisherFor(repository) {
+function rawReviewPublisherFor(repository) {
   resolveAdmittedTarget(repository);
   return repository === REVIEW_YETI_REPOSITORY
     ? { id: PUBLIC_REVIEW_APP_ID, slug: PUBLIC_REVIEW_APP_SLUG }
     : { id: REQUIRED_REVIEW_APP_ID, slug: REQUIRED_REVIEW_APP_SLUG };
+}
+
+function authoritativeGatePublisherFor(repository) {
+  resolveAdmittedTarget(repository);
+  return { id: REQUIRED_REVIEW_APP_ID, slug: REQUIRED_REVIEW_APP_SLUG };
 }
 
 function validateExactHeadReviewCheck(row, expectedHeadSha, publisher) {
@@ -497,8 +502,8 @@ function validateExactHeadGateCheck(row, expectedHeadSha, publisher) {
   return { row, kind: 'gate' };
 }
 
-async function listExactHeadAppChecks({ repository, headSha, token, fetchImpl, checkName, validateRow }) {
-  const publisher = reviewPublisherFor(repository);
+async function listExactHeadAppChecks({ repository, headSha, token, fetchImpl, checkName, validateRow, publisherFor }) {
+  const publisher = publisherFor(repository);
   const apiBase = `https://api.github.com/repos/${repository}`;
   const rows = [];
   const identities = [];
@@ -560,6 +565,7 @@ export async function listExactHeadReviewChecks({ repository, headSha, token, fe
     repository, headSha, token, fetchImpl,
     checkName: REQUIRED_REVIEW_CONTEXT,
     validateRow: validateExactHeadReviewCheck,
+    publisherFor: rawReviewPublisherFor,
   });
 }
 
@@ -1121,6 +1127,7 @@ export async function validateCentralDispatch({
       fetchImpl,
       checkName: REVIEW_GATE_CONTEXT,
       validateRow: validateExactHeadGateCheck,
+      publisherFor: authoritativeGatePublisherFor,
     })
     : undefined;
   const generation = assertReviewGeneration({

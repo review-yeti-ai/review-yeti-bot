@@ -498,6 +498,62 @@ test('validates exact live PR identity and the immutable base-owned caller with 
   assert.equal(calls.some((call) => call.url.includes('central-token')), false);
 });
 
+test('exampleorg recovery queries both worker and authoritative Gate from App 438', async () => {
+  const calls = [];
+  const defaultFetch = successFetch(calls);
+  const worker = {
+    ...infrastructureFailedFirstAttemptCheck(),
+    status: 'completed',
+    conclusion: 'failure',
+    completed_at: '2026-09-30T10:01:00Z',
+    output: {
+      title: 'Review Yeti: BLOCK',
+      summary: [
+        `Verdict \`BLOCK\` at \`${headSha}\`.`,
+        'Findings: 0 (blocking P0/P1: 0; 0 raw persona finding(s) before clustering).',
+        'Coverage: mode=panel; expected lanes=2; completed lanes=1; failed lanes=1; roster valid=true; quorum satisfied=false; full panel complete=false.',
+      ].join('\n'),
+      text: null,
+    },
+  };
+  const gate = {
+    id: 101,
+    name: 'Review Yeti Gate',
+    head_sha: headSha,
+    status: 'completed',
+    conclusion: 'failure',
+    external_id: `review-yeti-gate:v1:${'2'.repeat(64)}`,
+    completed_at: '2026-09-30T10:02:00Z',
+    app: { id: 4385771, slug: 'ct-review-bot' },
+    output: {
+      title: 'Review Yeti Gate: Failed',
+      summary: 'Review Yeti Gate failed: infrastructure-failure. This is not an approval.',
+    },
+  };
+  const fetchImpl = async (url, init) => {
+    if (url.includes(`/commits/${headSha}/check-runs?`)) {
+      calls.push({ url, init });
+      const query = new URL(url).searchParams;
+      const rows = query.get('check_name') === 'Review Yeti' ? [worker] : [gate];
+      return response({ total_count: rows.length, check_runs: rows });
+    }
+    return defaultFetch(url, init);
+  };
+
+  const result = await validateCentralDispatch({ payload, token: 'central-token', fetchImpl });
+
+  assert.equal(result.review_generation, 2);
+  assert.deepEqual(calls
+    .filter((call) => call.url.includes(`/commits/${headSha}/check-runs?`))
+    .map((call) => {
+      const query = new URL(call.url).searchParams;
+      return [query.get('check_name'), query.get('app_id')];
+    }), [
+    ['Review Yeti', '4385771'],
+    ['Review Yeti Gate', '4385771'],
+  ]);
+});
+
 test('fails closed on missing central credentials, stale identity, or a GitHub lookup failure', async () => {
   await assert.rejects(
     validateCentralDispatch({ payload, token: '', fetchImpl: successFetch([]) }),

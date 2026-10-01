@@ -103,8 +103,10 @@ The central `repository-dispatch.yml` workflow serializes the full admission run
 by exact repository, pull request, and head SHA with `cancel-in-progress: false`.
 New heads use different groups and can proceed independently. While holding the
 exact-head lease, central validation reads every page of the raw `Review Yeti`
-check ledger from App ID `4385771`, validates every row before classification,
-and admits only an initial `a1` with no worker ledger or bounded recovery
+check ledger from the route's publisher (App ID `4385771` for exampleorg
+repositories and `4552718` for the exact public self-review repository),
+validates every row before classification, and admits only an initial `a1` with
+no worker ledger or bounded recovery
 generations `a2` and `a3`. Every lower generation must appear exactly once as a
 completed App-owned `failure` carrying an approved infrastructure/no-verdict
 title, and all prior worker rows must share one identical DOKS `run_<id>`.
@@ -141,6 +143,12 @@ workflow-token fallback is accepted. For the public caller, central validation
 also enforces the SHA-pinned ingress-App, two-step dispatch-only workflow and
 the exact five-field coordinate payload; it rejects checkout, extra API writes,
 and any alternate token source.
+
+The public self-review worker's raw `Review Yeti` check is published by App
+`4552718`; the service-owned `Review Yeti Gate` remains App `4385771`. When a
+recovery classification requires Gate corroboration, central reads and
+validates that Gate against App `4385771` independently of the raw worker
+publisher. The raw check is not a substitute for the authoritative Gate.
 
 ### D. Self-Cancellation of Superseded Runs
 If multiple commits are pushed in rapid succession, earlier in-flight central runs detect that `head_sha` has moved and self-cancel, avoiding wasted model tokens on outdated code.
