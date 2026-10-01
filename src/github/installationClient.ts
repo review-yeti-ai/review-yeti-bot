@@ -983,7 +983,10 @@ export class GitHubInstallationClient {
 
   async getFileContent(owner: string, repo: string, path: string, ref?: string, options: { notFoundIsEmpty?: boolean } = {}): Promise<string | null> {
     try {
-      const url = `/repos/${owner}/${repo}/contents/${path}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
+      // A repository filename may contain query or fragment characters. It
+      // must never reinterpret the pinned ref or truncate the contents path.
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+      const url = `/repos/${owner}/${repo}/contents/${encodedPath}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
       const data = await this.request(url);
       if (data.encoding === 'base64' && typeof data.content === 'string') {
         return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
