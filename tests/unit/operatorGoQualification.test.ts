@@ -99,25 +99,37 @@ describe('embedded operator Go qualification workflow', () => {
   });
 
   it('leaves the existing Vitest job boundary and timeout intact', () => {
-    // PEG DECLINED. The SKU stays at 4 vCPU because the shards are CPU-bound:
-    // measured same-SHA on PR #1247 against the 4-vCPU main baseline, every
-    // shard stretched 2.11x-2.31x, past the 2x budget where a vCPU cut loses on
+    // PEG DECLINED for the default SKU. The shards are CPU-bound: measured
+    // same-SHA on PR #1247 against the 4-vCPU main baseline, every shard
+    // stretched 2.11x-2.31x, past the 2x budget where a vCPU cut loses on
     // normalized compute (wall x vCPU). The node_modules sticky disk was warm in
     // the 2-vCPU run, so this is CPU and not a cold-cache artifact.
-    expect(vitest['runs-on']).toBe('blacksmith-4vcpu-ubuntu-2404');
+    //
+    // `runs-on` is now the bench-aware expression: it honours the
+    // workflow_dispatch `bench_runner` override when set (for same-SHA A/B) and
+    // otherwise resolves to this job's own SKU.
+    expect(vitest['runs-on']).toContain('blacksmith-4vcpu-ubuntu-2404');
+    expect(vitest['runs-on']).toContain('inputs.bench_runner');
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
   });
 
-  it('keeps the memory-bound build job on the larger SKU', () => {
-    // The one deliberate PEG EXCEPTION in this workflow. Pegging `build` to
-    // 2 vCPU OOM'd `next build` on PR #1247 (job 110616268666): "Ineffective
-    // mark-compacts near heap limit ... JavaScript heap out of memory" at
-    // ~2.0 GB RSS. The larger SKU buys RAM here, not cores. This assertion
-    // exists so a future blanket "make everything 2 vCPU" sweep has to
-    // consciously delete the exception rather than inherit it.
-    expect(build['runs-on']).toBe('blacksmith-4vcpu-ubuntu-2404');
+  it('bounds the build heap so the build does not OOM on a smaller runner', () => {
+    // This replaces an earlier "keep build on 4 vCPU" exception. That exception
+    // was treating the symptom: Node derives its default old-space cap from the
+    // HOST's RAM, so `next build` OOM'd on 2 vCPU (
+    //   FATAL ERROR: Ineffective mark-compacts near heap limit
+    //   Allocation failed - JavaScript heap out of memory)
+    // while the build's real working set is only ~1.4 GB RSS. Pinning
+    // NODE_OPTIONS makes the requirement a property of the build rather than of
+    // whichever runner it lands on -- which is what lets the SKU be chosen on
+    // cost without changing whether the build succeeds.
+    const buildSteps = build.steps as Array<Record<string, any>>;
+    const buildStep = buildSteps.find((s) =>
+      typeof s.run === 'string' && s.run.includes('npm run build'));
+    expect(buildStep).toBeDefined();
+    expect(buildStep!.env?.NODE_OPTIONS).toMatch(/--max-old-space-size=\d+/);
     expect(build['timeout-minutes']).toBe(15);
   });
 
