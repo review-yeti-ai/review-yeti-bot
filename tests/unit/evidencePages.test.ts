@@ -12,6 +12,22 @@ const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), OLD = 'c'.repeat(40);
 const parse = (value: { toolOutput: string }) => JSON.parse(value.toolOutput);
 
 describe('original evidence pages', () => {
+  it('keeps missing or unverified source and binary patches unavailable and cancels pending reads', async () => {
+    const missing = { changedFiles: [] };
+    expect(parse(await runReadOnlyTool('read_file_page', { path: 'x', side: 'head' }, missing)).status).toBe('unavailable');
+    for (const source of [{ sha: 'bad', content: 'x' }, { sha: HEAD, content: null }]) {
+      const context = { changedFiles: [], repoFileProvider: { readFile: async () => null, findFiles: async () => [], readFileAt: async () => source } };
+      expect(parse(await runReadOnlyTool('read_file_page', { path: 'x', side: 'head' }, context)).reason).toBe('pinned_source_unavailable');
+    }
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, { changedFiles: [{ path: 'x',
+      patch: 'deleted file mode 100644\nBinary files a/x and b/x differ' }] })).status).toBe('unavailable');
+    const controller = new AbortController();
+    const run = runReadOnlyTool('read_file_page', { path: 'x', side: 'head' }, { changedFiles: [], signal: controller.signal,
+      repoFileProvider: { readFile: async () => null, findFiles: async () => [], readFileAt: () => new Promise(() => {}) } });
+    controller.abort('private abort reason');
+    await expect(run).rejects.toThrow('review panel was cancelled');
+  });
+
   it('evicts digest cache entries by count and bytes and declines oversized cache entries', async () => {
     let text = 'x';
     const context = { changedFiles: [], repoFileProvider: { readFile: async () => null, findFiles: async () => [],
