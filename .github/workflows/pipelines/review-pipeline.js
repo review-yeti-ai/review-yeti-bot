@@ -1923,6 +1923,100 @@ function splitDiffPatchForCoverage(patch) {
   return { header: header.join('\n'), hunks };
 }
 
+function parseDiffHunkForCoverage(hunkText) {
+  const lines = String(hunkText || '').split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const header = lines.shift();
+  const match = header?.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/u);
+  if (!match) return null;
+
+  const oldStart = Number(match[1]);
+  const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+  const newStart = Number(match[3]);
+  const newCount = match[4] === undefined ? 1 : Number(match[4]);
+  if (![oldStart, oldCount, newStart, newCount].every(Number.isSafeInteger)) return null;
+
+  const body = lines;
+  let actualOldCount = 0;
+  let actualNewCount = 0;
+  let actualDiffLineCount = 0;
+  let previousLineCanOwnNoNewlineMarker = false;
+  for (const line of body) {
+    if (line === '\\ No newline at end of file') {
+      if (!previousLineCanOwnNoNewlineMarker) return null;
+      previousLineCanOwnNoNewlineMarker = false;
+      continue;
+    }
+    if (line.startsWith(' ')) {
+      actualOldCount += 1;
+      actualNewCount += 1;
+    } else if (line.startsWith('+')) {
+      actualNewCount += 1;
+    } else if (line.startsWith('-')) {
+      actualOldCount += 1;
+    } else {
+      return null;
+    }
+    actualDiffLineCount += 1;
+    previousLineCanOwnNoNewlineMarker = true;
+  }
+  if (actualDiffLineCount === 0 || actualOldCount !== oldCount || actualNewCount !== newCount) return null;
+  return { oldStart, oldCount, newStart, newCount, section: match[5], body };
+}
+
+function unifiedFragmentRangeStart(sourceStart, sourceCount, consumedCount, fragmentCount) {
+  const sourceCursor = sourceStart + (sourceCount === 0 ? 1 : 0) + consumedCount;
+  return fragmentCount === 0 ? sourceCursor - 1 : sourceCursor;
+}
+
+function hasLosslessHunkFragmentCoverage(sourceHunks, plannedHunks) {
+  if (plannedHunks.length === sourceHunks.length
+    && plannedHunks.every((hunk, index) => hunk === sourceHunks[index])) {
+    return sourceHunks.every((hunk) => parseDiffHunkForCoverage(hunk) !== null);
+  }
+
+  let plannedIndex = 0;
+  for (const sourceText of sourceHunks) {
+    if (plannedHunks[plannedIndex] === sourceText) {
+      if (!parseDiffHunkForCoverage(sourceText)) return false;
+      plannedIndex += 1;
+      continue;
+    }
+
+    const source = parseDiffHunkForCoverage(sourceText);
+    if (!source || source.body.length === 0) return false;
+    let bodyOffset = 0;
+    let oldConsumed = 0;
+    let newConsumed = 0;
+
+    while (bodyOffset < source.body.length) {
+      const fragmentText = plannedHunks[plannedIndex];
+      if (typeof fragmentText !== 'string') return false;
+      const fragment = parseDiffHunkForCoverage(fragmentText);
+      if (!fragment || fragment.section !== source.section
+        || fragment.oldStart !== unifiedFragmentRangeStart(source.oldStart, source.oldCount, oldConsumed, fragment.oldCount)
+        || fragment.newStart !== unifiedFragmentRangeStart(source.newStart, source.newCount, newConsumed, fragment.newCount)
+        || fragment.body.length === 0) {
+        return false;
+      }
+
+      const expectedBody = source.body.slice(bodyOffset, bodyOffset + fragment.body.length);
+      if (expectedBody.length !== fragment.body.length
+        || expectedBody.some((line, index) => line !== fragment.body[index])) {
+        return false;
+      }
+      bodyOffset += fragment.body.length;
+      oldConsumed += fragment.oldCount;
+      newConsumed += fragment.newCount;
+      plannedIndex += 1;
+      if (oldConsumed > source.oldCount || newConsumed > source.newCount) return false;
+    }
+
+    if (oldConsumed !== source.oldCount || newConsumed !== source.newCount) return false;
+  }
+  return plannedIndex === plannedHunks.length;
+}
+
 function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
   if (!plan || !Array.isArray(plan.partitions) || plan.partitions.length < 2
     || plan.coveragePercent !== 100 || plan.omittedFilesCount !== 0
@@ -1960,9 +2054,11 @@ function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
     const sourceParts = splitDiffPatchForCoverage(sourcePatch);
     if (sourceParts.hunks.length === 0) return false;
     const plannedParts = plannedCopies.map((planned) => splitDiffPatchForCoverage(planned.patch));
-    return plannedParts.every((parts) => parts.header === sourceParts.header)
-      && plannedParts.flatMap((parts) => parts.hunks).length === sourceParts.hunks.length
-      && plannedParts.flatMap((parts) => parts.hunks).every((hunk, index) => hunk === sourceParts.hunks[index]);
+    if (!plannedParts.every((parts) => parts.header === sourceParts.header)) return false;
+    return hasLosslessHunkFragmentCoverage(
+      sourceParts.hunks,
+      plannedParts.flatMap((parts) => parts.hunks),
+    );
   });
 }
 
@@ -1989,7 +2085,9 @@ function createReviewPartitionPlan({
     return null;
   }
 
-  const plan = partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars);
+  const plan = mustBeLossless
+    ? partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars, { splitOversizedHunksAtLines: true })
+    : partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars);
   if (mustBeLossless && !isLosslessBoundedPartitionPlan(inputFiles, plan, maxChars)) {
     throw new Error('lossless partition manager did not produce complete, bounded file and hunk coverage');
   }

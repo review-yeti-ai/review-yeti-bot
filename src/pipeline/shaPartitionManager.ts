@@ -68,8 +68,171 @@ export function detectFileStatus(file: { path: string; patch?: string; status?: 
   return 'modified';
 }
 
+interface ParsedUnifiedHunk {
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  section: string;
+  body: string[];
+}
+
+function parseUnifiedHunk(hunk: string): ParsedUnifiedHunk | null {
+  const lines = hunk.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const header = lines.shift();
+  const match = header?.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/u);
+  if (!match) return null;
+
+  const oldStart = Number(match[1]);
+  const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+  const newStart = Number(match[3]);
+  const newCount = match[4] === undefined ? 1 : Number(match[4]);
+  if (![oldStart, oldCount, newStart, newCount].every(Number.isSafeInteger)) return null;
+
+  const body = lines;
+  let actualOldCount = 0;
+  let actualNewCount = 0;
+  for (const line of body) {
+    if (line === '\\ No newline at end of file') continue;
+    if (line.startsWith(' ')) {
+      actualOldCount += 1;
+      actualNewCount += 1;
+    } else if (line.startsWith('+')) {
+      actualNewCount += 1;
+    } else if (line.startsWith('-')) {
+      actualOldCount += 1;
+    } else {
+      return null;
+    }
+  }
+  if (actualOldCount !== oldCount || actualNewCount !== newCount) return null;
+  return { oldStart, oldCount, newStart, newCount, section: match[5], body };
+}
+
+function unifiedHunkCounts(lines: string[]): { oldCount: number; newCount: number } | null {
+  let oldCount = 0;
+  let newCount = 0;
+  for (const line of lines) {
+    if (line === '\\ No newline at end of file') continue;
+    if (line.startsWith(' ')) {
+      oldCount += 1;
+      newCount += 1;
+    } else if (line.startsWith('+')) {
+      newCount += 1;
+    } else if (line.startsWith('-')) {
+      oldCount += 1;
+    } else {
+      return null;
+    }
+  }
+  return { oldCount, newCount };
+}
+
+function hunkLineAtoms(body: string[]): string[][] | null {
+  const atoms: string[][] = [];
+  for (const line of body) {
+    if (line === '\\ No newline at end of file') {
+      const previous = atoms.at(-1);
+      if (!previous || previous.includes(line)) return null;
+      previous.push(line);
+    } else {
+      atoms.push([line]);
+    }
+  }
+  return atoms.length > 0 ? atoms : null;
+}
+
+function formatUnifiedHunkFragment(
+  hunk: ParsedUnifiedHunk,
+  oldStart: number,
+  newStart: number,
+  body: string[],
+): string | null {
+  const counts = unifiedHunkCounts(body);
+  if (!counts) return null;
+  return `@@ -${oldStart},${counts.oldCount} +${newStart},${counts.newCount} @@${hunk.section}\n${body.join('\n')}`;
+}
+
+function unifiedFragmentRangeStart(
+  sourceStart: number,
+  sourceCount: number,
+  consumedCount: number,
+  fragmentCount: number,
+): number {
+  const sourceCursor = sourceStart + (sourceCount === 0 ? 1 : 0) + consumedCount;
+  return fragmentCount === 0 ? sourceCursor - 1 : sourceCursor;
+}
+
 /**
- * Splits an oversized diff patch with multiple hunks into consecutive sub-patches if it exceeds safe capacity.
+ * Splits one oversized unified hunk only at complete diff-line boundaries. Every emitted hunk
+ * gets ranges recomputed from the consumed old/new lines; malformed hunks and indivisible lines
+ * are returned unchanged so guarded admission can reject them rather than truncate them.
+ */
+function splitOversizedHunkBlock(fileHeader: string, hunkBlock: string, safeDiffChars: number): string[] {
+  if (`${fileHeader}${hunkBlock}\n`.length <= safeDiffChars) return [hunkBlock];
+  const hunk = parseUnifiedHunk(hunkBlock);
+  if (!hunk) return [hunkBlock];
+  const atoms = hunkLineAtoms(hunk.body);
+  if (!atoms) return [hunkBlock];
+
+  const fragments: string[] = [];
+  let body: string[] = [];
+  let oldConsumed = 0;
+  let newConsumed = 0;
+  let bodyOldCount = 0;
+  let bodyNewCount = 0;
+
+  const makeFragment = (lines: string[], oldOffset: number, newOffset: number): string | null => {
+    const counts = unifiedHunkCounts(lines);
+    if (!counts) return null;
+    return formatUnifiedHunkFragment(
+      hunk,
+      unifiedFragmentRangeStart(hunk.oldStart, hunk.oldCount, oldOffset, counts.oldCount),
+      unifiedFragmentRangeStart(hunk.newStart, hunk.newCount, newOffset, counts.newCount),
+      lines,
+    );
+  };
+  const flush = () => {
+    if (body.length === 0) return;
+    const fragment = makeFragment(body, oldConsumed, newConsumed);
+    if (fragment) fragments.push(fragment);
+    oldConsumed += bodyOldCount;
+    newConsumed += bodyNewCount;
+    body = [];
+    bodyOldCount = 0;
+    bodyNewCount = 0;
+  };
+
+  for (const atom of atoms) {
+    const atomCounts = unifiedHunkCounts(atom);
+    if (!atomCounts) return [hunkBlock];
+    const candidateBody = [...body, ...atom];
+    const candidate = makeFragment(candidateBody, oldConsumed, newConsumed);
+    if (!candidate) return [hunkBlock];
+    if (`${fileHeader}${candidate}\n`.length <= safeDiffChars) {
+      body = candidateBody;
+      bodyOldCount += atomCounts.oldCount;
+      bodyNewCount += atomCounts.newCount;
+      continue;
+    }
+
+    if (body.length === 0) return [hunkBlock];
+    flush();
+    const firstAtom = makeFragment(atom, oldConsumed, newConsumed);
+    if (!firstAtom || `${fileHeader}${firstAtom}\n`.length > safeDiffChars) return [hunkBlock];
+    body = [...atom];
+    bodyOldCount = atomCounts.oldCount;
+    bodyNewCount = atomCounts.newCount;
+  }
+  flush();
+
+  return fragments.length > 1 ? fragments : [hunkBlock];
+}
+
+/**
+ * Splits an oversized diff patch at existing hunk boundaries. This legacy helper is also used
+ * by map-reduce chunking, whose behavior remains whole-hunk-only.
  */
 export function splitOversizedFileHunks(
   file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
@@ -103,18 +266,15 @@ export function splitOversizedFileHunks(
     hunkBlocks.push(currentHunk.join('\n'));
   }
 
-  // If only 1 hunk or no hunks, cannot split across hunk boundaries
-  if (hunkBlocks.length <= 1) {
-    return [file];
-  }
-
   const fileHeader = headerLines.length > 0 ? headerLines.join('\n') + '\n' : '';
+  if (hunkBlocks.length <= 1) return [file];
+
   const resultFiles: PartitionFile[] = [];
   let currentHunkGroup: string[] = [];
   let currentGroupChars = fileHeader.length;
 
   for (const hunk of hunkBlocks) {
-    const hunkChars = hunk.length + 1; // including newline
+    const hunkChars = hunk.length + 1;
     if (currentHunkGroup.length > 0 && currentGroupChars + hunkChars > safeDiffChars) {
       const combinedPatch = fileHeader + currentHunkGroup.join('\n') + '\n';
       resultFiles.push({
@@ -147,6 +307,76 @@ export function splitOversizedFileHunks(
 }
 
 /**
+ * Guarded gateway admission opts into bounded line-level hunk fragments when a single hunk is
+ * larger than the unchanged diff cap. Every fragment has recomputed unified-diff ranges. Invalid
+ * hunks and indivisible lines remain intact so the caller's strict validator rejects them.
+ */
+function splitOversizedFileHunksForGuardedAdmission(
+  file: { path: string; patch: string; originalChars: number; compactedChars: number; status: FileStatus },
+  safeDiffChars: number
+): PartitionFile[] {
+  const patch = file.patch;
+  if (!patch || patch.length <= safeDiffChars || !patch.includes('@@')) return [file];
+
+  const lines = patch.split('\n');
+  if (lines.at(-1) === '') lines.pop();
+  const headerLines: string[] = [];
+  const hunkBlocks: string[] = [];
+  let currentHunk: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('@@') && line.includes('@@')) {
+      if (currentHunk.length > 0) {
+        hunkBlocks.push(currentHunk.join('\n'));
+        currentHunk = [];
+      }
+      currentHunk.push(line);
+    } else if (currentHunk.length > 0) {
+      currentHunk.push(line);
+    } else {
+      headerLines.push(line);
+    }
+  }
+  if (currentHunk.length > 0) hunkBlocks.push(currentHunk.join('\n'));
+
+  const fileHeader = headerLines.length > 0 ? headerLines.join('\n') + '\n' : '';
+  if (hunkBlocks.length === 0) return [file];
+  const boundedHunks = hunkBlocks.flatMap((hunk) => splitOversizedHunkBlock(fileHeader, hunk, safeDiffChars));
+  const resultFiles: PartitionFile[] = [];
+  let currentHunkGroup: string[] = [];
+  const buildPatch = (hunks: string[]) => `${fileHeader}${hunks.join('\n')}\n`;
+
+  for (const hunk of boundedHunks) {
+    const candidateGroup = [...currentHunkGroup, hunk];
+    if (currentHunkGroup.length > 0 && buildPatch(candidateGroup).length > safeDiffChars) {
+      const combinedPatch = buildPatch(currentHunkGroup);
+      resultFiles.push({
+        path: file.path,
+        patch: combinedPatch,
+        originalChars: combinedPatch.length,
+        compactedChars: combinedPatch.length,
+        status: file.status,
+      });
+      currentHunkGroup = [hunk];
+    } else {
+      currentHunkGroup = candidateGroup;
+    }
+    if (buildPatch(currentHunkGroup).length > safeDiffChars) return [file];
+  }
+
+  if (currentHunkGroup.length > 0) {
+    const combinedPatch = buildPatch(currentHunkGroup);
+    resultFiles.push({
+      path: file.path,
+      patch: combinedPatch,
+      originalChars: combinedPatch.length,
+      compactedChars: combinedPatch.length,
+      status: file.status,
+    });
+  }
+  return resultFiles.length > 1 ? resultFiles : [file];
+}
+
+/**
  * Deterministic Zero-Loss Bin-Packing File Partitioning Engine.
  *
  * Partitions diff files into batches <= safeDiffChars ensuring 100% of files are reviewed
@@ -156,7 +386,8 @@ export function createPartitionPlan(
   files: InputDiffFile[],
   baseSha: string,
   headSha: string,
-  safeDiffChars: number
+  safeDiffChars: number,
+  options: { splitOversizedHunksAtLines?: boolean } = {},
 ): PartitionPlan {
   if (!baseSha || !headSha || typeof baseSha !== 'string' || typeof headSha !== 'string' || !baseSha.trim() || !headSha.trim()) {
     throw new Error('baseSha and headSha must be non-empty strings');
@@ -189,7 +420,9 @@ export function createPartitionPlan(
 
   for (const file of processedFiles) {
     // If single file diff with multiple hunks exceeds safe capacity, split by hunks
-    const splitFiles = splitOversizedFileHunks(file, safeDiffChars);
+    const splitFiles = options.splitOversizedHunksAtLines === true
+      ? splitOversizedFileHunksForGuardedAdmission(file, safeDiffChars)
+      : splitOversizedFileHunks(file, safeDiffChars);
 
     for (const subFile of splitFiles) {
       if (currentPartition.length > 0 && currentPartitionChars + subFile.compactedChars > safeDiffChars) {
