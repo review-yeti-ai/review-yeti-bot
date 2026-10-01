@@ -256,6 +256,12 @@ describe('preflight SQL injection static screening precision', () => {
       expected: true,
     },
     {
+      label: 'a regex operand after division does not hide later SQL construction',
+      filePath: 'src/query.ts',
+      line: String.raw`const ratio = value / /https?:\/\//.test(url); const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
       label: 'Python f-string interpolation follows Python source syntax',
       filePath: 'src/query.py',
       line: `query = f"SELECT * FROM users WHERE id = {request.args['id']}"`,

@@ -406,6 +406,33 @@ function followsJavascriptControlCondition(tokens: PreflightSqlToken[]): boolean
   return false;
 }
 
+function matchingOpeningBrace(tokens: PreflightSqlToken[], closingIndex: number): number | undefined {
+  let nested = 0;
+  for (let index = closingIndex; index >= 0; index--) {
+    if (tokens[index].text === '}') nested++;
+    if (tokens[index].text === '{' && --nested === 0) return index;
+  }
+  return undefined;
+}
+
+function closesJavascriptBlock(tokens: PreflightSqlToken[]): boolean {
+  if (tokens[tokens.length - 1]?.text !== '}') return false;
+  const openIndex = matchingOpeningBrace(tokens, tokens.length - 1);
+  if (openIndex === undefined) return false;
+
+  const beforeOpen = tokens[openIndex - 1];
+  if (beforeOpen?.text === ')' && followsJavascriptControlCondition(tokens.slice(0, openIndex))) return true;
+  if (beforeOpen?.kind === 'identifier' && ['else', 'try', 'finally', 'do'].includes(beforeOpen.text)) return true;
+  return beforeOpen?.text === '>' && tokens[openIndex - 2]?.text === '=';
+}
+
+function canEndJavascriptExpression(token: PreflightSqlToken | undefined): boolean {
+  return Boolean(token && (
+    ['identifier', 'number', 'string', 'regex'].includes(token.kind) ||
+    [')', ']', '}'].includes(token.text)
+  ));
+}
+
 function canStartJavascriptRegex(tokens: PreflightSqlToken[]): boolean {
   const previous = tokens[tokens.length - 1];
   if (!previous) return true;
@@ -419,6 +446,11 @@ function canStartJavascriptRegex(tokens: PreflightSqlToken[]): boolean {
     previous.kind === 'punctuation' &&
     ['(', '[', '{', ',', ':', ';', '=', '!', '?', '&', '|', '^', '~', '*', '%', '+', '-', '<', '>'].includes(previous.text)
   ) return true;
+  if (previous.text === '}' && closesJavascriptBlock(tokens)) return true;
+  // In `value / /pattern/`, the first slash is division and the second begins
+  // the RHS RegExp literal. A lone slash after an expression cannot start a
+  // valid operand, so keep ordinary division unchanged.
+  if (previous.text === '/' && canEndJavascriptExpression(tokens[tokens.length - 2])) return true;
   return previous.text === '>' && tokens[tokens.length - 2]?.text === '=';
 }
 
@@ -685,6 +717,43 @@ function tokenNestingDepths(tokens: PreflightSqlToken[]): number[] {
   return depths;
 }
 
+function isDirectEvalCall(tokens: PreflightSqlToken[], index: number): boolean {
+  return tokens[index]?.kind === 'identifier' && tokens[index].text === 'eval' &&
+    tokens[index + 1]?.text === '(' && tokens[index - 1]?.text !== '.';
+}
+
+function hasRegexIntrinsicMutationBarrier(tokens: PreflightSqlToken[], endIndex: number): boolean {
+  for (let index = 0; index < endIndex; index++) {
+    if (
+      tokens[index].kind === 'identifier' && tokens[index].text === 'RegExp' &&
+      tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'prototype'
+    ) return true;
+    if (
+      tokens[index].kind === 'identifier' && ['eval', 'Function'].includes(tokens[index].text) &&
+      tokens[index + 1]?.text === '('
+    ) return true;
+  }
+  return false;
+}
+
+function regexBindingUseMayMutate(tokens: PreflightSqlToken[], index: number): boolean {
+  const next = tokens[index + 1];
+  const nextAfterMember = tokens[index + 3];
+  if (['=', '++', '--'].includes(next?.text || '') || ['++', '--'].includes(tokens[index - 1]?.text || '')) return true;
+  if (next?.text === '+' || next?.text === '-' || next?.text === '*' || next?.text === '/' || next?.text === '%') {
+    if (tokens[index + 2]?.text === '=') return true;
+  }
+  if (next?.text === '.' && nextAfterMember?.text === '=') return true;
+  // Only known read/match methods are harmless observations here. Unknown
+  // calls, aliases, property writes, and passing the reference elsewhere can
+  // change the binding/object and therefore cancel the regex exemption.
+  return !(
+    next?.text === '.' &&
+    ['test', 'exec'].includes(tokens[index + 2]?.text || '') &&
+    tokens[index + 3]?.text === '('
+  );
+}
+
 type PreflightExpressionRange = { start: number; end: number };
 
 function indexPreflightExpressionRanges(
@@ -819,15 +888,46 @@ function isUnmodifiedTopLevelRegexBinding(
     // Only exempt the first bare use after a simple regex initializer. An
     // intervening substitution executes in a separate token scope and can
     // mutate this binding, so it cannot establish an unmodified receiver.
-    const interveningUse = tokens.some((token, index) =>
+    const interveningMutation = tokens.some((token, index) =>
       index > declarationIndex + 3 &&
       index < receiverIndex &&
-      ((token.kind === 'identifier' && token.text === receiver.text) ||
+      ((token.kind === 'identifier' && token.text === receiver.text && regexBindingUseMayMutate(tokens, index)) ||
         (token.kind === 'string' && token.interpolated === true))
     );
-    return !interveningUse;
+    return !interveningMutation &&
+      !tokens.slice(0, receiverIndex).some((_, index) => isDirectEvalCall(tokens, index)) &&
+      !hasRegexIntrinsicMutationBarrier(tokens, receiverIndex);
   }
   return false;
+}
+
+function isUnshadowedRegExpConstructorReceiver(
+  tokens: PreflightSqlToken[],
+  matchingIndexes: number[],
+  callNameIndex: number,
+): boolean {
+  const receiverEnd = callNameIndex - 2;
+  if (tokens[receiverEnd]?.text !== ')') return false;
+  const constructorOpen = matchingIndexes[receiverEnd];
+  const constructorName = constructorOpen - 1;
+  const newIndex = constructorName - 1;
+  if (
+    constructorOpen < 0 ||
+    tokens[constructorName]?.kind !== 'identifier' ||
+    tokens[constructorName]?.text !== 'RegExp' ||
+    tokens[newIndex]?.text !== 'new' ||
+    tokens[newIndex - 1]?.text === '.'
+  ) return false;
+
+  // The line-local heuristic grants this only to the unqualified intrinsic
+  // spelling, with no same-line shadow/reassignment, eval, or prototype write
+  // before construction. It is not a whole-file binding proof.
+  const shadowOrWrite = tokens.slice(0, constructorName).some((token) =>
+    token.kind === 'identifier' && token.text === 'RegExp'
+  );
+  // Constructor arguments execute before `.exec` is looked up; they can
+  // mutate the prototype too, so include the complete receiver expression.
+  return !shadowOrWrite && !hasRegexIntrinsicMutationBarrier(tokens, callNameIndex);
 }
 
 function isRegexExecMethod(
@@ -838,11 +938,14 @@ function isRegexExecMethod(
 ): boolean {
   if (tokens[callNameIndex - 1]?.text !== '.') return false;
   let receiverIndex = callNameIndex - 2;
+  if (isUnshadowedRegExpConstructorReceiver(tokens, matchingIndexes, callNameIndex)) return true;
   if (tokens[receiverIndex]?.text === ')') {
     const openIndex = matchingIndexes[receiverIndex];
     if (openIndex >= 0 && openIndex + 2 === receiverIndex) receiverIndex = openIndex + 1;
   }
-  if (tokens[receiverIndex]?.kind === 'regex') return true;
+  if (tokens[receiverIndex]?.kind === 'regex') {
+    return !hasRegexIntrinsicMutationBarrier(tokens, receiverIndex);
+  }
   return isUnmodifiedTopLevelRegexBinding(tokens, depths, receiverIndex, callNameIndex);
 }
 

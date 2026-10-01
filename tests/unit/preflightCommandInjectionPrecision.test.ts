@@ -170,6 +170,56 @@ describe('preflight command injection static screening precision', () => {
       expected: false,
     },
     {
+      label: 'a built-in RegExp constructor exec matches input rather than running a shell',
+      line: 'const match = new RegExp("needle").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a previous read-only regex test does not erase regex receiver ownership',
+      line: 'const re = /needle/; re.test(input); re.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'direct eval invalidates a regex binding before a later shell exec',
+      line: 'let runner = /x/; eval("runner = child_process"); runner.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a regex expression after a closed control block does not hide a shell call',
+      line: String.raw`if (enabled) { trace(); } /https?:\/\//.test(url); child_process.exec(req.query.command);`,
+      expected: true,
+    },
+    {
+      label: 'object-literal division is not confused with a closed block regex prefix',
+      line: 'const ratio = { value: 10 } / 2; child_process.exec(req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a shadowed RegExp constructor does not gain the intrinsic matcher exemption',
+      line: 'function search(RegExp) { return new RegExp("needle").exec("sh -c " + req.query.command); }',
+      expected: true,
+    },
+    {
+      label: 'a reassigned RegExp constructor does not gain the intrinsic matcher exemption',
+      line: 'RegExp = child_process; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an overridden regex instance exec method remains a shell call',
+      line: 'const re = /needle/; re.exec = child_process.exec; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a modified RegExp prototype does not gain the literal matcher exemption',
+      line: 'RegExp.prototype.exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'eval during RegExp construction blocks the intrinsic matcher exemption',
+      line: 'const match = new RegExp(eval("RegExp.prototype.exec = child_process.exec")).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
       label: 'reassigning a regex-named runner makes its later exec a shell call',
       line: 'let runner = /x/; runner = child_process; runner.exec("sh -c " + req.query.command);',
       expected: true,
