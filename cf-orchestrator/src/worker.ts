@@ -1,11 +1,12 @@
 import { RepoGateDO } from './repoGateDO.js';
 import { ReviewRunDO } from './reviewRunDO.js';
 import { ReviewJobWorkflow } from './reviewJobWorkflow.js';
+import { handleMergeGroupAttestation } from './mergeGroupAttestation.js';
 import type { DebounceMessagePayload, Env, ReviewRunSpec } from './types.js';
 import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
 
-export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow };
+export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
 export { defaultMcpRouter };
 
 /**
@@ -588,6 +589,35 @@ export default {
             thinkingEffort: thinkingEffort || 'standard',
             explainTarget,
           });
+        }
+
+        if (eventName === 'merge_group') {
+          const action = payload.action;
+          const repo = payload.repository;
+          const mergeGroup = payload.merge_group;
+          if (
+            !repo ||
+            typeof repo !== 'object' ||
+            Array.isArray(repo) ||
+            !repo.full_name ||
+            !mergeGroup ||
+            typeof mergeGroup !== 'object' ||
+            Array.isArray(mergeGroup)
+          ) {
+            return new Response('Bad Request: Missing or invalid repository / merge_group payload', { status: 400 });
+          }
+          if (action !== 'checks_requested') {
+            return Response.json({ status: 'ignored', reason: `unsupported_action_${action}`, event: eventName });
+          }
+          const repoFullName = repo.full_name.trim();
+          if (!isPilotRepository(repoFullName, env.PILOT_REPOSITORIES)) {
+            return Response.json({ status: 'ignored', reason: 'not_pilot_repository', event: eventName });
+          }
+          if (!mergeGroup.head_sha || !mergeGroup.head_ref || !mergeGroup.base_ref) {
+            return new Response('Bad Request: Missing or invalid repository / merge_group payload', { status: 400 });
+          }
+          const outcome = await handleMergeGroupAttestation(payload, env);
+          return Response.json(outcome);
         }
 
         return Response.json({ status: 'ignored', event: eventName });
