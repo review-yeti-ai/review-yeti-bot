@@ -268,4 +268,12 @@ describe('worker runtime manifest integrity through the production self-test', (
     await expect(run()).rejects.toThrow(/^worker runtime manifest is invalid$/);
     expect(moduleLoader).not.toHaveBeenCalled();
   });
+
+  it('classifies a real non-ENOENT manifest stat failure without leaking the path or loading modules', async () => {
+    const invalidPath = join(root, ENTRYPOINT, 'untrusted-provider-secret-marker.json');
+    await expect(runWorkerSelfTest({ NODE_ENV: 'test', REVIEW_RUNTIME_MANIFEST_PATH: invalidPath }, moduleLoader))
+      .rejects.toThrow(/^worker runtime manifest is invalid$/);
+    expect(moduleLoader).not.toHaveBeenCalled();
+    expect(ioCalls.opens).toHaveLength(0);
+  });
 });
