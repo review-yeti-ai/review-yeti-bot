@@ -466,7 +466,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       // ct_impact
       const rImpact = await runReadOnlyTool('ct_impact', { target: 'routes' }, baseContext());
       expect(rImpact.toolScope).toBe('cross-repository-ast-mesh');
-      expect(rImpact.isExhaustive).toBe(true);
+      expect(rImpact.isExhaustive).toBe(false);
 
       // knowledge_get
       const rKnowledge = await runReadOnlyTool('knowledge_get', { id: 'ADR-0564' }, baseContext());
@@ -781,7 +781,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
           if (text.includes('[PI_TOOL_RESULT]')) {
             toolCallCaptured = true;
             expect(text).toContain('blast_radius');
-            expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: true]');
+            expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: false]');
             // Render completed task plan
             return createFakeResponse(
               JSON.stringify({

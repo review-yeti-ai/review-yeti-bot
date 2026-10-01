@@ -233,3 +233,96 @@ describe('createZoektSearchTool', () => {
     expect(tool.capabilities.tools).toEqual([ZOEKT_SEARCH_TOOL_NAME]);
   });
 });
+
+
+describe('Zoekt completeness and shared direct session', () => {
+  it('does not certify absence over a filtered index even when a query completes', async () => {
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const tool = createZoektSearchTool({ identity, indexDir: '/idx',
+      config: { indexScope: { repository: identity.repository, headSha: identity.headSha,
+        complete: false, excludedDirectories: ['build'], fileLimitBytes: 2097152 } },
+      fsImpl: fakeFsAvailable(), spawnImpl });
+    expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'removed_command' }))
+      .toMatchObject({ status: 'ok', queryComplete: true, exhaustive: false,
+        indexScope: { excludedDirectories: ['build'] } });
+  });
+
+  it.each(['{bad json', JSON.stringify({ LineMatches: [] }),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: 'oops' }),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: [{ FileName: true }] }),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: [{ Line: '', LineNumber: 1 }] }),
+    'x'.repeat(4 * 1024 * 1024 + 1),
+    JSON.stringify({ FileName: 'a.ts', LineMatches: [{ Line: Buffer.from('x'.repeat(501)).toString('base64'), LineNumber: 1 }] }),
+  ])('discloses discarded records as incomplete', async (record) => {
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.write(record + '\n'); child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const tool = createZoektSearchTool({ identity, indexDir: '/idx', fsImpl: fakeFsAvailable(), spawnImpl,
+      config: { indexScope: { repository: identity.repository, headSha: identity.headSha, complete: true } } });
+    expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'x' }))
+      .toMatchObject({ status: 'ok', truncated: true, queryComplete: false, exhaustive: false });
+  });
+
+  it('shares the call budget across merged views of a run and propagates cancellation', async () => {
+    const { executeZoektSearch } = require('../../src/mcp/zoektSearchTool.js');
+    const runIdentity = { ...identity };
+    const config = { identity: runIdentity, indexDir: '/idx', maxCalls: 1 };
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const session = createZoektSearchTool({ identity: runIdentity, indexDir: '/idx', config, spawnImpl, fsImpl: fakeFsAvailable() });
+    const options = { session };
+    expect((await executeZoektSearch({ query: 'a' }, config, options)).status).toBe('ok');
+    expect(await executeZoektSearch({ query: 'b' }, { ...config }, options))
+      .toMatchObject({ reason: 'call_budget_exhausted', identity });
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(await executeZoektSearch({ query: 'b' }, config, { ...options, indexDir: '/other' }))
+      .toMatchObject({ reason: 'session_override_rejected' });
+    const controller = new AbortController(); controller.abort();
+    const cancelledSession = createZoektSearchTool({ identity: runIdentity, indexDir: '/idx', config, spawnImpl, fsImpl: fakeFsAvailable() });
+    expect(await executeZoektSearch({ query: 'c' }, config, { session: cancelledSession, signal: controller.signal }))
+      .toMatchObject({ status: 'cancelled' });
+    expect(await executeZoektSearch({ query: 'c' }, { identity: { ...identity }, indexDir: '/idx' },
+      { spawnImpl, fsImpl: fakeFsAvailable(), signal: controller.signal })).toMatchObject({ status: 'cancelled' });
+    expect(spawnImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('trusted scoped completeness identity', () => {
+  it.each([undefined, {}, { repository: identity.repository }, { headSha: identity.headSha },
+    { repository: '', headSha: identity.headSha }, { repository: identity.repository, headSha: 'short' },
+  ])('never certifies absence with missing or malformed identity %j', async (unverifiedIdentity) => {
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const tool = createZoektSearchTool({ identity: unverifiedIdentity, indexDir: '/idx',
+      config: { indexScope: { ...unverifiedIdentity, complete: true } }, fsImpl: fakeFsAvailable(), spawnImpl });
+    expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'consumer' })).toMatchObject({ exhaustive: false });
+  });
+  it.each([
+    ['matching', identity.repository, identity.headSha, true],
+    ['stale', identity.repository, 'b'.repeat(40), false],
+    ['foreign repository', 'other/repo', identity.headSha, false],
+  ])('requires %s snapshot for an exhaustive indexed set', async (_name, repository, headSha, exhaustive) => {
+    const spawnImpl = vi.fn(() => {
+      const child = makeFakeChild();
+      queueMicrotask(() => { child.stdout.end(); child.emit('exit', 0); });
+      return child;
+    });
+    const tool = createZoektSearchTool({ identity, indexDir: '/idx',
+      config: { indexScope: { repository, headSha, complete: true } }, fsImpl: fakeFsAvailable(), spawnImpl });
+    expect(await tool.call(ZOEKT_SEARCH_TOOL_NAME, { query: 'consumer' }))
+      .toMatchObject({ status: 'ok', queryComplete: true, exhaustive });
+  });
+});
