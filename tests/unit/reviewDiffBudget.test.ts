@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -965,16 +965,24 @@ describe('REL-556: reviewWithModel applies the tightened budget end to end', () 
     expect(result.diffOmittedFilesCount).toBeGreaterThan(0);
   });
 
-  it('lets an OpenRouter-only lane see materially more of the same 700k-char diff', async () => {
-    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
-    const result = await reviewWithModel(securityPersona, bigDiffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      fetchImplementation: impl,
-      transports: [{ name: 'openrouter-deepseek', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731', provider: 'openrouter' }],
+  describe('OpenRouter-only lane', () => {
+    beforeAll(() => {
+      // Fixture setup intentionally excludes the cold SDK load from the budget assertion's
+      // 5s test clock. The real reviewWithModel route still prewarms and uses the SDK.
+      require('@openrouter/sdk');
     });
 
-    const userMessage = calls[0].body.messages.find((m: any) => m.role === 'user').content as string;
-    expect(result.diffOmittedFilesCount ?? 0).toBeLessThan(fileCount);
-    expect(userMessage.length).toBeGreaterThan(0);
+    it('lets an OpenRouter-only lane see materially more of the same 700k-char diff', async () => {
+      const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+      const result = await reviewWithModel(securityPersona, bigDiffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        fetchImplementation: impl,
+        transports: [{ name: 'openrouter-deepseek', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731', provider: 'openrouter' }],
+      });
+
+      const userMessage = calls[0].body.messages.find((m: any) => m.role === 'user').content as string;
+      expect(result.diffOmittedFilesCount ?? 0).toBeLessThan(fileCount);
+      expect(userMessage.length).toBeGreaterThan(0);
+    });
   });
 });
 
