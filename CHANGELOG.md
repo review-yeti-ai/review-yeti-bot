@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.9](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.8...v1.101.9) (2026-10-01)
+
+
+### Bug Fixes
+
+* **review:** preserve terminal SSE metadata and provider errors ([#1202](https://github.com/review-yeti-ai/review-yeti-bot/issues/1202)) ([d137fc3](https://github.com/review-yeti-ai/review-yeti-bot/commit/d137fc3c326b428f3d1041372a95f34b397dc083))
+
 ## [1.101.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.7...v1.101.8) (2026-10-01)
 
 
