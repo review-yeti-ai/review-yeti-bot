@@ -15,11 +15,11 @@ const workflow = yaml.load(source) as Workflow;
 
 type Event = { name: string; action: string; draft?: boolean; state?: string };
 
-function admitted(event: Event): boolean {
-  const selector = event.name === 'pull_request' ? workflow.on.pull_request
-    : event.name === 'repository_dispatch' ? workflow.on.repository_dispatch : undefined;
+function admitted(event: Event, candidate: Workflow = workflow): boolean {
+  const selector = event.name === 'pull_request' ? candidate.on.pull_request
+    : event.name === 'repository_dispatch' ? candidate.on.repository_dispatch : undefined;
   if (!selector?.types.includes(event.action)) return false;
-  const guard = workflow.jobs.review.if;
+  const guard = candidate.jobs.review.if;
   if (!guard) return true; // GitHub's default when a configured job has no if.
 
   // Evaluate the actual configured guard, not a duplicate admission function.
@@ -35,7 +35,15 @@ function admitted(event: Event): boolean {
   }, { timeout: 100 }));
 }
 
+function assertPublicTriggerSet(candidate: Workflow): void {
+  expect(candidate.on.pull_request?.types).toEqual(['opened', 'synchronize', 'reopened', 'ready_for_review']);
+}
+
 describe('public native self-review admission', () => {
+  it('admits exactly the declared public pull request trigger set', () => {
+    assertPublicTriggerSet(workflow);
+  });
+
   it.each(['opened', 'synchronize', 'reopened'])('idle draft %s does not admit the paid job', (action) => {
     expect(admitted({ name: 'pull_request', action, state: 'open', draft: true })).toBe(false);
   });
@@ -49,7 +57,16 @@ describe('public native self-review admission', () => {
   });
 
   it.each(['converted_to_draft', 'closed', 'edited'])('%s is not a new paid admission event', (action) => {
-    expect(admitted({ name: 'pull_request', action, state: 'open', draft: true })).toBe(false);
+    expect(admitted({ name: 'pull_request', action, state: 'open', draft: false })).toBe(false);
+  });
+
+  it('detects an unwanted edited trigger planted into the actual workflow configuration', () => {
+    const planted = yaml.load(source) as Workflow;
+    planted.on.pull_request?.types.push('edited');
+    const event = { name: 'pull_request', action: 'edited', state: 'open', draft: false };
+    expect(admitted(event, planted)).toBe(true);
+    expect(() => assertPublicTriggerSet(planted)).toThrow();
+    expect(() => expect(admitted(event, planted)).toBe(false)).toThrow();
   });
 
   it('rejects a stale ready event whose current event payload still says draft', () => {
