@@ -39,10 +39,34 @@ export function createGetRuntimeMetricsTool() {
       }
       const { repo, window_hours = 24, comparison_mode = true } = parsed.data;
 
-      const latenciesMs = [
-        14200, 16500, 18450, 19800, 21200, 22400, 24800, 28450, 31000, 34500,
-        42000, 48000, 56000, 68000, 84000, 112000, 145000, 198000, 248100,
+      const samplePool = [
+        { latencyMs: 14200, ageHours: 0.5 },
+        { latencyMs: 16500, ageHours: 1.0 },
+        { latencyMs: 18450, ageHours: 2.0 },
+        { latencyMs: 19800, ageHours: 3.5 },
+        { latencyMs: 21200, ageHours: 5.0 },
+        { latencyMs: 22400, ageHours: 8.0 },
+        { latencyMs: 24800, ageHours: 11.0 },
+        { latencyMs: 28450, ageHours: 14.0 },
+        { latencyMs: 31000, ageHours: 18.0 },
+        { latencyMs: 34500, ageHours: 22.0 },
+        { latencyMs: 42000, ageHours: 26.0 },
+        { latencyMs: 48000, ageHours: 32.0 },
+        { latencyMs: 56000, ageHours: 40.0 },
+        { latencyMs: 68000, ageHours: 52.0 },
+        { latencyMs: 84000, ageHours: 68.0 },
+        { latencyMs: 112000, ageHours: 80.0 },
+        { latencyMs: 145000, ageHours: 100.0 },
+        { latencyMs: 198000, ageHours: 120.0 },
+        { latencyMs: 248100, ageHours: 160.0 },
       ];
+
+      const windowFiltered = samplePool
+        .filter((s) => s.ageHours <= window_hours)
+        .map((s) => s.latencyMs);
+
+      const latenciesMs = windowFiltered.length > 0 ? windowFiltered : [samplePool[0].latencyMs];
+
       const sorted = [...latenciesMs].sort((a, b) => a - b);
       const sum = sorted.reduce((acc, val) => acc + val, 0);
       const avg = Math.round(sum / sorted.length);
