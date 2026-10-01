@@ -22,6 +22,12 @@ const COMPOSED_TASK_LIVENESS_SQL = `
   AND runs.terminal_deadline > clock_timestamp()
 `;
 
+type ComposedTaskByteLength = Pick<ComposedTaskRecord<unknown>, 'byteLength'>;
+
+function exceedsComposedTaskLedgerByteBound(records: readonly ComposedTaskByteLength[]): boolean {
+  return records.reduce((total, record) => total + record.byteLength, 0) > MAX_COMPOSED_LEDGER_BYTES;
+}
+
 /** Additive bootstrap only; no API enrollment or worker adoption. Text stores
  * canonical JSON so the DB enforces the exact UTF-8 byte count, not jsonb's
  * differently spaced rendering. Immutable UPDATE guard permits run FK cleanup. */
@@ -288,8 +294,9 @@ export class PostgresComposedTaskLedgerRepository {
         return current !== 'current' ? { status: current }
           : { status: existing.digest === candidate.digest ? 'duplicate' : 'conflict', digest: existing.digest };
       }
-      if (plan.byteLength + retained.reduce((sum, outcome) => sum + outcome.byteLength, 0)
-        + candidate.byteLength > MAX_COMPOSED_LEDGER_BYTES) throw new ComposedTaskLedgerError('byte-bound');
+      if (exceedsComposedTaskLedgerByteBound([plan, ...retained, candidate])) {
+        throw new ComposedTaskLedgerError('byte-bound');
+      }
       await client.query(`INSERT INTO composed_task_outcomes (attempt_id,plan_digest,task_id,task_index,status,
         content_digest,payload,byte_length) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       [trusted.identity.attemptId, plan.digest, candidate.payload.taskId, index, candidate.payload.status,
@@ -311,7 +318,7 @@ export class PostgresComposedTaskLedgerRepository {
           || plan.payload.tasks[Number(row.task_index)]?.id !== row.task_id) throw new Error();
         return outcome;
       });
-      if (plan.byteLength + outcomes.reduce((sum, outcome) => sum + outcome.byteLength, 0) > MAX_COMPOSED_LEDGER_BYTES) throw new Error();
+      if (exceedsComposedTaskLedgerByteBound([plan, ...outcomes])) throw new Error();
       return outcomes;
     } catch { throw new ComposedTaskLedgerError('integrity'); }
   }
