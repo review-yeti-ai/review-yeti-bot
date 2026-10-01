@@ -162,6 +162,7 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// example-infra provisions it.
 		JevSecretName: strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_SECRET_NAME")),
 		JevShadow:     strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_SHADOW")),
+		JevEvidence:   strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_EVIDENCE")),
 		// REL-1079: deterministic diff shrinking, off unless the deployment
 		// sets it (a comma-separated owner/repo allowlist for pilots).
 		DiffShrink: strings.TrimSpace(os.Getenv("REVIEW_YETI_DIFF_SHRINK")),
