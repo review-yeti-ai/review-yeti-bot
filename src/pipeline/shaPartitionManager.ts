@@ -68,7 +68,7 @@ export function detectFileStatus(file: { path: string; patch?: string; status?: 
   return 'modified';
 }
 
-interface ParsedUnifiedHunk {
+export interface ParsedUnifiedHunk {
   oldStart: number;
   oldCount: number;
   newStart: number;
@@ -77,7 +77,7 @@ interface ParsedUnifiedHunk {
   body: string[];
 }
 
-function parseUnifiedHunk(hunk: string): ParsedUnifiedHunk | null {
+export function parseUnifiedHunk(hunk: string): ParsedUnifiedHunk | null {
   const lines = hunk.split('\n');
   if (lines.at(-1) === '') lines.pop();
   const header = lines.shift();
@@ -100,8 +100,8 @@ function unifiedHunkCounts(lines: string[]): { oldCount: number; newCount: numbe
   let oldCount = 0;
   let newCount = 0;
   let actualDiffLineCount = 0;
-  // Keep this owner-state rule aligned with parseDiffHunkForCoverage(); hunkLineAtoms then
-  // keeps the accepted marker attached to that same line when a fragment boundary is chosen.
+  // This canonical owner-state rule is also used by the guarded Action validator; hunkLineAtoms
+  // keeps an accepted marker attached to that same line when a fragment boundary is chosen.
   let previousLineCanOwnNoNewlineMarker = false;
   for (const line of lines) {
     if (line === '\\ No newline at end of file') {
@@ -150,7 +150,7 @@ function formatUnifiedHunkFragment(
   return `${header}${body.join('\n')}`;
 }
 
-function unifiedFragmentRangeStart(
+export function unifiedFragmentRangeStart(
   sourceStart: number,
   sourceCount: number,
   consumedCount: number,

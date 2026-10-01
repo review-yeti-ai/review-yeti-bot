@@ -274,10 +274,107 @@ function hunksFromPartitionPatch(patch: string, fileHeader: string): string[] {
   return hunks;
 }
 
+function runCanonicalPartitionProbe(sourcePatch: string, safeDiffCapacityChars: number, missingHelper?: string) {
+  const pipelinePath = path.join(root, '.github/workflows/pipelines/review-pipeline.js');
+  const script = String.raw`
+    const Module = require('node:module');
+    const originalLoad = Module._load;
+    let parseCalls = 0;
+    let rangeCalls = 0;
+    let canonicalPath = null;
+    Module._load = function canonicalHelperProbe(request, parent, isMain) {
+      const value = originalLoad.call(this, request, parent, isMain);
+      const normalized = String(request).replace(/\\/g, '/');
+      if (!normalized.endsWith('/src/pipeline/shaPartitionManager.ts')) return value;
+      canonicalPath = parent?.filename ? require('node:path').resolve(require('node:path').dirname(parent.filename), request) : normalized;
+      return new Proxy(value, {
+        get(target, key, receiver) {
+          if (key === process.env.MISSING_CANONICAL_HELPER) return undefined;
+          const helper = Reflect.get(target, key, receiver);
+          if (key === 'parseUnifiedHunk' && typeof helper === 'function') {
+            return (...args) => { parseCalls += 1; return Reflect.apply(helper, target, args); };
+          }
+          if (key === 'unifiedFragmentRangeStart' && typeof helper === 'function') {
+            return (...args) => { rangeCalls += 1; return Reflect.apply(helper, target, args); };
+          }
+          return helper;
+        },
+      });
+    };
+    const pipeline = require(process.argv[1]);
+    const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+    let result;
+    try {
+      const plan = pipeline.createReviewPartitionPlan({
+        files: [{ path: 'src/partition-parity.ts', patch: input.sourcePatch, status: 'modified' }],
+        baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        safeDiffCapacityChars: input.safeDiffCapacityChars,
+        modelConfig: { guardedGatewayDestination: true, model: pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS },
+      });
+      result = {
+        partitionCount: plan.partitions.length,
+        partitionChars: plan.partitions.map((partition) => partition.totalChars),
+        patches: plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
+      };
+    } catch (error) {
+      result = { error: error?.message || String(error) };
+    }
+    process.stdout.write(JSON.stringify({ canonicalPath, parseCalls, rangeCalls, ...result }));
+  `;
+  const childEnv = { ...process.env };
+  delete childEnv.NODE_OPTIONS;
+  delete childEnv.NODE_PATH;
+  for (const key of Object.keys(childEnv)) if (key.startsWith('TS_NODE_')) delete childEnv[key];
+  if (missingHelper) childEnv.MISSING_CANONICAL_HELPER = missingHelper;
+  else delete childEnv.MISSING_CANONICAL_HELPER;
+  const result = spawnSync(process.execPath, ['-e', script, pipelinePath], {
+    cwd: root,
+    env: childEnv,
+    input: JSON.stringify({ sourcePatch, safeDiffCapacityChars }),
+    encoding: 'utf8',
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.status !== 0) throw new Error(`canonical partition probe failed: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
 describe('guarded partition producer and validator stay in lossless parity', () => {
   const filePath = 'src/partition-parity.ts';
   const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
   const marker = '\\ No newline at end of file';
+
+  it('routes guarded range and body validation through the canonical partition-manager helpers', () => {
+    const sourcePatch = `${fileHeader}@@ -0,0 +1,4 @@ literal insertion\n+one\n+two\n+three\n+four\n`;
+    const expected = [
+      '@@ -0,0 +1,1 @@ literal insertion\n+one',
+      '@@ -0,0 +2,1 @@ literal insertion\n+two',
+      '@@ -0,0 +3,1 @@ literal insertion\n+three',
+      '@@ -0,0 +4,1 @@ literal insertion\n+four',
+    ];
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+    const probe = runCanonicalPartitionProbe(sourcePatch, safeDiffCapacityChars);
+    const actual = probe.patches.flatMap((patch: string) => hunksFromPartitionPatch(patch, fileHeader));
+    expect(probe.partitionCount).toBeGreaterThan(1);
+    expect(actual).toEqual(expected); // independent literal anchor/body oracle
+    expect(probe.parseCalls).toBeGreaterThan(0);
+    expect(probe.rangeCalls).toBeGreaterThan(0);
+  });
+
+  it.each(['parseUnifiedHunk', 'unifiedFragmentRangeStart'] as const)(
+    'fails closed when canonical validator helper %s is unavailable',
+    (helper) => {
+      const sourcePatch = `${fileHeader}@@ -0,0 +1,3 @@ missing helper\n+one\n+two\n+three\n`;
+      const expected = [
+        '@@ -0,0 +1,1 @@ missing helper\n+one',
+        '@@ -0,0 +2,1 @@ missing helper\n+two',
+        '@@ -0,0 +3,1 @@ missing helper\n+three',
+      ];
+      const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+      const probe = runCanonicalPartitionProbe(sourcePatch, safeDiffCapacityChars, helper);
+      expect(probe.error).toBe(`lossless partition validator helper ${helper} is unavailable`);
+    },
+  );
 
   it.each([
     {

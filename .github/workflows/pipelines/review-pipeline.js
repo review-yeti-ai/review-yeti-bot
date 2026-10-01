@@ -1923,69 +1923,24 @@ function splitDiffPatchForCoverage(patch) {
   return { header: header.join('\n'), hunks };
 }
 
-function parseDiffHunkForCoverage(hunkText) {
-  const lines = String(hunkText || '').split('\n');
-  if (lines.at(-1) === '') lines.pop();
-  const header = lines.shift();
-  const match = header?.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/u);
-  if (!match) return null;
-
-  const oldStart = Number(match[1]);
-  const oldCount = match[2] === undefined ? 1 : Number(match[2]);
-  const newStart = Number(match[3]);
-  const newCount = match[4] === undefined ? 1 : Number(match[4]);
-  if (![oldStart, oldCount, newStart, newCount].every(Number.isSafeInteger)) return null;
-
-  const body = lines;
-  let actualOldCount = 0;
-  let actualNewCount = 0;
-  let actualDiffLineCount = 0;
-  // This guarded validator mirrors the producer's owner-state check; exact body slices below
-  // make a marker's source-line ownership part of lossless coverage, not only its line counts.
-  let previousLineCanOwnNoNewlineMarker = false;
-  for (const line of body) {
-    if (line === '\\ No newline at end of file') {
-      if (!previousLineCanOwnNoNewlineMarker) return null;
-      previousLineCanOwnNoNewlineMarker = false;
-      continue;
-    }
-    if (line.startsWith(' ')) {
-      actualOldCount += 1;
-      actualNewCount += 1;
-    } else if (line.startsWith('+')) {
-      actualNewCount += 1;
-    } else if (line.startsWith('-')) {
-      actualOldCount += 1;
-    } else {
-      return null;
-    }
-    actualDiffLineCount += 1;
-    previousLineCanOwnNoNewlineMarker = true;
-  }
-  if (actualDiffLineCount === 0 || actualOldCount !== oldCount || actualNewCount !== newCount) return null;
-  return { oldStart, oldCount, newStart, newCount, section: match[5], body };
-}
-
-function unifiedFragmentRangeStart(sourceStart, sourceCount, consumedCount, fragmentCount) {
-  const sourceCursor = sourceStart + (sourceCount === 0 ? 1 : 0) + consumedCount;
-  return fragmentCount === 0 ? sourceCursor - 1 : sourceCursor;
-}
-
 function hasLosslessHunkFragmentCoverage(sourceHunks, plannedHunks) {
+  const parseUnifiedHunk = shaPartitionManager?.parseUnifiedHunk;
+  const unifiedFragmentRangeStart = shaPartitionManager?.unifiedFragmentRangeStart;
+  if (typeof parseUnifiedHunk !== 'function' || typeof unifiedFragmentRangeStart !== 'function') return false;
   if (plannedHunks.length === sourceHunks.length
     && plannedHunks.every((hunk, index) => hunk === sourceHunks[index])) {
-    return sourceHunks.every((hunk) => parseDiffHunkForCoverage(hunk) !== null);
+    return sourceHunks.every((hunk) => parseUnifiedHunk(hunk) !== null);
   }
 
   let plannedIndex = 0;
   for (const sourceText of sourceHunks) {
     if (plannedHunks[plannedIndex] === sourceText) {
-      if (!parseDiffHunkForCoverage(sourceText)) return false;
+      if (!parseUnifiedHunk(sourceText)) return false;
       plannedIndex += 1;
       continue;
     }
 
-    const source = parseDiffHunkForCoverage(sourceText);
+    const source = parseUnifiedHunk(sourceText);
     if (!source || source.body.length === 0) return false;
     let bodyOffset = 0;
     let oldConsumed = 0;
@@ -1994,7 +1949,7 @@ function hasLosslessHunkFragmentCoverage(sourceHunks, plannedHunks) {
     while (bodyOffset < source.body.length) {
       const fragmentText = plannedHunks[plannedIndex];
       if (typeof fragmentText !== 'string') return false;
-      const fragment = parseDiffHunkForCoverage(fragmentText);
+      const fragment = parseUnifiedHunk(fragmentText);
       if (!fragment || fragment.section !== source.section
         || fragment.oldStart !== unifiedFragmentRangeStart(source.oldStart, source.oldCount, oldConsumed, fragment.oldCount)
         || fragment.newStart !== unifiedFragmentRangeStart(source.newStart, source.newCount, newConsumed, fragment.newCount)
@@ -2085,6 +2040,12 @@ function createReviewPartitionPlan({
   if (!partitionManager || typeof partitionManager.createPartitionPlan !== 'function') {
     if (mustBeLossless) throw new Error('lossless partition manager is unavailable');
     return null;
+  }
+  if (mustBeLossless && (!shaPartitionManager || typeof shaPartitionManager.parseUnifiedHunk !== 'function')) {
+    throw new Error('lossless partition validator helper parseUnifiedHunk is unavailable');
+  }
+  if (mustBeLossless && typeof shaPartitionManager.unifiedFragmentRangeStart !== 'function') {
+    throw new Error('lossless partition validator helper unifiedFragmentRangeStart is unavailable');
   }
 
   const plan = mustBeLossless

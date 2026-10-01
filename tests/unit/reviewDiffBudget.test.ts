@@ -470,17 +470,35 @@ describe('guarded gateway input budgeting', () => {
 
   it('loads and partitions through the bare Action path without dist or ts-node', () => {
     const { inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const rangeFixture = createGuardedZeroAnchorFixture();
     const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
     const script = `
       const fs = require('node:fs');
       const Module = require('node:module');
       if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node 24+ is required');
       const originalLoad = Module._load;
+      let parseCalls = 0;
+      let rangeCalls = 0;
       Module._load = function guardedLoad(request, parent, isMain) {
         const target = String(request).replace(/\\\\/g, '/');
         if (target.includes('/dist/pipeline/shaPartitionManager')) throw new Error('dist fallback is unavailable in this Action test');
         if (target === 'ts-node' || target.startsWith('ts-node/')) throw new Error('ts-node is unavailable in this Action test');
-        return originalLoad.call(this, request, parent, isMain);
+        const loaded = originalLoad.call(this, request, parent, isMain);
+        if (target.endsWith('/src/pipeline/shaPartitionManager.ts')) {
+          return new Proxy(loaded, {
+            get(targetModule, key, receiver) {
+              const helper = Reflect.get(targetModule, key, receiver);
+              if (key === 'parseUnifiedHunk' && typeof helper === 'function') {
+                return (...args) => { parseCalls += 1; return Reflect.apply(helper, targetModule, args); };
+              }
+              if (key === 'unifiedFragmentRangeStart' && typeof helper === 'function') {
+                return (...args) => { rangeCalls += 1; return Reflect.apply(helper, targetModule, args); };
+              }
+              return helper;
+            },
+          });
+        }
+        return loaded;
       };
       const pipeline = require(process.argv[1]);
       const managerPath = Object.keys(require.cache).find((file) => file.replace(/\\\\/g, '/').endsWith('/src/pipeline/shaPartitionManager.ts'));
@@ -494,12 +512,16 @@ describe('guarded gateway input budgeting', () => {
         safeDiffCapacityChars: 80000,
         modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
       });
+      const rangePlan = pipeline.createReviewPartitionPlan(input.rangeRequest);
       process.stdout.write(JSON.stringify({
         managerPath,
         partitionChars: plan.partitions.map((partition) => partition.totalChars),
         files: plan.fileManifest.length,
         coveragePercent: plan.coveragePercent,
         omittedFilesCount: plan.omittedFilesCount,
+        parseCalls,
+        rangeCalls,
+        rangePatches: rangePlan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
       }));
     `;
     const childEnv = { ...process.env };
@@ -513,6 +535,7 @@ describe('guarded gateway input budgeting', () => {
         files: inputFiles,
         baseSha: '0123456789abcdef0123456789abcdef01234567',
         headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+        rangeRequest: rangeFixture.request,
       }),
       encoding: 'utf8',
       maxBuffer: 2 * 1024 * 1024,
@@ -526,6 +549,69 @@ describe('guarded gateway input budgeting', () => {
     expect(evidence.files).toBe(33);
     expect(evidence.coveragePercent).toBe(100);
     expect(evidence.omittedFilesCount).toBe(0);
+    expect(evidence.parseCalls).toBeGreaterThan(0);
+    expect(evidence.rangeCalls).toBeGreaterThan(0);
+    expect(evidence.rangePatches.map((patch: string) => patch.slice(rangeFixture.fileHeader.length).replace(/\n+$/u, '')))
+      .toEqual(rangeFixture.expectedHunks);
+  });
+
+  it('uses the compiled fallback as the canonical parser when native TypeScript loading is unavailable', () => {
+    const fixture = createGuardedZeroAnchorFixture();
+    const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
+    const script = `
+      const fs = require('node:fs');
+      const Module = require('node:module');
+      const originalLoad = Module._load;
+      let parseCalls = 0;
+      let rangeCalls = 0;
+      Module._load = function compiledFallbackProbe(request, parent, isMain) {
+        const target = String(request).replace(/\\\\/g, '/');
+        if (target.includes('/src/pipeline/shaPartitionManager')) throw new Error('native source path is unavailable in compiled fallback test');
+        const loaded = originalLoad.call(this, request, parent, isMain);
+        if (!target.includes('/dist/pipeline/shaPartitionManager')) return loaded;
+        return new Proxy(loaded, {
+          get(targetModule, key, receiver) {
+            const helper = Reflect.get(targetModule, key, receiver);
+            if (key === 'parseUnifiedHunk' && typeof helper === 'function') {
+              return (...args) => { parseCalls += 1; return Reflect.apply(helper, targetModule, args); };
+            }
+            if (key === 'unifiedFragmentRangeStart' && typeof helper === 'function') {
+              return (...args) => { rangeCalls += 1; return Reflect.apply(helper, targetModule, args); };
+            }
+            return helper;
+          },
+        });
+      };
+      const pipeline = require(process.argv[1]);
+      const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+      const plan = pipeline.createReviewPartitionPlan(input);
+      const managerPath = Object.keys(require.cache).find((file) => file.replace(/\\\\/g, '/').includes('/dist/pipeline/shaPartitionManager'));
+      process.stdout.write(JSON.stringify({
+        managerPath,
+        parseCalls,
+        rangeCalls,
+        patches: plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
+      }));
+    `;
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_OPTIONS;
+    delete childEnv.NODE_PATH;
+    for (const key of Object.keys(childEnv)) if (key.startsWith('TS_NODE_')) delete childEnv[key];
+    const result = spawnSync(process.execPath, ['-e', script, pipelinePath], {
+      cwd: rootRepoDir,
+      env: childEnv,
+      input: JSON.stringify(fixture.request),
+      encoding: 'utf8',
+      maxBuffer: 2 * 1024 * 1024,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(result.stdout);
+    expect(evidence.managerPath.replace(/\\/g, '/')).toMatch(/\/dist\/pipeline\/shaPartitionManager\.js$/u);
+    expect(evidence.parseCalls).toBeGreaterThan(0);
+    expect(evidence.rangeCalls).toBeGreaterThan(0);
+    expect(evidence.patches.map((patch: string) => patch.slice(fixture.fileHeader.length).replace(/\n+$/u, '')))
+      .toEqual(fixture.expectedHunks);
   });
 
   it('rejects unavailable or incomplete lossless partition plans', () => {

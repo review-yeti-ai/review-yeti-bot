@@ -19,6 +19,7 @@ import {
   PartitionPlan,
   FileStatus,
 } from '../../src/pipeline/shaPartitionManager';
+import * as partitionManagerModule from '../../src/pipeline/shaPartitionManager';
 
 // Re-export for any test suites importing from this test file
 export {
@@ -36,6 +37,49 @@ export type { DiffPartition, PartitionPlan, FileStatus };
 describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
   const BASE_SHA = '0123456789abcdef0123456789abcdef01234567';
   const HEAD_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
+
+  describe('canonical unified-hunk validation helpers', () => {
+    const helpers = partitionManagerModule as unknown as Record<string, unknown>;
+
+    it('exports the parser and range cursor used by the Action validator', () => {
+      expect(typeof helpers.parseUnifiedHunk).toBe('function');
+      expect(typeof helpers.unifiedFragmentRangeStart).toBe('function');
+    });
+
+    it('parses counted and omitted-count hunks and rejects an orphan no-newline marker', () => {
+      const parseUnifiedHunk = helpers.parseUnifiedHunk as (hunk: string) => unknown;
+      expect(parseUnifiedHunk('@@ -0,0 +1,2 @@ insertion\n+one\n+two')).toEqual({
+        oldStart: 0,
+        oldCount: 0,
+        newStart: 1,
+        newCount: 2,
+        section: ' insertion',
+        body: ['+one', '+two'],
+      });
+      expect(parseUnifiedHunk('@@ -1 +1 @@ replacement\n-old\n+new')).toEqual({
+        oldStart: 1,
+        oldCount: 1,
+        newStart: 1,
+        newCount: 1,
+        section: ' replacement',
+        body: ['-old', '+new'],
+      });
+      expect(parseUnifiedHunk('@@ -1,1 +1,1 @@ malformed\n\\ No newline at end of file\n-old\n+new')).toBeNull();
+    });
+
+    it('computes literal zero-side anchors from the shared source cursor', () => {
+      const rangeStart = helpers.unifiedFragmentRangeStart as (
+        sourceStart: number,
+        sourceCount: number,
+        consumedCount: number,
+        fragmentCount: number,
+      ) => number;
+      expect(rangeStart(0, 0, 0, 0)).toBe(0); // insertion at the beginning
+      expect(rangeStart(1, 2, 1, 1)).toBe(2); // second inserted line
+      expect(rangeStart(2, 0, 0, 0)).toBe(2); // pure deletion at source end
+      expect(rangeStart(3, 2, 2, 0)).toBe(4); // zero new-side range after two old lines
+    });
+  });
 
   // ==========================================================================
   // TIER 1: COMMIT SHA RANGE FORMATTING & VALIDATION
