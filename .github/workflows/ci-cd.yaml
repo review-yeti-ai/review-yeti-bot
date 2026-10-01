@@ -43,7 +43,7 @@ jobs:
   # typecheck still gates them.
   test-plan:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     permissions:
       contents: read
@@ -102,7 +102,7 @@ jobs:
     needs: test-plan
     if: needs.test-plan.outputs.shard-count != '0'
     name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     # Headroom for a cold node_modules disk (a lockfile change) on top of a full shard.
     timeout-minutes: 25
     permissions:
@@ -151,7 +151,7 @@ jobs:
   vitest-postgres:
     needs: test-plan
     if: needs.test-plan.outputs.postgres-tests != '[]'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     services:
       postgres:
         image: postgres:17-alpine
@@ -210,7 +210,7 @@ jobs:
 
   build:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: read
@@ -267,7 +267,7 @@ jobs:
           exit "$failed"
 
   typecheck:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
     # so the 464 errors that were burned down to reach that state could silently return unnoticed.
@@ -293,7 +293,7 @@ jobs:
         run: npm run lint:src -- --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo
 
   operator-test:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
     # so a reconciler regression could ship with a fully green PR. This job runs vet and the
@@ -418,6 +418,14 @@ jobs:
             # (verified live: runner group 'blacksmith runners …' picked up in
             # ~1.5 min; x86 blacksmith labels stay queued, so amd64 keeps
             # ubuntu-latest).
+            #
+            # The "x86 blacksmith labels stay queued" half of that observation
+            # is now stale: this same workflow's `worker-helper` and
+            # `legacy-runtime` jobs run on blacksmith-2vcpu-ubuntu-2404 (x86)
+            # and complete on every run, and the org has a
+            # blacksmith-2vcpu-ubuntu-2404 scale set registered. amd64 still
+            # stays on ubuntu-latest here because a public repo already gets a
+            # free multi-arch lane, not because x86 Blacksmith is unavailable.
             runner: blacksmith-2vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
