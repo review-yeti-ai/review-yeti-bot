@@ -104,7 +104,7 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCallValue } from './nativeTurnProtocol';
-import { MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../reviewTaskContract';
+import { MAX_TASK_ID_LENGTH, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../reviewTaskContract';
 import {
   resolveComposedMaxTasks,
   ReviewTask,
@@ -799,7 +799,7 @@ function buildPlanTaskContractGuidance(
   securityAuthPaths: string[] = [],
 ): string[] {
   const guidance = [
-    `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`,
+    `Task ids must match ${TASK_ID_PATTERN.source} (1-${MAX_TASK_ID_LENGTH} characters).`,
     `Every task object must include these nested fields: "id", "dimension", "paths", "question", and "rationale".`,
     `The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}. The "paths" value must be an array containing only exact changed code paths from the PR CHANGED FILES INDEX above; do not invent or rewrite paths.`,
     `The question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters; do not omit either field.`,

@@ -3,7 +3,7 @@ import { parseAndValidateConfig } from '../../config/configLoader';
 import type { OpenRouterResponse } from '../../gateway/openRouterClient';
 import { buildPlanDirective, executeComposedReview } from '../composedEngine';
 import { validateTaskPlan, type RawReviewTask } from '../reviewTask';
-import { MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../../reviewTaskContract';
+import { MAX_TASK_ID_LENGTH, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../../reviewTaskContract';
 
 const changedPath = 'src/auth/guard.ts';
 const changedFiles = [{
@@ -86,7 +86,7 @@ function expectedPlanExample(nonce: string): string {
 }
 
 function expectTaskContractGuidance(text: string, nonce: string): void {
-  const idRule = `Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`;
+  const idRule = `Task ids must match ${TASK_ID_PATTERN.source} (1-${MAX_TASK_ID_LENGTH} characters).`;
   expect(text.split(idRule)).toHaveLength(2);
   expect(text).toContain('include these nested fields: "id", "dimension", "paths", "question", and "rationale"');
   expect(text).toContain(`question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters`);
@@ -96,13 +96,19 @@ function expectTaskContractGuidance(text: string, nonce: string): void {
 }
 
 describe('composed plan task-field contract clarity', () => {
+  it('preserves the existing ID-pattern source and flags while sharing its bound', () => {
+    expect(MAX_TASK_ID_LENGTH).toBe(128);
+    expect(TASK_ID_PATTERN.source).toBe('^[a-z][a-z0-9_-]{0,127}$');
+    expect(TASK_ID_PATTERN.flags).toBe('u');
+  });
+
   it('omits the positive task example when no changed code path is available', () => {
     const nonce = 'empty-path-fixture-nonce';
     const text = buildPlanDirective(4, [], nonce);
 
     expect(text).toContain('include these nested fields: "id", "dimension", "paths", "question", and "rationale"');
     expect(text).toContain(`question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters`);
-    expect(text).toContain(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`);
+    expect(text).toContain(`Task ids must match ${TASK_ID_PATTERN.source} (1-${MAX_TASK_ID_LENGTH} characters).`);
     expect(text).toContain(`The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}.`);
     expect(text).toContain('No changed code path is available for a positive task example.');
     expect(text).not.toContain('Positive example of the complete plan/task JSON shape');
@@ -118,7 +124,7 @@ describe('composed plan task-field contract clarity', () => {
 
       expect(text).toContain(JSON.stringify({ nonce, tasks: [task] }));
       expect(text).not.toContain('security-auth-example');
-      expect(text.split(`Task ids must match ${TASK_ID_PATTERN.source} (1-128 characters).`)).toHaveLength(2);
+      expect(text.split(`Task ids must match ${TASK_ID_PATTERN.source} (1-${MAX_TASK_ID_LENGTH} characters).`)).toHaveLength(2);
       expect(validateTaskPlan({ tasks: [task] }, { changedFiles: [path] })).toMatchObject({ valid: true, tasks: [task] });
     },
   );
@@ -147,10 +153,10 @@ describe('composed plan task-field contract clarity', () => {
     });
   });
 
-  it.each([128, 129])('keeps the validator task-id boundary at %i characters', (length) => {
+  it.each([MAX_TASK_ID_LENGTH, MAX_TASK_ID_LENGTH + 1])('keeps the validator task-id boundary at %i characters', (length) => {
     const id = 'a'.repeat(length);
-    expect(TASK_ID_PATTERN.test(id)).toBe(length === 128);
-    expect(validateTaskPlan({ tasks: [{ ...validTask(), id }] }, { changedFiles: [changedPath] }).valid).toBe(length === 128);
+    expect(TASK_ID_PATTERN.test(id)).toBe(length === MAX_TASK_ID_LENGTH);
+    expect(validateTaskPlan({ tasks: [{ ...validTask(), id }] }, { changedFiles: [changedPath] }).valid).toBe(length === MAX_TASK_ID_LENGTH);
   });
 
   it.each(['blank fields', 'nonce mismatch', 'oversized id'] as const)(
@@ -172,7 +178,7 @@ describe('composed plan task-field contract clarity', () => {
           tasks: [{
             ...validTask(),
             ...(firstFailure === 'blank fields' ? { question: '   ', rationale: '' } : {}),
-            ...(firstFailure === 'oversized id' ? { id: 'a'.repeat(129) } : {}),
+            ...(firstFailure === 'oversized id' ? { id: 'a'.repeat(MAX_TASK_ID_LENGTH + 1) } : {}),
           }],
         }));
       }
