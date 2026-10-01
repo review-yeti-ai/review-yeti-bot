@@ -269,8 +269,8 @@ export default {
         return Response.json({ status: 'ok', maxAgeSeconds, ...result });
       }
 
-      // Review Yeti MCP Gateway: /api/mcp
-      if (url.pathname === '/api/mcp') {
+      // Review Yeti MCP Gateway: /api/mcp and /mcp
+      if (url.pathname === '/api/mcp' || url.pathname === '/mcp') {
         return await defaultMcpRouter.handleHttpRequest(request, env);
       }
 
