@@ -158,7 +158,9 @@ export async function runReadOnlyTool(
 
   if (['ct_impact', 'ct_mesh_query', 'ct_mesh_stats'].includes(tName)) {
     toolScope = 'cross-repository-ast-mesh';
-    isExhaustive = true;
+    // A mesh hit can guide investigation; its revision, languages and filters
+    // do not establish complete cross-repository consumer coverage.
+    isExhaustive = false;
   } else if (['knowledge_search', 'knowledge_get'].includes(tName)) {
     toolScope = 'governed-knowledge-adr';
     isExhaustive = true;
@@ -264,6 +266,7 @@ export async function runReadOnlyTool(
             const sliced = sliceLines(raw);
             const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
             const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+
             const prefixNote = sliced.sliced
               ? `${tName === 'get_diff' ? 'Patch lines' : 'Lines'} ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
               : '';
@@ -288,6 +291,7 @@ export async function runReadOnlyTool(
             const sliced = sliceLines(content);
             const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
             const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+            if (truncated) isExhaustive = false;
             const prefixNote = sliced.sliced
               ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
               : '';
@@ -394,10 +398,13 @@ export async function runReadOnlyTool(
       try {
         const zoektTool = require('../mcp/zoektSearchTool');
         const zoektRes: any = await raceWithPanelAbort(
-          zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig),
+          zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig, { signal: options?.signal, session: options?.zoektConfig?.searchSession }),
           options?.signal,
         );
-        isExhaustive = zoektRes.status === 'ok';
+        // This is a wire-envelope guard, not the index completeness policy:
+        // reject a contradictory receipt even if its producer says exhaustive.
+        // Index exclusions and revision checks remain owned by the search tool.
+        isExhaustive = zoektRes.status === 'ok' && zoektRes.exhaustive === true && zoektRes.truncated !== true;
         toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: ${isExhaustive}]\n${JSON.stringify(zoektRes, null, 2)}`;
       } catch (err: any) {
         toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: false | STATUS: unavailable]\nZoekt search unavailable: ${err?.message || String(err)}`;
