@@ -40,7 +40,7 @@ func TestWorkerMetricsSnapshotCountsFullQueueAndRecentFailures(t *testing.T) {
 	}
 	review := func(name string, deadline time.Time) *reviewv1alpha2.PRReviewJob {
 		return &reviewv1alpha2.PRReviewJob{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: job.Namespace},
-			Spec:   reviewv1alpha2.PRReviewJobSpec{ReceivedAt: metav1.NewTime(deadline.Add(-30 * time.Minute)), TerminalDeadline: metav1.NewTime(deadline)},
+			Spec:   reviewv1alpha2.PRReviewJobSpec{ReceivedAt: metav1.NewTime(deadline.Add(-15 * time.Minute)), TerminalDeadline: metav1.NewTime(deadline)},
 			Status: reviewv1alpha2.PRReviewJobStatus{Phase: reviewv1alpha2.PhaseQueued}}
 	}
 	active := worker("active", job.PublishingWorkerComponent, time.Time{})

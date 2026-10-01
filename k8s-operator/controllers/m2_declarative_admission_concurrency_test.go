@@ -893,6 +893,7 @@ func TestEmpirical_V1Alpha2_MultiReplica_SameReviewRace_SingleWorkerJobCreated(t
 	rev.Spec.PRNumber = 301
 	rev.Spec.RunSecretName = "ct-review-run-" + runHex
 	rev.Spec.ReceivedAt = metav1.NewTime(now.Add(-10 * time.Second))
+	rev.Spec.TerminalDeadline = metav1.NewTime(rev.Spec.ReceivedAt.Add(15 * time.Minute))
 	rev.CreationTimestamp = metav1.NewTime(now.Add(-10 * time.Second))
 
 	sharedClient := fake.NewClientBuilder().

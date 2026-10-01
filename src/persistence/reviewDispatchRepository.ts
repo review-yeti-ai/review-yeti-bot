@@ -2,7 +2,10 @@ import { timingSafeEqual } from 'node:crypto';
 import type { WorkerReviewEvidence } from '../review/workerReviewCompletion';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 import { deriveReviewRunId } from '../review/reviewAdmission';
-import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
+import {
+  assertPersistedTerminalDeadlineWindow,
+  assertTerminalDeadlineWindow,
+} from '../config/terminalDeadline';
 import type { RunRetryContext } from '../review/recoverablePanelRetry';
 import {
   ReviewAdmission,
@@ -42,6 +45,7 @@ import {
 } from '../review/reviewGatePolicy';
 import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
 import { loadIncompleteP2RecoveryContext } from './incompleteP2Recovery';
+import { REVIEW_DISPATCH_OUTBOX_STATUS } from './reviewDispatchStatus';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../review/incompleteP2RecoveryLimits';
 import { isTrustedMcpStaticAdminRecoveryOrigin } from '../review/mcpStaticAdminRecoveryOrigin';
 
@@ -275,7 +279,11 @@ function isTrustedMcpRecoveryInput(input: ReviewAdmissionInput): boolean {
     && input.eventName === 'mcp.trigger_review';
 }
 
-function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneration: boolean): void {
+function validateAdmission(
+  input: ReviewAdmissionInput,
+  requireExpectedGeneration: boolean,
+  deadlineKind: 'new' | 'persisted' = 'new',
+): void {
   if (!input.deliveryId.trim()) throw new Error('delivery id is required');
   if (!Number.isSafeInteger(input.repositoryId) || input.repositoryId <= 0) throw new Error('repository id must be positive');
   if (!Number.isSafeInteger(input.installationId) || input.installationId <= 0) throw new Error('installation id must be positive');
@@ -335,7 +343,11 @@ function validateAdmission(input: ReviewAdmissionInput, requireExpectedGeneratio
     && input.expectedGeneration === undefined) {
     throw new Error('expected generation is required for central app-gate admission');
   }
-  assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
+  if (deadlineKind === 'persisted') {
+    assertPersistedTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
+  } else {
+    assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
+  }
   if (input.authoritativeGate) {
     const { expectedAppId, prepared } = input.authoritativeGate;
     if (input.publicationMode !== 'app-gate' || !Number.isSafeInteger(expectedAppId) || expectedAppId <= 0) {
@@ -402,6 +414,21 @@ function assertExpectedGeneration(input: ReviewAdmissionInput, row: Record<strin
   if (input.expectedGeneration !== durableGeneration) {
     throw new ReviewGenerationConflictError(input.expectedGeneration, durableGeneration);
   }
+}
+
+/** One identity predicate for both exact-window and legacy-window redelivery. */
+function assertDuplicateDeliveryIdentity(input: ReviewAdmissionInput, row: Record<string, any> | undefined): void {
+  if (!row || row.payload_digest !== input.payloadDigest || Number(row.repository_id) !== input.repositoryId) {
+    throw new Error('delivery identity conflict: delivery id was already used for another payload or repository');
+  }
+  if (row.publication_mode !== input.publicationMode) {
+    throw new Error('delivery publication mode conflict: delivery id was already used with another publication mode');
+  }
+  if (input.authoritativeGate && (Number(row.authoritative_gate_app_id) !== input.authoritativeGate.expectedAppId
+    || row.identity_digest !== sha256(input.identity))) {
+    throw new Error('Duplicate delivery no longer matches current authoritative identity');
+  }
+  assertExpectedGeneration(input, row);
 }
 
 /**
@@ -835,7 +862,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         || row.publication_mode !== 'app-gate'
         || Number(row.authoritative_gate_app_id) !== input.authoritativeGate?.expectedAppId
         || row.status !== 'failed'
-        || row.outbox_status !== 'projected'
+        || row.outbox_status !== REVIEW_DISPATCH_OUTBOX_STATUS.projected
         || Number(row.outbox_execution_attempt) !== attempt
         || row.outbox_delivery_id !== row.delivery_id
         || row.outbox_has_projection !== true
@@ -890,12 +917,73 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }
   }
 
+  /**
+   * Read-only compatibility path for a delivery admitted before the exact
+   * 15-minute ceiling shipped. It cannot insert, retry, supersede, or update
+   * policy state: a legacy-width request is valid only when this exact durable
+   * delivery already exists and still matches its immutable identity.
+   */
+  private async readPersistedLegacyDuplicate(input: ReviewAdmissionInput): Promise<ReviewAdmission> {
+    if (input.authoritativeGate) await this.validateAuthoritativeAdmission(input);
+    const client = await this.pool.connect();
+    try {
+      const existing = await client.query(
+        `SELECT runs.*, deliveries.payload_digest, deliveries.repository_id
+           FROM github_deliveries AS deliveries
+           JOIN review_runs AS runs ON runs.run_id = deliveries.run_id
+          WHERE deliveries.delivery_id = $1`,
+        [input.deliveryId],
+      );
+      const row = existing.rows[0];
+      if (!row) {
+        // Preserve the public admission error while proving that this request
+        // never falls through to the mutating new-delivery transaction.
+        assertTerminalDeadlineWindow(input.receivedAt, input.terminalDeadline);
+        throw new Error('legacy terminal deadline is valid only for an existing delivery');
+      }
+      assertDuplicateDeliveryIdentity(input, row);
+      const run = fromRow(row);
+      if (run.receivedAt === undefined || run.terminalDeadline === undefined) {
+        throw new Error('persisted duplicate delivery is missing its terminal deadline');
+      }
+      assertPersistedTerminalDeadlineWindow(run.receivedAt, run.terminalDeadline);
+      if (run.receivedAt !== input.receivedAt || run.terminalDeadline !== input.terminalDeadline) {
+        throw new Error('delivery timing conflict: duplicate delivery no longer matches its persisted deadline');
+      }
+      return {
+        status: 'duplicate',
+        deliveryId: input.deliveryId,
+        repositoryId: input.repositoryId,
+        installationId: input.installationId,
+        publicationMode: input.publicationMode,
+        receivedAt: run.receivedAt,
+        terminalDeadline: run.terminalDeadline,
+        payloadDigest: input.payloadDigest,
+        run,
+      };
+    } finally {
+      client.release();
+    }
+  }
+
   async admit(requestedInput: ReviewAdmissionInput): Promise<ReviewAdmission> {
-    validateAdmission(requestedInput, this.options.requireExpectedGeneration === true);
+    let deadlineKind: 'new' | 'persisted' = 'new';
+    try {
+      assertTerminalDeadlineWindow(requestedInput.receivedAt, requestedInput.terminalDeadline);
+    } catch (strictDeadlineError) {
+      try {
+        assertPersistedTerminalDeadlineWindow(requestedInput.receivedAt, requestedInput.terminalDeadline);
+        deadlineKind = 'persisted';
+      } catch {
+        throw strictDeadlineError;
+      }
+    }
+    validateAdmission(requestedInput, this.options.requireExpectedGeneration === true, deadlineKind);
     let input = requestedInput;
     if (input.authoritativeGate && !this.options.validateAuthoritativeAdmission) {
       throw new Error('Authoritative admission validator is required');
     }
+    if (deadlineKind === 'persisted') return this.readPersistedLegacyDuplicate(input);
     const identityDigest = sha256(input.identity);
     const runId = deriveReviewRunId(input.identity);
     let preparedGenerationRecovery: ReviewGenerationRecoveryEvidence[] = [];
@@ -984,17 +1072,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           [input.deliveryId],
         );
         const row = existing.rows[0];
-        if (!row || row.payload_digest !== input.payloadDigest || Number(row.repository_id) !== input.repositoryId) {
-          throw new Error('delivery identity conflict: delivery id was already used for another payload or repository');
-        }
-        if (row.publication_mode !== input.publicationMode) {
-          throw new Error('delivery publication mode conflict: delivery id was already used with another publication mode');
-        }
-        if (input.authoritativeGate && (Number(row.authoritative_gate_app_id) !== input.authoritativeGate.expectedAppId
-          || row.identity_digest !== sha256(input.identity))) {
-          throw new Error('Duplicate delivery no longer matches current authoritative identity');
-        }
-        assertExpectedGeneration(input, row);
+        assertDuplicateDeliveryIdentity(input, row);
         await client.query('COMMIT');
         return {
           status: 'duplicate',
