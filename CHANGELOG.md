@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.8](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.7...v1.101.8) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** pin embedded Go qualification and safe failure evidence ([#1204](https://github.com/review-yeti-ai/review-yeti-bot/issues/1204)) ([d059560](https://github.com/review-yeti-ai/review-yeti-bot/commit/d0595608a7e4e59a4e0fd487057cd004c80516e6))
+
 ## [1.101.7](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.6...v1.101.7) (2026-10-01)
 
 
