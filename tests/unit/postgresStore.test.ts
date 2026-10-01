@@ -8,10 +8,6 @@ import { logger } from '../../src/utils/logger';
 import path from 'path';
 import fs from 'fs';
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
 describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
   const tmpDashboardPath = path.join('/tmp', `test_pg_dashboard_${Date.now()}.json`);
 
