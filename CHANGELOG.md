@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.1...v1.101.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** admit public self-review at ready or explicit request ([#1189](https://github.com/review-yeti-ai/review-yeti-bot/issues/1189)) ([ab8f557](https://github.com/review-yeti-ai/review-yeti-bot/commit/ab8f5574c79eb2be53ff9fa7c2b2550567b39fc6))
+
 ## [1.101.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.0...v1.101.1) (2026-10-01)
 
 
