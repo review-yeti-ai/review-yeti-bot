@@ -361,13 +361,13 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       // the PRReviewJob. From that point onward, the projection row is the
       // authoritative execution identity; treating the cleared dispatcher
       // lease as "no worker" is what made live reviews look queued. The
-      // operator's deterministic worker Job name is <projection>-worker. The
-      // exact generated Pod suffix is not persisted, so do not mislabel the
-      // Job name as a Pod identity.
+      // operator records the current worker Job name in PRReviewJob status,
+      // but that status is not persisted here and continuation jobs do not use
+      // the initial `-worker` suffix. Report only the authoritative projection
+      // identity instead of inventing a Job or Pod identity.
       const projectedWorker: ReviewActiveWorker | null = projectionIsCurrent
         ? {
-            identity_kind: 'job',
-            job_name: `${projectionName}-worker`,
+            identity_kind: 'projection',
             projection_name: projectionName,
             started_at: markers.get('review.lifecycle.started')
               ?? isoOrNull(projection?.dispatch_updated_at)

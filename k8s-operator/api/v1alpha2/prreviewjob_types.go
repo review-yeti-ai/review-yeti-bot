@@ -90,8 +90,11 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
 	HeadSHA string `json:"headSha"`
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
-	BaseSHA          string      `json:"baseSha"`
-	ReceivedAt       metav1.Time `json:"receivedAt"`
+	BaseSHA    string      `json:"baseSha"`
+	ReceivedAt metav1.Time `json:"receivedAt"`
+	// TerminalDeadline is exactly 15 minutes after ReceivedAt for every new
+	// Kubernetes projection. Pre-migration 15-60 minute rows are accepted only
+	// by the TypeScript database recovery path and must never be projected.
 	TerminalDeadline metav1.Time `json:"terminalDeadline"`
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
 	PolicyDigest string `json:"policyDigest"`
@@ -452,9 +455,9 @@ type PRReviewJobStatus struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=512
 	// +optional
-	ReceiptEvidenceRef string `json:"receiptEvidenceRef,omitempty"`
-	Message           string                   `json:"message,omitempty"`
-	Conditions        []metav1.Condition       `json:"conditions,omitempty"`
+	ReceiptEvidenceRef string             `json:"receiptEvidenceRef,omitempty"`
+	Message            string             `json:"message,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

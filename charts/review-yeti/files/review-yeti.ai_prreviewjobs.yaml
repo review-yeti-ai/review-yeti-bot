@@ -171,6 +171,10 @@ spec:
                 - generic
                 type: string
               terminalDeadline:
+                description: |-
+                  TerminalDeadline is exactly 15 minutes after ReceivedAt for every new
+                  Kubernetes projection. Pre-migration 15-60 minute rows are accepted only
+                  by the TypeScript database recovery path and must never be projected.
                 format: date-time
                 type: string
               workerImage:

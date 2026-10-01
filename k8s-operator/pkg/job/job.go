@@ -182,9 +182,15 @@ const (
 	// (see charts/review-yeti/templates/crd.yaml and
 	// k8s-operator/config/crd/bases/review-yeti.ai_prreviewjobs.yaml). Keep
 	// these two in lockstep with that rule and with the TypeScript dispatch
-	// side's src/config/terminalDeadline.ts MIN/MAX.
+	// side's src/config/terminalDeadline.ts DEFAULT_TERMINAL_DEADLINE_MS.
 	MinTerminalDeadlineSeconds = int64(900)
 	MaxTerminalDeadlineSeconds = int64(900)
+	// LegacyPersistedMaxTerminalDeadlineSeconds documents the former upper
+	// bound for database-only, read-only recovery. The Go operator intentionally
+	// never accepts this value: old rows must be finalized without creating a
+	// new PRReviewJob. A TypeScript contract test pins the recovery constant to
+	// this migration marker so the two languages cannot drift silently.
+	LegacyPersistedMaxTerminalDeadlineSeconds = int64(3600)
 	// Keep a one-minute publication/failure-conclusion reserve inside the
 	// admitted run deadline. The worker itself may never consume the full
 	// admission window.

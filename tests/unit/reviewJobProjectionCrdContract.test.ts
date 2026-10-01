@@ -3,7 +3,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
-import { DEFAULT_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import {
+  DEFAULT_TERMINAL_DEADLINE_MS,
+  LEGACY_MAX_TERMINAL_DEADLINE_MS,
+  TERMINAL_DEADLINE_MS,
+} from '../../src/config/terminalDeadline';
 import { CANCEL_REASON_MAX_LENGTH } from '../../src/k8s/kubernetesReviewJobProjector';
 
 const CANCEL_TRANSITION_RULE = 'self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && '
@@ -121,6 +125,13 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
       DEFAULT_TERMINAL_DEADLINE_MS / 1_000,
       DEFAULT_TERMINAL_DEADLINE_MS / 1_000,
     ]);
+  });
+
+  it('pins the database-only legacy recovery ceiling to the documented Go migration marker', () => {
+    const goSource = fs.readFileSync(path.resolve(__dirname, '../../k8s-operator/pkg/job/job.go'), 'utf8');
+    const match = goSource.match(/LegacyPersistedMaxTerminalDeadlineSeconds\s*=\s*int64\((\d+)\)/u);
+    expect(match).not.toBeNull();
+    expect(Number(match![1]) * 1_000).toBe(LEGACY_MAX_TERMINAL_DEADLINE_MS);
   });
 
   it('validates public ghcr.io worker image under the CRD pattern', () => {

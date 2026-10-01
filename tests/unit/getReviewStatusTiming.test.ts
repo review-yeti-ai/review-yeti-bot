@@ -214,12 +214,12 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.schema_version).toBe('ReviewStatus.v2');
     expect(data.phase).toBe('evaluating_personas');
     expect(data.active_worker).toMatchObject({
-      identity_kind: 'job',
-      job_name: 'ct-review-0123456789abcdef0123456789abcdef-worker',
+      identity_kind: 'projection',
       projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
       started_at: T2,
     });
     expect(data.active_worker).not.toHaveProperty('pod_name');
+    expect(data.active_worker).not.toHaveProperty('job_name');
   });
 
   it('falls back conservatively when the durable projection table is unavailable', async () => {
