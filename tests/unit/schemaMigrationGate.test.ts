@@ -5,11 +5,12 @@ import {
   isRetryableSchemaLockError,
   SCHEMA_DDL_LOCK_TIMEOUT,
   SCHEMA_MIGRATIONS_TABLE,
+  SCHEMA_MIGRATIONS_TABLE_SQL,
   schemaFingerprint,
   withSchemaLockRetry,
   type SchemaQueryable,
 } from '../../src/persistence/schemaMigrationGate';
-import { PostgresStore } from '../../src/persistence/postgresStore';
+import { ADVISORY_LOCK_ID, PostgresStore } from '../../src/persistence/postgresStore';
 import { logger } from '../../src/utils/logger';
 
 const DDL = [
@@ -64,7 +65,7 @@ describe('applySchemaOnce', () => {
     await expect(applySchemaOnce(client, DDL)).resolves.toBe('skipped');
 
     for (const ddl of DDL) expect(statements).not.toContain(ddl);
-    expect(statements.some((s) => s.includes('lock_timeout'))).toBe(false);
+    expect(statements[0]).toBe(`SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`);
     expect(statements.some((s) => s.startsWith(`INSERT INTO ${SCHEMA_MIGRATIONS_TABLE}`))).toBe(false);
   });
 
@@ -78,6 +79,7 @@ describe('applySchemaOnce', () => {
     const secondDdl = statements.indexOf(DDL[1]);
     const recordAt = statements.findIndex((s) => s.startsWith(`INSERT INTO ${SCHEMA_MIGRATIONS_TABLE}`));
     expect(timeoutAt).toBeGreaterThanOrEqual(0);
+    expect(timeoutAt).toBeLessThan(statements.indexOf(SCHEMA_MIGRATIONS_TABLE_SQL));
     expect(timeoutAt).toBeLessThan(firstDdl);
     expect(firstDdl).toBeLessThan(secondDdl);
     expect(secondDdl).toBeLessThan(recordAt);
@@ -147,6 +149,7 @@ describe('withSchemaLockRetry', () => {
 describe('PostgresStore.initialize schema gate wiring', () => {
   afterEach(() => {
     delete process.env.DATABASE_URL;
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -154,18 +157,116 @@ describe('PostgresStore.initialize schema gate wiring', () => {
     process.env.DATABASE_URL = 'postgresql://fixture:synthetic-password@127.0.0.1:5432/fixture';
     const store = new PostgresStore();
     const statements: string[] = [];
+    const events: string[] = [];
     let attempt = 0;
     const query = vi.fn(async (statement: string) => {
       if (statement === 'BEGIN') attempt += 1;
       statements.push(statement);
+      events.push(statement);
       const result = respond(statement, attempt);
       if (result instanceof Error) throw result;
       return result ?? { rows: [] };
     });
-    const release = vi.fn();
+    const release = vi.fn(() => { events.push('release'); });
     vi.spyOn(store.getPool(), 'connect').mockResolvedValue({ query, release } as never);
-    return { store, statements, release, attempts: () => attempt };
+    return { store, statements, events, query, release, attempts: () => attempt };
   }
+
+  it('bounds bootstrap before the unchanged advisory lock and migration table even for a recorded fingerprint', async () => {
+    const { store, statements, query, release } = storeWithScript((statement) => (
+      statement.startsWith(`SELECT 1 AS applied FROM ${SCHEMA_MIGRATIONS_TABLE}`) ? { rows: [{ applied: 1 }] } : undefined));
+    try {
+      await store.initialize();
+      expect(statements.slice(0, 3)).toEqual([
+        'BEGIN',
+        `SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`,
+        'SELECT pg_advisory_xact_lock($1)',
+      ]);
+      expect(query).toHaveBeenCalledWith('SELECT pg_advisory_xact_lock($1)', [ADVISORY_LOCK_ID]);
+      expect(statements.indexOf(SCHEMA_MIGRATIONS_TABLE_SQL)).toBeGreaterThan(2);
+      expect(statements.some((s) => s.includes('ALTER TABLE review_runs'))).toBe(false);
+      expect(statements.filter((s) => s === 'COMMIT')).toHaveLength(1);
+      expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('rolls back and releases an advisory timeout before retrying with the same bound', async () => {
+    vi.useFakeTimers();
+    const warnLog = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const { store, statements, events, release, attempts } = storeWithScript((statement, attempt) => (
+      statement === 'SELECT pg_advisory_xact_lock($1)' && attempt === 1
+        ? pgError('55P03', 'advisory lock timeout')
+        : statement.startsWith(`SELECT 1 AS applied FROM ${SCHEMA_MIGRATIONS_TABLE}`)
+          ? { rows: [{ applied: 1 }] }
+          : undefined));
+    try {
+      const initialization = store.initialize();
+      await vi.runAllTimersAsync();
+      await initialization;
+      const firstRollback = statements.indexOf('ROLLBACK');
+      expect(statements.slice(0, firstRollback + 1)).toEqual([
+        'BEGIN',
+        `SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`,
+        'SELECT pg_advisory_xact_lock($1)',
+        'ROLLBACK',
+      ]);
+      expect(statements.slice(firstRollback + 1, firstRollback + 4)).toEqual([
+        'BEGIN',
+        `SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`,
+        'SELECT pg_advisory_xact_lock($1)',
+      ]);
+      expect(events.slice(firstRollback, firstRollback + 5)).toEqual([
+        'ROLLBACK', 'release', 'BEGIN',
+        `SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`,
+        'SELECT pg_advisory_xact_lock($1)',
+      ]);
+      expect(attempts()).toBe(2);
+      expect(release).toHaveBeenCalledTimes(2);
+      expect(warnLog).toHaveBeenCalledTimes(1);
+      expect(warnLog).toHaveBeenCalledWith(
+        '[PostgresStore] Schema initialization lock conflict; retrying',
+        expect.objectContaining({ sqlState: '55P03', attempt: 1 }),
+      );
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(statements.filter((s) => s === 'COMMIT')).toHaveLength(1);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it('exhausts the original six advisory-conflict attempts without DDL or commit and releases every client', async () => {
+    vi.useFakeTimers();
+    const warnLog = vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const errorLog = vi.spyOn(logger, 'error').mockImplementation(() => undefined);
+    const failure = pgError('55P03', 'last advisory lock timeout');
+    const { store, statements, release, attempts } = storeWithScript((statement) => (
+      statement === 'SELECT pg_advisory_xact_lock($1)' ? failure : undefined));
+    try {
+      // Attach the rejection assertion before advancing timers: exhaustion is
+      // expected, not an unhandled rejection or a successful initialization.
+      const rejection = expect(store.initialize()).rejects.toBe(failure);
+      await vi.runAllTimersAsync();
+      await rejection;
+      expect(attempts()).toBe(6);
+      expect(statements).toEqual(Array.from({ length: 6 }, () => [
+        'BEGIN',
+        `SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`,
+        'SELECT pg_advisory_xact_lock($1)',
+        'ROLLBACK',
+      ]).flat());
+      expect(release).toHaveBeenCalledTimes(6);
+      expect(warnLog).toHaveBeenCalledTimes(5);
+      expect(errorLog).toHaveBeenCalledWith(
+        '[PostgresStore] PostgreSQL database schema initialization failed',
+        { code: 'postgres_initialization_failed' },
+      );
+    } finally {
+      await store.close();
+    }
+  });
 
   it('runs no review_runs DDL on a start whose schema is already recorded', async () => {
     const { store, statements } = storeWithScript((statement) => (

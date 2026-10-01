@@ -34,7 +34,7 @@ export const SCHEMA_MIGRATIONS_TABLE = 'review_yeti_schema_migrations';
 /** Bump to force every deployment to re-apply the DDL once. */
 export const SCHEMA_FINGERPRINT_VERSION = 'rel-1127-v1';
 
-/** Upper bound a DDL statement may wait for a table lock before giving up. */
+/** Upper bound bootstrap advisory and DDL lock waits before giving up. */
 export const SCHEMA_DDL_LOCK_TIMEOUT = '5s';
 
 export const SCHEMA_MIGRATIONS_TABLE_SQL = `CREATE TABLE IF NOT EXISTS ${SCHEMA_MIGRATIONS_TABLE} (
@@ -89,6 +89,9 @@ export async function applySchemaOnce(
   statements: readonly string[],
 ): Promise<SchemaApplyOutcome> {
   const fingerprint = schemaFingerprint(statements);
+  // The gate's own table creation can wait on a relation lock, including when
+  // a recorded fingerprint lets us skip the remaining DDL.
+  await client.query(`SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`);
   await client.query(SCHEMA_MIGRATIONS_TABLE_SQL);
   const recorded = await client.query(
     `SELECT 1 AS applied FROM ${SCHEMA_MIGRATIONS_TABLE} WHERE fingerprint = $1`,
@@ -103,7 +106,6 @@ export async function applySchemaOnce(
     if (missing.rows.length === 0) return 'skipped';
   }
 
-  await client.query(`SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`);
   for (const statement of statements) {
     await client.query(statement);
   }
