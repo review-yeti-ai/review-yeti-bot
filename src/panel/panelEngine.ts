@@ -243,6 +243,8 @@ export interface RepoFileProvider {
   /** Original admitted patch, independent of shrinking or prompt packing. */
   readDiff?(path: string): { patch: string; originalPatchLength?: number;
     identity?: { repository: string; baseSha: string; headSha: string } } | null;
+  deletionManifest?(offset: number, limit: number, digest?: string): unknown;
+  deletionEvidence?(path: string): Promise<unknown>;
   /**
    * Whether the repository tree behind findFiles was truncated by the API. GitHub
    * truncates recursive trees past ~100k entries, and a zero-hit search over a
@@ -1675,6 +1677,8 @@ export function buildCompactDiffManifest(
     `Each persona in this container reviews independently based on their domain lane.`,
     `Fetch diff hunks or inspect source context on-demand using:`,
     `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
+    `- deletion_manifest: {"tool":"deletion_manifest","args":{"offset":0,"limit":24}}. Page verified old-source groups and per-path obligations; pass returned digest on continuation and restart if groups change.`,
+    `- deletion_evidence: {"tool":"deletion_evidence","args":{"path":"<exact path>"}}. Deterministic AST/source peeks, surviving-head search and optional closed JEV questions; every obligation still requires review.`,
     `- get_diff_page: {"tool":"get_diff_page","args":{"path":"<path>","startOffset":0,"maxChars":16000}}; follows nextOffset through the ORIGINAL patch, including oversized single hunks.`,
     `- read_file_page: {"tool":"read_file_page","args":{"path":"<path>","side":"merge-base","startOffset":0,"maxChars":16000}}; use head for surviving source and merge-base for removed source. Repeat returned digest when continuing.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
