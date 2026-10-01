@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.5](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.4...v1.101.5) (2026-10-01)
+
+
+### Bug Fixes
+
+* **mcp:** report current review lifecycle phase truthfully ([#1188](https://github.com/review-yeti-ai/review-yeti-bot/issues/1188)) ([ebae015](https://github.com/review-yeti-ai/review-yeti-bot/commit/ebae01592bcd00bab0ed43c3e817a46d4b663a69))
+
 ## [1.101.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.3...v1.101.4) (2026-10-01)
 
 
