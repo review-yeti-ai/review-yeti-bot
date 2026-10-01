@@ -42,7 +42,8 @@
   "exclude": [
     "node_modules",
     "dist",
-    ".next"
+    ".next",
+    "cf-orchestrator"
   ],
   "ts-node": {
     "compilerOptions": {
