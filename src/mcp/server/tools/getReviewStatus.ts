@@ -8,6 +8,7 @@ import {
   type GetReviewStatusInput,
   type ReviewCheckRun,
   type ReviewActiveWorker,
+  type ReviewActiveProjection,
   type ReviewStatusOutput,
   type ReviewTiming,
 } from './schemas';
@@ -214,6 +215,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           phase: 'queued',
           check_run: null,
           active_worker: null,
+          active_projection: null,
           message: 'Database service is unavailable',
         } satisfies ReviewStatusOutput);
       }
@@ -292,6 +294,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
           phase: 'queued',
           check_run: null,
           active_worker: null,
+          active_projection: null,
           message: `No review run found for ${owner}/${repo} PR #${pull_number}`,
         } satisfies ReviewStatusOutput);
       }
@@ -349,7 +352,6 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         row.lease_owner && (leaseExpires > now || !row.lease_expires_at)
           ? {
               pod_name: row.lease_owner,
-              identity_kind: 'pod',
               started_at: new Date(row.updated_at || row.created_at || now).toISOString(),
               lease_expires_at: row.lease_expires_at
                 ? new Date(row.lease_expires_at).toISOString()
@@ -359,15 +361,14 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
 
       // DOKS releases the short dispatcher lease after it has durably created
       // the PRReviewJob. From that point onward, the projection row is the
-      // authoritative execution identity; treating the cleared dispatcher
-      // lease as "no worker" is what made live reviews look queued. The
+      // authoritative execution identity and keeps the projected phase live
+      // even though the legacy active_worker field honestly becomes null. The
       // operator records the current worker Job name in PRReviewJob status,
       // but that status is not persisted here and continuation jobs do not use
       // the initial `-worker` suffix. Report only the authoritative projection
       // identity instead of inventing a Job or Pod identity.
-      const projectedWorker: ReviewActiveWorker | null = projectionIsCurrent
+      const activeProjection: ReviewActiveProjection | null = projectionIsCurrent
         ? {
-            identity_kind: 'projection',
             projection_name: projectionName,
             started_at: markers.get('review.lifecycle.started')
               ?? isoOrNull(projection?.dispatch_updated_at)
@@ -376,10 +377,9 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
               ?? new Date(now).toISOString(),
             // projectReviewExecutionLiveness can mark a projection current
             // only when this parsed deadline is non-null and still in the future.
-            lease_expires_at: terminalDeadline!,
+            terminal_deadline: terminalDeadline!,
           }
         : null;
-      const activeWorker = leasedWorker ?? projectedWorker;
 
       // Timing is computed from the row plus its durable lifecycle markers. The
       // marker read is best-effort and never changes the status answer: if the
@@ -394,7 +394,8 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         head_sha: row.head_sha,
         phase,
         check_run: checkRun,
-        active_worker: activeWorker,
+        active_worker: leasedWorker,
+        active_projection: activeProjection,
         timing,
       } satisfies ReviewStatusOutput);
     },

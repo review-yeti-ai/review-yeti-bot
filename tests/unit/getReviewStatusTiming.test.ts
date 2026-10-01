@@ -213,13 +213,14 @@ describe('get_review_status timing: durable DOKS projection', () => {
     expect(data.verdict).toBe('RUNNING');
     expect(data.schema_version).toBe('ReviewStatus.v2');
     expect(data.phase).toBe('evaluating_personas');
-    expect(data.active_worker).toMatchObject({
-      identity_kind: 'projection',
+    expect(data.active_worker).toBeNull();
+    expect(data.active_projection).toMatchObject({
       projection_name: 'ct-review-0123456789abcdef0123456789abcdef',
       started_at: T2,
+      terminal_deadline: expect.any(String),
     });
-    expect(data.active_worker).not.toHaveProperty('pod_name');
-    expect(data.active_worker).not.toHaveProperty('job_name');
+    expect(data.active_projection).not.toHaveProperty('pod_name');
+    expect(data.active_projection).not.toHaveProperty('job_name');
   });
 
   it('falls back conservatively when the durable projection table is unavailable', async () => {
@@ -526,6 +527,7 @@ describe('get_review_status timing: backward compatibility', () => {
     expect(data.phase).toBe('evaluating_personas');
     expect(data.check_run.id).toBe(998877);
     expect(data.active_worker.pod_name).toBe('review-worker-pr-42-pod');
+    expect(data.active_worker).not.toHaveProperty('identity_kind');
 
     // Purely additive.
     expect(data.timing).toBeDefined();
