@@ -104,6 +104,7 @@ import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCallValue } from './nativeTurnProtocol';
+import { MAX_TASK_ID_LENGTH, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN } from '../reviewTaskContract';
 import {
   resolveComposedMaxTasks,
   ReviewTask,
@@ -768,7 +769,8 @@ export function buildPlanDirective(
     // which `validateTaskPlan` rejects as `malformed_ids`, failing the plan
     // after its single corrective turn. Describe the shape wanted and show
     // conforming ids; never quote a non-conforming one.
-    `Each task names an id matching [a-z][a-z0-9_-]* -- a short lowercase kebab-case slug naming what the task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape". Each task also names a dimension (one of: security, performance, architecture, testing, dependencies, contract, licensing), the exact changed file path(s) it covers, a concrete question to investigate, and a short rationale.`,
+    `Use a short lowercase slug naming what each task examines, for example "security-auth", "perf-hot-path" or "contract-api-shape".`,
+    ...buildPlanTaskContractGuidance(expectedNonce, changedFilePaths, securityAuthPaths),
     `Use at most ${maxTasks} tasks. Every non-documentation, non-binary changed file must be covered by at least one task.`,
     // The security floor is enforced against `classifyPathByHeuristic`, a
     // deterministic model-independent classification of the real changed
@@ -788,6 +790,42 @@ export function buildPlanDirective(
     `On an investigation turn, you may request exactly one read-only tool as {"tool":"tool_name","args":{}}. When ready, return the final plan object with the exact top-level fields "nonce" and "tasks" -- no other fields, no Markdown fences.`,
     `CT_REVIEW_NONCE:${expectedNonce}`,
   ].join('\n');
+}
+
+/** Shared by the initial and corrective plan requests so both teach the same validated task shape. */
+function buildPlanTaskContractGuidance(
+  expectedNonce: string,
+  changedFilePaths: string[],
+  securityAuthPaths: string[] = [],
+): string[] {
+  const guidance = [
+    `Task ids must match ${TASK_ID_PATTERN.source} (1-${MAX_TASK_ID_LENGTH} characters).`,
+    `Every task object must include these nested fields: "id", "dimension", "paths", "question", and "rationale".`,
+    `The "dimension" must be one of: ${TASK_DIMENSIONS.join(', ')}. The "paths" value must be an array containing only exact changed code paths from the PR CHANGED FILES INDEX above; do not invent or rewrite paths.`,
+    `The question and rationale must each be nonempty, non-whitespace strings of at most ${MAX_TASK_TEXT_LENGTH} characters; do not omit either field.`,
+  ];
+  const examplePath = changedFilePaths[0];
+  if (!examplePath) {
+    return [
+      ...guidance,
+      `No changed code path is available for a positive task example.`,
+    ];
+  }
+
+  const securityExample = securityAuthPaths.includes(examplePath);
+  const taskExample = {
+    id: securityExample ? 'security-auth-example' : 'testing-contract-example',
+    dimension: securityExample ? 'security' : 'testing',
+    paths: [examplePath],
+    question: 'What regression risk should be checked in this changed path?',
+    rationale: 'This task examines the changed path for a concrete behavior regression.',
+  };
+  const planExample = JSON.stringify({ nonce: expectedNonce, tasks: [taskExample] });
+
+  return [
+    ...guidance,
+    `Positive example of the complete plan/task JSON shape, using the issued nonce and an allowed changed path: ${planExample}. This illustrates one task's shape only; the full plan must still cover every changed code path and satisfy the security floor.`,
+  ];
 }
 
 function buildTaskDirective(task: ReviewTask, taskIndex: number, totalTasks: number, expectedNonce: string): string {
@@ -916,6 +954,7 @@ async function runPlanPhase(input: {
   providerId: ProviderId;
   messages: OpenRouterMessage[];
   effectiveFilePaths: string[];
+  securityAuthPaths: string[];
   maxTasks: number;
   timeoutMs: number;
   inactivityTimeoutMs: number;
@@ -1007,6 +1046,7 @@ async function runPlanPhase(input: {
         content: [
           'PLAN_CORRECTION',
           'Your plan was rejected: the "nonce" field did not match the nonce issued for this request.',
+          ...buildPlanTaskContractGuidance(input.expectedNonce, input.effectiveFilePaths, input.securityAuthPaths),
           'Return a corrected complete plan object now with the exact top-level fields "nonce" and "tasks".',
         ].join('\n'),
       }];
@@ -1036,13 +1076,14 @@ async function runPlanPhase(input: {
     }
     correctionUsed = true;
     const uncovered = validation.reason === 'coverage_gap' ? ` Uncovered paths: ${(validation.uncoveredPaths || []).join(', ')}.` : '';
-    const changed = ` Changed files you may name, and no others: ${input.effectiveFilePaths.join(', ')}.`;
+    const changed = ` Changed files you may name, and no others: ${JSON.stringify(input.effectiveFilePaths)}.`;
     messages = [...messages, {
       role: 'user',
       content: [
         'PLAN_CORRECTION',
         `Your plan was rejected: ${validation.message}${uncovered}${changed}`,
-        'Task ids must match [a-z][a-z0-9_-]*. Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
+        ...buildPlanTaskContractGuidance(input.expectedNonce, input.effectiveFilePaths, input.securityAuthPaths),
+        'Return a corrected complete plan object now (not a diff of the previous one) with the exact top-level fields "nonce" and "tasks".',
       ].join('\n'),
     }];
   }
@@ -1528,6 +1569,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           providerId,
           messages: baseMessages,
           effectiveFilePaths,
+          securityAuthPaths: effectiveFilePaths.filter((path) => domainLanes[path] === 'security_auth'),
           maxTasks,
           timeoutMs,
           inactivityTimeoutMs,
