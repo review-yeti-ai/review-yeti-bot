@@ -57,6 +57,14 @@ describe('buildZoektIndex', () => {
     fs.chmodSync(wrapperPath, 0o755);
     const result = await buildZoektIndex({ workdir, indexDir, config: { zoektIndexBinaryPath: wrapperPath } });
     expect(result.status).toBe('ok');
+    // Even a successful build filters sources; a clean query cannot prove
+    // repository-wide absence. Pin the receipt produced by the real builder.
+    expect(result.indexScope).toEqual({
+      complete: false,
+      fileLimitBytes: 2 * 1024 * 1024,
+      excludedDirectories: ['.git', '.hg', '.svn', 'node_modules', '_build', 'deps', 'dist', 'build', '.elixir_ls'],
+      limitations: ['directory_exclusions', 'file_size_limit', 'indexer_language_and_binary_filters'],
+    });
     const captured = fs.readFileSync(capturedArgsPath, 'utf8');
     expect(captured).not.toMatch(/https?:\/\//);
     expect(captured).not.toMatch(/--?token/i);

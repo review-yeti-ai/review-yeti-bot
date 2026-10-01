@@ -394,11 +394,19 @@ export class McpRouter {
         );
       }
 
-      // Fail-closed authorization check: all tool execution and resource reads require valid authentication
+      // Authorization check: mutating tools always require authentication.
+      // Read-only tools and resources require authentication unless PUBLIC_READ_MCP === 'true'.
+      const isMutating =
+        rpcRequest.method === 'tools/call' &&
+        typeof rpcRequest.params?.name === 'string' &&
+        MUTATING_TOOL_NAMES.has(rpcRequest.params.name);
+      const isPublicReadAllowed = env?.PUBLIC_READ_MCP === 'true' && !isMutating;
+
       if (
-        rpcRequest.method === 'tools/call' ||
-        rpcRequest.method === 'resources/read' ||
-        rpcRequest.method === 'resources/list'
+        (rpcRequest.method === 'tools/call' ||
+          rpcRequest.method === 'resources/read' ||
+          rpcRequest.method === 'resources/list') &&
+        !isPublicReadAllowed
       ) {
         const target =
           rpcRequest.method === 'tools/call'
