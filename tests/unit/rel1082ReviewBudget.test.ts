@@ -6,6 +6,7 @@ import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { executePersonaPanel, extractMessageContentText, MAX_INLINE_DIFF_CHARS_CEILING } from '../../src/panel/panelEngine';
 import { executeComposedReview } from '../../src/panel/composedEngine';
+import * as panelEngine from '../../src/panel/panelEngine';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { resolveScopedReviewApplicability } from '../../src/review/incrementalReview';
@@ -1120,6 +1121,22 @@ describe('composed engine wiring', () => {
     for (const body of requests) expect(Buffer.byteLength(body)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
     expect(plan.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
     expect(work.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
+  });
+
+  it('recovers original tail evidence in both phases and validates findings against the admitted patch', async () => {
+    const original = files(BIG_DIFF).find((file) => file.path === 'src/core.ts')!;
+    const validate = vi.spyOn(panelEngine, 'validateFindings');
+    const tail = original.patch!.indexOf('core_TAIL_MARKER');
+    expect(tail).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
+    const { plan, work } = toolResults(await composedRequests(ON, { tool: 'get_diff_page',
+      args: { path: 'src/core.ts', startOffset: tail, maxChars: 100 } }));
+    for (const result of [plan, work]) {
+      expect(result).toContain('core_TAIL_MARKER');
+      expect(result).toContain('original-admitted-diff');
+    }
+    expect(validate).toHaveBeenCalledWith([], expect.arrayContaining([expect.objectContaining({
+      path: original.path, patch: original.patch,
+    })]));
   });
 
   // The last message of the request after each phase's first tool call is that tool's result.

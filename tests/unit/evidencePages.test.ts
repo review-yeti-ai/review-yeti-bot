@@ -12,11 +12,24 @@ const HEAD = 'a'.repeat(40), BASE = 'b'.repeat(40), OLD = 'c'.repeat(40);
 const parse = (value: { toolOutput: string }) => JSON.parse(value.toolOutput);
 
 describe('original evidence pages', () => {
+  it('reports stale offsets and failed source lookups without claiming completion', async () => {
+    const context = { changedFiles: [{ path: 'x', patch: 'abc' }], repoFileProvider: {
+      readFile: async () => null, findFiles: async () => [], readFileAt: async () => { throw new Error('lookup failed'); },
+    } };
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x', startOffset: 4 }, context)))
+      .toMatchObject({ status: 'invalid', reason: 'offset_out_of_range' });
+    expect(parse(await runReadOnlyTool('read_file_page', { path: 'x', side: 'head' }, context)))
+      .toMatchObject({ status: 'unavailable', reason: 'source_lookup_failed' });
+  });
+
   it('uses separate original evidence while legacy tools retain reduced patches', async () => {
     const context = { changedFiles: [{ path: 'x', patch: 'cut', originalPatchLength: 10 }],
       originalChangedFiles: [{ path: 'x', patch: 'full patch' }] };
     expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, context)).content).toBe('full patch');
     expect((await runReadOnlyTool('get_diff', { path: 'x' }, context)).toolOutput).not.toContain('full patch');
+    const provider = createRepoFileProvider({} as GitHubInstallationClient, 'o', 'r', HEAD);
+    expect(parse(await runReadOnlyTool('get_diff_page', { path: 'x' }, { ...context, repoFileProvider: provider })).content)
+      .toBe('full patch');
   });
 
   it('hashes a stable source once across pages and invalidates changed content', async () => {
