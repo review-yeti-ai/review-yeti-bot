@@ -3155,6 +3155,7 @@ it('keeps content-free answered-call observations in the native thrown-infrastru
   expect(event).toMatchObject({runId:input.REVIEW_RUN_ID,headSha:HEAD,executionAttempt:3,result:{coverageComplete:true,quorumSatisfied:false,
     failureDiagnostics:{operationalTelemetry:{cause:'unknown',providerCalls:{started:1,completed:1,failed:0,aborted:0,inflight:0},responseUsage:{availability:'partial',totals:{totalTokens:18}},panel:{invoked:true}}}}});
   expect(event.result.failureDiagnostics.operationalTelemetry.phaseCounts.persona_lane.started).toBe(0);
+  expect(event.result.failureDiagnostics.operationalTelemetry.phaseCounts.panel).toMatchObject({started:1,failed:1,aborted:0});
   expect(event.result.personas.every((persona:any)=>persona.status==='ERROR'&&persona.errorClass==='transport')).toBe(true);
   expect(JSON.stringify(event.result.failureDiagnostics.operationalTelemetry)).not.toContain('SECRET');
 });
