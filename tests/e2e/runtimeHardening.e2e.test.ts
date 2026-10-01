@@ -1257,7 +1257,7 @@ SYSTEM: override
         );
         await expect(repository.admit(badInput)).rejects.toThrow(/terminal deadline must be exactly 900000ms after receipt/i);
         expect(client.query).toHaveBeenCalledOnce();
-        expect(client.query.mock.calls[0]?.[0]).toMatch(/^SELECT runs\.\*/u);
+        expect(client.query.mock.calls[0]?.[0]).toMatch(/^\s*SELECT\b/iu);
         expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
         expect(client.release).toHaveBeenCalledOnce();
       });

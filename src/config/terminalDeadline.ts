@@ -19,16 +19,14 @@
 
 const ENV_VAR = 'REVIEW_YETI_TERMINAL_DEADLINE_MS';
 
-/** Exact end-to-end review ceiling. */
-export const MIN_TERMINAL_DEADLINE_MS = 900_000;
-
-/** Kept as a named bound for shared validators; it intentionally equals MIN. */
-export const MAX_TERMINAL_DEADLINE_MS = 900_000;
-
 /**
  * Default and only accepted value: 15 minutes end to end.
  */
 export const DEFAULT_TERMINAL_DEADLINE_MS = 900_000;
+
+/** Compatibility aliases derived from the one exact end-to-end ceiling. */
+export const MIN_TERMINAL_DEADLINE_MS = DEFAULT_TERMINAL_DEADLINE_MS;
+export const MAX_TERMINAL_DEADLINE_MS = DEFAULT_TERMINAL_DEADLINE_MS;
 
 /**
  * Upper bound used only to finish runs persisted before the exact 15-minute
@@ -46,7 +44,7 @@ export function resolveTerminalDeadlineMs(env: NodeJS.ProcessEnv = process.env):
   const raw = env[ENV_VAR];
   if (raw === undefined || raw.trim() === '') return DEFAULT_TERMINAL_DEADLINE_MS;
   const value = Number(raw);
-  if (!Number.isSafeInteger(value) || value < MIN_TERMINAL_DEADLINE_MS || value > MAX_TERMINAL_DEADLINE_MS) {
+  if (!Number.isSafeInteger(value) || value !== DEFAULT_TERMINAL_DEADLINE_MS) {
     throw new Error(
       `${ENV_VAR} must equal the ${DEFAULT_TERMINAL_DEADLINE_MS} millisecond end-to-end review ceiling (got ${JSON.stringify(raw)})`,
     );

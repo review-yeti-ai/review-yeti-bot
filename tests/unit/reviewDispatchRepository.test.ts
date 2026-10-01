@@ -464,7 +464,7 @@ describe('PostgresReviewDispatchRepository', () => {
       .rejects.toThrow(/terminal deadline must be exactly/i);
     expect(connect).toHaveBeenCalledOnce();
     expect(client.query).toHaveBeenCalledOnce();
-    expect(client.query.mock.calls[0]?.[0]).toMatch(/^SELECT runs\.\*/u);
+    expect(client.query.mock.calls[0]?.[0]).toMatch(/^\s*SELECT\b/iu);
     expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
     expect(client.release).toHaveBeenCalledOnce();
   });

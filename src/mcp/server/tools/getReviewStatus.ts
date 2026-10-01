@@ -12,6 +12,8 @@ import {
   type ReviewTiming,
 } from './schemas';
 import {
+  isTerminalReviewRunStatus,
+  projectReviewExecutionLiveness,
   projectReviewStatusPhase,
   projectReviewStatusVerdict,
 } from '../reviewStatusVerdict';
@@ -75,10 +77,6 @@ interface DispatchProjection {
  * an unrecognised future status is treated as NOT terminal, so the conservative
  * failure mode is a null duration rather than an invented one.
  */
-const TERMINAL_RUN_STATUSES = new Set([
-  'succeeded', 'complete', 'completed', 'failed', 'cancelled', 'superseded', 'terminal',
-]);
-
 function isoOrNull(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const ms = value instanceof Date ? value.getTime() : Date.parse(String(value));
@@ -106,7 +104,7 @@ export function buildReviewTiming(
   const startedAt = markers.get('review.lifecycle.started') ?? null;
   const terminalMarker = markers.get('review.lifecycle.terminal') ?? null;
 
-  const runIsTerminal = typeof runStatus === 'string' && TERMINAL_RUN_STATUSES.has(runStatus);
+  const runIsTerminal = isTerminalReviewRunStatus(runStatus);
 
   // completed_at is populated ONLY for a genuinely terminal run. This is the
   // load-bearing guard: a still-running review reports null rather than a
@@ -177,14 +175,6 @@ async function readDispatchProjection(
     // review row and lifecycle ledger still produce a conservative answer.
     return null;
   }
-}
-
-function isTerminalStatus(value: unknown): boolean {
-  return typeof value === 'string' && TERMINAL_RUN_STATUSES.has(value);
-}
-
-function isTerminalGateState(value: unknown): boolean {
-  return value === 'success' || value === 'failure' || value === 'cancelled' || value === 'timed_out';
 }
 
 export const getReviewStatusDefinition: ToolDefinition = {
@@ -315,20 +305,17 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       const terminalDeadline = isoOrNull(row.terminal_deadline);
       const projectionName = typeof projection?.projection_name === 'string'
         ? projection.projection_name.trim() : '';
-      const projectionIsCurrent = projection?.dispatch_status === REVIEW_DISPATCH_OUTBOX_STATUS.projected
-        && projectionName.length > 0
-        && !isTerminalStatus(row.run_status)
-        && !isTerminalGateState(row.desired_state)
-        && terminalDeadline !== null
-        && Date.parse(terminalDeadline) > now;
       const durableExecutionStarted = markers.has('review.lifecycle.started');
-      const effectiveRunStatus = row.run_status === 'queued'
-        && (projectionIsCurrent || (durableExecutionStarted
-          && !isTerminalGateState(row.desired_state)
-          && terminalDeadline !== null
-          && Date.parse(terminalDeadline) > now))
-        ? 'running'
-        : row.run_status;
+      const execution = projectReviewExecutionLiveness({
+        runStatus: row.run_status,
+        desiredState: row.desired_state,
+        hasProjectedWorker: projection?.dispatch_status === REVIEW_DISPATCH_OUTBOX_STATUS.projected
+          && projectionName.length > 0,
+        durableExecutionStarted,
+        terminalDeadlineMs: terminalDeadline === null ? null : Date.parse(terminalDeadline),
+        nowMs: now,
+      });
+      const { effectiveRunStatus, projectionIsCurrent } = execution;
 
       const phase = projectReviewStatusPhase({
         desiredState: row.desired_state,
@@ -387,7 +374,9 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
               ?? isoOrNull(row.updated_at)
               ?? isoOrNull(row.created_at)
               ?? new Date(now).toISOString(),
-            lease_expires_at: terminalDeadline,
+            // projectReviewExecutionLiveness can mark a projection current
+            // only when this parsed deadline is non-null and still in the future.
+            lease_expires_at: terminalDeadline!,
           }
         : null;
       const activeWorker = leasedWorker ?? projectedWorker;
