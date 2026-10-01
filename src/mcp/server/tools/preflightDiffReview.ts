@@ -360,6 +360,200 @@ export interface PreflightDiffReviewDependencies {
   now?: () => number;
 }
 
+type PreflightSqlToken = {
+  kind: 'string' | 'identifier' | 'number' | 'punctuation';
+  text: string;
+  value?: string;
+  interpolated?: boolean;
+};
+
+const SQL_SELECT_FROM_PATTERN = /\bSELECT\b[\s\S]*?\bFROM\b/i;
+const STATIC_SQL_IDENTIFIERS = new Set(['false', 'none', 'null', 'true', 'undefined']);
+const PREFLIGHT_IDENTIFIER_PATTERN = /[A-Za-z_$][A-Za-z0-9_$]*/y;
+const PREFLIGHT_NUMBER_PATTERN = /(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?n?/y;
+
+function tokenizePreflightSourceLine(line: string): PreflightSqlToken[] {
+  const tokens: PreflightSqlToken[] = [];
+  let index = 0;
+  let sawBareSqlSelect = false;
+  let sawBareSqlFrom = false;
+
+  while (index < line.length) {
+    if (/\s/.test(line[index])) {
+      index++;
+      continue;
+    }
+    if (line.startsWith('//', index) || line[index] === '#') break;
+    if (line.startsWith('--', index) && sawBareSqlSelect && sawBareSqlFrom) break;
+    if (line.startsWith('/*', index)) {
+      const commentEnd = line.indexOf('*/', index + 2);
+      if (commentEnd < 0) break;
+      index = commentEnd + 2;
+      continue;
+    }
+
+    const pythonStringPrefix = /^(?:f|fr|rf)(?=["'])/i.exec(line.slice(index, index + 3))?.[0];
+    if (pythonStringPrefix) index += pythonStringPrefix.length;
+    const quote = line[index];
+    if (quote === '"' || quote === "'" || quote === '`') {
+      const delimiter = quote !== '`' && line.startsWith(quote.repeat(3), index) ? quote.repeat(3) : quote;
+      const contentStart = index + delimiter.length;
+      index = contentStart;
+      let interpolated = false;
+      while (index < line.length && !line.startsWith(delimiter, index)) {
+        const char = line[index];
+        if (char === '\\') {
+          index += 2;
+          continue;
+        }
+        if (quote === '`' && char === '$' && line[index + 1] === '{') interpolated = true;
+        if (pythonStringPrefix && char === '{' && line[index + 1] === '{') {
+          index += 2;
+          continue;
+        }
+        if (pythonStringPrefix && char === '{') interpolated = true;
+        if (quote === '"' && char === '#' && line[index + 1] === '{') interpolated = true;
+        if (quote === '"' && char === '$' && /[A-Za-z_{]/.test(line[index + 1] || '')) interpolated = true;
+        index++;
+      }
+      const value = line.slice(contentStart, index);
+      tokens.push({
+        kind: 'string',
+        text: line.slice(contentStart - delimiter.length, index),
+        value,
+        interpolated,
+      });
+      if (line.startsWith(delimiter, index)) index += delimiter.length;
+      continue;
+    }
+
+    PREFLIGHT_IDENTIFIER_PATTERN.lastIndex = index;
+    const identifier = PREFLIGHT_IDENTIFIER_PATTERN.exec(line)?.[0];
+    if (identifier) {
+      const normalizedIdentifier = identifier.toLowerCase();
+      if (normalizedIdentifier === 'select') sawBareSqlSelect = true;
+      if (normalizedIdentifier === 'from' && sawBareSqlSelect) sawBareSqlFrom = true;
+      tokens.push({ kind: 'identifier', text: identifier });
+      index += identifier.length;
+      continue;
+    }
+
+    PREFLIGHT_NUMBER_PATTERN.lastIndex = index;
+    const number = PREFLIGHT_NUMBER_PATTERN.exec(line)?.[0];
+    if (number) {
+      tokens.push({ kind: 'number', text: number });
+      index += number.length;
+      continue;
+    }
+
+    tokens.push({ kind: 'punctuation', text: line[index] });
+    index++;
+  }
+
+  return tokens;
+}
+
+function hasSqlSelectFromShape(tokens: PreflightSqlToken[]): boolean {
+  const sourceShape = tokens.map((token) => token.kind === 'string' ? token.value || '' : token.text).join(' ');
+  return SQL_SELECT_FROM_PATTERN.test(sourceShape);
+}
+
+function matchingParenthesisIndexes(tokens: PreflightSqlToken[]): number[] {
+  const matchingIndexes = Array<number>(tokens.length).fill(-1);
+  const openIndexes: number[] = [];
+  for (let index = 0; index < tokens.length; index++) {
+    if (tokens[index].text === '(') openIndexes.push(index);
+    if (tokens[index].text === ')') {
+      const openIndex = openIndexes.pop();
+      if (openIndex !== undefined) {
+        matchingIndexes[openIndex] = index;
+        matchingIndexes[index] = openIndex;
+      }
+    }
+  }
+  return matchingIndexes;
+}
+
+function isDynamicSqlIdentifier(token: PreflightSqlToken): boolean {
+  return token.kind === 'identifier' && !STATIC_SQL_IDENTIFIERS.has(token.text.toLowerCase());
+}
+
+function hasDynamicSqlOperand(
+  tokens: PreflightSqlToken[],
+  matchingIndexes: number[],
+  dynamicPrefix: number[],
+  index: number,
+  direction: -1 | 1
+): boolean {
+  const token = tokens[index];
+  if (!token) return true;
+  if (token.kind === 'string') return token.interpolated === true;
+  if (token.kind === 'number') return false;
+  if (token.kind === 'identifier') return isDynamicSqlIdentifier(token);
+
+  if (token.text === '-' || token.text === '+') {
+    const adjacent = tokens[index + direction];
+    return !adjacent || adjacent.kind !== 'number';
+  }
+  if (token.text === '(' && direction === 1) {
+    const closeIndex = matchingIndexes[index];
+    return closeIndex < 0 || dynamicPrefix[closeIndex] - dynamicPrefix[index + 1] > 0;
+  }
+  if (token.text === ')' && direction === -1) {
+    const openIndex = matchingIndexes[index];
+    if (openIndex < 0) return true;
+    const callName = tokens[openIndex - 1];
+    return Boolean(callName && isDynamicSqlIdentifier(callName)) || dynamicPrefix[index] - dynamicPrefix[openIndex + 1] > 0;
+  }
+
+  return true;
+}
+
+function hasUnsafeSqlConstruction(line: string): boolean {
+  const tokens = tokenizePreflightSourceLine(line);
+  let statement: PreflightSqlToken[] = [];
+
+  const statementHasUnsafeConstruction = (parts: PreflightSqlToken[]): boolean => {
+    if (!hasSqlSelectFromShape(parts)) return false;
+    if (parts.some((token) => token.kind === 'string' && token.interpolated)) return true;
+
+    const matchingIndexes = matchingParenthesisIndexes(parts);
+    const dynamicPrefix = [0];
+    for (const token of parts) {
+      dynamicPrefix.push(dynamicPrefix[dynamicPrefix.length - 1] + Number(isDynamicSqlIdentifier(token) || token.interpolated === true));
+    }
+
+    for (let index = 0; index < parts.length; index++) {
+      if (parts[index].text !== '+') continue;
+      if (
+        hasDynamicSqlOperand(parts, matchingIndexes, dynamicPrefix, index - 1, -1) ||
+        hasDynamicSqlOperand(parts, matchingIndexes, dynamicPrefix, index + 1, 1)
+      ) return true;
+    }
+
+    for (let index = 0; index < parts.length - 1; index++) {
+      if (parts[index].kind !== 'identifier' || parts[index].text.toLowerCase() !== 'concat' || parts[index + 1].text !== '(') {
+        continue;
+      }
+      const close = matchingIndexes[index + 1];
+      if (close > index + 2 && dynamicPrefix[close] - dynamicPrefix[index + 2] > 0) return true;
+    }
+
+    return false;
+  };
+
+  for (const token of tokens) {
+    if (token.text === ';') {
+      if (statementHasUnsafeConstruction(statement)) return true;
+      statement = [];
+    } else {
+      statement.push(token);
+    }
+  }
+
+  return statementHasUnsafeConstruction(statement);
+}
+
 export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependencies = {}) {
   const nowFn = deps.now || Date.now;
 
@@ -431,7 +625,6 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
 
       // Static security rules (Secrets, Tokens, SQLi, Shell injection)
       const SECRET_PATTERN = /(?:sk-[a-zA-Z0-9_-]{20,}|ghp_[a-zA-Z0-9]{36}|AIza[0-9A-Za-z-_]{35}|bearer\s+[a-zA-Z0-9._-]{24,})/i;
-      const SQLI_PATTERN = /SELECT\s+.*FROM\s+.*(?:\+|concat)\s*(?:req|params|query|body|[a-zA-Z0-9_]+)/i;
       const CMDI_PATTERN = /(?:exec|spawn|execSync)\s*\([^)]*(?:req|query|body|userInput|[a-zA-Z0-9_]+\s*\+|\+\s*[a-zA-Z0-9_]+|\$\{[^}]+\})/i;
 
       for (const file of parsedFiles) {
@@ -449,7 +642,7 @@ export function createPreflightDiffReviewTool(deps: PreflightDiffReviewDependenc
             });
           }
 
-          if (SQLI_PATTERN.test(added.text)) {
+          if (hasUnsafeSqlConstruction(added.text)) {
             findings.push({
               finding_id: `pref-sqli-${file.path}-${added.line}`,
               severity: 'P0',
