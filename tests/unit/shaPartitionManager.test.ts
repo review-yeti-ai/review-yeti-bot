@@ -9,7 +9,7 @@
  * - Tier 4: PR comment coverage telemetry formatting ("Coverage: 100% (X/X files reviewed across Y partitions, 0 omitted)")
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import {
   createPartitionPlan,
@@ -692,89 +692,113 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       expect(pieces.some((piece) => piece.patch.trimEnd().endsWith('\n' + marker))).toBe(true);
     });
 
-    // These instrument Array.join work only, not concatenation or all possible
-    // assembly mechanisms. The positive lower bound prevents a no-join rewrite
-    // from satisfying this mechanism-specific upper bound vacuously.
-    it('observes nonzero bounded Array.join materialization while splitting a large single hunk', () => {
+    // These are observable bounded-output and byte-fidelity controls, not
+    // computational-copy or latency proofs. Assembly may use join or concat.
+    it('preserves bounded literal bodies and contiguous ranges across a large single hunk', () => {
       const filePath = 'src/large-linear-hunk.ts';
       const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
       const body = Array.from({ length: 360 }, (_unused, index) =>
         ` context-${String(index).padStart(4, '0')}-${'x'.repeat(40)}`);
       const sourcePatch = `${fileHeader}@@ -1,360 +1,360 @@ large body\n${body.join('\n')}\n`;
       const safeDiffChars = fileHeader.length + 900;
-      const originalJoin = Array.prototype.join;
-      let joinedCodeUnits = 0;
-      let joinCalls = 0;
-      let plan: PartitionPlan | undefined;
-      const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: any[], separator?: string) {
-        const joined = originalJoin.apply(this, [separator]);
-        joinCalls += 1;
-        joinedCodeUnits += joined.length;
-        return joined;
-      });
-      try {
-        plan = createPartitionPlan([{
-          path: filePath,
-          patch: sourcePatch,
-          originalChars: sourcePatch.length,
-          compactedChars: sourcePatch.length,
-          status: 'modified',
-        }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      } finally {
-        joinSpy.mockRestore();
-      }
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = plan.partitions.flatMap((partition) => partition.files);
 
-      expect(plan).toBeDefined();
-      expect(plan!.partitions.every((partition) => partition.totalChars <= safeDiffChars)).toBe(true);
-      const emittedContextLines = plan!.partitions.flatMap((partition) => partition.files)
-        .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith(' context-')));
-      expect(emittedContextLines).toEqual(body);
-      expect(joinCalls).toBeGreaterThan(0);
-      expect(joinedCodeUnits).toBeGreaterThan(0);
-      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(plan).toMatchObject({
+        baseSha: BASE_SHA, headSha: HEAD_SHA, totalFiles: 1,
+        totalOriginalChars: sourcePatch.length, totalCompactedChars: sourcePatch.length,
+        coveragePercent: 100, omittedFilesCount: 0,
+        fileManifest: [{ path: filePath, status: 'modified', partitionIndex: 0 }],
+      });
+      let consumedLines = 0;
+      for (const piece of pieces) {
+        expect(piece.path).toBe(filePath);
+        expect(piece.patch.startsWith(fileHeader)).toBe(true);
+        expect(piece.patch.length).toBeLessThanOrEqual(safeDiffChars);
+        expect(piece.originalChars).toBe(piece.patch.length);
+        expect(piece.compactedChars).toBe(piece.patch.length);
+        const lines = piece.patch.slice(fileHeader.length).split('\n');
+        expect(lines.pop()).toBe(''); // exactly one terminal transport newline
+        const range = lines.shift()?.match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@ large body$/u);
+        expect(range).not.toBeNull();
+        expect(range).toBeDefined();
+        expect(lines.length).toBeGreaterThan(0);
+        expect(range!.slice(1).map(Number)).toEqual([
+          consumedLines + 1, lines.length, consumedLines + 1, lines.length,
+        ]);
+        const expectedBody = body.slice(consumedLines, consumedLines + lines.length);
+        expect(piece.patch).toBe(`${fileHeader}@@ -${consumedLines + 1},${lines.length} +${consumedLines + 1},${lines.length} @@ large body\n${expectedBody.join('\n')}\n`);
+        consumedLines += lines.length;
+      }
+      expect(consumedLines).toBe(360);
+      for (const [index, partition] of plan.partitions.entries()) {
+        expect(partition).toMatchObject({
+          partitionIndex: index, totalPartitions: plan.partitions.length,
+          baseSha: BASE_SHA, headSha: HEAD_SHA,
+        });
+        expect(partition.totalChars).toBe(partition.files.reduce((sum, piece) => sum + piece.patch.length, 0));
+        expect(partition.totalChars).toBeLessThanOrEqual(safeDiffChars);
+      }
     });
 
-    it('observes nonzero bounded Array.join materialization while grouping many small hunks', () => {
+    it('preserves bounded literal hunk counts, ranges and order across many small hunks', () => {
       const filePath = 'src/many-linear-hunks.ts';
       const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
       const hunks = Array.from({ length: 900 }, (_unused, index) =>
         `@@ -${index + 1},1 +${index + 1},1 @@ section-${index}\n context-${String(index).padStart(4, '0')}`);
       const sourcePatch = `${fileHeader}${hunks.join('\n')}\n`;
       const safeDiffChars = fileHeader.length + 900;
-      const originalJoin = Array.prototype.join;
-      let joinedCodeUnits = 0;
-      let joinCalls = 0;
-      let plan: PartitionPlan | undefined;
-      const joinSpy = vi.spyOn(Array.prototype, 'join').mockImplementation(function (this: any[], separator?: string) {
-        const joined = originalJoin.apply(this, [separator]);
-        joinCalls += 1;
-        joinedCodeUnits += joined.length;
-        return joined;
-      });
-      try {
-        plan = createPartitionPlan([{
-          path: filePath,
-          patch: sourcePatch,
-          originalChars: sourcePatch.length,
-          compactedChars: sourcePatch.length,
-          status: 'modified',
-        }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      } finally {
-        joinSpy.mockRestore();
-      }
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = plan.partitions.flatMap((partition) => partition.files);
 
-      expect(plan).toBeDefined();
-      expect(plan!.partitions.every((partition) => partition.totalChars <= safeDiffChars)).toBe(true);
-      const emittedHunks = plan!.partitions.flatMap((partition) => partition.files)
-        .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith('@@')));
-      const emittedContextLines = plan!.partitions.flatMap((partition) => partition.files)
-        .flatMap((file) => file.patch.split('\n').filter((line) => line.startsWith(' context-')));
-      expect(emittedHunks).toEqual(hunks.map((hunk) => hunk.split('\n')[0]));
-      expect(emittedContextLines).toEqual(Array.from({ length: 900 }, (_unused, index) =>
-        ` context-${String(index).padStart(4, '0')}`));
-      expect(joinCalls).toBeGreaterThan(0);
-      expect(joinedCodeUnits).toBeGreaterThan(0);
-      expect(joinedCodeUnits).toBeLessThanOrEqual(sourcePatch.length * 4);
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(plan).toMatchObject({
+        baseSha: BASE_SHA, headSha: HEAD_SHA, totalFiles: 1,
+        totalOriginalChars: sourcePatch.length, totalCompactedChars: sourcePatch.length,
+        coveragePercent: 100, omittedFilesCount: 0,
+        fileManifest: [{ path: filePath, status: 'modified', partitionIndex: 0 }],
+      });
+      let consumedHunks = 0;
+      for (const piece of pieces) {
+        expect(piece.path).toBe(filePath);
+        expect(piece.patch.startsWith(fileHeader)).toBe(true);
+        expect(piece.patch.length).toBeLessThanOrEqual(safeDiffChars);
+        expect(piece.originalChars).toBe(piece.patch.length);
+        expect(piece.compactedChars).toBe(piece.patch.length);
+        const lines = piece.patch.slice(fileHeader.length).split('\n');
+        expect(lines.pop()).toBe('');
+        expect(lines.length).toBeGreaterThan(0);
+        expect(lines.length % 2).toBe(0); // every literal hunk is one header + one context line
+        const count = lines.length / 2;
+        // Independent fixture literals include both 1/1 counts, exact old/new
+        // positions, section and body. Do not filter away unexpected lines.
+        expect(piece.patch).toBe(`${fileHeader}${hunks.slice(consumedHunks, consumedHunks + count).join('\n')}\n`);
+        consumedHunks += count;
+      }
+      expect(consumedHunks).toBe(900);
+      for (const [index, partition] of plan.partitions.entries()) {
+        expect(partition).toMatchObject({
+          partitionIndex: index, totalPartitions: plan.partitions.length,
+          baseSha: BASE_SHA, headSha: HEAD_SHA,
+        });
+        expect(partition.totalChars).toBe(partition.files.reduce((sum, piece) => sum + piece.patch.length, 0));
+        expect(partition.totalChars).toBeLessThanOrEqual(safeDiffChars);
+      }
     });
 
     it('TEST_T2_06: empty input files returns single partition with 0 files and 100% coverage', () => {
