@@ -253,6 +253,26 @@ export function resolveComposedEngineMaxTurns(
   return COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS;
 }
 
+export const COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS = 25;
+export const COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP = 500;
+
+/**
+ * Stop review early once findings reach the limit (default 25), finalizing results immediately.
+ */
+export function resolveComposedEngineMaxFindings(
+  env: NodeJS.ProcessEnv = process.env,
+  configuredMaxFindingsTotal?: number,
+): number {
+  const raw = Number(env.COMPOSED_ENGINE_MAX_FINDINGS);
+  if (Number.isSafeInteger(raw) && raw > 0) {
+    return Math.min(raw, COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP);
+  }
+  if (Number.isSafeInteger(configuredMaxFindingsTotal) && (configuredMaxFindingsTotal as number) > 0) {
+    return Math.min(configuredMaxFindingsTotal as number, COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP);
+  }
+  return COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS;
+}
+
 // ---------------------------------------------------------------------------
 // Small local helpers (deliberately NOT imported from panelEngine.ts's private scope -- these
 // are new, composed-engine-specific pieces, not the shared surface `./toolRuntime.ts` and
@@ -1519,9 +1539,15 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let nextTaskIdx = 0;
     let reservedModelTurns = planModelTurns;
 
+    const maxFindings = resolveComposedEngineMaxFindings(process.env, config.composed?.max_findings_total);
+    let totalFindingsCollected = 0;
+
     async function taskWorker(): Promise<void> {
       while (true) {
         throwIfPanelAborted(signal);
+        if (totalFindingsCollected >= maxFindings) {
+          break;
+        }
         const i = nextTaskIdx++;
         if (i >= planOutcome.tasks.length) break;
 
@@ -1541,6 +1567,9 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         options.progress?.emit({
           task: 'composed_task', status: 'started', role: 'composed_task', lane: diagnosticLane,
           provider: providerId, model, required: true,
+        });
+        logger.info('[composed] task started', {
+          taskIndex: i, taskId: task.id, dimension: task.dimension, question: task.question, paths: task.paths,
         });
         const taskTurnUsages: LaneTurnUsage[] = [];
         let outcome: TaskOutcome;
@@ -1589,6 +1618,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
           usage: taskUsage,
         });
+        logger.info('[composed] task finished', {
+          taskIndex: i, taskId: task.id, dimension: task.dimension, status: outcome.type,
+          findingsCount: outcome.type === 'complete' ? outcome.findings.length : 0,
+        });
 
         const actualModelTurns = outcome.type === 'complete' || outcome.type === 'blocked'
           ? Math.max(1, outcome.turnUsages.length - outcome.toolTurns)
@@ -1596,12 +1629,44 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         totalModelTurnsUsed += actualModelTurns;
         reservedModelTurns += (actualModelTurns - 1);
         taskSlots[i] = { type: 'outcome', outcome };
+
+        if (outcome.type === 'complete' && outcome.findings) {
+          totalFindingsCollected += outcome.findings.length;
+        }
       }
     }
 
     const workerCount = Math.min(maxConcurrency, planOutcome.tasks.length);
     const workers = Array.from({ length: workerCount }, () => taskWorker());
     await Promise.all(workers);
+
+    if (totalFindingsCollected >= maxFindings) {
+      logger.info('[composed] max findings limit reached; finalizing review early', {
+        totalFindings: totalFindingsCollected,
+        maxFindings,
+      });
+      for (let i = 0; i < planOutcome.tasks.length; i++) {
+        if (!taskSlots[i] || taskSlots[i].type === 'skipped') {
+          const task = planOutcome.tasks[i];
+          const diagnosticLane = composedTaskDiagnosticLane(i);
+          options.progress?.emit({
+            task: 'composed_task', status: 'completed', role: 'composed_task', lane: diagnosticLane,
+            provider: providerId, model, required: true, durationMs: 0, turn: 0,
+          });
+          taskSlots[i] = {
+            type: 'outcome',
+            outcome: {
+              type: 'complete',
+              findings: [],
+              toolTurns: 0,
+              toolCalls: [],
+              turnUsages: [],
+              durationMs: 0,
+            },
+          };
+        }
+      }
+    }
 
     const personas: PersonaLaneResult[] = [];
     const optionalFailures: PanelResult['optionalFailures'] = [];

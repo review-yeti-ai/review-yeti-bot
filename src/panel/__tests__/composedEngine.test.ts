@@ -1464,4 +1464,133 @@ describe('executeComposedReview', () => {
     // Successfully accepted without coverage gap rejection
     expect(result.personas.map((p) => p.id)).toEqual(['auth-task']);
   });
+
+  it('finalizes review early and accounts for all planned tasks when max review findings limit is reached', async () => {
+    const priorConcurrency = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+    process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = '1';
+    try {
+      const executedTasks: string[] = [];
+      const complete = vi.fn(async (payload: any) => {
+        const text = lastText(payload.messages);
+        const nonce = nonceFrom(text);
+        if (text.includes('PLAN TURN')) {
+          return fakeResponse(JSON.stringify({
+            nonce,
+            tasks: [
+              { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q1', rationale: 'r1' },
+              { id: 'task-2', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q2', rationale: 'r2' },
+              { id: 'task-3', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q3', rationale: 'r3' },
+            ],
+          }));
+        }
+        const taskId = text.includes('task-1') ? 'task-1' : text.includes('task-2') ? 'task-2' : 'task-3';
+        executedTasks.push(taskId);
+
+        // task-1 returns 2 findings, hitting the max_findings_total: 2 limit
+        if (taskId === 'task-1') {
+          return fakeResponse(JSON.stringify({
+            nonce,
+            task: 'task-1',
+            status: 'COMPLETE',
+            findings: [
+              { path: 'src/auth/guard.ts', line: 1, severity: 'P1', title: 'Defect 1', body: 'Detail 1' },
+              { path: 'src/auth/guard.ts', line: 1, severity: 'P1', title: 'Defect 2', body: 'Detail 2' },
+            ],
+          }));
+        }
+        return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+      });
+
+      const cfg: any = config();
+      cfg.composed = { max_findings_total: 2 };
+
+      const result = await executeComposedReview({
+        config: cfg,
+        changedFiles: CODE_FILES,
+        repository: 'calltelemetry/ct-meta',
+        headSha: 'a'.repeat(40),
+        client: { complete },
+      });
+
+      // task-1 ran, reached the cap of 2 findings; task-2 and task-3 were not executed
+      expect(executedTasks).toEqual(['task-1']);
+      // All planned tasks are cleanly populated on personas with complete status so arbitration and roster succeed
+      expect(result.personas.map((p) => p.id)).toEqual(['task-1', 'task-2', 'task-3']);
+      expect(result.personas[0].findings).toHaveLength(2);
+      expect(result.personas[1].findings).toHaveLength(0);
+      expect(result.personas[2].findings).toHaveLength(0);
+      expect(result.unreportedLanes ?? []).toEqual([]);
+      expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-2', 'task-3']);
+    } finally {
+      if (priorConcurrency === undefined) {
+        delete process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+      } else {
+        process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = priorConcurrency;
+      }
+    }
+  });
+
+  it('finalizes remaining unstarted tasks concurrently when max findings cap is reached', async () => {
+    const priorConcurrency = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+    process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = '2';
+    try {
+      const executedTasks: string[] = [];
+      const complete = vi.fn(async (payload: any) => {
+        const text = lastText(payload.messages);
+        const nonce = nonceFrom(text);
+        if (text.includes('PLAN TURN')) {
+          return fakeResponse(JSON.stringify({
+            nonce,
+            tasks: [
+              { id: 'task-1', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q1', rationale: 'r1' },
+              { id: 'task-2', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q2', rationale: 'r2' },
+              { id: 'task-3', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q3', rationale: 'r3' },
+              { id: 'task-4', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'q4', rationale: 'r4' },
+            ],
+          }));
+        }
+        const taskId = text.includes('task-1') ? 'task-1' : text.includes('task-2') ? 'task-2' : text.includes('task-3') ? 'task-3' : 'task-4';
+        executedTasks.push(taskId);
+
+        // task-1 returns 2 findings immediately, hitting the cap
+        if (taskId === 'task-1') {
+          return fakeResponse(JSON.stringify({
+            nonce,
+            task: 'task-1',
+            status: 'COMPLETE',
+            findings: [
+              { path: 'src/auth/guard.ts', line: 1, severity: 'P1', title: 'Defect 1', body: 'Detail 1' },
+              { path: 'src/auth/guard.ts', line: 1, severity: 'P1', title: 'Defect 2', body: 'Detail 2' },
+            ],
+          }));
+        }
+        return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
+      });
+
+      const cfg: any = config();
+      cfg.composed = { max_findings_total: 2 };
+
+      const result = await executeComposedReview({
+        config: cfg,
+        changedFiles: CODE_FILES,
+        repository: 'calltelemetry/ct-meta',
+        headSha: 'a'.repeat(40),
+        client: { complete },
+      });
+
+      // Tasks 1 and 2 started concurrently; tasks 3 and 4 were never picked up
+      expect(executedTasks).not.toContain('task-3');
+      expect(executedTasks).not.toContain('task-4');
+      // All 4 tasks are present on personas
+      expect(result.personas.map((p) => p.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+      expect(result.unreportedLanes ?? []).toEqual([]);
+      expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    } finally {
+      if (priorConcurrency === undefined) {
+        delete process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+      } else {
+        process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = priorConcurrency;
+      }
+    }
+  });
 });

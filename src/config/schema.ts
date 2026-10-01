@@ -543,6 +543,7 @@ export const composedEngineConfigSchema = z.object({
   max_turns_total: z.number().int().positive().max(200).optional(),
   max_turns_per_task: z.number().int().positive().max(50).optional(),
   task_dimensions: z.array(z.string().min(1)).min(1).optional(),
+  max_findings_total: z.number().int().positive().max(500).optional(),
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
 
