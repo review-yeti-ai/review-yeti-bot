@@ -8,6 +8,7 @@ import yaml from 'js-yaml';
 type Step = { name?: string; uses?: string; run?: string; with?: Record<string, unknown> };
 type Job = { name?: string; if?: string; needs?: string | string[]; permissions?: Record<string, string>; steps: Step[] };
 type Workflow = { on: Record<string, { branches?: string[]; types?: string[] } | null | unknown[]>;
+  concurrency?: { group?: string; 'cancel-in-progress'?: string | boolean };
   permissions?: Record<string, string>; jobs: Record<string, Job> };
 type Event = { name: string; action?: string; base?: string; ref?: string; draft?: boolean; state?: string; subject?: string };
 type Need = { result: string; outputs: Record<string, string> };
@@ -41,12 +42,13 @@ function eventRegistered(event: Event, workflow: Workflow): boolean {
 function evaluateGuard(guard: string | undefined, event: Event, dependencies: Record<string, Need>): boolean {
   if (!guard) return true;
   const expression = guard.replace(/^\s*\$\{\{\s*|\s*\}\}\s*$/gu, '');
-  const tokens = expression.match(/\s+|github\.(?:event_name|ref|event\.head_commit\.message|event\.pull_request\.(?:draft|state))|needs\.[a-z-]+\.(?:result|outputs\.[a-z-]+)|always\(\)|startsWith|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!(),]/gu) ?? [];
+  const tokens = expression.match(/\s+|github\.(?:event_name|ref|event\.action|event\.head_commit\.message|event\.pull_request\.(?:draft|state))|needs\.[a-z-]+\.(?:result|outputs\.[a-z-]+)|always\(\)|startsWith|'(?:[^'\\]|\\.)*'|true|false|==|!=|\|\||&&|[!(),]/gu) ?? [];
   if (tokens.join('') !== expression) throw new Error('Unsupported workflow condition syntax');
   const executable = tokens.map(token => token.startsWith('needs.')
     ? 'needs' + token.slice(6).split('.').map(key => `[${JSON.stringify(key)}]`).join('') : token).join('');
   return Boolean(vm.runInNewContext(executable, {
     github: { event_name: event.name, ref: event.ref, event: {
+      action: event.action,
       head_commit: { message: event.subject }, pull_request: { draft: event.draft, state: event.state },
     } }, needs: dependencies, always: () => true,
     startsWith: (value: string, prefix: string) => value.toLowerCase().startsWith(prefix.toLowerCase()),
@@ -61,6 +63,13 @@ function admitted(id: string, event: Event, workflow = ci, dependencies = needs(
   // GitHub adds success() to a job condition unless it already uses a status function.
   if (!String(job.if ?? '').includes('always()') && prerequisites.some(key => dependencies[key].result !== 'success')) return false;
   return evaluateGuard(job.if, event, dependencies);
+}
+
+function cancelsInProgress(event: Event, workflow = ci): boolean {
+  const predicate = workflow.concurrency?.['cancel-in-progress'];
+  if (typeof predicate === 'boolean') return predicate;
+  if (typeof predicate !== 'string') throw new Error('Missing workflow concurrency predicate');
+  return evaluateGuard(predicate, event, needs());
 }
 
 function workflowStrings(value: unknown): string {
@@ -214,6 +223,32 @@ describe('public draft quality admission', () => {
     const syntax = structuredClone(ci); syntax.jobs.typecheck.if = 'process.env.UNTRUSTED';
     expect(() => admitted('typecheck', draft, syntax)).toThrow('Unsupported workflow condition syntax');
     expect(() => admitted('missing-job', draft)).toThrow('Missing workflow job');
+  });
+
+  it('preserves supersession guards but lets ready_for_review queue without cancelling draft quality CI', () => {
+    const cases: Array<{ label: string; event: Event; cancel: boolean }> = [
+      { label: 'ready_for_review transition', event: { ...draft, action: 'ready_for_review', draft: false }, cancel: false },
+      { label: 'draft opened', event: { ...draft, action: 'opened', draft: true }, cancel: true },
+      { label: 'synchronize', event: { ...draft, action: 'synchronize', draft: false }, cancel: true },
+      { label: 'ordinary PR reopen', event: { ...draft, action: 'reopened', draft: false }, cancel: true },
+      { label: 'main push', event: { name: 'push', ref: 'refs/heads/main' }, cancel: false },
+      { label: 'branch push predicate', event: { name: 'push', ref: 'refs/heads/feature' }, cancel: true },
+      { label: 'nightly schedule', event: { name: 'schedule', ref: 'refs/heads/main' }, cancel: false },
+      { label: 'manual dispatch on main', event: { name: 'workflow_dispatch', ref: 'refs/heads/main' }, cancel: false },
+      { label: 'manual dispatch on branch', event: { name: 'workflow_dispatch', ref: 'refs/heads/feature' }, cancel: true },
+    ];
+
+    for (const { label, event, cancel } of cases) {
+      expect(cancelsInProgress(event), label).toBe(cancel);
+    }
+
+    // Counterfactual RED: the previous branch-only expression cancels the ready event.
+    const previous = structuredClone(ci);
+    previous.concurrency!['cancel-in-progress'] = "${{ github.ref != 'refs/heads/main' }}";
+    expect(cancelsInProgress({ ...draft, action: 'ready_for_review', draft: false }, previous)).toBe(true);
+    expect(cancelsInProgress({ ...draft, action: 'synchronize', draft: false }, previous)).toBe(true);
+    expect(cancelsInProgress({ name: 'push', ref: 'refs/heads/main' }, previous)).toBe(false);
+    expect(cancelsInProgress({ name: 'schedule', ref: 'refs/heads/main' }, previous)).toBe(false);
   });
 });
 
