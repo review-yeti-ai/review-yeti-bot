@@ -685,7 +685,7 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	}
 }
 
-func TestBuildWorkerJobEnforcesFixedEndToEndDeadline(t *testing.T) {
+func TestBuildWorkerJobEnforcesBoundedEndToEndDeadline(t *testing.T) {
 	received := time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC)
 	for _, test := range []struct {
 		name     string
@@ -695,6 +695,10 @@ func TestBuildWorkerJobEnforcesFixedEndToEndDeadline(t *testing.T) {
 	}{
 		{name: "fifteen minute window at admission", window: 15 * time.Minute, now: received, wantSecs: 840},
 		{name: "fifteen minute window mid-run", window: 15 * time.Minute, now: received.Add(5 * time.Minute), wantSecs: 540},
+		{name: "35-minute window at admission", window: 35 * time.Minute, now: received, wantSecs: 2_040},
+		{name: "35-minute window mid-run", window: 35 * time.Minute, now: received.Add(5 * time.Minute), wantSecs: 1_740},
+		{name: "60-minute window at admission", window: 60 * time.Minute, now: received, wantSecs: 3_540},
+		{name: "60-minute window mid-run", window: 60 * time.Minute, now: received.Add(5 * time.Minute), wantSecs: 3_240},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			review := reviewFixture(received)
@@ -708,15 +712,15 @@ func TestBuildWorkerJobEnforcesFixedEndToEndDeadline(t *testing.T) {
 			}
 		})
 	}
-	// Any wider window violates the end-to-end service ceiling.
+	// A window above the supported maximum violates the end-to-end service ceiling.
 	tooLong := reviewFixture(received)
-	tooLong.Spec.TerminalDeadline = metav1.NewTime(received.Add(16 * time.Minute))
+	tooLong.Spec.TerminalDeadline = metav1.NewTime(received.Add(60*time.Minute + time.Second))
 	if _, err := job.BuildWorkerJob(buildInput(tooLong, received)); !errors.Is(err, job.ErrJobDeadline) {
 		t.Fatalf("over-ceiling window error = %v, want ErrJobDeadline", err)
 	}
-	// A shorter projected window is also not the immutable admitted contract.
+	// A shorter projected window violates the minimum supported admission window.
 	tooShort := reviewFixture(received)
-	tooShort.Spec.TerminalDeadline = metav1.NewTime(received.Add(14 * time.Minute))
+	tooShort.Spec.TerminalDeadline = metav1.NewTime(received.Add(15*time.Minute - time.Second))
 	if _, err := job.BuildWorkerJob(buildInput(tooShort, received)); !errors.Is(err, job.ErrJobDeadline) {
 		t.Fatalf("under-floor window error = %v, want ErrJobDeadline", err)
 	}

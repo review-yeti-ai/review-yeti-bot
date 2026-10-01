@@ -456,7 +456,7 @@ describe('PostgresReviewDispatchRepository', () => {
     },
   );
 
-  it('rejects an admitted window that differs from the fixed 15-minute ceiling', async () => {
+  it('rejects an admitted window that differs from the configured deadline', async () => {
     const client = { query: vi.fn(async (_sql: string) => ({ rows: [] })), release: vi.fn() };
     const connect = vi.fn(async () => client);
     const repository = new PostgresReviewDispatchRepository({ connect } as any);

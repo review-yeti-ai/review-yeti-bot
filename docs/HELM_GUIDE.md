@@ -238,7 +238,7 @@ worker:
 ```
 
 > [!WARNING]
-> Review Yeti's CRD enforces an exact 15-minute end-to-end terminal window (`terminalDeadline - receivedAt == 900s`) via CEL validation. `REVIEW_YETI_TERMINAL_DEADLINE_MS`, when set, must equal `900000`; startup rejects attempts to widen it. Worker `activeDeadlineSeconds` remains below the admitted window (window minus the publication reserve) so the worker can finalize and publish a failure before eviction.
+> Review Yeti's CRD bounds the end-to-end terminal window to 15–60 minutes via CEL validation. `REVIEW_YETI_TERMINAL_DEADLINE_MS` defaults to `900000` (15 minutes) and accepts only decimal integer milliseconds from `900000` through `3600000`. The dispatcher admits the exact configured window; the CRD/operator enforce the shared bounds. Worker `activeDeadlineSeconds` remains below the admitted absolute deadline so queueing, startup, review, persistence, and publication stay inside that run's budget.
 
 ### 4. Ingress & TLS Management (`ingress`)
 
