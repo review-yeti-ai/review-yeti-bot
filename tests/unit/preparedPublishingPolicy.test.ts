@@ -25,7 +25,7 @@ describe('trusted prepared publishing policy', () => {
     const prepared = preparePublishingPolicy(file(), transport);
     expect(prepared.expectedPersonaIds).toEqual(['sec-lane', 'qual-lane']);
     expect(prepared.config.default_max_turns).toBe(15);
-    expect(prepared.config.reviewers.overall_timeout_s).toBe(3000);
+    expect(prepared.config.reviewers.overall_timeout_s).toBe(1200);
     expect(prepared.config.reviewers.providers).toMatchObject([{
       id: 'bifrost', model: transport.model, review_timeout_s: 180, arbiter_timeout_s: 180,
     }]);

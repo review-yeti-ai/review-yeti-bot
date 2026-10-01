@@ -13,6 +13,7 @@ import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
 import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { sha256 } from '../../src/review/reviewCore';
 import { initTelemetry } from '../../src/telemetry';
+import { TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const PUBLISHER_APP_ID = 4_385_771;
 const OWNED_SCHEMA = /^review_reaper_acceptance_[a-f0-9]{16}$/u;
@@ -186,7 +187,7 @@ function admission(round: number, branch: 'mismatch' | 'superseded') {
     repositoryId: 817,
     installationId: 819,
     receivedAt,
-    terminalDeadline: receivedAt + 900_000,
+    terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
     payloadDigest: sha256(identity),
     publicationMode: 'app-gate' as const,
     centralActionDispatch: false,

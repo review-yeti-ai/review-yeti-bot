@@ -12,6 +12,7 @@ import {
 } from './dashboardStore';
 import { logger } from '../utils/logger';
 import { REVIEW_GATE_SCHEMA_SQL } from './reviewGateSchema';
+import { COMPOSED_TASK_LEDGER_SCHEMA_SQL } from './composedTaskLedgerRepository';
 import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from './reviewGenerationRecoverySchema';
 import { PREPARED_REVIEW_SCHEMA_SQL } from './preparedReviewRepository';
 import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
@@ -430,6 +431,7 @@ export class PostgresStore {
       const schemaOutcome = await applySchemaOnce(client, [
         coreSchemaSql,
         REVIEW_GATE_SCHEMA_SQL,
+        COMPOSED_TASK_LEDGER_SCHEMA_SQL,
         // Historical bridge only: dispatch owns the receipt column and the
         // gate schema owns authoritative_gate_app_id, so both must exist first.
         LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL,

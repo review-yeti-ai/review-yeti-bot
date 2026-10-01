@@ -38,8 +38,9 @@ describe('resolveTerminalDeadlineMs', () => {
     },
   );
 
-  it('keeps 15 minutes as the default and minimum', () => {
-    expect(DEFAULT_TERMINAL_DEADLINE_MS).toBe(MIN_TERMINAL_DEADLINE_MS);
+  it('uses 25 minutes by default while retaining the 15-minute migration minimum', () => {
+    expect(DEFAULT_TERMINAL_DEADLINE_MS).toBe(1_500_000);
+    expect(MIN_TERMINAL_DEADLINE_MS).toBe(900_000);
     expect(resolveTerminalDeadlineMs(envWith(String(DEFAULT_TERMINAL_DEADLINE_MS))))
       .toBe(DEFAULT_TERMINAL_DEADLINE_MS);
   });
@@ -113,7 +114,7 @@ describe('assertTerminalDeadlineWindow', () => {
   });
 
   it('accepts the exact window regardless of the receivedAt offset', () => {
-    expect(() => assertTerminalDeadlineWindow(1_000, 1_000 + 900_000)).not.toThrow();
+    expect(() => assertTerminalDeadlineWindow(1_000, 1_000 + DEFAULT_TERMINAL_DEADLINE_MS)).not.toThrow();
   });
 
   it('rejects a window one millisecond below or above the exact deadline', () => {

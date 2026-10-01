@@ -6,6 +6,7 @@ import {
   WORKER_TERMINAL_DEADLINE_RESERVE_MS,
   WORKER_RECEIPT_RESERVE_MS,
   WORKER_PANEL_RESERVE_MS,
+  WORKER_SYNTHESIS_AND_PUBLICATION_RESERVE_MS,
   workerPanelTimeoutMs,
   workerTerminalDeadlineAtMs,
   workerPanelDeadlineBudget,
@@ -25,7 +26,8 @@ describe('REL-1113 worker terminal-deadline contract', () => {
     expect(jobGo).toMatch(new RegExp(`DeadlineReserveSeconds\\s*=\\s*int64\\(${WORKER_TERMINAL_DEADLINE_RESERVE_MS / 1000}\\)`, 'u'));
     expect(TERMINAL_DEADLINE_ENV).toBe(WORKER_TERMINAL_DEADLINE_ENV);
     expect(jobGo).toMatch(new RegExp(`WorkerReceiptReserveSeconds\\s*=\\s*int64\\(${WORKER_RECEIPT_RESERVE_MS / 1000}\\)`, 'u'));
-    expect(WORKER_PANEL_RESERVE_MS).toBe(WORKER_TERMINAL_DEADLINE_RESERVE_MS + WORKER_RECEIPT_RESERVE_MS);
+    expect(WORKER_PANEL_RESERVE_MS).toBe(WORKER_SYNTHESIS_AND_PUBLICATION_RESERVE_MS);
+    expect(WORKER_PANEL_RESERVE_MS).toBe(300_000);
   });
 
   it('parses the RFC 3339 instant the operator projects, and bounds the transport backoff by it', () => {
@@ -39,19 +41,19 @@ describe('REL-1113 worker terminal-deadline contract', () => {
     expect(remainingTerminalDeadlineMs({}, at)).toBe(Infinity);
   });
 
-  it('subtracts queue/setup and both existing reserves without widening the policy ceiling', () => {
+  it('subtracts queue/setup and the protected closeout reserve without widening the policy ceiling', () => {
     const deadline = Date.parse('2026-09-30T14:58:56.285Z');
     const env = { [WORKER_TERMINAL_DEADLINE_ENV]: new Date(deadline).toISOString() };
-    expect(workerPanelTimeoutMs(1800, env, Date.parse('2026-09-30T14:35:51Z'))).toBe(1_264_285);
+    expect(workerPanelTimeoutMs(1800, env, Date.parse('2026-09-30T14:35:51Z'))).toBe(1_085_285);
     expect(workerPanelTimeoutMs(900, env, deadline - 3_600_000)).toBe(900_000);
-    expect(workerPanelTimeoutMs(1800, env, deadline - 121_001)).toBe(1);
-    expect(workerPanelTimeoutMs(1800, env, deadline - 121_000)).toBe(0);
+    expect(workerPanelTimeoutMs(1800, env, deadline - 300_001)).toBe(1);
+    expect(workerPanelTimeoutMs(1800, env, deadline - 300_000)).toBe(0);
     expect(workerPanelTimeoutMs(1800, env, deadline + 1)).toBe(0);
   });
 
   it('retains legacy absence and policy fallback, but refuses an explicit malformed bound', () => {
     expect(workerPanelTimeoutMs(1800, {}, 0)).toBe(1_800_000);
-    expect(workerPanelTimeoutMs(0, {}, 0)).toBe(900_000);
+    expect(workerPanelTimeoutMs(0, {}, 0)).toBe(1_200_000);
     expect(() => workerPanelTimeoutMs(1800, { [WORKER_TERMINAL_DEADLINE_ENV]: 'bad' }, 0))
       .toThrow('Worker lifecycle deadline is invalid');
   });
@@ -60,15 +62,15 @@ describe('REL-1113 worker terminal-deadline contract', () => {
 describe('REL-1211 fixed model-work budget', () => {
   const now = Date.parse('2026-09-30T16:00:50Z');
   const terminalEnv = (at: number) => ({ [WORKER_TERMINAL_DEADLINE_ENV]: new Date(at).toISOString() });
-  it('pins both unchanged Go reserves and conservatively covers integer flooring', () => {
+  it('pins the five-minute closeout cutoff ahead of the Job hard stop', () => {
     const go = readFileSync(join(__dirname, '../../k8s-operator/pkg/job/job.go'), 'utf8');
     expect(go).toMatch(new RegExp(`WorkerReceiptReserveSeconds\\s*=\\s*int64\\(${WORKER_RECEIPT_RESERVE_MS / 1000}\\)`, 'u'));
-    expect(WORKER_DEADLINE_FLOOR_MARGIN_MS).toBe(1_000);
+    expect(WORKER_DEADLINE_FLOOR_MARGIN_MS).toBe(0);
     const terminal = Date.parse('2026-09-30T16:29:47.875Z');
     const hardStop = now + (Math.floor((terminal - now) / 1_000) - 60) * 1_000;
     const budget = workerPanelDeadlineBudget(1_800, terminalEnv(terminal), now);
-    expect(budget.deadlineAtMs).toBe(terminal - 121_000);
-    expect(hardStop - budget.deadlineAtMs).toBeGreaterThanOrEqual(60_000);
+    expect(budget.deadlineAtMs).toBe(terminal - 300_000);
+    expect(hardStop - budget.deadlineAtMs).toBeGreaterThanOrEqual(239_000);
     expect(budget.terminalBound).toBe(true);
   });
   it.each([undefined, '', '   '])('preserves absent/empty local bounds: %s', (raw) => {
@@ -86,15 +88,15 @@ describe('REL-1211 fixed model-work budget', () => {
       .toThrow('Worker lifecycle deadline is invalid');
   });
   it.each([0, -1, NaN, Infinity])('preserves the configured fallback: %s', (seconds) => {
-    expect(workerPanelDeadlineBudget(seconds, {}, now).timeoutMs).toBe(900_000);
+    expect(workerPanelDeadlineBudget(seconds, {}, now).timeoutMs).toBe(1_200_000);
   });
   it('takes the earlier relative bound without consuming a later admission window', () => {
-    expect(workerPanelDeadlineBudget(5, terminalEnv(now + 200_000), now))
+    expect(workerPanelDeadlineBudget(5, terminalEnv(now + 400_000), now))
       .toEqual({ deadlineAtMs: now + 5_000, timeoutMs: 5_000, terminalBound: false });
     expect(workerPanelDeadlineBudget(0.0001, {}, now).timeoutMs).toBe(1);
   });
   it.each([0, -1, -100_000])('represents exhausted budget as zero, not a minimum provider call: %s', (remaining) => {
-    expect(workerPanelDeadlineBudget(1_800, terminalEnv(now + 121_000 + remaining), now))
+    expect(workerPanelDeadlineBudget(1_800, terminalEnv(now + 300_000 + remaining), now))
       .toEqual({ deadlineAtMs: now + remaining, timeoutMs: 0, terminalBound: true });
   });
 });

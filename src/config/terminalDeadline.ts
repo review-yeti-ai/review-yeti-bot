@@ -2,7 +2,8 @@
  * Single source of truth for the review terminal deadline window.
  *
  * The DOKS execution lane admits a review with `terminalDeadline = receivedAt
- * + configured window` (15 minutes by default, bounded at 60 minutes), then
+ * + configured window` (25 minutes by default, bounded at 15-60 minutes for
+ * rollout compatibility), then
  * hands the worker Job only the *remainder* of that window
  * as `activeDeadlineSeconds`. Queue wait, capacity wait, image pull, review,
  * persistence, and publication all consume the same admitted budget. This is
@@ -22,9 +23,10 @@
 const ENV_VAR = 'REVIEW_YETI_TERMINAL_DEADLINE_MS';
 
 /**
- * Minimum supported admission window and production default: 15 minutes.
+ * Production default: 25 minutes. The worker reserves the last five minutes
+ * for deterministic synthesis, durable completion, and GitHub publication.
  */
-export const DEFAULT_TERMINAL_DEADLINE_MS = 900_000;
+export const DEFAULT_TERMINAL_DEADLINE_MS = 1_500_000;
 
 /**
  * Maximum supported admission window: 60 minutes. New admissions use the
@@ -33,16 +35,20 @@ export const DEFAULT_TERMINAL_DEADLINE_MS = 900_000;
  */
 export const MAX_TERMINAL_DEADLINE_MS = 3_600_000;
 
-/** Minimum accepted admission value. */
-export const MIN_TERMINAL_DEADLINE_MS = DEFAULT_TERMINAL_DEADLINE_MS;
+/** Minimum accepted migration value: the former exact 15-minute contract. */
+export const MIN_TERMINAL_DEADLINE_MS = 900_000;
+
+/** Retained descriptive name for older callers and migration tests. */
+export const LEGACY_MIN_TERMINAL_DEADLINE_MS = MIN_TERMINAL_DEADLINE_MS;
 
 /** Retained name for the persisted-row recovery bound. */
 export const LEGACY_MAX_TERMINAL_DEADLINE_MS = MAX_TERMINAL_DEADLINE_MS;
 
 /**
  * Resolves the terminal-deadline window from `REVIEW_YETI_TERMINAL_DEADLINE_MS`,
- * falling back to `DEFAULT_TERMINAL_DEADLINE_MS` when unset. Only decimal
- * integer milliseconds in the inclusive 15–60 minute range are accepted.
+ * falling back to the 25-minute `DEFAULT_TERMINAL_DEADLINE_MS` when unset.
+ * Only decimal integer milliseconds in the inclusive 15–60 minute migration
+ * range are accepted; production rollout sets the exact 25-minute value.
  */
 export function resolveTerminalDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env[ENV_VAR];
