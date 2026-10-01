@@ -149,7 +149,7 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
   // Frozen base554 CREATE layout: retain inline multi-column byte checks so
   // PostgreSQL, not a synthetic named guard, supplies the historical names.
   const historicalLedgerSql = (bounds: { planBytes?: number; outcomeBytes?: number;
-    planTasks?: number; outcomeIndex?: number } = {}) => `
+    planTasks?: number; outcomeIndex?: number } = {}, schemaSql = COMPOSED_TASK_LEDGER_SCHEMA_SQL) => `
     CREATE TABLE IF NOT EXISTS composed_task_plans (
       attempt_id TEXT PRIMARY KEY REFERENCES review_gate_attempts(attempt_id) ON DELETE CASCADE,
       content_digest VARCHAR(64) NOT NULL CHECK (content_digest ~ '^[a-f0-9]{64}$'),
@@ -180,8 +180,21 @@ describeWithPostgres('composed task ledger — real PostgreSQL, retention only',
       CHECK ((payload::jsonb->>'planDigest' = plan_digest) IS TRUE),
       CHECK ((payload::jsonb->>'taskId' = task_id) IS TRUE), CHECK ((payload::jsonb->>'status' = status) IS TRUE)
     );
-  ` + COMPOSED_TASK_LEDGER_SCHEMA_SQL.slice(
-    COMPOSED_TASK_LEDGER_SCHEMA_SQL.indexOf('CREATE OR REPLACE FUNCTION composed_task_ledger_reject_update()'));
+  ` + (() => {
+    const index = schemaSql.indexOf('CREATE OR REPLACE FUNCTION composed_task_ledger_reject_update()');
+    if (index < 0) throw new Error('Composed ledger schema is missing the immutable-update function anchor');
+    return schemaSql.slice(index);
+  })();
+
+  it('refuses a historical schema fixture whose immutable-update anchor is missing', () => {
+    const changedAnchor = COMPOSED_TASK_LEDGER_SCHEMA_SQL.replace(
+      'CREATE OR REPLACE FUNCTION composed_task_ledger_reject_update()',
+      'CREATE OR REPLACE FUNCTION renamed_immutable_update_guard()',
+    );
+    expect(() => historicalLedgerSql({}, changedAnchor)).toThrow(
+      'Composed ledger schema is missing the immutable-update function anchor',
+    );
+  });
 
   const initializeStore = async () => {
     if (!store || !scopedDatabaseUrl) throw new Error('PostgresStore bootstrap fixture was not initialized');

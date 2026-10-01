@@ -1791,9 +1791,9 @@ export async function runPublishingReviewWorker(
       // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
       // cutoff. Late setup cannot mint another relative window for either engine.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is
-      // max(panel, composed), never the sum. The panel holds up to `MAX_CONCURRENT_PERSONAS` (4)
-      // provider slots and the composed run holds 1; both fitting inside the account's ceiling of
-      // 10 is what makes running them side by side safe. `shadowOutcomePromise` is awaited only
+      // max(panel, composed), never the sum. The composed shadow scheduler is held to one task at
+      // a time, so raising the operator's panel-lane cap does not raise composed shadow task
+      // concurrency. `shadowOutcomePromise` is awaited only
       // once evidence is built (`buildReviewResult({ includeShadow: true })`), well after the
       // panel's own check publication below, so a slow shadow lane never delays it.
       // The diff's bracketing reads prove exact content, but setup and grounding
@@ -1854,6 +1854,7 @@ export async function runPublishingReviewWorker(
               ...(mapReduce ? { mapReduce } : {}),
               // Same upstream production Bifrost native JSON contract as the panel call below.
               requestPolicy: { responseFormat: { type: 'json_object' } },
+              publisherShadow: true,
             } as Parameters<typeof executeComposedReview>[0]);
             }),
             activeShadowDeadline.signal,

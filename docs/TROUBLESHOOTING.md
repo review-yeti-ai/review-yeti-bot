@@ -25,7 +25,7 @@ This production guide provides comprehensive diagnostic procedures, root cause a
 | **`HTTP 401 Unauthorized`**<br>`Invalid authorization token` | Dispatcher Service | Bearer dispatch token mismatch between GitHub secret and Kubernetes Secret. | Synchronize `DISPATCH_TOKEN` in Kubernetes `review-yeti-secrets` and Action secret. |
 | **`HTTP 401 Unauthorized`**<br>`Invalid X-Hub-Signature-256` | Dispatcher Service | Webhook HMAC-SHA256 signature validation failure or mutated request payload. | Verify webhook secret; ensure ingress controller does not mutate or buffer raw payload bodies. |
 | **`HTTP 429 Too Many Requests`**<br>`Retry-After` header present | Worker Pod / LLM | Provider concurrency/TPM quota exhausted on OpenRouter, Anthropic, or OpenAI. | Reduce `operator.config.maxConcurrentJobs` in `values.yaml` and configure fallback models. |
-| **`DeadlineExceeded`**<br>`activeDeadlineSeconds` elapsed | Operator / Worker | Queueing, image pull, review, persistence, or publication exhausted the fixed 15-minute end-to-end deadline. | Inspect `get_review_status` timing and worker telemetry; reduce queueing or model latency, tune parallelism, or reduce persona work. Do not widen `REVIEW_YETI_TERMINAL_DEADLINE_MS`. |
+| **`DeadlineExceeded`**<br>`activeDeadlineSeconds` elapsed | Operator / Worker | Queueing, image pull, review, persistence, or publication exhausted the configured 15–60 minute end-to-end deadline. | Inspect `get_review_status` timing and worker telemetry; reduce queueing or model latency, tune parallelism, or reduce persona work. Set `REVIEW_YETI_TERMINAL_DEADLINE_MS` only to a decimal integer from `900000` through `3600000`; the default is `900000`. |
 | **`OOMKilled` (Exit code 137)** | Worker Pod | Node AST parsing and diff chunking exceeded container memory limit. | Increase `worker.resources.limits.memory` to `1.5Gi` or `2Gi` in `values.yaml`. |
 | **`failed to acquire leader lease`** | Operator Controller | Multiple operator replicas running or stale lease lock following an ungraceful node shutdown. | Set `operator.replicaCount: 1`, verify `strategy.type: Recreate`, delete stale lease object. |
 | **`HTTP 502 / 503 Bad Gateway`** | Ingress Controller | Dispatcher pods not ready, startup probe failing, or port target misconfigured. | Check `kubectl describe pods -l app.kubernetes.io/component=dispatcher` and probe endpoints. |
@@ -278,11 +278,11 @@ Review Yeti incorporates automated exponential backoff with full jitter and hono
 ### Root Cause Analysis
 
 1. **CEL Terminal Deadline Validation**:
-   The `PRReviewJob` CRD enforces an exact 15-minute end-to-end terminal execution window using Common Expression Language (CEL). The optional `REVIEW_YETI_TERMINAL_DEADLINE_MS` value must be exactly `900000`; any other value fails startup:
+   The `PRReviewJob` CRD enforces a 15-to-60-minute end-to-end terminal execution window using Common Expression Language (CEL). The optional `REVIEW_YETI_TERMINAL_DEADLINE_MS` value defaults to `900000` and must be a decimal integer in the supported range; values outside it fail startup:
    ```cel
-   duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('900s')
+   duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')
    ```
-   If a worker pod runs longer than the admitted window, the Kubernetes job runner marks the custom resource as failed with `DeadlineExceeded`.
+   The dispatcher stamps each new run with one exact configured deadline. The worker Job receives only the time remaining before that absolute deadline, including the existing publication reserves. If a worker pod runs longer than the admitted window, the Kubernetes job runner marks the custom resource as failed with `DeadlineExceeded`.
 
 2. **Large Pull Request Diffs (> 5,000 Lines)**:
    Massive diffs (e.g. database schema dumps, generated TypeScript types, lockfiles) take excessive time to chunk, tokenize, and evaluate across all personas.
