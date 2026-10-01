@@ -2309,6 +2309,343 @@ describe('executeComposedReview', () => {
     expect(retention.port.persistOutcome).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('keeps mode-specific refill and receipt accounting with retention=%s', async (retained) => {
+    const events: string[] = [];
+    const releaseProviders = deferred<void>();
+    const secondCompleted = deferred<void>();
+    const fourthStarted = deferred<void>();
+    const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
+    const { complete, providerTasks } = retentionRoutedClient(events, async (taskId, _text, nonce) => {
+      if (taskId === 'task-4') fourthStarted.resolve();
+      if (!retained && (taskId === 'task-1' || taskId === 'task-3')) await releaseProviders.promise;
+      return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
+    }, fourTasks());
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      if (request.evidence.taskId === 'task-1' || request.evidence.taskId === 'task-3') {
+        const ack = deferred<any>();
+        held.set(request.evidence.taskId, { request, ack });
+        return ack.promise;
+      }
+      return retentionAck('outcome', request, '2'.repeat(64));
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: `run-refill-mode-${retained}`, executionAttempt: 1 }, {
+      sink: (event) => {
+        progress.push(`${event.lane ?? 'panel'}:${event.status}`);
+        if (event.lane === 'composed-task-2' && event.status === 'completed') secondCompleted.resolve();
+      },
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, progress: reporter, ...(retained ? { retention: { port: retention.port } } : {}) });
+    try {
+      await secondCompleted.promise;
+      if (retained) {
+        await flushBranches();
+        expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
+        expect([...held.keys()]).toEqual(['task-1', 'task-3']);
+        expect(progress).not.toContain('composed-task-4:started');
+      } else {
+        await fourthStarted.promise;
+        expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+        expect(progress).not.toContain('composed-task-1:completed');
+        expect(progress).not.toContain('composed-task-3:completed');
+      }
+    } finally {
+      releaseProviders.resolve();
+      for (const { request, ack } of held.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await run.catch(() => undefined);
+    }
+    const result = await run;
+    expect(result.personas.map((lane) => lane.id)).toEqual(fourTasks().map((task) => task.id));
+    expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
+    expect(complete).toHaveBeenCalledTimes(5);
+    expect(retention.port.persistPlan).toHaveBeenCalledTimes(retained ? 1 : 0);
+    expect(retention.port.persistOutcome).toHaveBeenCalledTimes(retained ? 4 : 0);
+  });
+
+  it.each([
+    { retained: false, pool: 1 }, { retained: false, pool: 2 },
+    { retained: true, pool: 1 }, { retained: true, pool: 2 },
+  ])('honors lower pool $pool with mode-specific settlement, retention=$retained', async ({ retained, pool }) => {
+    const previous = process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+    process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = String(pool);
+    const events: string[] = [];
+    const initialIds = fourTasks().slice(0, pool).map((task) => task.id);
+    const heldProviders = new Map(initialIds.map((id) => [id, deferred<void>()]));
+    const heldAcks = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
+    const initialHeld = deferred<void>();
+    const firstCompleted = deferred<void>();
+    const nextStarted = deferred<void>();
+    let activeCalls = 0;
+    let maxActiveCalls = 0;
+    const { complete, providerTasks } = retentionRoutedClient(events, async (taskId, _text, nonce) => {
+      activeCalls += 1;
+      maxActiveCalls = Math.max(maxActiveCalls, activeCalls);
+      if (taskId === `task-${pool + 1}`) nextStarted.resolve();
+      try {
+        if (!retained && heldProviders.has(taskId)) {
+          if (providerTasks.length === pool) initialHeld.resolve();
+          await heldProviders.get(taskId)!.promise;
+        }
+        return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
+      } finally { activeCalls -= 1; }
+    }, fourTasks());
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      if (initialIds.includes(request.evidence.taskId)) {
+        const ack = deferred<any>();
+        heldAcks.set(request.evidence.taskId, { request, ack });
+        if (heldAcks.size === pool) initialHeld.resolve();
+        return ack.promise;
+      }
+      return retentionAck('outcome', request, '2'.repeat(64));
+    });
+    const reporter = createPublishingProgress({ runId: `run-lower-pool-${pool}-${retained}`, executionAttempt: 1 }, {
+      sink: (event) => { if (event.lane === 'composed-task-1' && event.status === 'completed') firstCompleted.resolve(); },
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, progress: reporter, ...(retained ? { retention: { port: retention.port } } : {}) });
+    try {
+      await initialHeld.promise;
+      expect(providerTasks).toEqual(initialIds);
+      if (retained) {
+        const first = heldAcks.get('task-1')!;
+        first.ack.resolve(retentionAck('outcome', first.request, '2'.repeat(64)));
+      } else heldProviders.get('task-1')!.resolve();
+      await firstCompleted.promise;
+      if (retained && pool === 2) {
+        await flushBranches();
+        expect(providerTasks).toEqual(initialIds);
+      } else {
+        await nextStarted.promise;
+        expect(providerTasks).toContain(`task-${pool + 1}`);
+      }
+    } finally {
+      for (const gate of heldProviders.values()) gate.resolve();
+      for (const { request, ack } of heldAcks.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await run.catch(() => undefined);
+      if (previous === undefined) delete process.env.REVIEW_YETI_MAX_CONCURRENT_LANES;
+      else process.env.REVIEW_YETI_MAX_CONCURRENT_LANES = previous;
+    }
+    const result = await run;
+    expect(maxActiveCalls).toBeLessThanOrEqual(pool);
+    expect(activeCalls).toBe(0);
+    expect(result.personas.map((lane) => lane.id)).toEqual(fourTasks().map((task) => task.id));
+    expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
+    expect(complete).toHaveBeenCalledTimes(5);
+  });
+
+  it.each([
+    { label: 'full ceiling', firstTurns: 1, secondTurns: 4, secondComplete: true },
+    { label: 'partial final tail', firstTurns: 3, secondTurns: 3, secondComplete: false },
+  ])('refunds retained actual usage once before the $label', async ({ firstTurns, secondTurns, secondComplete }) => {
+    const events: string[] = [];
+    const firstAckStarted = deferred<void>();
+    const firstAck = deferred<any>();
+    let firstRequest: any;
+    const calls = new Map<string, number>();
+    const { complete, providerTasks } = retentionRoutedClient(events, (taskId, _text, nonce) => {
+      const count = (calls.get(taskId) ?? 0) + 1;
+      calls.set(taskId, count);
+      if ((taskId === 'task-1' && count === firstTurns) || (taskId === 'task-2' && secondComplete && count === secondTurns)) {
+        return JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] });
+      }
+      return JSON.stringify({ tool: 'read_file', args: { path: 'src/auth/guard.ts' } });
+    }, threeTasks().slice(0, 2));
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      retention.requests.push(request);
+      if (request.evidence.taskId === 'task-1') {
+        firstRequest = request;
+        firstAckStarted.resolve();
+        return firstAck.promise;
+      }
+      return retentionAck('outcome', request, '2'.repeat(64));
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 7, max_turns_per_task: 4 };
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, retention: { port: retention.port } });
+    try {
+      await firstAckStarted.promise;
+      await flushBranches();
+      expect(providerTasks).toEqual(Array(firstTurns).fill('task-1'));
+      expect(calls.has('task-2')).toBe(false);
+    } finally {
+      firstAck.resolve(retentionAck('outcome', firstRequest, '2'.repeat(64)));
+      await run.catch(() => undefined);
+    }
+    const result = await run;
+    expect(calls.get('task-1')).toBe(firstTurns);
+    expect(calls.get('task-2')).toBe(secondTurns);
+    expect(complete).toHaveBeenCalledTimes(1 + firstTurns + secondTurns);
+    const outcomes = retention.requests.filter((request) => request.stage === 'outcome');
+    expect(outcomes.map((request) => request.evidence.taskId)).toEqual(['task-1', 'task-2']);
+    expect(outcomes.map((request) => request.evidence.usage.turnsUsed)).toEqual([firstTurns, secondTurns]);
+    expect(outcomes.every((request) => request.evidence.usage.physicalCalls === null)).toBe(true);
+    expect(result.personas.map((lane) => lane.id)).toEqual(secondComplete ? ['task-1', 'task-2'] : ['task-1']);
+    if (secondComplete) expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(6);
+    else expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', diagnostics: { turnsUsed: 3 } }]);
+  });
+
+  it('awaits each zero-use retained budget outcome before skip progress and final publication', async () => {
+    const events: string[] = [];
+    const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
+    const secondStarted = deferred<void>();
+    const thirdStarted = deferred<void>();
+    const { complete, providerTasks } = retentionRoutedClient(events);
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      retention.requests.push(request);
+      if (request.evidence.taskId === 'task-1') return retentionAck('outcome', request, '2'.repeat(64));
+      const ack = deferred<any>();
+      held.set(request.evidence.taskId, { request, ack });
+      if (request.evidence.taskId === 'task-2') secondStarted.resolve();
+      else thirdStarted.resolve();
+      return ack.promise;
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: 'run-held-budget-acks', executionAttempt: 1 }, {
+      sink: (event) => progress.push(`${event.lane ?? 'panel'}:${event.status}`),
+    });
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 2, max_turns_per_task: 1 };
+    let settled = false;
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, retention: { port: retention.port }, progress: reporter }).finally(() => { settled = true; });
+    try {
+      await secondStarted.promise;
+      await flushBranches();
+      expect([...held.keys()]).toEqual(['task-2']);
+      expect(progress).not.toContain('composed-task-2:skipped');
+      expect(progress).not.toContain('panel:completed');
+      expect(settled).toBe(false);
+      const second = held.get('task-2')!;
+      second.ack.resolve(retentionAck('outcome', second.request, '2'.repeat(64)));
+      await thirdStarted.promise;
+      expect(progress).toContain('composed-task-2:skipped');
+      expect(progress).not.toContain('composed-task-3:skipped');
+      expect(settled).toBe(false);
+    } finally {
+      // Let a later fixture write acknowledge if an earlier assertion failed before its creation.
+      retention.port.persistOutcome.mockImplementation(async (request: any) => retentionAck('outcome', request, '2'.repeat(64)));
+      for (const { request, ack } of held.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await run.catch(() => undefined);
+    }
+    const result = await run;
+    expect(providerTasks).toEqual(['task-1']);
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(retention.requests.filter((request) => request.stage === 'outcome').map((request) => request.evidence.usage.turnsUsed))
+      .toEqual([1, 0, 0]);
+    expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual(['task-2', 'task-3']);
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1']);
+  });
+
+  it('joins retained siblings when a successful ACK is immediately followed by a fatal ACK', async () => {
+    const events: string[] = [];
+    const allHeld = deferred<void>();
+    const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
+    const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      const ack = deferred<any>();
+      held.set(request.evidence.taskId, { request, ack });
+      if (held.size === 3) allHeld.resolve();
+      return ack.promise;
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: 'run-success-fatal-ack-race', executionAttempt: 1 }, {
+      sink: (event) => {
+        progress.push(`${event.lane ?? 'panel'}:${event.status}`);
+        if (event.lane === 'composed-task-1' && event.status === 'completed') {
+          queueMicrotask(() => held.get('task-2')!.ack.reject(new Error('fixture ACK write failed')));
+        }
+      },
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, retention: { port: retention.port }, progress: reporter });
+    const rejected = expect(run).rejects.toMatchObject({ name: 'ComposedTaskRetentionError', failureCode: 'write_failed' });
+    try {
+      await allHeld.promise;
+      const first = held.get('task-1')!;
+      first.ack.resolve(retentionAck('outcome', first.request, '2'.repeat(64)));
+      await rejected;
+      expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
+      expect(progress).toContain('composed-task-1:completed');
+      expect(progress).toContain('composed-task-2:failed');
+      expect(progress).toContain('composed-task-3:aborted');
+      expect(progress).not.toContain('composed-task-4:started');
+      expect(progress).not.toContain('panel:completed');
+      const frozen = [...progress];
+      const third = held.get('task-3')!;
+      third.ack.resolve(retentionAck('outcome', third.request, '2'.repeat(64)));
+      await flushBranches();
+      expect(progress).toEqual(frozen);
+    } finally {
+      for (const { request, ack } of held.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await run.catch(() => undefined);
+    }
+  });
+
+  it('expires held cohort ACKs at the original deadline including planning time', async () => {
+    vi.useFakeTimers();
+    const events: string[] = [];
+    const planStarted = deferred<void>();
+    const planGate = deferred<void>();
+    const allHeld = deferred<void>();
+    const held = new Map<string, { request: any; ack: ReturnType<typeof deferred<any>> }>();
+    const routed = retentionRoutedClient(events, undefined, fourTasks());
+    const complete = vi.fn(async (payload: any) => {
+      if (lastText(payload.messages).includes('PLAN TURN')) { planStarted.resolve(); await planGate.promise; }
+      return routed.complete(payload);
+    });
+    const retention = recordingRetention(events);
+    retention.port.persistOutcome.mockImplementation(async (request: any) => {
+      const ack = deferred<any>();
+      held.set(request.evidence.taskId, { request, ack });
+      if (held.size === 3) allHeld.resolve();
+      return ack.promise;
+    });
+    const progress: string[] = [];
+    const reporter = createPublishingProgress({ runId: 'run-original-deadline-held-acks', executionAttempt: 1 }, {
+      sink: (event) => progress.push(`${event.lane ?? 'panel'}:${event.status}`),
+    });
+    const cfg: any = config();
+    cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+    const controller = new AbortController();
+    const deadlineAtMs = Date.now() + 1_000;
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+      client: { complete }, retention: { port: retention.port }, progress: reporter, signal: controller.signal,
+      deadlineBudget: { deadlineAtMs, timeoutMs: 1_000, terminalBound: true }, deadlineNow: () => Date.now() });
+    const rejected = expect(run).rejects.toThrow();
+    try {
+      await planStarted.promise;
+      await vi.advanceTimersByTimeAsync(600);
+      planGate.resolve();
+      await allHeld.promise;
+      expect(Date.now()).toBe(deadlineAtMs - 400);
+      await vi.advanceTimersByTimeAsync(400);
+      await rejected;
+      expect(routed.providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
+      expect(progress).not.toContain('composed-task-4:started');
+      expect(progress.filter((event) => /^composed-task-\d+:completed$/u.test(event))).toEqual([]);
+      expect(progress).not.toContain('panel:completed');
+    } finally {
+      controller.abort();
+      planGate.resolve();
+      for (const { request, ack } of held.values()) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+      await run.catch(() => undefined);
+      vi.useRealTimers();
+    }
+  });
+
   it('dispatches every funded task branch concurrently', async () => {
     let activeWorkCalls = 0;
     let maxActiveWorkCalls = 0;
