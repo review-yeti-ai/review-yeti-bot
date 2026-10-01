@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import {
   createGetReviewStatusTool,
   buildReviewTiming,
@@ -546,5 +547,25 @@ describe('get_review_status timing: backward compatibility', () => {
 
     expect(data.found).toBe(false);
     expect(data.timing).toBeUndefined();
+  });
+});
+
+describe('current failed-execution operational enrichment',()=>{
+  it.each([true,false])('uses a narrow exact run/head/attempt/execution fence (head supplied %s)',async(withHead)=>{
+    const row=baseRow({run_status:'failed',desired_state:'failure',lease_owner:null,lease_expires_at:null});
+    const operationalTelemetry=createPublishingProgress({runId:'run-query',executionAttempt:1},{sink:()=>{}}).snapshot!()!;
+    let enrichment=0;
+    const db:ReviewStatusDbClient={async query(sql,values){
+      if(sql.includes("failure_diagnostics->'operationalTelemetry'")){
+        enrichment++; expect(values).toEqual([row.run_id,row.head_sha,row.attempt_id]);
+        expect(sql).toContain('g.current_attempt=true');expect(sql).toContain("r.failure_diagnostics->>'executionAttempt'=g.execution_attempt::text");
+        expect(sql).not.toMatch(/SELECT.*logTail|SELECT.*payload|SELECT.*r.failure_diagnostics,/s);
+        return {rows:[{operational_telemetry:operationalTelemetry}]};
+      }
+      if(sql.includes('review_event_outbox')||sql.includes('review_dispatch_outbox'))return {rows:[]};return {rows:[row]};
+    }};
+    const result=await createGetReviewStatusTool(db).execute({owner:row.owner,repo:row.repo,pull_number:row.pr_number,...(withHead?{head_sha:row.head_sha}: {})});
+    const data=JSON.parse((result.content[0] as any).text);
+    expect(data.operational_telemetry).toEqual(operationalTelemetry); expect(data.verdict).toBe('FAILED');expect(data.timing.basis).toBe('control_plane_lifecycle'); expect(enrichment).toBe(1);
   });
 });

@@ -72,7 +72,8 @@ import {
 } from '../review/publicationFailurePolicy';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import {
-  buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
+  buildWorkerFailureDiagnostics,
+  normalizeOperationalTelemetry, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint, WorkerCompletionHttpError,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
@@ -119,7 +120,7 @@ import {
 import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAvailability';
 import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
-import { createPublishingProgress } from '../telemetry/publishingProgress';
+import { createPublishingProgress, type PublishingProgressReporter } from '../telemetry/publishingProgress';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -1103,6 +1104,7 @@ export async function runPublishingReviewWorker(
   const startedAt = new Date(now()).toISOString();
   // REL-1132: every provider call this run makes goes through `client` below, which records it here.
   const tokenLedger = new TokenLedger();
+  let executionProgress: PublishingProgressReporter | undefined;
   const logTokenAccounting = (): void => {
     if (tokenLedger.calls === 0) return;
     try {
@@ -1211,6 +1213,16 @@ export async function runPublishingReviewWorker(
           recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,
           ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
         }));
+    // One immutable, content-free snapshot for both native and legacy terminal boundaries.
+    const operationalTelemetry = executionProgress?.snapshot?.();
+    if (operationalTelemetry) {
+      const total=tokenLedger.snapshot().total;
+      if(total.calls>0) {
+        const withLedger=normalizeOperationalTelemetry({...operationalTelemetry,ledger:{basis:'returned_responses_including_shadow',availability:'partial',...total}});
+        if(withLedger?.ledger)operationalTelemetry.ledger=withLedger.ledger;
+      }
+      diagnostics.operationalTelemetry=operationalTelemetry;
+    }
     const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
       ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
       : undefined;
@@ -1509,7 +1521,8 @@ export async function runPublishingReviewWorker(
     // engine gets its own label so its cost never reads as panel cost.
     // Phase events describe only this gating publisher execution. Shadow review remains separate
     // non-gating evidence; the existing token ledger continues to account for its provider spend.
-    const progress = createPublishingProgress(identity);
+    const progress = createPublishingProgress(identity, { now });
+    executionProgress = progress;
     const client = meterModelClient(progress.instrument(modelClient), tokenLedger);
     const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });
 
@@ -1876,6 +1889,7 @@ export async function runPublishingReviewWorker(
       const panelResult = await raceWithPanelAbort(
         Promise.resolve().then(() => {
           panelDeadline.check();
+          progress.emit({task:'panel',status:'started'});
           return panelRunner({
           config: groundedConfig,
           changedFiles,
@@ -1909,7 +1923,8 @@ export async function runPublishingReviewWorker(
         })
           // REL-1124: only a rejection of the panel runner itself may be read as a reviewer lane
           // lost to the gateway; a source read or publication failure never is.
-          .catch((error: unknown) => { throw markThrownByPanel(error); }),
+          .then((result) => { progress.emit({task:'panel',status:'completed'}); return result; })
+          .catch((error: unknown) => { progress.emit({task:'panel',status:'failed'}); throw markThrownByPanel(error); }),
         panelDeadline.signal,
       );
       panelDeadline.check();

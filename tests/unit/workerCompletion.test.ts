@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
+import { normalizeOperationalTelemetry } from '../../src/review/workerCompletion';
 import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src/review/workerReviewCompletion';
 import {
   buildDurableWorkerFailureDiagnostics,
@@ -522,5 +524,35 @@ describe('classifyWorkerFailureMessage', () => {
 
   it('defaults to internal_error for a message matching no pattern', () => {
     expect(classifyWorkerFailureMessage(new Error('something odd happened'))).toBe('internal_error');
+  });
+});
+
+describe('operational failure diagnostics shared boundary',()=>{
+  function observations(){return createPublishingProgress({runId:'run-safe',executionAttempt:1},{sink:()=>{}}).snapshot!()!;}
+  it('accepts old bodies and preserves normalized new observations in durable failure diagnostics',()=>{
+    const old={reason:'worker_terminal_deadline_exceeded',logTail:'timeout'};
+    expect(workerFailureDiagnosticsSchema.parse(old)).toEqual(old);
+    const operationalTelemetry=observations();
+    const diagnostics=workerFailureDiagnosticsSchema.parse({...old,operationalTelemetry});
+    expect(buildDurableWorkerFailureDiagnostics('timeout',diagnostics,2)).toMatchObject({executionAttempt:2,operationalTelemetry});
+    expect(diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+  });
+  it.each([NaN,Infinity,-1,Number.MAX_SAFE_INTEGER+1,'0'])('rejects invalid observed count %s without changing the core durable failure',(count)=>{
+    const value={...observations(),eventCount:count};
+    expect(workerFailureDiagnosticsSchema.safeParse({reason:'timeout',logTail:'timeout',operationalTelemetry:value}).success).toBe(false);
+    const durable=buildDurableWorkerFailureDiagnostics('timeout',{reason:'timeout',logTail:'timeout',operationalTelemetry:value} as never,2);
+    expect(durable).not.toHaveProperty('operationalTelemetry'); expect(durable.failureClass).toBe('timeout');
+  });
+  it.each(['prompt','response','phone','model','provider','taskTitle','storeUrl','token'])('rejects unsafe extra field %s rather than returning it',(key)=>{
+    const value={...observations(),[key]:'SECRET'};
+    expect(normalizeOperationalTelemetry(value)).toBeUndefined();
+    expect(workerFailureDiagnosticsSchema.safeParse({reason:'timeout',logTail:'timeout',operationalTelemetry:value}).success).toBe(false);
+  });
+  it('rejects inconsistent counts, oversized histories and throwing fields fail-soft',()=>{
+    const value=observations();
+    expect(normalizeOperationalTelemetry({...value,providerCalls:{...value.providerCalls,inflight:1}})).toBeUndefined();
+    expect(normalizeOperationalTelemetry({...value,eventCount:17,recentEvents:Array.from({length:17},()=>({task:'panel',status:'started'}))})).toBeUndefined();
+    Object.defineProperty(value,'cause',{get(){throw new Error('SECRET');}});
+    expect(normalizeOperationalTelemetry(value)).toBeUndefined();
   });
 });

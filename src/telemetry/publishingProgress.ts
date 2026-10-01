@@ -2,6 +2,7 @@ import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '.
 import { resolveCachedTokens } from '../gateway/openRouterClient';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { logger } from '../utils/logger';
+import { normalizeOperationalTelemetry, type OperationalTelemetry } from '../review/workerCompletion';
 
 export type PublishingProgressRole = 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task' | 'other';
 export type PublishingProgressStatus = 'started' | 'completed' | 'failed' | 'aborted' | 'skipped' | 'blocked' | 'rejected';
@@ -47,6 +48,7 @@ export interface InternalProviderProgress {
 export interface PublishingProgressReporter {
   emit(event: PublishingProgressEvent): void;
   instrument(client: ReviewModelClient): ReviewModelClient;
+  snapshot?(): OperationalTelemetry | undefined;
 }
 
 type ProgressSink = (fields: Record<string, unknown>) => void;
@@ -136,6 +138,7 @@ function roleOfRequest(request: OpenRouterRequest, internal?: InternalProviderPr
 }
 
 function numericUsage(response: OpenRouterResponse): PublishingProgressEvent['usage'] {
+  try {
   const raw = (response.usage || {}) as unknown as Record<string, unknown>;
   const promptTokens = safeCount(raw.prompt ?? raw.prompt_tokens) ?? 0;
   const completionTokens = safeCount(raw.completion ?? raw.completion_tokens) ?? 0;
@@ -148,6 +151,7 @@ function numericUsage(response: OpenRouterResponse): PublishingProgressEvent['us
     cachedTokens,
     costUSD: safeCost(response.costUSD) ?? 0,
   };
+  } catch { return {}; }
 }
 
 export function safePublishingRejectionCode(error: unknown, signal?: AbortSignal): PublishingProgressRejectionCode {
@@ -245,9 +249,60 @@ export function createPublishingProgress(
   const sink = options.sink || ((fields: Record<string, unknown>) => logger.info('Publishing review progress', fields));
   const now = options.now || Date.now;
   let callSequence = 0;
+  let panelStartedAt: number | undefined;
+  const observed: OperationalTelemetry = {
+    version:'OperationalTelemetry.v1', basis:'observed_worker_client', cause:'unknown', eventCount:0, eventsDropped:0, recentEvents:[],
+    providerCalls:{started:0,completed:0,failed:0,aborted:0,inflight:0},
+    responseUsage:{availability:'unknown',responses:0,samples:{promptTokens:0,completionTokens:0,totalTokens:0,cachedTokens:0,costUSD:0},totals:{}},
+    panel:{invoked:false},
+  };
+  // Only returned numeric scalars are known. Existing log/ledger zero defaults do not establish availability.
+  const observeUsage = (response: OpenRouterResponse): void => {
+    try {
+      const raw=(response.usage || {}) as unknown as Record<string, unknown>;
+      const values={promptTokens:raw.prompt ?? raw.prompt_tokens, completionTokens:raw.completion ?? raw.completion_tokens,
+        totalTokens:raw.total ?? raw.total_tokens, cachedTokens:raw.cachedTokens ?? raw.cached ?? raw.cached_tokens ?? (raw.prompt_tokens_details as any)?.cached_tokens,
+        costUSD:response.costUSD};
+      for(const key of Object.keys(values) as Array<keyof typeof values>){
+        const n=values[key]; const max=key==='costUSD'?1_000_000_000:Number.MAX_SAFE_INTEGER;
+        if(typeof n!=='number'||!Number.isFinite(n)||n<0||n>max||(key!=='costUSD'&&!Number.isSafeInteger(n)))continue;
+        const total=(observed.responseUsage.totals[key] ?? 0)+n;
+        if(total>max)continue;
+        observed.responseUsage.samples[key]++; observed.responseUsage.totals[key]=total;
+      }
+    } catch { /* untrusted response metadata cannot affect completion */ }
+  };
+  const observe = (event: PublishingProgressEvent): void => {
+    try {
+      const candidate = { task:event.task, status:event.status,
+        ...(event.role ? {role:safeRole(event.role)}:{}),
+        ...(typeof event.turn==='number'&&Number.isSafeInteger(event.turn)&&event.turn>=0?{turn:event.turn}:{}),
+        ...(typeof event.callSequence==='number'&&Number.isSafeInteger(event.callSequence)&&event.callSequence>=0?{callSequence:event.callSequence}:{}),
+        ...(typeof event.durationMs==='number'&&Number.isSafeInteger(event.durationMs)&&event.durationMs>=0&&event.durationMs<=86_400_000?{durationMs:event.durationMs}:{}),
+        ...(isSafePublishingRejectionCode(event.rejectionCode)?{rejectionCode:event.rejectionCode}:{}),
+      };
+      const parsed=normalizeOperationalTelemetry({...observed, eventCount:1,eventsDropped:0,recentEvents:[candidate]});
+      // Validate enums with the shared schema before retaining anything.
+      if(!parsed)return;
+      observed.eventCount++; observed.recentEvents.push(parsed.recentEvents[0]);
+      if(observed.recentEvents.length>16){observed.recentEvents.shift();observed.eventsDropped++;}
+      if(event.task==='panel'&&event.status==='started'){observed.panel.invoked=true;panelStartedAt=now();}
+    } catch { /* observations are optional */ }
+  };
+  const snapshot = (): OperationalTelemetry | undefined => {
+    try {
+      const copy=JSON.parse(JSON.stringify(observed)) as OperationalTelemetry;
+      const samples=Object.values(copy.responseUsage.samples);
+      copy.responseUsage.availability=copy.responseUsage.responses>0&&samples.every(n=>n===copy.responseUsage.responses)?'known':samples.some(n=>n>0)?'partial':'unknown';
+      if(panelStartedAt!==undefined){const elapsed=now()-panelStartedAt;if(Number.isSafeInteger(elapsed)&&elapsed>=0&&elapsed<=86_400_000)copy.panel.wallClockMs=elapsed;}
+      return normalizeOperationalTelemetry(copy);
+    } catch { return undefined; }
+  };
 
   const emit = (event: PublishingProgressEvent): void => {
+    try {
     if (!runId || executionAttempt === undefined || executionAttempt < 1) return;
+    observe(event);
     const fields: Record<string, unknown> = {
       event: 'review_yeti_publishing_progress',
       runId,
@@ -272,10 +327,12 @@ export function createPublishingProgress(
       } } : {}),
     };
     try { sink(fields); } catch { /* diagnostics must never change a review outcome */ }
+    } catch { /* unsafe optional event metadata is ignored */ }
   };
 
   return {
     emit,
+    snapshot,
     instrument(client: ReviewModelClient): ReviewModelClient {
       return {
         complete(request: OpenRouterRequest): Promise<OpenRouterResponse> {
@@ -304,11 +361,14 @@ export function createPublishingProgress(
             turn,
             callSequence: callSequenceForRun,
           };
+          observed.providerCalls.started++; observed.providerCalls.inflight++;
           emit({ ...common, status: 'started' });
           let settled = false;
           const finish = (status: 'completed' | 'failed' | 'aborted', extras: Partial<PublishingProgressEvent> = {}) => {
             if (settled) return;
             settled = true;
+            observed.providerCalls.inflight--; observed.providerCalls[status]++;
+            if(status==='completed')observed.responseUsage.responses++;
             emit({ ...common, ...extras, status, durationMs: Math.max(0, now() - startedAt) });
           };
           const onAbort = () => finish('aborted', {
@@ -328,6 +388,7 @@ export function createPublishingProgress(
             throw error;
           }
           return pending.then((response) => {
+            if(!settled)observeUsage(response);
             finish('completed', {
               usage: numericUsage(response),
             });

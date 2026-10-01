@@ -244,3 +244,47 @@ describe('publishing progress diagnostics', () => {
     expectFailureCode(baseFinding, 'line_unanchorable', [{ path: 'src/auth.ts', patch: 'content without a hunk' }]);
   });
 });
+
+describe('bounded operational timeout observations', () => {
+  it('retains only observed calls, numeric availability and immutable finite events when the sink throws', async () => {
+    let clock=100; const reporter=createPublishingProgress({runId:'run-observed',executionAttempt:1},{now:()=>clock,sink:()=>{throw new Error('sink');}});
+    reporter.emit({task:'panel',status:'started'});
+    const raw:ReviewModelClient={complete:vi.fn(async()=>providerResponse())};
+    await reporter.instrument(raw).complete(request());
+    const saved=reporter.snapshot?.(); expect(saved).toMatchObject({cause:'unknown',providerCalls:{started:1,completed:1,inflight:0},responseUsage:{availability:'known',responses:1,totals:{promptTokens:11,completionTokens:7,totalTokens:18,cachedTokens:2,costUSD:0.004}},panel:{invoked:true,wallClockMs:0}});
+    clock=150; reporter.emit({task:'composed_task',status:'blocked',lane:'SECRET path/phone',model:'SECRET model'});
+    expect(saved!.recentEvents).toHaveLength(3); expect(reporter.snapshot?.()!.recentEvents).toHaveLength(4);
+    expect(JSON.stringify(reporter.snapshot?.())).not.toMatch(/security_lane|provider/model|private|SECRET|phone/);
+    expect(reporter.snapshot?.()!.panel.wallClockMs).toBe(50);
+  });
+  it('records aborted invocations once and ignores a late returned response without inventing usage', async () => {
+    const reporter=createPublishingProgress({runId:'run-aborted',executionAttempt:1},{sink:()=>{}});
+    const signal=new AbortController(); let answer!:(r:OpenRouterResponse)=>void;
+    const pending=reporter.instrument({complete:()=>new Promise(resolve=>{answer=resolve;})}).complete(request({signal:signal.signal}));
+    signal.abort(new DOMException('private credential prompt','AbortError'));
+    const saved=reporter.snapshot?.(); expect(saved?.providerCalls).toEqual({started:1,completed:0,failed:0,aborted:1,inflight:0});
+    answer(providerResponse()); await pending; signal.abort(); expect(reporter.snapshot?.()).toEqual(saved);
+    expect(saved?.responseUsage).toMatchObject({availability:'unknown',responses:0,totals:{}});
+    expect(saved?.panel).toEqual({invoked:false});
+  });
+  it('keeps concurrent execution counts separate, bounds recent history, and treats missing/malformed usage as unknown', async () => {
+    const a=createPublishingProgress({runId:'run-a',executionAttempt:1},{sink:()=>{}});
+    const b=createPublishingProgress({runId:'run-b',executionAttempt:1},{sink:()=>{}});
+    const response={...providerResponse(),usage:undefined,costUSD:undefined} as unknown as OpenRouterResponse;
+    await a.instrument({complete:async()=>response}).complete(request());
+    for(let i=0;i<30;i++)a.emit({task:'provider_output',status:'rejected',rejectionCode:'malformed_output',lane:'SECRET'});
+    expect(a.snapshot?.()).toMatchObject({eventCount:32,eventsDropped:16,responseUsage:{availability:'unknown',totals:{}},recentEvents:expect.any(Array)});
+    expect(a.snapshot?.()!.recentEvents).toHaveLength(16); expect(b.snapshot?.()!.providerCalls.started).toBe(0);
+    const malformed={...providerResponse(),usage:{prompt:-1,completion:Infinity,total:'18',cached:NaN},costUSD:-1} as unknown as OpenRouterResponse;
+    await b.instrument({complete:async()=>malformed}).complete(request());
+    expect(b.snapshot?.()!.responseUsage).toMatchObject({availability:'unknown',totals:{}});
+  });
+  it('never turns throwing response metadata into a review failure', async () => {
+    const reporter=createPublishingProgress({runId:'run-getter',executionAttempt:1},{sink:()=>{}});
+    const response={...providerResponse()}; Object.defineProperty(response,'usage',{get(){throw new Error('SECRET');}});
+    await expect(reporter.instrument({complete:async()=>response}).complete(request())).resolves.toBe(response);
+    expect(reporter.snapshot?.()).toMatchObject({providerCalls:{completed:1},responseUsage:{availability:'unknown'}});
+    reporter.emit({task:'future-secret',status:'raw-prompt'} as never);
+    expect(reporter.snapshot?.()!.eventCount).toBe(2);
+  });
+});

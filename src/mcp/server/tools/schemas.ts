@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import type { OperationalTelemetry } from '../../../review/workerCompletion';
 
 // Commit SHA validation regex: 40-char SHA-1 or 64-char SHA-256
 export const COMMIT_SHA_40_REGEX = /^[a-f0-9]{40}$/i;
@@ -117,6 +118,8 @@ export interface ReviewStatusOutput {
   active_projection?: ReviewActiveProjection | null;
   /** Optional so existing consumers keep working; absent when no run was found. */
   timing?: ReviewTiming | null;
+  /** Optional authenticated current-execution failure observations; old receipts are absent. */
+  operational_telemetry?: OperationalTelemetry;
   message?: string;
 }
 

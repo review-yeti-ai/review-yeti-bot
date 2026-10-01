@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
   MAX_COMPLETION_BYTES,
@@ -616,4 +617,18 @@ describe('WorkerReviewCompletion.v1', () => {
       }))).toThrow(/invalid WorkerReviewCompletion/u);
     });
   });
+});
+
+it('native completion parsing forwards optional observations without approving prepared ERROR personas',()=>{
+  const operationalTelemetry=createPublishingProgress({runId:'run-native',executionAttempt:2},{sink:()=>{}}).snapshot!()!;
+  const body=completion({result:{version:'WorkerReviewResult.v1',completedAt:'2026-09-09T12:00:00.000Z',
+    personas:[{id:'security',decision:'ERROR',status:'ERROR',errorClass:'timeout',findings:[]}],coverageComplete:false,quorumSatisfied:false,
+    failureDiagnostics:{reason:'worker_terminal_deadline_exceeded',logTail:'timeout',operationalTelemetry}}});
+  const parsed=parseWorkerReviewCompletion(body);
+  expect(parsed.result.failureDiagnostics?.operationalTelemetry).toEqual(operationalTelemetry);
+  expect(parsed.result.coverageComplete).toBe(false); expect(parsed.result.quorumSatisfied).toBe(false);
+  expect(parsed.result.failureDiagnostics).not.toHaveProperty('recoverableIncompletePanel');
+  expect(parsed.result.failureDiagnostics?.operationalTelemetry?.providerCalls.started).toBe(0);
+  expect(derive(parsed)).toMatchObject({valid:false,reason:'invalid-evidence'});
+  expect(()=>parseWorkerReviewCompletion({...body,result:{...body.result,failureDiagnostics:{...body.result.failureDiagnostics,operationalTelemetry:{...operationalTelemetry,prompt:'SECRET'}}}})).toThrow();
 });

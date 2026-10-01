@@ -2875,3 +2875,26 @@ describe('REL-1211 absolute publishing budget', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('operational telemetry terminal callback counterfactual',()=>{
+  it('preserves completed calls and the actual inflight cutoff through a healthy legacy completion adapter',async()=>{
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-01T08:00:00Z'));
+    const completion={reportTerminalFailure:vi.fn(async()=>{}),reportTerminalSuccess:vi.fn(async()=>{}),reportReviewEvidence:vi.fn(async()=>{})};
+    let count=0;
+    const client={complete:vi.fn(async()=>{if(++count===1)return {model:'safe',content:'SECRET response',usage:{prompt:11,completion:7,total:18,cached:2},costUSD:0.004,raw:{}};
+      return new Promise(()=>{});})};
+    const panelRunner=vi.fn(async(input:any)=>{await input.client.complete({model:'safe',messages:[{role:'user',content:'SECRET prompt'}],timeoutMs:1000,signal:input.signal});
+      return input.client.complete({model:'safe',messages:[],timeoutMs:1000,signal:input.signal});});
+    const input=env({REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/completion',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+121_050).toISOString()});
+    const task=runPublishingReviewWorker(input,deps({completion,client,panelRunner,zoektGrounding:vi.fn(async()=>({}))}) as never);
+    const rejected=expect(task).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(100); await rejected;
+    expect(client.complete).toHaveBeenCalledTimes(2);
+    const event=completion.reportTerminalFailure.mock.calls[0]![0] as any;
+    expect(event).toMatchObject({runId:input.REVIEW_RUN_ID,headSha:HEAD,executionAttempt:1,failureClass:'timeout',diagnostics:{reason:'worker_terminal_deadline_exceeded'}});
+    expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+    expect(event.diagnostics.operationalTelemetry).toMatchObject({cause:'unknown',providerCalls:{started:2,completed:1,aborted:1,inflight:0},responseUsage:{availability:'known',responses:1,totals:{totalTokens:18}},panel:{invoked:true},ledger:{basis:'returned_responses_including_shadow',availability:'partial',calls:1,totalTokens:18}});
+    expect(JSON.stringify(event.diagnostics.operationalTelemetry)).not.toContain('SECRET');
+    expect(vi.getTimerCount()).toBe(0); vi.useRealTimers();
+  });
+});

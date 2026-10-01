@@ -19,6 +19,7 @@ import {
   projectReviewStatusVerdict,
   matchesReviewStatusIdentity,
 } from '../reviewStatusVerdict';
+import { normalizeOperationalTelemetry, type OperationalTelemetry } from '../../../review/workerCompletion';
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from '../../../persistence/reviewDispatchStatus';
 
 export interface ReviewStatusDbClient {
@@ -178,6 +179,24 @@ async function readDispatchProjection(
     // review row and lifecycle ledger still produce a conservative answer.
     return null;
   }
+}
+
+/** Narrow authenticated-failure enrichment. Never select raw diagnostics or provider text. */
+async function readOperationalTelemetry(db: ReviewStatusDbClient, row: any): Promise<OperationalTelemetry | undefined> {
+  if(row.run_status!=='failed'||typeof row.run_id!=='string'||typeof row.attempt_id!=='string'
+    ||typeof row.head_sha!=='string'||! /^[a-f0-9]{40}$/i.test(row.head_sha))return undefined;
+  try {
+    const result=await db.query(`
+      SELECT r.failure_diagnostics->'operationalTelemetry' AS operational_telemetry
+        FROM review_runs r JOIN review_gate_attempts g ON g.run_id=r.run_id
+       WHERE r.run_id=$1 AND r.head_sha=$2 AND r.status='failed'
+         AND g.attempt_id=$3 AND g.current_attempt=true
+         AND r.failure_diagnostics->>'executionAttempt'=g.execution_attempt::text
+         AND r.failure_diagnostics->>'failureClass' IS NOT NULL
+       LIMIT 1
+    `,[row.run_id,row.head_sha,row.attempt_id]);
+    return normalizeOperationalTelemetry(result.rows[0]?.operational_telemetry);
+  } catch { return undefined; }
 }
 
 export const getReviewStatusDefinition: ToolDefinition = {
@@ -393,6 +412,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
       // marker read is best-effort and never changes the status answer: if the
       // ledger is unavailable, every duration resolves to null.
       const timing = buildReviewTiming(row, markers, row.run_status);
+      const operationalTelemetry = await readOperationalTelemetry(db, row);
 
       return buildToolResultJson({
         schema_version: 'ReviewStatus.v2',
@@ -405,6 +425,7 @@ export function createGetReviewStatusTool(db?: ReviewStatusDbClient) {
         active_worker: leasedWorker,
         active_projection: activeProjection,
         timing,
+        ...(operationalTelemetry ? {operational_telemetry:operationalTelemetry}:{}),
       } satisfies ReviewStatusOutput);
     },
   };
