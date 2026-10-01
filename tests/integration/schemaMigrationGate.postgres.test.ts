@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
-import { PostgresStore } from '../../src/persistence/postgresStore';
-import { SCHEMA_MIGRATIONS_TABLE } from '../../src/persistence/schemaMigrationGate';
+import { ADVISORY_LOCK_ID, PostgresStore } from '../../src/persistence/postgresStore';
+import { applySchemaOnce, SCHEMA_MIGRATIONS_TABLE, schemaFingerprint } from '../../src/persistence/schemaMigrationGate';
 import { logger } from '../../src/utils/logger';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -98,6 +98,72 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
     expect(recorded.rows).toHaveLength(1);
     expect(String(recorded.rows[0].fingerprint)).toMatch(/^[0-9a-f]{64}$/u);
   });
+
+  it('times out a held bootstrap advisory lock, retries after owner release, and releases its own transaction lock', async () => {
+    await initializeFresh();
+    live = await pool.connect();
+    await live.query('BEGIN');
+    await live.query('SELECT pg_advisory_xact_lock($1)', [ADVISORY_LOCK_ID]);
+
+    let notifyConflict!: () => void;
+    const conflict = new Promise<void>((resolve) => { notifyConflict = resolve; });
+    const warnLog = vi.spyOn(logger, 'warn').mockImplementation((message, details) => {
+      if (message === '[PostgresStore] Schema initialization lock conflict; retrying'
+        && details?.sqlState === '55P03' && details.attempt === 1) notifyConflict();
+    });
+    const store = new PostgresStore();
+    const initialization = store.initialize();
+    try {
+      // Release only after PostgreSQL actually timed out and the initializer
+      // rolled back/released its first client. No timer guesses or sleeps.
+      await Promise.race([
+        conflict,
+        initialization.then(() => { throw new Error('Initialization bypassed the held advisory lock'); }),
+      ]);
+      await live.query('ROLLBACK');
+      live.release();
+      live = undefined;
+      await initialization;
+      expect(warnLog).toHaveBeenCalledWith(
+        '[PostgresStore] Schema initialization lock conflict; retrying',
+        expect.objectContaining({ code: 'postgres_initialization_lock_conflict', sqlState: '55P03', attempt: 1 }),
+      );
+      expect(warnLog).toHaveBeenCalledTimes(1);
+      expect((await pool.query(`SELECT COUNT(*)::int AS count FROM ${SCHEMA_MIGRATIONS_TABLE}`)).rows[0].count).toBe(1);
+
+      live = await pool.connect();
+      await live.query('BEGIN');
+      expect((await live.query('SELECT pg_try_advisory_xact_lock($1) AS acquired', [ADVISORY_LOCK_ID])).rows[0].acquired)
+        .toBe(true);
+    } finally {
+      if (live) {
+        await live.query('ROLLBACK').catch(() => undefined);
+        live.release();
+        live = undefined;
+      }
+      await initialization.catch(() => undefined);
+      await store.close();
+      warnLog.mockRestore();
+    }
+  }, 40_000); // Same existing schema-contention test budget; no production timeout override.
+
+  it('bounds the migration table lock even when its fingerprint is already recorded', async () => {
+    await initializeFresh();
+    await pool.query(`INSERT INTO ${SCHEMA_MIGRATIONS_TABLE} (fingerprint) VALUES ($1)`, [schemaFingerprint([])]);
+    live = await pool.connect();
+    await live.query('BEGIN');
+    await live.query(`LOCK TABLE ${SCHEMA_MIGRATIONS_TABLE} IN ACCESS EXCLUSIVE MODE`);
+    const initializer = await pool.connect();
+    try {
+      await initializer.query('BEGIN');
+      // This conflicts at CREATE TABLE IF NOT EXISTS, before the fingerprint
+      // lookup or any product DDL. The server must return the real lock code.
+      await expect(applySchemaOnce(initializer, [] as const)).rejects.toMatchObject({ code: '55P03' });
+    } finally {
+      await initializer.query('ROLLBACK').catch(() => undefined);
+      initializer.release();
+    }
+  }, 40_000);
 
   it('REL-1189 upgrades a pre-priority outbox with the bounded constraint and claim index idempotently', async () => {
     await initializeFresh();
