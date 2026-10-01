@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.3...v1.101.4) (2026-10-01)
+
+
+### Bug Fixes
+
+* **publishing:** size work within admitted lifecycle ([#1193](https://github.com/review-yeti-ai/review-yeti-bot/issues/1193)) ([ec4cbd3](https://github.com/review-yeti-ai/review-yeti-bot/commit/ec4cbd33509431b253548c58b3f3419337512d8e))
+
 ## [1.101.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.101.2...v1.101.3) (2026-10-01)
 
 
