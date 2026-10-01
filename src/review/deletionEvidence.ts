@@ -9,6 +9,7 @@ import { unquoteGitPath } from './changedFiles';
 import { JevClient, type JevAsker, type JevQuestion } from '../gateway/jevClient';
 import { jevTransport } from './jevTransport';
 import { logger } from '../utils/logger';
+import { executeZoektSearch } from '../mcp/zoektSearchTool';
 
 export const DELETION_QUESTION_VERSION = 'deletion-evidence.v1';
 export const JEV_EVIDENCE_FLAG = 'REVIEW_YETI_JEV_EVIDENCE';
@@ -116,7 +117,7 @@ export function createDeletionEvidenceRuntime(input: {
       const query = `content:${JSON.stringify(candidate)}`;
       let search: any;
       try {
-        search = await raceWithPanelAbort(require('../mcp/zoektSearchTool').executeZoektSearch({ query }, input.zoektConfig,
+        search = await raceWithPanelAbort(executeZoektSearch({ query }, input.zoektConfig,
           { signal: input.signal, session: input.zoektConfig?.searchSession }), input.signal);
       } catch { throwIfPanelAborted(input.signal); search = { status: 'unavailable', reason: 'search_failed' }; }
       if (search.status === 'ok' && (search.identity?.repository !== input.repository || search.identity?.headSha !== input.headSha)) {

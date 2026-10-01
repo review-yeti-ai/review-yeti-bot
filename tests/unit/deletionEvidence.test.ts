@@ -24,6 +24,22 @@ const outcome = (model = 'jev-test') => ({ status: 'ok', model, durationMs: 1,
   } });
 
 describe('deletion evidence replay', () => {
+  it('excludes additions and context-only changes from the deletion inventory', () => {
+    const addition = { path: 'added.ts', patch: '--- /dev/null\n+++ b/added.ts\n@@ -0,0 +1 @@\n+export const x = 1;' };
+    const context = { path: 'same.ts', patch: '@@ -1 +1 @@\n unchanged' };
+    expect(deletionInventory([addition, context])).toEqual([]);
+    expect(setup([file('old.ts'), addition, context]).runtime.manifest().totalFiles).toBe(1);
+  });
+
+  it('keeps a thrown classifier call advisory and exposes its unavailable reason', async () => {
+    const ask = vi.fn(async () => { throw new Error('classifier failed'); });
+    const { runtime } = setup(undefined, { asker: { ask } as unknown as JevAsker, modelPin: 'jev-test' });
+    expect(await runtime.evidence('old.ts')).toMatchObject({
+      classification: { status: 'unavailable', reason: 'question_failed', authority: 'none' },
+      resolution: 'review_required', authority: 'evidence_only',
+    });
+  });
+
   it('keeps binary deletions and failed source reads unavailable', async () => {
     const binary = { path: 'x.bin', patch: 'deleted file mode 100644\nBinary files a/x.bin and b/x.bin differ' };
     expect(deletionInventory([binary])[0].available).toBe(false);
