@@ -15,7 +15,7 @@ import (
 
 func contractFixture() *v1alpha2.PRReviewJob {
 	receivedAt := metav1.NewTime(time.Date(2026, 8, 30, 20, 0, 0, 0, time.UTC))
-	terminalDeadline := metav1.NewTime(receivedAt.Add(15 * time.Minute))
+	terminalDeadline := metav1.NewTime(receivedAt.Add(25 * time.Minute))
 	return &v1alpha2.PRReviewJob{
 		TypeMeta: metav1.TypeMeta{APIVersion: "review-yeti.ai/v1alpha2", Kind: "PRReviewJob"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -320,4 +320,3 @@ func TestPRReviewJobV1Alpha2FencingDeepCopy(t *testing.T) {
 		t.Fatalf("status fencing/receipt fields were not deep copied: %#v", copied.Status)
 	}
 }
-

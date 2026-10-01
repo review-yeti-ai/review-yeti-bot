@@ -14,6 +14,7 @@ import {
   type K8sJobSpec,
 } from '../../src/infrastructure/k8sJobRunner';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
+import { DEFAULT_TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
 
 const execFileAsync = promisify(execFile);
 
@@ -151,7 +152,7 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
         headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         baseSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         receivedAt: now,
-        terminalDeadline: now + 900_000,
+        terminalDeadline: now + DEFAULT_TERMINAL_DEADLINE_MS,
         policyDigest: 'c'.repeat(64),
         configDigest: 'd'.repeat(64),
         publicationMode: 'disabled' as const,

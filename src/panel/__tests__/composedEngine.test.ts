@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   COMPOSED_TASK_CONCURRENCY_CEILING,
   executeComposedReview,
+  orderReviewTasksByRisk,
   resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
@@ -75,6 +76,16 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it('orders security and CI/IaC review work before lower-risk tasks deterministically', () => {
+    const ordered = orderReviewTasksByRisk([
+      { id: 'tests', dimension: 'testing', paths: ['tests/a.test.ts'], question: 'Tests?', rationale: 'Changed.' },
+      { id: 'source', dimension: 'performance', paths: ['src/a.ts'], question: 'Fast?', rationale: 'Changed.' },
+      { id: 'ci-contract', dimension: 'contract', paths: ['.github/workflows/review.yml'], question: 'Safe?', rationale: 'CI.' },
+      { id: 'auth', dimension: 'security', paths: ['src/auth/token.ts'], question: 'Secure?', rationale: 'Auth.' },
+    ]);
+    expect(ordered.map((task) => task.id)).toEqual(['auth', 'ci-contract', 'source', 'tests']);
+  });
+
   it('caps composed task concurrency at three, honors lower operator limits, and keeps publisher shadow serial', () => {
     expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '8' })).toBe(3);
     expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '2' })).toBe(2);
@@ -367,6 +378,107 @@ describe('executeComposedReview', () => {
       { role: 'composed_plan', lane: 'composed-plan', turn: 1 },
       { role: 'composed_task', lane: 'composed-task-1', turn: 1 },
     ]);
+  });
+
+  it('returns completed evidence at the evidence cutoff and resumes only pending exact-head tasks', async () => {
+    vi.useFakeTimers();
+    const saved: any[] = [];
+    let pendingStarted!: () => void;
+    const pendingCall = new Promise<void>((resolve) => { pendingStarted = resolve; });
+    const firstComplete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth?', rationale: 'Risk first.' },
+        { id: 'tests', dimension: 'testing', paths: ['src/auth/guard.ts'], question: 'Tests?', rationale: 'Coverage.' },
+      ] }));
+      if (text.includes('Task id: auth')) return fakeResponse(JSON.stringify({ nonce, task: 'auth', status: 'COMPLETE', findings: [] }));
+      pendingStarted();
+      return new Promise<OpenRouterResponse>(() => undefined);
+    });
+    const startedAt = Date.now();
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+      client: { complete: firstComplete }, deadlineBudget: { deadlineAtMs: startedAt + 100,
+        timeoutMs: 100, terminalBound: true }, deadlineNow: () => Date.now(),
+      checkpoint: { resumed: null, save: async (snapshot) => { saved.push(structuredClone(snapshot)); } },
+    });
+    await pendingCall;
+    await vi.advanceTimersByTimeAsync(101);
+    const partial = await run;
+    expect(partial.gracefulExit).toMatchObject({ reason: 'evidence_deadline', completedTaskIds: ['auth'], pendingTaskIds: ['tests'] });
+    expect(partial.personas.map((lane) => lane.id)).toEqual(['auth']);
+    expect(partial.unreportedLanes).toEqual([expect.objectContaining({ id: 'tests', failureClass: 'timeout' })]);
+    expect(saved.at(-1)).toMatchObject({ revision: 2, completedTasks: [{ id: 'auth', findings: [] }] });
+
+    const resumeCalls = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      expect(text).not.toContain('PLAN TURN');
+      const nonce = nonceFrom(text);
+      return fakeResponse(JSON.stringify({ nonce, task: 'tests', status: 'COMPLETE', findings: [] }));
+    });
+    const resumed = await executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+      client: { complete: resumeCalls }, checkpoint: {
+        resumed: { version: 'ReviewExecutionCheckpoint.v1', runId: `run_${'1'.repeat(32)}`, repositoryId: 1,
+          owner: 'acme', repo: 'reviewer-fixture', prNumber: 1, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+          policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64), executionAttempt: 2,
+          ...saved.at(-1) },
+        save: async (snapshot) => { saved.push(structuredClone(snapshot)); },
+      },
+    });
+    expect(resumeCalls).toHaveBeenCalledTimes(1);
+    expect(resumed.gracefulExit).toBeUndefined();
+    expect(resumed.personas.map((lane) => lane.id)).toEqual(['auth', 'tests']);
+    vi.useRealTimers();
+  });
+
+  it('does not spend the evidence budget waiting for durable checkpoint I/O', async () => {
+    vi.useFakeTimers();
+    const captured: number[] = [];
+    const persisted: number[] = [];
+    let releaseWrite!: () => void;
+    const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    let pendingStarted!: () => void;
+    const pendingCall = new Promise<void>((resolve) => { pendingStarted = resolve; });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = nonceFrom(text);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [
+        { id: 'auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth?', rationale: 'Risk first.' },
+        { id: 'tests', dimension: 'testing', paths: ['src/auth/guard.ts'], question: 'Tests?', rationale: 'Coverage.' },
+      ] }));
+      if (text.includes('Task id: auth')) return fakeResponse(JSON.stringify({ nonce, task: 'auth', status: 'COMPLETE', findings: [] }));
+      pendingStarted();
+      return new Promise<OpenRouterResponse>(() => undefined);
+    });
+    const startedAt = Date.now();
+    const run = executeComposedReview({
+      config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+      client: { complete }, deadlineBudget: { deadlineAtMs: startedAt + 100, timeoutMs: 100, terminalBound: true },
+      deadlineNow: () => Date.now(), checkpoint: {
+        resumed: null,
+        capture: (snapshot) => { captured.push(snapshot.revision); },
+        save: async (snapshot) => { persisted.push(snapshot.revision); await writeGate; },
+      },
+    });
+
+    await pendingCall;
+    expect(persisted).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(101);
+    const partial = await run;
+    expect(partial.gracefulExit).toMatchObject({
+      completedTaskIds: ['auth'], pendingTaskIds: ['tests'], checkpointPersistenceFailed: true,
+    });
+    expect(captured).toEqual([1, 2]);
+    expect(persisted).toEqual([1]);
+
+    releaseWrite();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(persisted).toEqual([1, 2]);
+    vi.useRealTimers();
   });
 
   it('keeps model-produced task ids and response model names out of publishing progress and token labels', async () => {
@@ -1244,8 +1356,9 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }));
 
     expect(maxActive).toBe(3);
-    expect(started).toEqual(manyTasks(6).map((task) => task.id));
-    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(6).map((task) => task.id));
+    const expectedOrder = orderReviewTasksByRisk(manyTasks(6)).map((task) => task.id);
+    expect(started).toEqual(expectedOrder);
+    expect(result.personas.map((lane) => lane.id)).toEqual(expectedOrder);
     expect(result.unreportedLanes).toEqual([]);
   });
 
@@ -1271,7 +1384,8 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete }, publisherShadow: true }));
 
     expect(maxActive).toBe(1);
-    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(3).map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id))
+      .toEqual(orderReviewTasksByRisk(manyTasks(3)).map((task) => task.id));
   });
 
   it('refunds unused cohort reservations before admitting waiting tasks without exceeding the total turn cap', async () => {
@@ -1297,8 +1411,8 @@ describe('executeComposedReview', () => {
 
     // Plan consumes one turn. The first cohort reserves two full ceilings (2+2) and uses 1+1;
     // after refund task-3 gets a full 2-turn slot and task-4 uses the final partial turn.
-    expect(started).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect(started).toEqual(['task-1', 'task-4', 'task-3', 'task-2']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-4', 'task-3', 'task-2']);
     expect((result.personas ?? []).reduce((sum, lane) => sum + (lane.turnUsages?.length ?? 0), 0)).toBe(5);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-5', failureClass: 'budget_exhausted' }]);
     expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', lane: 'composed-task-5', status: 'skipped', rejectionCode: 'budget_exhausted' }));
@@ -1369,8 +1483,8 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }))
       .rejects.toThrow('synthetic fatal task failure'));
 
-    expect(started).toEqual(new Set(['task-1', 'task-2', 'task-3']));
-    expect(aborted).toEqual(new Set(['task-2', 'task-3']));
+    expect(started).toEqual(new Set(['task-1', 'task-4', 'task-3']));
+    expect(aborted).toEqual(new Set(['task-4', 'task-3']));
     expect(complete).toHaveBeenCalledTimes(4); // one plan request plus the three-task first cohort
   });
 
@@ -1438,7 +1552,7 @@ describe('executeComposedReview', () => {
     });
 
     expect(maxActiveWorkCalls).toBe(3);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3', 'task-2']);
   });
 
   it('bounds larger plans to three concurrent provider branches', async () => {
@@ -1475,7 +1589,7 @@ describe('executeComposedReview', () => {
     });
 
     expect(maxActiveWorkCalls).toBe(COMPOSED_TASK_CONCURRENCY_CEILING);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-4', 'task-3', 'task-2']);
   });
 
   it('keeps later lanes running when a middle task produces no verdict', async () => {
@@ -1494,7 +1608,7 @@ describe('executeComposedReview', () => {
       client: { complete },
     });
 
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(workTurns).toEqual(['task-1', 'task-3', 'task-2']);
     expect(result.personas.map((lane) => lane.id).sort()).toEqual(['task-1', 'task-3']);
     expect(result.personas.every((lane) => lane.decision === 'APPROVE')).toBe(true);
     expect(result.optionalFailures ?? []).toEqual([]);
@@ -1509,7 +1623,7 @@ describe('executeComposedReview', () => {
   });
 
   it('preserves completed and later tasks when a middle task exhausts its fresh contract recovery', async () => {
-    const { complete, workTurns } = routedClient((taskId, _text, nonce) => taskId === 'task-2'
+    const { complete, workTurns } = routedClient((taskId, _text, nonce) => taskId === 'task-3'
       ? 'SYNTHETIC_REASONING_WITHOUT_VERDICT'
       : JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
     const cfg = config();
@@ -1518,11 +1632,11 @@ describe('executeComposedReview', () => {
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
     // Task 1 uses only one of its reserved turns, which is refunded before task 2 starts.
     // Task 2 can therefore use its full dynamic ceiling and remains bounded by the total cap.
-    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
-    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
-    expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
+    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-3', 'task-3', 'task-3']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2']);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-3', failureClass: 'malformed_output',
       error: expect.stringContaining('non_json_task_result') }]);
-    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
+    expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-2']);
     expect(complete).toHaveBeenCalledTimes(6);
   });
 
@@ -1539,7 +1653,7 @@ describe('executeComposedReview', () => {
       client: { complete },
     });
 
-    expect(workTurns).toEqual(['task-1', 'task-2', 'task-3']);
+    expect(workTurns).toEqual(['task-1', 'task-3', 'task-2']);
     expect(result.personas).toEqual([]);
     expect(result.optionalFailures ?? []).toEqual([]);
     expect((result.unreportedLanes ?? []).map((lane) => lane.failureClass)).toEqual([
