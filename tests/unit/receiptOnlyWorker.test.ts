@@ -1149,7 +1149,7 @@ describe('qualificationTimeoutMs', () => {
   // TERMINAL_DEADLINE_MS (the configured terminal-deadline window), widening
   // accepted values under the new 30-minute default. Pin the boundary
   // explicitly so a regression -- reverting to the old constant, clamping to
-  // MAX_TERMINAL_DEADLINE_MS instead of the resolved window, or dropping the
+  // a stale legacy ceiling instead of the resolved window, or dropping the
   // upper bound -- fails here rather than only surfacing as a worker Job
   // that starts with a qualification timeout it can never honor.
   it('accepts the minimum useful value of 1_000ms', () => {

@@ -3,7 +3,11 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import yaml from 'js-yaml';
 import { buildReviewJobProjection } from '../../src/k8s/reviewJobProjection';
-import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import {
+  DEFAULT_TERMINAL_DEADLINE_MS,
+  LEGACY_MAX_TERMINAL_DEADLINE_MS,
+  TERMINAL_DEADLINE_MS,
+} from '../../src/config/terminalDeadline';
 import { CANCEL_REASON_MAX_LENGTH } from '../../src/k8s/kubernetesReviewJobProjector';
 
 const CANCEL_TRANSITION_RULE = 'self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && '
@@ -102,14 +106,14 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     expect(Date.parse(projection.spec.terminalDeadline) - Date.parse(projection.spec.receivedAt)).toBe(TERMINAL_DEADLINE_MS);
   });
 
-  // REL-733 follow-up: MIN/MAX here and the CRD's CEL rule are a manually
+  // REL-733 follow-up: the exact TypeScript deadline and the CRD's CEL rule are a manually
   // maintained lockstep invariant (see terminalDeadline.ts's header comment).
   // The Go side pins this via crd_contract_test.go and job_test.go; this is
   // the TS-side pin, so a drift between the two -- e.g. widening
-  // MAX_TERMINAL_DEADLINE_MS without updating the CRD -- fails here instead
+  // DEFAULT_TERMINAL_DEADLINE_MS without updating the CRD -- fails here instead
   // of admitting a run whose window the CRD's CEL rule (or the Go operator's
   // validateInput) rejects at apply/projection time.
-  it('pins the terminalDeadline CEL rule bounds to MIN_TERMINAL_DEADLINE_MS/MAX_TERMINAL_DEADLINE_MS', () => {
+  it('pins both terminalDeadline CEL rule bounds to the exact TypeScript deadline', () => {
     const spec = crdSchema().properties.spec;
     const validations = spec['x-kubernetes-validations'] as Array<{ rule: string; message: string }>;
     const deadlineRule = validations.find(
@@ -117,7 +121,17 @@ describe('TypeScript projection and v1alpha2 CRD contract', () => {
     );
     expect(deadlineRule).toBeDefined();
     const boundsInSeconds = [...deadlineRule!.rule.matchAll(/duration\('(\d+)s'\)/gu)].map((match) => Number(match[1]));
-    expect(boundsInSeconds).toEqual([MIN_TERMINAL_DEADLINE_MS / 1_000, MAX_TERMINAL_DEADLINE_MS / 1_000]);
+    expect(boundsInSeconds).toEqual([
+      DEFAULT_TERMINAL_DEADLINE_MS / 1_000,
+      DEFAULT_TERMINAL_DEADLINE_MS / 1_000,
+    ]);
+  });
+
+  it('pins the database-only legacy recovery ceiling to the documented Go migration marker', () => {
+    const goSource = fs.readFileSync(path.resolve(__dirname, '../../k8s-operator/pkg/job/job.go'), 'utf8');
+    const match = goSource.match(/LegacyPersistedMaxTerminalDeadlineSeconds\s*=\s*int64\((\d+)\)/u);
+    expect(match).not.toBeNull();
+    expect(Number(match![1]) * 1_000).toBe(LEGACY_MAX_TERMINAL_DEADLINE_MS);
   });
 
   it('validates public ghcr.io worker image under the CRD pattern', () => {

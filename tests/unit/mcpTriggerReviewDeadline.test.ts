@@ -11,8 +11,8 @@ describe('trigger_review terminal deadline parity', () => {
   });
 
   it.each([
-    { label: 'default', configuredMs: undefined, expectedMs: 1_800_000 },
-    { label: 'configured', configuredMs: '2400000', expectedMs: 2_400_000 },
+    { label: 'default', configuredMs: undefined, expectedMs: 900_000 },
+    { label: 'explicit', configuredMs: '900000', expectedMs: 900_000 },
   ])('uses the shared $label admission window', async ({ configuredMs, expectedMs }) => {
     // The shared deadline constant is resolved once at module load. Import the
     // MCP tool after changing the env to prove it observes the same setting.
@@ -54,5 +54,13 @@ describe('trigger_review terminal deadline parity', () => {
     expect(admitted.receivedAt).toBe(RECEIVED_AT);
     expect(TERMINAL_DEADLINE_MS).toBe(expectedMs);
     expect(admitted.terminalDeadline - admitted.receivedAt).toBe(TERMINAL_DEADLINE_MS);
+  });
+
+  it('rejects an out-of-contract configured window instead of ignoring the shared setting', async () => {
+    vi.stubEnv('REVIEW_YETI_TERMINAL_DEADLINE_MS', '2400000');
+    vi.resetModules();
+
+    await expect(import('../../src/config/terminalDeadline'))
+      .rejects.toThrow(/must equal the 900000 millisecond end-to-end review ceiling/i);
   });
 });

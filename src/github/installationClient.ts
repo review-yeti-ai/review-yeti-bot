@@ -7,7 +7,7 @@ import {
   ReviewCIRequestPayload,
   validateReviewCIRequestPayload,
 } from './reviewCIRequest';
-import { assertTerminalDeadlineWindow } from '../config/terminalDeadline';
+import { assertPersistedTerminalDeadlineWindow } from '../config/terminalDeadline';
 import type {
   AbandonedCheckRecoveryOutcome,
   AbandonedPublishingRun,
@@ -694,7 +694,7 @@ export class GitHubInstallationClient {
     try {
       // Validate the persisted admission, not the current process's default:
       // a configuration change must not strand an already-admitted attempt.
-      assertTerminalDeadlineWindow(run.receivedAt, run.terminalDeadline);
+      assertPersistedTerminalDeadlineWindow(run.receivedAt, run.terminalDeadline);
       if (!Number.isSafeInteger(publisherAppId) || publisherAppId <= 0
         || !/^run_[a-f0-9]{32}$/u.test(run.runId) || !/^[a-f0-9]{40}$/u.test(run.headSha)
         || !Number.isSafeInteger(run.executionAttempt) || run.executionAttempt <= 0) {

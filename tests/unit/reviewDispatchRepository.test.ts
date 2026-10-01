@@ -6,7 +6,11 @@ import {
 } from '../../src/persistence/reviewDispatchRepository';
 import { buildLifecycleEvent } from '../../src/persistence/reviewEventRepository';
 import { sha256 } from '../../src/review/reviewCore';
-import { MAX_TERMINAL_DEADLINE_MS, MIN_TERMINAL_DEADLINE_MS, TERMINAL_DEADLINE_MS } from '../../src/config/terminalDeadline';
+import {
+  LEGACY_MAX_TERMINAL_DEADLINE_MS,
+  DEFAULT_TERMINAL_DEADLINE_MS,
+  TERMINAL_DEADLINE_MS,
+} from '../../src/config/terminalDeadline';
 import { getMetrics } from '../../src/telemetry/metrics';
 import { logger } from '../../src/utils/logger';
 import { workerTerminalSuccessDigest } from '../../src/review/workerCompletion';
@@ -452,31 +456,129 @@ describe('PostgresReviewDispatchRepository', () => {
     },
   );
 
-  // A run's persisted terminalDeadline reflects whichever REVIEW_YETI_TERMINAL_DEADLINE_MS
-  // value was in effect at admission time. A later dispatcher restart or rolling config
-  // update must not orphan that already-admitted run: this invariant validates the
-  // bounded [MIN, MAX] window (the same range the CRD's CEL rule and the Go operator
-  // enforce), not exact equality to whatever this process currently resolves.
-  it('accepts an admitted window that differs from the current TERMINAL_DEADLINE_MS but is still within [MIN, MAX]', async () => {
-    const client = clientWithRows([[], [], [{ delivery_id: input().deliveryId }], [row], [], [], [], []]);
-    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) } as any);
-    const admittedUnderADifferentWindow = {
-      ...input(),
-      // Neither MIN_TERMINAL_DEADLINE_MS nor the current TERMINAL_DEADLINE_MS -- a
-      // third in-range value simulating an env change between admission and now.
-      terminalDeadline: input().receivedAt + Math.round((MIN_TERMINAL_DEADLINE_MS + MAX_TERMINAL_DEADLINE_MS) / 2),
-    };
-    expect(admittedUnderADifferentWindow.terminalDeadline).not.toBe(input().terminalDeadline);
-    await expect(repository.admit(admittedUnderADifferentWindow)).resolves.toMatchObject({ status: 'accepted' });
+  it('rejects an admitted window that differs from the fixed 15-minute ceiling', async () => {
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [] })), release: vi.fn() };
+    const connect = vi.fn(async () => client);
+    const repository = new PostgresReviewDispatchRepository({ connect } as any);
+    await expect(repository.admit({ ...input(), terminalDeadline: input().terminalDeadline + 1 }))
+      .rejects.toThrow(/terminal deadline must be exactly/i);
+    expect(connect).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query.mock.calls[0]?.[0]).toMatch(/^\s*SELECT\b/iu);
+    expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+    expect(client.release).toHaveBeenCalledOnce();
   });
 
-  it('rejects a terminal deadline outside the bounded [MIN, MAX] window before opening a transaction', async () => {
+  it('returns a persisted 15-60 minute delivery through a read-only duplicate path', async () => {
+    const receivedAt = input().receivedAt;
+    const terminalDeadline = receivedAt + 2_100_000;
+    const persisted = {
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: input().repositoryId,
+      received_at: new Date(receivedAt),
+      terminal_deadline: new Date(terminalDeadline),
+    };
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [persisted] })), release: vi.fn() };
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    const result = await repository.admit({ ...input(), terminalDeadline });
+
+    expect(result).toMatchObject({ status: 'duplicate', receivedAt, terminalDeadline });
+    expect(result.run).toMatchObject({ receivedAt, terminalDeadline });
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      name: 'payload identity',
+      overrides: { payload_digest: '0'.repeat(64) },
+      error: /delivery identity conflict/i,
+    },
+    {
+      name: 'repository identity',
+      overrides: { repository_id: 999 },
+      error: /delivery identity conflict/i,
+    },
+    {
+      name: 'publication mode',
+      overrides: { publication_mode: 'app-gate' },
+      error: /publication mode conflict/i,
+    },
+    {
+      name: 'missing durable deadline',
+      overrides: { terminal_deadline: null },
+      error: /missing its terminal deadline/i,
+    },
+    {
+      name: 'durable timing',
+      overrides: { terminal_deadline: new Date(input().receivedAt + 1_800_000) },
+      error: /delivery timing conflict/i,
+    },
+  ])('rejects a legacy duplicate with conflicting $name', async ({ overrides, error }) => {
+    const receivedAt = input().receivedAt;
+    const terminalDeadline = receivedAt + 2_100_000;
+    const persisted = {
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: input().repositoryId,
+      received_at: new Date(receivedAt),
+      terminal_deadline: new Date(terminalDeadline),
+      ...overrides,
+    };
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [persisted] })), release: vi.fn() };
+    const repository = new PostgresReviewDispatchRepository({ connect: vi.fn(async () => client) });
+
+    await expect(repository.admit({ ...input(), terminalDeadline })).rejects.toThrow(error);
+
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.query.mock.calls[0]?.[0]).not.toMatch(/INSERT|UPDATE|DELETE|BEGIN/u);
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an authoritative legacy duplicate whose durable identity changed', async () => {
+    const receivedAt = input().receivedAt;
+    const terminalDeadline = receivedAt + 2_100_000;
+    const legacyInput = {
+      ...input(),
+      terminalDeadline,
+      publicationMode: 'app-gate' as const,
+      authoritativeGate: { expectedAppId: 4385771, prepared: {} },
+    };
+    const persisted = {
+      ...row,
+      payload_digest: input().payloadDigest,
+      repository_id: input().repositoryId,
+      publication_mode: 'app-gate',
+      authoritative_gate_app_id: 4385771,
+      identity_digest: '0'.repeat(64),
+      received_at: new Date(receivedAt),
+      terminal_deadline: new Date(terminalDeadline),
+    };
+    const client = { query: vi.fn(async (_sql: string) => ({ rows: [persisted] })), release: vi.fn() };
+    const validateAuthoritativeAdmission = vi.fn(async () => undefined);
+    const repository = new PostgresReviewDispatchRepository(
+      { connect: vi.fn(async () => client) },
+      undefined,
+      { validateAuthoritativeAdmission },
+    );
+
+    await expect((repository as any).readPersistedLegacyDuplicate(legacyInput))
+      .rejects.toThrow(/no longer matches current authoritative identity/i);
+    expect(validateAuthoritativeAdmission).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledOnce();
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a terminal deadline outside both new and persisted bounds before opening a transaction', async () => {
     const connect = vi.fn();
     const repository = new PostgresReviewDispatchRepository({ connect } as any);
-    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MIN_TERMINAL_DEADLINE_MS - 1 }))
-      .rejects.toThrow(/terminal deadline must be between/i);
-    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + MAX_TERMINAL_DEADLINE_MS + 1 }))
-      .rejects.toThrow(/terminal deadline must be between/i);
+    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + DEFAULT_TERMINAL_DEADLINE_MS - 1 }))
+      .rejects.toThrow(/terminal deadline must be exactly/i);
+    await expect(repository.admit({ ...input(), terminalDeadline: input().receivedAt + LEGACY_MAX_TERMINAL_DEADLINE_MS + 1 }))
+      .rejects.toThrow(/terminal deadline must be exactly/i);
     expect(connect).not.toHaveBeenCalled();
   });
 
