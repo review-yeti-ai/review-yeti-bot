@@ -378,6 +378,36 @@ describe('source-bound operator native assertion observations', () => {
     expect(JSON.stringify(result)).not.toContain(row.message);
   });
 
+  it('retains three distinct source-bound assertions across the full thread matrix', () => {
+    const manifest = sourceManifestFixture();
+    const rows = [
+      { ...lifecycleTemplates[4], threadCount: 1 },
+      { ...lifecycleTemplates[5], threadCount: 4 },
+      { ...lifecycleTemplates[8], threadCount: 16 },
+    ];
+    const stdout = rows.map((row) => nativeAssertionOutput(row.message, row.line, row.threadCount)).join('');
+    const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' }, manifest);
+    expect(result).toMatchObject({
+      failureClass: 'package_failure', diagnosticClass: 'go_test_failure',
+      failedTests: [lifecycleTestName], failedPackages: [`${OPERATOR_MODULE}/controllers`],
+    });
+    expect(result.assertionObservations).toHaveLength(3);
+    expect(result.assertionObservations).toEqual(rows.map((row) => ({
+      templateId: row.templateId,
+      testName: lifecycleTestName,
+      threadCount: row.threadCount,
+      source: { file: lifecycleFile, sha256: manifest.sources[0].sha256, line: row.line },
+      values: row.values,
+    })));
+    expect(result.assertionObservations?.map((row) => row.threadCount)).toEqual([1, 4, 16]);
+    expect(result.assertionObservations?.map((row) => row.templateId)).toEqual(rows.map((row) => row.templateId));
+    expect(result.stdoutSha256).toBe(createHash('sha256').update(stdout).digest('hex'));
+    expect(result.stderrSha256).toBe(createHash('sha256').update('').digest('hex'));
+    const serialized = JSON.stringify(result);
+    for (const row of rows) expect(serialized).not.toContain(row.message);
+    expect(serialized).not.toMatch(/CANARY_SECRET|Bearer |github_pat_|private\.example|\/private\//u);
+  });
+
   const malformedOutputRows = [
     { name: 'unknown fatal template', stdout: nativeAssertionOutput('CANARY_SECRET arbitrary assertion') },
     { name: 'negative count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got -1') },
