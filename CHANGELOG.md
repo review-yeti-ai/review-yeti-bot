@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.101.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.14...v1.101.0) (2026-10-01)
+
+
+### Features
+
+* **operator:** decouple reconcile concurrency from worker admission (ADR 0720) ([#1183](https://github.com/review-yeti-ai/review-yeti-bot/issues/1183)) ([6013ccc](https://github.com/review-yeti-ai/review-yeti-bot/commit/6013cccd4297f80576e33fef6c2d11c77c59ac35))
+
 ## [1.100.14](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.100.13...v1.100.14) (2026-09-30)
 
 
