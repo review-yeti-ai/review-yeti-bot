@@ -172,9 +172,9 @@ spec:
                 type: string
               terminalDeadline:
                 description: |-
-                  TerminalDeadline is exactly 15 minutes after ReceivedAt for every new
-                  Kubernetes projection. Pre-migration 15-60 minute rows are accepted only
-                  by the TypeScript database recovery path and must never be projected.
+                  TerminalDeadline is the immutable configured admission deadline. New
+                  projections are bounded to 15-60 minutes after ReceivedAt; the worker
+                  receives only the time remaining inside this absolute window.
                 format: date-time
                 type: string
               workerImage:
@@ -266,10 +266,10 @@ spec:
                 == has(oldSelf.fencingEpoch) && (!has(self.fencingEpoch) || self.fencingEpoch
                 == oldSelf.fencingEpoch) && has(self.workerLeaseToken) == has(oldSelf.workerLeaseToken)
                 && (!has(self.workerLeaseToken) || self.workerLeaseToken == oldSelf.workerLeaseToken)
-            - message: terminalDeadline must be exactly 15 minutes after receivedAt
+            - message: terminalDeadline must be between 15 and 60 minutes after receivedAt
               rule: duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt))
                 && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt))
-                <= duration('900s')
+                <= duration('3600s')
             - message: qualificationProfile and qualificationModel must both be omitted
                 for receipt-only workers or use an explicit qualification profile
                 with a non-auto model

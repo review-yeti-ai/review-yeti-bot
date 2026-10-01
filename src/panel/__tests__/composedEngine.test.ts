@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  allocateComposedTaskTurnBudgets,
-  COMPOSED_TASK_CONCURRENCY,
+  COMPOSED_TASK_CONCURRENCY_CEILING,
   executeComposedReview,
+  resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
 import { computeArbitration } from '../../review/reviewCore';
@@ -83,6 +83,13 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it('caps composed task concurrency at three, honors lower operator limits, and keeps publisher shadow serial', () => {
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '8' })).toBe(3);
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '2' })).toBe(2);
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '1' })).toBe(1);
+    expect(resolveComposedTaskConcurrency({ REVIEW_YETI_MAX_CONCURRENT_LANES: '16' }, true)).toBe(1);
+  });
+
   it.each(['plan', 'work'] as const)('cancels the active %s provider request when the review aborts', async (phase) => {
     const controller = new AbortController();
     let transportCancelled = false;
@@ -1196,6 +1203,185 @@ describe('executeComposedReview', () => {
     ];
   }
 
+  function manyTasks(count: number) {
+    const dimensions = ['security', 'testing', 'architecture'] as const;
+    return Array.from({ length: count }, (_, index) => ({
+      id: `task-${index + 1}`,
+      dimension: dimensions[index % dimensions.length],
+      paths: ['src/auth/guard.ts'],
+      question: `Review change ${index + 1}?`,
+      rationale: `bounded fixture ${index + 1}`,
+    }));
+  }
+
+  function responseForTask(payload: any, taskId: string) {
+    return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), task: taskId, status: 'COMPLETE', findings: [] }));
+  }
+
+  async function withMaxTaskConcurrency<T>(work: () => Promise<T>): Promise<T> {
+    vi.stubEnv('REVIEW_YETI_MAX_CONCURRENT_LANES', '8');
+    try {
+      return await work();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
+
+  it('runs three tasks concurrently and folds results in accepted plan order', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const started: string[] = [];
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(6) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error(`missing task id in work directive: ${directive.slice(0, 100)}`);
+      started.push(taskId);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      // Complete out of order within the first cohort; output remains in plan order.
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, 4 - Number(taskId.slice(5))) * 4));
+      active -= 1;
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }));
+
+    expect(maxActive).toBe(3);
+    expect(started).toEqual(manyTasks(6).map((task) => task.id));
+    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(6).map((task) => task.id));
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
+  it('keeps publisher-owned shadow work serial even when the ordinary task ceiling is three', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(3) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error('missing task id in shadow fixture');
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete }, publisherShadow: true }));
+
+    expect(maxActive).toBe(1);
+    expect(result.personas.map((lane) => lane.id)).toEqual(manyTasks(3).map((task) => task.id));
+  });
+
+  it('refunds unused cohort reservations before admitting waiting tasks without exceeding the total turn cap', async () => {
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-composed-budget-cohorts', executionAttempt: 1 }, { sink: (event) => events.push(event) });
+    const started: string[] = [];
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 5, max_turns_per_task: 2 };
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(5) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error('missing task id in budget fixture');
+      started.push(taskId);
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: progress.instrument({ complete }), progress }));
+
+    // Plan consumes one turn. The first cohort reserves two full ceilings (2+2) and uses 1+1;
+    // after refund task-3 gets a full 2-turn slot and task-4 uses the final partial turn.
+    expect(started).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
+    expect((result.personas ?? []).reduce((sum, lane) => sum + (lane.turnUsages?.length ?? 0), 0)).toBe(5);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-5', failureClass: 'budget_exhausted' }]);
+    expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', lane: 'composed-task-5', status: 'skipped', rejectionCode: 'budget_exhausted' }));
+  });
+
+  it('does not give a waiting task a premature partial reservation before an earlier task refunds turns', async () => {
+    const cfg: any = config();
+    cfg.composed = { max_turns_total: 21, max_turns_per_task: 12 };
+    let taskTwoTurns = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(2) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (taskId === 'task-1') return responseForTask(payload, taskId);
+      if (taskId !== 'task-2') throw new Error('unexpected task in starvation fixture');
+      taskTwoTurns += 1;
+      if (taskTwoTurns <= 9) {
+        return fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } }));
+      }
+      return responseForTask(payload, taskId);
+    });
+
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }));
+
+    expect(taskTwoTurns).toBe(10); // Exceeds the 8 turns left after task-1's initial reservation.
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2']);
+    expect(result.personas[1].turnsCount).toBe(10);
+    expect(result.unreportedLanes).toEqual([]);
+  });
+
+  it('aborts and settles active siblings after a fatal task error without starting later tasks', async () => {
+    const started = new Set<string>();
+    const aborted = new Set<string>();
+    let releaseAllStarted!: () => void;
+    const startedBarrier = new Promise<void>((resolve) => { releaseAllStarted = resolve; });
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(4) }));
+      const directive = payload.messages.find((message: any) =>
+        typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content ?? text;
+      const taskId = directive.match(/Task id: (task-[0-9]+)/)?.[1];
+      if (!taskId) throw new Error('missing task id in fatal fixture');
+      started.add(taskId);
+      if (started.size === 3) releaseAllStarted();
+      if (taskId === 'task-1') {
+        await startedBarrier;
+        throw new Error('synthetic fatal task failure');
+      }
+      return new Promise<OpenRouterResponse>((_resolve, reject) => {
+        if (payload.signal?.aborted) {
+          aborted.add(taskId);
+          reject(payload.signal.reason ?? new Error('aborted'));
+          return;
+        }
+        payload.signal?.addEventListener('abort', () => {
+          aborted.add(taskId);
+          reject(payload.signal.reason ?? new Error('aborted'));
+        }, { once: true });
+      });
+    });
+
+    await withMaxTaskConcurrency(() => expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } }))
+      .rejects.toThrow('synthetic fatal task failure'));
+
+    expect(started).toEqual(new Set(['task-1', 'task-2', 'task-3']));
+    expect(aborted).toEqual(new Set(['task-2', 'task-3']));
+    expect(complete).toHaveBeenCalledTimes(4); // one plan request plus the three-task first cohort
+  });
+
   function issuedNonce(messages: any[]): string {
     const text = messages.map((message) => {
       if (typeof message?.content === 'string') return message.content;
@@ -1334,7 +1520,7 @@ describe('executeComposedReview', () => {
     expect(result.personas.map((lane) => lane.id)).toEqual(providerTasks);
   });
 
-  it('holds three ACK slots and admits the fourth branch only on its own acknowledged slot', async () => {
+  it('holds cohort reservations until every own ACK settles before admitting the fourth branch', async () => {
     const events: string[] = [];
     const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
     const retention = recordingRetention(events);
@@ -1367,8 +1553,9 @@ describe('executeComposedReview', () => {
       const second = held.get('task-2')!;
       second.ack.resolve(retentionAck('outcome', second.request, '2'.repeat(64)));
       await flushBranches();
-      expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
-      expect(progress.indexOf('composed-task-2:completed')).toBeLessThan(progress.indexOf('composed-task-4:started'));
+      expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
+      expect(progress).toContain('composed-task-2:completed');
+      expect(progress).not.toContain('composed-task-4:started');
       expect(progress).not.toContain('composed-task-1:completed');
       expect(progress).not.toContain('composed-task-3:completed');
       expect(settled).toBe(false);
@@ -1377,12 +1564,15 @@ describe('executeComposedReview', () => {
       await run.catch(() => undefined);
     }
     const result = await run;
+    for (const taskId of ['task-1', 'task-2', 'task-3']) {
+      expect(progress.indexOf(`composed-${taskId}:completed`)).toBeLessThan(progress.indexOf('composed-task-4:started'));
+    }
     expect(result.personas.map((lane) => lane.id)).toEqual(fourTasks().map((task) => task.id));
     expect(result.personas.flatMap((lane) => lane.turnUsages ?? [])).toHaveLength(5);
     expect(retention.port.persistOutcome).toHaveBeenCalledTimes(4);
   });
 
-  it('joins funded sibling providers after an ACK failure without dispatching queued work', async () => {
+  it('aborts and settles funded sibling providers after an ACK failure without dispatching queued work', async () => {
     const events: string[] = [];
     const siblings = deferred<void>();
     const { complete, providerTasks } = retentionRoutedClient(events, async (taskId, _text, nonce) => {
@@ -1409,15 +1599,67 @@ describe('executeComposedReview', () => {
       await failedAck.promise;
       await flushBranches();
       expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
-      expect(settled).toBe(false);
+      expect(settled).toBe(true);
       expect(retention.port.persistOutcome).toHaveBeenCalledTimes(1);
     } finally {
       siblings.resolve();
       await rejection;
     }
-    expect(retention.port.persistOutcome).toHaveBeenCalledTimes(3);
+    expect(retention.port.persistOutcome).toHaveBeenCalledTimes(1);
     expect(providerTasks).not.toContain('task-4');
   });
+
+  it.each(['write failure', 'invalid ACK'] as const)(
+    'aborts held sibling ACKs after %s without awaiting never-settling raw producers', async (failure) => {
+      const events: string[] = [];
+      const { complete, providerTasks } = retentionRoutedClient(events, undefined, fourTasks());
+      const retention = recordingRetention(events);
+      const held: Array<{ request: any; ack: ReturnType<typeof deferred<any>> }> = [];
+      const allHeld = deferred<void>();
+      retention.port.persistOutcome.mockImplementation(async (request: any) => {
+        const ack = deferred<any>();
+        held.push({ request, ack });
+        if (held.length === 3) allHeld.resolve();
+        return ack.promise;
+      });
+      const cfg: any = config();
+      cfg.composed = { max_tasks: 4, max_turns_total: 5, max_turns_per_task: 1 };
+      const progress: string[] = [];
+      const reporter = createPublishingProgress({ runId: 'run-cohort-failed-ack', executionAttempt: 1 }, {
+        sink: (event) => progress.push(`${event.lane}:${event.status}`),
+      });
+      const run = executeComposedReview({
+        config: cfg, changedFiles: CODE_FILES, ...retentionSelectors,
+        client: { complete }, retention: { port: retention.port }, progress: reporter,
+      });
+      const settled = run.then(() => 'resolved', () => 'rejected');
+      const rejection = expect(run).rejects.toMatchObject({
+        name: 'ComposedTaskRetentionError', taskIndex: 0,
+        failureCode: failure === 'write failure' ? 'write_failed' : 'ack_invalid',
+      });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await allHeld.promise;
+        const first = held[0];
+        if (failure === 'write failure') first.ack.reject(new Error('private fixture storage error'));
+        else first.ack.resolve(retentionAck('outcome', first.request, '2'.repeat(64), { requestDigest: 'f'.repeat(64) }));
+        expect(await Promise.race([
+          settled,
+          new Promise<'pending'>((resolve) => { timer = setTimeout(() => resolve('pending'), 40); }),
+        ])).toBe('rejected');
+      } finally {
+        if (timer) clearTimeout(timer);
+        for (const { request, ack } of held) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
+        await rejection;
+      }
+      await flushBranches();
+      expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
+      expect(retention.port.persistOutcome).toHaveBeenCalledTimes(3);
+      expect(progress.filter((event) => /^composed-task-\d+:completed$/u.test(event))).toEqual([]);
+      expect(progress).not.toContain('composed-task-4:started');
+      expect(progress).not.toContain('panel:completed');
+    },
+  );
 
   it.each(['head changes', 'original deadline expires'] as const)(
     'fences all held ACK slots when %s without detaching siblings or admitting task four', async (change) => {
@@ -1459,9 +1701,9 @@ describe('executeComposedReview', () => {
         await flushBranches();
         expect(providerTasks).toEqual(['task-1', 'task-2', 'task-3']);
         expect(progress.filter((event) => /^composed-task-\d+:completed$/u.test(event))).toEqual([]);
-        // Head drift still joins admitted siblings. Deadline expiry instead aborts their
-        // pending ACK races even when the producer never settles; no fresh timeout is minted.
-        expect(settled).toBe(change === 'original deadline expires');
+        // A fatal ACK fence must abort and settle sibling ACK wrappers even if their raw
+        // producers never settle. Neither head drift nor expiry starts a fresh timeout.
+        expect(settled).toBe(true);
       } finally {
         for (const { request, ack } of held) ack.resolve(retentionAck('outcome', request, '2'.repeat(64)));
         await rejection;
@@ -2067,13 +2309,6 @@ describe('executeComposedReview', () => {
     expect(retention.port.persistOutcome).not.toHaveBeenCalled();
   });
 
-  it('allocates a narrow total budget fairly across planned task branches', () => {
-    expect(allocateComposedTaskTurnBudgets(threeTasks(), 5, 4)).toEqual([2, 2, 1]);
-    expect(allocateComposedTaskTurnBudgets(threeTasks(), 2, 4)).toEqual([1, 1, 0]);
-    expect(allocateComposedTaskTurnBudgets(threeTasks(), 0, 4)).toEqual([0, 0, 0]);
-    expect(allocateComposedTaskTurnBudgets(threeTasks(), 10, 2)).toEqual([2, 2, 2]);
-  });
-
   it('dispatches every funded task branch concurrently', async () => {
     let activeWorkCalls = 0;
     let maxActiveWorkCalls = 0;
@@ -2127,7 +2362,7 @@ describe('executeComposedReview', () => {
       if (!taskId) throw new Error(`work turn named no task: ${text.slice(0, 120)}`);
       activeWorkCalls += 1;
       maxActiveWorkCalls = Math.max(maxActiveWorkCalls, activeWorkCalls);
-      if (activeWorkCalls === COMPOSED_TASK_CONCURRENCY) releaseFirstWave();
+      if (activeWorkCalls === COMPOSED_TASK_CONCURRENCY_CEILING) releaseFirstWave();
       await firstWaveStarted;
       activeWorkCalls -= 1;
       return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: [] }));
@@ -2143,7 +2378,7 @@ describe('executeComposedReview', () => {
       client: { complete },
     });
 
-    expect(maxActiveWorkCalls).toBe(COMPOSED_TASK_CONCURRENCY);
+    expect(maxActiveWorkCalls).toBe(COMPOSED_TASK_CONCURRENCY_CEILING);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-2', 'task-3', 'task-4']);
   });
 
@@ -2185,12 +2420,14 @@ describe('executeComposedReview', () => {
     cfg.composed = { max_turns_total: 6, max_turns_per_task: 4 };
     const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
       repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete } });
-    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-2', 'task-3']);
+    // Task 1 uses only one of its reserved turns, which is refunded before task 2 starts.
+    // Task 2 can therefore use its full dynamic ceiling and remains bounded by the total cap.
+    expect([...workTurns].sort()).toEqual(['task-1', 'task-2', 'task-2', 'task-2', 'task-3']);
     expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
     expect(result.unreportedLanes).toMatchObject([{ id: 'task-2', failureClass: 'malformed_output',
       error: expect.stringContaining('non_json_task_result') }]);
     expect(projectPublishingRosterBounds(result).returnedIds).toEqual(['task-1', 'task-3']);
-    expect(complete).toHaveBeenCalledTimes(5);
+    expect(complete).toHaveBeenCalledTimes(6);
   });
 
   it('fails closed when every planned task produces no verdict', async () => {

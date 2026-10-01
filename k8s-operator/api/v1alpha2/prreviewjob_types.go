@@ -65,7 +65,7 @@ const (
 // except the one-way cancelRequested transition (REL-1073).
 // +kubebuilder:validation:XValidation:rule="self == oldSelf || (has(self.cancelRequested) && self.cancelRequested && !(has(oldSelf.cancelRequested) && oldSelf.cancelRequested))",message="PRReviewJob spec is immutable except for a one-way cancelRequested false-to-true transition"
 // +kubebuilder:validation:XValidation:rule="self.runId == oldSelf.runId && self.deliveryId == oldSelf.deliveryId && self.repositoryId == oldSelf.repositoryId && self.repo == oldSelf.repo && self.prNumber == oldSelf.prNumber && self.headSha == oldSelf.headSha && self.baseSha == oldSelf.baseSha && self.receivedAt == oldSelf.receivedAt && self.terminalDeadline == oldSelf.terminalDeadline && self.policyDigest == oldSelf.policyDigest && self.configDigest == oldSelf.configDigest && self.publicationMode == oldSelf.publicationMode && self.workerImage == oldSelf.workerImage && self.runSecretName == oldSelf.runSecretName && has(self.executionAttempt) == has(oldSelf.executionAttempt) && (!has(self.executionAttempt) || self.executionAttempt == oldSelf.executionAttempt) && has(self.preparedReview) == has(oldSelf.preparedReview) && (!has(self.preparedReview) || self.preparedReview == oldSelf.preparedReview) && has(self.runnerMode) == has(oldSelf.runnerMode) && (!has(self.runnerMode) || self.runnerMode == oldSelf.runnerMode) && has(self.qualificationProfile) == has(oldSelf.qualificationProfile) && (!has(self.qualificationProfile) || self.qualificationProfile == oldSelf.qualificationProfile) && has(self.qualificationModel) == has(oldSelf.qualificationModel) && (!has(self.qualificationModel) || self.qualificationModel == oldSelf.qualificationModel) && has(self.logicalChildId) == has(oldSelf.logicalChildId) && (!has(self.logicalChildId) || self.logicalChildId == oldSelf.logicalChildId) && has(self.fencingEpoch) == has(oldSelf.fencingEpoch) && (!has(self.fencingEpoch) || self.fencingEpoch == oldSelf.fencingEpoch) && has(self.workerLeaseToken) == has(oldSelf.workerLeaseToken) && (!has(self.workerLeaseToken) || self.workerLeaseToken == oldSelf.workerLeaseToken)",message="PRReviewJob spec fields other than cancelRequested and cancelReason are immutable"
-// +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('900s')",message="terminalDeadline must be exactly 15 minutes after receivedAt"
+// +kubebuilder:validation:XValidation:rule="duration('900s') <= (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) && (timestamp(self.terminalDeadline) - timestamp(self.receivedAt)) <= duration('3600s')",message="terminalDeadline must be between 15 and 60 minutes after receivedAt"
 // +kubebuilder:validation:XValidation:rule="(!has(self.qualificationProfile) && !has(self.qualificationModel)) || (self.qualificationProfile in ['full-panel', 'same-head'] && has(self.qualificationModel) && self.qualificationModel != 'auto' && self.qualificationModel != 'openrouter/auto')",message="qualificationProfile and qualificationModel must both be omitted for receipt-only workers or use an explicit qualification profile with a non-auto model"
 // +kubebuilder:validation:XValidation:rule="!has(self.preparedReview) || (self.publicationMode == 'app-gate' && (!has(self.runnerMode) || self.runnerMode == 'prebaked'))",message="preparedReview requires the prebaked app-gate lane"
 type PRReviewJobSpec struct {
@@ -92,9 +92,9 @@ type PRReviewJobSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{40}$`
 	BaseSHA    string      `json:"baseSha"`
 	ReceivedAt metav1.Time `json:"receivedAt"`
-	// TerminalDeadline is exactly 15 minutes after ReceivedAt for every new
-	// Kubernetes projection. Pre-migration 15-60 minute rows are accepted only
-	// by the TypeScript database recovery path and must never be projected.
+	// TerminalDeadline is the immutable configured admission deadline. New
+	// projections are bounded to 15-60 minutes after ReceivedAt; the worker
+	// receives only the time remaining inside this absolute window.
 	TerminalDeadline metav1.Time `json:"terminalDeadline"`
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{64}$`
 	PolicyDigest string `json:"policyDigest"`

@@ -2,6 +2,7 @@ import type { ResourceDbClient, ReviewRunResourceData } from './resourceTypes';
 import {
   projectReviewStatusPhase,
   projectReviewStatusVerdict,
+  matchesReviewStatusIdentity,
 } from '../reviewStatusVerdict';
 
 export async function fetchRunResource(
@@ -21,7 +22,7 @@ export async function fetchRunResource(
       found: false,
       run_id: null,
       head_sha: null,
-      phase: 'queued',
+      phase: 'unknown',
       verdict: 'PENDING',
       attempt_id: null,
       check_run: null,
@@ -60,7 +61,7 @@ export async function fetchRunResource(
     }
   }
 
-  if (!result || result.rows.length === 0) {
+  if (!result || !matchesReviewStatusIdentity(result.rows[0], { owner, repo, pullNumber: prNumber })) {
     return {
       uri,
       owner,
@@ -69,7 +70,7 @@ export async function fetchRunResource(
       found: false,
       run_id: null,
       head_sha: null,
-      phase: 'queued',
+      phase: 'unknown',
       verdict: 'PENDING',
       attempt_id: null,
       check_run: null,

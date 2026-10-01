@@ -344,7 +344,7 @@ describe('OpenAI gateway is the admitted transport', () => {
 
     expect(config.reviewers.fallback).toBe('none');
     expect(config.default_max_turns).toBe(15);
-    expect(config.reviewers.overall_timeout_s).toBe(1800);
+    expect(config.reviewers.overall_timeout_s).toBe(3000);
     expect(config.reviewers.providers).toEqual([expect.objectContaining({
       id: 'bifrost',
       enabled: true,

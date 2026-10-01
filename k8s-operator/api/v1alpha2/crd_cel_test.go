@@ -105,6 +105,33 @@ func validateUpdate(t *testing.T, oldObj, newObj map[string]interface{}) field.E
 	return errs
 }
 
+func TestV1Alpha2CRDEnforcesSupportedTerminalDeadlineRange(t *testing.T) {
+	cases := []struct {
+		name             string
+		terminalDeadline string
+		wantValid        bool
+	}{
+		{name: "15 minute minimum", terminalDeadline: "2026-09-23T13:38:18Z", wantValid: true},
+		{name: "35 minute interior", terminalDeadline: "2026-09-23T13:58:18Z", wantValid: true},
+		{name: "60 minute maximum", terminalDeadline: "2026-09-23T14:23:18Z", wantValid: true},
+		{name: "one second below minimum", terminalDeadline: "2026-09-23T13:38:17Z", wantValid: false},
+		{name: "one second above maximum", terminalDeadline: "2026-09-23T14:23:19Z", wantValid: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			obj := withSpec(t, func(spec map[string]interface{}) {
+				spec["terminalDeadline"] = tc.terminalDeadline
+			})
+			// Passing the same object as old/new satisfies the unrelated
+			// immutability rule and isolates the deadline CEL constraint.
+			errs := validateUpdate(t, obj, obj)
+			if (len(errs) == 0) != tc.wantValid {
+				t.Fatalf("deadline validation errors = %v, want valid=%v", errs, tc.wantValid)
+			}
+		})
+	}
+}
+
 func withSpec(t *testing.T, mutate func(spec map[string]interface{})) map[string]interface{} {
 	t.Helper()
 	obj := deepCopyObject(t, basePRReviewJob())
