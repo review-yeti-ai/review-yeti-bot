@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.110.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.109.0...v1.110.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** publish GitHub PR reviews and inline suggestions from review workflow ([907b633](https://github.com/review-yeti-ai/review-yeti-bot/commit/907b6333577c3696bc94a832dcc3858980b5be4d))
+
 ## [1.109.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.108.0...v1.109.0) (2026-10-01)
 
 
