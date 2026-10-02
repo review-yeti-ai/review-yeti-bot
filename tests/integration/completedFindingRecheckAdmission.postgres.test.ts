@@ -255,7 +255,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
         const bearer = typeof req === 'string' ? req : (req as { header(name: string): string }).header('authorization');
         if (bearer !== 'Bearer verified-offline-fixture') throw new Error('Unauthorized fixture');
         return context.caller;
-      }, checkRepositoryAccess: (_caller, owner, repo) => owner === identity.owner && repo === identity.repo },
+      }, checkRepositoryAccess: (_caller: unknown, owner: string, repo: string) => owner === identity.owner && repo === identity.repo },
     });
     const app = express();
     app.use(express.json());

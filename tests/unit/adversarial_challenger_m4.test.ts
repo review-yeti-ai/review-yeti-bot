@@ -285,7 +285,7 @@ index 1111111..2222222 100644
       await expect(tool.execute({
         owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 10, finding_id: 'f-dispute-1',
         counter_argument: 'Cache update is serialized using a dedicated Mutex lock instantiated in line 12.',
-      }, { caller, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' } }))
+      }, { caller, authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' } }))
         .rejects.toThrow('Fresh finding review is temporarily unavailable');
       expect(mockModel.complete).not.toHaveBeenCalled();
       expect(notifySpy).not.toHaveBeenCalled();

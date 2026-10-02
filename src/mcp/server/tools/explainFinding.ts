@@ -14,6 +14,7 @@ import type { ReviewModelClient } from '../../../gateway/openRouterClient';
 import {
   extractReviewFindingEntries,
   findReviewFindingRecord,
+  getReviewFindingIdentityParts,
   newestReviewRowsPerRun,
 } from './findingIdentity';
 
@@ -289,14 +290,15 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
           const matchedRecord = findReviewFindingRecord(findingRecords, finding_id);
           if (matchedRecord) {
             const f = matchedRecord.finding;
+            const { filePath, lineStart, lineEnd } = getReviewFindingIdentityParts(f);
             foundRecord = {
               finding_id,
               title: f.title || 'Finding',
               severity: f.severity || 'P1',
               category: f.category || 'Architecture',
-              file_path: f.path || f.file_path || '',
-              line_start: f.line_start || f.startLine || 1,
-              line_end: f.line_end || f.line || 1,
+              file_path: filePath,
+              line_start: lineStart,
+              line_end: lineEnd,
               violated_adrs: Array.isArray(f.violated_adrs)
                 ? f.violated_adrs
                 : Array.isArray(f.adrs)

@@ -178,7 +178,7 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
       policyDigest: POLICY, configDigest: CONFIG,
       completionDigest: workerReviewCompletionDigest(completionFor(newest, PREV_HEAD, PREV_BASE, 1, 42,
         [{ severity: 'P2', path: 'src/open.ts', line: 3, title: 't', body: 'b' }])),
-      ageMs: 3_600_000, shipComplete: true, findingPaths: ['src/open.ts'],
+      ageMs: 3_600_000, shipComplete: false, shipIncompleteReason: 'gate-not-clean', findingPaths: ['src/open.ts'],
     });
   });
 

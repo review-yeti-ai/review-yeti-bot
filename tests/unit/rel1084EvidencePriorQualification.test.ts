@@ -28,13 +28,13 @@ import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResul
  * Yeti check, so every stored prior is a WorkerReviewEvidence.v1 record with no gate row, and was
  * refused (`no-gate-evidence-record`). A non-authoritative run may now rest on one, from the
  * stored evidence alone: published conclusion success, run succeeded, the recorded lane roster
- * all present, re-derived verdict SHIP, no published P0/P1. Authoritative runs keep requiring the
+ * all present, re-derived verdict SHIP, no required published findings. Authoritative runs keep requiring the
  * gate record.
  *
  * Current priors are built by the REAL non-authoritative worker (`runPublishingReviewWorker`
  * without `REVIEW_AUTHORITATIVE_GATE`; only the model engine is stubbed) and read back through
  * the real `priorReviewRecordFromRows`. The explicitly historical stored-success fixture below
- * covers the existing reuse contract; it does not claim today's strict P2 publisher succeeds.
+ * proves current strict P2 policy refuses reuse without rewriting historical evidence.
  */
 
 // Keep the real import-time opt-out separate from the timed review assertions.
@@ -236,10 +236,10 @@ describe('a non-authoritative prior built by the real worker', () => {
     });
   });
 
-  it('historical #1034 stored-success evidence remains eligible, but its P2 finding file is always re-reviewed', () => {
+  it('historical #1034 stored-success evidence is preserved but its P2 prevents current reuse', () => {
     // An independent stored-record fixture, not a rewrite of today's failed worker evidence
     // or an advisory environment override. This models the prior contract's existing
-    // success + complete roster + no published P0/P1 compatibility boundary.
+    // success + complete roster + calibrated P2 under the historical policy.
     const evidence = parseWorkerReviewEvidence({
       version: 'WorkerReviewEvidence.v1', runId: PRIOR_RUN, repositoryId: REPO_ID,
       owner: 'acme', repo: 'app', prNumber: 7, headSha: PRIOR_HEAD, baseSha: BASE,
@@ -256,26 +256,28 @@ describe('a non-authoritative prior built by the real worker', () => {
     });
     expect(publishedFindingSeverity(evidence.result.personas[0].findings[0])).toBe('P2');
     const rows = storedRows(evidence);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(rows)).toMatchObject({
-      mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
-      openFindingPaths: ['src/stable.ts'],
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'rederived-not-ship', findingPaths: ['src/stable.ts'],
+    });
+    expect(decideNext(rows)).toEqual({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'rederived-not-ship',
     });
   });
 
-  it('#1034 shape: only an explicitly imported advisory opt-out permits a calibrated P2 prior', async () => {
+  it('#1034 shape: an import-time opt-out cannot disable the trusted required P2 policy', async () => {
     expect(advisoryOptOutWorker).toBeTypeOf('function');
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1' as const, path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
     ] }, { expectedPublishedAnnotation: 'warning' }, advisoryOptOutWorker);
-    expect(evidence.conclusion).toBe('success');
+    expect(evidence.conclusion).toBe('failure');
     // Stored lane evidence remains raw P1; the actual published annotation is calibrated P2.
     expect(evidence.result.personas.flatMap((lane) => lane.findings ?? []).map((finding) => finding.severity)).toEqual(['P1']);
     const rows = storedRows(evidence);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(rows)).toMatchObject({
-      mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
-      openFindingPaths: ['src/stable.ts'],
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'run-not-succeeded', findingPaths: ['src/stable.ts'],
+    });
+    expect(decideNext(rows)).toEqual({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded',
     });
   });
 

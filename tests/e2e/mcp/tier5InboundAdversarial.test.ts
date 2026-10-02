@@ -823,7 +823,7 @@ index 1111111..2222222 100644
 
       const context = {
         caller: { callerId: 'e2e-admin', authType: 'static_token', isAdmin: true, allowedRepositories: null },
-        authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
       } as any;
       await expect(tool.execute({
         owner: 'calltelemetry',
@@ -879,7 +879,7 @@ index 1111111..2222222 100644
 
       const context = {
         caller: { callerId: 'e2e-admin', authType: 'static_token', isAdmin: true, allowedRepositories: null },
-        authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
       } as any;
       await expect(tool.execute({
         owner: 'calltelemetry',

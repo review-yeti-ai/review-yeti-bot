@@ -2165,7 +2165,9 @@ describe('executeComposedReview', () => {
         preCheckEvidence: {},
       });
 
-      expect(prefix).toContain('TASK SCOPE: src/auth/guard.ts');
+      expect(prefix).toContain('WORK CONTEXT: ASSIGNED TASK (1 path(s))');
+      expect(prefix).toContain('TASK-ASSIGNED CHANGED FILES INDEX (1 file(s))');
+      expect(prefix).toContain('"src/auth/guard.ts"');
       expect(prefix).toContain('export function guard()');
       expect(prefix).not.toContain('export function migrate()');
       expect(prefix).not.toContain('export function Button()');

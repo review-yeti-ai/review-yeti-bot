@@ -261,7 +261,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
-    expect(result.verdict).toBe('SHIP');
+    expect(result.verdict).toBe('FIX_FIRST');
     expect(result.conclusion).toBe('failure');
     expect(result.blockingFindingCount).toBe(1);
     expect(result.findingCount).toBe(1);
@@ -269,7 +269,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti: SHIP',
+        title: 'Review Yeti: FIX_FIRST',
       }),
     );
   });

@@ -81,7 +81,7 @@ describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChalleng
       const restricted = createMockCaller(false, ['other/repo']);
       await expect(tool.execute(input, {
         caller: restricted,
-        authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
       })).rejects.toThrow(/denied|access/i);
       expect(connect).not.toHaveBeenCalled();
     });
@@ -92,7 +92,7 @@ describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChalleng
       const tool = createDisputeFindingTool({ modelClient, adjudicateDispute });
       await expect(tool.execute(input, {
         caller: createMockCaller(),
-        authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
       })).rejects.toThrow('Fresh finding review is temporarily unavailable');
       expect(modelClient.complete).not.toHaveBeenCalled();
       expect(adjudicateDispute).not.toHaveBeenCalled();

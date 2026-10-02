@@ -380,9 +380,12 @@ describe('Milestone 5 (R5): Gateway Circuit Breaking & Outage Requeuing', () => 
         expect.objectContaining({
           checkId: 9999,
           status: 'in_progress',
-          title: expect.stringContaining('requeuing'),
+          title: 'Review Yeti: gateway capacity unavailable (automatic retry NOT CONFIRMED)',
+          summary: expect.stringContaining('completion acknowledgement confirms delivery only, not dispatch admission'),
         })
       );
+      expect(JSON.stringify(cc.updateCheck.mock.calls))
+        .not.toMatch(/requeuing|will automatically requeue|retrying as attempt|scheduled automatically/u);
 
       // Terminal failure report carries provider_5xx reason and recoverableIncompletePanel: true
       expect(completion.reportTerminalFailure).toHaveBeenCalledWith(

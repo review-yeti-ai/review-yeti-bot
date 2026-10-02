@@ -162,7 +162,9 @@ describe('work-conserving composed task scheduling', () => {
     taskOneGate.resolve();
     await waitForStarted(taskFiveStarted.promise);
     const taskFiveContext = await taskFivePrompt.promise;
-    expect(taskFiveContext).toContain('=== PR CHANGED FILES & DIFF SCOPE (ALL FILES -- UNSCOPED) ===');
+    expect(taskFiveContext).toContain('=== WORK CONTEXT: ASSIGNED TASK (1 path(s)); see the task directive for exact obligations ===');
+    expect(taskFiveContext).toContain('=== TASK-ASSIGNED CHANGED FILES INDEX (1 file(s)) ===');
+    expect(taskFiveContext).not.toContain('=== PR CHANGED FILES & DIFF SCOPE');
     expect(taskFiveContext).toContain('+export const value = 2;');
     expect(taskFiveContext).toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS (2 completed) ===');
     expect(taskFiveContext).toContain('- Task task-1 (architecture, paths [src/app.ts]): CLEAN (0 findings)');

@@ -557,3 +557,11 @@ To ensure cluster resources are conserved and review integrity is preserved:
 
 3. **Retro Feedback Loop**:
    Review failures and turn-budget exhaustions feed into retrospective analysis tools to fine-tune `max_investigation_turns`, recalibrate persona token budgets, and improve static path instructions.
+
+## Retry-reporting consumer migration
+
+Before activating truthful worker retry reporting, migrate dashboard, alert and
+saved-log consumers using [Retry-reporting observability migration](RETRY_REPORTING_OBSERVABILITY_MIGRATION.md).
+The counter name is unchanged, but outcome values and the structured retry field
+change. A worker completion ACK is not a scheduling receipt; mixed-version
+queries must retain that distinction. Source landing is not live consumer proof.
