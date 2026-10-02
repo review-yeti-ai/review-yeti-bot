@@ -12,6 +12,11 @@ function file(raw: unknown = { schema: 'calltelemetry.review-policy.v1', review_
     path: 'policy/review-yeti.json', contentDigest: createHash('sha256').update(content).digest('hex') } };
 }
 
+function policyWithReviewYeti(reviewYeti: unknown): Record<string, unknown> {
+  const defaultPolicy = JSON.parse(file().content) as Record<string, unknown>;
+  return { ...defaultPolicy, review_yeti: reviewYeti };
+}
+
 describe('trusted prepared publishing policy', () => {
   it('resolves the private DSH policy to its explicit composed fallback without changing the panel default', () => {
     const selected = preparePublishingPolicy(file({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
@@ -42,16 +47,16 @@ describe('trusted prepared publishing policy', () => {
     const verifiedLegacy = parsePreparedReviewExecution(legacyEnvelope, oldEffectiveDigest, transport);
     expect(Object.hasOwn(verifiedLegacy.config, 'max_reviewed_lockfile_patch_chars')).toBe(false);
 
-    const capped = preparePublishingPolicy(file({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+    const capped = preparePublishingPolicy(file(policyWithReviewYeti({
       personas: 'security,testing', budget: { max_investigation_turns: 20, max_reviewed_lockfile_patch_chars: 65_536 },
-    } }), transport);
+    })), transport);
     expect(capped.config.max_reviewed_lockfile_patch_chars).toBe(65_536);
     expect(capped.policy.effectiveConfigDigest).not.toBe(oldEffectiveDigest);
     expect(verifyPreparedPublishingConfig(capped.config, capped.policy.effectiveConfigDigest, transport))
       .toEqual(capped.config);
   });
   it('preserves existing central lane-budget keys while validating the named lockfile cap', () => {
-    const prepared = preparePublishingPolicy(file({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
+    const prepared = preparePublishingPolicy(file(policyWithReviewYeti({
       personas: 'security,testing',
       budget: {
         max_investigation_turns: 20,
@@ -61,7 +66,7 @@ describe('trusted prepared publishing policy', () => {
         max_review_assignments: 8,
         max_reviewed_lockfile_patch_chars: 56_544,
       },
-    } }), transport);
+    })), transport);
     expect(prepared.config.max_reviewed_lockfile_patch_chars).toBe(56_544);
     expect(JSON.stringify(prepared.config)).not.toMatch(/lane_deadline_ms|lane_overhead_ms|lane_call_budget|max_review_assignments/u);
   });
@@ -73,9 +78,9 @@ describe('trusted prepared publishing policy', () => {
     {},
     { schema: 'unknown' },
     { schema: 'calltelemetry.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 0 } } },
-    { schema: 'calltelemetry.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 19_999 } } },
-    { schema: 'calltelemetry.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 65_537 } } },
-    { schema: 'calltelemetry.review-policy.v1', review_yeti: { personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: '65536' } } },
+    policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 19_999 } }),
+    policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: 65_537 } }),
+    policyWithReviewYeti({ personas: 'security', budget: { max_investigation_turns: 5, max_reviewed_lockfile_patch_chars: '65536' } }),
   ])
     ('rejects malformed central policy without echoing it', (raw) => {
       expect(() => preparePublishingPolicy(file(raw), transport)).toThrow('Trusted publishing policy could not be prepared');

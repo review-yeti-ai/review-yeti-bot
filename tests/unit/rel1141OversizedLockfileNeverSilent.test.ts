@@ -251,6 +251,38 @@ describe('bounded full raw lockfile review from trusted policy', () => {
     { path: 'yarn.lock', patch, mode: '100644' },
   ];
 
+  it('restores a new registry-package lockfile under the admitted cap and summarizes it at the default boundary', () => {
+    const patch = oversizedNpmLock('new-registry-package');
+    expect(patch.length).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
+    expect(patch.length).toBeLessThanOrEqual(cap);
+
+    const admitted = rosterWithLockfileCap('security', cap);
+    const restored = resolveReviewApplicability(admitted.personas, [
+      { path: 'package-lock.json', patch, mode: '100644' },
+    ], {
+      pathFilters: admitted.path_filters,
+      maxReviewedLockfilePatchChars: admitted.max_reviewed_lockfile_patch_chars,
+    });
+    expect(restored.effectiveFiles.find((file) => file.path === 'package-lock.json')?.patch).toBe(patch);
+    expect(restored.routedFiles).toEqual([
+      { path: 'package-lock.json', laneIds: ['sec-lane'], reason: 'new-package-lockfile' },
+    ]);
+    expect(restored.summarizedLockfiles).toEqual([]);
+    expect(restored.unreviewableLockfiles).toEqual([]);
+    expect(restored.omittedSourcePaths).toEqual([]);
+
+    const defaultCap = resolveReviewApplicability(roster('security').personas, [
+      { path: 'package-lock.json', patch, mode: '100644' },
+    ]);
+    expect(defaultCap.effectiveFiles.find((file) => file.path === 'package-lock.json')?.patch).not.toBe(patch);
+    expect(defaultCap.routedFiles).toEqual([
+      { path: 'package-lock.json', laneIds: ['sec-lane'], reason: 'summarized-lockfile' },
+    ]);
+    expect(defaultCap.summarizedLockfiles.map((file) => file.path)).toEqual(['package-lock.json']);
+    expect(defaultCap.unreviewableLockfiles).toEqual([]);
+    expect(defaultCap.omittedSourcePaths).toEqual([]);
+  });
+
   it('restores an oversized untrusted-source lockfile byte-for-byte under the explicit hard-bounded cap', () => {
     const patch = remotePatch();
     expect(patch.length).toBeGreaterThan(55_000);

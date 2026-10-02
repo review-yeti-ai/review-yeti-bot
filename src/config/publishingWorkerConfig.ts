@@ -2,10 +2,7 @@ import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOption
 import type { ComposedEngineConfig, CtReviewConfigV3, ProviderId, ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
-import {
-  DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
-  HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
-} from '../pipeline/hunkFilter';
+import { resolveMaxReviewedLockfilePatchChars } from '../pipeline/hunkFilter';
 
 export { isTriggerActionAllowed, type TriggerActionOptions };
 
@@ -314,12 +311,7 @@ export function resolveWorkerConfig(
       }
       const requestedLockfilePatchChars = policy.budget?.max_reviewed_lockfile_patch_chars;
       if (requestedLockfilePatchChars !== undefined) {
-        if (!Number.isSafeInteger(requestedLockfilePatchChars)
-          || requestedLockfilePatchChars < DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS
-          || requestedLockfilePatchChars > HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS) {
-          throw new Error('max_reviewed_lockfile_patch_chars is outside the supported bound');
-        }
-        maxReviewedLockfilePatchChars = requestedLockfilePatchChars;
+        maxReviewedLockfilePatchChars = resolveMaxReviewedLockfilePatchChars(requestedLockfilePatchChars);
       }
       if (typeof policy.personas === 'string') {
         personasList = policy.personas.split(',').map((p: string) => p.trim()).filter(Boolean);
