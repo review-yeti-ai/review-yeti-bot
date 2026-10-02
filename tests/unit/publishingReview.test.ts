@@ -1383,6 +1383,37 @@ describe('runPublishingReviewWorker', () => {
     );
   });
 
+  it('uses one invocation policy when configuration changes after the module was imported', async () => {
+    const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    try {
+      // This module was imported under the default strict policy. The trusted
+      // invocation config now opts out, so every published projection must agree.
+      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
+      const d = deps({
+        panelRunner: vi.fn(async () => ({
+          applicablePersonaIds: ['sec-lane'],
+          personas: [{ id: 'sec-lane', findings: [{
+            severity: 'P2', path: 'src/a.ts', line: 1, title: 'Advisory', body: 'Advisory',
+          }] }],
+          quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+          arbiter: { verdict: 'SHIP' },
+        })) as never,
+      });
+
+      const receipt = await runPublishingReviewWorker(env(), d as never);
+      const published = (d.checkClient.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
+      expect(receipt).toMatchObject({ verdict: 'SHIP', conclusion: 'success', blockingFindingCount: 0 });
+      expect(published).toMatchObject({ conclusion: 'success', annotations: [expect.objectContaining({
+        annotation_level: 'warning',
+      })] });
+      expect(published.summary).toContain('Findings: 1 (blocking P0/P1: 0;');
+      expect(published.text).toContain('1 finding(s), 0 blocking (P0/P1).');
+    } finally {
+      if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+    }
+  });
+
   it('concludes failure — never neutral or success — when the provider fails', async () => {
     // The whole point of fail-closed: an outage must block, not silently stop
     // enforcing. completeCheck cannot express neutral, and success is never used.

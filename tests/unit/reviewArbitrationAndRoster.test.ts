@@ -46,10 +46,12 @@ describe('Arbitration scales with the size of the panel', () => {
     expect(computeArbitrationQuorum(results(2, { P2: 1 }), 2).verdict).toBe('FIX_FIRST');
   });
 
-  it('does not let a legacy volume-threshold option disable required P2 findings', () => {
-    const opts = { p2BlocksMerge: false };
-    expect(computeArbitrationQuorum(results(12, { P2: 1 }), 12, opts).verdict).toBe('FIX_FIRST');
-    expect(computeArbitrationQuorum(results(2, { P2: 1 }), 2, opts).verdict).toBe('FIX_FIRST');
+  it('requires P2 below the legacy volume threshold even when that threshold is enabled', () => {
+    const opts = { p2BlocksMerge: true };
+    // Legacy thresholds are 12 for a 12-persona panel and 5 for a 2-persona panel.
+    // Counts below both thresholds prove the publication policy, not just the volume rule.
+    expect(computeArbitrationQuorum(results(12, { P2: 11 }), 12, opts).verdict).toBe('FIX_FIRST');
+    expect(computeArbitrationQuorum(results(2, { P2: 4 }), 2, opts).verdict).toBe('FIX_FIRST');
   });
 
   it('still gates on P0 and P1 alongside required P2 findings', () => {

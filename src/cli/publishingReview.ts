@@ -390,10 +390,6 @@ export {
 };
 export type { OpenAITransportConfig };
 
-export const BLOCKING_SEVERITIES: Set<string> = new Set(
-  blockingFindingSeverities(advisoryRequiredByDefault()),
-);
-
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
  * passes the same projection the check summary renders, so a SHIP verdict and
@@ -993,7 +989,11 @@ export interface PublishingReviewDeps {
  * severity so the blocking ones are read first, and every entry carries its
  * file and line so a reader can navigate without the annotation view.
  */
-export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number): string {
+export function renderFindingsMarkdown(
+  findings: ReviewFinding[],
+  blockingCount: number,
+  requireAdvisory = advisoryRequiredByDefault(),
+): string {
   if (findings.length === 0) {
     return 'No findings survived canonical arbitration for this head.';
   }
@@ -1027,7 +1027,7 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
       return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
-    `${findings.length} finding(s), ${blockingCount} blocking (${blockingFindingSeverities(advisoryRequiredByDefault()).join('/')}).`,
+    `${findings.length} finding(s), ${blockingCount} blocking (${blockingFindingSeverities(requireAdvisory).join('/')}).`,
     '',
     ...lines,
   ].join('\n');
@@ -1117,6 +1117,10 @@ export async function runPublishingReviewWorker(
   env: NodeJS.ProcessEnv,
   deps: PublishingReviewDeps,
 ): Promise<PublishingReviewReceipt> {
+  // Read the trusted process policy once per worker. The verdict, metrics, summary,
+  // and annotations for one publication must not observe different env snapshots.
+  const requireAdvisory = advisoryRequiredByDefault();
+  const blockingSeverities: Set<string> = new Set(blockingFindingSeverities(requireAdvisory));
   throwIfPanelAborted(deps.signal);
   if (!isPublishingReviewWorker(env)) throw invalidPublishingReviewContract();
   const authoritative = value(env, 'REVIEW_AUTHORITATIVE_GATE') === 'true';
@@ -2263,7 +2267,7 @@ export async function runPublishingReviewWorker(
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
         coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0,
-        requireAdvisory: advisoryRequiredByDefault(),
+        requireAdvisory,
         ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
@@ -2291,7 +2295,7 @@ export async function runPublishingReviewWorker(
       const findings = (canonical.findings || []) as ReviewFinding[];
       const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
       const blocking = findings.filter(
-        (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
+        (finding) => blockingSeverities.has(String(finding?.severity || 'P2').toUpperCase()),
       );
       // A file whose header could not be read was never sent to the panel, so no
       // finding can exist for it and the verdict describes less than the diff. That
@@ -2369,7 +2373,7 @@ export async function runPublishingReviewWorker(
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
       const pBlocking = pFindings.filter((f: any) =>
-        BLOCKING_SEVERITIES.has(String(f?.severity || 'P2').toUpperCase())
+        blockingSeverities.has(String(f?.severity || 'P2').toUpperCase())
       );
       return {
         id: p.id,
@@ -2507,7 +2511,7 @@ export async function runPublishingReviewWorker(
             ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
             : (panelResult as any).zeroLaneNonEvidence
               ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-            : `Findings: ${findings.length} (blocking ${blockingFindingSeverities(advisoryRequiredByDefault()).join('/')}: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+            : `Findings: ${findings.length} (blocking ${blockingFindingSeverities(requireAdvisory).join('/')}: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),
@@ -2544,7 +2548,7 @@ export async function runPublishingReviewWorker(
           `- Attempt ${source.executionAttempt}: ${source.rawFindingCount} raw P2 finding(s); [original App check](https://github.com/${identity.owner}/${identity.repoName}/pull/${identity.prNumber}/checks?check_run_id=${source.workerCheckId}); Gate \`${source.gateCheckId}\`; worker result \`${source.workerResultDigest}\`.`),
       ].join('\n'));
     }
-    const checkText = [renderFindingsMarkdown(findings, blocking.length),
+    const checkText = [renderFindingsMarkdown(findings, blocking.length, requireAdvisory),
       ...(p2RecoveryContext ? ['### Retained P2 observations (original evidence)',
         'These original observations remain advisory and were supplied to the full review above. Their source records are immutable; this section does not attribute them to a new reviewer.',
         ...p2RecoveryContext.findings.map((entry) =>
@@ -2836,7 +2840,7 @@ export async function runPublishingReviewWorker(
             path: String(finding.path),
             start_line: line,
             end_line: line,
-            annotation_level: BLOCKING_SEVERITIES.has(severity) ? 'failure' as const : 'warning' as const,
+            annotation_level: blockingSeverities.has(severity) ? 'failure' as const : 'warning' as const,
             title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
             message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
           };

@@ -1040,15 +1040,14 @@ index 123456..789abc 100644
           { severity: 'P2' },
           { severity: 'P2' },
           { severity: 'P2' },
-          { severity: 'P2' },
         ],
       }];
       const quorumP2 = computeArbitrationQuorum(resultsP2 as any);
       expect(quorumP2.verdict).toBe('FIX_FIRST');
 
-      // A legacy threshold option cannot weaken the default publishing requirement.
-      const opted = computeArbitrationQuorum(resultsP2 as any, undefined, { p2BlocksMerge: false });
-      expect(opted.verdict).toBe('FIX_FIRST');
+      // Even when the legacy volume threshold is enabled, this count is below its floor of five.
+      const belowLegacyThreshold = computeArbitrationQuorum(resultsP2 as any, undefined, { p2BlocksMerge: true });
+      expect(belowLegacyThreshold.verdict).toBe('FIX_FIRST');
     });
 
     it('23. Computes BLOCK for 3+ P1 findings or 1 P0 finding', () => {
