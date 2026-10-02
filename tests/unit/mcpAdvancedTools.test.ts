@@ -444,6 +444,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       const caller = createMockCaller({ allowedRepos: ['other/repository'] });
       await expect(tool.execute(input, {
         caller,
+        authenticatedByConfiguredAuthenticator: true,
         authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
       })).rejects.toThrow(/denied|access/i);
       expect(connect).not.toHaveBeenCalled();

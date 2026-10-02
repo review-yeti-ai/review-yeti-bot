@@ -65,6 +65,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
   it.each([readRequest, checkpoint])('refuses a query-only dependency before accessing review state', async (body) => {
     const query = vi.fn();
     const app = express(); app.use(express.json());
+    // @ts-expect-error A query-only dependency is rejected at compile time and still fails closed at runtime.
     app.post('/checkpoint', createReviewExecutionCheckpointHandler({ query }));
     const result = await request(app).post('/checkpoint').set('Authorization', `Bearer ${token}`).send(body);
     expect(result.status).toBe(503);

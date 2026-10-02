@@ -77,7 +77,6 @@ function setup() {
       calls.push({ sql, values });
       if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(sql.trim())) return { rows: [] };
       if (sql.includes('SET LOCAL lock_timeout') || sql.includes('pg_advisory_xact_lock')) return { rows: [] };
-      if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('SELECT repository_id, pr_number')) {
         return { rows: [{ repository_id: identity.repositoryId, pr_number: identity.prNumber, head_sha: identity.headSha,
           base_sha: identity.baseSha, effective_policy_digest: identity.policyDigest, effective_config_digest: identity.configDigest }] };

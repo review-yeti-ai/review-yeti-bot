@@ -9,7 +9,7 @@ import {
   type ReviewExecutionCheckpoint,
 } from '../review/reviewExecutionCheckpoint';
 
-type CheckpointDatabase = Queryable & Partial<ReviewPrTransactionPool>;
+export type CheckpointDatabase = Queryable & ReviewPrTransactionPool;
 
 function token(request: Request): string | null {
   return /^Bearer\s+(ghs_[^\s]+)$/iu.exec(request.header('authorization') ?? '')?.[1] ?? null;

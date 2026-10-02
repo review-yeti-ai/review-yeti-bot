@@ -309,6 +309,7 @@ describe('Empirical Challenger Suite: generate_fix_diff & dispute_finding (Miles
         queryableDatabase: { query } });
       await expect(tool.execute(input, {
         caller: { ...createMockCaller(false), allowedRepositories: new Set(['other/repository']) },
+        authenticatedByConfiguredAuthenticator: true,
         authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
       })).rejects.toThrow(/denied|access/i);
       expect(query).not.toHaveBeenCalled();
