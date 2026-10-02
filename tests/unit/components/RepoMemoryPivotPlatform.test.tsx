@@ -295,10 +295,14 @@ describe('MemoryPage public neutral state and export controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled());
+    vi.mocked(fetchMemoryStats).mockResolvedValueOnce({ ...memoryResponse(), r2: { ...memoryResponse().r2, bucket: 'example-after-purge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Purge Expired' }));
-    expect(await screen.findByText('Sample cache sweep completed')).toBeInTheDocument();
+    await waitFor(() => expect(purgeMemoryCache).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(3));
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled());
+    selectMemoryTab(/Workspaces & R2 Cache/);
+    expect(screen.getByText('example-after-purge')).toBeInTheDocument();
+    // Reload begins by clearing transient notices; verify the final visible state at the lifecycle barrier.
     expect(screen.queryByText('Sample cache sweep completed')).not.toBeInTheDocument();
   });
 
@@ -307,8 +311,11 @@ describe('MemoryPage public neutral state and export controls', () => {
     vi.mocked(purgeMemoryCache).mockRejectedValue(new Error('Sample purge unavailable'));
     await renderMemoryPage();
     fireEvent.click(screen.getByRole('button', { name: 'Purge Expired' }));
-    expect(await screen.findByText('Workspace cache swept. Ephemeral outlines purged successfully.')).toBeInTheDocument();
+    await waitFor(() => expect(purgeMemoryCache).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled();
+    expect(screen.queryByText('Workspace cache swept. Ephemeral outlines purged successfully.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
     const dialog = await screen.findByRole('dialog');
     await waitFor(() => expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).organization).toBe('example'));

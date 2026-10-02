@@ -564,3 +564,35 @@ describe('Neutral dashboard API state and boundary controls', () => {
     assert.ok(content.includes('event: connection:open'));assert.ok(content.includes('example-run'));
   });
 });
+
+
+describe('Dashboard trigger and gate public fallback boundaries', () => {
+  it('uses documented trigger defaults for malformed JSON and untyped pull request numbers', async () => {
+    for (const [body, expectedRepo] of [
+      ['not-json', 'reviewyeti-ai/yeti-pr-reviewer'],
+      [JSON.stringify({ jobId: 'example-trigger', repo: 'example/sample-cdr', prNumber: 'untyped' }), 'example/sample-cdr'],
+    ]) {
+      const res = await worker.fetch(new Request('https://worker.dev/api/live/trigger', { method: 'POST', body }), createMockEnv());
+      const data = await res.json() as any;
+      assert.equal(res.status, 200);
+      assert.equal(data.success, true);
+      assert.equal(data.prNumber, 1282);
+      assert.equal(data.stagesCount, 6);
+      assert.ok(data.streamUrl.includes(data.jobId));
+      assert.equal(data.repo, expectedRepo);
+    }
+  });
+
+  it('reads bound gate state using the neutral repository IDs in overview', async () => {
+    const queried: string[] = [];
+    const env = { ...createMockEnv(), REPO_GATE: { idFromName: (name: string) => { queried.push(name); return name; }, get: () => ({ fetch: async () => Response.json({ activeCount: 2, queueLength: 1 }) }) } } as unknown as Env;
+    const res = await worker.fetch(new Request('https://worker.dev/api/dashboard/overview'), env);
+    const data = await res.json() as any;
+    assert.equal(res.status, 200);
+    assert.ok(queried.includes('example/sample-cdr'));
+    assert.ok(queried.includes('example/sample-meta'));
+    assert.equal(data.overview.liveDurableObjects['example/sample-cdr'].activeCount, 2);
+    assert.equal(data.overview.liveDurableObjects['example/sample-meta'].queueLength, 1);
+    assert.ok(data.overview.activeJobsCount >= 6);
+  });
+});
