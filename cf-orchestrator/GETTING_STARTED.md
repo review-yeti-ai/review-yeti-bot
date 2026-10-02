@@ -4,7 +4,7 @@ This guide walks you through setting up, deploying, and operating the Cloudflare
 
 > [!IMPORTANT]
 > **Active Production State: Parallel Shadow Canary Mode**  
-> - **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev)  
+> - **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
 > - **Operational Invariant**: The DOKS Kubernetes operator (`ct-review-yeti-operator`) is running and authoritative in production, posting the primary `"Review Yeti"` checks.  
 > - **Cloudflare Canary**: Cloudflare evaluates incoming PRs concurrently, publishing non-blocking `"Review Yeti (Cloudflare Canary)"` checks and PR reviews with 1-click inline suggestions.  
 > - **Do NOT shut down DOKS, delete PVCs, or terminate node pools** until shadow parity is verified across 100+ consecutive real-world PR runs.
@@ -160,8 +160,8 @@ To validate the Cloudflare engine alongside the existing DOKS production deploym
 ENVIRONMENT = "production"
 PARALLEL_MODE = "true"
 PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
-PILOT_REPOSITORIES = "calltelemetry/ai-workspace,all"
-DOKS_FALLBACK_URL = "https://review-bot.calltelemetry.com/api/webhooks/github"
+PILOT_REPOSITORIES = "example-org/example-workspace,all"
+DOKS_FALLBACK_URL = "https://review-bot.example.com/api/webhooks/github"
 MAX_CONCURRENT_JOBS = "5"
 DEBOUNCE_WINDOW_SECONDS = "10"
 RUNNER_TYPE = "digitalocean"
@@ -190,7 +190,7 @@ npm run deploy
 
 ### 6.4 Point GitHub Webhook to Cloudflare
 In your GitHub App settings, set the Webhook URL to:  
-`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/api/webhooks/github`
+`https://review-yeti-cf-orchestrator.example.workers.dev/api/webhooks/github`
 
 ### 6.5 Operational Execution Flow
 1. **DOKS Remains 100% Primary**: Cloudflare immediately forwards every incoming webhook asynchronously to `DOKS_FALLBACK_URL`. DOKS processes production reviews and posts the authoritative `"Review Yeti"` check.
@@ -211,7 +211,7 @@ node scripts/ci/compare-orchestrator-runs.js \
 Sample output:
 ```
 ============================================================
- ORCHESTRATOR PARITY REPORT: calltelemetry/ai-workspace @ a1b2c3d
+ ORCHESTRATOR PARITY REPORT: example-org/example-workspace @ a1b2c3d
  Status: ✅ MATCH
 ============================================================
 • Verdict Agreement:         YES
@@ -263,8 +263,8 @@ Once shadow parity criteria are satisfied across real production workloads:
 npx wrangler tail --format pretty
 
 # Inspect status of a specific review run DO
-curl -s "https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/api/dispatch/runs/<runId>/status" | jq .
+curl -s "https://review-yeti-cf-orchestrator.example.workers.dev/api/dispatch/runs/<runId>/status" | jq .
 
 # Verify health endpoint
-curl -s "https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/health" | jq .
+curl -s "https://review-yeti-cf-orchestrator.example.workers.dev/health" | jq .
 ```

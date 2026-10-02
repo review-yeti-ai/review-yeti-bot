@@ -28,7 +28,7 @@ tools:
   # =========================================================================
   - name: "bifrost-llm-gateway"
     type: "inference"
-    url: "https://gateway-internal.calltelemetry.com/v1"
+    url: "https://gateway-internal.example.com/v1"
     enabled: true
     tunnel:
       mode: "cloudflare"
@@ -43,7 +43,7 @@ tools:
 
   - name: "cisco-axl-mcp"
     type: "mcp"
-    url: "https://axl-mcp.internal.calltelemetry.com/sse"
+    url: "https://axl-mcp.internal.example.com/sse"
     enabled: true
     tunnel:
       mode: "cloudflare"
