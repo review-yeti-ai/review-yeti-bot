@@ -1072,7 +1072,7 @@
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -3209,7 +3209,7 @@
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -5346,7 +5346,7 @@
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -7474,7 +7474,7 @@
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
