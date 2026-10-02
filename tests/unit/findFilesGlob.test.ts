@@ -147,6 +147,54 @@ describe('find_files through the real provider and tool runtime (REL-1102)', () 
     expect(res.toolOutput).toContain('tests/fixtures/jev/live-score.json');
   });
 
+  it('keeps deleted-only glob hits separate from the reviewed head tree', async () => {
+    const removedPaths = Array.from({ length: 8 }, (_, index) => `skills/k8s/reference-${index}.md`);
+    const github = stubGitHub(['README.md']);
+    const headSha = 'a'.repeat(40);
+    const repoFileProvider = createRepoFileProvider(github, 'o', 'r', headSha);
+    const res = await runReadOnlyTool('find_files', { query: 'skills/k8s/*.md' }, {
+      changedFiles: removedPaths.map((path) => ({ path, patch: '-removed source' })), repoFileProvider,
+    });
+    expect(github.getFileTree).toHaveBeenCalledWith('o', 'r', headSha);
+    expect(res.toolOutput).toContain('No files matching');
+    expect(res.toolOutput).toContain('found anywhere in the repository at the reviewed head');
+    expect(res.toolOutput).toContain('Matching paths in the PR diff, absent from the reviewed head tree:');
+    for (const path of removedPaths) expect(res.toolOutput).toContain(path);
+    expect(res.toolOutput).not.toContain('Found 8 path(s)');
+    expect(res.toolScope).toBe('full-repository');
+    expect(res.isExhaustive).toBe(true);
+  });
+
+  it('lists existing head matches separately from deleted PR paths', async () => {
+    const existing = 'skills/k8s/kept.md';
+    const removed = 'skills/k8s/removed.md';
+    const outsideDiff = 'skills/k8s/outside-diff.md';
+    const repoFileProvider = createRepoFileProvider(stubGitHub([existing, outsideDiff]), 'o', 'r', 'a'.repeat(40));
+    const res = await runReadOnlyTool('find_files', { query: 'skills/k8s/*.md' }, {
+      changedFiles: [{ path: removed, patch: '-old' }, { path: existing, patch: '+new' }], repoFileProvider,
+    });
+    const [headListing, diffListing] = res.toolOutput.split('\nMatching paths in the PR diff, absent from the reviewed head tree:');
+    expect(headListing).toContain('Found 2 path(s)');
+    expect(headListing).toContain(existing);
+    expect(headListing).toContain(outsideDiff);
+    expect(headListing).not.toContain(removed);
+    expect(diffListing).toContain(removed);
+    expect(diffListing).not.toContain(existing);
+    expect(res.isExhaustive).toBe(true);
+  });
+
+  it('keeps truncated-tree diff-only paths unconfirmed rather than declaring them deleted', async () => {
+    const path = 'skills/k8s/unreturned.md';
+    const repoFileProvider = createRepoFileProvider(stubGitHub(['README.md'], true), 'o', 'r', 'a'.repeat(40));
+    const res = await runReadOnlyTool('find_files', { query: 'skills/k8s/*.md' }, {
+      changedFiles: [{ path, patch: '+source' }], repoFileProvider,
+    });
+    expect(res.toolOutput).toContain('Matching paths in the PR diff, presence at the reviewed head unconfirmed:');
+    expect(res.toolOutput).toContain(path);
+    expect(res.toolOutput).not.toContain('absent from the reviewed head tree');
+    expect(res.isExhaustive).toBe(false);
+  });
+
   it('substring search through the tool still works', async () => {
     const repoFileProvider = createRepoFileProvider(stubGitHub(TREE), 'o', 'r', 'sha');
     const res = await runReadOnlyTool('find_files', { query: 'legend-object' }, { changedFiles, repoFileProvider });
@@ -183,6 +231,8 @@ describe('find_files through the real provider and tool runtime (REL-1102)', () 
     const res = await runReadOnlyTool('find_files', { query: 'src/**/*.ts' }, { changedFiles });
     expect(res.toolOutput).toContain('Files found in diff: src/gateway/jevClient.ts');
     expect(res.toolOutput).toContain('may still exist elsewhere');
+    expect(res.toolOutput).toContain('Current-head presence of these diff paths is unconfirmed.');
+    expect(res.toolScope).toBe('changed-patches-only');
     expect(res.isExhaustive).toBe(false);
   });
 });
@@ -200,6 +250,18 @@ describe('lookup failures never read as absence (REL-1102)', () => {
     expect(res.toolOutput).toContain('lookup failure');
     expect(res.toolOutput).toContain('tree 502');
     expect(res.toolOutput).toContain('Matching files in the diff: src/gateway/jevClient.ts');
+  });
+
+  it('find_files: unavailable head tree keeps removed diff paths discoverable without asserting head presence', async () => {
+    const removed = 'skills/k8s/removed.md';
+    const res = await runReadOnlyTool('find_files', { query: 'skills/k8s/*.md' }, {
+      changedFiles: [{ path: removed, patch: '-old' }], repoFileProvider: failingTree(),
+    });
+    expect(res.toolOutput).toContain(`Matching files in the diff: ${removed}`);
+    expect(res.toolOutput).toContain('Current-head presence of these diff paths is unconfirmed.');
+    expect(res.toolOutput).not.toContain('tree at the reviewed head, not just the diff');
+    expect(res.toolScope).toBe('changed-patches-only');
+    expect(res.isExhaustive).toBe(false);
   });
 
   it('find_files: a tree failure with no diff hits lists nothing from the diff', async () => {

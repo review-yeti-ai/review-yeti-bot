@@ -112,7 +112,7 @@ describe('embedded operator Go qualification workflow', () => {
     // every job) and for a flipped default SKU (`...-arm`), so they would not
     // catch the exact regressions this assertion exists for.
     expect(vitest['runs-on']).toMatch(
-      /\$\{\{ inputs\.bench_runner != '' && inputs\.bench_runner \|\| 'blacksmith-4vcpu-ubuntu-2404' \}\}/,
+      /\$\{\{ inputs\.bench_runner != '' && inputs\.bench_runner \|\| 'ubuntu-latest' \}\}/,
     );
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
@@ -134,22 +134,17 @@ describe('embedded operator Go qualification workflow', () => {
     // which is the "mixed runner set with no signal" failure it exists to prevent.
     const benchCovered = Object.keys(workflow.jobs).filter((name) => !PUBLISH_LANE.has(name));
 
-    // Per-job default SKU, pinned explicitly. A loose [24]vcpu pattern cannot
-    // detect a 2<->4 vCPU change, and the test's copy of these values drifted
-    // from the workflow once already. Decisions documented from the same-SHA A/B.
+    // Per-job default SKU, pinned explicitly. Decisions documented from the same-SHA A/B.
     const EXPECTED_DEFAULTS: Record<string, string> = {
-      // Measured green on 2 vCPU in the A/B (PR #1247).
-      'test-plan': 'blacksmith-2vcpu-ubuntu-2404',
-      'worker-helper': 'blacksmith-2vcpu-ubuntu-2404',
-      typecheck: 'blacksmith-2vcpu-ubuntu-2404',
-      'operator-test': 'blacksmith-2vcpu-ubuntu-2404',
-      'legacy-runtime': 'blacksmith-2vcpu-ubuntu-2404',
-      test: 'blacksmith-2vcpu-ubuntu-2404',
-      // DECLINED: vitest + vitest-postgres are CPU-bound (2.11-2.31x stretch;
-      // postgres 518s vs 115s) and build roughly doubles its wall time.
-      vitest: 'blacksmith-4vcpu-ubuntu-2404',
-      'vitest-postgres': 'blacksmith-4vcpu-ubuntu-2404',
-      build: 'blacksmith-4vcpu-ubuntu-2404',
+      'test-plan': 'ubuntu-latest',
+      'worker-helper': 'ubuntu-latest',
+      typecheck: 'ubuntu-latest',
+      'operator-test': 'ubuntu-latest',
+      'legacy-runtime': 'ubuntu-latest',
+      test: 'ubuntu-latest',
+      vitest: 'ubuntu-latest',
+      'vitest-postgres': 'ubuntu-latest',
+      build: 'ubuntu-latest',
     };
     // A job added without a documented SKU decision fails here rather than
     // escaping the guard silently.
@@ -222,6 +217,21 @@ describe('embedded operator Go qualification workflow', () => {
     expect(keyStep).toBeDefined();
     expect(keyStep!.run).toContain('npm_cache_key=');
     expect(keyStep!.run).toContain('node_modules_key=');
+  });
+
+  it('gates the Next.js build cache on runner.environment for sticky disk vs actions/cache', () => {
+    const build = workflow.jobs.build;
+    const buildSteps = build.steps as Array<Record<string, any>>;
+    const sticky = buildSteps.find((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('useblacksmith/stickydisk@'));
+    const actionsCache = buildSteps.find((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('actions/cache@'));
+
+    expect(sticky).toBeDefined();
+    expect(sticky?.if).toBe("runner.environment == 'self-hosted'");
+    expect(actionsCache).toBeDefined();
+    expect(actionsCache?.if).toBe("runner.environment == 'github-hosted'");
+    expect(actionsCache?.with?.path).toBe('./.next/cache');
   });
 
   it('bounds the build heap so the build does not OOM on a smaller runner', () => {
