@@ -688,6 +688,8 @@ export function createGitHubWebhookAdmissionHandler(options: GitHubWebhookAdmiss
         effectivePolicyDigest: resolved.prepared.policy.effectivePolicyDigest,
         authoritativeGate: { expectedAppId: authoritative.expectedAppId, prepared: resolved.prepared },
       } : {}),
+      ...(payload.action === 'ready_for_review' && resolved?.prepared.config.review_engine === 'composed'
+        ? { gracefulComposedContinuationOrigin: { kind: 'github_pull_request_ready_for_review' as const } } : {}),
     });
     return {
       status: admission.status,
