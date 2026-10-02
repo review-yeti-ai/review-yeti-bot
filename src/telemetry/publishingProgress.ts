@@ -1,8 +1,14 @@
-import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../gateway/openRouterClient';
-import { resolveCachedTokens } from '../gateway/openRouterClient';
+import {
+  OpenRouterResponseError,
+  resolveCachedTokens,
+  type OpenRouterRequest,
+  type OpenRouterResponse,
+  type ReviewModelClient,
+} from '../gateway/openRouterClient';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { logger } from '../utils/logger';
 import { deriveResponseUsageAvailability, normalizeOperationalTelemetry, operationalTelemetryEventSchema, type OperationalTelemetry } from '../review/workerCompletion';
+import { classifyProviderResponseStatus } from '../review/laneInfrastructure';
 
 export type PublishingProgressRole = 'persona' | 'moderator' | 'arbiter' | 'classifier' | 'map_reduce_reduce' | 'composed_plan' | 'composed_task' | 'other';
 export type PublishingProgressStatus = 'started' | 'completed' | 'failed' | 'aborted' | 'skipped' | 'blocked' | 'rejected';
@@ -27,6 +33,7 @@ export interface PublishingProgressEvent {
   turn?: number;
   callSequence?: number;
   durationMs?: number;
+  responseStatus?: number;
   rejectionCode?: PublishingProgressRejectionCode;
   required?: boolean;
   usage?: {
@@ -112,6 +119,24 @@ function safeDuration(value: unknown): number | undefined {
   return number === undefined ? undefined : Math.min(number, 86_400_000);
 }
 
+function safeResponseStatus(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 400 && value <= 599
+    ? value
+    : undefined;
+}
+
+function responseStatusOf(error: unknown): number | undefined {
+  return error instanceof OpenRouterResponseError ? safeResponseStatus(error.status) : undefined;
+}
+
+function providerFailureProgressFields(error: unknown, signal?: AbortSignal): Pick<PublishingProgressEvent, 'rejectionCode' | 'responseStatus'> {
+  const responseStatus = signal?.aborted ? undefined : responseStatusOf(error);
+  return {
+    rejectionCode: safePublishingRejectionCode(error, signal),
+    ...(responseStatus !== undefined ? { responseStatus } : {}),
+  };
+}
+
 function safeCost(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.min(number, 1_000_000_000) : undefined;
@@ -171,6 +196,9 @@ export function safePublishingRejectionCode(error: unknown, signal?: AbortSignal
     const typedFailureClass = (error as { failureClass?: unknown }).failureClass;
     const failureRejectionCode = workerFailureRejectionCode(typedFailureClass);
     if (failureRejectionCode) return failureRejectionCode;
+    if (error instanceof OpenRouterResponseError) {
+      return classifyProviderResponseStatus(responseStatusOf(error)) ?? 'provider_error';
+    }
     const name = (error as { name?: unknown }).name;
     switch (name) {
       case 'AbortError': return 'aborted';
@@ -282,6 +310,7 @@ export function createPublishingProgress(
         ...(typeof event.turn==='number'&&Number.isSafeInteger(event.turn)&&event.turn>=0?{turn:event.turn}:{}),
         ...(typeof event.callSequence==='number'&&Number.isSafeInteger(event.callSequence)&&event.callSequence>=0?{callSequence:event.callSequence}:{}),
         ...(typeof event.durationMs==='number'&&Number.isSafeInteger(event.durationMs)&&event.durationMs>=0&&event.durationMs<=86_400_000?{durationMs:event.durationMs}:{}),
+        ...(safeResponseStatus(event.responseStatus)!==undefined?{responseStatus:safeResponseStatus(event.responseStatus)}:{}),
         ...(isSafePublishingRejectionCode(event.rejectionCode)?{rejectionCode:event.rejectionCode}:{}),
       };
       const parsed=operationalTelemetryEventSchema.safeParse(candidate);
@@ -321,6 +350,7 @@ export function createPublishingProgress(
       ...(safeCount(event.turn) !== undefined ? { turn: safeCount(event.turn) } : {}),
       ...(safeCount(event.callSequence) !== undefined ? { callSequence: safeCount(event.callSequence) } : {}),
       ...(safeDuration(event.durationMs) !== undefined ? { durationMs: safeDuration(event.durationMs) } : {}),
+      ...(safeResponseStatus(event.responseStatus) !== undefined ? { responseStatus: safeResponseStatus(event.responseStatus) } : {}),
       ...(isSafePublishingRejectionCode(event.rejectionCode) ? { rejectionCode: event.rejectionCode } : {}),
       ...(typeof event.required === 'boolean' ? { required: event.required } : {}),
       ...(event.usage ? { usage: {
@@ -386,7 +416,7 @@ export function createPublishingProgress(
             pending = client.complete(forwardedRequest);
           } catch (error) {
             finish(diagnosticSignal?.aborted ? 'aborted' : 'failed', {
-              rejectionCode: safePublishingRejectionCode(error, diagnosticSignal),
+              ...providerFailureProgressFields(error, diagnosticSignal),
             });
             diagnosticSignal?.removeEventListener('abort', onAbort);
             throw error;
@@ -399,7 +429,7 @@ export function createPublishingProgress(
             return response;
           }, (error: unknown) => {
             finish(diagnosticSignal?.aborted ? 'aborted' : 'failed', {
-              rejectionCode: safePublishingRejectionCode(error, diagnosticSignal),
+              ...providerFailureProgressFields(error, diagnosticSignal),
             });
             throw error;
           }).finally(() => diagnosticSignal?.removeEventListener('abort', onAbort));

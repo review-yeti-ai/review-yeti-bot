@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { operationalTelemetrySchema } from '../../src/review/workerCompletion';
-import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../../src/gateway/openRouterClient';
+import { OpenRouterResponseError, type OpenRouterRequest, type OpenRouterResponse, type ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { createPanelDeadlineSignal, validateFindings, PanelFindingsValidationError } from '../../src/panel/panelEngine';
 import {
   createPublishingProgress,
@@ -85,6 +85,47 @@ describe('publishing progress diagnostics', () => {
     expect(events[1]).toMatchObject({ status: 'failed', rejectionCode: 'provider_error', runId: 'run-fail', executionAttempt: 3 });
     expect(JSON.stringify(events)).not.toContain('SECRET prompt and provider response');
     expect(JSON.stringify(events)).not.toContain('private prompt content');
+  });
+
+  it.each([
+    [401, 'auth'],
+    [403, 'auth'],
+    [429, 'rate_limit'],
+    [500, 'provider_error'],
+    [503, 'provider_error'],
+  ] as const)('retains only safe status and failure class for provider HTTP %i', async (status, rejectionCode) => {
+    const events: Array<Record<string, unknown>> = [];
+    const sensitiveText = `response body for ${status} https://gateway.example/private?api_key=do-not-export and prompt text`;
+    const failure = new OpenRouterResponseError(sensitiveText, status);
+    const progress = createPublishingProgress({ runId: 'run-http-failure', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+
+    await expect(progress.instrument({ complete: async () => { throw failure; } }).complete(request()))
+      .rejects.toBe(failure);
+
+    expect(safePublishingRejectionCode(failure)).toBe(rejectionCode);
+    expect(events[1]).toMatchObject({ task: 'provider_call', status: 'failed', rejectionCode, responseStatus: status });
+    expect(progress.snapshot?.()?.recentEvents[1]).toMatchObject({ rejectionCode, responseStatus: status });
+    const serialized = JSON.stringify({ events, telemetry: progress.snapshot?.() });
+    expect(serialized).not.toContain(sensitiveText);
+    expect(serialized).not.toContain('do-not-export');
+    expect(serialized).not.toContain('gateway.example');
+    expect(serialized).not.toContain('response body');
+    expect(serialized).not.toContain('prompt text');
+  });
+
+  it('does not trust arbitrary status-shaped objects or emit out-of-range status values', () => {
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-invalid-status', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+    const spoofed = Object.assign(new Error('private message'), { name: 'OpenRouterResponseError', status: 401 });
+
+    expect(safePublishingRejectionCode(spoofed)).toBe('provider_error');
+    progress.emit({ task: 'provider_call', status: 'failed', responseStatus: 700 } as never);
+    expect(events[0]).not.toHaveProperty('responseStatus');
+    expect(progress.snapshot?.()?.recentEvents[0]).not.toHaveProperty('responseStatus');
   });
 
   it('maps an unknown failureClass to a fixed code without emitting the caller-controlled value', async () => {
