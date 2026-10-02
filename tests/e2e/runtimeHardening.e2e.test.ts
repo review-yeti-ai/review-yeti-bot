@@ -740,10 +740,11 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
     describe('R5: DOKS Infrastructure & Terminal Run Re-queueing', () => {
       it('1.5.1: Worker image validator enforces an immutable sha256 digest, from any registry, via production dispatcher config', () => {
         const trustedGhcr = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[0]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
-        const trustedDoks = `${TRUSTED_WORKER_IMAGE_REPOSITORIES[1]}@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635`;
+        const legacyRegistry = 'registry.example.invalid/legacy/review-yeti-worker@sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635';
 
+        expect(TRUSTED_WORKER_IMAGE_REPOSITORIES).toEqual(['ghcr.io/review-yeti-ai/review-yeti-worker']);
         expect(isTrustedWorkerImage(trustedGhcr)).toBe(true);
-        expect(isTrustedWorkerImage(trustedDoks)).toBe(true);
+        expect(isTrustedWorkerImage(legacyRegistry)).toBe(false);
 
         const config = reviewJobDispatcherConfigFromEnv({
           REVIEW_JOB_DISPATCH_ENABLED: 'true',
