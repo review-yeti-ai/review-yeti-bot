@@ -83,28 +83,13 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
 
         <div className="space-y-1 font-mono text-[11px]">
           <div className="flex items-center justify-between">
-            <span className="text-zinc-400 flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" /> Claude 3.7 Sonnet
+            <span className="text-zinc-200 flex items-center gap-1.5 font-medium">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> Review Yeti PR Reviewer
             </span>
-            <span className="text-zinc-200 tabular-nums">48%</span>
+            <span className="text-emerald-400 font-semibold tabular-nums">100%</span>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400 flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> GPT-4o
-            </span>
-            <span className="text-zinc-200 tabular-nums">28%</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400 flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> DeepSeek R1
-            </span>
-            <span className="text-zinc-200 tabular-nums">14%</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-zinc-400 flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-purple-400" /> Edge Swarm
-            </span>
-            <span className="text-zinc-200 tabular-nums">10%</span>
+          <div className="text-[10px] text-zinc-500 pt-0.5">
+            Native Call Telemetry Edge Swarm Runner (zero external API dependencies)
           </div>
         </div>
 

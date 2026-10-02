@@ -185,7 +185,7 @@ function AnalyticsDashboardContent() {
               </h3>
             </div>
             <span className="text-xs font-mono text-slate-400">
-              {costData.breakdown.length} Active Model Providers
+              {costData.breakdown.length} Active Model Provider{costData.breakdown.length === 1 ? '' : 's'}
             </span>
           </div>
 

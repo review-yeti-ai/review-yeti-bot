@@ -124,7 +124,9 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
     assert.equal(body.success, true);
     assert.ok(body.totalSpendUsd > 0);
     assert.ok(Array.isArray(body.breakdown));
-    assert.ok(body.breakdown.some((m: any) => m.displayName.includes('Claude')));
+    assert.ok(body.breakdown.some((m: any) => m.displayName.includes('Review Yeti PR Reviewer')));
+    assert.equal(body.breakdown[0].percentage, 100);
+    assert.equal(body.breakdown[0].model, 'calltelemetry/yeti-pr-reviewer');
     assert.ok(Array.isArray(body.byRepo));
   });
 

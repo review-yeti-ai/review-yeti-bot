@@ -177,10 +177,7 @@ export async function handleDashboardApi(
       p95DurationMs: 28450,
       totalFindings: kpi.totalFindings,
       providerHealth: [
-        { id: 'cloudflare-edge', status: 'healthy', model: 'Review Yeti Edge Swarm' },
-        { id: 'openrouter', status: 'healthy', model: 'Anthropic Claude 3.7 Sonnet' },
-        { id: 'anthropic', status: 'healthy', model: 'Claude 3.5 Sonnet' },
-        { id: 'openai', status: 'healthy', model: 'GPT-4o' },
+        { id: 'cloudflare-edge', status: 'healthy', model: 'Review Yeti PR Reviewer' },
       ],
       memoryGraph: {
         symbolNodesCount: 1420,
@@ -439,42 +436,22 @@ export async function handleDashboardApi(
     const analytics = extractToolJson<any>(analyticsRes) || {};
     const totalSpend = analytics.kpis?.totalSpendUSD || 2.148;
 
+    const totalTokens = analytics.kpis?.totalTokens || 1450200;
+    const promptTokens = Math.round(totalTokens * 0.82);
+    const completionTokens = Math.round(totalTokens * 0.18);
+    const totalReviews = analytics.kpis?.totalReviews || 84;
+
     const breakdown = [
       {
-        model: 'anthropic/claude-3.7-sonnet',
-        displayName: 'Claude 3.7 Sonnet',
-        providerId: 'openrouter',
-        spendUsd: Number((totalSpend * 0.48).toFixed(3)),
-        percentage: 48,
-        callCount: 64,
-        tokens: { prompt: 580000, completion: 92000 },
-      },
-      {
-        model: 'openai/gpt-4o',
-        displayName: 'GPT-4o',
-        providerId: 'openrouter',
-        spendUsd: Number((totalSpend * 0.28).toFixed(3)),
-        percentage: 28,
-        callCount: 38,
-        tokens: { prompt: 340000, completion: 54000 },
-      },
-      {
-        model: 'deepseek/deepseek-r1',
-        displayName: 'DeepSeek R1',
-        providerId: 'openrouter',
-        spendUsd: Number((totalSpend * 0.14).toFixed(3)),
-        percentage: 14,
-        callCount: 22,
-        tokens: { prompt: 190000, completion: 32000 },
-      },
-      {
-        model: 'cloudflare/workers-ai',
-        displayName: 'Review Yeti Edge Swarm',
-        providerId: 'cloudflare',
-        spendUsd: Number((totalSpend * 0.1).toFixed(3)),
-        percentage: 10,
-        callCount: 84,
-        tokens: { prompt: 140000, completion: 22000 },
+        model: 'calltelemetry/yeti-pr-reviewer',
+        displayName: 'Review Yeti PR Reviewer',
+        providerId: 'calltelemetry-edge',
+        spendUsd: Number(totalSpend.toFixed(3)),
+        percentage: 100,
+        callCount: totalReviews,
+        tokens: { prompt: promptTokens, completion: completionTokens },
+        promptTokens,
+        completionTokens,
       },
     ];
 
