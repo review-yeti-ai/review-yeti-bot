@@ -986,6 +986,107 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       [seeded.run.runId])).rows[0].count).toBe(1);
   });
 
+  type ImmutableDuplicateDamage = 'immutable completed persona' | 'matching completed IDs' | 'matching pending plan IDs';
+
+  async function duplicateImmutableTaskEvidence(
+    database: PoolClient, seeded: Awaited<ReturnType<typeof seedGracefulComposedIncompleteAttempt>>,
+    damage: ImmutableDuplicateDamage, replaceSourceCheckpoint = false,
+  ) {
+    const completion = structuredClone(seeded.completion);
+    if (damage === 'matching pending plan IDs') {
+      // Duplicate two unfinished plan members: all six completed task IDs and
+      // their findings remain unchanged, so missing completed work is not the refusal.
+      completion.result.taskPlan![7].id = completion.result.taskPlan![6].id;
+    } else {
+      // Preserve array length and exact findings while making plan-order persona
+      // evidence repeat an ID. The second original completed ID is now missing.
+      completion.result.personas[1].id = completion.result.personas[0].id;
+    }
+    const digest = workerReviewCompletionDigest(completion);
+    const payload = JSON.stringify(completion);
+    // Bind the seeded immutable source and its source Gate to the actual changed
+    // bytes; rejection must not be an incidental stale digest/SQL join mismatch.
+    await database.query(`UPDATE review_worker_completions SET payload=$2::jsonb,content_digest=$3,byte_length=$4
+      WHERE run_id=$1 AND execution_attempt=1`, [seeded.run.runId, payload, digest, Buffer.byteLength(payload)]);
+    await database.query(`UPDATE review_gate_attempts SET worker_result_digest=$2
+      WHERE run_id=$1 AND execution_attempt=1`, [seeded.run.runId, digest]);
+    if (replaceSourceCheckpoint) {
+      const checkpoint = structuredClone(seeded.checkpoint);
+      if (damage === 'matching pending plan IDs') checkpoint.plan = completion.result.taskPlan!;
+      else {
+        checkpoint.completedTasks = seeded.completion.result.personas.map((persona) =>
+          structuredClone(seeded.checkpoint.completedTasks.find((task) => task.id === persona.id)!));
+        checkpoint.completedTasks[1].id = checkpoint.completedTasks[0].id;
+        expect(checkpoint.completedTasks).toEqual(completion.result.personas.map((persona) => ({ id: persona.id, findings: persona.findings })));
+      }
+      const json = JSON.stringify(checkpoint);
+      await database.query(`UPDATE review_execution_checkpoints SET payload=$2::jsonb,byte_length=$3
+        WHERE run_id=$1`, [seeded.run.runId, json, Buffer.byteLength(json)]);
+    }
+    expect(digest).not.toBe(seeded.digest);
+    expect((await database.query(`SELECT c.content_digest,g.worker_result_digest FROM review_worker_completions c
+      JOIN review_gate_attempts g ON g.run_id=c.run_id AND g.execution_attempt=c.execution_attempt
+      WHERE c.run_id=$1 AND c.execution_attempt=1`, [seeded.run.runId])).rows[0])
+      .toEqual({ content_digest: digest, worker_result_digest: digest });
+  }
+
+  it.each(['immutable completed persona', 'matching completed IDs', 'matching pending plan IDs'] as const)
+  ('refuses duplicate IDs in %s source evidence before any recovery allocation', async (damage) => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', false,
+      { concurrent: true, explicitEmptyRechecks: true });
+    proof = seeded.proof;
+    await duplicateImmutableTaskEvidence(client, seeded, damage, damage !== 'immutable completed persona');
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = (await client.query('SELECT count(*)::int count FROM github_deliveries')).rows[0].count;
+    const gatesBefore = (await client.query('SELECT * FROM review_gate_attempts WHERE run_id=$1 ORDER BY execution_attempt',
+      [seeded.run.runId])).rows;
+    await expect(repository.admit({
+      ...authoritativeAdmission(`immutable-duplicate-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    })).rejects.toThrow();
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int count FROM github_deliveries')).rows[0].count).toBe(deliveriesBefore);
+    expect((await client.query('SELECT * FROM review_gate_attempts WHERE run_id=$1 ORDER BY execution_attempt',
+      [seeded.run.runId])).rows).toEqual(gatesBefore);
+    expect((await client.query('SELECT count(*)::int count FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+  });
+
+  it.each(['immutable completed persona', 'matching pending plan IDs'] as const)
+  ('refuses duplicate IDs in %s immutable evidence while reconstructing an admitted receipt', async (damage) => {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', false,
+      { concurrent: true, explicitEmptyRechecks: true });
+    proof = seeded.proof;
+    await repository.admit({ ...authoritativeAdmission(`immutable-reconstruction-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false });
+    await bindPendingGate(gateRepository, 1_790_000_120_000);
+    const token = 'ghs_rel1302_immutable_duplicate_worker';
+    await client.query(`UPDATE review_dispatch_outbox SET status='claimed',worker_token_digest=$2,
+      lease_owner='immutable-duplicate-worker',lease_expires_at=to_timestamp($3/1000.0) WHERE run_id=$1`,
+      [seeded.run.runId, sha256(token), 1_790_000_460_000]);
+    expect((await writeCheckpointOverRealHttp({ ...seeded.checkpoint, executionAttempt: 2, revision: 8 }, token)).status).toBe(200);
+    expect((await readRetainedOverRealHttp(seeded.run.runId, token, 2)).statuses).toEqual([200]);
+    await duplicateImmutableTaskEvidence(client, seeded, damage);
+    const before = await dispatchState(client, seeded.run.runId);
+    const receiptBefore = (await client.query('SELECT * FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows;
+    const refused = await readRetainedOverRealHttp(seeded.run.runId, token, 2);
+    expect(refused.statuses).toEqual([503]);
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT * FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows).toEqual(receiptBefore);
+  });
+
   it.each(['digest', 'revision'] as const)('rejects a tampered %s when reconstructing the admitted receipt after checkpoint replacement', async (damage) => {
     let proof: any;
     const { repository, client, gateRepository } = await createRepository({
