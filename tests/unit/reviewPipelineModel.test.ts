@@ -489,6 +489,7 @@ describe('resolveModelConfig', () => {
     expect(requests[0].thinking).toBeUndefined();
     expect(requests[1].thinking).toEqual(finishReason === 'length' && initial === 24_576 && !effort ? { type: 'disabled' } : undefined);
     if (effort) expect(requests[1].reasoning_effort).toBe(effort);
+    if (finishReason === 'length' && initial === 24_576 && !effort) expect(requests[1]).not.toHaveProperty('reasoning_effort');
     expect(result.responseAttempts.map((attempt: any) => attempt.outcome)).toEqual(['malformed_output', 'parsed']);
   });
 
