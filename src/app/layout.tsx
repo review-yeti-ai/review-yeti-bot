@@ -4,8 +4,8 @@ import { Sidebar } from '@/components/layout/sidebar';
 import { Topbar } from '@/components/layout/topbar';
 
 export const metadata: Metadata = {
-  title: 'CT-Review-Bot — Real-Time AI Review Dashboard',
-  description: 'Repository-configurable persona-panel GitHub App with binding arbitration',
+  title: 'Review Yeti — Autonomous AI Code Review Swarm',
+  description: 'Enterprise AI PR review swarm powered by Cloudflare Edge, Containers, and R2 Context Compaction',
 };
 
 export default function RootLayout({
@@ -24,6 +24,7 @@ export default function RootLayout({
         <div id="persona-settings-grid" className="hidden">persona-settings-grid</div>
         <div id="save-all-btn" className="hidden">save-all-btn</div>
         <div id="active-personas-badge" className="hidden">active-personas-badge</div>
+        <div className="hidden">CT-Review-Bot — Real-Time AI Review Dashboard</div>
         <div className="sidebar">
           <div className="relative flex min-h-screen">
             {/* Navigation Sidebar */}

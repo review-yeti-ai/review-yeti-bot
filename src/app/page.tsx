@@ -42,11 +42,11 @@ export default function OverviewPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-foreground">
-            CT-Review-Bot Overview Dashboard
+            Review Yeti Swarm Control Plane
           </h2>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 mt-1">
             <p className="text-sm text-muted-foreground">
-              Repository-configurable persona panel with binding arbitration
+              Autonomous multi-agent review orchestration, path-scoped diff analysis, and P0 blocker enforcement
             </p>
             <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs font-mono text-blue-400 border border-blue-500/20">
               Today: {stats?.todayDateBadge || new Date().toISOString().slice(0, 10)}

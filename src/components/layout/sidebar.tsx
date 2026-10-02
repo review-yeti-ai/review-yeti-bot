@@ -271,15 +271,16 @@ export function Sidebar() {
             className="flex items-center gap-3 group"
             onClick={() => setIsOpen(false)}
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
               <Bot className="h-5 w-5 text-white" />
             </div>
             <div className="flex flex-col">
               <span className="font-semibold tracking-wide text-foreground text-sm flex items-center gap-1.5">
-                ct-review-bot
+                Review Yeti
                 <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
+                <span className="sr-only">ct-review-bot</span>
               </span>
-              <span className="text-[11px] text-muted-foreground">v1.5.0 • Persona Panel</span>
+              <span className="text-[11px] text-muted-foreground">Call Telemetry • Swarm Engine</span>
             </div>
           </Link>
 
@@ -292,18 +293,18 @@ export function Sidebar() {
         {/* Bottom System Status Panel */}
         <div className="p-4 m-4 rounded-xl border border-border/40 bg-background/50 backdrop-blur-sm">
           <div className="flex items-center justify-between text-xs mb-2">
-            <span className="text-muted-foreground font-medium">Pipeline Status</span>
-            <span className="text-emerald-400 font-mono text-[11px]">Active</span>
+            <span className="text-muted-foreground font-medium">Review Yeti Swarm</span>
+            <span className="text-emerald-400 font-mono text-[11px]">Online</span>
           </div>
           <div className="h-1.5 w-full bg-secondary/80 rounded-full overflow-hidden">
             <div className="h-full bg-gradient-to-r from-emerald-500 to-indigo-500 rounded-full w-full animate-pulse" />
           </div>
           <div className="mt-2 text-[10px] text-muted-foreground flex items-center justify-between">
-            <span>11 Personas Active</span>
-            <span>SSE Client Ready</span>
+            <span>Cloudflare Edge Active</span>
+            <span>R2 Cache Ready</span>
           </div>
           <div className="mt-3 pt-2.5 border-t border-border/40 flex items-center justify-between">
-            <span className="text-[10px] text-muted-foreground">Version</span>
+            <span className="text-[10px] text-muted-foreground">Control Plane</span>
             <VersionBadge />
           </div>
         </div>

@@ -5,9 +5,10 @@ import { handleMergeGroupAttestation } from './mergeGroupAttestation.js';
 import type { DebounceMessagePayload, Env, ReviewRunSpec } from './types.js';
 import { purgeExpiredR2WorkspaceCaches } from './runners/r2WorkspaceCache.js';
 import { defaultMcpRouter, constantTimeEquals } from './mcp/mcpRouter.js';
+import { handleDashboardApi } from './api/dashboardRoutes.js';
 
 export { RepoGateDO, ReviewRunDO, ReviewJobWorkflow, handleMergeGroupAttestation };
-export { defaultMcpRouter };
+export { defaultMcpRouter, handleDashboardApi };
 
 /**
  * Validates whether a given repository full name is included in the pilot scope.
@@ -273,6 +274,12 @@ export default {
       // Review Yeti MCP Gateway: /api/mcp and /mcp
       if (url.pathname === '/api/mcp' || url.pathname === '/mcp') {
         return await defaultMcpRouter.handleHttpRequest(request, env);
+      }
+
+      // Review Yeti Dashboard & Analytics REST API (Edge)
+      const dashboardResponse = await handleDashboardApi(request, env);
+      if (dashboardResponse) {
+        return dashboardResponse;
       }
 
       // Webhook Ingest: /api/webhooks/github

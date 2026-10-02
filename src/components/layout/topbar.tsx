@@ -17,8 +17,8 @@ export interface TopbarProps {
 
 const pageTitles: Record<string, { title: string; description: string }> = {
   '/': {
-    title: 'Overview Dashboard',
-    description: 'Real-time review metrics, pass rates, and active persona status',
+    title: 'Review Yeti Swarm Control Plane',
+    description: 'Real-time review metrics, turnaround SLAs, and active review swarm status',
   },
   '/analytics': {
     title: 'Executive & Engineering Analytics',
@@ -26,19 +26,19 @@ const pageTitles: Record<string, { title: string; description: string }> = {
   },
   '/onboarding': {
     title: 'Onboarding Wizard',
-    description: '5-step GitHub Organization registration, AI model provider routing, and diagnostic probes',
+    description: 'GitHub Organization registration, AI model provider routing, and diagnostic probes',
   },
   '/live': {
-    title: 'Live Agent Stream',
-    description: 'Real-time SSE agent terminal stdout/stderr log stream',
+    title: 'Live Review Inspector',
+    description: 'Real-time agent reasoning feed, tool call telemetry, and AST diff viewer',
   },
   '/repos': {
-    title: 'Repositories & Webhooks',
-    description: 'Configured GitHub repositories and webhook delivery health',
+    title: 'Monitored Repositories & Quality Gates',
+    description: 'Configured GitHub repositories, gate enforcement, and webhook delivery health',
   },
   '/settings': {
-    title: 'Persona System Prompt Editor',
-    description: 'Customize 11 reviewer persona prompts and arbitration parameters',
+    title: 'Review Yeti Swarm Policy & Rules',
+    description: 'Customize reviewer rules, severity thresholds, and arbitration parameters',
   },
   '/integrations': {
     title: 'Integrations Panel',
@@ -58,8 +58,8 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
   const pathname = usePathname() || '/';
 
   const routeMeta = pageTitles[pathname] || {
-    title: title || 'ct-review-bot',
-    description: description || 'Persona Panel Dashboard',
+    title: title || 'Review Yeti',
+    description: description || 'Autonomous Review Swarm Dashboard',
   };
 
   const displayTitle = title || routeMeta.title;
