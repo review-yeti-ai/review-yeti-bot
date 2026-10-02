@@ -38,6 +38,7 @@ import {
 import {
   OpenRouterMessage,
   ReviewModelClient,
+  retryAfterFloorMs,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
 import {
@@ -504,15 +505,17 @@ async function callTurn(params: {
         ? params.deadlineAtMs - (params.now ?? Date.now)()
         : Infinity;
 
+      const cooldownFloorMs = retryAfterFloorMs(error, (params.now ?? Date.now)());
+      const emptyCompletionDelayMs = Math.max(EMPTY_COMPLETION_RETRY_DELAY_MS, cooldownFloorMs);
       if (isEmptyCompletionError(error) && emptyCompletionAttempts < EMPTY_COMPLETION_MAX_ATTEMPTS - 1
-          && EMPTY_COMPLETION_RETRY_DELAY_MS < budgetLeftMs) {
+          && emptyCompletionDelayMs < budgetLeftMs) {
         emptyCompletionAttempts += 1;
         logger.warn(`[composed] empty completion from '${params.providerId}' (attempt ${emptyCompletionAttempts}/${EMPTY_COMPLETION_MAX_ATTEMPTS}); re-issuing against the same alias so its routing can pick a different backend.`);
-        await panelDelay(EMPTY_COMPLETION_RETRY_DELAY_MS, params.signal);
+        await panelDelay(emptyCompletionDelayMs, params.signal);
         continue;
       }
 
-      const backoffMs = transportRetryDelayMs(transportAttempts + 1);
+      const backoffMs = Math.max(transportRetryDelayMs(transportAttempts + 1), cooldownFloorMs);
       if (transportAttempts < TRANSPORT_MAX_RETRIES
           && backoffMs < budgetLeftMs
           && isTransientLaneTransportError(error)) {
@@ -522,10 +525,11 @@ async function callTurn(params: {
         continue;
       }
 
-      if (genericAttempts < 1 && isRetryablePanelError(error) && 1000 < budgetLeftMs) {
+      const genericDelayMs = Math.max(1000, cooldownFloorMs);
+      if (genericAttempts < 1 && isRetryablePanelError(error) && genericDelayMs < budgetLeftMs) {
         genericAttempts += 1;
         logger.warn(`[composed] retrying transient error from '${params.providerId}'.`);
-        await panelDelay(1000, params.signal);
+        await panelDelay(genericDelayMs, params.signal);
         continue;
       }
 

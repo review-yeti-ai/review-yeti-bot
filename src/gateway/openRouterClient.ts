@@ -4,6 +4,7 @@ import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { describeErrorChain, errorCauseLogFields, type SanitizedErrorCause } from '../utils/errorCause';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
 import { TokenBatcher, type TokenBatcherOptions } from './tokenBatcher';
+import { parseRetryAfter, retryAfterRemainingMs, type RetryAfter } from './retryAfter';
 
 export class OpenRouterConnectionError extends Error {
   /**
@@ -23,6 +24,11 @@ export class OpenRouterConnectionError extends Error {
 export class OpenRouterResponseError extends Error {
   readonly status?: number;
 
+  /** Sanitized cooldown from this attempt's actual HTTP429 response, never its raw header. */
+  get retryAfter(): RetryAfter | undefined {
+    return retryAfterByError.get(this);
+  }
+
   get observedHttpStatus(): number | undefined {
     return observedHttpStatusByError.get(this)?.status;
   }
@@ -40,6 +46,17 @@ export class OpenRouterResponseError extends Error {
 
 type ObservedHttpStatusSource = 'fetch_response' | 'sdk_http_error';
 type ObservedHttpStatus = Readonly<{ status: number; source: ObservedHttpStatusSource }>;
+
+const retryAfterByError = new WeakMap<OpenRouterResponseError, RetryAfter>();
+
+function withRetryAfter<T extends OpenRouterResponseError>(error: T, metadata?: RetryAfter): T {
+  if (error.status === 429 && metadata) retryAfterByError.set(error, metadata);
+  return error;
+}
+
+export function retryAfterFloorMs(error: unknown, nowMs: number): number {
+  return retryAfterRemainingMs(error instanceof OpenRouterResponseError ? error.retryAfter : undefined, nowMs);
+}
 
 const observedHttpStatusByError = new WeakMap<OpenRouterResponseError, ObservedHttpStatus>();
 
@@ -1709,6 +1726,8 @@ async function createOpenRouterSdkClient(options: {
   apiKey: string;
   fetchImplementation: FetchImplementation;
   onGenerationId?: (value: string) => void;
+  onRetryAfter?: (value: RetryAfter | undefined) => void;
+  now?: () => number;
 }): Promise<OpenRouterSdkClient> {
   const { OpenRouter, OpenRouterError, HTTPClient } = await loadOpenRouterSdk();
   const httpClient = new HTTPClient({
@@ -1752,6 +1771,9 @@ async function createOpenRouterSdkClient(options: {
           statusText: compatibilityResponse?.statusText,
           headers: compatibilityResponse?.headers || { 'content-type': 'application/json' },
         });
+      }
+      if (response.status === 429) {
+        options.onRetryAfter?.(parseRetryAfter(response.headers.get('retry-after'), (options.now ?? Date.now)()));
       }
       const contentType = response.headers?.get?.('content-type') || '';
       const isSse = contentType.includes('text/event-stream');
@@ -2031,6 +2053,7 @@ export class OpenRouterClient implements ReviewModelClient {
     let requestDeadlineExpired = false;
     let callerCancelled = false;
     let streamTransportFailure = false;
+    let sdkRetryAfter: RetryAfter | undefined;
     let observedSdkHttpStatusFromError: ((error: unknown) => number | undefined) | undefined;
     const onCallerAbort = () => {
       callerCancelled = true;
@@ -2132,6 +2155,9 @@ export class OpenRouterClient implements ReviewModelClient {
         if (responseGenerationId) generationId = responseGenerationId;
 
         if (!response.ok) {
+          const retryAfter = response.status === 429
+            ? parseRetryAfter(response.headers?.get?.('retry-after'), this.now())
+            : undefined;
           let errorBody = '';
           try {
             errorBody = await readResponseText(response, requestAbortController.signal);
@@ -2146,14 +2172,14 @@ export class OpenRouterClient implements ReviewModelClient {
             parsedBody = parsed;
             parsedMsg = parsed?.error?.message || parsed?.message || errorBody;
           } catch (_) {}
-          throw withObservedHttpStatus(
+          throw withRetryAfter(withObservedHttpStatus(
             new OpenRouterResponseError(
               `${upstreamLabel(this.baseUrl, parsedBody)} HTTP ${status}: ${parsedMsg}`,
               status,
             ),
             status,
             'fetch_response',
-          );
+          ), retryAfter);
         }
 
         const contentType = response.headers?.get?.('content-type') || '';
@@ -2202,6 +2228,8 @@ export class OpenRouterClient implements ReviewModelClient {
             apiKey: this.apiKey,
             fetchImplementation: this.fetchImplementation,
             onGenerationId: (value) => { generationId = value; },
+            onRetryAfter: (value) => { sdkRetryAfter = value; },
+            now: this.now,
           }),
           requestAbortController.signal,
         );
@@ -2379,7 +2407,10 @@ export class OpenRouterClient implements ReviewModelClient {
         const observedHttpStatus = observedSdkHttpStatusFromError?.(error);
         const sdkMessage = sdkErrorMessage(error);
         if (status && status >= 400) {
-          const responseError = new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status);
+          const responseError = withRetryAfter(
+            new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status),
+            sdkRetryAfter,
+          );
           classifiedError = observedHttpStatus !== undefined
             ? withObservedHttpStatus(responseError, observedHttpStatus, 'sdk_http_error')
             : responseError;
