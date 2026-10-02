@@ -1522,7 +1522,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       ...authoritativeAdmission(`historical-central-${randomUUID()}`, 1_790_000_100_000),
       eventName: 'workflow_dispatch', centralActionDispatch: true,
       expectedGeneration: 2, retryRequested: true, retryAfterExecutionAttempt: 1,
-      incompleteP2Recovery: true,
+      incompleteP2Recovery: true as const,
     };
     const admitted = await repository.admit(input);
     expect(admitted.run.attempt).toBe(1);
@@ -1532,7 +1532,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const context = await loadIncompleteP2RecoveryContext(client, {
       runId: seeded.run.runId, executionAttempt: 2, repositoryId: seeded.completion.repositoryId,
       identity: seeded.run.identity, policyDigest: seeded.completion.policyDigest,
-      expectedAppId: 4_385_771, expectedContextDigest: String(admitted.run.artifacts.incomplete_p2_recovery_digest),
+      expectedAppId: 4_385_771, expectedContextDigest: String((admitted.run.artifacts as Record<string, unknown>).incomplete_p2_recovery_digest),
     });
     expect(context?.sources[0].workerResultDigest).toBe(seeded.digest);
   });

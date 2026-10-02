@@ -1,6 +1,6 @@
 {
   "name": "ct-review-bot",
-  "version": "1.115.2",
+  "version": "1.116.0",
   "description": "Repository-configurable persona-panel GitHub App with binding arbitration",
   "main": "dist/index.js",
   "bin": {
@@ -22,8 +22,8 @@
   ],
   "scripts": {
     "generate:providers": "ts-node scripts/generate-omniroute-providers.ts",
+    "build:backend": "tsc -p tsconfig.server.json && node scripts/ensure-static-assets.js",
     "build:frontend": "node scripts/clean-frontend.js && next build && node scripts/postbuild.js",
-    "build:backend": "tsc -p tsconfig.server.json",
     "build:cf-orchestrator": "cd cf-orchestrator && npm run build",
     "build": "npm run build:frontend && npm run build:backend && node scripts/postbuild.js",
     "start": "node dist/index.js",
