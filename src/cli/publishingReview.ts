@@ -2748,8 +2748,8 @@ export async function runPublishingReviewWorker(
     } else if (authoritativeInfrastructureResult) {
       // REL-1113: same publication order as a verdict (durable service record first), but the
       // check is INCOMPLETE -- never "BLOCK" -- and names the lanes that did not complete. The
-      // service records `infrastructure-failure` for this result and, while attempts remain,
-      // re-admits a fresh execution attempt from the same shared decision.
+      // service records `infrastructure-failure` and may consider re-admission after its
+      // independent validation; this worker's delivery ACK does not prove a fresh attempt.
       await reportReviewResult(authoritativeInfrastructureResult);
       await deps.checkClient.completeCheck({
         owner: identity.owner,

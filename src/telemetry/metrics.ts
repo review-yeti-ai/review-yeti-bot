@@ -133,7 +133,8 @@ export interface MetricCounters {
   laneOutcomes: Counter;
   /** REL-1113: runs that ended INCOMPLETE because reviewer lanes failed on infrastructure
    * (transport/gateway), published as INCOMPLETE rather than a verdict. `outcome` is
-   * `retrying` (a fresh attempt is scheduled) or `exhausted` (no automatic attempt left). */
+   * `not_confirmed`, `cap_exhausted`, or `unknown`; none is a scheduling receipt.
+   * Consumer migration: docs/RETRY_REPORTING_OBSERVABILITY_MIGRATION.md. */
   reviewIncompleteInfra: Counter;
   /** A lane's turn-accumulation telemetry failed `personaTelemetrySchema` validation and was
    * omitted from the published/reported result rather than failing the review. Non-zero here
