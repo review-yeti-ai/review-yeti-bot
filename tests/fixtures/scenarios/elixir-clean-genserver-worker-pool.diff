@@ -1,7 +1,7 @@
 --- FILE: lib/exampleorg/pool/dynamic_worker_supervisor.ex ---
 diff --git a/lib/exampleorg/pool/dynamic_worker_supervisor.ex b/lib/exampleorg/pool/dynamic_worker_supervisor.ex
 @@ -1,5 +1,18 @@
- defmodule exampleorg.Pool.DynamicWorkerSupervisor do
+ defmodule Exampleorg.Pool.DynamicWorkerSupervisor do
    use DynamicSupervisor
  
    def start_link(init_arg) do
@@ -14,7 +14,7 @@ diff --git a/lib/exampleorg/pool/dynamic_worker_supervisor.ex b/lib/exampleorg/p
 +  end
 +
 +  def start_worker(args) do
-+    spec = {exampleorg.Pool.Worker, args}
++    spec = {Exampleorg.Pool.Worker, args}
 +    DynamicSupervisor.start_child(__MODULE__, spec)
 +  end
 +end
@@ -22,7 +22,7 @@ diff --git a/lib/exampleorg/pool/dynamic_worker_supervisor.ex b/lib/exampleorg/p
 --- FILE: lib/exampleorg/pool/worker.ex ---
 diff --git a/lib/exampleorg/pool/worker.ex b/lib/exampleorg/pool/worker.ex
 @@ -1,5 +1,19 @@
- defmodule exampleorg.Pool.Worker do
+ defmodule Exampleorg.Pool.Worker do
    use GenServer, restart: :transient
  
    def start_link(args) do
@@ -44,9 +44,9 @@ diff --git a/lib/exampleorg/pool/worker.ex b/lib/exampleorg/pool/worker.ex
 --- FILE: test/exampleorg/pool/worker_test.exs ---
 diff --git a/test/exampleorg/pool/worker_test.exs b/test/exampleorg/pool/worker_test.exs
 @@ -1,5 +1,16 @@
- defmodule exampleorg.Pool.WorkerTest do
+ defmodule Exampleorg.Pool.WorkerTest do
    use ExUnit.Case, async: true
-   alias exampleorg.Pool.Worker
+   alias Exampleorg.Pool.Worker
 +
 +  describe "worker execution" do
 +    test "executes task and returns ok tuple" do
