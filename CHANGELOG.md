@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.116.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.0...v1.116.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **REL-1265:** re-review disputed tasks with immutable evidence ([#1258](https://github.com/review-yeti-ai/review-yeti-bot/issues/1258)) ([0d177d3](https://github.com/review-yeti-ai/review-yeti-bot/commit/0d177d383f25a121377f39b64fd450c86ae669e2))
+
 ## [1.116.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.2...v1.116.0) (2026-10-02)
 
 
