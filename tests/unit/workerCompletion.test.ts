@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
-import { normalizeOperationalTelemetry, operationalTelemetrySchema, type OperationalTelemetry } from '../../src/review/workerCompletion';
+import { normalizeOperationalTelemetry, operationalTelemetryEventSchema, operationalTelemetrySchema, type OperationalTelemetry } from '../../src/review/workerCompletion';
 import { parseWorkerReviewEvidence, workerReviewEvidenceDigest } from '../../src/review/workerReviewCompletion';
 import {
   buildDurableWorkerFailureDiagnostics,
@@ -529,6 +529,18 @@ describe('classifyWorkerFailureMessage', () => {
 
 describe('operational failure diagnostics shared boundary',()=>{
   function observations(){return createPublishingProgress({runId:'run-safe',executionAttempt:1},{sink:()=>{}}).snapshot!()!;}
+  it('accepts only bounded HTTP error status metadata and rejects response content fields',()=>{
+    const base = { task: 'provider_call', status: 'failed', rejectionCode: 'provider_error' } as const;
+    for (const responseStatus of [400, 401, 403, 429, 500, 599]) {
+      expect(operationalTelemetryEventSchema.safeParse({ ...base, responseStatus }).success).toBe(true);
+    }
+    for (const responseStatus of [399, 600, NaN, 401.5, '503', null]) {
+      expect(operationalTelemetryEventSchema.safeParse({ ...base, responseStatus }).success).toBe(false);
+    }
+    for (const field of ['message', 'responseBody', 'url', 'responseStatusSource']) {
+      expect(operationalTelemetryEventSchema.safeParse({ ...base, responseStatus: 503, [field]: 'SECRET' }).success).toBe(false);
+    }
+  });
   it('accepts old bodies and preserves normalized new observations in durable failure diagnostics',()=>{
     const old={reason:'worker_terminal_deadline_exceeded',logTail:'timeout'};
     expect(workerFailureDiagnosticsSchema.parse(old)).toEqual(old);
