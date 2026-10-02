@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,7 +14,7 @@ import {
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { deriveCanonicalWorkerReviewEvidence, parseWorkerReviewCompletion, type WorkerReviewCompletion, type WorkerReviewResult } from '../../src/review/workerReviewCompletion';
 import { parseChangedFiles } from '../../src/review/changedFiles';
-import { computeArbitration } from '../../src/review/reviewCore';
+import { canonicalJson, computeArbitration, sha256 } from '../../src/review/reviewCore';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import { isInfrastructureIncompleteResult } from '../../src/review/publicationFailurePolicy';
 import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity';
@@ -33,6 +33,7 @@ import {
   incompleteP2RecoveryClaimFor,
   MAX_INCOMPLETE_P2_RECOVERY_BYTES,
 } from '../../src/review/incompleteP2Recovery';
+import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -470,6 +471,125 @@ describe('REL-1198 retained P2 worker boundary', () => {
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].summary).toContain(context.contextDigest);
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].summary).toContain('check_run_id=5001');
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0].text).toContain(JSON.stringify(context.findings[0].finding));
+  });
+
+  it('forces full uncached task evidence for a durable disputed-finding recheck while reusing unrelated checkpoint tasks', async () => {
+    const f = fixture({ reviewEngine: 'composed' });
+    const targetTaskId = f.prepared.expectedPersonaIds[0]!;
+    const plan = f.prepared.expectedPersonaIds.map((id, index) => ({
+      id,
+      dimension: index === 0 ? 'security' as const : 'testing' as const,
+      paths: ['src/a.ts'],
+      question: `Review ${id} against the current changed source.`,
+      rationale: `The exact-head checkpoint includes ${id}.`,
+    }));
+    const sourceFinding = { severity: 'P1' as const, path: 'src/a.ts', line: 1,
+      title: 'Previously disputed finding', body: 'This exact finding must receive a fresh task review.' };
+    const previousCheckpoint = {
+      version: 'ReviewExecutionCheckpoint.v1',
+      runId: f.env.REVIEW_RUN_ID,
+      repositoryId: Number(f.env.REVIEW_REPOSITORY_ID),
+      owner: 'example',
+      repo: 'project',
+      prNumber: Number(f.env.REVIEW_PR_NUMBER),
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: f.env.REVIEW_POLICY_DIGEST,
+      configDigest: f.env.REVIEW_CONFIG_DIGEST,
+      executionAttempt: 1,
+      revision: 1,
+      plan,
+      completedTasks: plan.map((task) => ({ id: task.id,
+        findings: task.id === targetTaskId ? [sourceFinding] : [] })),
+    };
+    const counterArgument = 'The finding may be stale; recheck its exact changed line and current behavior.';
+    const unsigned = {
+      requestId: randomUUID(),
+      runId: f.env.REVIEW_RUN_ID!,
+      sourceExecutionAttempt: 1,
+      sourceContentDigest: 'd'.repeat(64),
+      sourcePlanDigest: sha256(canonicalJson(plan)),
+      sourceGateAttemptId: `${f.env.REVIEW_RUN_ID}-g0-e1`,
+      repositoryId: Number(f.env.REVIEW_REPOSITORY_ID),
+      owner: 'example',
+      repo: 'project',
+      prNumber: Number(f.env.REVIEW_PR_NUMBER),
+      headSha: HEAD,
+      baseSha: BASE,
+      policyDigest: f.env.REVIEW_POLICY_DIGEST!,
+      configDigest: f.env.REVIEW_CONFIG_DIGEST!,
+      findingId: 'source-finding-id',
+      personaId: targetTaskId,
+      taskId: targetTaskId,
+      finding: sourceFinding,
+      counterArgument,
+      counterArgumentDigest: sha256(counterArgument),
+    };
+    const recheck = { ...unsigned, requestDigest: disputedFindingRecheckDigest(unsigned) };
+    const read = vi.fn(async () => ({ checkpoint: previousCheckpoint as any, disputedFindingRechecks: [recheck] }));
+    const write = vi.fn(async (_snapshot: any) => 3);
+    const incrementalRead = vi.fn().mockRejectedValue(new Error('A disputed finding must use full current-source evidence'));
+    const cacheRead = vi.fn().mockRejectedValue(new Error('A disputed finding must not use cached verdicts'));
+    f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
+    f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
+    f.deps.incrementalBase = { read: incrementalRead };
+    f.deps.verdictCacheBase = { read: cacheRead };
+    f.deps.reviewCheckpoint = { read, write } as any;
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      expect(options.changedFiles.map((file: { path: string }) => file.path)).toContain('src/a.ts');
+      expect(options.incremental).toBeUndefined();
+      expect(options.verdictCache).toBeUndefined();
+      expect(options.disputedFindingRechecks).toEqual([recheck]);
+      expect(options.checkpoint.resumed.completedTasks.map((task: { id: string }) => task.id))
+        .not.toContain(targetTaskId);
+      expect(options.checkpoint.resumed.completedTasks.map((task: { id: string }) => task.id))
+        .toContain(f.prepared.expectedPersonaIds[1]);
+      await options.checkpoint.save({ revision: 2, plan,
+        completedTasks: plan.map((task) => ({ id: task.id, findings: [] })),
+        satisfiedFindingRecheckIds: [recheck.requestId] });
+      return f.panel;
+    });
+    f.deps.composedReviewRunner = composedReviewRunner;
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(read).toHaveBeenCalledOnce();
+    expect(incrementalRead).not.toHaveBeenCalled();
+    expect(cacheRead).not.toHaveBeenCalled();
+    expect(write).toHaveBeenCalledOnce();
+    const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(event.result.incremental).toBeUndefined();
+    expect(event.result.verdictCache).toBeUndefined();
+    expect(write.mock.calls[0]?.[0]).toMatchObject({ plan, satisfiedFindingRecheckIds: [recheck.requestId] });
+  });
+
+  it('continues evaluating configured incremental and cache reuse when no dispute is pending', async () => {
+    const f = fixture({ reviewEngine: 'composed' });
+    f.env.REVIEW_YETI_INCREMENTAL = 'example/project';
+    f.env.REVIEW_YETI_VERDICT_CACHE = 'example/project';
+    const incrementalRead = vi.fn(async () => ({ prior: null, maxAgeMs: 60_000 }));
+    const cacheRead = vi.fn(async () => ({ source: null, maxAgeMs: 60_000 }));
+    const comparisonContent = vi.fn(async () => ({ files: [{ path: 'src/a.ts', status: 'modified',
+      blobSha: 'a'.repeat(40), patch: '@@ -1 +1 @@\n-old\n+new\n' }] }));
+    const composedReviewRunner = vi.fn(async (_options: any) => f.panel);
+    f.deps.incrementalBase = { read: incrementalRead };
+    f.deps.verdictCacheBase = { read: cacheRead };
+    f.deps.verdictCacheCompareReader = { content: comparisonContent };
+    f.deps.composedReviewRunner = composedReviewRunner;
+    f.deps.reviewCheckpoint = {
+      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })),
+      write: vi.fn(async () => 1),
+    };
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    expect(incrementalRead).toHaveBeenCalledOnce();
+    expect(cacheRead).toHaveBeenCalledOnce();
+    expect(comparisonContent).toHaveBeenCalledOnce();
+    expect(composedReviewRunner).toHaveBeenCalledOnce();
+    const options = composedReviewRunner.mock.calls[0]![0];
+    expect(options.verdictCache).toMatchObject({ source: null, permitted: [] });
+    expect(options.disputedFindingRechecks).toBeUndefined();
   });
 
   it('publishes a valid retained P2 context below the complete Checks text bound without truncation', async () => {
@@ -1629,7 +1749,7 @@ describe('authoritative prepared publishing worker', () => {
     await runWorker(f.env, legacy);
     for (const derived of derivations) {
       expect(derived.valid).toBe(true);
-      expect(derived.evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
+      expect(derived.evidence).toMatchObject({ verdict: 'FIX_FIRST', p0Count: 0, p1Count: 0 });
       expect(derived.canonical?.findings).toEqual([{ ...finding, reporters: 1 }]);
     }
     expect(legacy).not.toHaveBeenCalled();
@@ -1649,10 +1769,10 @@ describe('authoritative prepared publishing worker', () => {
     expect(completed).toMatchObject({ status: 'completed', output: {
       text: expect.stringContaining(finding.title),
       annotations: [{ path: finding.path, start_line: 1, end_line: 1,
-        annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
+        annotation_level: 'failure', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
-    expect(completed.conclusion).toBe('success');
+    expect(completed.conclusion).toBe('failure');
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');
@@ -1706,7 +1826,7 @@ describe('authoritative prepared publishing worker', () => {
     const published = computeArbitration(original, 2, { changedFiles, coverageComplete: true });
     expect(published.findings).toHaveLength(2);
     expect(derived.canonical?.findings).toEqual(published.findings);
-    expect(derived.evidence).toMatchObject({ verdict: 'SHIP', coverageComplete: true, quorumSatisfied: true });
+    expect(derived.evidence).toMatchObject({ verdict: 'FIX_FIRST', coverageComplete: true, quorumSatisfied: true });
 
     // Worker normalization is not permission for an arbitrary sender to submit
     // an off-diff finding. The service's strict validator must still reject it.

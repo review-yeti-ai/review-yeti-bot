@@ -1,4 +1,5 @@
 import {
+  advisoryRequiredByDefault,
   computeArbitration,
   CanonicalArbitration,
   ReviewChangedFile,
@@ -20,5 +21,7 @@ export function computeAppVerdict(options: AppVerdictOptions): CanonicalArbitrat
     candidateVerdict: options.candidateVerdict,
     rationale: options.rationale,
     panelSize: options.panelSize,
+    requireAdvisory: options.requireAdvisory === true || options.advisoryRequired === true
+      || advisoryRequiredByDefault(),
   });
 }

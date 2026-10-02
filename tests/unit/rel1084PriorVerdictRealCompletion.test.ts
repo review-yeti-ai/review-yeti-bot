@@ -263,28 +263,24 @@ describe('a prior built by the real completion builder and the real gate', () =>
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
   });
 
-  it('#1034 shape: a raw P1 calibration re-filed as P2 still yields a SHIP-complete prior; its file is re-reviewed, the rest carried and served', async () => {
+  it('#1034 shape: a raw P1 calibrated to P2 blocks a clean prior and cannot seed carry-forward', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
     ] } });
-    // The worker reports the raw P1; the gate publishes it as P2 and passes a clean SHIP.
+    // The worker reports the raw P1; the gate publishes it as P2 and applies the current default
+    // requirement that gating P2 findings be addressed before the review can pass.
     expect(completion.result.personas.flatMap((lane) => lane.findings.map((finding) => finding.severity))).toEqual(['P1']);
     const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
-    expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
+    expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
     const rows = storedRows(completion, recorded);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(completion, rows)).toMatchObject({
-      mode: 'incremental',
-      reviewPaths: ['src/changed.ts', 'src/stable.ts'],
-      carriedForwardPaths: ['src/same.ts'],
-      openFindingPaths: ['src/stable.ts'],
-    });
-    // The verdict cache never recorded the file with a finding, and serves only the clean unchanged one.
-    expect(completion.result.verdictCache?.entries.map((entry) => entry.path)).toEqual(['src/changed.ts', 'src/same.ts']);
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, findingPaths: ['src/stable.ts'] });
+    expect(decideNext(completion, rows)).toMatchObject({ mode: 'full', reason: 'prior-not-ship-complete' });
+    // A completion that failed on its published P2 cannot be a verdict-cache source.
     const source = verdictCacheSourceFromRows(rows);
+    expect(source?.prior.shipComplete).toBe(false);
     const current = nextIdentity(completion);
     const content = await gatherVerdictCacheContent(contentReader(), REPO_ID, source!.prior, current);
     const decision = decideVerdictCache({ source, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS, current, ...content });
-    expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts']);
+    expect(decision.mode).toBe('full');
   });
 });

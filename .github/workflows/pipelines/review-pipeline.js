@@ -17,6 +17,7 @@ const { createHash } = require('crypto');
 const { spawnSync, execSync } = require('child_process');
 const {
   computeArbitration: computeCanonicalArbitration,
+  advisoryRequiredByDefault,
   sanitizeFindings: sanitizeCanonicalFindings,
   normalizeFindingReplacement,
   sha256,
@@ -6084,7 +6085,11 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
  * Canonical arbitration boundary shared with the typed App runtime.
  */
 function computeArbitrationQuorum(personaResults, expectedPersonas = personaResults.length, options = {}) {
-  return computeCanonicalArbitration(personaResults, expectedPersonas, options);
+  return computeCanonicalArbitration(personaResults, expectedPersonas, {
+    ...options,
+    requireAdvisory: options.requireAdvisory === true || options.advisoryRequired === true
+      || advisoryRequiredByDefault(),
+  });
 }
 
 /**

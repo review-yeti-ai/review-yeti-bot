@@ -1328,21 +1328,21 @@ describe('runPublishingReviewWorker', () => {
     }
   });
 
-  it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
+  it('requires P2-only findings even when the model arbiter says SHIP', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane'],
-        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Advisory', body: 'Advisory' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
-        arbiter: { verdict: 'FIX_FIRST' },
+        arbiter: { verdict: 'SHIP' },
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.verdict).toBe('SHIP');
-    expect(receipt.conclusion).toBe('success');
-    expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.verdict).toBe('FIX_FIRST');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.blockingFindingCount).toBe(1);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
-      expect.objectContaining({ conclusion: 'success', title: 'Review Yeti: SHIP' }),
+      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: FIX_FIRST' }),
     );
   });
 
@@ -1459,10 +1459,10 @@ describe('runPublishingReviewWorker', () => {
     });
   });
 
-  it('reports the findings behind a self-published check as evidence, before the terminal callback, for both conclusions', async () => {
+  it('reports P1 and required-P2 findings as failure evidence without a terminal-success callback', async () => {
     for (const [finding, conclusion] of [
       [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }, 'failure'],
-      [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }, 'success'],
+      [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Required advisory', body: 'Tidy' }, 'failure'],
     ] as const) {
       const order: string[] = [];
       const completion = {
@@ -1492,12 +1492,8 @@ describe('runPublishingReviewWorker', () => {
         result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: 'FINDINGS',
           findings: [expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })] }] },
       });
-      if (conclusion === 'success') {
-        expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
-        expect(completion.reportTerminalSuccess.mock.calls[0][0]).not.toHaveProperty('result');
-      } else {
-        expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
-      }
+      expect(conclusion).toBe('failure');
+      expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
       expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
     }
   });
@@ -1557,7 +1553,7 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('success');
+    expect(receipt.conclusion).toBe('failure');
     const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
     expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
       ['found', 'FINDINGS'],   // no stated decision, findings present
@@ -1566,10 +1562,9 @@ describe('runPublishingReviewWorker', () => {
     ]);
   });
 
-  it('still reports the terminal success, and no evidence, when the result fails the contract', async () => {
-    // The green check is already published by the time evidence is built. A
-    // result the service would refuse (here: a finding body past the contract's
-    // text bound) must be dropped, not allowed to abort the report.
+  it('publishes a required P2 as failure and omits evidence that violates the wire contract', async () => {
+    // A finding body past the contract's text bound cannot be sent as evidence,
+    // but the publisher has already seen a P2 and must not turn that into SHIP.
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
@@ -1586,13 +1581,11 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('success');
-    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
-    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(event.version).toBe('WorkerTerminalSuccess.v1');
-    expect(event).not.toHaveProperty('result');
+    expect(receipt.conclusion).toBe('failure');
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
   });
 
   it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {

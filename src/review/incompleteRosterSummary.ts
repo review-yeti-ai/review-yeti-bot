@@ -1,9 +1,12 @@
 export interface IncompleteRosterSummaryCounts {
   canonicalFindingCount: number;
   rawFindingCount: number;
+  blockingFindingCount: number;
+  blockingFindingFormat: 'legacy-p0-p1' | 'p2-inclusive';
   /** Keep the source spelling so callers can preserve their previous lexical checks. */
   canonicalFindingCountText: string;
   rawFindingCountText: string;
+  blockingFindingCountText: string;
   expectedLanes: number;
   completedLanes: number;
 }
@@ -56,8 +59,22 @@ export function parseIncompleteRosterSummary(
   const coverageLines = lines.filter((line) => line.startsWith('Coverage: '));
   if (findingLines.length !== 1 || coverageLines.length !== 1) return null;
 
-  const findings = /^Findings: ([0-9]+) \(blocking P0\/P1: 0; ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u.exec(findingLines[0]);
+  // Keep reading the historical publisher form for immutable zero-blocker
+  // receipts, while accepting the current P2-required publisher form only when
+  // every canonical finding is counted as blocking. The durable archive loader
+  // still verifies that those findings are all P2 and rejects raw P0/P1.
+  const legacyFindings = /^Findings: ([0-9]+) \(blocking P0\/P1: (0); ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u
+    .exec(findingLines[0]);
+  const p2InclusiveFindings = /^Findings: ([0-9]+) \(blocking P0\/P1\/P2: ([0-9]+); ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u
+    .exec(findingLines[0]);
+  const findings = legacyFindings ?? p2InclusiveFindings;
   if (!findings) return null;
+  const canonicalFindingCount = Number(findings[1]);
+  const blockingFindingCount = Number(findings[2]);
+  const rawFindingCount = Number(findings[3]);
+  if (!Number.isSafeInteger(canonicalFindingCount) || !Number.isSafeInteger(blockingFindingCount)
+    || !Number.isSafeInteger(rawFindingCount) || rawFindingCount < canonicalFindingCount
+    || (legacyFindings ? blockingFindingCount !== 0 : blockingFindingCount !== canonicalFindingCount)) return null;
 
   const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverageLines[0]);
   const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverageLines[0]);
@@ -71,10 +88,13 @@ export function parseIncompleteRosterSummary(
     || (composed && Number(composed[1]) !== expectedLanes)) return null;
 
   return {
-    canonicalFindingCount: Number(findings[1]),
-    rawFindingCount: Number(findings[2]),
+    canonicalFindingCount,
+    rawFindingCount,
+    blockingFindingCount,
+    blockingFindingFormat: legacyFindings ? 'legacy-p0-p1' : 'p2-inclusive',
     canonicalFindingCountText: findings[1],
-    rawFindingCountText: findings[2],
+    rawFindingCountText: findings[3],
+    blockingFindingCountText: findings[2],
     expectedLanes,
     completedLanes,
   };
