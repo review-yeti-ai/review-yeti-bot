@@ -50,10 +50,20 @@ describe('429 Retry-After', () => {
     const error = await responseError(new Date(epoch + 5000).toUTCString());
     expect(error.retryAfter).toEqual({ notBeforeMs: epoch + 5000, format: 'http_date' });
   });
-  it.each(['-1', '1.5', 'not-a-date', 'Fri, 99 Oct 2026 20:00:01 GMT', 'a'.repeat(200)])('ignores malformed header %s', async header => {
+  it.each(['Friday, 02-Oct-26 20:00:05 GMT', 'Fri Oct  2 20:00:05 2026'])('honors obsolete HTTP-date formats (%s)', async header => {
+    expect((await responseError(header)).retryAfter).toEqual({ notBeforeMs: epoch + 5000, format: 'http_date' });
+  });
+  it('interprets a RFC850 year over 50 years ahead as the past century', async () => {
+    expect((await responseError('Thursday, 02-Oct-97 20:00:05 GMT')).retryAfter).toEqual({ notBeforeMs: epoch, format: 'http_date' });
+  });
+  it('preserves the floor for an HTTP leap second', async () => {
+    const header = 'Fri, 02 Oct 2026 20:00:60 GMT';
+    expect((await responseError(header)).retryAfter).toEqual({ notBeforeMs: epoch + 60_000, format: 'http_date' });
+  });
+  it.each(['Friday, 99-Oct-26 20:00:05 GMT', 'Fri Oct 99 20:00:05 2026', '-1', '1.5', 'not-a-date', 'Fri, 99 Oct 2026 20:00:01 GMT'])('ignores malformed header %s', async header => {
     expect((await responseError(header)).retryAfter).toBeUndefined();
   });
-  it.each(['86401', '9'.repeat(200), new Date(epoch + 86_401_000).toUTCString()])('refuses an excessive declared cooldown without retaining its raw value', async header => {
+  it.each(['86401', '9'.repeat(200), 'a'.repeat(200), new Date(epoch + 86_401_000).toUTCString()])('refuses an excessive declared cooldown without retaining its raw value', async header => {
     expect((await responseError(header)).retryAfter).toEqual({ exceedsBound: true });
   });
   it.each(['0', new Date(epoch - 1000).toUTCString()])('allows an already elapsed cooldown without a negative floor (%s)', async header => {
