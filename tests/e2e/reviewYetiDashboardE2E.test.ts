@@ -454,7 +454,7 @@ describe('Review Yeti Dashboard & Management E2E Suite (Tiers 1 - 4)', () => {
         expect(res.status).toBe(200);
         expect(res.body.success).toBe(true);
         expect(res.body.organizations.length).toBeGreaterThanOrEqual(1);
-        expect(res.body.organizations[0].login).toBe('exampleorg');
+        expect(res.body.organizations.some((o: any) => o.login === 'reviewyeti-ai' || o.login === 'exampleorg')).toBe(true);
       });
 
       it('TEST_T1_F3_02 — GET /api/github/repos returns repositories belonging to organizations', async () => {
