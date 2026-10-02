@@ -207,7 +207,7 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(on.observed).toBe(off.observed);
   });
 
-  it.each(['clean', 'advisory'] as const)('publishes %s check and evidence before waiting on slow Jev', async (kind) => {
+  it.each(['clean', 'advisory'] as const)('publishes the %s check and callback before waiting on slow Jev', async (kind) => {
     const order: string[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -231,6 +231,8 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(receipt.conclusion).toBe(kind === 'clean' ? 'success' : 'failure');
     expect(receipt.findingCount).toBe(kind === 'clean' ? 0 : 1);
     expect(order.slice(0, 2)).toEqual(['check', kind === 'clean' ? 'terminal-success' : 'evidence']);
+    expect(order[0]).toBe('check');
+    expect(order.indexOf('check')).toBeLessThan(order.indexOf('jev'));
     expect(order).toContain('jev');
   });
 

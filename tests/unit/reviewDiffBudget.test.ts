@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -70,6 +70,73 @@ function createCurrentSizedGatewayDiffFixture() {
       ...otherFiles,
     ],
   };
+}
+
+function createGuardedOversizedHunkFixture() {
+  const path = 'src/panel/__tests__/composedEngine.test.ts';
+  const fileHeader = `diff --git a/${path} b/${path}\nindex 0000000..1111111 100644\n--- a/${path}\n+++ b/${path}\n`;
+  const body = [
+    ...Array.from({ length: 6 }, (_unused, index) => ` context-${index}`),
+    ...Array.from({ length: 1499 }, (_unused, index) => `+${String(index).padStart(4, '0')}${'x'.repeat(47 + (index < 400 ? 1 : 0))}`),
+  ];
+  const patch = `${fileHeader}@@ -1520,6 +1530,1505 @@ describe('executeComposedReview', () => {\n${body.join('\n')}\n`;
+  const baseSha = '0123456789abcdef0123456789abcdef01234567';
+  const headSha = 'fedcba9876543210fedcba9876543210fedcba98';
+  return {
+    path,
+    body,
+    patch,
+    request: {
+      files: [{ path, patch, status: 'modified' }],
+      baseSha,
+      headSha,
+      safeDiffCapacityChars: 80_000,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    },
+  };
+}
+
+function createGuardedZeroAnchorFixture() {
+  const path = 'src/zero-anchor.ts';
+  const fileHeader = 'diff --git a/' + path + ' b/' + path + '\n'
+    + 'index 0000000..1111111 100644\n'
+    + '--- a/' + path + '\n'
+    + '+++ b/' + path + '\n';
+  const body = [' context-before', '+inserted-one', '+inserted-two', ' context-after'];
+  const sourceHeader = '@@ -1,2 +1,4 @@';
+  const patch = fileHeader + sourceHeader + '\n' + body.join('\n') + '\n';
+  const expectedHunks = [
+    '@@ -1,1 +1,1 @@\n context-before',
+    '@@ -1,0 +2,1 @@\n+inserted-one',
+    '@@ -1,0 +3,1 @@\n+inserted-two',
+    '@@ -2,1 +4,1 @@\n context-after',
+  ];
+  const safeDiffCapacityChars = fileHeader.length + Math.max(...expectedHunks.map((hunk) => hunk.length + 1));
+  return {
+    path,
+    fileHeader,
+    body,
+    patch,
+    expectedHunks,
+    request: {
+      files: [{ path, patch, status: 'modified' }],
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    },
+  };
+}
+
+function extractUnifiedHunkBody(patch: string): string[] {
+  let inHunk = false;
+  return patch.split(/\r?\n/u).filter((line) => {
+    if (line.startsWith('@@')) {
+      inHunk = true;
+      return false;
+    }
+    return inHunk && line !== '';
+  });
 }
 
 describe('planDiffBudget', () => {
@@ -403,17 +470,35 @@ describe('guarded gateway input budgeting', () => {
 
   it('loads and partitions through the bare Action path without dist or ts-node', () => {
     const { inputFiles } = createCurrentSizedGatewayDiffFixture();
+    const rangeFixture = createGuardedZeroAnchorFixture();
     const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
     const script = `
       const fs = require('node:fs');
       const Module = require('node:module');
       if (Number(process.versions.node.split('.')[0]) < 24) throw new Error('Node 24+ is required');
       const originalLoad = Module._load;
+      let parseCalls = 0;
+      let rangeCalls = 0;
       Module._load = function guardedLoad(request, parent, isMain) {
         const target = String(request).replace(/\\\\/g, '/');
         if (target.includes('/dist/pipeline/shaPartitionManager')) throw new Error('dist fallback is unavailable in this Action test');
         if (target === 'ts-node' || target.startsWith('ts-node/')) throw new Error('ts-node is unavailable in this Action test');
-        return originalLoad.call(this, request, parent, isMain);
+        const loaded = originalLoad.call(this, request, parent, isMain);
+        if (target.endsWith('/src/pipeline/shaPartitionManager.ts')) {
+          return new Proxy(loaded, {
+            get(targetModule, key, receiver) {
+              const helper = Reflect.get(targetModule, key, receiver);
+              if (key === 'parseUnifiedHunk' && typeof helper === 'function') {
+                return (...args) => { parseCalls += 1; return Reflect.apply(helper, targetModule, args); };
+              }
+              if (key === 'unifiedFragmentRangeStart' && typeof helper === 'function') {
+                return (...args) => { rangeCalls += 1; return Reflect.apply(helper, targetModule, args); };
+              }
+              return helper;
+            },
+          });
+        }
+        return loaded;
       };
       const pipeline = require(process.argv[1]);
       const managerPath = Object.keys(require.cache).find((file) => file.replace(/\\\\/g, '/').endsWith('/src/pipeline/shaPartitionManager.ts'));
@@ -427,12 +512,16 @@ describe('guarded gateway input budgeting', () => {
         safeDiffCapacityChars: 80000,
         modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
       });
+      const rangePlan = pipeline.createReviewPartitionPlan(input.rangeRequest);
       process.stdout.write(JSON.stringify({
         managerPath,
         partitionChars: plan.partitions.map((partition) => partition.totalChars),
         files: plan.fileManifest.length,
         coveragePercent: plan.coveragePercent,
         omittedFilesCount: plan.omittedFilesCount,
+        parseCalls,
+        rangeCalls,
+        rangePatches: rangePlan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
       }));
     `;
     const childEnv = { ...process.env };
@@ -446,6 +535,7 @@ describe('guarded gateway input budgeting', () => {
         files: inputFiles,
         baseSha: '0123456789abcdef0123456789abcdef01234567',
         headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+        rangeRequest: rangeFixture.request,
       }),
       encoding: 'utf8',
       maxBuffer: 2 * 1024 * 1024,
@@ -459,6 +549,69 @@ describe('guarded gateway input budgeting', () => {
     expect(evidence.files).toBe(33);
     expect(evidence.coveragePercent).toBe(100);
     expect(evidence.omittedFilesCount).toBe(0);
+    expect(evidence.parseCalls).toBeGreaterThan(0);
+    expect(evidence.rangeCalls).toBeGreaterThan(0);
+    expect(evidence.rangePatches.map((patch: string) => patch.slice(rangeFixture.fileHeader.length).replace(/\n+$/u, '')))
+      .toEqual(rangeFixture.expectedHunks);
+  });
+
+  it('uses the compiled fallback as the canonical parser when native TypeScript loading is unavailable', () => {
+    const fixture = createGuardedZeroAnchorFixture();
+    const pipelinePath = path.join(rootRepoDir, '.github/workflows/pipelines/review-pipeline.js');
+    const script = `
+      const fs = require('node:fs');
+      const Module = require('node:module');
+      const originalLoad = Module._load;
+      let parseCalls = 0;
+      let rangeCalls = 0;
+      Module._load = function compiledFallbackProbe(request, parent, isMain) {
+        const target = String(request).replace(/\\\\/g, '/');
+        if (target.includes('/src/pipeline/shaPartitionManager')) throw new Error('native source path is unavailable in compiled fallback test');
+        const loaded = originalLoad.call(this, request, parent, isMain);
+        if (!target.includes('/dist/pipeline/shaPartitionManager')) return loaded;
+        return new Proxy(loaded, {
+          get(targetModule, key, receiver) {
+            const helper = Reflect.get(targetModule, key, receiver);
+            if (key === 'parseUnifiedHunk' && typeof helper === 'function') {
+              return (...args) => { parseCalls += 1; return Reflect.apply(helper, targetModule, args); };
+            }
+            if (key === 'unifiedFragmentRangeStart' && typeof helper === 'function') {
+              return (...args) => { rangeCalls += 1; return Reflect.apply(helper, targetModule, args); };
+            }
+            return helper;
+          },
+        });
+      };
+      const pipeline = require(process.argv[1]);
+      const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+      const plan = pipeline.createReviewPartitionPlan(input);
+      const managerPath = Object.keys(require.cache).find((file) => file.replace(/\\\\/g, '/').includes('/dist/pipeline/shaPartitionManager'));
+      process.stdout.write(JSON.stringify({
+        managerPath,
+        parseCalls,
+        rangeCalls,
+        patches: plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
+      }));
+    `;
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_OPTIONS;
+    delete childEnv.NODE_PATH;
+    for (const key of Object.keys(childEnv)) if (key.startsWith('TS_NODE_')) delete childEnv[key];
+    const result = spawnSync(process.execPath, ['-e', script, pipelinePath], {
+      cwd: rootRepoDir,
+      env: childEnv,
+      input: JSON.stringify(fixture.request),
+      encoding: 'utf8',
+      maxBuffer: 2 * 1024 * 1024,
+    });
+
+    expect(result.status, result.stderr).toBe(0);
+    const evidence = JSON.parse(result.stdout);
+    expect(evidence.managerPath.replace(/\\/g, '/')).toMatch(/\/dist\/pipeline\/shaPartitionManager\.js$/u);
+    expect(evidence.parseCalls).toBeGreaterThan(0);
+    expect(evidence.rangeCalls).toBeGreaterThan(0);
+    expect(evidence.patches.map((patch: string) => patch.slice(fixture.fileHeader.length).replace(/\n+$/u, '')))
+      .toEqual(fixture.expectedHunks);
   });
 
   it('rejects unavailable or incomplete lossless partition plans', () => {
@@ -487,6 +640,195 @@ describe('guarded gateway input budgeting', () => {
         }),
       },
     })).toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
+  it('admits a bounded split of one oversized hunk only when all source lines remain ordered', () => {
+    const fixture = createGuardedOversizedHunkFixture();
+    expect(fixture.patch.length).toBeGreaterThan(80_000);
+
+    const plan = pipeline.createReviewPartitionPlan(fixture.request);
+
+    expect(plan.partitions.length).toBeGreaterThan(1);
+    expect(plan.partitions.every((partition: any) => partition.totalChars <= 80_000)).toBe(true);
+    expect(plan.partitions.every((partition: any) => partition.totalChars
+      === partition.files.reduce((sum: number, planned: any) => sum + planned.patch.length, 0))).toBe(true);
+    expect(plan.fileManifest.map((entry: any) => entry.path)).toEqual([fixture.path]);
+    expect(plan.coveragePercent).toBe(100);
+    expect(plan.omittedFilesCount).toBe(0);
+    expect(plan.partitions.flatMap((partition: any) => partition.files
+      .filter((planned: any) => planned.path === fixture.path)
+      .flatMap((planned: any) => extractUnifiedHunkBody(planned.patch)))).toEqual(fixture.body);
+  });
+
+  it('emits canonical zero-count anchors for a guarded lossless split', () => {
+    const fixture = createGuardedZeroAnchorFixture();
+    expect(fixture.patch.length).toBeGreaterThan(fixture.request.safeDiffCapacityChars);
+
+    const plan = pipeline.createReviewPartitionPlan(fixture.request);
+    const actualHunks = plan.partitions.flatMap((partition: any) => partition.files
+      .filter((planned: any) => planned.path === fixture.path)
+      .map((planned: any) => planned.patch.slice(fixture.fileHeader.length).replace(/\n+$/u, '')));
+
+    expect(plan.partitions.every((partition: any) => partition.totalChars
+      <= fixture.request.safeDiffCapacityChars)).toBe(true);
+    expect(actualHunks).toEqual(fixture.expectedHunks);
+    expect(plan.partitions.flatMap((partition: any) => partition.files
+      .flatMap((planned: any) => extractUnifiedHunkBody(planned.patch)))).toEqual(fixture.body);
+  });
+
+  it('rejects a manager that shifts a zero-old-count range to the following source line', () => {
+    const fixture = createGuardedZeroAnchorFixture();
+    const partitionManager = {
+      createPartitionPlan: (...args: any[]) => {
+        const plan = structuredClone(shaPartitionManager.createPartitionPlan(...args));
+        let changed = false;
+        for (const partition of plan.partitions) {
+          for (const planned of partition.files) {
+            if (planned.path !== fixture.path) continue;
+            const lines = planned.patch.split('\n');
+            const headerIndex = lines.findIndex((line: string) => /^@@ -\d+,0 \+/u.test(line));
+            if (headerIndex < 0) continue;
+            lines[headerIndex] = lines[headerIndex].replace(/^@@ -\d+,0/u, '@@ -2,0');
+            planned.patch = lines.join('\n');
+            changed = true;
+          }
+          partition.totalChars = partition.files.reduce((sum: number, planned: any) => sum + planned.patch.length, 0);
+        }
+        if (!changed) throw new Error('zero-old-count fixture hunk was not found');
+        return plan;
+      },
+    };
+
+    expect(() => pipeline.createReviewPartitionPlan({ ...fixture.request, partitionManager }))
+      .toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
+  it('rejects a manager that shifts a zero-new-count range past its preceding-line anchor', () => {
+    const path = 'src/zero-new-anchor.ts';
+    const fileHeader = 'diff --git a/' + path + ' b/' + path + '\n'
+      + 'index 0000000..1111111 100644\n'
+      + '--- a/' + path + '\n'
+      + '+++ b/' + path + '\n';
+    const body = ['-old-line', '+new-line'];
+    const patch = fileHeader + '@@ -5 +5 @@\n' + body.join('\n') + '\n';
+    const expectedHunks = ['@@ -5,1 +4,0 @@\n-old-line', '@@ -5,0 +5,1 @@\n+new-line'];
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expectedHunks.map((hunk) => hunk.length + 1));
+    const request = {
+      files: [{ path, patch, status: 'modified' }],
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    };
+    const partitionManager = {
+      createPartitionPlan: (...args: any[]) => {
+        const plan = structuredClone(shaPartitionManager.createPartitionPlan(...args));
+        let changed = false;
+        for (const partition of plan.partitions) {
+          for (const planned of partition.files) {
+            if (planned.path !== path) continue;
+            const lines = planned.patch.split('\n');
+            const headerIndex = lines.findIndex((line: string) => /^@@ -5,1 \+\d+,0 @@/u.test(line));
+            if (headerIndex < 0) continue;
+            lines[headerIndex] = lines[headerIndex].replace(/^@@ -5,1 \+\d+,0/u, '@@ -5,1 +5,0');
+            planned.patch = lines.join('\n');
+            changed = true;
+          }
+          partition.totalChars = partition.files.reduce((sum: number, planned: any) => sum + planned.patch.length, 0);
+        }
+        if (!changed) throw new Error('zero-new-count fixture hunk was not found');
+        return plan;
+      },
+    };
+
+    expect(patch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => pipeline.createReviewPartitionPlan({ ...request, partitionManager }))
+      .toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
+  it('rejects a marker-only split hunk instead of detaching the no-newline marker', () => {
+    const path = 'src/no-newline.ts';
+    const fileHeader = 'diff --git a/' + path + ' b/' + path + '\n'
+      + 'index 0000000..1111111 100644\n'
+      + '--- a/' + path + '\n'
+      + '+++ b/' + path + '\n';
+    const oldLine = '-' + 'old-without-newline-'.repeat(3);
+    const marker = '\\ No newline at end of file';
+    const newLine = '+' + 'new-without-newline-'.repeat(3);
+    const patch = fileHeader + '@@ -1 +1 @@\n' + oldLine + '\n' + marker + '\n' + newLine + '\n';
+    const baseSha = '0123456789abcdef0123456789abcdef01234567';
+    const headSha = 'fedcba9876543210fedcba9876543210fedcba98';
+    const fragments = [
+      '@@ -1,1 +0,0 @@\n' + oldLine,
+      '@@ -1,0 +0,0 @@\n' + marker,
+      '@@ -1,0 +1,1 @@\n' + newLine,
+    ];
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...fragments.map((fragment) => fragment.length + 1));
+    const sourceFiles = [{ path, patch, status: 'modified' }];
+    const basePlan = shaPartitionManager.createPartitionPlan(sourceFiles, baseSha, headSha, 10_000);
+    const sourceEntry = basePlan.partitions[0].files[0];
+    const malformedPlan = {
+      ...basePlan,
+      partitions: fragments.map((fragment, partitionIndex) => ({
+        ...basePlan.partitions[0],
+        partitionIndex,
+        totalPartitions: fragments.length,
+        files: [{ ...sourceEntry, patch: fileHeader + fragment + '\n', compactedChars: fileHeader.length + fragment.length + 1 }],
+        totalChars: fileHeader.length + fragment.length + 1,
+      })),
+    };
+    const partitionManager = { createPartitionPlan: () => malformedPlan };
+    const request = {
+      files: sourceFiles,
+      baseSha,
+      headSha,
+      safeDiffCapacityChars,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+      partitionManager,
+    };
+
+    expect(patch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => pipeline.createReviewPartitionPlan(request))
+      .toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
+  it('rejects a bounded split hunk whose same-sized line was altered by the partition manager', () => {
+    const fixture = createGuardedOversizedHunkFixture();
+    const partitionManager = {
+      createPartitionPlan: (...args: any[]) => {
+        const plan = structuredClone(shaPartitionManager.createPartitionPlan(...args));
+        const partition = plan.partitions.find((candidate: any) => candidate.files.some((planned: any) => planned.path === fixture.path));
+        const planned = partition?.files.find((candidate: any) => candidate.path === fixture.path);
+        if (!partition || !planned) throw new Error('fixture partition was not created');
+        const lines = planned.patch.split('\n');
+        const changedLineIndex = lines.findIndex((line: string) => /^\+\d{4}x+$/u.test(line));
+        if (changedLineIndex < 0) throw new Error('fixture hunk line was not found');
+        lines[changedLineIndex] = `${lines[changedLineIndex].slice(0, -1)}z`;
+        planned.patch = lines.join('\n');
+        partition.totalChars = partition.files.reduce((sum: number, item: any) => sum + item.patch.length, 0);
+        return plan;
+      },
+    };
+
+    expect(() => pipeline.createReviewPartitionPlan({ ...fixture.request, partitionManager }))
+      .toThrow(/complete, bounded file and hunk coverage/u);
+  });
+
+  it('fails closed instead of splitting or hiding a single line that cannot fit the hard bound', () => {
+    const path = 'src/oversized-line.ts';
+    const fileHeader = `diff --git a/${path} b/${path}\nindex 0000000..1111111 100644\n--- a/${path}\n+++ b/${path}\n`;
+    const patch = `${fileHeader}@@ -0,0 +1,1 @@\n+${'x'.repeat(80_100)}\n`;
+    const request = {
+      files: [{ path, patch, status: 'modified' }],
+      baseSha: '0123456789abcdef0123456789abcdef01234567',
+      headSha: 'fedcba9876543210fedcba9876543210fedcba98',
+      safeDiffCapacityChars: 80_000,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    };
+
+    const unmodifiedPlan = shaPartitionManager.createPartitionPlan(request.files, request.baseSha, request.headSha, 80_000);
+    expect(unmodifiedPlan.partitions.flatMap((partition: any) => partition.files).map((planned: any) => planned.patch)).toEqual([patch]);
+    expect(() => pipeline.createReviewPartitionPlan(request)).toThrow(/complete, bounded file and hunk coverage/u);
   });
 
   it('rejects a lossless partition plan whose split-file copies are reordered', () => {
@@ -623,16 +965,24 @@ describe('REL-556: reviewWithModel applies the tightened budget end to end', () 
     expect(result.diffOmittedFilesCount).toBeGreaterThan(0);
   });
 
-  it('lets an OpenRouter-only lane see materially more of the same 700k-char diff', async () => {
-    const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
-    const result = await reviewWithModel(securityPersona, bigDiffFiles, { repo: 'o/r', prNumber: '1' }, null, {
-      fetchImplementation: impl,
-      transports: [{ name: 'openrouter-deepseek', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731', provider: 'openrouter' }],
+  describe('OpenRouter-only lane', () => {
+    beforeAll(() => {
+      // Fixture setup intentionally excludes the cold SDK load from the budget assertion's
+      // 5s test clock. The real reviewWithModel route still prewarms and uses the SDK.
+      require('@openrouter/sdk');
     });
 
-    const userMessage = calls[0].body.messages.find((m: any) => m.role === 'user').content as string;
-    expect(result.diffOmittedFilesCount ?? 0).toBeLessThan(fileCount);
-    expect(userMessage.length).toBeGreaterThan(0);
+    it('lets an OpenRouter-only lane see materially more of the same 700k-char diff', async () => {
+      const { impl, calls } = stubFetch(JSON.stringify({ findings: [] }));
+      const result = await reviewWithModel(securityPersona, bigDiffFiles, { repo: 'o/r', prNumber: '1' }, null, {
+        fetchImplementation: impl,
+        transports: [{ name: 'openrouter-deepseek', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731', provider: 'openrouter' }],
+      });
+
+      const userMessage = calls[0].body.messages.find((m: any) => m.role === 'user').content as string;
+      expect(result.diffOmittedFilesCount ?? 0).toBeLessThan(fileCount);
+      expect(userMessage.length).toBeGreaterThan(0);
+    });
   });
 });
 
