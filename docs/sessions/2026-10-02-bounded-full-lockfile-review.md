@@ -32,6 +32,16 @@ suite passed: 748 tests, including the privacy audit. Whitespace checks passed.
 These changes require fresh exact-head CI and review; the earlier SHIP does
 not qualify the follow-up. No deployment or policy activation is claimed.
 
+The next full CI run passed the repaired fixture checks but caught a stale
+privacy baseline from the newly merged anonymous analytics fixture cleanup.
+After integrating that main change, the four-case privacy suite reproduced
+the failure: the unchanged baseline expected 22 references while the cleaned
+fixture contains 15. Only that entry is reduced and its match digest refreshed;
+the audit and all other entries are unchanged. No private reference is added.
+Fresh exact-head review and full CI must qualify this integration repair too.
+The integrated fourteen-file suite passes 778 tests, including the four-case
+privacy audit and cleaned analytics fixture. Backend build also passes.
+
 ## Activation boundary
 
 No central policy value is enabled by this source change. No service deployment
