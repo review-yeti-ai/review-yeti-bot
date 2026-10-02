@@ -38,6 +38,20 @@ function fixture() {
 }
 
 describe('AbandonedRunReaper exact-attempt ownership', () => {
+  it.each([12345, 54321])('Gate-bound publication fences the authenticated App %s before client preparation', async (publisherAppId) => {
+    const f = fixture();
+    const reserved = { ...run, owner: 'example-org', repo: 'widgets', prNumber: 17,
+      authoritativeGateAppId: 12345 };
+    f.repository.claimAbandonedPublishingRuns.mockResolvedValue([reserved]);
+    const subject = new AbandonedRunReaper({ repository: f.repository, checkClientFor: f.checkClientFor,
+      workerId: 'synthetic-reaper', publisherAppId, now: () => 902_000 });
+    const matching = publisherAppId === reserved.authoritativeGateAppId;
+    await expect(subject.runOnce()).resolves.toEqual({ swept: 1, published: matching ? 1 : 0,
+      failed: matching ? 0 : 1 });
+    expect(f.checkClientFor).toHaveBeenCalledTimes(matching ? 1 : 0);
+    expect(f.client.failAbandonedCheck).toHaveBeenCalledTimes(matching ? 1 : 0);
+  });
+
   it('uses the repository-selected publisher App id for fail-closed publication', async () => {
     const f = fixture();
     const publisherAppIdFor = vi.fn(() => 7_654_321);

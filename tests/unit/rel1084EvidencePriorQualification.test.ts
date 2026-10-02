@@ -182,17 +182,14 @@ describe('a non-authoritative prior built by the real worker', () => {
     expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts', 'src/stable.ts']);
   });
 
-  it('#1034 shape: a raw P1 published as P2 qualifies; its file is re-reviewed, the rest carried forward', async () => {
+  it('#1034 shape: a raw P1 published as unresolved P2 cannot supply a successful prior', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
     ] });
-    expect(evidence.conclusion).toBe('success');
+    expect(evidence.conclusion).toBe('failure');
     const rows = storedRows(evidence);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(rows)).toMatchObject({
-      mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
-      openFindingPaths: ['src/stable.ts'],
-    });
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
+    expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
   });
 
   it('keeps authoritative-gate runs on the gate record: an authoritative current or prior run refuses evidence', async () => {
