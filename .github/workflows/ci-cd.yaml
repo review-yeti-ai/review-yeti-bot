@@ -44,14 +44,15 @@ concurrency:
   # a later synchronize or other superseding branch event can still cancel or replace work.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.action == 'ready_for_review') }}
 
-# SINGLE SOURCE OF TRUTH for the same-SHA A/B runner override.
-# Every job's `runs-on` references this one expression, so renaming the input or
-# changing the fallback semantics is a one-line edit rather than nine coordinated
-# ones, and a job cannot silently keep its own runner during a bench run.
-# Empty input resolves to `false`, which makes every job fall through to its own
-# `||` default. `bench_runner` values are validated by the choice input's options.
-env:
-  BENCH_RUNNER: ${{ inputs.bench_runner }}
+# WHY PER-JOB EXPRESSIONS (and not one shared value):
+# `jobs.<job_id>.runs-on` permits only the `github`, `needs`, `strategy`,
+# `matrix`, `vars`, and `inputs` contexts -- NOT `env`. A workflow-level
+# `env.BENCH_RUNNER` therefore makes the entire workflow invalid, and GitHub
+# creates no run at all (observed: commit c9faee7 produced zero CI runs).
+# `inputs` IS valid here, which is why the override reads `inputs.bench_runner`
+# directly. The fallback SKU is necessarily per-job because each job has its own
+# default, so a job added later must include this expression; the guard test
+# enforces that for every job it covers.
 
 jobs:
   # Ordinary quality checks run while the author prepares a draft. Paid native
@@ -73,7 +74,7 @@ jobs:
   # typecheck still gates them.
   test-plan:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -132,7 +133,7 @@ jobs:
     needs: test-plan
     if: needs.test-plan.outputs.shard-count != '0'
     name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     # Headroom for a cold node_modules disk (a lockfile change) on top of a full shard.
     timeout-minutes: 25
     permissions:
@@ -181,7 +182,7 @@ jobs:
   vitest-postgres:
     needs: test-plan
     if: needs.test-plan.outputs.postgres-tests != '[]'
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     services:
       postgres:
         image: postgres:17-alpine
@@ -225,7 +226,7 @@ jobs:
   # guard nobody is checking. It needs node and jq, not node_modules.
   worker-helper:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -240,7 +241,7 @@ jobs:
 
   build:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -273,7 +274,7 @@ jobs:
   test:
     needs: [test-plan, vitest, vitest-postgres, worker-helper, build]
     if: "always() && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -308,7 +309,7 @@ jobs:
           exit "$failed"
 
   typecheck:
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
     # so the 464 errors that were burned down to reach that state could silently return unnoticed.
@@ -334,7 +335,7 @@ jobs:
         run: npm run lint:src -- --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo
 
   operator-test:
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
     # so a reconciler regression could ship with a fully green PR. This job runs vet and the
@@ -382,7 +383,7 @@ jobs:
 
   legacy-runtime:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ${{ env.BENCH_RUNNER != '' && env.BENCH_RUNNER || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     permissions:
       contents: read

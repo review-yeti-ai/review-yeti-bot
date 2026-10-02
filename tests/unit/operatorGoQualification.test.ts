@@ -112,14 +112,50 @@ describe('embedded operator Go qualification workflow', () => {
     // every job) and for a flipped default SKU (`...-arm`), so they would not
     // catch the exact regressions this assertion exists for.
     expect(vitest['runs-on']).toMatch(
-      /\$\{\{ env\.BENCH_RUNNER != '' && env\.BENCH_RUNNER \|\| 'blacksmith-4vcpu-ubuntu-2404' \}\}/,
+      /\$\{\{ inputs\.bench_runner != '' && inputs\.bench_runner \|\| 'blacksmith-4vcpu-ubuntu-2404' \}\}/,
     );
-    // The override must be a single workflow-level value, so there is exactly one
-    // place to change it and no job can silently keep its own runner.
-    expect(workflow.env.BENCH_RUNNER).toBe('${{ inputs.bench_runner }}');
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
+  });
+
+  it('wires the bench override into every bench-covered job', () => {
+    // Review Yeti's counterfactual: reverting ONE job (e.g. `build`) to a literal
+    // `runs-on` left the suite green while the override silently stopped applying
+    // to that job -- so a same-SHA A/B run would measure a mixed runner set with
+    // no signal. Asserting only `vitest` does not enforce the invariant its own
+    // comment states ("a job cannot silently keep its own runner during a bench
+    // run"). This checks every job in the covered set.
+    const BENCH_COVERED = [
+      'test-plan', 'vitest', 'vitest-postgres', 'worker-helper', 'build',
+      'test', 'typecheck', 'operator-test', 'legacy-runtime',
+    ];
+    const EXPECTED_DEFAULTS: Record<string, string> = {
+      // Measured in the same-SHA A/B (PR #1247): these six were green on 2 vCPU.
+      'test-plan': 'blacksmith-2vcpu-ubuntu-2404',
+      'worker-helper': 'blacksmith-2vcpu-ubuntu-2404',
+      typecheck: 'blacksmith-2vcpu-ubuntu-2404',
+      'operator-test': 'blacksmith-2vcpu-ubuntu-2404',
+      'legacy-runtime': 'blacksmith-2vcpu-ubuntu-2404',
+      test: 'blacksmith-2vcpu-ubuntu-2404',
+      // Declined: vitest shards and vitest-postgres are CPU-bound (2.11-2.31x
+      // stretch), and build roughly doubles its wall time.
+      vitest: 'blacksmith-4vcpu-ubuntu-2404',
+      'vitest-postgres': 'blacksmith-4vcpu-ubuntu-2404',
+      build: 'blacksmith-4vcpu-ubuntu-2404',
+    };
+    for (const job of BENCH_COVERED) {
+      const actual = workflow.jobs[job]?.['runs-on'];
+      // Guard DIRECTION is pinned, so `!=` -> `==` (which silently disables the
+      // override on every job) fails here rather than passing. Built as a plain
+      // string so the GitHub expression's own `${{`/`}}` is never interpolated
+      // by JS or escaped through a regex.
+      const expected =
+        "${{ inputs.bench_runner != '' && inputs.bench_runner || '" +
+        EXPECTED_DEFAULTS[job] +
+        "' }}";
+      expect(job + '|' + actual).toBe(job + '|' + expected);
+    }
   });
 
   it('bounds the build heap so the build does not OOM on a smaller runner', () => {
