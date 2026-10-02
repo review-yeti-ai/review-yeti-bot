@@ -101,7 +101,7 @@ digest, stored in the `ct-review-job-dispatcher` ConfigMap's
 `REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
 production: it only makes a new commit's image available to pull. Advancing
 the live dispatcher to that commit is a separate, explicit operational step.
-In the exampleorg production cluster, Flux owns this key from
+In the Exampleorg production cluster, Flux owns this key from
 `exampleorg/example-infra` on `main`, at
 `clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml`.
 The runtime helper discovers that ownership; it does not compete with the
@@ -159,7 +159,7 @@ image already includes Node, used for the fixed non-secret running attestation.
 
 The existing source-tag resolver verifies the exact full-SHA tag against the
 caller-supplied digest, then reads that immutable index and requires Linux
-amd64 and arm64 entries. The worker GHCR and exampleorg DOCR repositories
+amd64 and arm64 entries. The worker GHCR and Exampleorg DOCR repositories
 are allowlisted; moving tags, platform digests and registry fallbacks are not.
 This proves registry source-tag matching, not a cryptographic build attestation.
 The caller supplies independently reviewed source.
