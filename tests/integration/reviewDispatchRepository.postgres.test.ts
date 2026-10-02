@@ -793,7 +793,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { priorProof, followupProof, completion, digest };
   }
 
-  it('retains a graceful composed partial on an ordinary MCP retry and accepts its authenticated full Gate result', async () => {
+  it('retains a legacy P2 partial on ordinary MCP retry and blocks the authenticated Gate result when P2 remains', async () => {
     let proof: any;
     const resolveGenerationRecovery = vi.fn(async () => [proof]);
     const { repository, client, gateRepository } = await createRepository({
@@ -881,7 +881,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
           id: task.id, decision: 'APPROVE' as const, status: 'COMPLETE' as const, findings: [],
         }))],
         taskPlan: seeded.checkpoint.plan,
-        coverageComplete: true, quorumSatisfied: true, findingCount: 4, blockingFindingCount: 0,
+        coverageComplete: true, quorumSatisfied: true, findingCount: 4, blockingFindingCount: 4,
         incompleteP2Recovery: incompleteP2RecoveryClaimFor(retained.context!),
       },
     };
@@ -900,10 +900,16 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
       async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
     expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
-      .toBe('succeeded');
+      .toBe('failed');
     expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0])
-      .toMatchObject({ desired_state: 'success', decision: { status: 'success', reason: 'clean-review' } });
+      .toMatchObject({ desired_state: 'failure', decision: { status: 'failure', reason: 'blocking-findings' } });
+    const gateEvidence = (await client.query(`SELECT evidence FROM review_gate_attempts
+      WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].evidence;
+    expect(gateEvidence).toMatchObject({ verdict: 'FIX_FIRST', p0Count: 0, p1Count: 0 });
+    const storedCompletion = (await client.query(`SELECT payload FROM review_worker_completions
+      WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].payload;
+    expect(storedCompletion.result).toMatchObject({ findingCount: 4, blockingFindingCount: 4 });
   });
 
   it('refuses a composed graceful retry when its App summary reports blocking findings before allocating', async () => {

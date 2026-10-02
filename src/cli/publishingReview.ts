@@ -65,7 +65,7 @@ import {
   loadSameHeadReviewSource, readPullRequestIdentity, verifyReviewablePullRequest,
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
-import { advisoryRequiredByDefault, computeArbitration, sanitizeFinding } from '../review/reviewCore';
+import { advisoryRequiredByDefault, blockingFindingSeverities, computeArbitration, sanitizeFinding } from '../review/reviewCore';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
@@ -390,9 +390,7 @@ export {
 };
 export type { OpenAITransportConfig };
 
-export const BLOCKING_SEVERITIES = new Set(
-  advisoryRequiredByDefault() ? ['P0', 'P1', 'P2'] : ['P0', 'P1']
-);
+export const BLOCKING_SEVERITIES = new Set(blockingFindingSeverities(advisoryRequiredByDefault()));
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller

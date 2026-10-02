@@ -10,6 +10,15 @@ function advisoryRequiredByDefault() {
   return process.env.REVIEW_YETI_REQUIRE_ADVISORY !== 'false';
 }
 
+function blockingFindingSeverities(requireAdvisory = advisoryRequiredByDefault()) {
+  return requireAdvisory ? ['P0', 'P1', 'P2'] : ['P0', 'P1'];
+}
+
+function blockingFindingCount(metrics, requireAdvisory = advisoryRequiredByDefault()) {
+  const counts = { P0: metrics.p0Count, P1: metrics.p1Count, P2: metrics.p2Count };
+  return blockingFindingSeverities(requireAdvisory).reduce((total, severity) => total + counts[severity], 0);
+}
+
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === 'object') {
@@ -548,5 +557,7 @@ module.exports = {
   clusterFindings,
   resolvePanelSize,
   advisoryRequiredByDefault,
+  blockingFindingSeverities,
+  blockingFindingCount,
   computeArbitration,
 };

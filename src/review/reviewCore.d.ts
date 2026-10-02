@@ -97,6 +97,13 @@ export interface ArbitrationOptions {
 
 /** Trusted runtime default for publishing boundaries; pure arbitration stays opt-in. */
 export function advisoryRequiredByDefault(): boolean;
+/** Canonical blocking severities for the current trusted publication policy. */
+export function blockingFindingSeverities(requireAdvisory?: boolean): Array<'P0' | 'P1' | 'P2'>;
+/** Counts canonical findings using the same blocking-severity policy as publication. */
+export function blockingFindingCount(
+  metrics: { p0Count: number; p1Count: number; p2Count: number },
+  requireAdvisory?: boolean,
+): number;
 
 export function canonicalize(value: unknown): unknown;
 export function canonicalJson(value: unknown): string;

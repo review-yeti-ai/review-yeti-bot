@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { computeAppVerdict } from '../../src/review/reviewAdapters';
-import { advisoryRequiredByDefault, computeArbitration, ReviewLane } from '../../src/review/reviewCore';
+import {
+  advisoryRequiredByDefault,
+  blockingFindingCount,
+  blockingFindingSeverities,
+  computeArbitration,
+  ReviewLane,
+} from '../../src/review/reviewCore';
 
 const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js');
 
@@ -50,10 +56,35 @@ describe('canonical review contract differential', () => {
       const pure = computeArbitration(p2Only, 2, { changedFiles });
 
       expect(advisoryRequiredByDefault()).toBe(true);
+      expect(blockingFindingSeverities()).toEqual(['P0', 'P1', 'P2']);
+      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 })).toBe(1);
       expect(app.verdict).toBe('FIX_FIRST');
       expect(app.metrics.p2Count).toBe(1);
       expect(action.verdict).toBe('FIX_FIRST');
       expect(pure.verdict).toBe('SHIP');
+    } finally {
+      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
+    }
+  });
+
+  it('honors the configured P0/P1-only rollback through both publishing boundaries', () => {
+    const p2Only: ReviewLane[] = [
+      { id: 'security', required: true, decision: 'FINDINGS', findings: [
+        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Advisory', body: 'A P2-only finding.' },
+      ] },
+      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
+    ];
+    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
+    try {
+      expect(advisoryRequiredByDefault()).toBe(false);
+      expect(blockingFindingSeverities()).toEqual(['P0', 'P1']);
+      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 })).toBe(0);
+      expect(computeAppVerdict({ lanes: p2Only, expectedLanes: 2, changedFiles }).verdict).toBe('SHIP');
+      expect(actionVerdict(p2Only).verdict).toBe('SHIP');
+      // The pure kernel remains opt-in independently of the publishing-boundary default.
+      expect(computeArbitration(p2Only, 2, { changedFiles }).verdict).toBe('SHIP');
     } finally {
       if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
       else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;

@@ -1,6 +1,6 @@
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME } from '../review/reviewCheckIdentity';
-import { advisoryRequiredByDefault, canonicalJson, sha256 } from '../review/reviewCore';
+import { advisoryRequiredByDefault, blockingFindingCount, canonicalJson, sha256 } from '../review/reviewCore';
 import {
   MAX_INCOMPLETE_P2_RECOVERY_BYTES,
   MAX_INCOMPLETE_P2_RECOVERY_FINDINGS,
@@ -320,8 +320,8 @@ async function hasPersistedIncompleteGateFindings(
       || (completion.result.findingCount !== undefined
         && completion.result.findingCount !== canonical.metrics.totalFindings)
       || (completion.result.blockingFindingCount !== undefined
-        && completion.result.blockingFindingCount !== canonical.metrics.p0Count + canonical.metrics.p1Count
-          + (advisoryRequiredByDefault() ? canonical.metrics.p2Count : 0))) refuse();
+        && completion.result.blockingFindingCount !== blockingFindingCount(
+          canonical.metrics, advisoryRequiredByDefault()))) refuse();
   }
   return false;
 }

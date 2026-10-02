@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
-import { advisoryRequiredByDefault, canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
+import { advisoryRequiredByDefault, blockingFindingCount, canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
@@ -616,8 +616,7 @@ function rawFieldsMatchCanonical(
   if (result.findingCount !== undefined && result.findingCount !== canonical.metrics.totalFindings) {
     return `worker finding count ${result.findingCount} disagrees with canonical count ${canonical.metrics.totalFindings}`;
   }
-  const blockingCount = canonical.metrics.p0Count + canonical.metrics.p1Count
-    + (requireAdvisory ? canonical.metrics.p2Count : 0);
+  const blockingCount = blockingFindingCount(canonical.metrics, requireAdvisory);
   if (result.blockingFindingCount !== undefined && result.blockingFindingCount !== blockingCount) {
     return `worker blocking finding count ${result.blockingFindingCount} disagrees with canonical count ${blockingCount}`;
   }
