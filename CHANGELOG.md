@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.113.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.2...v1.113.0) (2026-10-02)
+
+
+### Features
+
+* make optional JEV classification part of review planning (REL-1081) ([#1253](https://github.com/review-yeti-ai/review-yeti-bot/issues/1253)) ([bdd868e](https://github.com/review-yeti-ai/review-yeti-bot/commit/bdd868e75da184eb73fd98bd869b770e21b812c0))
+
 ## [1.112.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.1...v1.112.2) (2026-10-02)
 
 
