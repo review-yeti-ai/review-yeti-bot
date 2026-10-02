@@ -327,7 +327,7 @@ export async function runContinuationPhase(
 ): Promise<ContinuationPhaseResult> {
   const env = options.env || process.env;
   const runId = options.runId || env.REVIEW_RUN_ID || `run_${createHash('sha256').update(String(Date.now())).digest('hex').slice(0, 32)}`;
-  const repo = options.repo || env.REVIEW_REPO || 'exampleorg/review-yeti-bot';
+  const repo = options.repo || env.REVIEW_REPO || 'review-yeti-ai/review-yeti-bot';
   const prNumber = options.prNumber || Number(env.REVIEW_PR_NUMBER || '1');
   const headSha = options.headSha || env.REVIEW_HEAD_SHA || env.GIT_HEAD_SHA || '0'.repeat(40);
   const token = options.token || env.GITHUB_PUBLISH_TOKEN || env.GH_TOKEN || env.GITHUB_TOKEN;
@@ -388,7 +388,7 @@ export async function runContinuationPhase(
     // Step 2: Connect to PostgreSQL and load review_runs and review_run_artifacts by runId
     const { run, llmCompletion, alreadyCompleted } = await withTimeoutGuard(
       loadContinuationState(db, runId, {
-        expectedRepo: options.repo || (repo !== 'exampleorg/review-yeti-bot' ? repo : undefined),
+        expectedRepo: options.repo || (repo !== 'review-yeti-ai/review-yeti-bot' ? repo : undefined),
         expectedPrNumber: options.prNumber || (prNumber !== 1 ? prNumber : undefined),
         expectedHeadSha: options.headSha || (headSha !== '0'.repeat(40) ? headSha : undefined),
       }),

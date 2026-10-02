@@ -7,6 +7,24 @@ import {
 import { CompiledDomainIndex, loadCompiledIndex } from '../../src/pipeline/domainIndex';
 
 describe('publishingWorkerConfig', () => {
+  it('keeps the default lockfile cap implicit and projects an explicitly admitted bounded cap', () => {
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'not-persisted', model: 'review-model' };
+    const legacy = resolveWorkerConfig({}, transport);
+    expect(legacy.max_reviewed_lockfile_patch_chars).toBeUndefined();
+
+    const admitted = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', budget: { max_investigation_turns: 10, max_reviewed_lockfile_patch_chars: 65_536 },
+    } }) }, transport);
+    expect(admitted.max_reviewed_lockfile_patch_chars).toBe(65_536);
+  });
+
+  it.each([19_999, 65_537, '65536'])('rejects out-of-bound or non-numeric raw-lockfile cap %s', (value) => {
+    expect(() => resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+      personas: 'security', budget: { max_investigation_turns: 10, max_reviewed_lockfile_patch_chars: value },
+    } }) }, { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'not-persisted', model: 'review-model' }))
+      .toThrow('review policy could not be parsed');
+  });
+
   it.each([[1, 1], [3, 3], [5, 5], [10, 10], [11, 11], [20, 15]])(
     'projects admitted turn budget %i to %i without replacing a lower limit', (requested, expected) => {
       const config = resolveWorkerConfig({ REVIEW_YETI_POLICY_JSON: JSON.stringify({

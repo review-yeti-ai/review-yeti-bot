@@ -67,10 +67,8 @@ export {
  * cannot become a generic legacy fallback. Additional historical rows require
  * their own independently reviewed immutable receipt.
  */
-const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT = {
+const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT_FIELDS = {
   runId: 'run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce',
-  owner: 'exampleorg',
-  repo: 'example-api',
   prNumber: 4972,
   headSha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
   executionAttempt: 1,
@@ -84,11 +82,22 @@ const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT = {
   completedAt: '2026-09-10T03:38:15Z',
 } as const;
 
+/**
+ * The receipt's `owner/repo` is deployment configuration (REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY),
+ * not code: it is the identity of one durable production row. When unset the owner and repo are empty,
+ * no persisted run can equal them, and the receipt can never match (an exact-ID check without an exact
+ * run still fails closed below).
+ */
+function historicalEmptyExternalIdReceipt() {
+  const [owner = '', repo = ''] = (process.env.REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY ?? '').trim().split('/');
+  return { ...HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT_FIELDS, owner, repo };
+}
+
 function matchesHistoricalEmptyIdentityRun(
   run: AbandonedPublishingRun,
   publisherAppId: number,
 ): boolean {
-  const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+  const receipt = historicalEmptyExternalIdReceipt();
   return run.runId === receipt.runId
     && run.owner === receipt.owner
     && run.repo === receipt.repo
@@ -102,7 +111,7 @@ function matchesHistoricalEmptyIdentityRun(
 }
 
 function matchesHistoricalEmptyIdentityCheck(check: any): boolean {
-  const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+  const receipt = historicalEmptyExternalIdReceipt();
   return check?.id === receipt.checkId
     && check.name === receipt.checkName
     && check.head_sha === receipt.headSha
@@ -883,7 +892,7 @@ export class GitHubInstallationClient {
         const candidates = checks.filter(exactAttempt);
         if (candidates.length > 1) throw new Error('ambiguous abandoned check');
         if (candidates.length === 1) return reconcileCandidate(candidates[0]);
-        const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+        const receipt = historicalEmptyExternalIdReceipt();
         const exactHistoricalRun = matchesHistoricalEmptyIdentityRun(run, publisherAppId);
         const historicalReceiptIdMatches = checks.filter((check) => check?.id === receipt.checkId);
         // The live head contains several publisher-owned checks from before

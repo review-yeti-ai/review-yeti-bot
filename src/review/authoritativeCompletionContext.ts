@@ -217,7 +217,10 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
       const applicability = resolveReviewApplicability(
         stored.config.personas.filter((persona) => persona.enabled),
         files,
-        { pathFilters: stored.config.path_filters },
+        {
+          pathFilters: stored.config.path_filters,
+          maxReviewedLockfilePatchChars: stored.config.max_reviewed_lockfile_patch_chars,
+        },
       );
       const applicablePersonaIds = applicability.applicable.map((persona) => persona.id);
       // A zero-lane documentation-only panel is an explicit audited exemption.

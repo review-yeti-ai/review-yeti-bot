@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { GitHubActionsOidcClaims } from '../auth/githubActionsOidc';
 import {
+  CENTRAL_REVIEW_CONFIGURED,
+  CENTRAL_REVIEW_OWNER,
   CENTRAL_REVIEW_REPOSITORY,
   isCentralReviewDispatchIdentity,
 } from './reviewCheckIdentity';
@@ -84,7 +86,7 @@ export function assertActionDispatchMatchesClaims(
   const repository = `${request.owner}/${request.repo}`;
   const isDirect = repository === claims.repository && String(request.repositoryId) === claims.repository_id;
   const isSupportedExternalTarget = centralExternalRepositories.get(repository) === request.repositoryId;
-  const isCentralTarget = request.owner === 'exampleorg' || isSupportedExternalTarget;
+  const isCentralTarget = (CENTRAL_REVIEW_CONFIGURED && request.owner === CENTRAL_REVIEW_OWNER) || isSupportedExternalTarget;
   const isCentralRepositoryDispatch = request.caller.eventName === 'repository_dispatch';
   // A manual retry is signed as workflow_dispatch even though it enters through the same
   // central receiver. Admit it only when both GitHub's parent and reusable-workflow claims
@@ -93,6 +95,7 @@ export function assertActionDispatchMatchesClaims(
     && isCentralReviewDispatchIdentity(request.caller, claims)
     && request.caller.workflowSha === claims.workflow_sha;
   const isCentral = (isCentralRepositoryDispatch || isCentralManualDispatch)
+    && CENTRAL_REVIEW_CONFIGURED
     && claims.repository === CENTRAL_REVIEW_REPOSITORY
     && isCentralTarget;
   // The central repository can review itself, which makes both predicates true.
