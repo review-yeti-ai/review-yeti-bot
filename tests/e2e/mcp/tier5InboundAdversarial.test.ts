@@ -8,7 +8,7 @@
  * 3. Native MCP Resources & Real-Time SSE Subscriptions (Catalog, Read, Subscribe, Event Notification)
  * 4. Preflight Diff Review White-Box AST & Severity Calibration (CRLF, Non-git headers, Confidence filter)
  * 5. Fix Diff Generation White-Box Git Synthesis & Verification (git apply --check, Fallback chains, Add/Del)
- * 6. Dispute Finding Quorum Adjudication & Ledger Blocker Math (Model parse, SSE trigger, Blocker math)
+ * 6. Dispute request safety and advisory-only helpers
  * 7. Explain Finding Scoping, Multi-Tenant Fail-Closed & Heuristics (Unscoped auth, Bypass vs Compliant)
  * 8. Review Engine Selection (TriggerReview admission propagation, Conflict 409, PublishingWorker selection)
  */
@@ -733,9 +733,9 @@ index 1111111..2222222 100644
   });
 
   // ===========================================================================
-  // Suite 6: Dispute Finding Quorum Adjudication & Ledger Blocker Math
+  // Suite 6: Dispute request safety and advisory-only helpers
   // ===========================================================================
-  describe('Suite 6: Dispute Finding Quorum Adjudication & Ledger Blocker Math', () => {
+  describe('Suite 6: Dispute request safety and advisory-only helpers', () => {
     it('TC-T5-DIS-01: evaluateDisputeWithModel parses structured verdict, reasoning, and confidence', async () => {
       const mockClient: any = {
         complete: async () => ({
@@ -758,7 +758,7 @@ index 1111111..2222222 100644
       expect(result.reasoning).toMatch(/concurrency hazard/i);
     });
 
-    it('TC-T5-DIS-02: overruled finding triggers SSE notifyResourceUpdated, upheld does not', async () => {
+    it('TC-T5-DIS-02: unauthenticated direct tool calls cannot adjudicate or publish resource updates', async () => {
       const notifySpy = vi.fn();
 
       // Seed database with a run and 1 finding
@@ -788,30 +788,15 @@ index 1111111..2222222 100644
         notifyResourceUpdated: notifySpy,
       });
 
-      // 1. Upheld dispute does not call notifyResourceUpdated
-      await tool.execute({
-        owner: 'exampleorg',
-        repo: 'example-api',
-        pr_number: 99,
-        finding_id: 'f-overrule-test',
-        counter_argument: 'whatever',
-      });
+      await expect(tool.execute({
+        owner: 'exampleorg', repo: 'example-api', pr_number: 99,
+        finding_id: 'f-overrule-test', counter_argument: 'valid technical justification',
+      })).rejects.toThrow(/forbidden/i);
       expect(notifySpy).not.toHaveBeenCalled();
-
-      // 2. Overruled dispute calls notifyResourceUpdated twice (findings + runs)
-      await tool.execute({
-        owner: 'exampleorg',
-        repo: 'example-api',
-        pr_number: 99,
-        finding_id: 'f-overrule-test',
-        counter_argument: 'valid technical justification',
-      });
-      expect(notifySpy).toHaveBeenCalledTimes(2);
-      expect(notifySpy).toHaveBeenCalledWith('review-yeti://findings/exampleorg/example-api/99');
-      expect(notifySpy).toHaveBeenCalledWith('review-yeti://runs/exampleorg/example-api/99');
+      expect(env.db.findings.find((finding) => finding.finding_id === 'f-overrule-test')?.status).toBe('OPEN');
     });
 
-    it('TC-T5-DIS-03: blocker count recalculation accurately handles mixed P0/P1/P2 and resolved states', async () => {
+    it('TC-T5-DIS-03: an authenticated caller still cannot adjudicate without a transaction pool', async () => {
       env.db.seedRun({
         owner: 'exampleorg',
         repo: 'example-api',
@@ -830,23 +815,25 @@ index 1111111..2222222 100644
       env.db.seedFinding({ finding_id: 'f-p2-adv', run_id: run.run_id, severity: 'P2', title: 'P2 Advisory', file_path: 'c.ts' });
       env.db.seedFinding({ finding_id: 'f-p1-resolved', run_id: run.run_id, severity: 'P1', title: 'P1 Resolved', file_path: 'd.ts', status: 'RESOLVED' });
 
+      const adjudicateDispute = vi.fn(() => ({ verdict: 'overruled' as const, reasoning: 'Accept technical proof' }));
       const tool = createDisputeFindingTool({
         queryableDatabase: env.db,
-        adjudicateDispute: () => ({ verdict: 'overruled', reasoning: 'Accept technical proof' }),
+        adjudicateDispute,
       });
 
-      const res = await tool.execute({
+      const context = {
+        caller: { callerId: 'e2e-admin', authType: 'static_token', isAdmin: true, allowedRepositories: null },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
+      } as any;
+      await expect(tool.execute({
         owner: 'exampleorg',
         repo: 'example-api',
         pr_number: 77,
         finding_id: 'f-p1-target',
         counter_argument: 'Acceptable mitigation proof per ADR 0564',
-      });
-
-      const content = JSON.parse((res as any).content[0].text);
-      expect(content.verdict).toBe('overruled');
-      // Remaining blockers: only f-p0-open remains (1 blocker)
-      expect(content.remaining_blockers).toBe(1);
+      }, context)).rejects.toThrow(/temporarily unavailable/i);
+      expect(adjudicateDispute).not.toHaveBeenCalled();
+      expect(env.db.findings.find((finding) => finding.finding_id === 'f-p1-target')?.status).toBe('OPEN');
     });
 
     it('TC-T5-DIS-04: model exception gracefully falls back to defaultAdjudicateFinding heuristics', async () => {
@@ -867,7 +854,7 @@ index 1111111..2222222 100644
       expect(result.reasoning).toMatch(/Counter-argument lacks technical evidence/i);
     });
 
-    it('TC-T5-DIS-05: database query executes updates on worker completion payload', async () => {
+    it('TC-T5-DIS-05: missing transaction support refuses before querying or updating completion payloads', async () => {
       const mockQuery = vi.fn().mockImplementation(async (sql: string) => {
         if (sql.includes('SELECT c.run_id')) {
           return {
@@ -890,18 +877,18 @@ index 1111111..2222222 100644
         adjudicateDispute: () => ({ verdict: 'overruled', reasoning: 'Accept' }),
       });
 
-      await tool.execute({
+      const context = {
+        caller: { callerId: 'e2e-admin', authType: 'static_token', isAdmin: true, allowedRepositories: null },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
+      } as any;
+      await expect(tool.execute({
         owner: 'exampleorg',
         repo: 'example-api',
         pr_number: 88,
         finding_id: 'find-to-overrule',
         counter_argument: 'Detailed technical mitigation description here',
-      });
-
-      // Verify UPDATE was executed on review_worker_completions
-      const updateCall = mockQuery.mock.calls.find((call) => call[0].includes('UPDATE review_worker_completions'));
-      expect(updateCall).toBeDefined();
-      expect(updateCall![1][0]).toContain('"status":"OVERRULED"');
+      }, context)).rejects.toThrow(/temporarily unavailable/i);
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 

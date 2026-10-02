@@ -147,7 +147,7 @@ index 1111111..2222222 100644
       findingId = f.finding_id;
     });
 
-    it('TC-T2-PAY-01: accepts counter-argument at exactly 10,000 characters boundary', async () => {
+    it('TC-T2-PAY-01: accepts a 10,000-character counter-argument but requires an accepted source to queue it', async () => {
       const longArg = 'Technical justification: '.padEnd(10000, 'x');
 
       const res = await env.callTool('dispute_finding', {
@@ -158,9 +158,8 @@ index 1111111..2222222 100644
         counter_argument: longArg,
       });
 
-      expect(res.status).toBe(200);
-      expect(res.result).toBeDefined();
-      expect(res.result.disputed).toBe(true);
+      expect(res.error?.message).toMatch(/temporarily unavailable/i);
+      expect(env.db.findings.find((finding) => finding.finding_id === findingId)?.status).toBe('OPEN');
     });
 
     it('TC-T2-PAY-02: rejects counter-argument exceeding 10,000 characters with schema error', async () => {
@@ -374,7 +373,7 @@ index 1111111..2222222 100644
       expect(results[2].result.eligible_to_ship).toBe(false); // secret detected
     });
 
-    it('TC-T2-CON-03: concurrent disputes across multiple PRs maintain isolated state in ledger', async () => {
+    it('TC-T2-CON-03: concurrent requests without accepted sources fail independently without model calls', async () => {
       const run1 = env.db.seedRun({ owner: 'exampleorg', repo: 'example-api', pr_number: 701, head_sha: '1'.repeat(40) });
       const run2 = env.db.seedRun({ owner: 'exampleorg', repo: 'example-api', pr_number: 702, head_sha: '2'.repeat(40) });
 
@@ -392,8 +391,11 @@ index 1111111..2222222 100644
         }),
       ]);
 
-      expect(res1.result.verdict).toBe('overruled');
-      expect(res2.result.verdict).toBe('upheld');
+      expect(res1.error?.message).toMatch(/temporarily unavailable/i);
+      expect(res2.error?.message).toMatch(/temporarily unavailable/i);
+      expect(env.deepSeek.disputeCalls).toHaveLength(0);
+      expect(env.db.findings.find((finding) => finding.finding_id === f1.finding_id)?.status).toBe('OPEN');
+      expect(env.db.findings.find((finding) => finding.finding_id === f2.finding_id)?.status).toBe('OPEN');
     });
 
     it('TC-T2-CON-04: empty database query results are handled cleanly without unhandled exceptions', async () => {

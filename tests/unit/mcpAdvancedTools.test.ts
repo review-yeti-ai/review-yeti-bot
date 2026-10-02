@@ -1,3 +1,6 @@
+// This suite isolates authentication and unavailable dependencies. Positive append-only admission,
+// returned receipts and immutable source evidence are covered by disputedFindingRecheckFlow.test.ts
+// and completedFindingRecheckAdmission.postgres.test.ts, which fail if enqueue is never reached.
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import express, { type Request } from 'express';
 import request from 'supertest';
@@ -429,411 +432,45 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
   // 3. dispute_finding
   // ===========================================================================
   describe('3. Tool: dispute_finding', () => {
-    const findingId = 'finding-sec-202';
-    const samplePayload = {
-      result: {
-        personas: [
-          {
-            id: 'security-reviewer',
-            findings: [
-              {
-                finding_id: findingId,
-                title: 'Potential SQL Injection in dynamic query',
-                severity: 'P0',
-                status: 'OPEN',
-                resolved: false,
-                path: 'src/db/query.ts',
-                line: 45,
-              },
-              {
-                finding_id: 'finding-style-203',
-                title: 'Missing return type annotation',
-                severity: 'P2',
-                status: 'OPEN',
-                resolved: false,
-                path: 'src/util/helper.ts',
-                line: 12,
-              },
-            ],
-          },
-        ],
-      },
+    const input = {
+      owner: TEST_OWNER, repo: TEST_REPO, pr_number: TEST_PR,
+      finding_id: 'source-finding-202',
+      counter_argument: 'The request router binds the authenticated repository before reading tenant data.',
     };
 
-    it('overruled verdict: substantive counter-argument overrules finding, decrements blockers, and emits SSE notification', async () => {
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string, params: any[]) => {
-          if (sql.includes('SELECT')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-99',
-                  execution_attempt: 1,
-                  payload: JSON.stringify(samplePayload),
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const notifySpy = vi.fn();
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        notifyResourceUpdated: notifySpy,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument:
-            'The parameter is pre-sanitized through sqlStringEscape and strictly validated as an integer ID in route schema.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.finding_id).toBe(findingId);
-      expect(data.disputed).toBe(true);
-      expect(data.verdict).toBe('overruled');
-      expect(data.reasoning).toContain('overruled and resolved');
-      expect(data.remaining_blockers).toBe(0); // P0 finding was overruled, P2 is not a blocker
-
-      // Verify DB update was called
-      expect(mockDb.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE review_worker_completions'),
-        expect.any(Array)
-      );
-
-      // Verify SSE notifications emitted
-      expect(notifySpy).toHaveBeenCalledWith(`review-yeti://findings/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
-      expect(notifySpy).toHaveBeenCalledWith(`review-yeti://runs/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
+    it('requires repository authorization before opening the request transaction', async () => {
+      const connect = vi.fn();
+      const tool = createDisputeFindingTool({ transactionPool: { connect } as any });
+      const caller = createMockCaller({ allowedRepos: ['other/repository'] });
+      await expect(tool.execute(input, {
+        caller,
+        authenticatedByConfiguredAuthenticator: true,
+        authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
+      })).rejects.toThrow(/denied|access/i);
+      expect(connect).not.toHaveBeenCalled();
     });
 
-    it('upheld verdict: dismissive counter-argument is rejected by quorum', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-99',
-              execution_attempt: 1,
-              payload: JSON.stringify(samplePayload),
-            },
-          ],
-        }),
-      };
-
-      const notifySpy = vi.fn();
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        notifyResourceUpdated: notifySpy,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: 'not a bug ignore this',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.verdict).toBe('upheld');
-      expect(data.reasoning).toContain('lacks technical evidence');
-      expect(data.remaining_blockers).toBe(1); // P0 remains a blocker
-      expect(notifySpy).not.toHaveBeenCalled();
+    it('never uses an injected adjudicator or model client to change a finding', async () => {
+      const adjudicateDispute = vi.fn();
+      const modelClient = { complete: vi.fn() };
+      const tool = createDisputeFindingTool({ adjudicateDispute, modelClient });
+      await expect(tool.execute(input, {
+        caller: createMockCaller({ isAdmin: true }),
+        authenticatedByConfiguredAuthenticator: true,
+        authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
+      })).rejects.toThrow('Fresh finding review is temporarily unavailable');
+      expect(adjudicateDispute).not.toHaveBeenCalled();
+      expect(modelClient.complete).not.toHaveBeenCalled();
     });
 
-    it('custom adjudicator injection', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-99',
-              execution_attempt: 1,
-              payload: JSON.stringify(samplePayload),
-            },
-          ],
-        }),
-      };
-
-      const customAdjudicator = vi.fn().mockResolvedValue({
-        verdict: 'overruled' as const,
-        reasoning: 'Custom quorum approved architectural exemption',
-      });
-
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        adjudicateDispute: customAdjudicator,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: 'Architectural ADR 0594 allows dynamic column indexing.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(customAdjudicator).toHaveBeenCalled();
-      expect(data.verdict).toBe('overruled');
-      expect(data.reasoning).toBe('Custom quorum approved architectural exemption');
-    });
-
-    it('storage fallback: disputes finding successfully when record is in review_run_artifacts', async () => {
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string) => {
-          if (sql.includes('review_worker_completions')) {
-            return { rows: [] }; // Empty in completions
-          }
-          if (sql.includes('review_run_artifacts')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-art-1',
-                  payload: JSON.stringify(samplePayload),
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const tool = createDisputeFindingTool({ queryableDatabase: mockDb });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: 'Architectural ADR 0594 allows dynamic column indexing with proven bounds.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.verdict).toBe('overruled');
-      expect(data.disputed).toBe(true);
-      expect(data.remaining_blockers).toBe(0);
-    });
-
-    it('model-backed adjudication: OVERRULED verdict with confidence and DB ledger update', async () => {
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string) => {
-          if (sql.includes('SELECT')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-99',
-                  execution_attempt: 1,
-                  payload: JSON.stringify(samplePayload),
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const mockModelClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            verdict: 'overruled',
-            reasoning: 'Model evaluated counter-argument against ADR 0242 and confirmed valid integer sanitization.',
-            confidence: 0.94,
-          }),
-        }),
-      };
-
-      const notifySpy = vi.fn();
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-        notifyResourceUpdated: notifySpy,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: 'Parameter is strongly typed and checked by schema validator before query builder.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.finding_id).toBe(findingId);
-      expect(data.disputed).toBe(true);
-      expect(data.verdict).toBe('overruled');
-      expect(data.confidence).toBe(0.94);
-      expect(data.reasoning).toContain('Model evaluated counter-argument');
-      expect(data.remaining_blockers).toBe(0);
-
-      expect(mockDb.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE review_worker_completions'),
-        expect.any(Array)
-      );
-      expect(notifySpy).toHaveBeenCalledWith(`review-yeti://findings/${TEST_OWNER}/${TEST_REPO}/${TEST_PR}`);
-    });
-
-    it('model-backed adjudication: UPHELD verdict with confidence keeps blocker', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-99',
-              execution_attempt: 1,
-              payload: JSON.stringify(samplePayload),
-            },
-          ],
-        }),
-      };
-
-      const mockModelClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: JSON.stringify({
-            verdict: 'upheld',
-            reasoning: 'Counter-argument does not demonstrate parameterization or boundary checking.',
-            confidence: 0.88,
-          }),
-        }),
-      };
-
-      const notifySpy = vi.fn();
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-        notifyResourceUpdated: notifySpy,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: 'I do not think this is an issue, query runs fine in dev.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.finding_id).toBe(findingId);
-      expect(data.disputed).toBe(true);
-      expect(data.verdict).toBe('upheld');
-      expect(data.confidence).toBe(0.88);
-      expect(data.reasoning).toContain('Counter-argument does not demonstrate parameterization');
-      expect(data.remaining_blockers).toBe(1);
-
-      expect(mockDb.query).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE review_worker_completions'),
-        expect.arrayContaining([expect.stringContaining('"resolved":false')])
-      );
-      expect(notifySpy).not.toHaveBeenCalled();
-    });
-
-    it('model error fallback: reverts to heuristic adjudication on model failure', async () => {
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string) => {
-          if (sql.includes('SELECT')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-99',
-                  execution_attempt: 1,
-                  payload: JSON.stringify(samplePayload),
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const mockModelClient = {
-        complete: vi.fn().mockRejectedValue(new Error('DeepSeek API connection reset')),
-      };
-
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-      });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument:
-            'The parameter is pre-sanitized through sqlStringEscape and strictly validated as an integer ID in route schema.',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.verdict).toBe('overruled');
-      expect(data.confidence).toBe(0.85);
-      expect(data.reasoning).toContain('Quorum adjudication accepted counter-argument');
-      expect(data.remaining_blockers).toBe(0);
-    });
-
-    it('output schema matches DisputeFindingOutput contract', async () => {
-      const mockDb = {
-        query: vi.fn().mockResolvedValue({
-          rows: [
-            {
-              run_id: 'run-99',
-              execution_attempt: 1,
-              payload: JSON.stringify(samplePayload),
-            },
-          ],
-        }),
-      };
-
-      const tool = createDisputeFindingTool({ queryableDatabase: mockDb });
-
-      const res: any = await tool.execute(
-        {
-          owner: TEST_OWNER,
-          repo: TEST_REPO,
-          pr_number: TEST_PR,
-          finding_id: findingId,
-          counter_argument: 'invalid rebuttal',
-        },
-        { caller: createMockCaller() }
-      );
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data).toHaveProperty('finding_id');
-      expect(data).toHaveProperty('disputed');
-      expect(data).toHaveProperty('verdict');
-      expect(data).toHaveProperty('reasoning');
-      expect(data).toHaveProperty('confidence');
-      expect(data).toHaveProperty('remaining_blockers');
-      expect(typeof data.confidence).toBe('number');
-      expect(typeof data.remaining_blockers).toBe('number');
+    it('validates the bounded request shape without accepting unknown fields', () => {
+      const tool = createDisputeFindingTool();
+      expect(tool.schema.safeParse({ ...input, counter_argument: 'a'.repeat(10_000) }).success).toBe(true);
+      expect(tool.schema.safeParse({ ...input, counter_argument: 'a'.repeat(10_001) }).success).toBe(false);
+      expect(tool.schema.safeParse({ ...input, extra: 'untrusted field' }).success).toBe(false);
     });
   });
 
-  // ===========================================================================
-  // 4. attest_pr_gate
-  // ===========================================================================
   describe('4. Tool: attest_pr_gate', () => {
     it('PASSED gate: exact head SHA match, SHIP verdict, 0 blockers, passing CI checks returns HMAC token', async () => {
       const cleanPayload = {
@@ -1288,7 +925,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       expect(content.patch).toContain('+createHash("sha256")');
     });
 
-    it('successfully calls dispute_finding via POST /api/mcp tools/call', async () => {
+    it('does not adjudicate a dispute through the router without an accepted transaction pool', async () => {
       const res = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -1310,10 +947,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
         });
 
       expect(res.status).toBe(200);
-      expect(res.body.error).toBeUndefined();
-      const content = JSON.parse(res.body.result.content[0].text);
-      expect(content.verdict).toBe('overruled');
-      expect(content.remaining_blockers).toBe(0);
+      expect(res.body.error?.message).toMatch(/temporarily unavailable/i);
     });
 
     it('successfully calls attest_pr_gate via POST /api/mcp tools/call', async () => {
