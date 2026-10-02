@@ -61,6 +61,30 @@ test('does not expose the worker setting in credential-free transport plans or a
   assert.throws(() => buildExecutionPlanFixture(policy), /budget contains unknown keys: unexpected/);
 });
 
+test('the checked-in policy admits the 65,536 cap without forwarding it to the action caller', (t) => {
+  const budget = committedPolicy.review_yeti.budget;
+  assert.equal(budget.max_reviewed_lockfile_patch_chars, 65_536);
+  assert.doesNotThrow(() => validateLockfileReviewBudget(budget));
+  assert.doesNotThrow(() => validatePolicy(committedPolicy));
+
+  const executionPlan = buildExecutionPlanFixture(committedPolicy);
+  assert.equal(JSON.stringify(executionPlan).includes('max_reviewed_lockfile_patch_chars'), false);
+
+  const root = mkdtempSync(join(tmpdir(), 'review-lockfile-budget-policy-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const output = join(root, 'outputs');
+  writeFileSync(output, '');
+  const result = spawnSync(process.execPath, [join(scripts, 'emit-policy.mjs')], {
+    env: { PATH: dirname(process.execPath), GITHUB_OUTPUT: output },
+    encoding: 'utf8', timeout: 10_000,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 0, result.stderr);
+  const emitted = readFileSync(output, 'utf8');
+  assert.match(emitted, /^action_ref<</m);
+  assert.equal(emitted.includes('max_reviewed_lockfile_patch_chars'), false);
+});
+
 test('the actual policy emitter validates the setting before emitting any outputs and never forwards it', (t) => {
   const root = mkdtempSync(join(tmpdir(), 'review-lockfile-budget-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
