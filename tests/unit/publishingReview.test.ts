@@ -149,7 +149,17 @@ async function withAdvisoryPolicy(
 ): Promise<void> {
   const worker = advisoryPolicyWorkers.get(advisory);
   expect(worker).toBeTypeOf('function');
-  await check(worker!);
+  // Arbitration and completion use the same live process policy as the
+  // publisher captured during preparation. Keep it set through execution.
+  const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+  try {
+    if (advisory === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = advisory;
+    await check(worker!);
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+  }
 }
 
 describe('qualification source arguments', () => {

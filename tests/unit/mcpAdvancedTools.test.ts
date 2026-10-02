@@ -452,6 +452,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       const tool = createDisputeFindingTool({ adjudicateDispute, modelClient });
       await expect(tool.execute(input, {
         caller: createMockCaller({ isAdmin: true }),
+        authenticatedByConfiguredAuthenticator: true,
         authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
       })).rejects.toThrow('Fresh finding review is temporarily unavailable');
       expect(adjudicateDispute).not.toHaveBeenCalled();

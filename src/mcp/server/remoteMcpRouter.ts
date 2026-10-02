@@ -203,6 +203,7 @@ export function createDefaultToolRegistry(options?: {
   registry.registerTool(createDisputeFindingTool({
     queryableDatabase: db,
     transactionPool: db && typeof db.connect === 'function' ? db : undefined,
+    authoritativePublishing: options?.triggerDeps?.authoritativePublishing,
     notifyResourceUpdated: options?.notifyResourceUpdated,
     ...(modelClient ? { modelClient } : {}),
     ...options?.disputeFindingDeps,

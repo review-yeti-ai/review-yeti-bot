@@ -10,6 +10,7 @@ import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
+import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -77,11 +78,18 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
         run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pr_number INTEGER NOT NULL,
         head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, effective_policy_digest TEXT NOT NULL,
         effective_config_digest VARCHAR(64) NOT NULL, status TEXT NOT NULL, attempt INTEGER NOT NULL,
-        repository_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        repository_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        publication_mode TEXT DEFAULT 'app-gate', stage TEXT DEFAULT 'complete', result_digest TEXT,
+        received_at TIMESTAMPTZ, terminal_deadline TIMESTAMPTZ, error_text TEXT,
+        failure_diagnostics JSONB DEFAULT '{}'::jsonb, publication_fence TEXT, lease_owner TEXT,
+        lease_expires_at TIMESTAMPTZ, cancel_requested_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE review_dispatch_outbox (
         run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
-        status TEXT NOT NULL, execution_attempt INTEGER NOT NULL, worker_token_digest VARCHAR(64)
+        status TEXT NOT NULL, execution_attempt INTEGER NOT NULL, worker_token_digest VARCHAR(64),
+        projection_name TEXT, terminal_receipt_digest TEXT, lease_owner TEXT, lease_expires_at TIMESTAMPTZ,
+        available_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+        cancel_requested_at TIMESTAMPTZ
       );
     `);
     await pool.query(REVIEW_GATE_SCHEMA_SQL);
@@ -102,6 +110,7 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
        status, attempt, repository_id, authoritative_gate_app_id)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'failed', 1, $9, 4385771)`,
     [runId, owner, repo, prNumber, headSha, baseSha, policyDigest, configDigest, repositoryId]);
+    await pool!.query('UPDATE review_runs SET result_digest=$2 WHERE run_id=$1', [runId, completionDigest]);
     // Accepted worker results may leave the dispatch outbox projected after Gate publication.
     await pool!.query(`INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt)
       VALUES ($1, 'projected', 1)`, [runId]);
@@ -121,12 +130,12 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
       VALUES ($1, 2, 4, $2, $3, $4::jsonb, $5)`,
     [runId, headSha, configDigest, JSON.stringify(sourceCheckpoint), Buffer.byteLength(JSON.stringify(sourceCheckpoint), 'utf8')]);
 
-    const tool = createDisputeFindingTool({ transactionPool: pool as never,
+    const tool = createDisputeFindingTool({ transactionPool: pool as never, authoritativePublishing: findingRecheckAdmission(completion),
       adjudicateDispute: () => { throw new Error('Legacy adjudication must not run'); } });
     const findingId = getReviewFindingId(runId, task.id, sourceFinding);
     const input = { owner, repo, pr_number: prNumber, finding_id: findingId,
       counter_argument: 'The request router binds the authenticated repository before tenant data is loaded.' };
-    const context = { caller: {
+    const context = { authenticatedByConfiguredAuthenticator: true, caller: {
       authType: 'static_token' as const, tokenDigest: 'test-digest', isAdmin: true,
       allowedRepositories: null, callerId: 'rel1265-postgres-test',
     }, authorizedRepository: { owner, repo } };
@@ -164,16 +173,17 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
     expect(workerReviewCompletionDigest(storedSourceBefore.payload)).toBe(completionDigest);
     expect(storedSourceBefore.content_digest).toBe(completionDigest);
     expect(storedGateBefore).toMatchObject({ attempt_id: gateAttemptId, worker_result_digest: completionDigest,
-      desired_state: 'failure', desired_version: '2', published_version: '2', current_attempt: true });
+      desired_state: 'failure', desired_version: '2', published_version: '2', current_attempt: false });
     expect((await pool!.query('SELECT count(*)::int AS count FROM review_finding_rechecks WHERE run_id = $1', [runId])).rows[0].count)
       .toBe(1);
 
-    // Simulate normal a3 reservation after a2: run generation is 2 while worker execution is 3.
-    // The source Gate (g1-e2) is no longer current but remains bound to the immutable completion.
+    // Request admission already reserved g2-e3 and queued execution3. Fixture
+    // only the later authenticated worker start for the checkpoint-route checks.
+    expect((await pool!.query('SELECT status,attempt FROM review_runs WHERE run_id=$1', [runId])).rows[0])
+      .toEqual({ status: 'queued', attempt: 2 });
     await pool!.query(`UPDATE review_runs SET status = 'running', attempt = 2 WHERE run_id = $1`, [runId]);
     await pool!.query(`UPDATE review_dispatch_outbox SET status = 'projected', execution_attempt = 2,
       worker_token_digest = $2 WHERE run_id = $1`, [runId, sha256(WORKER_TOKEN)]);
-    await pool!.query(`UPDATE review_gate_attempts SET current_attempt = false WHERE attempt_id = $1`, [gateAttemptId]);
 
     const app = express();
     app.use(express.json({ limit: '1mb' }));

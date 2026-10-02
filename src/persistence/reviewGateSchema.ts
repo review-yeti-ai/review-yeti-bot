@@ -124,4 +124,19 @@ export const REVIEW_GATE_SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS review_finding_rechecks_run_created_idx
     ON review_finding_rechecks (run_id, created_at DESC);
+  -- Append-only authorization for the fresh execution started by a completed
+  -- review's authenticated task request. General retry admission is unchanged.
+  CREATE TABLE IF NOT EXISTS review_finding_recheck_admissions (
+    run_id TEXT NOT NULL REFERENCES review_runs(run_id) ON DELETE CASCADE,
+    source_execution_attempt INTEGER NOT NULL CHECK (source_execution_attempt > 0),
+    trigger_request_id UUID NOT NULL UNIQUE REFERENCES review_finding_rechecks(request_id),
+    execution_attempt INTEGER NOT NULL CHECK (execution_attempt = source_execution_attempt + 1),
+    review_generation INTEGER NOT NULL CHECK (review_generation > 0),
+    gate_attempt_id TEXT NOT NULL UNIQUE REFERENCES review_gate_attempts(attempt_id),
+    requested_by VARCHAR(64) NOT NULL CHECK (requested_by ~ '^[a-f0-9]{64}$'),
+    received_at TIMESTAMPTZ NOT NULL,
+    terminal_deadline TIMESTAMPTZ NOT NULL CHECK (terminal_deadline > received_at),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (run_id, source_execution_attempt)
+  );
 `;

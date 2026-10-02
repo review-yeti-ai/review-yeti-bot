@@ -22,10 +22,13 @@ import {
 import { withReviewPrTransaction, lockReviewPr, type ReviewPrTransactionPool } from '../../../persistence/reviewPrTransaction';
 import { parseReviewExecutionCheckpoint } from '../../../review/reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../../review/workerReviewCompletion';
-import { canonicalJson, sha256 } from '../../../review/reviewCore';
+import { advisoryRequiredByDefault, canonicalJson, sha256 } from '../../../review/reviewCore';
+import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
+import { admitCompletedFindingRecheck } from '../../../persistence/completedFindingRecheckAdmission';
 import {
   disputedFindingRecheckDigest,
   MAX_DISPUTE_RECHECKS_PER_REVIEW,
+  loadValidatedDisputedFindingRechecks,
   type DisputedFindingRecheckUnsigned,
 } from '../../../review/disputedFindingRecheck';
 
@@ -64,6 +67,8 @@ export const disputeFindingDefinition: ToolDefinition = {
 };
 
 export interface DisputeFindingDependencies {
+  authoritativePublishing?: AuthoritativeReviewAdmission;
+  now?: () => number;
   queryableDatabase?: {
     query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
   };
@@ -218,8 +223,15 @@ function assertSameCompletionIdentity(row: any, completion: ReturnType<typeof pa
     && coordinates.policyDigest === completion.policyDigest
     && Number(coordinates.executionAttempt) === completion.executionAttempt
     && coordinates.attemptId === row.gate_attempt_id;
-  if (!matches || Number(row.review_generation) !== Number(row.attempt)
-    || Number(row.outbox_execution_attempt) + 1 !== completion.executionAttempt
+  const admitted = row.admitted_execution_attempt != null;
+  const executionMatches = admitted
+    ? Number(row.admitted_execution_attempt) === completion.executionAttempt + 1
+      && Number(row.outbox_execution_attempt) + 1 === Number(row.admitted_execution_attempt)
+      && Number(row.admitted_review_generation) === Number(row.review_generation) + 1
+      && Number(row.attempt) === Number(row.admitted_review_generation)
+    : Number(row.review_generation) === Number(row.attempt)
+      && Number(row.outbox_execution_attempt) + 1 === completion.executionAttempt;
+  if (!matches || !executionMatches
     || Number(row.repository_id) !== completion.repositoryId || Number(row.pr_number) !== completion.prNumber
     || row.owner !== completion.owner || row.repo !== completion.repo
     || row.head_sha !== completion.headSha || row.base_sha !== completion.baseSha
@@ -238,13 +250,17 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
       const { owner, repo, pr_number, finding_id, counter_argument } = parsed.data;
       const caller = context?.caller;
       const authorizedRepository = context?.authorizedRepository;
-      if (!caller || !authorizedRepository
+      if (context?.authenticatedByConfiguredAuthenticator !== true || !caller || !authorizedRepository
         || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
         || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()
         || !canAccessRepository(caller, owner, repo)) {
         throw new McpRbacError(owner, repo);
       }
       if (!deps.transactionPool) throw new Error('Fresh finding review is temporarily unavailable');
+      const authoritative = deps.authoritativePublishing;
+      if (authoritative?.acceptNewRequests !== true || !authoritative.resolver) {
+        throw new Error('Fresh finding review requires active authoritative admission');
+      }
 
       const queued = await withReviewPrTransaction(deps.transactionPool, async (client) => {
         const hint = (await client.query(
@@ -264,7 +280,8 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         const row = (await client.query(`
           WITH latest_run AS (
             SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
-                   effective_policy_digest, effective_config_digest, attempt, status, created_at
+                   effective_policy_digest, effective_config_digest, attempt, status, created_at,
+                   authoritative_gate_app_id, publication_mode, result_digest
               FROM review_runs
              WHERE owner = $1 AND repo = $2 AND pr_number = $3
              ORDER BY created_at DESC, run_id DESC
@@ -276,6 +293,8 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
                  gate.worker_result_digest, gate.coordinates AS gate_coordinates,
                  gate.desired_state, gate.desired_version, gate.published_version,
                  gate.creation_state, gate.check_id, gate.current_attempt
+                 , admission.execution_attempt AS admitted_execution_attempt,
+                 admission.review_generation AS admitted_review_generation
             FROM latest_run runs
             LEFT JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
             LEFT JOIN LATERAL (
@@ -289,14 +308,21 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
                  AND stored_gate.execution_attempt = completion.execution_attempt
                  AND stored_gate.worker_result_digest = completion.content_digest
                ORDER BY stored_gate.review_generation DESC LIMIT 1
-            ) gate ON true`,
+            ) gate ON true
+            LEFT JOIN review_finding_recheck_admissions admission
+              ON admission.run_id = runs.run_id
+             AND admission.source_execution_attempt = completion.execution_attempt`,
         [owner, repo, pr_number])).rows[0];
         if (!row || !row.payload || !row.gate_attempt_id
-          || !['succeeded', 'failed'].includes(String(row.status))
+          || (row.admitted_execution_attempt == null
+            ? !['succeeded', 'failed'].includes(String(row.status))
+            : !['queued', 'running'].includes(String(row.status)))
           // Completed reviews can retain a projected outbox row: the worker
           // result and its Gate publication, not outbox cleanup state, are the
           // authoritative evidence that this is an accepted source.
-          || !['projected', 'terminal'].includes(String(row.outbox_status)) || row.current_attempt !== true
+          || (row.admitted_execution_attempt == null
+            ? !['projected', 'terminal'].includes(String(row.outbox_status)) || row.current_attempt !== true
+            : !['pending', 'claimed', 'projected'].includes(String(row.outbox_status)) || row.current_attempt !== false)
           || row.creation_state !== 'bound' || row.check_id == null
           || !['success', 'failure'].includes(String(row.desired_state))
           || Number(row.published_version) < Number(row.desired_version)) {
@@ -309,8 +335,28 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           throw new Error('Finding source completion digest is invalid');
         }
         assertSameCompletionIdentity(row, completion);
+        if (!authoritative.repositoryIds.includes(completion.repositoryId)
+          || row.publication_mode !== 'app-gate'
+          || Number(row.authoritative_gate_app_id) !== authoritative.expectedAppId) {
+          throw new Error('Finding source is outside active authoritative admission');
+        }
+        // The service resolver re-reads the candidate and central policy at this
+        // boundary. Neither the developer argument nor persisted status can
+        // supply current GitHub truth or a provider/policy override.
+        const resolved = await authoritative.resolver.resolve({ repositoryId: completion.repositoryId,
+          owner: completion.owner, repo: completion.repo, prNumber: completion.prNumber,
+          headSha: completion.headSha, baseSha: completion.baseSha });
+        if (!resolved.current.open || resolved.current.draft
+          || ['repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha'].some((key) =>
+            resolved.current[key as keyof typeof resolved.current] !== completion[key as keyof typeof completion])
+          || resolved.prepared.policy.effectivePolicyDigest !== completion.policyDigest
+          || resolved.prepared.policy.effectiveConfigDigest !== completion.configDigest) {
+          throw new Error('Finding source no longer matches the current candidate and trusted policy');
+        }
         const taskPlan = completion.result.taskPlan;
-        if (!taskPlan || completion.result.personas.length === 0) {
+        if (!taskPlan || completion.result.personas.length === 0
+          || completion.result.coverageComplete !== true || completion.result.quorumSatisfied !== true
+          || completion.result.personas.some((persona) => persona.status !== 'COMPLETE')) {
           throw new Error('Finding is not from a resumable composed review task');
         }
         const findingRecords = extractReviewFindingEntries(completion, { includeAlternateSources: true })
@@ -320,6 +366,26 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         const canonicalFindingId = getReviewFindingId(completion.runId, matched.personaId, matched.finding);
         const task = taskPlan.find((candidate) => candidate.id === matched.personaId);
         if (!task) throw new Error('Finding persona is not bound to a composed review task');
+
+        const existing = (await client.query(
+          `SELECT request_id, finding_id, counter_argument_digest
+             FROM review_finding_rechecks
+            WHERE run_id = $1 AND source_execution_attempt = $2 AND task_id = $3
+            FOR UPDATE`, [completion.runId, completion.executionAttempt, task.id],
+        )).rows[0];
+        const counterArgumentDigest = sha256(counter_argument);
+        if (existing) {
+          if (existing.finding_id !== canonicalFindingId || existing.counter_argument_digest !== counterArgumentDigest) {
+            throw new Error('A different dispute re-review is already queued for this task');
+          }
+          if (row.admitted_execution_attempt == null) throw new Error('Finding request has no durable execution admission');
+          const requests = await loadValidatedDisputedFindingRechecks(client, row, Number(row.admitted_execution_attempt));
+          if (!requests.some((request) => request.requestId === String(existing.request_id))) {
+            throw new Error('Finding request source is unavailable');
+          }
+          return { requestId: String(existing.request_id), completion, finding: matched.finding,
+            findingId: canonicalFindingId };
+        }
 
         const checkpointRow = (await client.query(
           'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1 FOR UPDATE', [completion.runId],
@@ -343,21 +409,6 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           throw new Error('The disputed finding is absent from its durable task checkpoint');
         }
 
-        const existing = (await client.query(
-          `SELECT request_id, finding_id, counter_argument_digest
-             FROM review_finding_rechecks
-            WHERE run_id = $1 AND source_execution_attempt = $2 AND task_id = $3
-            FOR UPDATE`,
-          [completion.runId, completion.executionAttempt, task.id],
-        )).rows[0];
-        const counterArgumentDigest = sha256(counter_argument);
-        if (existing) {
-          if (existing.finding_id !== canonicalFindingId || existing.counter_argument_digest !== counterArgumentDigest) {
-            throw new Error('A different dispute re-review is already queued for this task');
-          }
-          return { requestId: String(existing.request_id), completion, finding: matched.finding,
-            findingId: canonicalFindingId };
-        }
         const count = Number((await client.query(
           'SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id = $1', [completion.runId],
         )).rows[0]?.count ?? 0);
@@ -409,11 +460,17 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
             canonicalFindingId, matched.personaId, task.id, JSON.stringify(unsigned.finding), counter_argument,
             counterArgumentDigest, requestDigest, sha256(caller.callerId)],
         );
+        await admitCompletedFindingRecheck(client, unsigned, {
+          sourceGeneration: Number(row.review_generation), expectedAppId: authoritative.expectedAppId,
+          actorDigest: sha256(caller.callerId), now: (deps.now ?? Date.now)(),
+        });
         return { requestId, completion, finding: matched.finding, findingId: canonicalFindingId };
       });
 
       const blockers = extractReviewFindingEntries(queued.completion, { includeAlternateSources: true })
-        .filter(({ finding }) => ['P0', 'P1', 'CRITICAL', 'HIGH'].includes(String(finding.severity || '').toUpperCase())).length;
+        .filter(({ finding }) => (advisoryRequiredByDefault()
+          ? ['P0', 'P1', 'P2', 'CRITICAL', 'HIGH'] : ['P0', 'P1', 'CRITICAL', 'HIGH'])
+          .includes(String(finding.severity || '').toUpperCase())).length;
       return buildToolResultJson({ finding_id: queued.findingId, request_id: queued.requestId,
         review_status: 'fresh_re_review_requested', remaining_blockers: blockers } satisfies DisputeFindingOutput);
     },

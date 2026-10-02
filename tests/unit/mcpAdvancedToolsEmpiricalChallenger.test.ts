@@ -293,6 +293,7 @@ describe('Empirical Challenger Suite: generate_fix_diff & dispute_finding (Miles
       const tool = createDisputeFindingTool({ modelClient, notifyResourceUpdated });
       await expect(tool.execute(input, {
         caller: createMockCaller(),
+        authenticatedByConfiguredAuthenticator: true,
         authorizedRepository: { owner: TEST_OWNER, repo: TEST_REPO },
       })).rejects.toThrow('Fresh finding review is temporarily unavailable');
       expect(modelClient.complete).not.toHaveBeenCalled();

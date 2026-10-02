@@ -7,6 +7,7 @@ import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { parseDisputedFindingRecheck } from '../../src/review/disputedFindingRecheck';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
+import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 
 const workerToken = 'ghs_disputed_finding_fixture';
@@ -69,6 +70,7 @@ function setup() {
   let currentCheckpoint: unknown = structuredClone(checkpointSource);
   let recheckRow: Record<string, unknown> | undefined;
   let gateCurrentAttempt = true;
+  let admissionCreated = false;
   let terminalSourceCompletionBytes = canonicalJson(sourcePayload);
   const transactionClient = {
     query: vi.fn(async (sql: string, values?: unknown[]) => {
@@ -78,6 +80,30 @@ function setup() {
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('SELECT repository_id, pr_number FROM review_runs')) {
         return { rows: [{ repository_id: identity.repositoryId, pr_number: identity.prNumber }] };
+      }
+      if (sql.includes('SELECT runs.status, runs.attempt, outbox.status AS outbox_status')) {
+        return { rows: [{ status: 'failed', attempt: 1, outbox_status: 'terminal', execution_attempt: 0 }] };
+      }
+      if (sql.includes('UPDATE review_runs SET status') || sql.includes('UPDATE review_dispatch_outbox SET status')) {
+        return { rows: [{ run_id: identity.runId }] };
+      }
+      if (sql.includes('UPDATE review_gate_attempts SET current_attempt = false')) {
+        gateCurrentAttempt = false;
+        return { rows: [{ attempt_id: gateAttemptId }] };
+      }
+      if (sql.includes('SELECT runs.*, outbox.execution_attempt + 1 AS worker_execution_attempt')) {
+        return { rows: [{ ...identity, owner: identity.owner, repo: identity.repo, repository_id: identity.repositoryId,
+          pr_number: identity.prNumber, head_sha: identity.headSha, base_sha: identity.baseSha,
+          effective_policy_digest: identity.policyDigest, attempt: 2, worker_execution_attempt: 2 }] };
+      }
+      if (sql.includes('INSERT INTO review_gate_attempts')) {
+        return { rows: [{ coordinates: JSON.parse(String(values?.[7])), review_generation: 2, expected_app_id: 4385771,
+          external_id: 'fresh-gate', check_id: null, creation_state: 'reserved', desired_state: 'queued',
+          desired_version: 0, published_version: -1, current_attempt: true }] };
+      }
+      if (sql.includes('INSERT INTO review_finding_recheck_admissions')) {
+        admissionCreated = true;
+        return { rows: [] };
       }
       if (sql.includes('WITH latest_run AS')) {
         return { rows: [{
@@ -89,10 +115,13 @@ function setup() {
           base_sha: identity.baseSha,
           effective_policy_digest: identity.policyDigest,
           effective_config_digest: identity.configDigest,
-          attempt: 1,
-          status: 'failed',
-          outbox_execution_attempt: 0,
-          outbox_status: 'terminal',
+          attempt: admissionCreated ? 2 : 1,
+          status: admissionCreated ? 'queued' : 'failed',
+          authoritative_gate_app_id: 4385771, publication_mode: 'app-gate',
+          admitted_execution_attempt: admissionCreated ? 2 : null,
+          admitted_review_generation: admissionCreated ? 2 : null,
+          outbox_execution_attempt: admissionCreated ? 1 : 0,
+          outbox_status: admissionCreated ? 'pending' : 'terminal',
           execution_attempt: 1,
           content_digest: sourceDigest,
           payload: sourcePayload,
@@ -215,7 +244,7 @@ describe('REL-1265 dispute re-review flow', () => {
     const sourceBytesBefore = f.sourceBytes;
     const digestBefore = f.sourceDigest;
     const adjudicateDispute = vi.fn();
-    const tool = createDisputeFindingTool({ transactionPool: f.pool as never, adjudicateDispute });
+    const tool = createDisputeFindingTool({ transactionPool: f.pool as never, authoritativePublishing: findingRecheckAdmission(identity), adjudicateDispute });
     const findingId = getReviewFindingId(identity.runId, task.id, finding);
     const requestResult = await tool.execute({
       owner: identity.owner,
@@ -223,14 +252,15 @@ describe('REL-1265 dispute re-review flow', () => {
       pr_number: identity.prNumber,
       finding_id: findingId,
       counter_argument: 'The router binds the authenticated repository before this handler reaches tenant data.',
-    }, { caller, authorizedRepository: { owner: identity.owner, repo: identity.repo } });
+    }, { caller, authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: identity.owner, repo: identity.repo } });
     const requested = JSON.parse((requestResult.content[0] as { text: string }).text);
 
     expect(requested).toMatchObject({ finding_id: findingId, review_status: 'fresh_re_review_requested',
       remaining_blockers: 1 });
     expect(requested.request_id).toMatch(/^[0-9a-f-]{36}$/u);
     expect(adjudicateDispute).not.toHaveBeenCalled();
-    expect(f.calls.some(({ sql }) => /UPDATE\s+review_worker_completions|UPDATE\s+review_gate_attempts/iu.test(sql))).toBe(false);
+    expect(f.calls.some(({ sql }) => /UPDATE\s+review_worker_completions/iu.test(sql))).toBe(false);
+    expect(f.calls.some(({ sql }) => sql.includes('INSERT INTO review_finding_recheck_admissions'))).toBe(true);
     expect(f.sourceBytes).toBe(sourceBytesBefore);
     expect(workerReviewCompletionDigest(f.sourcePayload)).toBe(digestBefore);
 
@@ -264,12 +294,12 @@ describe('REL-1265 dispute re-review flow', () => {
 
   it('rejects fabricated, uncompleted, or unauthorized satisfaction receipts without checkpoint mutation', async () => {
     const f = setup();
-    const tool = createDisputeFindingTool({ transactionPool: f.pool as never });
+    const tool = createDisputeFindingTool({ transactionPool: f.pool as never, authoritativePublishing: findingRecheckAdmission(identity) });
     const findingId = getReviewFindingId(identity.runId, task.id, finding);
     const requestResult = await tool.execute({
       owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber, finding_id: findingId,
       counter_argument: 'The caller identity is bound to the repository before this handler reads source evidence.',
-    }, { caller, authorizedRepository: { owner: identity.owner, repo: identity.repo } });
+    }, { caller, authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: identity.owner, repo: identity.repo } });
     const requested = JSON.parse((requestResult.content[0] as { text: string }).text);
     f.setGateHistorical();
 
