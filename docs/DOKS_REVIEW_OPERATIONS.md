@@ -77,7 +77,7 @@ The dispatcher is safe to run with two or more replicas (REL-1053):
 - The OTLP push labels metrics with `service.instance.id` = the pod's
   `workerId`, so replicas do not overwrite each other's cumulative counters.
 
-Before raising `replicas` above one, make these changes in ct-infrastructure:
+Before raising `replicas` above one, make these changes in example-infra:
 
 - Replace the static `ClusterIP` scrape target with pod or endpoints discovery
   (or a headless Service with per-pod targets). Otherwise each scrape reaches a
@@ -101,8 +101,8 @@ digest, stored in the `ct-review-job-dispatcher` ConfigMap's
 `REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
 production: it only makes a new commit's image available to pull. Advancing
 the live dispatcher to that commit is a separate, explicit operational step.
-In the CallTelemetry production cluster, Flux owns this key from
-`calltelemetry/ct-infrastructure` on `main`, at
+In the Exampleorg production cluster, Flux owns this key from
+`exampleorg/example-infra` on `main`, at
 `clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml`.
 The runtime helper discovers that ownership; it does not compete with the
 controller.
@@ -122,14 +122,14 @@ jq '{action,management,targetImage}' worker-plan.json
 
 When `.action` is `gitops-update-required`, `--apply` is deliberately
 unavailable. Update the exact digest and release annotations in the
-`ct-infrastructure` manifest, update its stage-2 provenance fixture, and land
+`example-infra` manifest, update its stage-2 provenance fixture, and land
 that change through the protected pull-request path. Wait until Flux reports
 the exact merge revision as Ready and applied:
 
 ```bash
 kubectl --context <explicit-context> --namespace flux-system \
   get kustomization flux-system -o json \
-  | jq -e --arg revision 'main@sha1:<ct-infrastructure-merge-sha>' '
+  | jq -e --arg revision 'main@sha1:<example-infra-merge-sha>' '
       .status.lastAppliedRevision==$revision
       and any(.status.conditions[]?; .type=="Ready" and .status=="True")'
 ```
@@ -159,7 +159,7 @@ image already includes Node, used for the fixed non-secret running attestation.
 
 The existing source-tag resolver verifies the exact full-SHA tag against the
 caller-supplied digest, then reads that immutable index and requires Linux
-amd64 and arm64 entries. The worker GHCR and CallTelemetry DOCR repositories
+amd64 and arm64 entries. The worker GHCR and Exampleorg DOCR repositories
 are allowlisted; moving tags, platform digests and registry fallbacks are not.
 This proves registry source-tag matching, not a cryptographic build attestation.
 The caller supplies independently reviewed source.
@@ -533,7 +533,7 @@ Under ADR 0564 and API-3230, Review Yeti incorporates a private NATS JetStream e
 
 ## 🏆 Live DOKS Qualification Evidence
 
-On 2026-09-12, production qualification on `doks-nyc1` (`ct-infrastructure` PR #271) validated the full runtime:
+On 2026-09-12, production qualification on `doks-nyc1` (`example-infra` PR #271) validated the full runtime:
 - **Fast-Ship Path**: Completed in **13 seconds** (`check_run` ID `103601331582`) on doc-only diffs.
 - **Full Modular DAG Path**: Completed in **59 seconds** (`check_run` ID `103601457039`) across 5 parallel persona lanes, processing 23,043 tokens and publishing terminal `SHIP`.
 - **Storage Profile**: Verified ephemeral `emptyDir` 1Gi volume mount with instant pod startup and 0 PVC provisioning delays.
