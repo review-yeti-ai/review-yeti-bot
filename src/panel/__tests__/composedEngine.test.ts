@@ -2782,7 +2782,6 @@ describe('executeComposedReview', () => {
           activeWrites += 1;
           peakWrites = Math.max(peakWrites, activeWrites);
           try {
-            await Promise.resolve();
             if (snapshot.completedTasks.length === tasks.length) releaseFinalWrite();
           } finally {
             activeWrites -= 1;
