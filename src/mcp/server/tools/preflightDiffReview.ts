@@ -757,15 +757,71 @@ function isDirectEvalCall(tokens: PreflightSqlToken[], index: number): boolean {
     tokens[index + 1]?.text === '(' && tokens[index - 1]?.text !== '.';
 }
 
-function hasRegexIntrinsicMutationBarrier(tokens: PreflightSqlToken[], endIndex: number): boolean {
+function isExecPropertyAssignment(tokens: PreflightSqlToken[], propertyIndex: number): boolean {
+  const property = tokens[propertyIndex];
+  if (property?.kind === 'identifier' && property.text === 'exec') {
+    return tokens[propertyIndex - 1]?.text === '.' && tokens[propertyIndex + 1]?.text === '=';
+  }
+  return property?.kind === 'string' && property.value === 'exec' &&
+    tokens[propertyIndex - 1]?.text === '[' && tokens[propertyIndex + 1]?.text === ']' &&
+    tokens[propertyIndex + 2]?.text === '=';
+}
+
+function hasRegexIntrinsicMutationBarrier(
+  tokens: PreflightSqlToken[],
+  endIndex: number,
+  matchingIndexes: number[],
+): boolean {
+  // Track only explicit same-line aliases of prototype escape expressions;
+  // this is not a general binding or taint analysis.
+  const prototypeAliases = new Set<string>();
   for (let index = 0; index < endIndex; index++) {
+    const token = tokens[index];
     if (
-      tokens[index].kind === 'identifier' && tokens[index].text === 'RegExp' &&
+      token.kind === 'identifier' && token.text === 'RegExp' &&
       tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'prototype'
     ) return true;
     if (
-      tokens[index].kind === 'identifier' && ['eval', 'Function'].includes(tokens[index].text) &&
+      token.kind === 'identifier' && ['eval', 'Function'].includes(token.text) &&
       tokens[index + 1]?.text === '('
+    ) return true;
+
+    if (
+      token.kind === 'identifier' && token.text === '__proto__' &&
+      isExecPropertyAssignment(tokens, index + 2)
+    ) return true;
+    if (
+      token.kind === 'identifier' && token.text === 'constructor' &&
+      tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'prototype' &&
+      isExecPropertyAssignment(tokens, index + 4)
+    ) return true;
+
+    if (token.kind === 'identifier' && token.text === 'getPrototypeOf' && tokens[index + 1]?.text === '(') {
+      const closeIndex = matchingIndexes[index + 1];
+      if (closeIndex > index && isExecPropertyAssignment(tokens, closeIndex + 2)) return true;
+    }
+
+    if (
+      token.kind === 'identifier' && ['const', 'let', 'var'].includes(token.text) &&
+      tokens[index + 1]?.kind === 'identifier' && tokens[index + 2]?.text === '=' &&
+      (index === 0 || [';', '{', '}'].includes(tokens[index - 1]?.text || ''))
+    ) {
+      let declarationEnd = index + 3;
+      while (declarationEnd < endIndex && tokens[declarationEnd].text !== ';') declarationEnd++;
+      const initializer = tokens.slice(index + 3, declarationEnd);
+      const escapesPrototype = initializer.some((candidate, candidateIndex) =>
+        candidate.kind === 'identifier' && (
+          candidate.text === '__proto__' ||
+          (candidate.text === 'getPrototypeOf' && initializer[candidateIndex + 1]?.text === '(') ||
+          (candidate.text === 'constructor' && initializer[candidateIndex + 1]?.text === '.' &&
+            initializer[candidateIndex + 2]?.text === 'prototype')
+        )
+      );
+      if (escapesPrototype) prototypeAliases.add(tokens[index + 1].text);
+    }
+    if (
+      token.kind === 'identifier' && prototypeAliases.has(token.text) &&
+      isExecPropertyAssignment(tokens, index + 2)
     ) return true;
   }
   return false;
@@ -899,6 +955,7 @@ function isUnmodifiedTopLevelRegexBinding(
   depths: number[],
   receiverIndex: number,
   callNameIndex: number,
+  matchingIndexes: number[],
 ): boolean {
   const receiver = tokens[receiverIndex];
   if (
@@ -931,7 +988,7 @@ function isUnmodifiedTopLevelRegexBinding(
     );
     return !interveningMutation &&
       !tokens.slice(0, receiverIndex).some((_, index) => isDirectEvalCall(tokens, index)) &&
-      !hasRegexIntrinsicMutationBarrier(tokens, receiverIndex);
+      !hasRegexIntrinsicMutationBarrier(tokens, receiverIndex, matchingIndexes);
   }
   return false;
 }
@@ -1054,7 +1111,7 @@ function isUnshadowedRegExpConstructorReceiver(
     token.kind === 'string' && token.interpolated === true
   );
   return !shadowOrWrite && harmlessArguments && !precedingExecutableTemplate &&
-    !hasRegexIntrinsicMutationBarrier(tokens, callNameIndex);
+    !hasRegexIntrinsicMutationBarrier(tokens, callNameIndex, matchingIndexes);
 }
 
 function isRegexExecMethod(
@@ -1071,9 +1128,9 @@ function isRegexExecMethod(
     if (openIndex >= 0 && openIndex + 2 === receiverIndex) receiverIndex = openIndex + 1;
   }
   if (tokens[receiverIndex]?.kind === 'regex') {
-    return !hasRegexIntrinsicMutationBarrier(tokens, receiverIndex);
+    return !hasRegexIntrinsicMutationBarrier(tokens, receiverIndex, matchingIndexes);
   }
-  return isUnmodifiedTopLevelRegexBinding(tokens, depths, receiverIndex, callNameIndex);
+  return isUnmodifiedTopLevelRegexBinding(tokens, depths, receiverIndex, callNameIndex, matchingIndexes);
 }
 
 function hasUnsafeCommandConstruction(tokens: PreflightSqlToken[]): boolean {

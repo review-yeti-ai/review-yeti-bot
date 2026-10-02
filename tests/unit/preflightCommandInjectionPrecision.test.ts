@@ -430,6 +430,61 @@ describe('preflight command injection static screening precision', () => {
       expected: true,
     },
     {
+      label: 'a regex literal __proto__ exec mutation revokes the literal matcher exemption',
+      line: '(/needle/).__proto__.exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a regex literal __proto__ computed exec mutation revokes the literal matcher exemption',
+      line: '(/seed/).__proto__["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a regex instance constructor prototype mutation revokes the literal matcher exemption',
+      line: '/seed/.constructor.prototype.exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a regex instance constructor prototype computed exec mutation revokes the literal matcher exemption',
+      line: '/seed/.constructor.prototype["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.getPrototypeOf on another regex instance revokes the constructor matcher exemption',
+      line: 'Object.getPrototypeOf(/seed/).exec = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.getPrototypeOf computed exec mutation revokes the literal matcher exemption',
+      line: 'Object.getPrototypeOf(/seed/)["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Reflect.getPrototypeOf on another regex instance revokes the literal matcher exemption',
+      line: 'Reflect.getPrototypeOf(/seed/).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Reflect.getPrototypeOf computed exec mutation revokes the literal matcher exemption',
+      line: 'Reflect.getPrototypeOf(/seed/)["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an aliased instance prototype exec mutation revokes the constructor matcher exemption',
+      line: 'const p = (/seed/).__proto__; p.exec = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'mutating one regex binding prototype revokes another regex binding exemption',
+      line: 'const seed = /seed/; seed.__proto__.exec = child_process.exec; const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an aliased computed exec property mutation revokes the literal matcher exemption',
+      line: 'const p = Object.getPrototypeOf(/seed/); p["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
       label: 'eval during RegExp construction blocks the intrinsic matcher exemption',
       line: 'const match = new RegExp(eval("RegExp.prototype.exec = child_process.exec")).exec("sh -c " + req.query.command);',
       expected: true,
