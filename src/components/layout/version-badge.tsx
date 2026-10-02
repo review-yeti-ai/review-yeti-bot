@@ -32,7 +32,7 @@ export function VersionBadge() {
     buildTimestamp: '2026-07-27T14:40:00Z',
     environment: 'production',
     cluster: 'DigitalOcean Kubernetes (DOKS ny1)',
-    runner: 'Blacksmith ARM 2vCPU Runners',
+    runner: 'GitHub Actions Runners',
     memoryEngine: 'Tree-sitter SQLite AST Graph v2',
   });
 
