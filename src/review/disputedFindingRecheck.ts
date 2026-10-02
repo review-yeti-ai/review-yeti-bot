@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { canonicalJson, sha256 } from './reviewCore';
-import { getReviewFindingId } from '../mcp/server/tools/findingIdentity';
+import { getReviewFindingId } from './findingIdentity';
 import type { ReviewExecutionCheckpoint } from './reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from './workerReviewCompletion';
 
