@@ -616,8 +616,8 @@
   "digest": "54f70c21dba7cbb3"
  },
  "tests/adversarial/m5ChallengerHitlAnalyticsStress.test.ts": {
-  "count": 15,
-  "digest": "ce00885e58c952a2"
+  "count": 22,
+  "digest": "a2d358471d25b9bb"
  },
  "tests/benchmark/memoryPerformance.test.ts": {
   "count": 3,
