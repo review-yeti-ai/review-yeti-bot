@@ -22,8 +22,14 @@ describe('Milestone 26: Telemetry to Analytics API Integration Test', () => {
   });
 
   it('records review run telemetry and reflects updated metrics in analytics endpoints', async () => {
-    const initialOverview = dashboardStore.getOverviewStats();
-    const initialReviews = initialOverview.totalReviewsExecuted;
+    // /api/analytics/summary is windowed (default 7d, see getAnalyticsSummary); the overview total is
+    // all-time. Compare the endpoint with itself, not with the all-time counter.
+    const beforeRes = await request(app)
+      .get('/api/analytics/summary')
+      .set('Authorization', `Bearer ${token}`);
+    expect(beforeRes.status).toBe(200);
+    const initialReviews = beforeRes.body.summary.totalReviews;
+    const initialAllTime = dashboardStore.getOverviewStats().totalReviewsExecuted;
 
     // Simulate review run recording
     dashboardStore.recordReviewRun({
@@ -45,6 +51,9 @@ describe('Milestone 26: Telemetry to Analytics API Integration Test', () => {
 
     expect(summaryRes.status).toBe(200);
     expect(summaryRes.body.summary.totalReviews).toBe(initialReviews + 1);
+    // The windowed count can only be a subset of the all-time total.
+    expect(dashboardStore.getOverviewStats().totalReviewsExecuted).toBe(initialAllTime + 1);
+    expect(summaryRes.body.summary.totalReviews).toBeLessThanOrEqual(initialAllTime + 1);
   });
 
   it('verifies multi-persona trace ID propagation during quorum panel execution', async () => {
