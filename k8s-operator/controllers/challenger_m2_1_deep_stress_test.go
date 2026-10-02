@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Challenger 1 Deep Empirical Stress Test Suite:
 Milestone 2 Iteration 2 Gate:

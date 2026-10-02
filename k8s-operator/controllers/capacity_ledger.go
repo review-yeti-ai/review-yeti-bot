@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -41,7 +41,7 @@ const (
 	// CapacityLedgerLeaseName is the singleton Lease resource coordinating cluster-wide worker capacity.
 	CapacityLedgerLeaseName = "review-yeti-capacity-ledger"
 	// CapacityLedgerActiveSlotsAnnotation is the Lease annotation key storing the active review names JSON array.
-	CapacityLedgerActiveSlotsAnnotation = "ct.review.example.com/active-slots"
+	CapacityLedgerActiveSlotsAnnotation = "review-yeti.ai/active-slots"
 	// DefaultCapacityLedgerDurationSeconds is the default TTL duration for active worker capacity slots.
 	DefaultCapacityLedgerDurationSeconds = int32(600)
 )

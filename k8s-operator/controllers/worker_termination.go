@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -415,12 +415,8 @@ func (r *PRReviewJobV1Alpha2Reconciler) ensureReceiptAuditability(
 	if worker != nil {
 		if d, ok := worker.Annotations["review-yeti.ai/receipt-digest"]; ok && d != "" {
 			review.Status.ReceiptDigest = d
-		} else if d, ok := worker.Annotations["ct.example.com/receipt-digest"]; ok && d != "" {
-			review.Status.ReceiptDigest = d
 		}
 		if ev, ok := worker.Annotations["review-yeti.ai/receipt-evidence-ref"]; ok && ev != "" {
-			review.Status.ReceiptEvidenceRef = ev
-		} else if ev, ok := worker.Annotations["ct.example.com/receipt-evidence-ref"]; ok && ev != "" {
 			review.Status.ReceiptEvidenceRef = ev
 		}
 		if review.Status.ReceiptDigest != "" && review.Status.ReceiptEvidenceRef != "" {
