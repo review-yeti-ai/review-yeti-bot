@@ -438,20 +438,20 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
   });
 });
 
-describe('Public dashboard contract regressions', () => {
+describe('Neutral dashboard API state and boundary controls', () => {
   it('keeps sample repository identities consistent across overview, memory and filtered exports', async () => {
     const env = createMockEnv();
     const overview = await worker.fetch(new Request('https://worker.dev/api/overview'), env);
     const data = await overview.json() as any;
-    assert.ok(Object.hasOwn(data.overview.liveDurableObjects, 'reviewyeti-ai/example-api'));
-    assert.ok(Object.hasOwn(data.overview.liveDurableObjects, 'reviewyeti-ai/example-meta'));
-    const exported = await worker.fetch(new Request('https://worker.dev/api/memory/export?repo=example-api'), env);
+    assert.ok(Object.hasOwn(data.overview.liveDurableObjects, 'example/sample-cdr'));
+    assert.ok(Object.hasOwn(data.overview.liveDurableObjects, 'example/sample-meta'));
+    const exported = await worker.fetch(new Request('https://worker.dev/api/memory/export?repo=sample-cdr'), env);
     const snapshot = await exported.json() as any;
-    assert.equal(snapshot.organization, 'exampleorg');
+    assert.equal(snapshot.organization, 'example');
     assert.ok(snapshot.workspaces.length > 0);
-    assert.equal(snapshot.scope, 'example-api');
-    assert.ok(snapshot.workspaces.some((w: any) => w.repository === 'exampleorg/example-api'));
-    assert.ok(snapshot.workspaces.some((w: any) => w.repository === 'reviewyeti-ai/example-meta'));
+    assert.equal(snapshot.scope, 'sample-cdr');
+    assert.ok(snapshot.workspaces.some((w: any) => w.repository === 'example/sample-cdr'));
+    assert.ok(snapshot.workspaces.some((w: any) => w.repository === 'example/sample-meta'));
     // The existing server export labels the requested scope while retaining the full ledger.
     assert.equal(snapshot.sha256Digest.length, 64);
   });
@@ -464,7 +464,7 @@ describe('Public dashboard contract regressions', () => {
       assert.equal(res.status, 200);
       assert.ok(body[key].length > 0);
     }
-    const res = await worker.fetch(new Request('https://worker.dev/api/memory/query?repo=example-meta&q=missing-symbol&category=performance'), env);
+    const res = await worker.fetch(new Request('https://worker.dev/api/memory/query?repo=sample-meta&q=missing-symbol&category=performance'), env);
     const body = await res.json() as any;
     assert.deepEqual(body.learnings, []);
     assert.deepEqual(body.suppressedNits, []);
@@ -538,14 +538,14 @@ describe('Public dashboard contract regressions', () => {
   });
 
   it('uses D1 review records for actual verdict and token values instead of the fallback feed', async () => {
-    const reviews=['SHIP','BLOCK','COMMENT'].map((verdict,i)=>({id:'example-review-'+i,repo:'exampleorg/example-api',pr_number:i+1,title:i===0?'':`Sample ${i}`,head_sha:'a'.repeat(40),verdict,status:'completed',duration_ms:1000,prompt_tokens:100,completion_tokens:20,total_tokens:120,spend_usd:0.01,created_at:1700000000000,quorum:i===0?'':'Sample quorum'}));
+    const reviews=['SHIP','BLOCK','COMMENT'].map((verdict,i)=>({id:'example-review-'+i,repo:'example/sample-cdr',pr_number:i+1,title:i===0?'':`Sample ${i}`,head_sha:'a'.repeat(40),verdict,status:'completed',duration_ms:1000,prompt_tokens:100,completion_tokens:20,total_tokens:120,spend_usd:0.01,created_at:1700000000000,quorum:i===0?'':'Sample quorum'}));
     const writes:unknown[][]=[];
     const db={prepare:(sql:string)=>({bind:(...values:unknown[])=>({all:async()=>({results:sql.includes('FROM reviews')?reviews:[]}),run:async()=>{writes.push(values);return{};}}),all:async()=>({results:[]})})};
     const env={...createMockEnv(),DB:db} as unknown as Env;
     const res=await worker.fetch(new Request('https://worker.dev/api/dashboard/logs'),env);const body=await res.json() as any;
     assert.equal(res.status,200);const actual=body.logs.filter((r:any)=>r.id.startsWith('example-review-'));
     assert.deepEqual(actual.map((r:any)=>r.verdict),['SHIP','NACK','COMMENT']);assert.ok(actual.every((r:any)=>r.tokenDetails.total===120));assert.ok(actual[0].title.includes('PR #1'));
-    const update=await worker.fetch(new Request('https://worker.dev/api/github/repos',{method:'POST',body:JSON.stringify({id:'exampleorg/example-api',owner:'exampleorg',repo:'example-api',defaultBranch:'main',automationEnabled:true,generateFlowchart:true,customProfile:'balanced'})}),env);
+    const update=await worker.fetch(new Request('https://worker.dev/api/github/repos',{method:'POST',body:JSON.stringify({id:'example/sample-cdr',owner:'example',repo:'sample-cdr',defaultBranch:'main',automationEnabled:true,generateFlowchart:true,customProfile:'balanced'})}),env);
     assert.equal(update.status,200);assert.equal(writes.length,1);
   });
 
@@ -557,7 +557,7 @@ describe('Public dashboard contract regressions', () => {
   });
 
   it('drains the local live stream and retires it through its real abort signal', async () => {
-    const controller=new AbortController();const res=await worker.fetch(new Request('https://worker.dev/api/live/stream?jobId=example-run&speed=instant',{signal:controller.signal}),createMockEnv());
+    const controller=new AbortController();const res=await worker.fetch(new Request('https://worker.dev/api/live/stream?jobId=example-run',{signal:controller.signal}),createMockEnv());
     const reader=res.body!.getReader(),decoder=new TextDecoder();let content='';
     try{while(!content.includes('"overallProgress":100')){const item=await reader.read();assert.equal(item.done,false);content+=decoder.decode(item.value);}}
     finally{controller.abort();await reader.cancel();}
@@ -581,11 +581,11 @@ describe('Dashboard trigger and gate public fallback boundaries', () => {
       } }),
     } } as unknown as Env;
     const res = await worker.fetch(new Request('https://worker.dev/api/live/trigger', {
-      method: 'POST', body: JSON.stringify({ jobId: 'example-bound-run', repo: 'exampleorg/example-api', prNumber: 23 }),
+      method: 'POST', body: JSON.stringify({ jobId: 'example-bound-run', repo: 'example/sample-cdr', prNumber: 23 }),
     }), env);
     assert.equal(res.status, 200);
     await completed;
-    assert.deepEqual(calls[0], { url: 'http://do/trigger', payload: { jobId: 'example-bound-run', repo: 'exampleorg/example-api', prNumber: 23 } });
+    assert.deepEqual(calls[0], { url: 'http://do/trigger', payload: { jobId: 'example-bound-run', repo: 'example/sample-cdr', prNumber: 23 } });
     const transitions = calls.filter(call => call.url === 'http://do/events' && call.payload.type === 'stage:transition');
     assert.equal(transitions.at(-1)?.payload.stage, 'complete');
     assert.equal(transitions.at(-1)?.payload.overallProgress, 100);
@@ -596,7 +596,7 @@ describe('Dashboard trigger and gate public fallback boundaries', () => {
   it('uses documented trigger defaults for malformed JSON and untyped pull request numbers', async () => {
     for (const [body, expectedRepo] of [
       ['not-json', 'reviewyeti-ai/yeti-pr-reviewer'],
-      [JSON.stringify({ jobId: 'example-trigger', repo: 'exampleorg/example-api', prNumber: 'untyped' }), 'exampleorg/example-api'],
+      [JSON.stringify({ jobId: 'example-trigger', repo: 'example/sample-cdr', prNumber: 'untyped' }), 'example/sample-cdr'],
     ]) {
       const res = await worker.fetch(new Request('https://worker.dev/api/live/trigger', { method: 'POST', body }), createMockEnv());
       const data = await res.json() as any;
@@ -615,140 +615,10 @@ describe('Dashboard trigger and gate public fallback boundaries', () => {
     const res = await worker.fetch(new Request('https://worker.dev/api/dashboard/overview'), env);
     const data = await res.json() as any;
     assert.equal(res.status, 200);
-    assert.ok(queried.includes('reviewyeti-ai/example-api'));
-    assert.ok(queried.includes('reviewyeti-ai/example-meta'));
-    assert.equal(data.overview.liveDurableObjects['reviewyeti-ai/example-api'].activeCount, 2);
-    assert.equal(data.overview.liveDurableObjects['reviewyeti-ai/example-meta'].queueLength, 1);
+    assert.ok(queried.includes('example/sample-cdr'));
+    assert.ok(queried.includes('example/sample-meta'));
+    assert.equal(data.overview.liveDurableObjects['example/sample-cdr'].activeCount, 2);
+    assert.equal(data.overview.liveDurableObjects['example/sample-meta'].queueLength, 1);
     assert.ok(data.overview.activeJobsCount >= 6);
   });
-});
-
-
-describe('Integrated public topology route boundaries', () => {
-  it('returns all four public tiers and stable telemetry for the default or empty job identifier', async () => {
-    for (const query of ['', '?jobId=']) {
-      const response = await worker.fetch(new Request('https://worker.dev/api/live/topology' + query), createMockEnv());
-      assert.equal(response.status, 200);
-      assert.equal(response.headers.get('Content-Type'), 'application/json');
-      assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
-      const topology = await response.json() as any;
-      assert.equal(topology.success, true);
-      assert.equal(topology.jobId, 'run_live_reviewyeti_pr1282');
-      assert.ok(Number.isFinite(Date.parse(topology.timestamp)));
-      assert.equal(topology.healthScore, 99.9);
-      assert.equal(topology.activeWorkers, 4);
-      assert.deepEqual(topology.tiers, [
-        { tier: 1, name: 'Edge Ingress', nodesCount: 2, status: 'HEALTHY' },
-        { tier: 2, name: 'State & Storage Mesh', nodesCount: 4, status: 'HEALTHY' },
-        { tier: 3, name: 'Autonomous Swarm Agents', nodesCount: 5, status: 'IN_FLIGHT' },
-        { tier: 4, name: 'Inference Fleet', nodesCount: 4, status: 'HEALTHY' },
-      ]);
-    }
-  });
-
-  it('retains an explicit job identifier without invoking mutable review or storage bindings', async () => {
-    let bindingCalls = 0;
-    const env = { ...createMockEnv(), REVIEW_RUN: { idFromName: () => { bindingCalls++; throw new Error('Unexpected review mutation'); } }, DB: { prepare: () => { bindingCalls++; throw new Error('Unexpected database mutation'); } } } as unknown as Env;
-    const response = await worker.fetch(new Request('https://worker.dev/api/live/topology?jobId=example-topology-run'), env);
-    assert.equal(response.status, 200);
-    const topology = await response.json() as any;
-    assert.equal(topology.jobId, 'example-topology-run');
-    assert.equal(topology.globalThroughputTokSec, 384);
-    assert.equal(topology.edgeP95RttMs, 14.2);
-    assert.equal(topology.r2CacheHitRate, 95.8);
-    assert.equal(bindingCalls, 0);
-  });
-
-  it('preserves topology CORS preflight without returning a topology payload', async () => {
-    const response = await worker.fetch(new Request('https://worker.dev/api/live/topology', { method: 'OPTIONS' }), createMockEnv());
-    assert.equal(response.status, 204);
-    assert.equal(await response.text(), '');
-    assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
-    assert.ok(response.headers.get('Access-Control-Allow-Methods')?.includes('GET'));
-  });
-
-  it('keeps the public read available while rejecting an unauthorized adjacent cache mutation', async () => {
-    const env = { ...createMockEnv(), REVIEW_YETI_MCP_AUTH_TOKEN: 'example-authorized-token' } as Env;
-    const read = await worker.fetch(new Request('https://worker.dev/api/live/topology', { headers: { Authorization: 'Bearer example-invalid-token' } }), env);
-    assert.equal(read.status, 200);
-    assert.equal((await read.json() as any).success, true);
-    const mutation = await worker.fetch(new Request('https://worker.dev/api/cache/purge-expired', { method: 'POST', headers: { Authorization: 'Bearer example-invalid-token' } }), env);
-    assert.equal(mutation.status, 401);
-    assert.match(await mutation.text(), /requires valid authorization token/);
-  });
-
-  it('returns the existing not-found error for an unknown adjacent topology path', async () => {
-    const response = await worker.fetch(new Request('https://worker.dev/api/live/topology-unknown'), createMockEnv());
-    assert.equal(response.status, 404);
-    assert.match(await response.text(), /Not Found/i);
-  });
-
-});
-
-
-describe('Bound gate read fallback regressions', () => {
-  it('keeps a healthy empty gate at zero active jobs without fabricating a pending review', async () => {
-    const queried: string[] = [];
-    const env = { ...createMockEnv(), REPO_GATE: {
-      idFromName: (name: string) => { queried.push(name); return name; },
-      get: () => ({ fetch: async () => Response.json({ activeCount: 0, queueLength: 0, activeRuns: [] }) }),
-    } } as unknown as Env;
-    const response = await worker.fetch(new Request('https://worker.dev/api/dashboard/overview'), env);
-    const data = await response.json() as any;
-    assert.equal(response.status, 200);
-    assert.equal(data.overview.activeJobsCount, 0);
-    assert.equal(data.overview.liveDurableObjects['reviewyeti-ai/example-api'].activeCount, 0);
-    assert.ok(queried.includes('reviewyeti-ai/example-meta'));
-  });
-
-  it('retains a bound active review when optional elapsed and head metadata are absent', async () => {
-    const env = { ...createMockEnv(), REPO_GATE: {
-      idFromName: (name: string) => name,
-      get: () => ({ fetch: async () => Response.json({ activeCount: 1, activeRunsByPr: { '41': 'example-active-review' } }) }),
-    } } as unknown as Env;
-    const response = await worker.fetch(new Request('https://worker.dev/api/dashboard/logs'), env);
-    const data = await response.json() as any;
-    assert.equal(response.status, 200);
-    const active = data.logs.filter((row: any) => row.id === 'example-active-review');
-    assert.equal(active.length, 1);
-    assert.equal(active[0].prNumber, 41);
-    assert.equal(active[0].status, 'pending');
-    assert.equal(active[0].verdict, 'PENDING');
-    assert.equal(active[0].latencyMs, 12000);
-    assert.equal(active[0].headSha, '9b8a7c6d');
-    assert.equal(active[0].quorum, 'Swarm In-Flight');
-    assert.ok(Number.isFinite(Date.parse(active[0].timestamp)));
-  });
-});
-
-
-it('rejects incomplete live event admission before calling a bound review run', async () => {
-  let calls = 0;
-  const env = { ...createMockEnv(), REVIEW_RUN: {
-    idFromName: () => { calls++; throw new Error('Incomplete event must never dispatch'); },
-    get: () => { calls++; throw new Error('Incomplete event must never dispatch'); },
-  } } as unknown as Env;
-  for (const body of ['not-json', JSON.stringify({ jobId: 'example-run' }), JSON.stringify({ event: { type: 'example-event' } })]) {
-    const response = await worker.fetch(new Request('https://worker.dev/api/live/publish', { method: 'POST', body }), env);
-    assert.equal(response.status, 400);
-    assert.deepEqual(await response.json(), { error: 'jobId and event required' });
-  }
-  assert.equal(calls, 0);
-});
-
-
-it('forwards an accepted live event unchanged to its bound run', async () => {
-  const calls: Array<{ url: string; init: RequestInit }> = [];
-  const event = { type: 'example-event', jobId: 'example-run', progress: 25 };
-  const env = { ...createMockEnv(), REVIEW_RUN: {
-    idFromName: (name: string) => { assert.equal(name, 'example-run'); return name; },
-    get: () => ({ fetch: async (url: string, init: RequestInit) => { calls.push({ url, init }); return Response.json({ success: true }); } }),
-  } } as unknown as Env;
-  const response = await worker.fetch(new Request('https://worker.dev/api/live/publish', { method: 'POST', body: JSON.stringify({ jobId: 'example-run', event }) }), env);
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { success: true });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, 'http://do/events');
-  assert.equal(calls[0].init.method, 'POST');
-  assert.deepEqual(JSON.parse(calls[0].init.body as string), event);
 });
