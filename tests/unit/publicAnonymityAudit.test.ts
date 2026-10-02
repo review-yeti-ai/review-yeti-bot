@@ -60,7 +60,7 @@ describe('public anonymity audit (whole tracked tree)', () => {
   const found = findingsByFile();
 
   it('no tracked file outside the allowlist names the deploying organization or its private repositories', () => {
-    const offenders = [...found.entries()].filter(([file]) => !(file in allowlist)).map(([file, f]) => `${file} (${f.count})`);
+    const offenders = [...found.entries()].filter(([file]) => !Object.hasOwn(allowlist, file)).map(([file, f]) => `${file} (${f.count})`);
     expect(offenders).toEqual([]);
   });
 
