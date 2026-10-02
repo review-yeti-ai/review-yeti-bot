@@ -58,10 +58,10 @@ flowchart TD
 ```
 
 ### Accessing the Platform
-- ⚡ **Cloudflare Edge Worker**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)
-- 🌐 **Production Domain**: [`https://review-bot.example.com`](https://review-bot.example.com)
+- ⚡ **Cloudflare Edge Worker**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev)
+- 🌐 **Production Domain**: [`https://review-bot.calltelemetry.com`](https://review-bot.calltelemetry.com)
 - 💻 **Local Development**: `http://localhost:3000`
-- **REST APIs**: `/api` (e.g. `https://review-yeti-cf-orchestrator.example.workers.dev/api` or `https://review-bot.example.com/api`)
+- **REST APIs**: `/api` (e.g. `https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/api` or `https://review-bot.calltelemetry.com/api`)
 - **Health Checks**: `/health` and `/ready`
 
 👉 **To deploy or configure the portal using Cloudflare Workers Static Assets or Cloudflare Pages, see the [Cloudflare Portal Setup Guide](CLOUDFLARE_PORTAL_SETUP.md).**
@@ -88,7 +88,7 @@ The platform implements a multi-tier authentication system supporting session to
 ### Logging In & Managing Session Tokens
 
 #### 1. Authentication Login (`POST /api/auth/login`)
-Users log in to the Web Dashboard using the administrative credentials configured via the `ADMIN_PASSWORD` environment variable (defaults to `admin123`).
+Users log in to the Web Dashboard using the administrative credentials configured via the `ADMIN_PASSWORD` environment variable. There is no default: when `ADMIN_PASSWORD` is unset or empty, every local login is rejected with `503`.
 
 **Request**:
 ```bash
@@ -223,7 +223,7 @@ curl -X PATCH http://localhost:3000/api/dashboard/repositories/my-org/my-repo \
   "success": true,
   "repository": {
     "owner": "my-org",
-    "repo": "example-api",
+    "repo": "cisco-cdr",
     "automationEnabled": true,
     "customProfile": "assertive",
     "modelOverrides": {
@@ -314,7 +314,7 @@ Returns a rolling audit log of recent PR review panel runs:
   "logs": [
     {
       "id": "log_1721865255_a1b2",
-      "prRun": "example-api #142",
+      "prRun": "cisco-cdr #142",
       "headSha": "9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d4c3b2a1f0e",
       "personas": "sec-lane, arch-lane, perf-lane, qual-lane",
       "quorum": "4/4 Distinct",
