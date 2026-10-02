@@ -44,7 +44,7 @@ export function FiveStepWizard() {
     webhookSecretConfigured: true,
     webhookSecretRaw: 'whsec_test_secret_key_12345',
     privateKeyConfigured: true,
-    privateKeyPemRaw: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0M...\n-----END RSA PRIVATE KEY-----',
+    privateKeyPemRaw: '-----BEGIN [REDACTED_KEY]-----\nMIIEowIBAAKCAQEA0M...\n-----END [REDACTED_KEY]-----',
     status: 'configured',
   });
 
