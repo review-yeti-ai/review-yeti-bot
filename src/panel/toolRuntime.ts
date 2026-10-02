@@ -368,32 +368,36 @@ export async function runReadOnlyTool(
       if (options?.repoFileProvider) {
         try {
           const found = await raceWithPanelAbort(options.repoFileProvider.findFiles(searchQ), options?.signal);
-          const repoHits: string[] = Array.isArray(found) ? found : [];
+          const repoHits: string[] = Array.isArray(found) ? [...new Set(found)] : [];
           const truncated = await raceWithPanelAbort(options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false), options?.signal);
-          // Diff paths first (the PR's own files), then the rest of the tree. A path deleted by
-          // the PR is in the diff but not in the tree at head, so it stays in the list.
-          const all = [...new Set([...diffHits, ...repoHits])];
+          // Deleted PR paths remain useful diff evidence, but are not files at
+          // head. Keep them separate from the pinned tree's existence claims.
+          const headPaths = new Set(repoHits);
+          const diffOnly = [...new Set(diffHits)].filter((path) => !headPaths.has(path));
           toolScope = 'full-repository';
           isExhaustive = !truncated;
           const truncNote = ' The repository tree was TRUNCATED by GitHub (very large repository), so this list may be incomplete.';
-          if (all.length > 0) {
-            toolOutput += `Found ${all.length} path(s) matching '${searchQ}' (${how} match, full-repository tree at the reviewed head, not just the diff): ${listHits(all)}`
+          if (repoHits.length > 0) {
+            toolOutput += `Found ${repoHits.length} path(s) matching '${searchQ}' (${how} match, full-repository tree at the reviewed head, not just the diff): ${listHits(repoHits)}`
               + (truncated ? truncNote : '');
           } else if (truncated) {
-            toolOutput += `No files matching '${searchQ}' (${how} match) in the diff, and none in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
+            toolOutput += `No files matching '${searchQ}' (${how} match) in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
           } else {
             toolOutput += `No files matching '${searchQ}' (${how} match) found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
           }
+          if (diffOnly.length > 0) {
+            toolOutput += `\nMatching paths in the PR diff, ${truncated ? 'presence at the reviewed head unconfirmed' : 'absent from the reviewed head tree'}: ${listHits(diffOnly)}. These are diff paths, not verified existing head files; use get_diff or read_file_page with side=merge-base to inspect removed source.`;
+          }
         } catch (err: any) {
-          toolScope = 'full-repository';
+          toolScope = 'changed-patches-only';
           isExhaustive = false;
           toolOutput += `Full-repository file search for '${searchQ}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`
-            + (diffHits.length > 0 ? ` Matching files in the diff: ${listHits(diffHits)}` : '');
+            + (diffHits.length > 0 ? ` Matching files in the diff: ${listHits(diffHits)}. Current-head presence of these diff paths is unconfirmed.` : '');
         }
       } else if (diffHits.length > 0) {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
-        toolOutput += `Files found in diff: ${listHits(diffHits)} (${how} match; changed files only, so other matching files may still exist elsewhere in the repository)`;
+        toolOutput += `Files found in diff: ${listHits(diffHits)} (${how} match; changed files only, so other matching files may still exist elsewhere in the repository). Current-head presence of these diff paths is unconfirmed.`;
       } else {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
