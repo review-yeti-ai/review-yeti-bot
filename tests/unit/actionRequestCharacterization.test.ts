@@ -270,8 +270,8 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
             { role: 'user', content: '<panel-assignment-prompt>' },
           ],
           reasoning: { effort: 'high' },
-          session_id: 'review-yeti-v1-e667c32550a7b7dc2330b4dd1a350d9ddef4ba86497382c1',
-          prompt_cache_key: 'review-yeti-v1-e667c32550a7b7dc2330b4dd1a350d9ddef4ba86497382c1',
+          session_id: 'review-yeti-v1-d0bb8c699bc551532feca20aa446d995db96f69da538b28a',
+          prompt_cache_key: 'review-yeti-v1-d0bb8c699bc551532feca20aa446d995db96f69da538b28a',
           provider: {
             allow_fallbacks: true,
             require_parameters: true,

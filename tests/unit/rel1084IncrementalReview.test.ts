@@ -194,9 +194,7 @@ function priorCompletion(overrides: { personas?: unknown[]; verdict?: string; co
       version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T10:00:00.000Z',
       personas: overrides.personas ?? [
         { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
-        { id: 'arch-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
-          { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
-        ] },
+        { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
       ],
       coverageComplete: overrides.coverageComplete ?? true, quorumSatisfied: true,
       ...(overrides.verdict ? { verdict: overrides.verdict } : {}),
@@ -230,11 +228,11 @@ function rows(payload: unknown, overrides: { status?: string; digest?: string; c
 }
 
 describe('prior review record', () => {
-  it('summarises a SHIP-complete record with every finding path and its age from the current admission', () => {
+  it('summarises a clean SHIP-complete record with its age from the current admission', () => {
     const record = priorReviewRecordFromRows(rows(priorCompletion()));
     expect(record).toMatchObject({
       runId: PRIOR_RUN, executionAttempt: 1, repositoryId: 42, prNumber: 7, headSha: PREV_HEAD, baseSha: PREV_BASE,
-      policyDigest: POLICY, configDigest: CONFIG, shipComplete: true, findingPaths: ['src/open.ts'], ageMs: 3_600_000,
+      policyDigest: POLICY, configDigest: CONFIG, shipComplete: true, findingPaths: [], ageMs: 3_600_000,
     });
   });
 
@@ -248,6 +246,20 @@ describe('prior review record', () => {
     expect(priorReviewRecordFromRows(rows(priorCompletion({ coverageComplete: false })))?.shipComplete).toBe(false);
     expect(priorReviewRecordFromRows(rows(priorCompletion({ personas: [{ id: 'documentation-only', decision: 'APPROVE',
       status: 'COMPLETE', findings: [] }] }), { expectedPersonaIds: ['documentation-only'] }))?.shipComplete).toBe(false);
+  });
+
+  it('retains advisory paths from a current-policy SHIP-complete P2 review', () => {
+    const completion = priorCompletion({ personas: [
+      { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+      { id: 'arch-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
+        { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
+      ] },
+    ] });
+    const recorded = gateRecordFor(completion, { expectedPersonaIds: PRIOR_LANES, changedFiles: files(DIFF) });
+    expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
+    expect(priorReviewRecordFromRows(rows(completion))).toMatchObject({
+      shipComplete: true, findingPaths: ['src/open.ts'],
+    });
   });
 
   it('derives the verdict and never reads the worker\'s optional verdict field', () => {
@@ -316,9 +328,9 @@ describe('prior review record', () => {
     }
   });
 
-  it('judges findings at published severity: a P1 calibration re-filed as P2 qualifies, a surviving P1 does not', () => {
-    // review-yeti-bot#1034 (82381c85): a lane filed a P1 that calibration re-filed as P2, the gate
-    // said clean SHIP, and the prior was refused by the raw-severity rule.
+  it('preserves calibrated P2 paths for re-review while rejecting surviving P0/P1 evidence', () => {
+    // Current policy permits P2 advisories but preserves their paths so the
+    // next review cannot silently carry an open finding forward.
     const calibrated = priorCompletion({ personas: [
       { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE',
         findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11, title: 'Naming is inconsistent', body: 'b' }] },
@@ -328,14 +340,13 @@ describe('prior review record', () => {
     expect(calibratedRows.run.status).toBe('succeeded');
     const record = priorReviewRecordFromRows(calibratedRows);
     expect(record).toMatchObject({ shipComplete: true, findingPaths: ['src/changed.ts'] });
-    expect(record).not.toHaveProperty('shipIncompleteReason');
     // An unverified-premise P1 is also published as P2.
     const hedged = priorCompletion({ personas: [
       { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11,
         title: 'Missing import', body: 'Repo tooling could not confirm the import exists.' }] },
       { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
     ] });
-    expect(priorReviewRecordFromRows(rows(hedged))?.shipComplete).toBe(true);
+    expect(priorReviewRecordFromRows(rows(hedged))).toMatchObject({ shipComplete: true, findingPaths: ['src/changed.ts'] });
     // A P1 that survives calibration disqualifies even over a clean gate record copied onto it,
     // on a gating lane or a shadow lane.
     const good = rows(priorCompletion());
