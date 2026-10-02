@@ -1039,12 +1039,24 @@ async function lookupRepositoryVisibility(input: { owner: string; repo: string; 
   return repositoryVisibilityFrom(data);
 }
 
-/** REL-677: the three-conjunct zoekt grounding gate, extracted so every kill path is unit-testable. */
+/**
+ * REL-677 / REL-1282: the zoekt grounding gate, extracted so every kill path is unit-testable.
+ *
+ * `ZOEKT_GROUNDING_ENABLED` is `true` (every repository) or a comma-separated `owner/repo`
+ * allow-list (case-insensitive), so grounding can be canaried on one repository before an
+ * organization-wide enablement. Anything else, including unset or `false`, is off. The container
+ * memory floor is enforced separately, per run, inside the grounding stage.
+ */
 export function zoektGroundingEnabledFor(
   env: NodeJS.ProcessEnv,
   config: unknown,
+  repository?: string,
 ): boolean {
-  return value(env, 'ZOEKT_GROUNDING_ENABLED') === 'true'
+  const raw = value(env, 'ZOEKT_GROUNDING_ENABLED').toLowerCase();
+  const optedIn = raw === 'true'
+    || (raw !== '' && raw !== 'false' && !!repository
+      && raw.split(',').map((entry) => entry.trim()).filter(Boolean).includes(repository.trim().toLowerCase()));
+  return optedIn
     && value(env, 'ZOEKT_GROUNDING_DISABLED') !== 'true'
     && (config as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
 }
@@ -1768,7 +1780,7 @@ export async function runPublishingReviewWorker(
     // removed in the finally below; the index never outlives this review run. Grounding
     // has its own stage budgets, but may not restart or extend the fixed model-work cutoff.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
-    const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
+    const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig, identity.repo);
     const panelDeadline = createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now);
     let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> } = {};
     // Receipt ownership cannot depend on which continuation wins the abort race:
@@ -1878,6 +1890,17 @@ export async function runPublishingReviewWorker(
           span.setAttribute('review_yeti.zoekt_index_build.status', status);
           span.setAttribute('review_yeti.zoekt_index_build.duration_ms', zoektIndexBuildMs);
           getMetrics().zoektIndexBuildDuration.record(zoektIndexBuildMs / 1000, { repository: identity.repo, status });
+          // REL-1282: real container memory evidence so the worker limit is sized from runs, not guesses.
+          const groundingMemory = (result as { memory?: { limitBytes?: number; peakBytesAfterBuild?: number; floorBytes?: number } }).memory;
+          if (groundingMemory) {
+            if (groundingMemory.limitBytes !== undefined) span.setAttribute('review_yeti.zoekt_index_build.memory_limit_bytes', groundingMemory.limitBytes);
+            if (groundingMemory.peakBytesAfterBuild !== undefined) span.setAttribute('review_yeti.zoekt_index_build.cgroup_peak_bytes', groundingMemory.peakBytesAfterBuild);
+            logger.info('Zoekt grounding memory', {
+              event: 'zoekt_grounding_memory', repository: identity.repo, status,
+              memoryLimitBytes: groundingMemory.limitBytes, cgroupPeakBytesAfterBuild: groundingMemory.peakBytesAfterBuild,
+              memoryFloorBytes: groundingMemory.floorBytes,
+            });
+          }
         } else {
           span.setAttribute('review_yeti.zoekt_index_build.status', 'disabled');
         }
