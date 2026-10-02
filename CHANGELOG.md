@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.117.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.4...v1.117.0) (2026-10-02)
+
+
+### Features
+
+* **analytics:** modern Tremor UX dashboard, repository memory pivot platform, and swarm context compaction ([#1322](https://github.com/review-yeti-ai/review-yeti-bot/issues/1322)) ([d62ed82](https://github.com/review-yeti-ai/review-yeti-bot/commit/d62ed82c352c5dae0f8e2b7df6470a787a73bb1e))
+* **infra:** add review-yeti.calltelemetry.com custom domain and automated edge deployment workflow ([#1328](https://github.com/review-yeti-ai/review-yeti-bot/issues/1328)) ([84e99a4](https://github.com/review-yeti-ai/review-yeti-bot/commit/84e99a42b7a6a71a412ce25e4ac5ed3373b2cbd9))
+* **live:** interactive 4-tier swarm and infrastructure topology visualizer with hover inspection ([#1325](https://github.com/review-yeti-ai/review-yeti-bot/issues/1325)) ([1e33ca7](https://github.com/review-yeti-ai/review-yeti-bot/commit/1e33ca73becfbadc13225760127cb3f10748d10b))
+
+
+### Bug Fixes
+
+* **ci:** bump the anonymity ratchet for the two files [#1333](https://github.com/review-yeti-ai/review-yeti-bot/issues/1333) grew ([#1337](https://github.com/review-yeti-ai/review-yeti-bot/issues/1337)) ([1cab903](https://github.com/review-yeti-ai/review-yeti-bot/commit/1cab903ba359c80e37bfd629f47df9aa5e2c9cab))
+* **ci:** update the anonymity ratchet for the analytics de-org change ([#1336](https://github.com/review-yeti-ai/review-yeti-bot/issues/1336)) ([a5142c1](https://github.com/review-yeti-ai/review-yeti-bot/commit/a5142c1b29bb9c67e6f37ce02ea7d5b2152e4ef1))
+* **REL-1265:** retain composed evidence on signed ready retries ([#1333](https://github.com/review-yeti-ai/review-yeti-bot/issues/1333)) ([bf7570e](https://github.com/review-yeti-ai/review-yeti-bot/commit/bf7570e73c9187de235bd3cfdfc16d10f119d9cd))
+
 ## [1.116.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.3...v1.116.4) (2026-10-02)
 
 
