@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.112.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.1...v1.112.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **review:** split oversized hunks without losing bounded coverage ([#1230](https://github.com/review-yeti-ai/review-yeti-bot/issues/1230)) ([398dd08](https://github.com/review-yeti-ai/review-yeti-bot/commit/398dd08a471ed66df32f9fcd70c5f0ec6019d846))
+
 ## [1.112.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.0...v1.112.1) (2026-10-02)
 
 
