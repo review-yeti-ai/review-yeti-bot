@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { resolvePolicyForRepository } from './repository-policy.mjs';
 import { validatePolicy } from './review-yeti-smoke.mjs';
 import { TRANSPORT_RATE_LIMIT_KEYS, validateTransportEnvelope } from './transport-envelope.mjs';
+import { validateLockfileReviewBudget } from './lockfile-review-budget.mjs';
 
 
 
@@ -48,6 +49,9 @@ const ALLOWED_BUDGET_KEYS = [
   'lane_call_budget',
   'max_investigation_turns',
   'max_review_assignments',
+  // Validated by the shared policy validator; supported workers read this from
+  // trusted policy, never as a caller-controlled dispatch override.
+  'max_reviewed_lockfile_patch_chars',
 ];
 const ALLOWED_TRANSPORT_KEYS = [
   'name',
@@ -133,6 +137,7 @@ export function validateExecutionPlanPolicy(policy, repository = '') {
     throw new Error('DSH requires an explicit composed fallback until the worker supports DSH');
   }
   rejectUnknownKeys(policy.review_yeti.budget, ALLOWED_BUDGET_KEYS, 'policy.review_yeti.budget');
+  validateLockfileReviewBudget(policy.review_yeti.budget);
   if (!['ordered', 'striped'].includes(policy.review_yeti.dispatch_mode)) {
     throw new Error('policy.review_yeti.dispatch_mode must be ordered or striped');
   }

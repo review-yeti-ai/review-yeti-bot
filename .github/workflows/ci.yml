@@ -99,6 +99,7 @@ jobs:
           node --test scripts/review-yeti-smoke.test.mjs
           node --test scripts/align-panel-seed-key.test.mjs
           node --test scripts/emit-execution-plan.test.mjs
+          node --test scripts/lockfile-review-budget.test.mjs
           node --test scripts/validate-central-dispatch.test.mjs
           node --test scripts/cross-org-review-target.test.mjs
           node --test scripts/validate-review-generation.test.mjs

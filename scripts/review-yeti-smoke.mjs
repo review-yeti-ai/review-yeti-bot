@@ -14,6 +14,7 @@ import {
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
+import { validateLockfileReviewBudget } from './lockfile-review-budget.mjs';
 
 
 
@@ -59,6 +60,7 @@ export function validatePolicy(policy, repository = '') {
   }
 
   const budget = policy.review_yeti?.budget;
+  validateLockfileReviewBudget(budget);
   const positiveSafeInteger = (value) => Number.isSafeInteger(value) && value > 0;
   if (!['ordered', 'striped'].includes(policy.review_yeti?.dispatch_mode)) {
     throw new Error('Review Yeti dispatch_mode must be ordered or striped');

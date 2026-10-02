@@ -6,6 +6,7 @@ import {
   resolvePolicyForRepository,
 } from './repository-policy.mjs';
 import { validateTransportEnvelope } from './transport-envelope.mjs';
+import { validateLockfileReviewBudget } from './lockfile-review-budget.mjs';
 
 // REVIEW_REPOSITORY is set at job level for both consumer-repo and central-dispatch runs (see
 // review-yeti.yml); GITHUB_REPOSITORY is the runner-provided fallback for any invocation that
@@ -22,6 +23,7 @@ if (policy.schema !== 'exampleorg.review-policy.v1') throw new Error('unsupporte
 if (!budget || typeof budget !== 'object' || Array.isArray(budget)) {
   throw new Error('review_yeti.budget must be an object');
 }
+validateLockfileReviewBudget(budget);
 if (typeof review.action_channel_pattern !== 'string' || review.action_channel_pattern.length === 0) {
   throw new Error('review_yeti.action_channel_pattern is required');
 }

@@ -194,6 +194,7 @@ PY
 mkdir -p "$tmp_dir/scripts" "$tmp_dir/policy"
 cp "$repo_root/scripts/emit-policy.mjs" "$tmp_dir/scripts/emit-policy.mjs"
 cp "$repo_root/scripts/lane-deadline-invariant.mjs" "$tmp_dir/scripts/lane-deadline-invariant.mjs"
+cp "$repo_root/scripts/lockfile-review-budget.mjs" "$tmp_dir/scripts/lockfile-review-budget.mjs"
 cp "$repo_root/scripts/repository-policy.mjs" "$tmp_dir/scripts/repository-policy.mjs"
 cp "$repo_root/scripts/review-yeti-smoke.mjs" "$tmp_dir/scripts/review-yeti-smoke.mjs"
 cp "$repo_root/scripts/streaming-fetch-dispatcher.mjs" "$tmp_dir/scripts/streaming-fetch-dispatcher.mjs"
