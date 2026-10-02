@@ -24,14 +24,29 @@ export interface OAuthStateRecord {
   createdAt: number;
 }
 
+function passwordsMatch(candidate: string, expected: string): boolean {
+  const a = crypto.createHash('sha256').update(candidate).digest();
+  const b = crypto.createHash('sha256').update(expected).digest();
+  return crypto.timingSafeEqual(a, b);
+}
+
 export class AuthService {
   private sessions: Map<string, UserSession> = new Map();
   private oauthStates: Map<string, OAuthStateRecord> = new Map();
 
+  /**
+   * Local admin login exists only when ADMIN_PASSWORD is configured. There is deliberately no
+   * built-in fallback credential: an unset (or empty) password means every local login is rejected.
+   */
+  public isLocalLoginConfigured(): boolean {
+    return Boolean(process.env.ADMIN_PASSWORD);
+  }
+
   public login(username: string, password?: string): UserSession | null {
-    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
-    // Allow login if username is admin and password matches
-    if (username === 'admin' && password === adminPassword) {
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminPassword) return null;
+    // Allow login if username is admin and password matches (constant-time comparison)
+    if (username === 'admin' && typeof password === 'string' && passwordsMatch(password, adminPassword)) {
       const token = `sess_${crypto.randomBytes(24).toString('hex')}`;
       const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
       const session: UserSession = {
