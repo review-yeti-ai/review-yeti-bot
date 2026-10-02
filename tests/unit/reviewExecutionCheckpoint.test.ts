@@ -143,7 +143,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
       .set('Authorization', `Bearer ${bearer}`).send(body);
     expect(response.status).toBe(403);
     expect(response.body).toEqual({ error: 'Worker is not authorized for this execution' });
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('review_execution_checkpoints'))).toBe(false);
   });
 
   it.each([
@@ -164,7 +164,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
       .set('Authorization', `Bearer ${token}`).send(body);
     expect(response.status).toBe(403);
     expect(response.body).toEqual({ error: 'Worker is not authorized for this execution' });
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('review_execution_checkpoints'))).toBe(false);
   });
 
   it('rejects a checkpoint whose exact-head identity differs from the admitted run', async () => {
@@ -180,7 +180,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
       .set('Authorization', `Bearer ${token}`).send({ ...checkpoint, headSha: 'e'.repeat(40) });
     expect(response.status).toBe(503);
     expect(response.body).toEqual({ error: 'Review checkpoint is temporarily unavailable' });
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('review_execution_checkpoints'))).toBe(false);
   });
 
   it('returns the authoritative revision for a stale write', async () => {
