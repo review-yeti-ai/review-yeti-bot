@@ -453,7 +453,7 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   //
   // Set `options.p2BlocksMerge` to restore the old contract without a revert.
   const p2BlocksMerge = options.p2BlocksMerge === true;
-  const advisoryRequired = options.requireAdvisory === true || options.advisoryRequired === true || process.env.REVIEW_YETI_REQUIRE_ADVISORY === 'true';
+  const advisoryRequired = options.requireAdvisory === true || options.advisoryRequired === true;
   let candidateVerdict = 'SHIP';
   let rationale = `All ${completedResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 

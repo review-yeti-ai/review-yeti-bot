@@ -91,6 +91,32 @@ describe('canonical review contract differential', () => {
     }
   });
 
+  it('keeps pure arbitration byte-identical across runtime policy changes for each explicit advisory option', () => {
+    const p2Only: ReviewLane[] = [
+      { id: 'security', required: true, decision: 'FINDINGS', findings: [
+        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Advisory', body: 'A P2-only finding.' },
+      ] },
+      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
+    ];
+    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    try {
+      for (const requireAdvisory of [undefined, false, true]) {
+        const options = { changedFiles, ...(requireAdvisory === undefined ? {} : { requireAdvisory }) };
+        const receipts = [undefined, 'false', 'true'].map((policy) => {
+          if (policy === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+          else process.env.REVIEW_YETI_REQUIRE_ADVISORY = policy;
+          const result = computeArbitration(p2Only, 2, options);
+          expect(result.verdict).toBe(requireAdvisory === true ? 'FIX_FIRST' : 'SHIP');
+          return JSON.stringify(result);
+        });
+        expect(new Set(receipts).size).toBe(1);
+      }
+    } finally {
+      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
+    }
+  });
+
   it('keeps findings and verdicts identical while removing out-of-diff paths', () => {
     const results: ReviewLane[] = [
       {
