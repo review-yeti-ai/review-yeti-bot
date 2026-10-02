@@ -858,6 +858,81 @@ function prototypeEscapeReceiverEnd(
   return -1;
 }
 
+function isWholePrototypeValue(
+  tokens: PreflightSqlToken[],
+  start: number,
+  end: number,
+  matchingIndexes: number[],
+  prototypeAliases?: Set<string>,
+): boolean {
+  // Strip only groups enclosing the complete value. Containers, arrows and
+  // function bodies cannot establish identity from a nested/suffix escape.
+  while (start < end && tokens[start]?.text === '(' && matchingIndexes[start] === end - 1) {
+    start++;
+    end--;
+  }
+  if (start + 1 === end && tokens[start]?.kind === 'identifier') {
+    return prototypeAliases?.has(tokens[start].text) === true;
+  }
+  let root = start;
+  while (root < end && tokens[root]?.text === '(') {
+    const close = matchingIndexes[root];
+    if (close <= root || close >= end) return false;
+    root++;
+  }
+  const receiver = tokens[root];
+  if (receiver?.kind !== 'identifier' && receiver?.kind !== 'regex') return false;
+  let receiverEnd = groupedPrototypeReceiverEnd(tokens, root, end, matchingIndexes);
+  const consumesWholeValue = (valueEnd: number) => valueEnd >= 0 &&
+    groupedPrototypeReceiverEnd(tokens, valueEnd, end, matchingIndexes) === end - 1;
+
+  if (receiver.kind === 'identifier' && ['Object', 'Reflect'].includes(receiver.text)) {
+    const methodEnd = staticMemberEnd(tokens, receiverEnd, 'getPrototypeOf', end);
+    if (methodEnd >= 0) {
+      const callOpen = boundedBuiltinCallOpen(tokens, methodEnd, end, matchingIndexes);
+      if (callOpen >= 0) {
+        receiverEnd = groupedPrototypeReceiverEnd(tokens, matchingIndexes[callOpen], end, matchingIndexes);
+        if (consumesWholeValue(receiverEnd)) return true;
+      }
+    }
+  }
+  if (receiver.kind === 'identifier' && receiver.text === 'RegExp') {
+    if (consumesWholeValue(staticMemberEnd(tokens, receiverEnd, 'prototype', end))) return true;
+  }
+
+  // A call may be the receiver of an explicit prototype member, but its
+  // return value alone is never assumed to be a prototype.
+  const constructorName = receiver.text === 'new' ? tokens[root + 1] : undefined;
+  const callReceiverEnd = constructorName?.kind === 'identifier' && constructorName.text === 'RegExp'
+    ? root + 1 : receiverEnd;
+  const receiverCallOpen = boundedBuiltinCallOpen(tokens, callReceiverEnd, end, matchingIndexes);
+  if (receiverCallOpen >= 0) {
+    receiverEnd = groupedPrototypeReceiverEnd(tokens, matchingIndexes[receiverCallOpen], end, matchingIndexes);
+  }
+  while (receiverEnd < end - 1) {
+    if (consumesWholeValue(staticMemberEnd(tokens, receiverEnd, '__proto__', end))) return true;
+    const constructorEnd = staticMemberEnd(tokens, receiverEnd, 'constructor', end);
+    if (constructorEnd >= 0) {
+      const groupedConstructorEnd = groupedPrototypeReceiverEnd(tokens, constructorEnd, end, matchingIndexes);
+      if (consumesWholeValue(staticMemberEnd(tokens, groupedConstructorEnd, 'prototype', end))) return true;
+    }
+    // Static member/call receivers may precede the explicit escape. Consume
+    // from the root only; never search through a container or function body.
+    let memberIndex = receiverEnd + 1;
+    if (tokens[memberIndex]?.text === '?' && tokens[memberIndex + 1]?.text === '.') memberIndex += 2;
+    else if (tokens[memberIndex]?.text === '.') memberIndex++;
+    const member = tokens[memberIndex]?.text === '[' ? tokens[memberIndex + 1] : tokens[memberIndex];
+    const name = member?.kind === 'identifier' ? member.text : member?.kind === 'string' ? member.value : undefined;
+    if (name === undefined) return false;
+    const memberEnd = staticMemberEnd(tokens, receiverEnd, name, end);
+    if (memberEnd < 0) return false;
+    receiverEnd = groupedPrototypeReceiverEnd(tokens, memberEnd, end, matchingIndexes);
+    const callOpen = boundedBuiltinCallOpen(tokens, receiverEnd, end, matchingIndexes);
+    if (callOpen >= 0) receiverEnd = groupedPrototypeReceiverEnd(tokens, matchingIndexes[callOpen], end, matchingIndexes);
+  }
+  return false;
+}
+
 function hasExplicitPrototypeMutationCall(
   tokens: PreflightSqlToken[],
   index: number,
@@ -886,7 +961,7 @@ function hasExplicitPrototypeMutationCall(
 
   // Delimit only the first target argument. Skip balanced calls/grouping and
   // balance object/array literals so source/descriptor arguments cannot leak in.
-  let targetStart = callOpen + 1;
+  const targetStart = callOpen + 1;
   let targetEnd = callClose;
   const delimiters: string[] = [];
   for (let cursor = targetStart; cursor < callClose; cursor++) {
@@ -905,22 +980,7 @@ function hasExplicitPrototypeMutationCall(
     }
   }
   if (delimiters.length > 0) return false;
-  while (tokens[targetStart]?.text === '(' && matchingIndexes[targetStart] === targetEnd - 1) {
-    targetStart++;
-    targetEnd--;
-  }
-  if (
-    targetStart + 1 === targetEnd && tokens[targetStart]?.kind === 'identifier' &&
-    prototypeAliases.has(tokens[targetStart].text)
-  ) return true;
-  for (let cursor = targetStart; cursor < targetEnd; cursor++) {
-    const escapeEnd = prototypeEscapeReceiverEnd(tokens, cursor, targetEnd, matchingIndexes);
-    if (
-      escapeEnd >= 0 &&
-      groupedPrototypeReceiverEnd(tokens, escapeEnd, targetEnd, matchingIndexes) === targetEnd - 1
-    ) return true;
-  }
-  return false;
+  return isWholePrototypeValue(tokens, targetStart, targetEnd, matchingIndexes, prototypeAliases);
 }
 
 function hasRegexIntrinsicMutationBarrier(
@@ -931,6 +991,7 @@ function hasRegexIntrinsicMutationBarrier(
   // Track only explicit same-line aliases of prototype escape expressions;
   // this is not a general binding or taint analysis.
   const prototypeAliases = new Set<string>();
+  const depths = tokenNestingDepths(tokens);
   for (let index = 0; index < endIndex; index++) {
     const token = tokens[index];
     if (
@@ -955,10 +1016,12 @@ function hasRegexIntrinsicMutationBarrier(
       (index === 0 || [';', '{', '}'].includes(tokens[index - 1]?.text || ''))
     ) {
       let declarationEnd = index + 3;
-      while (declarationEnd < endIndex && tokens[declarationEnd].text !== ';') declarationEnd++;
-      const escapesPrototype = tokens.slice(index + 3, declarationEnd).some((_, candidateIndex) =>
-        prototypeEscapeReceiverEnd(tokens, index + 3 + candidateIndex, declarationEnd, matchingIndexes) >= 0
-      );
+      // Match the whole first initializer, not later declarators or nested
+      // function-body semicolons. This does not track additional bindings.
+      while (declarationEnd < endIndex && !(
+        depths[declarationEnd] === depths[index] && [';', ','].includes(tokens[declarationEnd].text)
+      )) declarationEnd++;
+      const escapesPrototype = isWholePrototypeValue(tokens, index + 3, declarationEnd, matchingIndexes);
       if (escapesPrototype) prototypeAliases.add(tokens[index + 1].text);
     }
     if (

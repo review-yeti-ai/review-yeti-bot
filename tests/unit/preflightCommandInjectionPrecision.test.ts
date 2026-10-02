@@ -823,6 +823,91 @@ describe('preflight command injection static screening precision', () => {
       expected: false,
     },
     {
+      label: 'an object holding a prototype is not itself a prototype alias for Object.assign',
+      line: 'const box = { saved: Object.getPrototypeOf(/seed/) }; Object.assign(box, { exec: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a grouped object holding a prototype is not itself a prototype alias for defineProperty',
+      line: 'const box = (({ saved: Reflect.getPrototypeOf(/seed/) })); Object.defineProperty((box), "exec", { value: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a nested container prototype reference does not make an exec write a prototype mutation',
+      line: 'const box = { saved: { prototype: Object.getPrototypeOf(/seed/) } }; (box).exec = child_process.exec; /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'an array holding a prototype is not itself a prototype alias for Reflect.set',
+      line: 'const box = [Object.getPrototypeOf(/seed/)]; Reflect.set(box, "exec", child_process.exec); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'an array containing a prototype member name is not itself a prototype alias',
+      line: 'const box = ["__proto__"]; Object.assign(box, { exec: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'an arrow returning a prototype is not itself a prototype alias for Object.assign',
+      line: 'const fn = () => Object.getPrototypeOf(/seed/); Object.assign(fn, { exec: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a grouped arrow returning a prototype is not itself a prototype alias for Reflect.defineProperty',
+      line: 'const fn = ((() => Reflect?.["getPrototypeOf"]?.(/seed/))); Reflect.defineProperty(fn, "exec", { value: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a function returning a prototype is not itself a prototype alias for defineProperties',
+      line: 'const fn = function () { return Object.getPrototypeOf(/seed/); }; Object.defineProperties(fn, { exec: { value: child_process.exec } }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a direct arrow target returning a prototype is still a function object',
+      line: 'Object.assign(() => Object.getPrototypeOf(/seed/), { exec: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a grouped direct arrow target returning a prototype is still a function object',
+      line: 'Reflect["set"]?.((() => (Object.getPrototypeOf)(/seed/)), "exec", child_process.exec); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a whole grouped instance prototype initializer remains an unsafe mutation alias',
+      line: 'const p = (((/seed/).__proto__)); Object.assign((p), { exec: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a whole optional grouped inspection initializer remains an unsafe mutation alias',
+      line: 'const p = (((Object?.["getPrototypeOf"])?.(/seed/))); Reflect.set((p), "exec", child_process.exec); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a whole grouped constructor prototype initializer remains an unsafe mutation alias',
+      line: 'const p = ((/seed/.constructor["prototype"])); Object["defineProperties"]?.((p), { exec: { value: child_process.exec } }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a whole grouped RegExp prototype initializer remains an unsafe mutation alias',
+      line: 'const p = (((RegExp)["prototype"])); Reflect["defineProperty"]?.((p), "exec", { value: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a whole member receiver prototype initializer remains an unsafe mutation alias',
+      line: 'const holder = { re: /seed/ }; const p = holder.re.__proto__; Object.assign(p, { exec: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a whole inspection receiver constructor prototype initializer remains an unsafe mutation alias',
+      line: 'const p = Object.getPrototypeOf(/seed/).constructor.prototype; Reflect.set(p, "exec", child_process.exec); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a complete first-declarator prototype initializer remains an unsafe mutation alias',
+      line: 'const p = Object.getPrototypeOf(/seed/), note = "unchanged"; Object.assign(p, { exec: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
       label: 'eval during RegExp construction blocks the intrinsic matcher exemption',
       line: 'const match = new RegExp(eval("RegExp.prototype.exec = child_process.exec")).exec("sh -c " + req.query.command);',
       expected: true,
