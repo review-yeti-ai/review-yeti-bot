@@ -19,12 +19,14 @@ package controllers_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -174,50 +176,147 @@ func reconcileUntilSettled(
 	reconciler *controllers.PRReviewJobV1Alpha2Reconciler,
 	reviews []*reviewv1alpha2.PRReviewJob,
 	threads int,
-) {
+) error {
+	logger := logr.FromContextOrDiscard(ctx)
+	retryable := func(err error) bool {
+		return apierrors.IsConflict(err) || apierrors.IsTimeout(err) ||
+			apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err) ||
+			apierrors.IsServiceUnavailable(err) || apierrors.IsInternalError(err)
+	}
 	limit := reconciler.MaxConcurrentJobs
 	if limit <= 0 {
 		limit = 4
 	}
 
-	prevRunning := -1
 	for round := 0; round < len(reviews); round++ {
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-		ch := make(chan *reviewv1alpha2.PRReviewJob, len(reviews))
-		for _, r := range reviews {
-			ch <- r
+		if err := ctx.Err(); err != nil {
+			logger.Error(err, "fixture convergence cancelled", "round", round+1)
+			return err
 		}
-		close(ch)
-
-		for i := 0; i < threads; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				<-start
-				for rev := range ch {
-					req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}}
-					_, _ = reconciler.Reconcile(ctx, req)
+		retryErrors := false
+		for _, outcome := range reconcileM4Batch(ctx, reconciler, reviews, threads) {
+			if outcome.err != nil {
+				if !retryable(outcome.err) {
+					return fmt.Errorf("reconcile %s: %w", outcome.request, outcome.err)
 				}
-			}()
-		}
-		close(start)
-		wg.Wait()
-
-		runningCount := 0
-		for _, rev := range reviews {
-			var cur reviewv1alpha2.PRReviewJob
-			if err := reconciler.Client.Get(ctx, types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}, &cur); err == nil {
-				if cur.Status.Phase == reviewv1alpha2.PhaseRunning {
-					runningCount++
-				}
+				retryErrors = true
 			}
 		}
-		if runningCount >= limit || runningCount == prevRunning {
-			break
+
+		snapshot := make([]*reviewv1alpha2.PRReviewJob, 0, len(reviews))
+		for _, review := range reviews {
+			key := client.ObjectKeyFromObject(review)
+			stored := &reviewv1alpha2.PRReviewJob{}
+			if err := reconciler.Client.Get(ctx, key, stored); err != nil {
+				logger.Error(err, "fixture review observation failed", "request", key)
+				if !retryable(err) {
+					return fmt.Errorf("observe %s: %w", key, err)
+				}
+				retryErrors = true
+				continue
+			}
+			snapshot = append(snapshot, stored)
 		}
-		prevRunning = runningCount
+		if len(snapshot) != len(reviews) {
+			continue
+		}
+
+		var jobs batchv1.JobList
+		if err := reconciler.Client.List(ctx, &jobs); err != nil {
+			logger.Error(err, "fixture worker observation failed", "round", round+1)
+			if !retryable(err) {
+				return fmt.Errorf("observe workers: %w", err)
+			}
+			continue
+		}
+		workers := make(map[types.NamespacedName]*batchv1.Job, len(jobs.Items))
+		active := make(map[types.NamespacedName]bool)
+		for i := range jobs.Items {
+			worker := &jobs.Items[i]
+			key := client.ObjectKeyFromObject(worker)
+			workers[key] = worker
+			if committedWorkerConsumesCapacity(worker) {
+				active[key] = true
+			}
+		}
+
+		converged := !retryErrors
+		eligible := make([]*reviewv1alpha2.PRReviewJob, 0, len(snapshot))
+		for _, review := range snapshot {
+			key := types.NamespacedName{Namespace: review.Namespace, Name: review.Status.JobName}
+			terminal := reviewv1alpha2.PRReviewJobPhase("")
+			if worker := workers[key]; worker != nil {
+				for _, condition := range worker.Status.Conditions {
+					if condition.Status == corev1.ConditionTrue {
+						switch condition.Type {
+						case batchv1.JobComplete:
+							terminal = reviewv1alpha2.PhaseSucceeded
+						case batchv1.JobFailed:
+							terminal = reviewv1alpha2.PhaseFailed
+						}
+					}
+				}
+			}
+			if terminal != "" && review.Status.Phase != terminal {
+				converged = false
+			}
+			switch review.Status.Phase {
+			case reviewv1alpha2.PhaseSucceeded, reviewv1alpha2.PhaseFailed:
+				if terminal != review.Status.Phase || active[key] {
+					err := fmt.Errorf("review %s has an unexpected terminal phase %s", review.Name, review.Status.Phase)
+					logger.Error(err, "fixture terminal observation failed", "request", client.ObjectKeyFromObject(review))
+					return err
+				}
+			case "", reviewv1alpha2.PhaseQueued, reviewv1alpha2.PhaseRunning:
+				eligible = append(eligible, review)
+			default:
+				err := fmt.Errorf("review %s has an unexpected phase %s", review.Name, review.Status.Phase)
+				logger.Error(err, "fixture phase observation failed", "request", client.ObjectKeyFromObject(review))
+				return err
+			}
+		}
+		sort.Slice(eligible, func(i, j int) bool {
+			left, right := eligible[i], eligible[j]
+			if !left.Spec.ReceivedAt.Equal(&right.Spec.ReceivedAt) {
+				return left.Spec.ReceivedAt.Before(&right.Spec.ReceivedAt)
+			}
+			if !left.CreationTimestamp.Equal(&right.CreationTimestamp) {
+				return left.CreationTimestamp.Before(&right.CreationTimestamp)
+			}
+			return left.Name < right.Name
+		})
+		wantRunning := limit
+		if len(eligible) < wantRunning {
+			wantRunning = len(eligible)
+		}
+		associated := make(map[types.NamespacedName]bool)
+		for i, review := range eligible {
+			want := reviewv1alpha2.PhaseQueued
+			if i < wantRunning {
+				want = reviewv1alpha2.PhaseRunning
+				key := types.NamespacedName{Namespace: review.Namespace, Name: review.Status.JobName}
+				if review.Status.JobName == "" || associated[key] || !active[key] {
+					converged = false
+				}
+				associated[key] = true
+			}
+			if review.Status.Phase != want {
+				converged = false
+			}
+		}
+		if len(active) != wantRunning || len(associated) != wantRunning {
+			converged = false
+		}
+		if converged {
+			return nil
+		}
 	}
+	if len(reviews) == 0 {
+		return nil
+	}
+	err := fmt.Errorf("fixture convergence exhausted after %d rounds", len(reviews))
+	logger.Error(err, "fixture convergence exhausted", "rounds", len(reviews))
+	return err
 }
 
 // -----------------------------------------------------------------------------
@@ -379,7 +478,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_ReconcileConcurrency_4Threads(t *testin
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, reviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -442,7 +543,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_ReconcileConcurrency_16Threads(t *testi
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, reviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -505,7 +608,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_StandardLimit10_16Threads(t *testing.T)
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, reviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -573,7 +678,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_FIFOOrdering_ContendedThreads(t *testin
 		reverseReviews[i] = reviews[totalReviews-1-i]
 	}
 
-	reconcileUntilSettled(ctx, reconciler, reverseReviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reverseReviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	// The 4 oldest reviews (rev-fifo-00, rev-fifo-01, rev-fifo-02, rev-fifo-03) MUST be Running
 	for i := 0; i < maxJobs; i++ {
@@ -665,7 +772,9 @@ func TestEmpirical_V1Alpha2_ContinuationBurst_RespectsCapacity_WithoutMutex(t *t
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, allReviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, allReviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -1012,5 +1121,139 @@ func TestEmpirical_V1Alpha2_MultiReplica_SameReviewRace_SingleWorkerJobCreated(t
 	}
 	if updated.Status.Phase != reviewv1alpha2.PhaseRunning {
 		t.Fatalf("review phase = %s, want Running", updated.Status.Phase)
+	}
+}
+
+// Fixture-driver regressions call the original void helpers as statements.
+// Their OLD oracle is stored state or a real keyed outcome, never a new API.
+func TestM2FixtureSettleRetriesTransientAdmissionErrors(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "transient", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) && calls.Add(1) <= 16 {
+						return apierrors.NewTimeoutError("fixture admission timeout", 0)
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
+
+func TestM2FixtureSettleRetriesQuietConflictRequeues(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "conflict", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) && calls.Add(1) <= 16 {
+						return apierrors.NewConflict(batchv1.SchemeGroupVersion.WithResource("jobs").GroupResource(), "fixture-admission", fmt.Errorf("fixture conflict"))
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
+
+func TestM2FixtureSettleContinuesBelowCapacityPlateau(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var reads atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "plateau", func(f interceptor.Funcs, reviews []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				target := client.ObjectKeyFromObject(reviews[3])
+				f.Get = func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*reviewv1alpha2.PRReviewJob); ok && key == target && reads.Add(1) <= 4 {
+						return apierrors.NewTimeoutError("fixture target observation timeout", 0)
+					}
+					return c.Get(ctx, key, obj, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
+
+func TestM2FixtureSettleStopsOnPermanentError(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			sentinel := apierrors.NewForbidden(batchv1.SchemeGroupVersion.WithResource("jobs").GroupResource(), "fixture-admission", fmt.Errorf("fixture admission denied"))
+			ctx, r, reviews, _, sink := newConvergenceFixture(t, threads, 8, "forbidden", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) {
+						calls.Add(1)
+						return sentinel
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			if got := calls.Load(); got != 8 {
+				t.Errorf("permanent error must stop after one closed batch: got %d admission calls, want 8", got)
+			}
+			assertFixtureKeyedErrors(t, sink, reviews, sentinel)
+		})
+	}
+}
+
+func TestM2FixtureSettleReportsBoundedExhaustion(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, _, sink := newConvergenceFixture(t, threads, 8, "exhaust", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) {
+						calls.Add(1)
+						return apierrors.NewConflict(batchv1.SchemeGroupVersion.WithResource("jobs").GroupResource(), "fixture-admission", fmt.Errorf("fixture conflict"))
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			if got := calls.Load(); got != 64 {
+				t.Errorf("exhaustion must consume exactly the existing eight-round bound: got %d admission calls, want 64", got)
+			}
+			observed := false
+			for _, entry := range sink.snapshot() {
+				observed = observed || entry.err != nil
+			}
+			if !observed {
+				t.Error("exhausted convergence returned without a failure diagnostic")
+			}
+			var jobs batchv1.JobList
+			if err := r.Client.List(ctx, &jobs); err != nil {
+				t.Fatal(err)
+			}
+			if len(jobs.Items) != 0 {
+				t.Fatalf("exhausted admission created %d workers", len(jobs.Items))
+			}
+		})
+	}
+}
+
+func TestM2FixtureSettleHealthyControlPreservesFIFOAndMatrix(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "healthy", nil)
+			reversed := append([]*reviewv1alpha2.PRReviewJob(nil), reviews...)
+			for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+				reversed[left], reversed[right] = reversed[right], reversed[left]
+			}
+			reconcileUntilSettled(ctx, r, reversed, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
 	}
 }
