@@ -200,7 +200,7 @@
  "scripts/verify-doks.sh": 1,
  "src/analytics/cliParser.ts": 1,
  "src/api/dashboardApi.ts": 4,
- "src/api/githubAppApi.ts": 4,
+ "src/api/githubAppApi.ts": 6,
  "src/api/onboarding.ts": 4,
  "src/app/analytics/page.tsx": 5,
  "src/app/memory/page.tsx": 6,

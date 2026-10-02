@@ -17,7 +17,7 @@ const PRIVATE_REPOS = ['cisco-' + 'cdr', 'ct-' + 'meta', 'ct-' + 'release', 'ct-
 const root = path.resolve(__dirname, '../..');
 
 const FORBIDDEN = new RegExp([
-  ORG, `call-${'telemetry'}`, `call_${'telemetry'}`,
+  ORG, `call-${'telemetry'}`, `call_${'telemetry'}`, `call[ \\t]+${'telemetry'}`,
   ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name}(?![a-z0-9])`),
 ].join('|'), 'giu');
 
