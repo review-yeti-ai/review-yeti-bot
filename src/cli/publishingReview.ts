@@ -69,11 +69,11 @@ import {
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
   isInfrastructureIncompleteResult,
   isRecoverableIncompletePanel,
-  isRecoverablePanelRetryEligible,
   laneProviderStatus,
+  recoverablePanelRetryReportingStatus,
   RECOVERABLE_PANEL_AUTO_RETRY_CAP,
-  renderIncompleteInfrastructureSummary,
-  renderIncompleteInfrastructureTitle,
+  renderRecoverablePanelRetrySummary,
+  renderRecoverablePanelRetryTitle,
   type IncompleteLaneDescription,
 } from '../review/publicationFailurePolicy';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
@@ -1218,10 +1218,11 @@ export async function runPublishingReviewWorker(
     );
     // REL-1124: a panel that THREW on infrastructure (a required lane, the moderator or the arbiter
     // lost to the gateway, a raw `fetch failed`/`terminated`) with no finding anywhere reaches the
-    // same shared decision as a returned panel (REL-1113): INCOMPLETE and re-attempted.
-    // A legacy (non-authoritative) provider_5xx already had its own bounded re-attempt (REL-620:
-    // the check stays in_progress "requeuing" and the dispatcher re-admits with 5xx backoff), so
-    // it keeps that path unchanged. The authoritative path had no re-attempt for it.
+    // same shared decision as a returned panel (REL-1113): INCOMPLETE; the service separately
+    // decides whether to admit another attempt.
+    // A legacy (non-authoritative) provider_5xx already had its own bounded re-attempt path
+    // (REL-620); keep that dispatch/backoff behavior unchanged. The authoritative path had no
+    // re-attempt for it.
     let thrownInfrastructure = panelFailure === undefined && prePanelCoverageComplete === true
       && !(isProvider5xx && !authoritative)
       ? thrownPanelInfrastructureFailure(error, { aborted: deps.signal?.aborted === true })
@@ -1255,16 +1256,14 @@ export async function runPublishingReviewWorker(
         }));
     const operationalTelemetry = captureOperationalTelemetry(failureClass);
     if (operationalTelemetry) diagnostics.operationalTelemetry = operationalTelemetry;
-    const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
-      ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
-      : undefined;
+    const retryReportingStatus = recoverablePanelRetryReportingStatus(identity.executionAttempt);
     let infrastructureDelivered = false;
     // The dispatcher retries attempts 1..CAP; the attempt that fails as
     // CAP+1 is the exhausted one this exact worker execution is running as
     // (`identity.executionAttempt`), so no cross-process coordination is
     // needed to know whether this is the final word.
     const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx || thrownInfrastructure !== undefined)
-      && !isRecoverablePanelRetryEligible(identity.executionAttempt)
+      && retryReportingStatus === 'cap_exhausted'
       ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
       : undefined;
     if (authoritative && !authoritativeCompletionAttempted) {
@@ -1314,16 +1313,13 @@ export async function runPublishingReviewWorker(
         });
       }
     };
-    // REL-1124: a thrown infrastructure failure writes its durable record BEFORE the check, so the
-    // check can say whether a re-attempt was actually scheduled; every other failure keeps the
-    // pre-existing order (check, then callback).
+    // REL-1124: a thrown infrastructure failure writes its durable record BEFORE the check. The
+    // completion acknowledgement confirms delivery only; it does not confirm retry admission.
+    // Every other failure keeps the pre-existing order (check, then callback).
     const legacyPersistedFirst = thrownInfrastructure !== undefined;
     if (legacyPersistedFirst) await persistLegacyTerminalFailure();
-    // REL-1124: the automatic re-attempt is driven only by the durable record above (the
-    // service re-admits from the delivered INCOMPLETE body; the legacy dispatcher from the
-    // recoverable terminal failure). When that record was not written, nothing will re-admit this
-    // run, so it keeps the plain terminal failure: the check never promises a re-attempt (nor a
-    // provider_5xx requeue) and the run is not counted as an incomplete_infra retry.
+    // REL-1124: retry admission is a separate service decision after this delivery. A successful
+    // completion acknowledgement is not a scheduling receipt, so reporting remains unconfirmed.
     const infrastructureUndelivered = thrownInfrastructure !== undefined && !infrastructureDelivered;
     if (!infrastructureDelivered) thrownInfrastructure = undefined;
     if (thrownInfrastructure) {
@@ -1336,12 +1332,12 @@ export async function runPublishingReviewWorker(
         headSha: identity.headSha,
         executionAttempt: identity.executionAttempt,
         authoritative,
-        retryScheduled: infrastructureRetry !== undefined,
+        retryStatus: retryReportingStatus,
         failedLanes: thrownInfrastructure.incompleteLanes,
       });
       try {
         getMetrics().reviewIncompleteInfra.add(1, {
-          outcome: infrastructureRetry ? 'retrying' : 'exhausted',
+          outcome: retryReportingStatus,
           failure_class: thrownInfrastructure.failureClass,
           authoritative: String(authoritative),
         });
@@ -1378,9 +1374,9 @@ export async function runPublishingReviewWorker(
             repo: identity.repoName,
             checkId: failedCheckId,
             conclusion: 'failure',
-            title: renderIncompleteInfrastructureTitle(thrownInfrastructure.incompleteLanes, infrastructureRetry),
+            title: renderRecoverablePanelRetryTitle(thrownInfrastructure.incompleteLanes, identity.executionAttempt),
             summary: [
-              renderIncompleteInfrastructureSummary(identity.headSha, thrownInfrastructure.incompleteLanes, infrastructureRetry, identity.executionAttempt),
+              renderRecoverablePanelRetrySummary(identity.headSha, thrownInfrastructure.incompleteLanes, identity.executionAttempt),
               renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
               ...(workerLogLocator ? [workerLogLocator] : []),
             ].join('\n\n'),
@@ -1392,8 +1388,8 @@ export async function runPublishingReviewWorker(
               repo: identity.repoName,
               checkId: failedCheckId,
               status: 'in_progress',
-              title: 'Review Yeti: gateway capacity unavailable (requeuing)',
-              summary: 'Gateway capacity unavailable (502/503 upstream). Execution will automatically requeue.',
+              title: 'Review Yeti: gateway capacity unavailable (automatic retry NOT CONFIRMED)',
+              summary: 'Gateway capacity unavailable (502/503 upstream). Automatic retry is NOT CONFIRMED: the completion acknowledgement confirms delivery only, not dispatch admission. No next attempt or supersession is promised.',
             });
           }
         } else {
@@ -1404,11 +1400,11 @@ export async function runPublishingReviewWorker(
             checkId: failedCheckId,
             conclusion: 'failure',
             title: incompleteLanes && incompleteLanes.length > 0
-              ? renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry)
+              ? renderRecoverablePanelRetryTitle(incompleteLanes, identity.executionAttempt)
               : 'Review Yeti: review did not complete',
             summary: [
               ...(incompleteLanes && incompleteLanes.length > 0
-                ? [renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt)]
+                ? [renderRecoverablePanelRetrySummary(identity.headSha, incompleteLanes, identity.executionAttempt)]
                 : []),
               renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
               ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
@@ -2659,15 +2655,12 @@ export async function runPublishingReviewWorker(
             ? { roster: [...panelResult.applicablePersonaIds] } : {}) },
       }).result;
     };
-    // REL-1113: an automatic fresh attempt is still available for this execution (the same bound
-    // the dispatcher and the trusted completion service apply), or this is the last one.
-    const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
-      ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
-      : undefined;
+    // Eligibility is not an admission receipt; keep worker-facing status explicitly unconfirmed.
+    const retryReportingStatus = recoverablePanelRetryReportingStatus(identity.executionAttempt);
     // REL-1113: on the authoritative path, the exact result reported to the service, marked as
     // infrastructure-incomplete, when -- and only when -- the shared decision accepts it. The
-    // service evaluates the same function on the same payload to re-admit a fresh attempt, so
-    // the worker's INCOMPLETE check and the service's retry can never disagree.
+    // service evaluates the same function on the same payload before considering re-admission, so
+    // the worker's INCOMPLETE check and the service's infrastructure classification can never disagree.
     let authoritativeInfrastructureResult: WorkerReviewResult | undefined;
     if (authoritativeInfrastructureCandidate) {
       const primary = incompleteLanes.find((lane) => lane.providerStatus !== undefined) ?? incompleteLanes[0];
@@ -2698,14 +2691,14 @@ export async function runPublishingReviewWorker(
         headSha: identity.headSha,
         executionAttempt: identity.executionAttempt,
         authoritative,
-        retryScheduled: infrastructureRetry !== undefined,
+        retryStatus: retryReportingStatus,
         expectedLanes: coverage.expectedLaneCount,
         completedLanes: coverage.completedLaneCount,
         failedLanes: incompleteLanes,
       });
       try {
         getMetrics().reviewIncompleteInfra.add(1, {
-          outcome: infrastructureRetry ? 'retrying' : 'exhausted',
+          outcome: retryReportingStatus,
           failure_class: incompleteLanes[0]?.failureClass ?? 'unknown',
           authoritative: String(authoritative),
         });
@@ -2742,9 +2735,9 @@ export async function runPublishingReviewWorker(
         repo: identity.repoName,
         checkId,
         conclusion: 'failure',
-        title: renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry),
+        title: renderRecoverablePanelRetryTitle(incompleteLanes, identity.executionAttempt),
         summary: [
-          renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt),
+          renderRecoverablePanelRetrySummary(identity.headSha, incompleteLanes, identity.executionAttempt),
           renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           renderTransportSummary(transport.model, resolvedTransportModel),
           renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs, tokenAccounting }),

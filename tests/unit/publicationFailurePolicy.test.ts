@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   isRecoverableIncompletePanel,
   isRecoverablePanelRetryEligible,
+  recoverablePanelRetryReportingStatus,
   RECOVERABLE_PANEL_AUTO_RETRY_CAP,
+  renderRecoverablePanelRetrySummary,
+  renderRecoverablePanelRetryTitle,
   type IncompletePanelEvidence,
 } from '../../src/review/publicationFailurePolicy';
 
@@ -108,4 +111,34 @@ describe('recoverable-panel auto-retry eligibility boundary', () => {
   ])('is not eligible for a non-safe-integer attempt (%s)', (_label, attempt) => {
     expect(isRecoverablePanelRetryEligible(attempt)).toBe(false);
   });
+});
+
+describe('worker retry reporting does not infer scheduling from eligibility', () => {
+  const lanes = [{ id: 'sec-lane', failureClass: 'transport' }];
+
+  it.each([1, RECOVERABLE_PANEL_AUTO_RETRY_CAP])('reports attempt %s as not confirmed', (attempt) => {
+    expect(recoverablePanelRetryReportingStatus(attempt)).toBe('not_confirmed');
+    expect(renderRecoverablePanelRetryTitle(lanes, attempt)).toContain('automatic retry NOT CONFIRMED');
+    const summary = renderRecoverablePanelRetrySummary('a'.repeat(40), lanes, attempt);
+    expect(summary).toContain('completion API acknowledgement confirms delivery only');
+    expect(summary).toContain('No next attempt or supersession is promised.');
+    expect(summary).not.toContain('scheduled automatically');
+  });
+
+  it('reports only the exact terminal attempt as cap exhaustion', () => {
+    const attempt = RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1;
+    expect(recoverablePanelRetryReportingStatus(attempt)).toBe('cap_exhausted');
+    expect(renderRecoverablePanelRetryTitle(lanes, attempt)).toContain('automatic retry cap EXHAUSTED');
+    expect(renderRecoverablePanelRetrySummary('a'.repeat(40), lanes, attempt))
+      .toContain(`cap of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP} additional attempts was exhausted at execution attempt ${attempt}`);
+  });
+
+  it.each([0, -1, Number.NaN, 1.5, RECOVERABLE_PANEL_AUTO_RETRY_CAP + 2])(
+    'does not mislabel invalid or out-of-contract attempt %s as cap exhaustion', (attempt) => {
+      expect(recoverablePanelRetryReportingStatus(attempt)).toBe('unknown');
+      expect(renderRecoverablePanelRetryTitle(lanes, attempt)).toContain('automatic retry status UNKNOWN');
+      expect(renderRecoverablePanelRetrySummary('a'.repeat(40), lanes, attempt))
+        .toContain('this value proves neither retry eligibility nor cap exhaustion');
+    },
+  );
 });

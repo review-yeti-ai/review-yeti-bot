@@ -176,8 +176,25 @@ async function serviceRequeue(completion: WorkerReviewCompletion) {
   return { outcome, admit };
 }
 
-describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-attempted (authoritative)', () => {
-  it.each(SHAPES)('%s on attempt 1: INCOMPLETE, re-attempt 2 of 3, never a verdict', async (_label, make, failureClass, detail) => {
+describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE (authoritative)', () => {
+  it('does not treat a delivered completion ACK as confirmation that attempt 2 was scheduled', async () => {
+    const f = fixture('1');
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
+    f.panelRunner.mockRejectedValue(requiredSecLaneFetchFailed());
+
+    await runPublishingReviewWorker(f.env, f.deps);
+
+    const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+    expect(check?.title).toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane sec-lane failed: transport)');
+    expect(check?.summary).toContain('Automatic retry is NOT CONFIRMED for execution attempt 1');
+    expect(check?.summary).toContain('acknowledgement confirms delivery only');
+    expect(check?.summary).not.toMatch(/scheduled automatically|retrying as attempt|superseded by it/iu);
+    expect(f.warn).toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
+      expect.objectContaining({ retryStatus: 'not_confirmed' }));
+    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'not_confirmed', failure_class: 'transport', authoritative: 'true' });
+  });
+
+  it.each(SHAPES)('%s on attempt 1: INCOMPLETE without a scheduling claim, never a verdict', async (_label, make, failureClass, detail) => {
     const f = fixture('1');
     const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
     f.panelRunner.mockRejectedValue(make());
@@ -194,11 +211,13 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
     const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
     expect(f.checkClient.completeCheck).toHaveBeenCalledOnce();
     expect(check).toMatchObject({ conclusion: 'failure',
-      title: `Review Yeti: INCOMPLETE — infrastructure (${detail}); retrying as attempt 2 of 3` });
+      title: `Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; ${detail})` });
     expect(check?.title).not.toMatch(VERDICT_WORDS);
     expect(isRecoverableFailureTitle(check?.title)).toBe(true);
     expect(check?.summary).toContain('not a review verdict');
-    expect(check?.summary).toContain('A fresh attempt (2 of 3) is scheduled automatically');
+    expect(check?.summary).toContain('Automatic retry is NOT CONFIRMED for execution attempt 1');
+    expect(check?.summary).toContain('completion API acknowledgement confirms delivery only');
+    expect(check?.summary).not.toMatch(/scheduled automatically|fresh attempt \(2 of 3\)|superseded by it/iu);
 
     // The worker's body satisfies the shared decision ...
     const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
@@ -220,8 +239,8 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
 
     // Countable reason class, and nothing private leaves the process.
     expect(f.warn).toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
-      expect.objectContaining({ reasonClass: 'incomplete_infra', retryScheduled: true }));
-    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'retrying', failure_class: failureClass, authoritative: 'true' });
+      expect.objectContaining({ reasonClass: 'incomplete_infra', retryStatus: 'not_confirmed' }));
+    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'not_confirmed', failure_class: failureClass, authoritative: 'true' });
     for (const published of [f.reportReviewResult.mock.calls, f.checkClient.completeCheck.mock.calls]) {
       expect(JSON.stringify(published)).not.toContain(PRIVATE_DETAIL);
       expect(JSON.stringify(published)).not.toContain(TOKEN);
@@ -234,9 +253,9 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE and re-a
     f.panelRunner.mockRejectedValue(make());
     await expect(runPublishingReviewWorker(f.env, f.deps)).resolves.toMatchObject({ verdict: 'INCOMPLETE' });
     const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
-    expect(check?.title).toBe(`Review Yeti: INCOMPLETE — infrastructure (${detail})`);
-    expect(check?.summary).toContain('was the last automatic attempt (3 of 3)');
-    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'exhausted', failure_class: failureClass, authoritative: 'true' });
+    expect(check?.title).toBe(`Review Yeti: INCOMPLETE — infrastructure (automatic retry cap EXHAUSTED; ${detail})`);
+    expect(check?.summary).toContain('cap of 2 additional attempts was exhausted at execution attempt 3');
+    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'cap_exhausted', failure_class: failureClass, authoritative: 'true' });
     const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
     expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
     const { outcome, admit } = await serviceRequeue(completion);
@@ -393,7 +412,7 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     expect(event).toMatchObject({ failureClass: 'transport', executionAttempt: 1,
       diagnostics: { reason: 'lane_infrastructure_incomplete', recoverableIncompletePanel: true } });
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title)
-      .toBe('Review Yeti: INCOMPLETE — infrastructure (lane sec-lane failed: transport); retrying as attempt 2 of 3');
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane sec-lane failed: transport)');
     const admit = vi.fn(async () => ({}) as never);
     await requeueRecoverableIncompletePanelFailure({ input: event, now: START, logger: { error: vi.fn() },
       repository: { admit, readRunRetryContext: vi.fn(async () => ({ publicationMode: 'app-gate' as const,
@@ -402,7 +421,7 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     expect(admit).toHaveBeenCalledWith(expect.objectContaining({ retryRequested: true, retryAfterExecutionAttempt: 1 }));
   });
 
-  it('leaves the pre-existing legacy provider_5xx requeue (REL-620) unchanged: in_progress "requeuing", rethrown', async () => {
+  it('preserves legacy provider_5xx failure handling without claiming retry scheduling', async () => {
     const f = legacyFixture('1');
     const error = attachPanelFailureEvidence(new PanelInfrastructureError('required persona failure: HTTP 502 provider_5xx',
       { failureClass: 'provider_error', failureReason: 'provider_5xx' }), {
@@ -411,7 +430,8 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toBe(error);
     expect(f.reportTerminalFailure.mock.calls[0]?.[0]?.diagnostics).toMatchObject({ reason: 'provider_5xx', recoverableIncompletePanel: true });
     expect(f.checkClient.updateCheck).toHaveBeenCalledWith(expect.objectContaining({ status: 'in_progress',
-      title: 'Review Yeti: gateway capacity unavailable (requeuing)' }));
+      title: 'Review Yeti: gateway capacity unavailable (automatic retry NOT CONFIRMED)',
+      summary: expect.stringContaining('completion acknowledgement confirms delivery only, not dispatch admission') }));
     expect(f.checkClient.completeCheck).not.toHaveBeenCalled();
   });
 
@@ -426,7 +446,7 @@ describe('REL-1124: legacy (non-authoritative) app-gate path reaches the same ou
     expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
     expect(completion.result.failureDiagnostics).toMatchObject({ providerStatus: 502 });
     expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.title)
-      .toBe('Review Yeti: INCOMPLETE — infrastructure (lane sec-lane failed: 502); retrying as attempt 2 of 3');
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane sec-lane failed: 502)');
     await expect(serviceRequeue(completion)).resolves.toMatchObject({ outcome: 'requeued' });
   });
 
