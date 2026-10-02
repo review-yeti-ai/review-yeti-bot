@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.117.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.1...v1.117.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **gateway:** respect provider Retry-After before composed retries ([#1335](https://github.com/review-yeti-ai/review-yeti-bot/issues/1335)) ([2971d6e](https://github.com/review-yeti-ai/review-yeti-bot/commit/2971d6ed37335666ad2748bcaf64e1e7eb081588))
+
 ## [1.117.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.0...v1.117.1) (2026-10-02)
 
 
