@@ -114,7 +114,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
       id: 60000 + gate.reviewGeneration, name: REVIEW_GATE_CHECK_NAME, appId: gate.expectedAppId,
       headSha: gate.coordinates.headSha, externalId: gate.externalId,
       status: gate.desiredState === 'queued' ? 'queued' as const : 'completed' as const,
-      conclusion: gate.desiredState === 'failure' ? 'failure' : null,
+      conclusion: gate.desiredState === 'success' ? 'success' : gate.desiredState === 'failure' ? 'failure' : null,
     }), () => now)).toBe('published');
   };
 
@@ -164,6 +164,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
     expect(read.body.disputedFindingRechecks).toHaveLength(2);
     const fresh = structuredClone(source);
     fresh.executionAttempt = 3;
+    fresh.result.completedAt = new Date(now).toISOString();
     fresh.result.personas[0]!.findings = [];
     fresh.result.personas[1]!.findings = [];
     fresh.result.findingCount = 1;

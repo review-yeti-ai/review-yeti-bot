@@ -275,7 +275,7 @@ index 1111111..2222222 100644
     });
 
     // --- 3. dispute_finding ---
-    it('EMP-INB-05: dispute_finding requests a fresh review without invoking adjudication or mutating source state', async () => {
+    it('EMP-INB-05: dispute_finding refuses unavailable fresh-review storage without adjudication or notification', async () => {
       const mockModel = { complete: vi.fn() };
       const notifySpy = vi.fn();
       const tool = createDisputeFindingTool({ modelClient: mockModel, notifyResourceUpdated: notifySpy });

@@ -197,7 +197,7 @@ export async function loadValidatedDisputedFindingRechecks(
        AND gate.execution_attempt = request.source_execution_attempt
      WHERE request.run_id = $1
      ORDER BY request.source_execution_attempt, request.created_at, request.request_id
-     LIMIT 9`, [run.run_id])).rows;
+     LIMIT ${MAX_DISPUTE_RECHECKS_PER_REVIEW + 1}`, [run.run_id])).rows;
   if (rows.length > MAX_DISPUTE_RECHECKS_PER_REVIEW) {
     throw new Error('Too many disputed finding re-review requests');
   }

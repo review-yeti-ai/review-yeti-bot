@@ -5,7 +5,7 @@ import { createReviewExecutionCheckpointHandler } from '../../src/api/reviewExec
 import { createDisputeFindingTool } from '../../src/mcp/server/tools/disputeFinding';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
-import { parseDisputedFindingRecheck } from '../../src/review/disputedFindingRecheck';
+import { loadValidatedDisputedFindingRechecks, parseDisputedFindingRecheck } from '../../src/review/disputedFindingRecheck';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
@@ -239,6 +239,22 @@ const caller = {
 };
 
 describe('REL-1265 dispute re-review flow', () => {
+  it.each(['completion_execution_attempt', 'bound_gate_attempt_id'])('rejects a request after its %s source binding is lost', async (missing) => {
+    const f = setup();
+    const tool = createDisputeFindingTool({ transactionPool: f.pool as never, authoritativePublishing: findingRecheckAdmission(identity) });
+    await tool.execute({ owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber,
+      finding_id: getReviewFindingId(identity.runId, task.id, finding),
+      counter_argument: 'The router binds the authenticated tenant before evaluating this guard.' },
+    { caller, authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: identity.owner, repo: identity.repo } });
+    const run = { run_id: identity.runId, repository_id: identity.repositoryId, owner: identity.owner,
+      repo: identity.repo, pr_number: identity.prNumber, head_sha: identity.headSha, base_sha: identity.baseSha,
+      effective_policy_digest: identity.policyDigest, effective_config_digest: identity.configDigest };
+    await expect(loadValidatedDisputedFindingRechecks(f.transactionClient, run, 2)).resolves.toHaveLength(1);
+    const query = vi.fn(async () => ({ rows: [{ ...f.recheck, [missing]: null }] }));
+    await expect(loadValidatedDisputedFindingRechecks({ query }, run, 2)).rejects.toThrow('Disputed finding source binding is invalid');
+    expect(query).toHaveBeenCalledOnce();
+  });
+
   it('stores an immutable request, authenticates its read, and accepts only its completed-task receipt', async () => {
     const f = setup();
     const sourceBytesBefore = f.sourceBytes;

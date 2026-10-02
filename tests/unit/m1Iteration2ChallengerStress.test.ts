@@ -319,13 +319,17 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
   // =========================================================================
   describe('disputeFinding & explainFinding resilience', () => {
 
-    it('CHAL-DIS-01: disputeFinding refuses direct adjudication without an authenticated fresh-review transaction', async () => {
+    it('CHAL-DIS-01: disputeFinding refuses direct adjudication without a fresh-review transaction', async () => {
       const modelClient = { complete: vi.fn() };
       const tool = createDisputeFindingTool({ queryableDatabase: { query: vi.fn() }, modelClient });
       await expect(tool.execute({
         owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 99, finding_id: 'f-dis-1',
         counter_argument: 'Node.js is single-threaded and the operation is synchronous.',
-      })).rejects.toThrow(/denied|access/i);
+      }, {
+        caller: { authType: 'static_token', isAdmin: true, allowedRepositories: null, callerId: 'admin', tokenDigest: 'd' },
+        authenticatedByConfiguredAuthenticator: true,
+        authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+      })).rejects.toThrow('Fresh finding review is temporarily unavailable');
       expect(modelClient.complete).not.toHaveBeenCalled();
     });
 

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_DISPUTE_RECHECKS_PER_REVIEW } from './disputedFindingRecheck';
 import {
   MAX_CHANGED_FILES,
   MAX_PATH_CHARACTERS,
@@ -67,7 +68,7 @@ const checkpointSchema = z.object({
   executionAttempt: positiveInteger,
   revision: positiveInteger,
   /** Append-only worker receipt ids for completed dispute-triggered task re-reviews. */
-  satisfiedFindingRecheckIds: z.array(z.string().uuid()).max(8).optional(),
+  satisfiedFindingRecheckIds: z.array(z.string().uuid()).max(MAX_DISPUTE_RECHECKS_PER_REVIEW).optional(),
   plan: z.array(taskSchema).min(1).max(MAX_TASKS_HARD_CAP),
   completedTasks: z.array(completedTaskSchema).max(MAX_TASKS_HARD_CAP),
 }).strict().superRefine((value, context) => {

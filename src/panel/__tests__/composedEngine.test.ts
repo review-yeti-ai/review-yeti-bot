@@ -151,13 +151,14 @@ describe('executeComposedReview', () => {
       expect(lastText(complete.mock.calls[0]![0].messages)).toContain(`Task id: ${authTask.id}`);
       if (status === 'COMPLETE') {
         expect(result.personas.find((lane) => lane.id === authTask.id)?.findings).toEqual([]);
+        expect(saved.at(-1)?.completedTasks).toHaveLength(2);
         expect(result.personas.find((lane) => lane.id === testsTask.id)?.findings).toEqual([priorTestsFinding]);
         expect(saved.at(-1)).toMatchObject({
           satisfiedFindingRecheckIds: [unsigned.requestId],
-          completedTasks: [
+          completedTasks: expect.arrayContaining([
             { id: testsTask.id, findings: [priorTestsFinding] },
             { id: authTask.id, findings: [] },
-          ],
+          ]),
         });
       } else {
         expect(result.optionalFailures?.some((lane) => lane.id === authTask.id)).toBe(true);
