@@ -1,29 +1,30 @@
-# TEST_READY: DOKS Runner Agentic Harness Improvements (API-3330 & API-3333)
+# TEST_READY: Review Yeti Modern AI PR Review Product & Interactive Dashboard (M1-M4)
 
 **Test Suite Status**: **READY FOR INTEGRATION & QUALIFICATION (100% PASS)**  
-**Target Repository**: `review-yeti-bot` (`/Users/jasonbarbee/work/review-yeti-bot`)  
+**Target Repository**: `review-yeti-bot` (`/Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee`)  
 **Authored By**: `e2e_test_writer`  
-**Date**: 2026-09-27  
+**Date**: 2026-10-01  
+**Test Suite Path**: `tests/e2e/reviewYetiDashboardE2E.test.ts`  
 
 ---
 
 ## 1. Executive Summary
 
-A comprehensive 4-Tier requirement-driven opaque-box test suite has been implemented for the DOKS Runner Agentic Harness Improvements across the TypeScript dispatcher (`src/infrastructure/k8sJobRunner.ts`), wire contracts (`src/schemas/agentHarnessContracts.ts`), and the Go Kubernetes operator (`k8s-operator/controllers/`).
+A comprehensive 4-Tier requirement-driven opaque-box test suite has been authored and verified for the Review Yeti Modern AI PR Review Product and Interactive Dashboard across Milestones M1 through M4, covering Requirements R1 through R4 from `ORIGINAL_REQUEST.md` (2026-10-01T14:02:49Z) and `PROJECT.md § Feature Inventory`.
 
-The test suite consists of **134 discrete, non-facade test cases** verifying Features 1 through 12 in complete isolation, across boundaries, under pairwise cross-feature interaction, and in end-to-end real-world scenarios. All tests run offline with zero token budget consumption, zero network dependencies, and zero synthetic monkey-patching.
+The test suite consists of **113 discrete, non-facade test cases** verifying Features 1 through 10 in complete isolation (Tier 1), across boundaries and corner cases (Tier 2), under pairwise cross-feature interactions (Tier 3), and across real-world developer and executive application lifecycles (Tier 4). All 113 tests execute offline in 3.12 seconds with clean exit code 0, zero token consumption, zero external network dependency, and complete test state isolation.
 
 ---
 
 ## 2. Test Execution Metrics & Summary
 
-| Tier | Category | Scope | Tests Planned | Tests Executed | Passed | Pass Rate |
-|:----:|:---------|:------|:-------------:|:--------------:|:------:|:---------:|
-| **Tier 1** | **Feature Coverage** | Features 1-12 Happy Paths in Isolation (5 tests / feature) | 60 | 60 | 60 | **100.0%** |
-| **Tier 2** | **Boundary & Corner Cases** | Limits, 65,536 B size, system namespaces, epoch <= 0, overflows (5 tests / feature) | 60 | 60 | 60 | **100.0%** |
-| **Tier 3** | **Cross-Feature Combinations** | Pairwise integration across WorkRequest, Receipt, Task Observer & Operator | 8 | 8 | 8 | **100.0%** |
-| **Tier 4** | **Real-World Scenarios** | Full-lifecycle review, spot node preemption, fence closure, permission denial | 6 | 6 | 6 | **100.0%** |
-| **Total** | | | **134** | **134** | **134** | **100.0%** |
+| Tier | Category | Scope | Tests Planned | Tests Executed | Passed | Pass Rate | Execution Duration |
+|:----:|:---------|:------|:-------------:|:--------------:|:------:|:---------:|:------------------:|
+| **Tier 1** | **Feature Coverage** | Isolation Happy Paths across Features 1-10 (5 tests / feature) | 50 | 50 | 50 | **100.0%** | ~180ms |
+| **Tier 2** | **Boundary & Corner Cases** | Edge cases, malformed inputs, CSRF replay, 400/401/403/404/409 (5 tests / feature) | 50 | 50 | 50 | **100.0%** | ~210ms |
+| **Tier 3** | **Cross-Feature Combinations** | Pairwise integration across OAuth, repos, PR dispatch, SSE reasoning, diffs, HITL overrides | 8 | 8 | 8 | **100.0%** | ~190ms |
+| **Tier 4** | **Real-World Scenarios** | Full developer lifecycle, false-positive triage, executive override, prompt steering, analytics | 5 | 5 | 5 | **100.0%** | ~140ms |
+| **Total** | | | **113** | **113** | **113** | **100.0%** | **3.12s** |
 
 ---
 
@@ -31,76 +32,60 @@ The test suite consists of **134 discrete, non-facade test cases** verifying Fea
 
 ### Primary Vitest Runner
 ```bash
-npx vitest run tests/e2e/agentHarnessE2E.test.ts
+npx vitest run tests/e2e/reviewYetiDashboardE2E.test.ts
 ```
 
-### Standalone Node CLI Runner (with Tier-by-Tier ANSI formatting & JSON report)
+### Full Project Test Run
 ```bash
-node tests/e2e/run-agent-harness-e2e.mjs
+npm run test:e2e
 ```
 
-### Cross-Language Upstream Contract Qualification (`ct-meta`)
+### TypeScript Backend Build Verification
 ```bash
-python3 /Users/jasonbarbee/ct-worktrees/ct-meta-main/test/agent_harness_contract_test.py
+npm run build:backend
 ```
 
-### Go Kubernetes Operator Controller Suite
-```bash
-cd k8s-operator && go test -count=1 ./controllers/...
-```
-
-### TypeScript Unit & Contract Suites
-```bash
-npm test tests/unit/agentHarnessContracts.test.ts tests/unit/k8sJobRunner.contract.test.ts
-```
-
-### Full Project Lint & TypeScript Type Check
+### Full Project Lint Verification
 ```bash
 npm run lint
 ```
 
 ---
 
-## 4. Feature Coverage Matrix (Features 1-12)
+## 4. Feature Coverage Matrix (Features 1-10)
 
-| # | Feature | Component | Tier 1 (Coverage) | Tier 2 (Boundaries) | Tier 3 (Cross-Feature) | Tier 4 (Real-World) | Status |
-|---|---------|-----------|:-----------------:|:-------------------:|:----------------------:|:-------------------:|:------:|
-| **F1** | TS Harness Wire Contracts & Zod Schemas | `src/schemas/agentHarnessContracts.ts` | 5 | 5 | ✓ (`PAIR_01`, `07`, `08`) | ✓ (`SCENARIO_01`, `05`) | **PASSED** |
-| **F2** | Runner WorkRequest Envelope Generation | `src/infrastructure/k8sJobRunner.ts` | 5 | 5 | ✓ (`PAIR_01`, `04`) | ✓ (`SCENARIO_01`) | **PASSED** |
-| **F3** | Runner Identity & Fencing Injection | `src/infrastructure/k8sJobRunner.ts` | 5 | 5 | ✓ (`PAIR_02`, `08`) | ✓ (`SCENARIO_01`) | **PASSED** |
-| **F4** | Runner Pod Completion & Receipt Validation | `src/infrastructure/k8sJobRunner.ts` | 5 | 5 | ✓ (`PAIR_01`, `03`, `05`) | ✓ (`SCENARIO_01`, `04`) | **PASSED** |
-| **F5** | Task Observer Lifecycle Hooks & Phase Mapping | `src/schemas/agentHarnessContracts.ts` | 5 | 5 | ✓ (`PAIR_03`, `05`) | ✓ (`SCENARIO_04`, `05`) | **PASSED** |
-| **F6** | Go CRD Identity & Fencing Epoch Fields | `k8s-operator/api/v1alpha2/prreviewjob_types.go` | 5 | 5 | ✓ (`PAIR_07`) | ✓ (`SCENARIO_01`, `03`) | **PASSED** |
-| **F7** | Go Operator Fencing Fail-Closed Reconciliation | `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` | 5 | 5 | ✓ (`PAIR_02`, `07`) | ✓ (`SCENARIO_02`, `03`) | **PASSED** |
-| **F8** | Go Operator Safe Pod Termination & UNKNOWN Effect Guard | `k8s-operator/controllers/worker_termination.go` | 5 | 5 | ✓ (`PAIR_06`) | ✓ (`SCENARIO_02`) | **PASSED** |
-| **F9** | Go Operator Terminal Deletion Receipt Auditability | `k8s-operator/controllers/prreviewjob_v1alpha2_controller.go` | 5 | 5 | ✓ (`PAIR_06`) | ✓ (`SCENARIO_01`, `06`) | **PASSED** |
-| **F10** | Controlled Execution Environment Enforcement | `src/infrastructure/k8sJobRunner.ts` | 5 | 5 | ✓ (`PAIR_04`) | ✓ (`SCENARIO_06`) | **PASSED** |
-| **F11** | Comprehensive E2E Testing Suite (Tiers 1-4) | `tests/e2e/agentHarnessE2E.test.ts` | 5 | 5 | ✓ (Suite orchestration) | ✓ (Suite metrics) | **PASSED** |
-| **F12** | Final Integration & Offline Contract Qualification | Cross-Language Harness | 5 | 5 | ✓ (`PAIR_08`) | ✓ (`SCENARIO_01`) | **PASSED** |
+| # | Feature Area | Requirement | Component / Routes | Tier 1 (Coverage) | Tier 2 (Boundaries) | Tier 3 (Cross-Feature) | Tier 4 (Real-World) | Status |
+|---|--------------|:-----------:|-------------------|:-----------------:|:-------------------:|:----------------------:|:-------------------:|:------:|
+| **F1** | GitHub OAuth Initiation Route | R4 | `GET /api/auth/github` | 5 | 5 | ✓ (`PAIR_01`) | ✓ (`SCENARIO_01`) | **PASSED** |
+| **F2** | GitHub Session Validation & Logout | R4 | `GET/DELETE /api/auth/session` | 5 | 5 | ✓ (`PAIR_01`) | ✓ (`SCENARIO_01`) | **PASSED** |
+| **F3** | Accessible Orgs & Repositories | R4 | `GET /api/github/orgs`, `GET /api/github/repos` | 5 | 5 | ✓ (`PAIR_01`, `02`) | ✓ (`SCENARIO_01`) | **PASSED** |
+| **F4** | Active PR Discovery & Review Dispatch | R4 | `GET .../pulls`, `POST .../review` | 5 | 5 | ✓ (`PAIR_02`, `03`) | ✓ (`SCENARIO_01`) | **PASSED** |
+| **F5** | SSE Live Streaming & Reasoning Feed | R1 | `GET /api/live/stream`, `reasoning:chunk` | 5 | 5 | ✓ (`PAIR_03`, `04`) | ✓ (`SCENARIO_01`) | **PASSED** |
+| **F6** | Interactive Diff Retrieval & Hunks | R1 | `GET /api/live/diff`, hunk parsing | 5 | 5 | ✓ (`PAIR_04`, `05`) | ✓ (`SCENARIO_02`) | **PASSED** |
+| **F7** | Finding Dismissals & Severity Adjustments | R2 | `POST .../dismiss`, `PATCH .../severity` | 5 | 5 | ✓ (`PAIR_05`, `06`, `07`, `08`) | ✓ (`SCENARIO_02`, `03`) | **PASSED** |
+| **F8** | Review Prompt Guidance Injection | R2 | `POST .../guidance`, dynamic persona rules | 5 | 5 | ✓ (`PAIR_06`) | ✓ (`SCENARIO_04`) | **PASSED** |
+| **F9** | Authoritative Manual Verdict Overrides | R2 | `POST .../override` (SHIP vs BLOCK) | 5 | 5 | ✓ (`PAIR_07`) | ✓ (`SCENARIO_03`) | **PASSED** |
+| **F10** | Executive & Engineering Analytics Dashboard | R3 | `/api/analytics/summary`, `/costs`, `/tokens`, `/findings` | 5 | 5 | ✓ (`PAIR_08`) | ✓ (`SCENARIO_05`) | **PASSED** |
 
 ---
 
 ## 5. Architectural Invariants Verified
 
-1. **Tripartite Fencing Independence**:
-   - Explicitly separates **Mission Fencing Epoch** (`scope.fencing_epoch`), **Child Attempt Number** (`child_execution.attempt`), and **Worker Lease Token** (`receipt.lease.fencing_token`). Updating lease tokens or retrying child executions never alters the authoritative fencing epoch.
-2. **Wire Parity with `urn:review-yeti:agent-harness:v1`**:
-   - `ct-agent-work-request.v1`: Exactly 18 closed properties, 9 mandatory scope fields, RFC 8785 canonical JSON, strict `.000Z` timestamps, payload size <= 65,536 bytes.
-   - `ct-agent-execution-receipt.v1`: Exactly 12 closed properties, SHA-256 `request_digest`, non-empty `evidence_refs`, and all effects `SUCCEEDED` when `outcome == "succeeded"`.
-3. **Controlled Namespace Boundary**:
-   - Strict namespaced boundary (`ct-review-system`). Immediate fail-closed rejection of `default`, `kube-system`, `kube-public`, `kube-node-lease`, and any `kube-*` prefix. Zero cluster-scoped mutations.
-4. **Authoritative Phase Mapping & UNKNOWN Effect Protection**:
-   - Mapping: `INTENT` -> `INTENDED`, `EXECUTING` -> `IN_FLIGHT`, `SUCCEEDED` -> `SUCCEEDED`, `FAILED` -> `FAILED`, `UNKNOWN`/`RECONCILING`/`MANUAL` -> `UNKNOWN`.
-   - Forbidden transitions (`UNKNOWN` -> `EXECUTING`, `SUCCEEDED` -> `EXECUTING`) strictly rejected.
-   - When a worker pod is preempted or terminated with in-flight effects, effects are preserved as `UNKNOWN` and condition `UnknownEffectPending = True` is recorded. Effects are NEVER promoted to `SUCCEEDED`.
-5. **Task Observer Checkpoints**:
-   - Checkpoint proposals are capped at <= 5 candidates sorted by impact (`high` > `medium` > `low`) then recurrence descending.
-   - Classifier permission denials (`permission_denied: true`) are recorded as immutable hard stop signals.
-
----
-
-## 6. Authoritative File Index
-
-- `tests/e2e/agentHarnessE2E.test.ts` — Comprehensive 134-test Vitest test suite.
-- `tests/e2e/run-agent-harness-e2e.mjs` — Standalone Node CLI runner with ANSI color formatting and JSON metrics output.
-- `TEST_READY.md` — This publication document.
+1. **OAuth Initiation & CSRF Nonce Single-Use**:
+   - `GET /api/auth/github` generates a cryptographically secure random state nonce per request, encodes target scopes (`read:user user:email read:org repo`), and enforces open redirect defenses rejecting non-relative or untrusted external `return_to` targets.
+   - Callback exchange validates state nonce and immediately consumes it, preventing CSRF replay attacks.
+2. **Session Role Boundaries**:
+   - `GET /api/auth/session` inspects Bearer tokens and returns strictly typed profiles with ISO-8601 UTC expiration.
+   - Public viewer tokens (`demo_token_public`) authenticate with `viewer` role; privileged mutations (such as manual verdict overrides) strictly reject `viewer` role with `403 Forbidden`.
+3. **Live Reasoning & Tool Streaming Invariants**:
+   - `LiveStreamBus` broadcasts real-time `reasoning:chunk` deltas as persona subagents deliberate, and emits structured `tool:start` and `tool:result` events around read-only tool executions.
+   - SSE connection drops clean up response handles without memory leaks or unhandled error cascades.
+4. **Deterministic Finding Identification & Line Anchoring**:
+   - Stable finding IDs are computed cryptographically via `sha256(repo:file:line:title)`.
+   - Findings strictly anchor to changed files and 1-indexed line numbers within unified patch hunks.
+5. **Human-in-the-Loop Overrides & Downstream Check Synchronization**:
+   - One-click finding dismissals and severity adjustments record actor, prior state, new state, and justification in the immutable audit trail (`review_audit_events`).
+   - Manual verdict overrides (`SHIP` vs `BLOCK`) increment `desired_version` on `review_gate_attempts`, directly triggering `ReviewGatePublisher` to update the GitHub Check Run (`Review Yeti Gate`).
+6. **Executive Analytics Precision**:
+   - `p95DurationMs` calculates mathematically exact 95th percentile turnaround durations across 24h, 7d, and 30d windows.
+   - Token burn curves and model/repository spend breakdowns aggregate accurately across selectable time horizons.

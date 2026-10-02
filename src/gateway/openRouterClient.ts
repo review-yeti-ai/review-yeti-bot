@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { describeErrorChain, errorCauseLogFields, type SanitizedErrorCause } from '../utils/errorCause';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
+import { TokenBatcher, type TokenBatcherOptions } from './tokenBatcher';
 
 export class OpenRouterConnectionError extends Error {
   /**
@@ -98,6 +99,9 @@ export interface OpenRouterRequest {
   plugins?: Array<Record<string, unknown>>;
   metadata?: Record<string, string>;
   onFirstToken?: () => void;
+  onReasoningChunk?: (chunk: string) => void;
+  onContentChunk?: (chunk: string) => void;
+  batchOptions?: TokenBatcherOptions;
   /** Caller-owned cancellation for the whole request, including streamed bodies. */
   signal?: AbortSignal;
   maxRetries?: number;
@@ -874,12 +878,20 @@ function hasMeaningfulChunk(data: any): boolean {
   });
 }
 
-function collectChunk(data: any, state: StreamState): boolean {
+function collectChunk(
+  data: any,
+  state: StreamState,
+  reasoningBatcher?: TokenBatcher,
+  contentBatcher?: TokenBatcher,
+): boolean {
   const meaningful = hasMeaningfulChunk(data);
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
-  if (typeof content === 'string') state.content += content;
+  if (typeof content === 'string') {
+    state.content += content;
+    if (content) contentBatcher?.push(content);
+  }
   const reasoning = choice?.delta?.reasoning_details
     ?? choice?.delta?.reasoningDetails
     ?? choice?.delta?.reasoning
@@ -890,7 +902,11 @@ function collectChunk(data: any, state: StreamState): boolean {
     ?? choice?.message?.reasoning
     ?? choice?.message?.reasoning_content
     ?? choice?.message?.reasoningContent;
-  state.reasoning += reasoningText(reasoning);
+  const chunkReasoning = reasoningText(reasoning);
+  state.reasoning += chunkReasoning;
+  if (chunkReasoning) {
+    reasoningBatcher?.push(chunkReasoning);
+  }
   if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
     state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
   }
@@ -1045,6 +1061,9 @@ async function readStreamingResponse(
     persona?: string;
     providerId?: string;
     onFirstToken?: () => void;
+    onReasoningChunk?: (chunk: string) => void;
+    onContentChunk?: (chunk: string) => void;
+    batchOptions?: TokenBatcherOptions;
   }
 ): Promise<any> {
   const contentType = response.headers?.get('content-type') || '';
@@ -1073,6 +1092,13 @@ async function readStreamingResponse(
     finishReason: null,
     lastChunkTime: Date.now(),
   };
+
+  const reasoningBatcher = options?.onReasoningChunk
+    ? new TokenBatcher(options.onReasoningChunk, options.batchOptions)
+    : undefined;
+  const contentBatcher = options?.onContentChunk
+    ? new TokenBatcher(options.onContentChunk, options.batchOptions)
+    : undefined;
 
   const rawInactivityTimeoutMs = options?.inactivityTimeoutMs;
   const inactivityTimeoutMs = typeof rawInactivityTimeoutMs === 'number'
@@ -1164,7 +1190,7 @@ async function readStreamingResponse(
     if (!json || json === '[DONE]') return false;
     let meaningful = false;
     try {
-      meaningful = collectChunk(JSON.parse(json), state);
+      meaningful = collectChunk(JSON.parse(json), state, reasoningBatcher, contentBatcher);
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed response: malformed streaming JSON');
     }
@@ -1237,6 +1263,8 @@ async function readStreamingResponse(
         }
       }
     }
+    reasoningBatcher?.flush();
+    contentBatcher?.flush();
   } catch (error) {
     // The read timer can win a same-deadline race a few milliseconds early (the classification
     // grace above still marks it as total). Trigger the abort/cancel path for that case too.
@@ -1262,6 +1290,8 @@ async function readStreamingResponse(
     await cancel(error instanceof OpenRouterTimeoutError ? 'stream timeout' : 'stream error');
     throw error;
   } finally {
+    reasoningBatcher?.cancel();
+    contentBatcher?.cancel();
     if (totalDeadlineTimer) clearTimeout(totalDeadlineTimer);
     if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
     try { reader.releaseLock(); } catch (_) {}
@@ -1314,7 +1344,12 @@ function sdkUsageToWire(usage: any, rawUsage?: any): Record<string, unknown> | n
   };
 }
 
-function collectSdkChunk(data: any, state: StreamState): boolean {
+function collectSdkChunk(
+  data: any,
+  state: StreamState,
+  reasoningBatcher?: TokenBatcher,
+  contentBatcher?: TokenBatcher,
+): boolean {
   if (data?.error) {
     const message = data.error.message || data.error.code || 'OpenRouter emitted a streaming error';
     const status = Number.isInteger(Number(data.error.code)) ? Number(data.error.code) : undefined;
@@ -1324,7 +1359,10 @@ function collectSdkChunk(data: any, state: StreamState): boolean {
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
-  if (typeof content === 'string') state.content += content;
+  if (typeof content === 'string') {
+    state.content += content;
+    if (content) contentBatcher?.push(content);
+  }
   const reasoning = choice?.delta?.reasoningDetails
     ?? choice?.delta?.reasoning_details
     ?? choice?.delta?.reasoning
@@ -1335,7 +1373,11 @@ function collectSdkChunk(data: any, state: StreamState): boolean {
     ?? choice?.message?.reasoning
     ?? choice?.message?.reasoning_content
     ?? choice?.message?.reasoningContent;
-  state.reasoning += reasoningText(reasoning);
+  const chunkReasoning = reasoningText(reasoning);
+  state.reasoning += chunkReasoning;
+  if (chunkReasoning) {
+    reasoningBatcher?.push(chunkReasoning);
+  }
   if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
     state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
   }
@@ -1375,6 +1417,9 @@ async function readSdkStreamingResponse(
     onTotalTimeout?: () => void;
     onCancel?: (reason: string) => void;
     onFirstToken?: () => void;
+    onReasoningChunk?: (chunk: string) => void;
+    onContentChunk?: (chunk: string) => void;
+    batchOptions?: TokenBatcherOptions;
   },
 ): Promise<any> {
   const reader = stream.getReader();
@@ -1388,6 +1433,12 @@ async function readSdkStreamingResponse(
     finishReason: null,
     lastChunkTime: Date.now(),
   };
+  const reasoningBatcher = options?.onReasoningChunk
+    ? new TokenBatcher(options.onReasoningChunk, options.batchOptions)
+    : undefined;
+  const contentBatcher = options?.onContentChunk
+    ? new TokenBatcher(options.onContentChunk, options.batchOptions)
+    : undefined;
   const rawInactivityTimeoutMs = options?.inactivityTimeoutMs;
   const inactivityTimeoutMs = typeof rawInactivityTimeoutMs === 'number'
     && Number.isFinite(rawInactivityTimeoutMs)
@@ -1475,7 +1526,7 @@ async function readSdkStreamingResponse(
       }
       if (done) break;
       if (value !== undefined) {
-        if (collectSdkChunk(value, state)) {
+        if (collectSdkChunk(value, state, reasoningBatcher, contentBatcher)) {
           lastMeaningfulDataAt = Date.now();
           if (!receivedFirstData) {
             receivedFirstData = true;
@@ -1484,6 +1535,8 @@ async function readSdkStreamingResponse(
         }
       }
     }
+    reasoningBatcher?.flush();
+    contentBatcher?.flush();
     // The deadline timer cancels the SDK EventStream so a pending read can settle. Cancellation
     // reports `{done:true}` to the downstream reader, therefore classify that terminal read as a
     // timeout instead of returning a partial successful completion.
@@ -1513,6 +1566,8 @@ async function readSdkStreamingResponse(
     await cancel(error instanceof OpenRouterTimeoutError ? 'stream timeout' : 'stream error');
     throw error;
   } finally {
+    reasoningBatcher?.cancel();
+    contentBatcher?.cancel();
     if (totalTimer) clearTimeout(totalTimer);
     if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
     try { reader.releaseLock(); } catch (_) {}
@@ -2085,6 +2140,9 @@ export class OpenRouterClient implements ReviewModelClient {
               controller.abort();
             },
             onFirstToken: request.onFirstToken,
+            onReasoningChunk: request.onReasoningChunk,
+            onContentChunk: request.onContentChunk,
+            batchOptions: request.batchOptions,
           });
         }
       } else {
@@ -2136,6 +2194,9 @@ export class OpenRouterClient implements ReviewModelClient {
                 controller.abort();
               },
               onFirstToken: request.onFirstToken,
+              onReasoningChunk: request.onReasoningChunk,
+              onContentChunk: request.onContentChunk,
+              batchOptions: request.batchOptions,
             });
           } else {
             data = normalizeSdkResponse(sdkResponse, sdkClient.getRawUsage?.());

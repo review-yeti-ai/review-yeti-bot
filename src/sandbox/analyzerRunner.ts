@@ -505,19 +505,62 @@ export async function runSemgrep(files: string[], options: AnalyzerExecutionOpti
 
 export async function runGitleaks(files: string[], options: AnalyzerExecutionOptions): Promise<PreCheckAnalyzerReceipt> {
   const cmd = options.customExecutable || 'gitleaks';
-  const args = files.length === 1
-    ? ['detect', '--no-git', '--source', files[0], '-r', '-', '-f', 'json', '--no-banner', '-l', 'error']
-    : ['detect', '--no-git', '-r', '-', '-f', 'json', '--no-banner', '-l', 'error', ...files];
-  const res = await executeSandboxedCommand(cmd, args, {
-    cwd: options.workspaceRoot,
-    timeoutMs: options.timeoutMs,
-    maxBytes: options.maxBytes,
-    sandboxRunner: options.sandboxRunner,
-    spawnImpl: options.spawnImpl,
-    signal: options.signal,
-  });
+  if (files.length === 0) {
+    return {
+      tool: 'gitleaks',
+      category: 'secrets',
+      available: true,
+      exitStatus: 0,
+      durationMs: 0,
+      filesScanned: 0,
+      hypothesesCount: 0,
+      hypotheses: [],
+      command: cmd,
+    };
+  }
 
-  return buildReceipt('gitleaks', 'secrets', res, options.workspaceRoot, files.length, parseGitleaksOutput);
+  if (files.length === 1) {
+    const args = ['detect', '--no-git', '--source', files[0], '-r', '-', '-f', 'json', '--no-banner', '-l', 'error'];
+    const res = await executeSandboxedCommand(cmd, args, {
+      cwd: options.workspaceRoot,
+      timeoutMs: options.timeoutMs,
+      maxBytes: options.maxBytes,
+      sandboxRunner: options.sandboxRunner,
+      spawnImpl: options.spawnImpl,
+      signal: options.signal,
+    });
+
+    return buildReceipt('gitleaks', 'secrets', res, options.workspaceRoot, 1, parseGitleaksOutput);
+  }
+
+  const receipts = await Promise.all(files.map((file) => runGitleaks([file], options)));
+  const notInstalled = receipts.find((r) => r.exitStatus === 'not_installed');
+  if (notInstalled) return notInstalled;
+
+  const anyError = receipts.find((r) => r.exitStatus === 'error');
+  const anyTimeout = receipts.find((r) => r.exitStatus === 'timeout');
+
+  const combinedHypotheses: CandidateHypothesis[] = [];
+  let totalDuration = 0;
+  for (const r of receipts) {
+    totalDuration += r.durationMs;
+    if (r.hypotheses) {
+      combinedHypotheses.push(...r.hypotheses);
+    }
+  }
+
+  return {
+    tool: 'gitleaks',
+    category: 'secrets',
+    available: true,
+    exitStatus: anyError ? 'error' : (anyTimeout ? 'timeout' : 0),
+    durationMs: totalDuration,
+    filesScanned: files.length,
+    hypothesesCount: combinedHypotheses.length,
+    hypotheses: combinedHypotheses,
+    error: anyError?.error || anyTimeout?.error,
+    command: cmd,
+  };
 }
 
 function buildReceipt(

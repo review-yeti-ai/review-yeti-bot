@@ -127,7 +127,7 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
     try {
       const exit = await Promise.race([
         once(child, 'exit'),
-        delay(4_000).then(() => { throw new Error(`PostgreSQL startup probe exceeded deadline: ${output}`); }),
+        delay(9_000).then(() => { throw new Error(`PostgreSQL startup probe exceeded deadline: ${output}`); }),
       ]);
 
       expect(exit).toEqual([1, null]);

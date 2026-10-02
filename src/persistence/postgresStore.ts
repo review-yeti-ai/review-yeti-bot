@@ -19,6 +19,8 @@ import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
 import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
+import { REVIEW_HITL_SCHEMA_SQL } from './reviewHitlSchema';
+import { REVIEW_ANALYTICS_SCHEMA_SQL } from './reviewAnalyticsSchema';
 import { applySchemaOnce, withSchemaLockRetry } from './schemaMigrationGate';
 import { LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL } from './legacyAppGateReceiptPolicy';
 
@@ -441,6 +443,8 @@ export class PostgresStore {
         REVIEW_CI_CHECK_SCHEMA_SQL,
         REVIEW_EVENT_SCHEMA_SQL,
         REVIEW_EVENT_V2_SCHEMA_SQL,
+        REVIEW_HITL_SCHEMA_SQL,
+        REVIEW_ANALYTICS_SCHEMA_SQL,
       ]);
 
       // 2. Check if database tables are empty and seed if initial startup

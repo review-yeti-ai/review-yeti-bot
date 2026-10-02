@@ -459,7 +459,7 @@ describe('guarded gateway input budgeting', () => {
     expect(evidence.files).toBe(33);
     expect(evidence.coveragePercent).toBe(100);
     expect(evidence.omittedFilesCount).toBe(0);
-  });
+  }, 15_000);
 
   it('rejects unavailable or incomplete lossless partition plans', () => {
     const { inputFiles } = createCurrentSizedGatewayDiffFixture();

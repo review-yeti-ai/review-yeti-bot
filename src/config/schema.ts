@@ -341,6 +341,71 @@ export const enforcementPolicySchema = z.object({
   failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).default('fail_closed'),
   require_ticket_link: z.boolean().default(false),
 }).passthrough().default({});
+export type EnforcementPolicyConfig = z.infer<typeof enforcementPolicySchema>;
+
+export const repositoryReviewRulesSchema = z.object({
+  reviews: reviewsSchema.default({}),
+  auto_review: autoReviewSchema.default({}),
+  enforcement_policy: enforcementPolicySchema.default({}),
+}).passthrough();
+
+export type RepositoryReviewRules = z.infer<typeof repositoryReviewRulesSchema>;
+
+export const reviewsUpdateSchema = z.object({
+  profile: z.enum(['chill', 'balanced', 'assertive']).optional(),
+  reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  default_max_turns: z.number().int().min(1).max(20).optional(),
+  confidence_threshold: z.number().min(0).max(100).optional(),
+  mascot: z.boolean().optional(),
+  ticket_enforcement: z.boolean().optional(),
+  request_changes_workflow: z.boolean().optional(),
+  high_level_summary: z.boolean().optional(),
+  poem: z.boolean().optional(),
+  review_status: z.boolean().optional(),
+  collapse_walkthrough: z.boolean().optional(),
+  auto_title_instructions: z.string().optional(),
+  sequence_diagrams: z.boolean().optional(),
+  path_instructions: z.array(z.object({
+    path: z.string(),
+    instructions: z.string(),
+  })).optional(),
+}).passthrough();
+
+export const autoReviewUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  ignore_drafts: z.boolean().optional(),
+  review_drafts: z.boolean().optional(),
+  triggers: z.array(z.string()).optional(),
+  labels: z.array(z.string()).optional(),
+  ignore_patterns: z.array(z.string()).optional(),
+  drafts: z.boolean().optional(),
+}).passthrough();
+
+export const enforcementPolicyUpdateSchema = z.object({
+  require_all_reviews: z.boolean().optional(),
+  failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).optional(),
+  require_ticket_link: z.boolean().optional(),
+}).passthrough();
+
+export const updateRepositoryReviewRulesSchema = z.preprocess((val: any) => {
+  if (val && typeof val === 'object' && !Array.isArray(val)) {
+    const copy = { ...val };
+    if (copy.autoReview && !copy.auto_review) {
+      copy.auto_review = copy.autoReview;
+    }
+    if (copy.enforcementPolicy && !copy.enforcement_policy) {
+      copy.enforcement_policy = copy.enforcementPolicy;
+    }
+    return copy;
+  }
+  return val;
+}, z.object({
+  reviews: reviewsUpdateSchema.optional(),
+  auto_review: autoReviewUpdateSchema.optional(),
+  enforcement_policy: enforcementPolicyUpdateSchema.optional(),
+}).passthrough());
+
+export type UpdateRepositoryReviewRules = z.infer<typeof updateRepositoryReviewRulesSchema>;
 
 export const dialsSchema = z.object({
   memory_engine: z.boolean().default(true),

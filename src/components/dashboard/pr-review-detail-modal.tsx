@@ -32,11 +32,29 @@ import {
   ChevronRight,
   FileCode,
   AlertCircle,
-  Terminal,
   ListChecks,
   Network,
+  Compass,
+  Terminal,
+  MessageSquare,
+  History,
 } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/utils';
+import { VerdictOverrideControls } from './verdict-override-controls';
+import { ReviewAuditTrailPanel } from './review-audit-trail-panel';
+import { PromptGuidanceCard } from '../live/prompt-guidance-card';
+import { FindingDiffCard } from '../live/finding-diff-card';
+import { computeFindingId } from '@/lib/findingUtils';
+import {
+  dismissFinding,
+  adjustFindingSeverity,
+  submitPromptGuidance,
+  fetchPromptGuidance,
+  submitVerdictOverride,
+  fetchAuditTrail,
+} from '@/lib/api-client';
+import type { ReviewAuditEvent, PromptGuidanceItem, VerdictOverrideRecord } from '@/types/hitl';
+import type { AnchoredFinding } from '@/types/diff';
 
 class ModalErrorBoundary extends React.Component<
   { children: React.ReactNode; onReset: () => void },
@@ -98,6 +116,91 @@ export function PRReviewDetailModal({
   onOpenChange,
 }: PRReviewDetailModalProps) {
   const [expandedPersonas, setExpandedPersonas] = React.useState<Record<string, boolean>>({});
+  const [activeTab, setActiveTab] = React.useState<'evaluation' | 'guidance' | 'audit'>('evaluation');
+  const [overrideRecord, setOverrideRecord] = React.useState<VerdictOverrideRecord | null>(null);
+  const [guidanceList, setGuidanceList] = React.useState<PromptGuidanceItem[]>([]);
+  const [auditEvents, setAuditEvents] = React.useState<ReviewAuditEvent[]>([]);
+  const [findingOverrides, setFindingOverrides] = React.useState<
+    Record<string, { status?: 'active' | 'dismissed'; severity?: 'P0' | 'P1' | 'P2'; dismissalReason?: string }>
+  >({});
+
+  React.useEffect(() => {
+    if (open && job?.id) {
+      fetchPromptGuidance(job.id)
+        .then((items) => {
+          if (items) setGuidanceList(items);
+        })
+        .catch(() => {});
+      fetchAuditTrail(job.id)
+        .then((events) => {
+          if (events) setAuditEvents(events);
+        })
+        .catch(() => {});
+    }
+  }, [open, job?.id]);
+
+  const handleAddGuidance = async (guidanceText: string, targetPersonas?: string[]) => {
+    if (!job?.id) return;
+    const res = await submitPromptGuidance(job.id, guidanceText, targetPersonas);
+    if (res.guidance) {
+      setGuidanceList((prev) => [...prev, res.guidance]);
+      fetchAuditTrail(job.id)
+        .then((events) => {
+          if (events) setAuditEvents(events);
+        })
+        .catch(() => {});
+    }
+  };
+
+  const handleOverrideSuccess = (record: any) => {
+    setOverrideRecord(record);
+    if (job?.id) {
+      fetchAuditTrail(job.id)
+        .then((events) => {
+          if (events) setAuditEvents(events);
+        })
+        .catch(() => {});
+    }
+  };
+
+  const handleDismissFinding = async (findingId: string, reason: string) => {
+    if (!job?.id) return;
+    try {
+      await dismissFinding(job.id, findingId, reason, 'reviewer');
+      setFindingOverrides((prev) => ({
+        ...prev,
+        [findingId]: { ...prev[findingId], status: 'dismissed', dismissalReason: reason },
+      }));
+      fetchAuditTrail(job.id)
+        .then((events) => {
+          if (events) setAuditEvents(events);
+        })
+        .catch(() => {});
+    } catch (err) {
+      console.warn('Failed to dismiss finding:', err);
+    }
+  };
+
+  const handleAdjustSeverity = async (
+    findingId: string,
+    severity: 'P0' | 'P1' | 'P2'
+  ) => {
+    if (!job?.id) return;
+    try {
+      await adjustFindingSeverity(job.id, findingId, severity, 'reviewer');
+      setFindingOverrides((prev) => ({
+        ...prev,
+        [findingId]: { ...prev[findingId], severity },
+      }));
+      fetchAuditTrail(job.id)
+        .then((events) => {
+          if (events) setAuditEvents(events);
+        })
+        .catch(() => {});
+    } catch (err) {
+      console.warn('Failed to adjust severity:', err);
+    }
+  };
 
   const personaLogs = React.useMemo(() => {
     if (!job) return [];
@@ -275,6 +378,86 @@ export function PRReviewDetailModal({
           </DialogDescription>
         </DialogHeader>
 
+        {/* Verdict Override Controls */}
+        <div className="my-3">
+          <VerdictOverrideControls
+            reviewId={job.id}
+            currentVerdict={job.verdict}
+            existingOverride={overrideRecord}
+            onOverrideSuccess={handleOverrideSuccess}
+          />
+        </div>
+
+        {/* View Tabs Navigation Bar */}
+        <div className="flex items-center gap-2 border-b border-border/60 pb-2 mb-4">
+          <button
+            type="button"
+            onClick={() => setActiveTab('evaluation')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              activeTab === 'evaluation'
+                ? 'bg-indigo-600 text-white'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'
+            }`}
+          >
+            <Bot className="w-3.5 h-3.5" />
+            Evaluation &amp; Personas
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('guidance')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              activeTab === 'guidance'
+                ? 'bg-indigo-600 text-white'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            Prompt Guidance
+            {guidanceList.length > 0 && (
+              <Badge variant="outline" className="ml-1 text-[10px] py-0 px-1 border-indigo-400/40 text-indigo-300">
+                {guidanceList.length}
+              </Badge>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('audit')}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              activeTab === 'audit'
+                ? 'bg-indigo-600 text-white'
+                : 'text-muted-foreground hover:text-foreground hover:bg-muted/40'
+            }`}
+          >
+            <History className="w-3.5 h-3.5" />
+            Audit Trail
+            {auditEvents.length > 0 && (
+              <Badge variant="outline" className="ml-1 text-[10px] py-0 px-1 border-border/80 text-foreground">
+                {auditEvents.length}
+              </Badge>
+            )}
+          </button>
+        </div>
+
+        {activeTab === 'guidance' && (
+          <div className="my-4">
+            <PromptGuidanceCard
+              reviewId={job.id}
+              guidanceList={guidanceList}
+              onAddGuidance={handleAddGuidance}
+            />
+          </div>
+        )}
+
+        {activeTab === 'audit' && (
+          <div className="my-4">
+            <ReviewAuditTrailPanel events={auditEvents} />
+          </div>
+        )}
+
+        {activeTab === 'evaluation' && (
+          <>
         {/* Core Metrics Grid */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 my-4">
           <div className="p-3.5 rounded-lg border border-border bg-muted/20 space-y-1">
@@ -549,51 +732,37 @@ export function PRReviewDetailModal({
 
                           <div className="space-y-2.5">
                             {entry.nits.map((nit, nIdx) => {
-                              const severityBadge =
-                                nit.severity === 'P0' ? (
-                                  <Badge variant="destructive" className="font-mono text-[10px]">P0 - Critical</Badge>
-                                ) : nit.severity === 'P1' ? (
-                                  <Badge variant="warning" className="font-mono text-[10px]">P1 - Warning</Badge>
-                                ) : (
-                                  <Badge variant="outline" className="font-mono text-[10px] border-indigo-500/40 text-indigo-300">P2 - Nit</Badge>
-                                );
+                              const fId = computeFindingId(
+                                repoStr,
+                                nit.filePath,
+                                nit.lineNumber,
+                                nit.title || nit.description || 'Finding'
+                              );
+                              const override = findingOverrides[fId];
+                              const isDismissed = override?.status === 'dismissed';
+                              const currentSeverity = override?.severity || nit.severity || 'P2';
+                              const anchoredFinding: AnchoredFinding = {
+                                id: fId,
+                                file: nit.filePath,
+                                line: nit.lineNumber,
+                                title: nit.title || `${entry.displayName || entry.persona} Finding`,
+                                description: nit.description || nit.title || '',
+                                severity: currentSeverity,
+                                suggestion: nit.suggestion,
+                                status: isDismissed ? 'dismissed' : 'active',
+                                dismissedReason: override?.dismissalReason,
+                                persona: entry.persona,
+                              };
 
                               return (
-                                <div
-                                  key={nIdx}
-                                  className="p-3 rounded-lg bg-black/40 border border-border/50 space-y-2 text-xs"
-                                >
-                                  <div className="flex items-center justify-between gap-2 flex-wrap font-mono">
-                                    <div className="flex items-center gap-2">
-                                      {severityBadge}
-                                      <span className="font-semibold text-foreground">{nit.filePath}</span>
-                                      <span className="text-muted-foreground">: Line {nit.lineNumber}</span>
-                                    </div>
-                                  </div>
-
-                                  {nit.title && (
-                                    <div className="font-semibold text-foreground text-xs">
-                                      {nit.title}
-                                    </div>
-                                  )}
-
-                                  {nit.description && (
-                                    <p className="text-muted-foreground text-xs leading-normal">
-                                      {nit.description}
-                                    </p>
-                                  )}
-
-                                  {nit.suggestion && (
-                                    <div className="p-2.5 rounded bg-emerald-950/30 border border-emerald-500/30 font-mono text-[11px] space-y-1">
-                                      <div className="text-emerald-400 font-semibold flex items-center gap-1">
-                                        <span>Code Fix Suggestion:</span>
-                                      </div>
-                                      <pre className="text-emerald-300/90 whitespace-pre-wrap font-mono leading-relaxed">
-                                        {nit.suggestion}
-                                      </pre>
-                                    </div>
-                                  )}
-                                </div>
+                                <FindingDiffCard
+                                  key={fId || nIdx}
+                                  finding={anchoredFinding}
+                                  onDismiss={(id, reason) => handleDismissFinding(id, reason)}
+                                  onAdjustSeverity={(id, sev) =>
+                                    handleAdjustSeverity(id, sev)
+                                  }
+                                />
                               );
                             })}
                           </div>
@@ -614,6 +783,8 @@ export function PRReviewDetailModal({
             <PipelineFlowViewer job={job} personaLogs={personaLogs} />
           </div>
         </div>
+        </>
+        )}
 
         </ModalErrorBoundary>
       </DialogContent>

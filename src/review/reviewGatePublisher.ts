@@ -69,7 +69,7 @@ export class ReviewGatePublisher {
           checkId: check.id,
           update: isGateProgressState(gate.desiredState)
             ? { status: gate.desiredState }
-            : { conclusion: gate.desiredState, ...gateFailureMetadata(gate) },
+            : { conclusion: gate.desiredState, ...gateTerminalMetadata(gate) },
         });
       }, this.now);
       if (status === 'stale-claim') {
@@ -102,6 +102,45 @@ export class ReviewGatePublisher {
  * actionable. A success keeps its own summary, a cancellation is not a review
  * outcome, and a progress state has no decision yet.
  */
+/** Formats title and summary for terminal check updates, including manual overrides. */
+export function gateTerminalMetadata(gate: StoredReviewGate): { title?: string; summary?: string } {
+  const isTerminal = !isGateProgressState(gate.desiredState);
+  if (!isTerminal) return {};
+
+  const isManualOverride =
+    gate.decisionReason === 'manual-override' ||
+    gate.decisionReason === 'manual-override-ship' ||
+    gate.decisionReason === 'manual-override-block';
+
+  if (isManualOverride) {
+    let detail: { overriddenBy?: string; reason?: string } = {};
+    if (gate.decisionDetail) {
+      try {
+        detail = JSON.parse(gate.decisionDetail);
+      } catch {
+        detail = { reason: gate.decisionDetail };
+      }
+    }
+    const actor = detail.overriddenBy || 'authorized reviewer';
+    const reasonText = detail.reason || 'Human operator manual verdict override.';
+
+    if (gate.desiredState === 'success') {
+      return {
+        title: 'Review Yeti Gate: Approved (Manual Override - SHIP)',
+        summary: `Manual SHIP override authorized by ${actor}.\n\n**Justification**: ${reasonText}`,
+      };
+    }
+    if (gate.desiredState === 'failure') {
+      return {
+        title: 'Review Yeti Gate: Blocked (Manual Override - BLOCK)',
+        summary: `Manual BLOCK override enforced by ${actor}.\n\n**Justification**: ${reasonText}`,
+      };
+    }
+  }
+
+  return gateFailureMetadata(gate);
+}
+
 function gateFailureMetadata(gate: StoredReviewGate): { title?: string; summary?: string } {
   const isNonApprovalTerminal = gate.desiredState === 'failure' || gate.desiredState === 'timed_out';
   if (!isNonApprovalTerminal || gate.decisionReason === undefined) return {};

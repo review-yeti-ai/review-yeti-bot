@@ -100,6 +100,7 @@ import {
   TRANSPORT_MAX_RETRIES,
   type RepoFileProvider,
 } from './panelEngine';
+import { dashboardStore } from '../persistence/dashboardStore';
 import type { WorkerFailureClass } from '../types/workerFailure';
 import { compactMessageWindow, PI_TOOL_RESULT_MARKER } from './messageWindow';
 import { runReadOnlyTool } from './toolRuntime';
@@ -297,7 +298,7 @@ export const COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS = 25;
  * `COMPOSED_ENGINE_MAX_FINDINGS_HARD_CAP`, falling back to `COMPOSED_ENGINE_DEFAULT_MAX_FINDINGS` (25).
  */
 export function resolveComposedEngineMaxFindings(
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
   configuredMaxFindingsTotal?: number,
 ): number {
   const envVal = env.COMPOSED_ENGINE_MAX_FINDINGS || env.REVIEW_YETI_MAX_FINDINGS;
@@ -1566,6 +1567,12 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const preCheckEvidence = await gatherPreCheckEvidence(config, effectiveFiles, options.workspaceRoot, signal, repoFileProvider);
     const zoektConfig = mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt);
 
+    const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
+    const promptGuidanceItems = dashboardStore.getPromptGuidance(jobId || effectiveJobId) || [];
+    const steeringRules = promptGuidanceItems.map((g) =>
+      `[HUMAN REVIEWER GUIDANCE${g.createdBy ? ` (${g.createdBy})` : ''}]: ${g.guidanceText}`
+    );
+
     const staticPrefixText = buildStaticPrefix({
       effectiveFiles: budgeted ? budgeted.promptFiles : effectiveFiles,
       ...(budgetPack ? { inlineTokenBudget: budgetPack.inlineTokenBudget } : {}),
@@ -1576,7 +1583,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       branch: options.branch,
       prNumber: options.prNumber,
       repositoryVisibility,
-      rules: (config.rules || []).map((r) => (typeof r === 'string' ? r : JSON.stringify(r))),
+      rules: [
+        ...(config.rules || []).map((r) => (typeof r === 'string' ? r : JSON.stringify(r))),
+        ...steeringRules,
+      ],
       preCheckEvidence,
     });
 
@@ -1800,7 +1810,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     let totalFindingsCollected = [...completedCheckpointTasks.values()].reduce((sum, f) => sum + f.length, 0);
     const settledTaskSummaries: string[] = [];
     for (const [id, findings] of completedCheckpointTasks) {
-      settledTaskSummaries.push(`- Task ${id} (resumed-checkpoint): ${findings.length} finding(s)`);
+      settledTaskSummaries.push(`- Task ${id} (resumed-checkpoint): ${findings.length} finding(s) [TASK ${id} COMPLETE]`);
     }
     const taskAbort = new AbortController();
     const onPanelAbort = () => taskAbort.abort(signal?.reason);
@@ -1933,7 +1943,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         const summaryNote = findingCount === 0
           ? 'CLEAN (0 findings)'
           : `${findingCount} finding(s) (${highSevCount} high sev)`;
-        settledTaskSummaries.push(`- Task ${task.id} (${task.dimension}, paths [${task.paths.join(', ')}]): ${summaryNote}`);
+        settledTaskSummaries.push(`- Task ${task.id} (${task.dimension}, paths [${task.paths.join(', ')}]): ${summaryNote} [TASK ${task.id} COMPLETE]`);
       } else if (outcome.type === 'blocked') {
         optionalFailures.push({
           id: task.id,
@@ -1945,7 +1955,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'assistant', content: `Task ${task.id} blocked.` },
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
-        settledTaskSummaries.push(`- Task ${task.id} (${task.dimension}, paths [${task.paths.join(', ')}]): BLOCKED`);
+        settledTaskSummaries.push(`- Task ${task.id} (${task.dimension}, paths [${task.paths.join(', ')}]): BLOCKED [TASK ${task.id} BLOCKED]`);
       } else {
         // Exhausted work remains absent from the returned roster and cannot satisfy coverage.
         unreportedLanes.push(unreportedLaneFailure(task, 'exhausted', outcome.diagnostics));
@@ -2151,7 +2161,10 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         branch: options.branch,
         prNumber: options.prNumber,
         repositoryVisibility,
-        rules: (config.rules || []).map((r) => (typeof r === 'string' ? r : JSON.stringify(r))),
+        rules: [
+          ...(config.rules || []).map((r) => (typeof r === 'string' ? r : JSON.stringify(r))),
+          ...steeringRules,
+        ],
         preCheckEvidence,
       });
 

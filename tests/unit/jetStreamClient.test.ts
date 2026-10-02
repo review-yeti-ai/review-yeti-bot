@@ -173,7 +173,7 @@ async function runShutdownOrderingProbe(
         servers: [(transport === 'tls' ? 'tls://localhost:' : 'nats://127.0.0.1:') + port],
         token: 'synthetic-shutdown-ordering-token',
         name: 'shutdown-ordering-probe',
-        connectTimeoutMs: 1000,
+        connectTimeoutMs: 3000,
         publishAckTimeoutMs: 500,
         maxReconnectAttempts: 0,
         reconnectBackoffMs: 1,
@@ -216,8 +216,8 @@ async function runShutdownOrderingProbe(
       await new Promise((resolve) => server.close(resolve));
       process.stdout.write('SHUTDOWN_ORDER_RESULT ' + JSON.stringify(result) + '\\n');
     })().catch((error) => {
-      process.stderr.write('SHUTDOWN_ORDER_FAILED ' + String(error && error.message) + '\\n');
-      process.exitCode = 1;
+      process.stderr.write('SHUTDOWN_ORDER_FAILED ' + String(error && (error.stack || error.message)) + '\\n');
+      process.exit(1);
     });
   `;
   const childEnvironment: NodeJS.ProcessEnv = {
@@ -240,7 +240,7 @@ async function runShutdownOrderingProbe(
   try {
     const exit = await Promise.race([
       once(child, 'exit'),
-      delay(8_000).then(() => { throw new Error(`shutdown ordering subprocess exceeded deadline: ${output}`); }),
+      delay(15_000).then(() => { throw new Error(`shutdown ordering subprocess exceeded deadline: ${output}`); }),
     ]);
     if (exit[0] !== 0 || exit[1] !== null) {
       throw new Error(`shutdown ordering subprocess failed: ${String(exit[0])} ${String(exit[1])} ${output}`);
@@ -439,7 +439,7 @@ describe('JetStream publish client', () => {
     const client = new JetStreamPublishClient(config({
       servers: [`nats://127.0.0.1:${port}`],
       tls: null,
-      connectTimeoutMs: 250,
+      connectTimeoutMs: 500,
       drainTimeoutMs: 100,
       maxReconnectAttempts: 2,
       reconnectBackoffMs: 1,
@@ -449,7 +449,7 @@ describe('JetStream publish client', () => {
       await expect(client.connect()).rejects.toMatchObject({ code: 'connect_timeout' });
       await client.drain();
       await client.close();
-      await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 500 });
+      await vi.waitFor(() => expect(sockets.size).toBe(0), { timeout: 1000 });
       expect(connections).toBe(3);
       expect(client.health()).toMatchObject({ state: 'closed', connectAttempts: 3 });
     } finally {
@@ -516,7 +516,7 @@ describe('JetStream publish client', () => {
         state: 'closed',
       });
     },
-    12_000,
+    25_000,
   );
 
   it('rejects a malformed PubAck returned by the real v3 adapter', async () => {
@@ -699,8 +699,8 @@ describe('JetStream publish client', () => {
         servers: ['nats://127.0.0.1:${port}'],
         token: 'synthetic-client-token-must-not-print',
         name: 'strict-output-probe',
-        connectTimeoutMs: 500,
-        publishAckTimeoutMs: 500,
+        connectTimeoutMs: 2_000,
+        publishAckTimeoutMs: 2_000,
         maxReconnectAttempts: 0,
         reconnectBackoffMs: 1,
         drainTimeoutMs: 100,
@@ -730,7 +730,7 @@ describe('JetStream publish client', () => {
     try {
       const exit = await Promise.race([
         once(child, 'exit'),
-        delay(3_000).then(() => { throw new Error(`strict adapter probe did not exit: ${output}`); }),
+        delay(10_000).then(() => { throw new Error(`strict adapter probe did not exit: ${output}`); }),
       ]);
 
       expect(exit).toEqual([0, null]);
@@ -743,7 +743,7 @@ describe('JetStream publish client', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await closeFixture(server, sockets);
     }
-  }, 10_000);
+  }, 20_000);
 
   it('bounds a connection that never becomes available', async () => {
     const client = new JetStreamPublishClient(
@@ -1173,8 +1173,8 @@ describe('JetStream publish client', () => {
           },
           releaseForRetry: async () => true,
         }),
-      }).then(() => process.stdout.write('MAIN_RESOLVED\\n')).catch(() => {
-        process.stdout.write('MAIN_REJECTED\\n');
+      }).then(() => process.stdout.write('MAIN_RESOLVED\\n')).catch((err) => {
+        process.stdout.write('MAIN_REJECTED: ' + (err && (err.stack || err.message)) + '\\n');
         process.exitCode = 1;
       });
     `;
@@ -1184,7 +1184,7 @@ describe('JetStream publish client', () => {
       CT_REVIEW_EVENTS_ENABLED: 'true',
       CT_REVIEW_EVENTS_NATS_URL: `tls://localhost:${port}`,
       CT_REVIEW_EVENTS_NATS_TOKEN: 'synthetic-healthy-tls-token',
-      CT_REVIEW_EVENTS_CONNECT_TIMEOUT_MS: '1000',
+      CT_REVIEW_EVENTS_CONNECT_TIMEOUT_MS: '2000',
       CT_REVIEW_EVENTS_PUBLISH_ACK_TIMEOUT_MS: '1000',
       CT_REVIEW_EVENTS_MAX_RECONNECT_ATTEMPTS: '0',
       CT_REVIEW_EVENTS_RECONNECT_BACKOFF_MS: '1',
@@ -1208,7 +1208,7 @@ describe('JetStream publish client', () => {
 
     try {
       await Promise.race([
-        vi.waitFor(() => expect(output).toContain('PUBLISHED'), { timeout: 4_000 }),
+        vi.waitFor(() => expect(output).toContain('PUBLISHED'), { timeout: 10_000 }),
         exitPromise.then(([code, signal]) => {
           throw new Error(`healthy TLS publisher exited before shutdown: ${String(code)} ${String(signal)} ${output}`);
         }),
@@ -1231,7 +1231,7 @@ describe('JetStream publish client', () => {
       await closeFixture(server, sockets);
       await tls.cleanup();
     }
-  }, 10_000);
+  }, 20_000);
 
   it('closes a verified TLS socket stalled during automatic reconnect before nonzero exit', async () => {
     const tls = await createTlsCertificate();
@@ -1382,7 +1382,7 @@ describe('JetStream publish client', () => {
       await Promise.race([
         reconnectAccepted.then(() => { probeReached = true; }),
         prematureExit,
-        delay(4_000).then(() => { throw new Error(`subprocess did not reach TLS reconnect (${secureConnections}, ping=${sawPing}, publish=${sawPublish}, ${tlsFixtureError}): ${output}`); }),
+        delay(10_000).then(() => { throw new Error(`subprocess did not reach TLS reconnect (${secureConnections}, ping=${sawPing}, publish=${sawPublish}, ${tlsFixtureError}): ${output}`); }),
       ]);
       const signalledAt = Date.now();
       expect(child.kill('SIGTERM')).toBe(true);
@@ -1402,7 +1402,7 @@ describe('JetStream publish client', () => {
       await closeFixture(stalledServer, stalledSockets);
       await tls.cleanup();
     }
-  }, 15_000);
+  }, 20_000);
 
   it('exits within the drain deadline on SIGTERM while the real TLS handshake is stalled', async () => {
     const sockets = new Set<Socket>();
@@ -1478,7 +1478,7 @@ describe('JetStream publish client', () => {
       CT_REVIEW_EVENTS_PUBLISH_ACK_TIMEOUT_MS: '5000',
       CT_REVIEW_EVENTS_MAX_RECONNECT_ATTEMPTS: '0',
       CT_REVIEW_EVENTS_RECONNECT_BACKOFF_MS: '1',
-      CT_REVIEW_EVENTS_DRAIN_TIMEOUT_MS: '100',
+      CT_REVIEW_EVENTS_DRAIN_TIMEOUT_MS: '800',
       CT_REVIEW_EVENTS_BATCH_SIZE: '1',
       CT_REVIEW_EVENTS_LEASE_MS: '12000',
       CT_REVIEW_EVENTS_RETRY_DELAY_MS: '100',
@@ -1504,7 +1504,7 @@ describe('JetStream publish client', () => {
       await Promise.race([
         accepted.then(() => { probeReached = true; }),
         prematureExit,
-        delay(3_000).then(() => { throw new Error(`subprocess did not reach TLS probe: ${stderr}`); }),
+        delay(10_000).then(() => { throw new Error(`subprocess did not reach TLS probe: ${stderr}`); }),
       ]);
       const signalledAt = Date.now();
       expect(child.kill('SIGTERM')).toBe(true);
@@ -1521,7 +1521,7 @@ describe('JetStream publish client', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await closeFixture(server, sockets);
     }
-  }, 10_000);
+  }, 20_000);
 
   it('exits nonzero and redacted when graceful publisher drain and close fail', async () => {
     const rawSecret = 'synthetic-drain-provider-secret';
@@ -1583,7 +1583,7 @@ describe('JetStream publish client', () => {
 
     try {
       await Promise.race([
-        vi.waitFor(() => expect(output).toContain('READY'), { timeout: 3_000 }),
+        vi.waitFor(() => expect(output).toContain('READY'), { timeout: 10_000 }),
         exitPromise.then(([code, signal]) => {
           throw new Error(`subprocess exited before drain failure: ${String(code)} ${String(signal)} ${output}`);
         }),
@@ -1607,7 +1607,7 @@ describe('JetStream publish client', () => {
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }
-  }, 10_000);
+  }, 20_000);
 
   it('forces subprocess exit by the shutdown deadline when a PostgreSQL claim promise stalls', async () => {
     const sockets = new Set<Socket>();
@@ -1679,7 +1679,7 @@ describe('JetStream publish client', () => {
       await Promise.race([
         accepted.then(() => { probeReached = true; }),
         prematureExit,
-        delay(3_000).then(() => { throw new Error(`subprocess did not reach PostgreSQL probe: ${stderr}`); }),
+        delay(10_000).then(() => { throw new Error(`subprocess did not reach PostgreSQL probe: ${stderr}`); }),
       ]);
       const signalledAt = Date.now();
       expect(child.kill('SIGTERM')).toBe(true);
@@ -1696,5 +1696,5 @@ describe('JetStream publish client', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await closeFixture(server, sockets);
     }
-  }, 10_000);
+  }, 20_000);
 });

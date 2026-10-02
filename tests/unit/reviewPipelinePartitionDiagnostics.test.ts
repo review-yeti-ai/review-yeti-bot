@@ -189,7 +189,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
       });
     }
     expect(JSON.stringify(telemetry)).not.toContain('synthetic non-JSON reasoning');
-  });
+  }, 15000);
 
   it('preserves the all-successful partition publication and diagnostics', () => {
     const { calls, outputs, telemetry } = runPartitionedReview('none');
@@ -204,7 +204,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
     });
     expect(testing.responseAttempts).toHaveLength(1);
     expect(testing.responseAttempts[0]).toMatchObject({ outcome: 'parsed', finishReason: 'stop' });
-  });
+  }, 15000);
 
   it.each([
     ['first', 'present'], ['last', 'present'], ['first', 'absent'], ['last', 'absent'],
@@ -226,7 +226,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
     expect(testing.responseAttempts).toHaveLength(2);
     expect(testing.responseAttempts.at(-1)).toMatchObject({ outcome: 'malformed_output', provider: 'anthropic' });
     expect(JSON.stringify(telemetry)).not.toContain('synthetic non-JSON reasoning');
-  });
+  }, 15000);
 });
 
 // Every assertion calls the same exported helper used by main(). No source

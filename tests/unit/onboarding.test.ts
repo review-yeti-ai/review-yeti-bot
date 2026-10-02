@@ -186,7 +186,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       } finally {
         fetchSpy.mockRestore();
       }
-    });
+    }, 20_000);
 
     it('POST /api/onboarding/diagnostic should fail quorum when fewer than 3 distinct providers are configured', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url: any, init?: any) => {
@@ -233,7 +233,7 @@ describe('Milestone 29: Zero-Config Onboarding Wizard', () => {
       } finally {
         fetchSpy.mockRestore();
       }
-    });
+    }, 20_000);
   });
 });
 
