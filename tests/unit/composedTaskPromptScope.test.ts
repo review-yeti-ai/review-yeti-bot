@@ -169,6 +169,13 @@ describe('composed WORK task prompt scope', () => {
 
     expect(workRequest.messages[0].content).toContain('WORK PHASE: execute only the single engine-assigned task');
     expect(workRequest.messages[0].content).not.toContain('You review the WHOLE pull request');
+    const toolContractHeader = 'You have access to read-only investigation tools';
+    const planSystem = planRequest.messages[0].content as string;
+    const workSystem = workRequest.messages[0].content as string;
+    expect(planSystem).toContain(toolContractHeader);
+    expect(workSystem).toContain(toolContractHeader);
+    expect(planSystem.slice(planSystem.indexOf(toolContractHeader)))
+      .toBe(workSystem.slice(workSystem.indexOf(toolContractHeader)));
     expect(workText).toContain('WORK CONTEXT: ASSIGNED TASK (1 path(s))');
     expect(workText).toContain('TASK-ASSIGNED CHANGED FILES INDEX (1 file(s))');
     expect(workText).toContain(`Assigned task paths (the only paths that define this task's obligations): ["${assignedPath}"]`);
