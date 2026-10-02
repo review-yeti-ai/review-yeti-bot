@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import { describeErrorChain, errorCauseLogFields, type SanitizedErrorCause } from '../utils/errorCause';
 import { raceWithAbort as sharedRaceWithAbort } from './raceWithAbort';
+import { TokenBatcher, type TokenBatcherOptions } from './tokenBatcher';
 
 export class OpenRouterConnectionError extends Error {
   /**
@@ -22,11 +23,39 @@ export class OpenRouterConnectionError extends Error {
 export class OpenRouterResponseError extends Error {
   readonly status?: number;
 
+  get observedHttpStatus(): number | undefined {
+    return observedHttpStatusByError.get(this)?.status;
+  }
+
+  get observedHttpStatusSource(): ObservedHttpStatusSource | undefined {
+    return observedHttpStatusByError.get(this)?.source;
+  }
+
   constructor(message: string, status?: number) {
     super(message);
     this.name = 'OpenRouterResponseError';
     this.status = Number.isInteger(status) ? status : undefined;
   }
+}
+
+type ObservedHttpStatusSource = 'fetch_response' | 'sdk_http_error';
+type ObservedHttpStatus = Readonly<{ status: number; source: ObservedHttpStatusSource }>;
+
+const observedHttpStatusByError = new WeakMap<OpenRouterResponseError, ObservedHttpStatus>();
+
+function withObservedHttpStatus<T extends OpenRouterResponseError>(
+  error: T,
+  status: number,
+  source: ObservedHttpStatusSource,
+): T {
+  if (Number.isSafeInteger(status) && status >= 400 && status <= 599) {
+    observedHttpStatusByError.set(error, Object.freeze({ status, source }));
+  }
+  return error;
+}
+
+export function observedHttpStatusOf(error: unknown): ObservedHttpStatus | undefined {
+  return error instanceof OpenRouterResponseError ? observedHttpStatusByError.get(error) : undefined;
 }
 
 export type OpenRouterTimeoutKind = 'request' | 'ttft' | 'inactivity' | 'total';
@@ -98,6 +127,9 @@ export interface OpenRouterRequest {
   plugins?: Array<Record<string, unknown>>;
   metadata?: Record<string, string>;
   onFirstToken?: () => void;
+  onReasoningChunk?: (chunk: string) => void;
+  onContentChunk?: (chunk: string) => void;
+  batchOptions?: TokenBatcherOptions;
   /** Caller-owned cancellation for the whole request, including streamed bodies. */
   signal?: AbortSignal;
   maxRetries?: number;
@@ -265,10 +297,13 @@ type OpenRouterSdkClient = {
   getRawJson?: () => Promise<any>;
   /** A one-shot buffered response used only for explicitly supported compatible envelopes. */
   getRawResponse?: () => Promise<Response | null>;
+  /** Read-only trusted-status check for SDK HTTP exceptions; arbitrary status-shaped errors fail closed. */
+  observedHttpStatusFromError?: (error: unknown) => number | undefined;
 };
 
 type OpenRouterSdkModule = {
   OpenRouter: new (options?: Record<string, unknown>) => OpenRouterSdkClient;
+  OpenRouterError: new (...args: any[]) => Error;
   HTTPClient: new (options?: Record<string, unknown>) => {
     addHook(type: string, hook: (...args: any[]) => void | Promise<void>): unknown;
   };
@@ -283,7 +318,9 @@ let openRouterSdkModulePromise: Promise<OpenRouterSdkModule> | null = null;
  */
 function loadOpenRouterSdk(): Promise<OpenRouterSdkModule> {
   if (!openRouterSdkModulePromise) {
-    openRouterSdkModulePromise = Promise.resolve(require('@openrouter/sdk') as OpenRouterSdkModule);
+    const sdk = require('@openrouter/sdk') as Omit<OpenRouterSdkModule, 'OpenRouterError'>;
+    const errors = require('@openrouter/sdk/models/errors') as Pick<OpenRouterSdkModule, 'OpenRouterError'>;
+    openRouterSdkModulePromise = Promise.resolve({ ...sdk, OpenRouterError: errors.OpenRouterError });
   }
   return openRouterSdkModulePromise;
 }
@@ -874,12 +911,20 @@ function hasMeaningfulChunk(data: any): boolean {
   });
 }
 
-function collectChunk(data: any, state: StreamState): boolean {
+function collectChunk(
+  data: any,
+  state: StreamState,
+  reasoningBatcher?: TokenBatcher,
+  contentBatcher?: TokenBatcher,
+): boolean {
   const meaningful = hasMeaningfulChunk(data);
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
-  if (typeof content === 'string') state.content += content;
+  if (typeof content === 'string') {
+    state.content += content;
+    if (content) contentBatcher?.push(content);
+  }
   const reasoning = choice?.delta?.reasoning_details
     ?? choice?.delta?.reasoningDetails
     ?? choice?.delta?.reasoning
@@ -890,7 +935,11 @@ function collectChunk(data: any, state: StreamState): boolean {
     ?? choice?.message?.reasoning
     ?? choice?.message?.reasoning_content
     ?? choice?.message?.reasoningContent;
-  state.reasoning += reasoningText(reasoning);
+  const chunkReasoning = reasoningText(reasoning);
+  state.reasoning += chunkReasoning;
+  if (chunkReasoning) {
+    reasoningBatcher?.push(chunkReasoning);
+  }
   if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
     state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
   }
@@ -1045,6 +1094,9 @@ async function readStreamingResponse(
     persona?: string;
     providerId?: string;
     onFirstToken?: () => void;
+    onReasoningChunk?: (chunk: string) => void;
+    onContentChunk?: (chunk: string) => void;
+    batchOptions?: TokenBatcherOptions;
   }
 ): Promise<any> {
   const contentType = response.headers?.get('content-type') || '';
@@ -1073,6 +1125,13 @@ async function readStreamingResponse(
     finishReason: null,
     lastChunkTime: Date.now(),
   };
+
+  const reasoningBatcher = options?.onReasoningChunk
+    ? new TokenBatcher(options.onReasoningChunk, options.batchOptions)
+    : undefined;
+  const contentBatcher = options?.onContentChunk
+    ? new TokenBatcher(options.onContentChunk, options.batchOptions)
+    : undefined;
 
   const rawInactivityTimeoutMs = options?.inactivityTimeoutMs;
   const inactivityTimeoutMs = typeof rawInactivityTimeoutMs === 'number'
@@ -1164,7 +1223,7 @@ async function readStreamingResponse(
     if (!json || json === '[DONE]') return false;
     let meaningful = false;
     try {
-      meaningful = collectChunk(JSON.parse(json), state);
+      meaningful = collectChunk(JSON.parse(json), state, reasoningBatcher, contentBatcher);
     } catch {
       throw new OpenRouterResponseError('OpenRouter returned malformed response: malformed streaming JSON');
     }
@@ -1237,6 +1296,8 @@ async function readStreamingResponse(
         }
       }
     }
+    reasoningBatcher?.flush();
+    contentBatcher?.flush();
   } catch (error) {
     // The read timer can win a same-deadline race a few milliseconds early (the classification
     // grace above still marks it as total). Trigger the abort/cancel path for that case too.
@@ -1262,6 +1323,8 @@ async function readStreamingResponse(
     await cancel(error instanceof OpenRouterTimeoutError ? 'stream timeout' : 'stream error');
     throw error;
   } finally {
+    reasoningBatcher?.cancel();
+    contentBatcher?.cancel();
     if (totalDeadlineTimer) clearTimeout(totalDeadlineTimer);
     if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
     try { reader.releaseLock(); } catch (_) {}
@@ -1314,7 +1377,12 @@ function sdkUsageToWire(usage: any, rawUsage?: any): Record<string, unknown> | n
   };
 }
 
-function collectSdkChunk(data: any, state: StreamState): boolean {
+function collectSdkChunk(
+  data: any,
+  state: StreamState,
+  reasoningBatcher?: TokenBatcher,
+  contentBatcher?: TokenBatcher,
+): boolean {
   if (data?.error) {
     const message = data.error.message || data.error.code || 'OpenRouter emitted a streaming error';
     const status = Number.isInteger(Number(data.error.code)) ? Number(data.error.code) : undefined;
@@ -1324,7 +1392,10 @@ function collectSdkChunk(data: any, state: StreamState): boolean {
   if (typeof data?.model === 'string' && data.model) state.model = data.model;
   const choice = data?.choices?.[0];
   const content = choice?.delta?.content ?? choice?.message?.content;
-  if (typeof content === 'string') state.content += content;
+  if (typeof content === 'string') {
+    state.content += content;
+    if (content) contentBatcher?.push(content);
+  }
   const reasoning = choice?.delta?.reasoningDetails
     ?? choice?.delta?.reasoning_details
     ?? choice?.delta?.reasoning
@@ -1335,7 +1406,11 @@ function collectSdkChunk(data: any, state: StreamState): boolean {
     ?? choice?.message?.reasoning
     ?? choice?.message?.reasoning_content
     ?? choice?.message?.reasoningContent;
-  state.reasoning += reasoningText(reasoning);
+  const chunkReasoning = reasoningText(reasoning);
+  state.reasoning += chunkReasoning;
+  if (chunkReasoning) {
+    reasoningBatcher?.push(chunkReasoning);
+  }
   if (choice?.finishReason !== undefined || choice?.finish_reason !== undefined) {
     state.finishReason = choice.finishReason ?? choice.finish_reason ?? null;
   }
@@ -1375,6 +1450,9 @@ async function readSdkStreamingResponse(
     onTotalTimeout?: () => void;
     onCancel?: (reason: string) => void;
     onFirstToken?: () => void;
+    onReasoningChunk?: (chunk: string) => void;
+    onContentChunk?: (chunk: string) => void;
+    batchOptions?: TokenBatcherOptions;
   },
 ): Promise<any> {
   const reader = stream.getReader();
@@ -1388,6 +1466,12 @@ async function readSdkStreamingResponse(
     finishReason: null,
     lastChunkTime: Date.now(),
   };
+  const reasoningBatcher = options?.onReasoningChunk
+    ? new TokenBatcher(options.onReasoningChunk, options.batchOptions)
+    : undefined;
+  const contentBatcher = options?.onContentChunk
+    ? new TokenBatcher(options.onContentChunk, options.batchOptions)
+    : undefined;
   const rawInactivityTimeoutMs = options?.inactivityTimeoutMs;
   const inactivityTimeoutMs = typeof rawInactivityTimeoutMs === 'number'
     && Number.isFinite(rawInactivityTimeoutMs)
@@ -1475,7 +1559,7 @@ async function readSdkStreamingResponse(
       }
       if (done) break;
       if (value !== undefined) {
-        if (collectSdkChunk(value, state)) {
+        if (collectSdkChunk(value, state, reasoningBatcher, contentBatcher)) {
           lastMeaningfulDataAt = Date.now();
           if (!receivedFirstData) {
             receivedFirstData = true;
@@ -1484,6 +1568,8 @@ async function readSdkStreamingResponse(
         }
       }
     }
+    reasoningBatcher?.flush();
+    contentBatcher?.flush();
     // The deadline timer cancels the SDK EventStream so a pending read can settle. Cancellation
     // reports `{done:true}` to the downstream reader, therefore classify that terminal read as a
     // timeout instead of returning a partial successful completion.
@@ -1513,6 +1599,8 @@ async function readSdkStreamingResponse(
     await cancel(error instanceof OpenRouterTimeoutError ? 'stream timeout' : 'stream error');
     throw error;
   } finally {
+    reasoningBatcher?.cancel();
+    contentBatcher?.cancel();
     if (totalTimer) clearTimeout(totalTimer);
     if (streamSignal && onSignalAbort) streamSignal.removeEventListener('abort', onSignalAbort);
     try { reader.releaseLock(); } catch (_) {}
@@ -1622,7 +1710,7 @@ async function createOpenRouterSdkClient(options: {
   fetchImplementation: FetchImplementation;
   onGenerationId?: (value: string) => void;
 }): Promise<OpenRouterSdkClient> {
-  const { OpenRouter, HTTPClient } = await loadOpenRouterSdk();
+  const { OpenRouter, OpenRouterError, HTTPClient } = await loadOpenRouterSdk();
   const httpClient = new HTTPClient({
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
@@ -1712,6 +1800,18 @@ async function createOpenRouterSdkClient(options: {
     // Disable the SDK's default one-hour 5xx retry loop so it cannot outlive the configured terminal deadline.
     retryConfig: { strategy: 'none' },
   });
+  client.observedHttpStatusFromError = (error: unknown): number | undefined => {
+    if (!(error instanceof OpenRouterError)) return undefined;
+    const sdkError = error as Error & { statusCode?: unknown; rawResponse?: unknown };
+    if (!(sdkError.rawResponse instanceof Response)) return undefined;
+    const status = sdkError.rawResponse.status;
+    return Number.isSafeInteger(status)
+      && status >= 400
+      && status <= 599
+      && sdkError.statusCode === status
+      ? status
+      : undefined;
+  };
   client.getRawResponse = async () => {
     if (!rawJsonCapture) return null;
     const json = await rawJsonCapture.getJson();
@@ -1931,6 +2031,7 @@ export class OpenRouterClient implements ReviewModelClient {
     let requestDeadlineExpired = false;
     let callerCancelled = false;
     let streamTransportFailure = false;
+    let observedSdkHttpStatusFromError: ((error: unknown) => number | undefined) | undefined;
     const onCallerAbort = () => {
       callerCancelled = true;
       const cancellation = new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
@@ -2045,9 +2146,13 @@ export class OpenRouterClient implements ReviewModelClient {
             parsedBody = parsed;
             parsedMsg = parsed?.error?.message || parsed?.message || errorBody;
           } catch (_) {}
-          throw new OpenRouterResponseError(
-            `${upstreamLabel(this.baseUrl, parsedBody)} HTTP ${status}: ${parsedMsg}`,
+          throw withObservedHttpStatus(
+            new OpenRouterResponseError(
+              `${upstreamLabel(this.baseUrl, parsedBody)} HTTP ${status}: ${parsedMsg}`,
+              status,
+            ),
             status,
+            'fetch_response',
           );
         }
 
@@ -2085,6 +2190,9 @@ export class OpenRouterClient implements ReviewModelClient {
               controller.abort();
             },
             onFirstToken: request.onFirstToken,
+            onReasoningChunk: request.onReasoningChunk,
+            onContentChunk: request.onContentChunk,
+            batchOptions: request.batchOptions,
           });
         }
       } else {
@@ -2097,6 +2205,7 @@ export class OpenRouterClient implements ReviewModelClient {
           }),
           requestAbortController.signal,
         );
+        observedSdkHttpStatusFromError = sdkClient.observedHttpStatusFromError;
         try {
           if (callerCancelled || request.signal?.aborted) {
             throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
@@ -2136,6 +2245,9 @@ export class OpenRouterClient implements ReviewModelClient {
                 controller.abort();
               },
               onFirstToken: request.onFirstToken,
+              onReasoningChunk: request.onReasoningChunk,
+              onContentChunk: request.onContentChunk,
+              batchOptions: request.batchOptions,
             });
           } else {
             data = normalizeSdkResponse(sdkResponse, sdkClient.getRawUsage?.());
@@ -2264,9 +2376,13 @@ export class OpenRouterClient implements ReviewModelClient {
         classifiedError = error;
       } else {
         const status = sdkErrorStatus(error);
+        const observedHttpStatus = observedSdkHttpStatusFromError?.(error);
         const sdkMessage = sdkErrorMessage(error);
         if (status && status >= 400) {
-          classifiedError = new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status);
+          const responseError = new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status);
+          classifiedError = observedHttpStatus !== undefined
+            ? withObservedHttpStatus(responseError, observedHttpStatus, 'sdk_http_error')
+            : responseError;
         } else if (request.stream !== false && /malformed json|response validation failed/i.test(sdkMessage)) {
           classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
         } else if (error?.name === 'ResponseValidationError') {

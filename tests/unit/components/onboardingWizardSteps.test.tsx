@@ -28,6 +28,13 @@ vi.mock('@/lib/api-client', () => ({
   updateDashboardConfig: vi.fn(),
   fetchPersonas: vi.fn().mockResolvedValue({}),
   updatePersona: vi.fn(),
+  fetchGitHubOrgs: vi.fn().mockResolvedValue([]),
+  fetchGitHubRepos: vi.fn().mockResolvedValue({ repositories: [], totalCount: 0, activeCount: 0 }),
+  fetchRepoPullRequests: vi.fn().mockResolvedValue([]),
+  fetchRepositoryPullRequests: vi.fn().mockResolvedValue([]),
+  triggerPullRequestReview: vi.fn().mockResolvedValue({ success: true, message: 'Queued' }),
+  fetchRepositoryReviewRules: vi.fn().mockResolvedValue({}),
+  updateRepositoryReviewRules: vi.fn().mockResolvedValue({}),
 }));
 
 describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () => {

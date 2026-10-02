@@ -10,6 +10,7 @@ import {
   OpenRouterClient,
   OpenRouterConnectionError,
   OpenRouterResponseError,
+  observedHttpStatusOf,
   OpenRouterTimeoutError,
   calculateFullJitterDelay,
   upstreamLabel,
@@ -446,10 +447,57 @@ describe('OpenRouterClient', () => {
     }));
     const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation });
 
-    await expect(client.complete({ ...request, stream: false })).rejects.toMatchObject({
-      name: 'OpenRouterResponseError',
-    });
+    const failure = await client.complete({ ...request, stream: false }).catch((error) => error);
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect((failure as OpenRouterResponseError).status).toBe(status);
+    expect((failure as OpenRouterResponseError).observedHttpStatus).toBe(status);
+    expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBe('sdk_http_error');
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it('records fetch-response provenance only for an actual non-OK response', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
+    const failure = await client.complete({ ...request, stream: true }).catch((error) => error);
+
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect((failure as OpenRouterResponseError).status).toBe(401);
+    expect((failure as OpenRouterResponseError).observedHttpStatus).toBe(401);
+    expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBe('fetch_response');
+  });
+
+  it.each([401, 429])('does not promote stream-body error code %i into observed HTTP status', async (status) => {
+    const chunk = JSON.parse(sdkChunk({})) as Record<string, unknown>;
+    chunk.error = { code: status, message: `body-only status ${status}` };
+    const body = `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`;
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
+    const failure = await client.complete({ ...request, stream: false }).catch((error) => error);
+
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect((failure as OpenRouterResponseError).status).toBe(status);
+    expect((failure as OpenRouterResponseError).observedHttpStatus).toBeUndefined();
+    expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBeUndefined();
+    expect(observedHttpStatusOf(failure)).toBeUndefined();
+    expect(isTransientGatewayError(failure)).toBe(false);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat a plain status-shaped transport error as observed HTTP provenance', async () => {
+    const arbitraryError = Object.assign(new Error('private transport message'), { status: 401 });
+    const fetchImplementation = vi.fn().mockRejectedValue(arbitraryError);
+    const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
+    const failure = await client.complete({ ...request, stream: false }).catch((error) => error);
+
+    expect(observedHttpStatusOf(arbitraryError)).toBeUndefined();
+    expect(observedHttpStatusOf(failure)).toBeUndefined();
+    expect(isTransientGatewayError(failure)).toBe(false);
   });
 
   describe('upstreamLabel', () => {
@@ -1360,9 +1408,10 @@ describe('OpenRouterClient', () => {
         }))
       );
       const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
-      await expect(client.complete({ ...request, model: 'glm-5.3-flash', stream: false })).rejects.toMatchObject({
-        message: 'OpenRouter returned empty completion content',
-      });
+      const failure = await client.complete({ ...request, model: 'glm-5.3-flash', stream: false }).catch((error) => error);
+      expect(failure).toMatchObject({ message: 'OpenRouter returned empty completion content', status: 502 });
+      expect((failure as OpenRouterResponseError).observedHttpStatus).toBeUndefined();
+      expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBeUndefined();
     });
 
     // A live NeuralWatt probe with a tight max_tokens budget returned
@@ -1392,10 +1441,13 @@ describe('OpenRouterClient', () => {
         }))
       );
       const client = new OpenRouterClient({ apiKey: 'test-openrouter-key', fetchImplementation, maxRetries: 0 });
-      await expect(client.complete({ ...request, model: 'glm-5.3-flash', stream: false })).rejects.toMatchObject({
+      const failure = await client.complete({ ...request, model: 'glm-5.3-flash', stream: false }).catch((error) => error);
+      expect(failure).toMatchObject({
         message: 'OpenRouter returned truncated reasoning with no completion content (finish_reason=length)',
         status: 502,
       });
+      expect((failure as OpenRouterResponseError).observedHttpStatus).toBeUndefined();
+      expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBeUndefined();
     });
 
     it('retries the truncated-reasoning finish_reason=length failure and recovers with a complete answer', async () => {

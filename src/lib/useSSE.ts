@@ -9,6 +9,22 @@ import {
   LiveJobSummary,
   PersonaStatus,
 } from '@/types/live';
+import { AnchoredFinding } from '@/types/diff';
+
+export interface ToolExecutionRecord {
+  id: string;
+  jobId: string;
+  personaId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  output?: string;
+  outputLength?: number;
+  error?: string;
+  status: 'running' | 'completed' | 'error';
+  durationMs?: number;
+  turn?: number;
+  timestamp: string;
+}
 
 export const DEFAULT_PERSONAS = [
   'security',
@@ -77,6 +93,9 @@ export function useSSE(options: UseSSEOptions = {}) {
   });
   const [tokenHistory, setTokenHistory] = useState<TokenMetricHistoryPoint[]>([]);
   const [activeJobs, setActiveJobs] = useState<LiveJobSummary[]>([]);
+  const [reasoning, setReasoning] = useState<Record<string, string>>({});
+  const [toolExecutions, setToolExecutions] = useState<ToolExecutionRecord[]>([]);
+  const [anchoredFindings, setAnchoredFindings] = useState<AnchoredFinding[]>([]);
 
   // Refs for double-buffered batching queue
   const incomingQueueRef = useRef<LiveStreamEvent[]>([]);
@@ -133,6 +152,9 @@ export function useSSE(options: UseSSEOptions = {}) {
 
   const clearEvents = useCallback(() => {
     setEvents([]);
+    setReasoning({});
+    setToolExecutions([]);
+    setAnchoredFindings([]);
     setPersonaProgress(createInitialPersonaProgress());
     setTokenMetrics({
       promptTokens: 0,
@@ -199,6 +221,155 @@ export function useSSE(options: UseSSEOptions = {}) {
             progress: newProgress,
             chunkCount: newChunkCount,
             lastMessage: chunkMsg.length > 80 ? chunkMsg.slice(0, 77) + '...' : chunkMsg,
+          };
+        }
+      } else if (type === 'reasoning:chunk' || type === 'persona:reasoning') {
+        const text = data?.reasoning || data?.chunk || data?.message || '';
+        if (text && canonicalPersona) {
+          setReasoning((prev) => ({
+            ...prev,
+            [canonicalPersona]: (prev[canonicalPersona] || '') + text,
+          }));
+        }
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            progress: Math.min(95, Math.max(currentPersona.progress, 20)),
+            lastMessage: 'Deliberating reasoning trace...',
+          };
+        }
+      } else if (type === 'tool:start') {
+        const toolName = data?.tool || data?.toolName || 'tool';
+        const toolId = `${evt.jobId}_${canonicalPersona}_${toolName}_${evt.timestamp}`;
+        const newTool: ToolExecutionRecord = {
+          id: toolId,
+          jobId: evt.jobId,
+          personaId: canonicalPersona,
+          tool: toolName,
+          args: data?.args || {},
+          status: 'running',
+          turn: data?.turn,
+          timestamp: evt.timestamp,
+        };
+        setToolExecutions((prev) => [...prev, newTool]);
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            lastMessage: data?.message || `Executing tool ${toolName}...`,
+          };
+        }
+      } else if (type === 'tool:result') {
+        const toolName = data?.tool || data?.toolName || 'tool';
+        setToolExecutions((prev) => {
+          const idx = [...prev].reverse().findIndex(
+            (t) => t.tool === toolName && t.personaId === canonicalPersona && t.status === 'running'
+          );
+          if (idx !== -1) {
+            const actualIdx = prev.length - 1 - idx;
+            const updated = [...prev];
+            updated[actualIdx] = {
+              ...updated[actualIdx],
+              output: data?.output,
+              outputLength: data?.outputLength ?? data?.output?.length,
+              durationMs: data?.durationMs,
+              status: 'completed',
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: `${evt.jobId}_${canonicalPersona}_${toolName}_${evt.timestamp}`,
+              jobId: evt.jobId,
+              personaId: canonicalPersona,
+              tool: toolName,
+              args: data?.args || {},
+              output: data?.output,
+              outputLength: data?.outputLength ?? data?.output?.length,
+              durationMs: data?.durationMs,
+              status: 'completed',
+              turn: data?.turn,
+              timestamp: evt.timestamp,
+            },
+          ];
+        });
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            lastMessage: data?.message || `Tool ${toolName} completed in ${data?.durationMs || 0}ms`,
+          };
+        }
+      } else if (type === 'tool:error') {
+        const toolName = data?.tool || data?.toolName || 'tool';
+        setToolExecutions((prev) => {
+          const idx = [...prev].reverse().findIndex(
+            (t) => t.tool === toolName && t.personaId === canonicalPersona && t.status === 'running'
+          );
+          if (idx !== -1) {
+            const actualIdx = prev.length - 1 - idx;
+            const updated = [...prev];
+            updated[actualIdx] = {
+              ...updated[actualIdx],
+              error: data?.error,
+              durationMs: data?.durationMs,
+              status: 'error',
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: `${evt.jobId}_${canonicalPersona}_${toolName}_${evt.timestamp}`,
+              jobId: evt.jobId,
+              personaId: canonicalPersona,
+              tool: toolName,
+              args: data?.args || {},
+              error: data?.error,
+              durationMs: data?.durationMs,
+              status: 'error',
+              turn: data?.turn,
+              timestamp: evt.timestamp,
+            },
+          ];
+        });
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            lastMessage: data?.message || `Tool ${toolName} failed: ${data?.error || ''}`,
+          };
+        }
+      } else if (type === 'persona:finding') {
+        const findingData = data?.finding || data || {};
+        const fId = data?.findingId || findingData.id || `f_${canonicalPersona}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const finding: AnchoredFinding = {
+          id: fId,
+          severity: (findingData.severity || data?.severity || 'P1') as 'P0' | 'P1' | 'P2',
+          file: findingData.path || findingData.file || data?.path || data?.filePath || '',
+          line: findingData.line ?? data?.line ?? 1,
+          startLine: findingData.startLine ?? data?.startLine,
+          title: findingData.title || data?.title || data?.findingTitle || 'Review Finding',
+          description: findingData.description || findingData.body || data?.description || '',
+          suggestion: findingData.suggestion || data?.suggestion || findingData.replacementCode || data?.replacementCode,
+          suggestedPatch: findingData.suggestedPatch || data?.suggestedPatch,
+          status: 'active',
+          persona: canonicalPersona,
+        };
+
+        setAnchoredFindings((prev) => {
+          if (prev.some((f) => f.id === finding.id)) return prev;
+          return [...prev, finding];
+        });
+
+        if (currentPersona) {
+          const currentCount = currentPersona.findingsCount || 0;
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            findingsCount: currentCount + 1,
+            lastMessage: `[${finding.severity}] ${finding.title}`,
           };
         }
       } else if (type === 'persona:complete' || type === 'agent_done') {
@@ -525,5 +696,8 @@ export function useSSE(options: UseSSEOptions = {}) {
     reconnect,
     activeJobs,
     fetchActiveJobs,
+    reasoning,
+    toolExecutions,
+    anchoredFindings,
   };
 }

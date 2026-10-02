@@ -17,6 +17,7 @@ import {
   Menu,
   X,
   Database,
+  BarChart3,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { VersionBadge } from './version-badge';
@@ -33,6 +34,12 @@ const navItems: NavItem[] = [
     title: 'Overview',
     href: '/',
     icon: LayoutDashboard,
+  },
+  {
+    title: 'Analytics',
+    href: '/analytics',
+    icon: BarChart3,
+    badge: 'R3',
   },
   {
     title: 'Onboarding Wizard',

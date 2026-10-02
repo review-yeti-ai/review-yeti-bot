@@ -1619,6 +1619,8 @@ export interface ScopedDiffSectionOptions {
   headSha?: string;
   domainLanes?: Record<string, DomainLane>;
   persona?: string;
+  /** Marks a task-local index explicitly; other callers retain the PR-wide label. */
+  fileIndexScope?: 'pull-request' | 'task-assignment';
   tokenBudget?: number;
   charsPerToken?: number;
   maxFileDiffChars?: number;
@@ -1748,6 +1750,7 @@ export function buildScopedDiffSection(
 
   const fileEntries = changedFiles.map((f: any) => {
     const filePath = f.path || f.filePath || 'unknown';
+    const renderedPath = options?.fileIndexScope === 'task-assignment' ? JSON.stringify(filePath) : filePath;
     const lane = domainLanes[filePath] || classifyPathByHeuristic(filePath);
     const isAffinity = !isShared && personaAffinities.includes(lane as DomainLane);
     const stats = computeDiffStats(f.patch);
@@ -1755,12 +1758,12 @@ export function buildScopedDiffSection(
     const affinityTag = isAffinity ? ' (★ YOUR LANE)' : '';
 
     if (skippedSet.has(filePath)) {
-      return `- ${filePath} (OVERSIZED: ${filePatchChars(f)} chars; use get_diff_page or read_file_page in bounded pages) [${lane}]`;
+      return `- ${renderedPath} (OVERSIZED: ${filePatchChars(f)} chars; use get_diff_page or read_file_page in bounded pages) [${lane}]`;
     }
     if (indexedSet.has(filePath)) {
-      return `- ${filePath} [${lane}]${affinityTag}${statStr} [INDEXED: on-demand get_diff available]`;
+      return `- ${renderedPath} [${lane}]${affinityTag}${statStr} [INDEXED: on-demand get_diff available]`;
     }
-    return `- ${filePath} [${lane}]${affinityTag}${statStr} [INLINED]`;
+    return `- ${renderedPath} [${lane}]${affinityTag}${statStr} [INLINED]`;
   });
 
   const personaFocusSection = (!isShared && persona && personaAffinities.length > 0)
@@ -1773,11 +1776,18 @@ export function buildScopedDiffSection(
       ]
     : [];
 
+  const taskHasOversizedFiles = options?.fileIndexScope === 'task-assignment' && skippedPaths.length > 0;
   const protocolAdvisory = tier === 'tier_a'
     ? [
         `=== PRE-FETCHED DIFF HUNKS (${inlinedPaths.length} file(s) inlined, budget: ${tokenBudget.toLocaleString()} tokens) ===`,
-        `All modified file diffs for this PR are pre-fetched below enclosed in <untrusted_diff_data> XML blocks.`,
-        `Inspect the inlined diffs and emit your findings immediately on Turn 1. Do not make redundant get_diff calls.`,
+        options?.fileIndexScope === 'task-assignment'
+          ? taskHasOversizedFiles
+            ? `Non-oversized modified file diffs assigned to this task are pre-fetched below; ${skippedPaths.length} oversized task file(s) require paged inspection. This is not the full PR diff.`
+            : `All modified file diffs assigned to this task are pre-fetched below; this is not the full PR diff.`
+          : `All modified file diffs for this PR are pre-fetched below enclosed in <untrusted_diff_data> XML blocks.`,
+        taskHasOversizedFiles
+          ? `Inspect the inlined diffs and use get_diff_page or read_file_page for every oversized assigned file before completing this task. Do not make redundant get_diff calls for inlined files.`
+          : `Inspect the inlined diffs and emit your findings immediately on Turn 1. Do not make redundant get_diff calls.`,
       ]
     : tier === 'tier_b'
     ? [
@@ -1786,8 +1796,10 @@ export function buildScopedDiffSection(
         `Remaining files are indexed above and can be inspected on-demand using get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}.`,
       ]
     : [
-        `=== ALL FILES OVERSIZED ===`,
-        `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`,
+        options?.fileIndexScope === 'task-assignment' ? `=== ALL ASSIGNED FILES OVERSIZED ===` : `=== ALL FILES OVERSIZED ===`,
+        options?.fileIndexScope === 'task-assignment'
+          ? `All files assigned to this task exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`
+          : `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`,
       ];
 
   const diffText = [
@@ -1804,7 +1816,9 @@ export function buildScopedDiffSection(
         ]
       : []),
     ...personaFocusSection,
-    `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
+    options?.fileIndexScope === 'task-assignment'
+      ? `=== TASK-ASSIGNED CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`
+      : `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
     fileEntries.join('\n') || 'None',
     ``,
     ...protocolAdvisory,
@@ -2206,7 +2220,7 @@ async function invoke(
     // structural no-op: `compactMessageWindow` returns `messages` unchanged, with `[0]`/`[1]`
     // reference-identical, in every path below (see `./messageWindow.ts`).
     const activeMessages = options?.compaction?.enabled
-      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls })
+      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls, retainSmallToolResults: true })
       : messages;
     const requestMessages = nativeJsonMode
       ? withNativeTurnDirective(activeMessages, nativeAdjudication
@@ -2251,6 +2265,22 @@ async function invoke(
           },
           ...(options?.effort ? { reasoningEffort: options.effort } : {}),
           ...(options?.signal ? { signal: options.signal } : {}),
+          onReasoningChunk: (chunk: string) => {
+            if (options?.jobId) {
+              LiveStreamBus.getInstance().publishEvent({
+                jobId: options.jobId,
+                timestamp: new Date().toISOString(),
+                type: 'reasoning:chunk',
+                persona: (options.persona || role) as any,
+                data: {
+                  personaId: options.persona || role,
+                  reasoning: chunk,
+                  turn: iter + 1,
+                  message: chunk,
+                },
+              });
+            }
+          },
         })),
         options?.signal,
       );
@@ -2352,12 +2382,84 @@ async function invoke(
         throwIfPanelAborted(options?.signal);
         toolTurns++;
         turnUsage.kind = 'tool';
-        const { toolOutput: rawToolOutput, toolScope, isExhaustive } = await runReadOnlyTool(toolCall.tool, toolCall.args, {
-          changedFiles,
-          repoFileProvider: options?.repoFileProvider,
-          zoektConfig: (options as any)?.zoektConfig,
-          signal: options?.signal,
-        });
+        const toolName = toolCall.tool;
+        const toolArgs = toolCall.args || {};
+        const toolStartedAt = Date.now();
+
+        if (options?.jobId) {
+          LiveStreamBus.getInstance().publishEvent({
+            jobId: options.jobId,
+            timestamp: new Date().toISOString(),
+            type: 'tool:start',
+            persona: (options.persona || role) as any,
+            data: {
+              personaId: options.persona || role,
+              tool: toolName,
+              args: toolArgs,
+              turn: iter + 1,
+              message: `Executing tool ${toolName}...`,
+            },
+          });
+        }
+
+        let rawToolOutput: string;
+        let toolScope: string = 'unknown';
+        let isExhaustive: boolean = true;
+        try {
+          const result = await runReadOnlyTool(toolName, toolArgs, {
+            changedFiles,
+            repoFileProvider: options?.repoFileProvider,
+            zoektConfig: (options as any)?.zoektConfig,
+            signal: options?.signal,
+          });
+          rawToolOutput = result.toolOutput;
+          toolScope = result.toolScope;
+          isExhaustive = result.isExhaustive;
+
+          const durationMs = Date.now() - toolStartedAt;
+          if (options?.jobId) {
+            LiveStreamBus.getInstance().publishEvent({
+              jobId: options.jobId,
+              timestamp: new Date().toISOString(),
+              type: 'tool:result',
+              persona: (options.persona || role) as any,
+              data: {
+                personaId: options.persona || role,
+                tool: toolName,
+                args: toolArgs,
+                output: rawToolOutput.length > 500 ? rawToolOutput.slice(0, 500) + '...' : rawToolOutput,
+                outputLength: rawToolOutput.length,
+                scope: toolScope,
+                isExhaustive,
+                durationMs,
+                turn: iter + 1,
+                message: `Tool ${toolName} completed in ${durationMs}ms`,
+              },
+            });
+          }
+        } catch (toolErr: any) {
+          const durationMs = Date.now() - toolStartedAt;
+          const errorMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          if (options?.jobId) {
+            LiveStreamBus.getInstance().publishEvent({
+              jobId: options.jobId,
+              timestamp: new Date().toISOString(),
+              type: 'tool:error',
+              persona: (options.persona || role) as any,
+              data: {
+                personaId: options.persona || role,
+                tool: toolName,
+                args: toolArgs,
+                error: errorMsg,
+                durationMs,
+                turn: iter + 1,
+                message: `Tool ${toolName} failed: ${errorMsg}`,
+              },
+            });
+          }
+          throw toolErr;
+        }
+
         // REL-1082: a budgeted lane keeps its whole request under the gateway proxy's body limit.
         const toolOutput = laneBudget
           ? clipToolOutputToRequestCap(rawToolOutput, [...messages, { role: 'assistant', content: response.content }], laneBudget.requestCapBytes)
@@ -2621,6 +2723,16 @@ async function runPersona(
     const bus = LiveStreamBus.getInstance();
     const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
 
+    const promptGuidanceItems = allowDashboardOverrides
+      ? (dashboardStore.getPromptGuidance(jobId || effectiveJobId) || [])
+      : [];
+    const applicableGuidance = promptGuidanceItems.filter((g) =>
+      !g.targetPersonas || g.targetPersonas.length === 0 || g.targetPersonas.includes(persona.id)
+    );
+    const steeringRules = applicableGuidance.map((g) =>
+      `[HUMAN REVIEWER GUIDANCE${g.createdBy ? ` (${g.createdBy})` : ''}]: ${g.guidanceText}`
+    );
+
     bus.publishEvent({
       jobId: effectiveJobId,
       timestamp: new Date().toISOString(),
@@ -2839,7 +2951,7 @@ async function runPersona(
             changedFiles: scopedFiles,
             domainLanes,
             pathInstructions: config.path_instructions,
-            rules: [...(config.rules || []), ...memoryRules],
+            rules: [...(config.rules || []), ...memoryRules, ...steeringRules],
             preCheckEvidence: preCheckEvidence,
             outputSchema: {
               decision: ['json_object', 'json_schema'].includes(
@@ -2939,6 +3051,48 @@ async function runPersona(
           }
           const decision: 'APPROVE' | 'FINDINGS' = result.parsed.decision as 'APPROVE' | 'FINDINGS';
           throwIfPanelAborted(signal);
+
+          if (findings.length > 0 && effectiveJobId) {
+            for (const finding of findings) {
+              const findingId = crypto.createHash('sha256')
+                .update(`${repository}:${finding.path}:${finding.line}:${finding.title}`)
+                .digest('hex');
+
+              bus.publishEvent({
+                jobId: effectiveJobId,
+                timestamp: new Date().toISOString(),
+                type: 'persona:finding',
+                persona: persona.id as any,
+                data: {
+                  personaId: persona.id,
+                  findingId,
+                  severity: finding.severity,
+                  filePath: finding.path,
+                  path: finding.path,
+                  line: finding.line,
+                  startLine: finding.startLine,
+                  findingTitle: finding.title,
+                  title: finding.title,
+                  description: finding.body || finding.title,
+                  suggestion: finding.suggestion,
+                  replacementCode: finding.replacementCode,
+                  finding: {
+                    id: findingId,
+                    severity: finding.severity,
+                    path: finding.path,
+                    file: finding.path,
+                    line: finding.line,
+                    startLine: finding.startLine,
+                    title: finding.title,
+                    description: finding.body || finding.title,
+                    suggestion: finding.suggestion,
+                    replacementCode: finding.replacementCode,
+                  },
+                  message: `[${finding.severity}] ${finding.path}:${finding.line} - ${finding.title}`,
+                },
+              });
+            }
+          }
 
           const promptTokens = result.response.usage?.prompt || 0;
           const completionTokens = result.response.usage?.completion || 0;
