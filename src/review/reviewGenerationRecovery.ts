@@ -259,7 +259,7 @@ export function validateIncompleteP2RecoveryLedgerCandidate(
   evidence: ReviewGenerationRecoveryEvidence[],
 ): ReviewGenerationRecoveryEvidence[] {
   validateReviewGenerationRecoveryRequest(request);
-  if ((request.incompleteP2Recovery !== true && request.gracefulComposedContinuation !== true) || !Array.isArray(evidence)
+  if (!isArchiveRecoveryCandidate(request) || !Array.isArray(evidence)
     || evidence.length !== request.expectedGeneration - 1) refuse();
   let previousCompleted = -Infinity;
   for (let index = 0; index < evidence.length; index += 1) {
@@ -288,7 +288,7 @@ export function evaluateIncompleteP2RecoveryLedgerCandidate(
   rows: unknown[],
   gateChecks: unknown[] = [],
 ): ReviewGenerationRecoveryEvidence[] {
-  if (request.incompleteP2Recovery !== true && request.gracefulComposedContinuation !== true) refuse();
+  if (!isArchiveRecoveryCandidate(request)) refuse();
   return evaluateRecoveryLedger(request, rows, gateChecks, true);
 }
 

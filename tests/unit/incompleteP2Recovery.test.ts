@@ -477,6 +477,27 @@ describe('incomplete P2 recovery context', () => {
       await expect(loadFixture(fixture, { recoveryEvidence: proof })).rejects.toThrow();
     });
 
+  it.each([3, 0, 2])
+    ('authenticates historical declared count %s without an optional stored count', async (declaredCount) => {
+      const fixture = queryableForIncompletePrior();
+      Reflect.deleteProperty(fixture.sourceRows[0].payload.result, 'blockingFindingCount');
+      const originalDigest = resealCompletion(fixture);
+      const proof = recoveryEvidence(fixture.externalId, {
+        workerSummary: workerSummary().replace('blocking P0/P1: 0', `blocking P0/P1/P2: ${declaredCount}`),
+      });
+      const originalRows = JSON.stringify(fixture.sourceRows);
+      const originalProof = JSON.stringify(proof);
+      if (declaredCount === 3) {
+        const context = await loadFixture(fixture, { recoveryEvidence: proof });
+        expect(context?.findings).toHaveLength(3);
+        expect(context?.sources[0].workerResultDigest).toBe(originalDigest);
+      } else {
+        await expect(loadFixture(fixture, { recoveryEvidence: proof })).rejects.toThrow();
+      }
+      expect(JSON.stringify(fixture.sourceRows)).toBe(originalRows);
+      expect(JSON.stringify(proof)).toBe(originalProof);
+    });
+
   it('refuses a completion whose payload no longer matches its immutable digest', async () => {
     const fixture = queryableForIncompletePrior();
     const completion = (fixture.sourceRows[0] as any).payload;
