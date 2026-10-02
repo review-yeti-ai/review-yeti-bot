@@ -63,10 +63,20 @@ TypeScript validation pass. Fresh exact-head review and full CI are required.
 The subsequent main `bd6c051` generated-changelog audit exclusion is preserved
 as an already-landed owner change, not added or used to fix these two entries.
 
+Exact head `f1eb6b1` passed full CI `37069753107`, including the actual database
+lane, and hosted review `37069753054` returned SHIP/PASS with zero omitted
+files. A surfaced testing advisory identifies the direct resolver lower-bound
+coverage gap: policy-schema rejection tests do not exercise that helper branch.
+Two direct applicability tests now reject 19,999 and accept exactly 20,000,
+without changing production code or existing upper-bound assertions. This
+follow-up requires its own fresh exact-head CI and review before merge.
+The expanded nineteen-file suite passes 999 tests with 254 database-backed
+cases skipped locally. TypeScript and whitespace validation pass.
+
 ## Activation boundary
 
 No central policy value is enabled by this source change. No service deployment
-or live hosted review is claimed. Deploy compatible worker and completion
+or hosted review of the final follow-up is claimed. Deploy compatible worker and completion
 service images first, then configure the central policy. Re-admit a consumer
 review only after the new code and policy are verified live.
 

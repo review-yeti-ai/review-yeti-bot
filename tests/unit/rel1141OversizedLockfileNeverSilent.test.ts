@@ -380,6 +380,20 @@ describe('bounded full raw lockfile review from trusted policy', () => {
     expect(() => resolveReviewApplicability(enabled(), [], { maxReviewedLockfilePatchChars: cap + 1 }))
       .toThrow('max reviewed lockfile patch size is outside the supported bound');
   });
+
+  it('rejects a below-default cap at the direct applicability boundary', () => {
+    expect(() => resolveReviewApplicability(enabled(), [], {
+      maxReviewedLockfilePatchChars: MAX_FILE_PATCH_CHARS - 1,
+    })).toThrow('max reviewed lockfile patch size is outside the supported bound');
+  });
+
+  it('accepts the exact default cap at the direct applicability boundary', () => {
+    const decision = resolveReviewApplicability(enabled(), [], {
+      maxReviewedLockfilePatchChars: MAX_FILE_PATCH_CHARS,
+    });
+    expect(decision.effectiveFiles).toEqual([]);
+    expect(decision.unreviewableLockfiles).toEqual([]);
+  });
 });
 
 describe('REL-1141: fails closed (coverage incomplete) when the lockfile cannot be summarized', () => {
