@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Challenger 2 Empirical Adversarial Test Suite:
 Storage Isolation, Universal emptyDir, Zero PVC Provisioning/Mounting, and Concurrent Sandboxing.
@@ -276,7 +276,7 @@ func TestChallengerConcurrentReviewsStrictStorageIsolation(t *testing.T) {
 				RunID:            runID,
 				DeliveryID:       fmt.Sprintf("deliv-%d", i+1),
 				RepositoryID:     int64(1000 + i),
-				Repo:             fmt.Sprintf("calltelemetry/repo-%d", i+1),
+				Repo:             fmt.Sprintf("exampleorg/repo-%d", i+1),
 				PRNumber:         prNum,
 				HeadSHA:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				BaseSHA:          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -285,7 +285,7 @@ func TestChallengerConcurrentReviewsStrictStorageIsolation(t *testing.T) {
 				PolicyDigest:     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 				ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 				PublicationMode:  "disabled",
-				WorkerImage:      "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				RunnerMode:       "prebaked",
 				RunSecretName:    fmt.Sprintf("ct-review-run-%032x", i+1),
 			},

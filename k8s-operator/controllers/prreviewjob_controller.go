@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -54,9 +54,9 @@ type PRReviewJobReconciler struct {
 	TTLManager   cleanup.TTLManager
 }
 
-// +kubebuilder:rbac:groups=review.calltelemetry.com,resources=prreviewjobs,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=review.calltelemetry.com,resources=prreviewjobs/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=review.calltelemetry.com,resources=prreviewjobs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=legacy.review-yeti.ai,resources=prreviewjobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=legacy.review-yeti.ai,resources=prreviewjobs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=legacy.review-yeti.ai,resources=prreviewjobs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch;create;update;patch;delete
 
@@ -416,7 +416,7 @@ func (r *PRReviewJobReconciler) buildJob(job *reviewv1alpha1.PRReviewJob, jobNam
 					Containers: []corev1.Container{
 						{
 							Name:            "reviewer-worker",
-							Image:           "ghcr.io/calltelemetry/ct-review-worker:latest",
+							Image:           "ghcr.io/review-yeti-ai/review-yeti-worker:latest",
 							ImagePullPolicy: corev1.PullIfNotPresent,
 							VolumeMounts: []corev1.VolumeMount{
 								{

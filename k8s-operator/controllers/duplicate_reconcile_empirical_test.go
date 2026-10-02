@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -118,7 +118,7 @@ func TestEmpirical_FailedUnderlyingJob_Transition(t *testing.T) {
 	jobObj := &reviewv1alpha1.PRReviewJob{
 		ObjectMeta: metav1.ObjectMeta{Name: jKey.Name, Namespace: jKey.Namespace},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      77,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",
@@ -202,7 +202,7 @@ func TestEmpirical_DuplicateReconciliationRequests_RunningJob(t *testing.T) {
 	jobObj := &reviewv1alpha1.PRReviewJob{
 		ObjectMeta: metav1.ObjectMeta{Name: jKey.Name, Namespace: jKey.Namespace},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      88,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",

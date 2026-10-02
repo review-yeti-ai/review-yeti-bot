@@ -25,7 +25,7 @@ func TestPRReviewJob_DeepCopy_MutatedNestedObjects(t *testing.T) {
 
 	orig := &v1alpha1.PRReviewJob{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: "review.calltelemetry.com/v1alpha1",
+			APIVersion: "legacy.review-yeti.ai/v1alpha1",
 			Kind:       "PRReviewJob",
 		},
 		ObjectMeta: metav1.ObjectMeta{
@@ -37,10 +37,10 @@ func TestPRReviewJob_DeepCopy_MutatedNestedObjects(t *testing.T) {
 			Annotations: map[string]string{
 				"annot": "orig-val",
 			},
-			Finalizers: []string{"finalizer.review.calltelemetry.com"},
+			Finalizers: []string{"finalizer.legacy.review-yeti.ai"},
 		},
 		Spec: v1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                99,
 			HeadSHA:                 "1234567890abcdef",
 			BaseSHA:                 "fedcba0987654321",
@@ -187,7 +187,7 @@ func TestPRReviewJob_DeepCopy_MutatedNestedObjects(t *testing.T) {
 	if orig.ObjectMeta.Annotations["annot"] != "orig-val" {
 		t.Errorf("Violation: Mutating copied Annotations altered original! got %v", orig.ObjectMeta.Annotations)
 	}
-	if orig.ObjectMeta.Finalizers[0] != "finalizer.review.calltelemetry.com" || len(orig.ObjectMeta.Finalizers) != 1 {
+	if orig.ObjectMeta.Finalizers[0] != "finalizer.legacy.review-yeti.ai" || len(orig.ObjectMeta.Finalizers) != 1 {
 		t.Errorf("Violation: Mutating copied Finalizers altered original! got %v", orig.ObjectMeta.Finalizers)
 	}
 }
@@ -321,7 +321,7 @@ func TestPRReviewJob_NilHandling_Stress(t *testing.T) {
 // TestCRD_YAML_ParsingAndSchemaValidation parses the CRD YAML manifest and checks schema rules.
 func TestCRD_YAML_ParsingAndSchemaValidation(t *testing.T) {
 	// Locate CRD file relative to project root
-	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "review.calltelemetry.com_prreviewjobs.yaml")
+	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "legacy.review-yeti.ai_prreviewjobs.yaml")
 	data, err := os.ReadFile(crdPath)
 	if err != nil {
 		t.Fatalf("Failed to read CRD file at %s: %v", crdPath, err)
@@ -344,8 +344,8 @@ func TestCRD_YAML_ParsingAndSchemaValidation(t *testing.T) {
 		t.Fatalf("CRD metadata field missing or invalid")
 	}
 	crdName, _ := metadata["name"].(string)
-	if crdName != "prreviewjobs.review.calltelemetry.com" {
-		t.Errorf("CRD name mismatch: got %s, want prreviewjobs.review.calltelemetry.com", crdName)
+	if crdName != "prreviewjobs.legacy.review-yeti.ai" {
+		t.Errorf("CRD name mismatch: got %s, want prreviewjobs.legacy.review-yeti.ai", crdName)
 	}
 
 	// Extract spec.versions[0].schema.openAPIV3Schema
@@ -428,7 +428,7 @@ func TestCRD_YAML_ParsingAndSchemaValidation(t *testing.T) {
 
 	// Test repo regex against edge case test vectors
 	validRepos := []string{
-		"calltelemetry/cisco-cdr",
+		"exampleorg/example-api",
 		"kubernetes/kubernetes",
 		"owner-name_12/repo.name-99",
 	}
@@ -527,7 +527,7 @@ func TestPRReviewJob_Stress_LargePayload(t *testing.T) {
 			Namespace: "stress-test",
 		},
 		Spec: v1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                5000,
 			HeadSHA:                 "abcdef1234567890",
 			BaseSHA:                 "0987654321fedcba",

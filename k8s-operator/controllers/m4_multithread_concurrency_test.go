@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -580,7 +580,7 @@ func TestM4_Integration_ErrorHandling_TransientAPI500_SlotRelease(t *testing.T) 
 	// Verify slot was released: Lease active slots should be empty
 	var lease coordinationv1.Lease
 	if err := kube.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: controllers.CapacityLedgerLeaseName}, &lease); err == nil {
-		slotsJson := lease.Annotations["ct.review.calltelemetry.com/active-slots"]
+		slotsJson := lease.Annotations["review-yeti.ai/active-slots"]
 		if slotsJson != "" && slotsJson != "[]" {
 			t.Fatalf("expected active slots to be released after API failure, got: %s", slotsJson)
 		}
@@ -608,7 +608,7 @@ func TestM4_Integration_ErrorHandling_CorruptedLeaseRecovery_16Threads(t *testin
 			Name:      controllers.CapacityLedgerLeaseName,
 			Namespace: "ct-review-system",
 			Annotations: map[string]string{
-				"ct.review.calltelemetry.com/active-slots": "{corrupted-json-payload",
+				"review-yeti.ai/active-slots": "{corrupted-json-payload",
 			},
 		},
 	}
