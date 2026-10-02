@@ -149,6 +149,7 @@ function repositoryFixture(executionAttempt = 2) {
         return { rows: [{ repository_id: 123, pr_number: 42, received_at: '2026-09-29T11:59:00.000Z', authoritative_gate_app_id: APP_ID }] };
       }
       if (sql.includes('FROM review_worker_completions completions')) return { rows: [] };
+      if (sql.includes('FROM review_finding_rechecks request')) return { rows: [] };
       if (sql.startsWith('UPDATE review_gate_attempts')
         || sql.startsWith('INSERT INTO review_worker_completions')
         || sql.startsWith('UPDATE review_dispatch_outbox')
