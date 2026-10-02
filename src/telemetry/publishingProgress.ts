@@ -304,14 +304,14 @@ export function createPublishingProgress(
       }
     } catch { /* untrusted response metadata cannot affect completion */ }
   };
-  const observe = (event: PublishingProgressEvent): void => {
+  const observe = (event: PublishingProgressEvent, includeObservedResponseStatus: boolean): void => {
     try {
       const candidate = { task:event.task, status:event.status,
         ...(event.role ? {role:safeRole(event.role)}:{}),
         ...(typeof event.turn==='number'&&Number.isSafeInteger(event.turn)&&event.turn>=0?{turn:event.turn}:{}),
         ...(typeof event.callSequence==='number'&&Number.isSafeInteger(event.callSequence)&&event.callSequence>=0?{callSequence:event.callSequence}:{}),
         ...(typeof event.durationMs==='number'&&Number.isSafeInteger(event.durationMs)&&event.durationMs>=0&&event.durationMs<=86_400_000?{durationMs:event.durationMs}:{}),
-        ...(safeResponseStatus(event.responseStatus)!==undefined?{responseStatus:safeResponseStatus(event.responseStatus)}:{}),
+        ...(includeObservedResponseStatus&&safeResponseStatus(event.responseStatus)!==undefined?{responseStatus:safeResponseStatus(event.responseStatus)}:{}),
         ...(isSafePublishingRejectionCode(event.rejectionCode)?{rejectionCode:event.rejectionCode}:{}),
       };
       const parsed=operationalTelemetryEventSchema.safeParse(candidate);
@@ -334,10 +334,13 @@ export function createPublishingProgress(
     } catch { return undefined; }
   };
 
-  const emit = (event: PublishingProgressEvent): void => {
+  const emitEvent = (event: PublishingProgressEvent, allowObservedResponseStatus = false): void => {
     try {
     if (!runId || executionAttempt === undefined || executionAttempt < 1) return;
-    observe(event);
+    const includeObservedResponseStatus = allowObservedResponseStatus
+      && event.task === 'provider_call'
+      && event.status === 'failed';
+    observe(event, includeObservedResponseStatus);
     const fields: Record<string, unknown> = {
       event: 'review_yeti_publishing_progress',
       runId,
@@ -351,7 +354,9 @@ export function createPublishingProgress(
       ...(safeCount(event.turn) !== undefined ? { turn: safeCount(event.turn) } : {}),
       ...(safeCount(event.callSequence) !== undefined ? { callSequence: safeCount(event.callSequence) } : {}),
       ...(safeDuration(event.durationMs) !== undefined ? { durationMs: safeDuration(event.durationMs) } : {}),
-      ...(safeResponseStatus(event.responseStatus) !== undefined ? { responseStatus: safeResponseStatus(event.responseStatus) } : {}),
+      ...(includeObservedResponseStatus && safeResponseStatus(event.responseStatus) !== undefined
+        ? { responseStatus: safeResponseStatus(event.responseStatus) }
+        : {}),
       ...(isSafePublishingRejectionCode(event.rejectionCode) ? { rejectionCode: event.rejectionCode } : {}),
       ...(typeof event.required === 'boolean' ? { required: event.required } : {}),
       ...(event.usage ? { usage: {
@@ -365,6 +370,9 @@ export function createPublishingProgress(
     try { sink(fields); } catch { /* diagnostics must never change a review outcome */ }
     } catch { /* unsafe optional event metadata is ignored */ }
   };
+  // Public emits are caller-controlled; only the instrumented gateway failure path may retain
+  // status metadata after extracting it from trusted HTTP provenance.
+  const emit = (event: PublishingProgressEvent): void => emitEvent(event);
 
   const reporter: PublishingProgressReporter = {
     emit,
@@ -399,12 +407,16 @@ export function createPublishingProgress(
           observed.providerCalls.started++; observed.providerCalls.inflight++;
           emit({ ...common, status: 'started' });
           let settled = false;
-          const finish = (status: 'completed' | 'failed' | 'aborted', extras: Partial<PublishingProgressEvent> = {}) => {
+          const finish = (
+            status: 'completed' | 'failed' | 'aborted',
+            extras: Partial<PublishingProgressEvent> = {},
+            includeObservedResponseStatus = false,
+          ) => {
             if (settled) return;
             settled = true;
             observed.providerCalls.inflight--; observed.providerCalls[status]++;
             if(status==='completed')observed.responseUsage.responses++;
-            emit({ ...common, ...extras, status, durationMs: Math.max(0, now() - startedAt) });
+            emitEvent({ ...common, ...extras, status, durationMs: Math.max(0, now() - startedAt) }, includeObservedResponseStatus);
           };
           const onAbort = () => finish('aborted', {
             rejectionCode: safePublishingRejectionCode(undefined, diagnosticSignal),
@@ -418,7 +430,7 @@ export function createPublishingProgress(
           } catch (error) {
             finish(diagnosticSignal?.aborted ? 'aborted' : 'failed', {
               ...providerFailureProgressFields(error, diagnosticSignal),
-            });
+            }, true);
             diagnosticSignal?.removeEventListener('abort', onAbort);
             throw error;
           }
@@ -431,7 +443,7 @@ export function createPublishingProgress(
           }, (error: unknown) => {
             finish(diagnosticSignal?.aborted ? 'aborted' : 'failed', {
               ...providerFailureProgressFields(error, diagnosticSignal),
-            });
+            }, true);
             throw error;
           }).finally(() => diagnosticSignal?.removeEventListener('abort', onAbort));
         },

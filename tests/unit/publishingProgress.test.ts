@@ -201,9 +201,10 @@ describe('publishing progress diagnostics', () => {
     progress.emit({ task: 'provider_call', status: 'failed', responseStatus: 700 } as never);
     expect(events[0]).not.toHaveProperty('responseStatus');
     progress.emit({ task: 'provider_call', status: 'failed', responseStatus: 401, responseStatusSource: 'sdk_http_error' } as never);
-    expect(events[1]).toHaveProperty('responseStatus', 401);
+    expect(events[1]).not.toHaveProperty('responseStatus');
     expect(events[1]).not.toHaveProperty('responseStatusSource');
     expect(progress.snapshot?.()?.recentEvents[0]).not.toHaveProperty('responseStatus');
+    expect(progress.snapshot?.()?.recentEvents[1]).not.toHaveProperty('responseStatus');
   });
 
   it('maps an unknown failureClass to a fixed code without emitting the caller-controlled value', async () => {
