@@ -100,4 +100,23 @@ describe('nonactivated canonical finding identity library', () => {
     expect(findReviewFindingRecord([first, second], 'b66641f3e6c4b97a')).toBe(first);
     expect(findReviewFindingRecord([], 'ed5a0b597a1e1b22')).toBeNull();
   });
+  it('pins identity alias isolation and conflicting-key precedence', () => {
+    for (const aliases of [
+      { path: 'src/call.ts', line_start: 7, line_end: 9 },
+      { file_path: 'src/call.ts', startLine: 7, line: 9 },
+      { file: 'src/call.ts', line_start: 7, line: 9 },
+      { path: 'src/call.ts', file_path: 'other.ts', file: 'last.ts', line_start: 7, startLine: 8, line_end: 9, line: 10 },
+      { file_path: 'src/call.ts', file: 'last.ts', startLine: 7, line: 9 },
+    ]) {
+      const aliased = { ...aliases, title: finding.title };
+      expect(getReviewFindingIdentityParts(aliased)).toEqual({
+        filePath: 'src/call.ts', lineStart: 7, lineEnd: 9, title: finding.title,
+      });
+      expect(getReviewFindingId('run-one', 'security', aliased)).toBe('b66641f3e6c4b97a');
+      expect(getLegacyResourceFindingId('run-one', aliased)).toBe('ed5a0b597a1e1b22');
+      const record = { finding: aliased, runId: 'run-one', personaId: 'security' };
+      expect(findReviewFindingRecord([record], 'b66641f3e6c4b97a')).toBe(record);
+    }
+  });
+
 });

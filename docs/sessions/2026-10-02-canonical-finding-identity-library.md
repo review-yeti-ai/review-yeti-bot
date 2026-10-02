@@ -13,3 +13,5 @@ The existing virtual manifest-routing control now gives both engines one owned e
 Native focused V8 measured all helper lines, statements, branches and functions covered. That optional focused coverage command exited 1 against unchanged whole-repository floors; this is helper-only measurement, not a global coverage pass.
 
 Reader adoption is a separate dependent slice retaining all four readers and the complete original roundtrip test. Durable authenticated recheck safety and activation remain with the existing PR #1258 owner. This unused library does not authorize disputes or check mutation.
+
+The first public self-review at c580 identified an alias/precedence test gap. Five isolated helper mutations each left all original eight cases passing; the additive ninth table rejected each mutation in both its initial run and unchanged replay. Exact production bytes then passed all nine; the helper and original eight test bodies remain unchanged.
