@@ -1314,6 +1314,14 @@ export async function handleDashboardApi(
             status: 'COMPLETED',
             progress: 100,
             findingsCount: 0,
+            tokensBurned: 3800,
+            promptTokens: 3400,
+            completionTokens: 400,
+            tokensPerSec: 0,
+            costUSD: 0.0025,
+            budgetUSD: 0.0125,
+            turn: 1,
+            maxTurns: 20,
             lastMessage: 'Pass — Zero security vulnerabilities detected',
             durationMs: 4200,
           },
@@ -1326,6 +1334,14 @@ export async function handleDashboardApi(
             status: 'RUNNING',
             progress: 80,
             findingsCount: 1,
+            tokensBurned: 7600,
+            promptTokens: 6400,
+            completionTokens: 1200,
+            tokensPerSec: 180,
+            costUSD: 0.0052,
+            budgetUSD: 0.0125,
+            turn: 3,
+            maxTurns: 20,
             lastMessage: 'Context compaction: 4.2x ratio achieved on unified diff',
             durationMs: 6800,
           },
@@ -1338,6 +1354,14 @@ export async function handleDashboardApi(
             status: 'RUNNING',
             progress: 60,
             findingsCount: 0,
+            tokensBurned: 3200,
+            promptTokens: 2800,
+            completionTokens: 400,
+            tokensPerSec: 195,
+            costUSD: 0.0022,
+            budgetUSD: 0.0125,
+            turn: 3,
+            maxTurns: 20,
             lastMessage: 'Cloudflare Worker CPU execution time: 8.4ms (within 50ms SLA)',
             durationMs: 3100,
           },
@@ -1350,6 +1374,14 @@ export async function handleDashboardApi(
             status: 'PENDING',
             progress: 10,
             findingsCount: 0,
+            tokensBurned: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            tokensPerSec: 0,
+            costUSD: 0,
+            budgetUSD: 0.0125,
+            turn: 0,
+            maxTurns: 20,
             lastMessage: 'Queued for AST verification and test assertions',
             durationMs: 0,
           },
@@ -1887,6 +1919,12 @@ export async function handleDashboardApi(
       }
     };
 
+    // Configure streaming cadence: instant for unit tests/header, realistic delays for live browser experience
+    const speedParam = url.searchParams.get('speed');
+    const isTestMode = request.headers.get('x-test-mode') === 'true' || speedParam === 'instant';
+    const stepDelay = isTestMode ? 0 : speedParam === 'fast' ? 40 : 650;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
     // Emit live streaming events asynchronously and maintain persistent keep-alive heartbeat
     (async () => {
       let isAborted = false;
@@ -1935,6 +1973,8 @@ export async function handleDashboardApi(
           timestamp: new Date().toISOString(),
         });
 
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
         // Stage 2: Context Compaction
         await writeEvent('stage:transition', {
           jobId,
@@ -1956,6 +1996,15 @@ export async function handleDashboardApi(
           astOutlineNodes: 18,
           timestamp: new Date().toISOString(),
         });
+        await writeEvent('log:chunk', {
+          jobId,
+          persona: 'all',
+          stream: 'stdout',
+          chunk: '[Compactor Engine] Raw diff 24,800 tokens compacted to 5,900 tokens (4.2x ratio, 18 AST symbols)',
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
 
         // Stage 3: Swarm Planning
         await writeEvent('stage:transition', {
@@ -1975,11 +2024,19 @@ export async function handleDashboardApi(
             priority: 1,
             description: 'Enforce security boundary: secret redaction, credential scanning, and edge isolation',
             paths: ['src/gateway/edgeCompactionEngine.ts'],
-            status: 'IN_FLIGHT',
-            progress: 50,
+            status: 'PENDING',
+            progress: 0,
             findingsCount: 0,
-            lastMessage: 'Validating secret scanning, token redaction, and boundary fences...',
-            durationMs: 1400,
+            tokensBurned: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            tokensPerSec: 0,
+            costUSD: 0,
+            budgetUSD: 0.0125,
+            turn: 0,
+            maxTurns: 20,
+            lastMessage: 'Queued for secret scanning and credential check',
+            durationMs: 0,
           },
           {
             id: 'task_arch_compaction',
@@ -1990,6 +2047,14 @@ export async function handleDashboardApi(
             status: 'PENDING',
             progress: 0,
             findingsCount: 0,
+            tokensBurned: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            tokensPerSec: 0,
+            costUSD: 0,
+            budgetUSD: 0.0125,
+            turn: 0,
+            maxTurns: 20,
             lastMessage: 'Queued for AST symbol graph compaction analysis',
             durationMs: 0,
           },
@@ -2002,6 +2067,14 @@ export async function handleDashboardApi(
             status: 'PENDING',
             progress: 0,
             findingsCount: 0,
+            tokensBurned: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            tokensPerSec: 0,
+            costUSD: 0,
+            budgetUSD: 0.0125,
+            turn: 0,
+            maxTurns: 20,
             lastMessage: 'Queued for Worker CPU/memory budget verification',
             durationMs: 0,
           },
@@ -2014,6 +2087,14 @@ export async function handleDashboardApi(
             status: 'PENDING',
             progress: 0,
             findingsCount: 0,
+            tokensBurned: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            tokensPerSec: 0,
+            costUSD: 0,
+            budgetUSD: 0.0125,
+            turn: 0,
+            maxTurns: 20,
             lastMessage: 'Queued for route invariant verification',
             durationMs: 0,
           },
@@ -2026,12 +2107,14 @@ export async function handleDashboardApi(
           timestamp: new Date().toISOString(),
         });
 
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
         // Stage 4: Subagent Turns & Execution
         await writeEvent('stage:transition', {
           jobId,
           stage: 'execution',
           status: 'running',
-          overallProgress: 75,
+          overallProgress: 45,
           message: 'Subagents executing isolated turns, tool invocations, and finding drafts',
           timestamp: new Date().toISOString(),
         });
@@ -2047,20 +2130,27 @@ export async function handleDashboardApi(
           tool: 'ast_lookup',
           input: { path: 'src/gateway/edgeCompactionEngine.ts', symbols: ['redactTokens', 'sanitizeSecretHeaders'] },
           output: { symbolsFound: 2, leakRisk: 'NONE', status: 'clean' },
-          tokensBurned: 1420,
+          tokensBurned: 2100,
           latencyMs: 310,
           timestamp: new Date().toISOString(),
         });
 
-        // 4. Initial Progress & Reasoning
         await writeEvent('task:progress', {
           jobId,
           taskId: 'task_sec_boundary',
           dimension: 'security',
           status: 'IN_FLIGHT',
-          progress: 60,
+          progress: 50,
           findingsCount: 0,
-          lastMessage: 'Scanning AST nodes for credentials and leaked tokens...',
+          tokensBurned: 2100,
+          promptTokens: 1900,
+          completionTokens: 200,
+          tokensPerSec: 145,
+          costUSD: 0.0014,
+          budgetUSD: 0.0125,
+          turn: 1,
+          maxTurns: 20,
+          lastMessage: 'Scanning AST nodes for credentials and leaked secrets...',
           timestamp: new Date().toISOString(),
         });
 
@@ -2068,9 +2158,9 @@ export async function handleDashboardApi(
           jobId,
           persona: 'security',
           status: 'RUNNING',
-          progress: 60,
+          progress: 50,
           findingsCount: 0,
-          lastMessage: 'Scanning AST nodes for credentials and leaked tokens...',
+          lastMessage: 'Scanning AST nodes for credentials and leaked secrets...',
           timestamp: new Date().toISOString(),
         });
 
@@ -2078,7 +2168,7 @@ export async function handleDashboardApi(
           jobId,
           persona: 'security',
           stream: 'stdout',
-          chunk: '[Security Swarm] AST symbol nodes parsed. Zero credentials or leaked tokens detected.',
+          chunk: '[Security Swarm] AST symbol nodes parsed. Zero credentials or leaked secrets detected.',
           timestamp: new Date().toISOString(),
         });
 
@@ -2089,7 +2179,29 @@ export async function handleDashboardApi(
           timestamp: new Date().toISOString(),
         });
 
+        await writeEvent('token:update', {
+          jobId,
+          promptTokens: 2100,
+          completionTokens: 200,
+          totalTokens: 2300,
+          costUSD: 0.0014,
+          tokensPerSec: 145,
+          isAbsolute: true,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
         // Turn 2 / 20 (Architecture Lane)
+        await writeEvent('stage:transition', {
+          jobId,
+          stage: 'execution',
+          status: 'running',
+          overallProgress: 60,
+          message: 'Architecture Auditor inspecting AST symbol graph compaction bounds',
+          timestamp: new Date().toISOString(),
+        });
+
         await writeEvent('turn:step', {
           jobId,
           personaId: 'architecture',
@@ -2100,20 +2212,27 @@ export async function handleDashboardApi(
           tool: 'diff_inspect',
           input: { path: 'src/gateway/edgeCompactionEngine.ts', hunkBounds: [40, 52] },
           output: { outlineDepth: 3, memoryFootprint: '42KB', boundaryLeakage: 'none' },
-          tokensBurned: 2840,
+          tokensBurned: 4800,
           latencyMs: 540,
           timestamp: new Date().toISOString(),
         });
 
-        // 5. Architecture Task Progress & Finding
         await writeEvent('task:progress', {
           jobId,
           taskId: 'task_arch_compaction',
           dimension: 'architecture',
           status: 'IN_FLIGHT',
-          progress: 80,
-          findingsCount: 1,
-          lastMessage: 'Context compaction verified: 4.2x reduction ratio achieved',
+          progress: 45,
+          findingsCount: 0,
+          tokensBurned: 4800,
+          promptTokens: 4100,
+          completionTokens: 700,
+          tokensPerSec: 180,
+          costUSD: 0.0032,
+          budgetUSD: 0.0125,
+          turn: 2,
+          maxTurns: 20,
+          lastMessage: 'Inspecting AST symbol graph compaction bounds...',
           timestamp: new Date().toISOString(),
         });
 
@@ -2121,17 +2240,9 @@ export async function handleDashboardApi(
           jobId,
           persona: 'architecture',
           status: 'RUNNING',
-          progress: 80,
-          findingsCount: 1,
-          lastMessage: 'Context compaction verified: 4.2x reduction ratio achieved',
-          timestamp: new Date().toISOString(),
-        });
-
-        await writeEvent('log:chunk', {
-          jobId,
-          persona: 'architecture',
-          stream: 'stdout',
-          chunk: '[Architecture Auditor] Unified diff parsed. AST symbol graph compacted into 18 summary nodes.',
+          progress: 45,
+          findingsCount: 0,
+          lastMessage: 'Inspecting AST symbol graph compaction bounds...',
           timestamp: new Date().toISOString(),
         });
 
@@ -2142,12 +2253,82 @@ export async function handleDashboardApi(
           timestamp: new Date().toISOString(),
         });
 
-        // Turn 3 / 20 (Architecture Finding formulation)
+        await writeEvent('token:update', {
+          jobId,
+          promptTokens: 6200,
+          completionTokens: 900,
+          totalTokens: 7100,
+          costUSD: 0.0046,
+          tokensPerSec: 180,
+          isAbsolute: true,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
+        // Turn 3 / 20 (Performance Lane)
+        await writeEvent('stage:transition', {
+          jobId,
+          stage: 'execution',
+          status: 'running',
+          overallProgress: 72,
+          message: 'Budget Guardian validating Cloudflare Worker CPU execution time',
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('turn:step', {
+          jobId,
+          personaId: 'performance',
+          taskId: 'task_perf_worker_budget',
+          turn: 3,
+          maxTurns: 20,
+          action: 'budget_check',
+          tool: 'cpu_profile',
+          input: { script: 'cf-orchestrator/src/worker.ts', slaLimitMs: 50 },
+          output: { cpuTimeMs: 8.4, memoryMb: 24.2, status: 'pass' },
+          tokensBurned: 3200,
+          latencyMs: 380,
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('task:progress', {
+          jobId,
+          taskId: 'task_perf_worker_budget',
+          dimension: 'performance',
+          status: 'IN_FLIGHT',
+          progress: 60,
+          findingsCount: 0,
+          tokensBurned: 3200,
+          promptTokens: 2800,
+          completionTokens: 400,
+          tokensPerSec: 195,
+          costUSD: 0.0022,
+          budgetUSD: 0.0125,
+          turn: 3,
+          maxTurns: 20,
+          lastMessage: 'Worker CPU execution: 8.4ms (within 50ms SLA)',
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('token:update', {
+          jobId,
+          promptTokens: 10400,
+          completionTokens: 1400,
+          totalTokens: 11800,
+          costUSD: 0.0076,
+          tokensPerSec: 195,
+          isAbsolute: true,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
+        // Architecture Finding formulation
         await writeEvent('turn:step', {
           jobId,
           personaId: 'architecture',
           taskId: 'task_arch_compaction',
-          turn: 3,
+          turn: 4,
           maxTurns: 20,
           action: 'finding_formulation',
           input: { path: 'src/gateway/edgeCompactionEngine.ts', line: 45, check: 'AST outline bounds' },
@@ -2175,14 +2356,76 @@ export async function handleDashboardApi(
           timestamp: new Date().toISOString(),
         });
 
-        await writeEvent('token:metrics', {
+        await writeEvent('task:progress', {
           jobId,
-          promptTokens: 18400,
-          completionTokens: 3820,
-          totalTokens: 22220,
-          estimatedCostUSD: 0.012,
-          tokensPerSec: 284,
-          latencyMs: 1420,
+          taskId: 'task_arch_compaction',
+          dimension: 'architecture',
+          status: 'IN_FLIGHT',
+          progress: 85,
+          findingsCount: 1,
+          tokensBurned: 7600,
+          promptTokens: 6400,
+          completionTokens: 1200,
+          tokensPerSec: 210,
+          costUSD: 0.0052,
+          budgetUSD: 0.0125,
+          turn: 4,
+          maxTurns: 20,
+          lastMessage: 'Context compaction verified: 4.2x reduction ratio achieved',
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('token:update', {
+          jobId,
+          promptTokens: 14200,
+          completionTokens: 2200,
+          totalTokens: 16400,
+          costUSD: 0.0105,
+          tokensPerSec: 210,
+          isAbsolute: true,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
+        // Turn 4 / 20 (Contract Verifier / Testing Lane)
+        await writeEvent('turn:step', {
+          jobId,
+          personaId: 'testing',
+          taskId: 'task_test_coverage',
+          turn: 5,
+          maxTurns: 20,
+          action: 'invariant_verify',
+          tool: 'vitest_runner',
+          input: { suite: 'dashboardRoutes.test.ts' },
+          output: { testsPassed: 961, status: 'pass' },
+          tokensBurned: 3600,
+          latencyMs: 450,
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('task:progress', {
+          jobId,
+          taskId: 'task_test_coverage',
+          dimension: 'testing',
+          status: 'IN_FLIGHT',
+          progress: 75,
+          tokensBurned: 3600,
+          promptTokens: 3100,
+          completionTokens: 500,
+          tokensPerSec: 220,
+          costUSD: 0.0024,
+          budgetUSD: 0.0125,
+          turn: 5,
+          maxTurns: 20,
+          lastMessage: 'Executing route invariant checks and test contracts...',
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('reasoning:chunk', {
+          jobId,
+          persona: 'testing',
+          chunk: 'All Edge API route contracts verified. Zero invariant violations detected.',
           timestamp: new Date().toISOString(),
         });
 
@@ -2191,12 +2434,15 @@ export async function handleDashboardApi(
           promptTokens: 18400,
           completionTokens: 3820,
           totalTokens: 22220,
-          costUSD: 0.012,
-          tokensPerSec: 284,
+          costUSD: 0.0124,
+          tokensPerSec: 220,
+          isAbsolute: true,
           timestamp: new Date().toISOString(),
         });
 
-        // 6. Complete Security Task
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
+        // Complete All Swarm Tasks
         await writeEvent('task:complete', {
           jobId,
           taskId: 'task_sec_boundary',
@@ -2204,7 +2450,11 @@ export async function handleDashboardApi(
           status: 'COMPLETED',
           progress: 100,
           findingsCount: 0,
+          tokensBurned: 3800,
+          costUSD: 0.0025,
+          budgetUSD: 0.0125,
           lastMessage: 'Passed — zero security vulnerabilities found',
+          durationMs: 2400,
           timestamp: new Date().toISOString(),
         });
 
@@ -2218,15 +2468,92 @@ export async function handleDashboardApi(
           timestamp: new Date().toISOString(),
         });
 
+        await writeEvent('task:complete', {
+          jobId,
+          taskId: 'task_arch_compaction',
+          dimension: 'architecture',
+          status: 'COMPLETED',
+          progress: 100,
+          findingsCount: 1,
+          tokensBurned: 9450,
+          costUSD: 0.0058,
+          budgetUSD: 0.0125,
+          lastMessage: 'Passed with 1 advisory finding (P1)',
+          durationMs: 3800,
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('persona:progress', {
+          jobId,
+          persona: 'architecture',
+          status: 'COMPLETED',
+          progress: 100,
+          findingsCount: 1,
+          lastMessage: 'Passed with 1 advisory finding (P1)',
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('task:complete', {
+          jobId,
+          taskId: 'task_perf_worker_budget',
+          dimension: 'performance',
+          status: 'COMPLETED',
+          progress: 100,
+          findingsCount: 0,
+          tokensBurned: 4200,
+          costUSD: 0.0024,
+          budgetUSD: 0.0125,
+          lastMessage: 'Passed — CPU execution within 50ms SLA',
+          durationMs: 2100,
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('task:complete', {
+          jobId,
+          taskId: 'task_test_coverage',
+          dimension: 'testing',
+          status: 'COMPLETED',
+          progress: 100,
+          findingsCount: 0,
+          tokensBurned: 4770,
+          costUSD: 0.0027,
+          budgetUSD: 0.0125,
+          lastMessage: 'Passed — 961/961 tests green',
+          durationMs: 2600,
+          timestamp: new Date().toISOString(),
+        });
+
+        await writeEvent('token:metrics', {
+          jobId,
+          promptTokens: 18400,
+          completionTokens: 3820,
+          totalTokens: 22220,
+          estimatedCostUSD: 0.0124,
+          tokensPerSec: 220,
+          latencyMs: 450,
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
+
         // Stage 5: Arbitration
         await writeEvent('stage:transition', {
           jobId,
           stage: 'arbitration',
           status: 'running',
-          overallProgress: 90,
+          overallProgress: 92,
           message: 'Deduplicating findings, enforcing P0 blocker rules & auto-approval gate',
           timestamp: new Date().toISOString(),
         });
+        await writeEvent('log:chunk', {
+          jobId,
+          persona: 'all',
+          stream: 'stdout',
+          chunk: '[Arbitration Gate] 1 P1 finding recorded. No P0 blockers found. Review Yeti consensus: SHIP.',
+          timestamp: new Date().toISOString(),
+        });
+
+        if (stepDelay > 0 && !isAborted) await sleep(stepDelay);
 
         // Stage 6: Publication & Complete
         await writeEvent('stage:transition', {
@@ -2242,8 +2569,9 @@ export async function handleDashboardApi(
           jobId,
           status: 'completed',
           verdict: 'SHIP',
-          durationMs: 18450,
+          durationMs: 14200,
           totalTokens: 22220,
+          costUSD: 0.0124,
           timestamp: new Date().toISOString(),
         });
 

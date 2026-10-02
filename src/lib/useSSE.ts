@@ -40,6 +40,14 @@ export interface SwarmTaskItem {
   findingsCount: number;
   lastMessage?: string;
   durationMs?: number;
+  tokensBurned?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  tokensPerSec?: number;
+  costUSD?: number | null;
+  budgetUSD?: number | null;
+  turn?: number;
+  maxTurns?: number;
 }
 
 export interface ContextCompactionMetrics {
@@ -247,6 +255,7 @@ export function useSSE(options: UseSSEOptions = {}) {
     let latestLatency = metricsRef.current.latencyMs;
     let astNodesDelta = 0;
     let nitsDelta = 0;
+    let absoluteMetrics: Partial<StreamingTokenMetrics> | null = null;
 
     const nextPersonaProgress = { ...personaProgressRef.current };
 
@@ -284,6 +293,14 @@ export function useSSE(options: UseSSEOptions = {}) {
               findingsCount: t.findingsCount ?? 0,
               lastMessage: t.lastMessage || 'Queued for subagent execution',
               durationMs: t.durationMs ?? 0,
+              tokensBurned: t.tokensBurned ?? 0,
+              promptTokens: t.promptTokens ?? 0,
+              completionTokens: t.completionTokens ?? 0,
+              tokensPerSec: t.tokensPerSec ?? 0,
+              costUSD: t.costUSD ?? 0,
+              budgetUSD: t.budgetUSD ?? 0.0125,
+              turn: t.turn ?? 0,
+              maxTurns: t.maxTurns ?? 20,
             }))
           );
         }
@@ -300,6 +317,14 @@ export function useSSE(options: UseSSEOptions = {}) {
                   findingsCount: data.findingsCount !== undefined ? data.findingsCount : t.findingsCount,
                   lastMessage: data.lastMessage || t.lastMessage,
                   durationMs: data.durationMs !== undefined ? data.durationMs : t.durationMs,
+                  tokensBurned: data.tokensBurned !== undefined ? data.tokensBurned : t.tokensBurned,
+                  promptTokens: data.promptTokens !== undefined ? data.promptTokens : t.promptTokens,
+                  completionTokens: data.completionTokens !== undefined ? data.completionTokens : t.completionTokens,
+                  tokensPerSec: data.tokensPerSec !== undefined ? data.tokensPerSec : t.tokensPerSec,
+                  costUSD: data.costUSD !== undefined ? data.costUSD : t.costUSD,
+                  budgetUSD: data.budgetUSD !== undefined ? data.budgetUSD : t.budgetUSD,
+                  turn: data.turn !== undefined ? data.turn : t.turn,
+                  maxTurns: data.maxTurns !== undefined ? data.maxTurns : t.maxTurns,
                 };
               }
               return t;
@@ -319,6 +344,12 @@ export function useSSE(options: UseSSEOptions = {}) {
                   findingsCount: data.findingsCount !== undefined ? data.findingsCount : t.findingsCount,
                   lastMessage: data.lastMessage || 'Task completed successfully',
                   durationMs: data.durationMs !== undefined ? data.durationMs : t.durationMs,
+                  tokensBurned: data.tokensBurned !== undefined ? data.tokensBurned : t.tokensBurned,
+                  promptTokens: data.promptTokens !== undefined ? data.promptTokens : t.promptTokens,
+                  completionTokens: data.completionTokens !== undefined ? data.completionTokens : t.completionTokens,
+                  tokensPerSec: 0,
+                  costUSD: data.costUSD !== undefined ? data.costUSD : t.costUSD,
+                  budgetUSD: data.budgetUSD !== undefined ? data.budgetUSD : t.budgetUSD,
                 };
               }
               return t;
@@ -662,19 +693,28 @@ export function useSSE(options: UseSSEOptions = {}) {
         }));
       }
 
-      // Token and cost extraction
-      if (data) {
+      // Absolute vs Delta Token and Cost Extraction
+      if (type === 'token:metrics' || (type === 'token:update' && data?.isAbsolute)) {
+        absoluteMetrics = {
+          promptTokens: typeof data?.promptTokens === 'number' ? data.promptTokens : undefined,
+          completionTokens: typeof data?.completionTokens === 'number' ? data.completionTokens : undefined,
+          totalTokens: typeof data?.totalTokens === 'number' ? data.totalTokens : undefined,
+          estimatedCostUSD: typeof data?.costUSD === 'number' ? data.costUSD : typeof data?.estimatedCostUSD === 'number' ? data.estimatedCostUSD : undefined,
+          tokensPerSec: typeof data?.tokensPerSec === 'number' ? data.tokensPerSec : undefined,
+          latencyMs: typeof data?.latencyMs === 'number' ? data.latencyMs : undefined,
+        };
+      } else if (data) {
         if (type === 'token:update') {
           if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
           if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
           if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
           if (typeof data.costUSD === 'number') costDelta += data.costUSD;
           else if (typeof data.estimatedCostUSD === 'number') costDelta += data.estimatedCostUSD;
+        } else {
+          if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
+          if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
+          if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
         }
-
-        if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
-        if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
-        if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
 
         if (typeof data.tokensUsed === 'object' && data.tokensUsed !== null) {
           if (typeof data.tokensUsed.prompt === 'number') pTokensDelta += data.tokensUsed.prompt;
@@ -710,15 +750,25 @@ export function useSSE(options: UseSSEOptions = {}) {
 
     // Calculate new metrics totals
     setTokenMetrics((prev) => {
-      const newPrompt = prev.promptTokens + pTokensDelta;
-      const newCompletion = prev.completionTokens + cTokensDelta;
-      const newTotal = prev.totalTokens + (tTokensDelta || pTokensDelta + cTokensDelta);
-      const newCost = prev.estimatedCostUSD + costDelta;
-      const newAst = prev.astNodes + astNodesDelta;
-      const newNits = prev.nitsFound + nitsDelta;
+      let newPrompt = prev.promptTokens + pTokensDelta;
+      let newCompletion = prev.completionTokens + cTokensDelta;
+      let newTotal = prev.totalTokens + (tTokensDelta || pTokensDelta + cTokensDelta);
+      let newCost = prev.estimatedCostUSD + costDelta;
+      let newAst = prev.astNodes + astNodesDelta;
+      let newNits = prev.nitsFound + nitsDelta;
+
+      if (absoluteMetrics) {
+        if (typeof absoluteMetrics.promptTokens === 'number') newPrompt = absoluteMetrics.promptTokens;
+        if (typeof absoluteMetrics.completionTokens === 'number') newCompletion = absoluteMetrics.completionTokens;
+        if (typeof absoluteMetrics.totalTokens === 'number') newTotal = absoluteMetrics.totalTokens;
+        if (typeof absoluteMetrics.estimatedCostUSD === 'number') newCost = absoluteMetrics.estimatedCostUSD;
+        if (typeof absoluteMetrics.latencyMs === 'number') latestLatency = absoluteMetrics.latencyMs;
+      }
 
       // Approximate tokens per sec based on latency or batch size
-      const tps = latestLatency > 0 ? Math.round(((cTokensDelta || 1) / (latestLatency / 1000)) * 10) / 10 : prev.tokensPerSec;
+      const tps = absoluteMetrics && typeof absoluteMetrics.tokensPerSec === 'number'
+        ? absoluteMetrics.tokensPerSec
+        : latestLatency > 0 ? Math.round(((cTokensDelta || 1) / (latestLatency / 1000)) * 10) / 10 : prev.tokensPerSec;
 
       const newMetrics: StreamingTokenMetrics = {
         promptTokens: newPrompt,

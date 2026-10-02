@@ -19,6 +19,12 @@ const sampleNode: TopologyNodeData = {
   status: 'IN_FLIGHT',
   health: 99.5,
   latencyMs: 1400,
+  progress: 75,
+  tokensBurned: 4850,
+  budgetUsedUSD: 0.0034,
+  budgetMaxUSD: 0.0125,
+  activeTurn: 2,
+  maxTurns: 20,
   metrics: {
     tokensPerSec: 142,
     turnsCount: 2,
@@ -26,6 +32,8 @@ const sampleNode: TopologyNodeData = {
     memoryMb: 24.2,
     compactionRatio: 4.2,
     activeFiles: ['src/gateway/edgeCompactionEngine.ts'],
+    promptTokens: 4200,
+    completionTokens: 650,
   },
   role: 'Secret redaction & edge boundary fences',
   provider: 'OpenRouter Gateway',
@@ -50,6 +58,18 @@ describe('NodeHoverInspectionCard Component', () => {
     expect(screen.getByText('142')).toBeDefined();
     expect(screen.getByText('4.2x')).toBeDefined();
     expect(screen.getByText('src/gateway/edgeCompactionEngine.ts')).toBeDefined();
+  });
+
+  it('renders progressive live telemetry: % complete, tokens burned, and budget consumed', () => {
+    render(<NodeHoverInspectionCard node={sampleNode} />);
+
+    expect(screen.getByText('Execution Progress')).toBeDefined();
+    expect(screen.getByText('75%')).toBeDefined();
+    expect(screen.getByText('Tokens Burned')).toBeDefined();
+    expect(screen.getByText('4,850')).toBeDefined();
+    expect(screen.getByText('Budget Consumed')).toBeDefined();
+    expect(screen.getByText('$0.0034')).toBeDefined();
+    expect(screen.getByText('Turn 2')).toBeDefined();
   });
 
   it('triggers onInspectNode callback when inspect node button is clicked', () => {
@@ -245,5 +265,13 @@ describe('LiveDashboardView Swarm & Infra Mesh Tab Integration', () => {
       expect(screen.getByText('Hide Topology Mesh ▴')).toBeDefined();
       expect(screen.getByTestId('live-swarm-topology-canvas')).toBeDefined();
     });
+  });
+
+  it('renders live review budget meter and tokens meter in HUD strip', () => {
+    render(<LiveDashboardView />);
+
+    expect(screen.getByTestId('hud-tokens-meter')).toBeDefined();
+    expect(screen.getByTestId('hud-budget-meter')).toBeDefined();
+    expect(screen.getByText('Budget:')).toBeDefined();
   });
 });
