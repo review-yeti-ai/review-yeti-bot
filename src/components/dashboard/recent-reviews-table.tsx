@@ -377,7 +377,7 @@ export function RecentReviewsTable({
                   </div>
                 </TableHead>
                 <TableHead className="w-[160px] text-[11px] font-mono uppercase tracking-wider text-zinc-400">
-                  Swarm Personas
+                  Swarm Tasks
                 </TableHead>
                 <TableHead
                   className="text-right w-[100px] cursor-pointer select-none group text-[11px] font-mono uppercase tracking-wider text-zinc-400"

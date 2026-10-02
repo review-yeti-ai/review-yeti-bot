@@ -1,4 +1,12 @@
 export type LiveStreamEventType =
+  | 'connection:open'
+  | 'task:plan'
+  | 'task:progress'
+  | 'task:complete'
+  | 'context:compaction'
+  | 'finding:anchored'
+  | 'ping'
+  | 'log:chunk'
   | 'persona:start'
   | 'persona:chunk'
   | 'persona:reasoning'
@@ -18,6 +26,9 @@ export type LiveStreamEventType =
   | 'job:queued'
   | 'job:dispatched'
   | 'job:complete'
+  | 'stage:transition'
+  | 'turn:step'
+  | 'token:update'
   // Legacy event type shims
   | 'agent_start'
   | 'llm_chunk'
@@ -289,3 +300,40 @@ export interface LiveDashboardState {
   tokenHistory: TokenMetricHistoryPoint[];
   activeJobs: LiveJobSummary[];
 }
+
+export type ReviewStage =
+  | 'admission'
+  | 'compaction'
+  | 'planning'
+  | 'execution'
+  | 'arbitration'
+  | 'publication'
+  | 'complete';
+
+export interface StageState {
+  stage: ReviewStage;
+  label: string;
+  description: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+}
+
+export interface TurnStepRecord {
+  id: string;
+  jobId: string;
+  personaId: string;
+  taskId?: string;
+  turn: number;
+  maxTurns: number;
+  action: 'planning' | 'tool_call' | 'reasoning' | 'finding_formulation' | 'finalization' | string;
+  tool?: string;
+  input?: any;
+  output?: any;
+  tokensBurned?: number;
+  latencyMs?: number;
+  timestamp: string;
+}
+

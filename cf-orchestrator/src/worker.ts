@@ -230,6 +230,11 @@ export default {
         });
       }
 
+      // Live Swarm Command Center shortcut / alias: /l redirects directly to /
+      if (url.pathname === '/l' || url.pathname === '/live-swarm') {
+        return Response.redirect(new URL('/', request.url).toString(), 302);
+      }
+
       // Pull-path worker status poller: /api/dispatch/runs/:runId/status
       const statusMatch = url.pathname.match(/^\/api\/dispatch\/runs\/([^/]+)\/status$/);
       if (statusMatch && request.method === 'GET') {

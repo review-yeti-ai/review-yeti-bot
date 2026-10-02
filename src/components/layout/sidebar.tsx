@@ -53,6 +53,12 @@ const coreNavItems: NavItem[] = [
     shortcut: 'G L',
   },
   {
+    title: 'Memory & Cache',
+    href: '/memory',
+    icon: Database,
+    shortcut: 'G M',
+  },
+  {
     title: 'Repositories',
     href: '/repos',
     icon: FolderGit2,
@@ -62,20 +68,9 @@ const coreNavItems: NavItem[] = [
 
 const configNavItems: NavItem[] = [
   {
-    title: 'Persona Editor',
-    href: '/settings?tab=personas',
+    title: 'Swarm Tasks & Policies',
+    href: '/settings',
     icon: Sliders,
-  },
-  {
-    title: 'AI Models & Providers',
-    href: '/settings?tab=models',
-    icon: Cpu,
-  },
-  {
-    title: 'Memory Engine',
-    href: '/memory',
-    icon: Database,
-    badge: 'AST',
   },
   {
     title: 'Integrations',
@@ -86,12 +81,6 @@ const configNavItems: NavItem[] = [
     title: 'GitHub App',
     href: '/github-app',
     icon: GitBranch,
-  },
-  {
-    title: 'Onboarding Wizard',
-    href: '/onboarding',
-    icon: Sparkles,
-    badge: 'NEW',
   },
 ];
 
@@ -243,7 +232,7 @@ export function Sidebar() {
               </span>
             </div>
           </Link>
-          <span className="sr-only">ct-review-bot</span>
+          <span className="sr-only">review-yeti-bot</span>
         </div>
 
         {/* Navigation Scroll Container */}

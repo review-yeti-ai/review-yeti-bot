@@ -49,8 +49,8 @@ const pageTitles: Record<string, { title: string; description: string }> = {
     description: 'Installation manifest exchange and repository binding settings',
   },
   '/memory': {
-    title: 'Codebase Memory & Graph Engine',
-    description: 'Symbol AST dependency graph viewer, learned repository rules, and semantic search engine',
+    title: 'Edge Cache & Review Memory',
+    description: 'Cloudflare R2 workspace cache, KV auth tokens, and D1 review memory status',
   },
 };
 
@@ -64,27 +64,6 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
 
   const displayTitle = title || routeMeta.title;
   const displayDescription = description || routeMeta.description;
-
-  const [isDemoMode, setIsDemoMode] = React.useState(false);
-
-  React.useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('ry_mode');
-      if (stored === 'demo') {
-        setIsDemoMode(true);
-      }
-    }
-  }, []);
-
-  const toggleMode = () => {
-    const next = !isDemoMode;
-    setIsDemoMode(next);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('ry_mode', next ? 'demo' : 'live');
-      window.dispatchEvent(new CustomEvent('ry_mode_change', { detail: next ? 'demo' : 'live' }));
-    }
-    if (onRefresh) onRefresh();
-  };
 
   return (
     <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-white/[0.06] bg-[#08090a]/90 px-3 sm:px-6 backdrop-blur-xl">
@@ -106,19 +85,11 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
 
       {/* Right Environment Badges & Action Buttons */}
       <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-        {/* Transparent Data Mode Switcher (Live Edge vs Sample Baseline) */}
-        <button
-          onClick={toggleMode}
-          title={isDemoMode ? 'Showing Sample Swarm Baseline. Click to switch to Live Edge.' : 'Showing Live Cloudflare Edge. Click to switch to Sample Baseline.'}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-mono border transition-all ${
-            isDemoMode
-              ? 'bg-amber-500/10 border-amber-500/25 text-amber-300 hover:bg-amber-500/15'
-              : 'bg-emerald-500/10 border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/15'
-          }`}
-        >
-          <Zap className="h-3 w-3" />
-          <span>{isDemoMode ? 'Baseline Demo' : 'Live Edge'}</span>
-        </button>
+        {/* Cloudflare Edge Status Badge */}
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-mono border bg-emerald-500/10 border-emerald-500/25 text-emerald-300">
+          <Zap className="h-3 w-3 text-emerald-400" />
+          <span>Live Edge</span>
+        </div>
 
         {/* Version & Git Commit Badge */}
         <div className="hidden sm:flex">
@@ -132,7 +103,7 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
         </div>
 
         {/* Action Button: Live Stream Shortcut */}
-        {pathname !== '/live' && (
+        {pathname !== '/' && pathname !== '/live' && (
           <Button asChild variant="outline" size="sm" className="gap-1.5 text-xs h-7 px-2.5 border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:bg-white/[0.06]">
             <Link href="/live">
               <Radio className="h-3 w-3 text-emerald-400 animate-pulse" />
@@ -162,7 +133,7 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
           className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]"
         >
           <a
-            href="https://github.com/calltelemetry/cisco-cdr"
+            href="https://github.com/reviewyeti-ai/review-yeti-bot"
             target="_blank"
             rel="noreferrer"
             title="GitHub Repository"

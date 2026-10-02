@@ -3609,6 +3609,7 @@ export class DashboardStore {
       : 0;
 
     const knownModels = [
+      { model: 'reviewyeti-ai/yeti-pr-reviewer', displayName: 'Review Yeti PR Reviewer', providerId: 'reviewyeti-ai' },
       { model: 'claude-5-sonnet', displayName: 'Claude 5 Sonnet', providerId: 'claude' },
       { model: 'gpt-5.6-sol', displayName: 'GPT-5.6 Sol', providerId: 'codex' },
       { model: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', providerId: 'deepseek' },

@@ -51,8 +51,10 @@ function SettingsContent() {
   const [activeTab, setActiveTab] = React.useState<string>(tabParam === 'models' ? 'models' : 'personas');
 
   React.useEffect(() => {
-    if (tabParam === 'models' || tabParam === 'personas') {
-      setActiveTab(tabParam);
+    if (tabParam === 'models') {
+      setActiveTab('models');
+    } else if (tabParam === 'personas' || tabParam === 'swarm' || tabParam === 'tasks') {
+      setActiveTab('personas');
     }
   }, [tabParam]);
 
@@ -79,7 +81,7 @@ function SettingsContent() {
   const activePersona = personas[selectedId] || {
     id: selectedId,
     displayName: PERSONA_METADATA[selectedId as keyof typeof PERSONA_METADATA]?.name || selectedId,
-    model: 'openrouter/auto',
+    model: 'reviewyeti-ai/yeti-pr-reviewer',
     effort: 'low',
     maxTurns: 20,
     confidenceThreshold: 80,
@@ -229,7 +231,7 @@ function SettingsContent() {
   };
 
   const activeCount = Object.values(personas).filter((p) => p.enabled !== false).length;
-  const currentPersonaModel = activePersona.model || 'openrouter/auto';
+  const currentPersonaModel = activePersona.model || 'reviewyeti-ai/yeti-pr-reviewer';
   const enabledProviderList = Object.values(providers).filter((p) => p.enabled !== false && p.active !== false);
 
   const allAvailableModels = React.useMemo(() => {
@@ -269,11 +271,11 @@ function SettingsContent() {
       {/* Header and Tab Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-foreground">
-            Platform &amp; Persona Control Panel — AI Providers &amp; Models
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Configure domain-specialized reviewer personas, AI model routing, API credentials, and provider endpoints
+          <h1 className="text-xl font-bold tracking-tight text-foreground">
+            Swarm Policies &amp; Settings
+          </h1>
+          <p className="text-xs text-muted-foreground">
+            Reviewer persona verifications, context compaction, and edge provider budgets
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -309,12 +311,12 @@ function SettingsContent() {
       <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
         <TabsList className="grid w-full grid-cols-2 max-w-md bg-card/80 border border-border/60">
           <TabsTrigger value="personas" className="flex items-center gap-2 text-xs font-semibold">
-            <Sliders className="h-4 w-4 text-purple-400" />
-            Swarm Review Tasks &amp; Dimensions
+            <Sliders className="h-3.5 w-3.5 text-purple-400" />
+            Review Tasks &amp; Personas
           </TabsTrigger>
           <TabsTrigger value="models" className="flex items-center gap-2 text-xs font-semibold">
-            <Cpu className="h-4 w-4 text-indigo-400" />
-            Edge Swarm Infrastructure &amp; Budgets
+            <Cpu className="h-3.5 w-3.5 text-indigo-400" />
+            Model Providers &amp; Budgets
           </TabsTrigger>
         </TabsList>
 

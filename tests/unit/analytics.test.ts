@@ -80,9 +80,9 @@ describe('Milestone 24 & 26: Typed Analytics REST API Unit Tests', () => {
       expect(res.body.monthlyBudgetUsd).toBeDefined();
       expect(Array.isArray(res.body.breakdown)).toBe(true);
 
-      const modelItem = res.body.breakdown.find((m: any) => m.model === 'claude-5-sonnet');
+      const modelItem = res.body.breakdown.find((m: any) => m.model === 'reviewyeti-ai/yeti-pr-reviewer');
       expect(modelItem).toBeDefined();
-      expect(modelItem.displayName).toBe('Claude 5 Sonnet');
+      expect(modelItem.displayName).toBe('Review Yeti PR Reviewer');
     });
   });
 

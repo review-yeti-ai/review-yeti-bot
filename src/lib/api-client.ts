@@ -81,15 +81,13 @@ export async function updatePersona(personaId: string, patch: Partial<PersonaSet
 }
 
 // Overview & Logs API
-export async function fetchOverviewStats(options?: { mode?: string }): Promise<OverviewStats> {
-  const mode = options?.mode || (typeof window !== 'undefined' ? localStorage.getItem('ry_mode') || 'live' : 'live');
-  const res = await request<{ success: boolean; overview: OverviewStats }>(`/api/dashboard/overview?mode=${encodeURIComponent(mode)}`);
+export async function fetchOverviewStats(): Promise<OverviewStats> {
+  const res = await request<{ success: boolean; overview: OverviewStats }>('/api/dashboard/overview');
   return res.overview;
 }
 
-export async function fetchReviewLogs(options?: { mode?: string }): Promise<ReviewJob[]> {
-  const mode = options?.mode || (typeof window !== 'undefined' ? localStorage.getItem('ry_mode') || 'live' : 'live');
-  const res = await request<{ success: boolean; logs: ReviewJob[] }>(`/api/dashboard/logs?mode=${encodeURIComponent(mode)}`);
+export async function fetchReviewLogs(): Promise<ReviewJob[]> {
+  const res = await request<{ success: boolean; logs: ReviewJob[] }>('/api/dashboard/logs');
   return res.logs || [];
 }
 
@@ -271,6 +269,33 @@ export async function searchMemoryCode(query = 'security', limit = 10): Promise<
 export async function fetchMemoryLearnings(repo?: string): Promise<any> {
   const queryParam = repo ? `?repo=${encodeURIComponent(repo)}` : '';
   return request(`/api/memory/learnings${queryParam}`);
+}
+
+export async function fetchMemoryStats(): Promise<any> {
+  return request('/api/memory/stats');
+}
+
+export async function queryMemoryPlatform(params: {
+  q?: string;
+  repo?: string;
+  category?: string;
+}): Promise<any> {
+  const sp = new URLSearchParams();
+  if (params.q) sp.set('q', params.q);
+  if (params.repo) sp.set('repo', params.repo);
+  if (params.category) sp.set('category', params.category);
+  return request(`/api/memory/query?${sp.toString()}`);
+}
+
+export async function exportMemorySnapshot(format: 'json' | 'markdown' | 'csv' = 'json', repo?: string): Promise<any> {
+  const sp = new URLSearchParams();
+  sp.set('format', format);
+  if (repo) sp.set('repo', repo);
+  return request(`/api/memory/export?${sp.toString()}`);
+}
+
+export async function purgeMemoryCache(): Promise<{ success: boolean; message: string; deletedCount: number }> {
+  return request('/api/memory/purge', { method: 'POST' });
 }
 
 // MCP Fleet API

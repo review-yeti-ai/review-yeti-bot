@@ -49,6 +49,7 @@ export interface SwarmTaskMatrixProps {
   compaction?: ContextCompactionMetrics | null;
   selectedTaskId?: string | null;
   onSelectTask?: (taskId: string) => void;
+  activeTurnByTask?: Record<string, { current: number; max: number }>;
   className?: string;
 }
 
@@ -165,6 +166,7 @@ export function SwarmTaskMatrix({
   compaction = DEFAULT_COMPACTION,
   selectedTaskId,
   onSelectTask,
+  activeTurnByTask = {},
   className = '',
 }: SwarmTaskMatrixProps) {
   const activeTasks = tasks && tasks.length > 0 ? tasks : DEFAULT_SWARM_TASKS;
@@ -244,12 +246,22 @@ export function SwarmTaskMatrix({
                   </span>
                 </div>
 
-                <Badge
-                  variant="outline"
-                  className={`text-[9px] uppercase font-mono px-1.5 py-0 ${dim.badgeClass}`}
-                >
-                  {task.dimension}
-                </Badge>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {activeTurnByTask && (activeTurnByTask[task.id] || activeTurnByTask[task.dimension]) && (
+                    <span
+                      className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 font-semibold"
+                      data-testid={`task-turn-badge-${task.id}`}
+                    >
+                      T{(activeTurnByTask[task.id] || activeTurnByTask[task.dimension]).current}/{(activeTurnByTask[task.id] || activeTurnByTask[task.dimension]).max}
+                    </span>
+                  )}
+                  <Badge
+                    variant="outline"
+                    className={`text-[9px] uppercase font-mono px-1.5 py-0 ${dim.badgeClass}`}
+                  >
+                    {task.dimension}
+                  </Badge>
+                </div>
               </div>
 
               {/* Task Description */}
