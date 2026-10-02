@@ -41,7 +41,8 @@ describe('package.json script contract', () => {
   });
 
   it('keeps build:backend, which Dockerfile.worker and the build script depend on', () => {
-    // Pin the contract (it exists and compiles the server tsconfig), not the exact flag spelling.
-    expect(pkg.scripts['build:backend']).toMatch(/\btsc\b.*tsconfig\.server\.json/u);
+    // The script must be one plain tsc run against the server tsconfig: -p/--project spelling and extra
+    // flags are fine, but a chained or failure-swallowing command (`|| true`, `;`, `&&`) is not.
+    expect(pkg.scripts['build:backend']).toMatch(/^tsc (?:-p|--project) tsconfig\.server\.json(?: --[a-zA-Z-]+(?: [^\s&|;]+)?)*$/u);
   });
 });
