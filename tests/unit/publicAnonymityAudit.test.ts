@@ -23,7 +23,7 @@ const FORBIDDEN = new RegExp([
   ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name.split('-').join('[-_ ]')}(?![a-z0-9])`),
 ].join('|'), 'giu');
 
-// Binary assets only: lockfiles are text and are scanned like everything else.
+// Binary assets are read as raw bytes; lockfiles are text and are scanned like everything else.
 const BINARY = /\.(png|db|ico|jpe?g|gif|woff2?)$/iu;
 
 function trackedFiles(): string[] {
@@ -43,11 +43,10 @@ function digestOf(matches: string[]): string {
 function findingsByFile(): Map<string, Finding> {
   const findings = new Map<string, Finding>();
   for (const file of trackedFiles()) {
-    // Every tracked file NAME is checked; binary assets are not read as text.
+    // Every tracked file NAME is checked. Binary assets are scanned as raw bytes (latin1) so embedded
+    // strings count; text files are read as UTF-8.
     let text = '';
-    if (!BINARY.test(file)) {
-      try { text = fs.readFileSync(path.join(root, file), 'utf8'); } catch { text = ''; }
-    }
+    try { text = fs.readFileSync(path.join(root, file), BINARY.test(file) ? 'latin1' : 'utf8'); } catch { text = ''; }
     const matches = [...(text.match(FORBIDDEN) ?? []), ...(file.match(FORBIDDEN) ?? [])];
     if (matches.length > 0) findings.set(file, { count: matches.length, digest: digestOf(matches) });
   }
