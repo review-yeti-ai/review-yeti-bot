@@ -16,6 +16,26 @@ function toolJson(result: any): any {
 }
 
 describe('native review finding identity', () => {
+  it.each([{ path: 'src/line-only.ts', line: 18 }, { file: 'src/file-alias.ts', line: 20 }])('shares fallback coordinates with explain for %j', async (finding) => {
+    const db = { query: vi.fn().mockResolvedValue({ rows: [{ run_id: 'run-coordinates', payload: { findings: [{ ...finding, title: 'Coordinates', severity: 'P2' }] } }] }) };
+    const args = { owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583 };
+    const listed = toolJson(await createGetReviewFindingsTool(db).execute(args)).findings[0];
+    const resource = await fetchFindingsResource(args.owner, args.repo, args.pull_number, db);
+    const modelClient = { complete: vi.fn().mockResolvedValue({ content: '{"explanation":"Coordinates","satisfies_requirement":null}' }) };
+    const caller = { authType: 'static_token' as const, tokenDigest: 'test-digest', isAdmin: false, allowedRepositories: new Set(['calltelemetry/ct-uat']), callerId: 'coordinate-test' };
+    await createExplainFindingTool({ queryableDatabase: db, modelClient }).execute({ ...args, finding_id: listed.finding_id, question: 'What does this finding refer to?' }, { caller });
+    expect(resource.findings[0]).toMatchObject({ file_path: listed.file_path, line_start: finding.line, line_end: finding.line });
+    expect(modelClient.complete).toHaveBeenCalledOnce();
+    expect(modelClient.complete.mock.calls[0][0].messages[1].content).toContain(`- Location: ${listed.file_path}:${finding.line}-${finding.line}`);
+  });
+
+  it('selects the greatest attempt from oldest-first rows and retains the first equal-attempt row', () => {
+    const older = { run_id: 'run-ordered', execution_attempt: 1 }, newest = { run_id: 'run-ordered', execution_attempt: 2 };
+    const other = { run_id: 'run-other', execution_attempt: 1 }, tie = { ...newest };
+    expect(newestReviewRowsPerRun([older, newest, other, tie])).toEqual([newest, other]);
+    expect(newestReviewRowsPerRun([older, newest, other, tie])[0]).toBe(newest);
+  });
+
   it('keeps displayed IDs aligned across listing, resources, explain, and diff tools', async () => {
     const target = {
       title: 'Tenant lookup must use the canonical worker name',

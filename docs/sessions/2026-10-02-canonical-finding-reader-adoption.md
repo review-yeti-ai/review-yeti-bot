@@ -8,3 +8,4 @@ The unchanged protected baseline and immediate replay each passed 10/11; resourc
 Canonical IDs now share persona and end-line identity; unique legacy aliases remain accepted, collisions rejected.
 Dispute writers, registration/router, publisher markers, RBAC, and defaults stay unchanged.
 Source qualification and ordinary Draft CI precede Ready admission; no live activation is claimed.
+Review controls reproduce line-only/file-alias coordinate drift and the first-row-wins oracle gap; shared coordinates and additive oldest-first/tie assertions repair them without changing the original cases.
