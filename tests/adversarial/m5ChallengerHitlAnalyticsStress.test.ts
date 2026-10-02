@@ -585,6 +585,18 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
         expect(filtered7d.map((l) => l.id)).toEqual(
           expect.arrayContaining(['log-boundary-inside', 'log-boundary-exact', 'log-boundary-outside'])
         );
+        const D30 = 30 * 86400 * 1000;
+        (dashboardStore as any).data.reviewLogs = [
+          { id: '30d-exact', timestamp: new Date(now - D30).toISOString(), repo: 'exampleorg/test' },
+          { id: '30d-outside', timestamp: new Date(now - D30 - 1).toISOString(), repo: 'exampleorg/test' },
+          { id: 'pr-run-match', timestamp: new Date(now).toISOString(), prRun: 'exampleorg/test#42' },
+          { id: 'repo-mismatch', timestamp: new Date(now).toISOString(), repo: 'exampleorg/other', prRun: 'exampleorg/other#42' },
+          { id: 'repo-missing', timestamp: new Date(now).toISOString() },
+        ];
+        expect(dashboardStore.getFilteredReviewLogs('30d', 'exampleorg/test').map((l) => l.id))
+          .toEqual(['30d-exact', 'pr-run-match']);
+        expect(dashboardStore.getFilteredReviewLogs('7d', 'exampleorg/test').map((l) => l.id))
+          .toEqual(['pr-run-match']);
         expect(Date.now()).toBe(now);
       } finally {
         clock.mockRestore();
@@ -630,7 +642,8 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
       (dashboardStore as any).cache.tokenTimeSeries = {};
 
       const tokenSeries = dashboardStore.getTokenTimeSeries('7d', 'exampleorg/burn-test', 'day');
-      const dataPoints = Array.isArray(tokenSeries.data) ? tokenSeries.data : [];
+      expect(Array.isArray(tokenSeries.data)).toBe(true);
+      const dataPoints = tokenSeries.data;
 
       expect(dataPoints.length).toBe(7);
 
@@ -699,7 +712,8 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
       const costs = dashboardStore.getCostBreakdown('24h');
       expect(costs.totalSpendUsd).toBe(0.6);
 
-      const repoSum = (costs.byRepo || []).reduce((acc, r) => acc + r.spendUsd, 0);
+      expect(Array.isArray(costs.byRepo)).toBe(true);
+      const repoSum = costs.byRepo!.reduce((acc, r) => acc + r.spendUsd, 0);
       expect(parseFloat(repoSum.toFixed(4))).toBe(0.6);
     });
   });
