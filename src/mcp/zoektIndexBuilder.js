@@ -3,6 +3,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { GROUNDING_INDEXER_HEAP_LIMIT_BYTES } = require('./zoektMemoryBudget');
 
 // ADR: knowledge/adr/0329-adopt-zoekt-as-a-bounded-review-time-search-pilot-for-review-yeti.md
 //
@@ -16,18 +17,24 @@ const path = require('path');
 // pipeline-controlled configuration (the checkout path the pipeline itself
 // produced, a scratch directory it chose). It performs no network I/O.
 
+// Memory-bounded defaults (REL-1282). One builder with 8 MiB shards and a Go heap limit keeps the
+// indexer near 190 MiB on a 230 MiB working tree; the former 2 x 100 MiB shards peaked at 270-790 MiB
+// and OOMKilled the worker container. See zoektMemoryBudget.js for the measurements.
 const DEFAULTS = Object.freeze({
-  timeoutMs: 90_000,
-  parallelism: 2,
+  timeoutMs: 120_000,
+  parallelism: 1,
   fileLimitBytes: 2 * 1024 * 1024,
-  shardLimitBytes: 100 * 1024 * 1024,
+  shardLimitBytes: 8 * 1024 * 1024,
+  memoryLimitBytes: GROUNDING_INDEXER_HEAP_LIMIT_BYTES,
 });
 const MAX_LIMITS = Object.freeze({
   timeoutMs: 180_000,
   parallelism: 4,
   fileLimitBytes: 8 * 1024 * 1024,
   shardLimitBytes: 512 * 1024 * 1024,
+  memoryLimitBytes: 512 * 1024 * 1024,
 });
+const MIN_MEMORY_LIMIT_BYTES = 64 * 1024 * 1024;
 // Directories omitted from this index because they routinely dominate a fresh
 // checkout's disk footprint (dependency trees, compiled build output). Kept
 // narrow and additive to zoekt-index's own ".git,.hg,.svn" default.
@@ -44,6 +51,10 @@ function resolveBuildConfig(config = {}) {
     parallelism: boundedInteger(config.parallelism, DEFAULTS.parallelism, MAX_LIMITS.parallelism),
     fileLimitBytes: boundedInteger(config.fileLimitBytes, DEFAULTS.fileLimitBytes, MAX_LIMITS.fileLimitBytes),
     shardLimitBytes: boundedInteger(config.shardLimitBytes, DEFAULTS.shardLimitBytes, MAX_LIMITS.shardLimitBytes),
+    memoryLimitBytes: Math.max(
+      MIN_MEMORY_LIMIT_BYTES,
+      boundedInteger(config.memoryLimitBytes, DEFAULTS.memoryLimitBytes, MAX_LIMITS.memoryLimitBytes),
+    ),
     ignoreDirs: Array.isArray(config.ignoreDirs) && config.ignoreDirs.length > 0
       ? [...new Set(config.ignoreDirs.map((entry) => String(entry)))].slice(0, 32)
       : DEFAULT_IGNORE_DIRS,
@@ -98,7 +109,8 @@ async function buildZoektIndex({ workdir, indexDir, config = {}, signal } = {}) 
     try {
       child = spawn(resolved.zoektIndexBinaryPath, args, {
         cwd: indexDir,
-        env: { PATH: process.env.PATH || '' },
+        // GOMEMLIMIT is a soft Go heap ceiling: the collector works harder instead of growing past it.
+        env: { PATH: process.env.PATH || '', GOMEMLIMIT: `${resolved.memoryLimitBytes}B` },
         stdio: ['ignore', 'ignore', 'pipe'],
       });
     } catch (error) {
