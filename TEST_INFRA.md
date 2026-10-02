@@ -65,7 +65,7 @@ Mapping all requirements (R1 - R4) from `PROJECT.md` and `ORIGINAL_REQUEST.md` a
 - `TEST_T1_F3_02`: `GET /api/github/repos` returns repositories belonging to user or organization.
 - `TEST_T1_F3_03`: Repository listing includes 1-click monitoring toggle status (`automationEnabled: boolean`).
 - `TEST_T1_F3_04`: Repository listing correlates strictness profile (`chill` | `balanced` | `assertive`).
-- `TEST_T1_F3_05`: Supports filtering repositories by organization name query parameter (`?org=calltelemetry`).
+- `TEST_T1_F3_05`: Supports filtering repositories by organization name query parameter (`?org=example-org`).
 
 #### F4: Active Pull Requests Discovery & Review Dispatch
 - `TEST_T1_F4_01`: `GET /api/github/repos/:owner/:repo/pulls` returns open PRs with title, author, branch, head SHA, and draft status.
@@ -216,7 +216,7 @@ Mapping all requirements (R1 - R4) from `PROJECT.md` and `ORIGINAL_REQUEST.md` a
 ### Tier 4: Real-World Scenarios (Comprehensive End-to-End Workflows — 5 Tests)
 
 - `TEST_T4_SCENARIO_01`: **Developer Happy-Path: OAuth Login -> Repo Discovery -> Active PR Review -> Clean SSE Stream -> SHIP Consensus**
-  - Full engineer workflow: logs in via GitHub OAuth, navigates to `calltelemetry/cisco-cdr`, selects active PR #402, monitors live reasoning feed over SSE, all 11 personas finish with zero P0/P1 findings, panel issues SHIP verdict, and PR check marks success.
+  - Full engineer workflow: logs in via GitHub OAuth, navigates to `example-org/example-api`, selects active PR #402, monitors live reasoning feed over SSE, all 11 personas finish with zero P0/P1 findings, panel issues SHIP verdict, and PR check marks success.
 - `TEST_T4_SCENARIO_02`: **Human-in-the-Loop False-Positive Triage: Security Lane P1 Finding Dismissal -> Auto-Approval Gate Update**
   - Security persona flags a suspected secret in test fixture; developer inspects inline finding card on diff viewer; clicks "Dismiss as False Positive" with justification; active findings drop to 0; gate automatically clears and downstream check updates to SHIP.
 - `TEST_T4_SCENARIO_03`: **Authoritative Executive Override: Critical Blocked Review Overridden to SHIP for Emergency Hotfix Deployment**
