@@ -35,8 +35,7 @@ import { getMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
 import {
   ReviewGenerationRecoveryLedgerError,
-  validateReviewGenerationRecoveryEvidence,
-  validateIncompleteP2RecoveryLedgerCandidate,
+  validateFetchedReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryRequest,
 } from '../review/reviewGenerationRecovery';
@@ -415,14 +414,10 @@ function validateGenerationRecovery(
 ): void {
   const request = generationRecoveryRequest(input, runId);
   try {
-    if (input.incompleteP2Recovery === true || input.gracefulComposedContinuation === true) {
-      // Candidate shape and App chronology only. Original historical counts
-      // are authenticated by loadIncompleteP2RecoveryContext under the PR lock
-      // before allocation or persisted admission evidence.
-      validateIncompleteP2RecoveryLedgerCandidate(request, evidence);
-    } else {
-      validateReviewGenerationRecoveryEvidence(request, evidence);
-    }
+    // Candidate shape and App chronology only. Original historical counts
+    // are authenticated by loadIncompleteP2RecoveryContext under the PR lock
+    // before allocation or persisted admission evidence.
+    validateFetchedReviewGenerationRecoveryEvidence(request, evidence);
   } catch (error) {
     if (error instanceof ReviewGenerationRecoveryLedgerError) {
       throw new ReviewGenerationConflictError(request.expectedGeneration, 1);

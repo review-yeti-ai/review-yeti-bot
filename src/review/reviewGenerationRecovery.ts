@@ -292,6 +292,31 @@ export function evaluateIncompleteP2RecoveryLedgerCandidate(
   return evaluateRecoveryLedger(request, rows, gateChecks, true);
 }
 
+/** Select fetch-stage validation in one place. Archive candidates still require
+ * locked source authentication before they can authorize a new generation. */
+function isArchiveRecoveryCandidate(request: ReviewGenerationRecoveryRequest): boolean {
+  return request.incompleteP2Recovery === true || request.gracefulComposedContinuation === true;
+}
+
+export function validateFetchedReviewGenerationRecoveryEvidence(
+  request: ReviewGenerationRecoveryRequest,
+  evidence: ReviewGenerationRecoveryEvidence[],
+): ReviewGenerationRecoveryEvidence[] {
+  return isArchiveRecoveryCandidate(request)
+    ? validateIncompleteP2RecoveryLedgerCandidate(request, evidence)
+    : validateReviewGenerationRecoveryEvidence(request, evidence);
+}
+
+export function evaluateFetchedReviewGenerationRecoveryLedger(
+  request: ReviewGenerationRecoveryRequest,
+  rows: unknown[],
+  gateChecks: unknown[] = [],
+): ReviewGenerationRecoveryEvidence[] {
+  return isArchiveRecoveryCandidate(request)
+    ? evaluateIncompleteP2RecoveryLedgerCandidate(request, rows, gateChecks)
+    : evaluateReviewGenerationRecoveryLedger(request, rows, gateChecks);
+}
+
 export function evaluateReviewGenerationRecoveryLedger(
   request: ReviewGenerationRecoveryRequest,
   rows: unknown[],

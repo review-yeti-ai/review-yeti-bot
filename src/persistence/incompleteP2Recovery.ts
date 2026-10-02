@@ -584,6 +584,25 @@ export async function loadIncompleteP2RecoveryContext(
   }
 
 
+  // Reject malformed App identity or lifetime boundaries before querying any
+  // completion archive. This is structural only: historical summary counts
+  // still gain authority exclusively from the source-bound checks below.
+  for (const [index, proof] of recoveryEvidenceForValidation.entries()) {
+    const roster = proof.legacyIncompleteRoster;
+    if (!roster) refuse();
+    selectedGateCheck(input, proof);
+    if (roster.workerStartedAt !== undefined) {
+      const started = Date.parse(roster.workerStartedAt);
+      const completed = Date.parse(roster.workerCompletedAt);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(roster.workerStartedAt)
+        || !Number.isFinite(started)
+        || new Date(started).toISOString().replace('.000Z', 'Z') !== roster.workerStartedAt
+        || started > completed) refuse();
+    } else if (index === latestProofIndex && !markerBoundLegacyStartOmission) {
+      refuse();
+    }
+  }
+
   const sourceRows = await queryable.query(`
     SELECT runs.run_id, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
            runs.head_sha, runs.base_sha, runs.effective_policy_digest, runs.effective_config_digest,

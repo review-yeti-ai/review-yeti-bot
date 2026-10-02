@@ -17,8 +17,7 @@ import type { DelegatedFailureReason } from '../review/workerCompletion';
 import { createBoundedGitHubJsonClient } from './boundedGitHubJson';
 import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 import {
-  evaluateReviewGenerationRecoveryLedger,
-  evaluateIncompleteP2RecoveryLedgerCandidate,
+  evaluateFetchedReviewGenerationRecoveryLedger,
   REVIEW_WORKER_CHECK_NAME,
   ReviewGenerationRecoveryLedgerError,
   validateReviewGenerationRecoveryRequest,
@@ -399,9 +398,7 @@ export class GitHubInstallationClient {
           .includes(String((output as Record<string, unknown>).title));
     })
       ? await this.readRecoveryCheckInventory(input, REVIEW_GATE_CHECK_NAME) : [];
-    return input.incompleteP2Recovery === true || input.gracefulComposedContinuation === true
-      ? evaluateIncompleteP2RecoveryLedgerCandidate(input, rows, gateChecks)
-      : evaluateReviewGenerationRecoveryLedger(input, rows, gateChecks);
+    return evaluateFetchedReviewGenerationRecoveryLedger(input, rows, gateChecks);
   }
 
   private async readRecoveryCheckInventory(

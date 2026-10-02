@@ -448,3 +448,96 @@ describe('historical archive fetch candidates', () => {
       [worker], [{ ...gate, conclusion: 'success' }])).toThrow();
   });
 });
+
+describe('graceful composed continuation candidates', () => {
+  const gracefulRequest = request({ gracefulComposedContinuation: true });
+  const gracefulWorkerSummary = (format: 'current' | 'historical') => {
+    const findings = format === 'current'
+      ? 'Findings: 3 (blocking P0/P1: 0; 4 raw persona finding(s) before clustering).'
+      : 'Findings: 3 (blocking P0/P1/P2: 3; 4 raw persona finding(s) before clustering).';
+    return [
+      `Evidence collection reached its 20-minute cutoff at \`${headSha}\`. The final closeout preserved and published 3 validated finding(s); 4 risk-ordered task(s) remain. This is fail-closed, not an approval. An exact-head rerun resumes the durable completed-task checkpoint.`,
+      `Verdict \`BLOCK\` at \`${headSha}\`.`,
+      findings,
+      'Coverage: engine=composed; planned tasks=7; expected tasks=7; completed tasks=3; failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false.',
+    ].join('\n\n');
+  };
+  const gracefulWorker = (format: 'current' | 'historical' = 'current') => workerCheck(1, {
+    started_at: '2026-09-29T11:59:58Z',
+    completed_at: '2026-09-29T12:00:00Z',
+    output: {
+      title: 'Review Yeti: INCOMPLETE (partial evidence published)',
+      summary: gracefulWorkerSummary(format),
+      text: null,
+    },
+  });
+  const gracefulGate = () => incompleteGateCheck(2_101, 7, 3, '2026-09-29T12:00:02Z');
+
+  it.each(['current', 'historical'] as const)(
+    'retains the exact %s graceful summary and marker through candidate evaluation and GitHub pages',
+    async (format) => {
+      const worker = gracefulWorker(format);
+      const gate = gracefulGate();
+      const proof = evaluateIncompleteP2RecoveryLedgerCandidate(gracefulRequest, [worker], [gate]);
+
+      expect(proof).toHaveLength(1);
+      expect(proof[0].legacyIncompleteRoster).toEqual(expect.objectContaining({
+        workerSummary: worker.output.summary,
+        gracefulComposedPartial: true,
+        workerStartedAt: '2026-09-29T11:59:58Z',
+        workerCompletedAt: '2026-09-29T12:00:00Z',
+        gateChecks: [gate],
+      }));
+      if (format === 'current') {
+        expect(validateReviewGenerationRecoveryEvidence(gracefulRequest, proof)).toEqual(proof);
+      } else {
+        expect(() => validateReviewGenerationRecoveryEvidence(gracefulRequest, proof))
+          .toThrow(/generation recovery ledger/u);
+      }
+
+      const { client, fetchImplementation } = clientForPages([
+        { total_count: 1, check_runs: [worker] },
+        { total_count: 1, check_runs: [gate] },
+      ]);
+      const fetched = await client.readReviewGenerationRecovery(gracefulRequest);
+      expect(fetched[0].legacyIncompleteRoster).toEqual(expect.objectContaining({
+        workerSummary: worker.output.summary,
+        gracefulComposedPartial: true,
+      }));
+      expect(fetchImplementation).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    ['foreign App', (worker: ReturnType<typeof gracefulWorker>, gate: ReturnType<typeof gracefulGate>) => [
+      { ...worker, app: { id: 99, slug: 'foreign-app' } }, gate,
+    ]],
+    ['successful Gate', (worker: ReturnType<typeof gracefulWorker>, gate: ReturnType<typeof gracefulGate>) => [
+      worker, { ...gate, conclusion: 'success', output: { title: 'Review Yeti Gate: Passed', summary: 'Passed.', text: null } },
+    ]],
+    ['inverted worker interval', (worker: ReturnType<typeof gracefulWorker>, gate: ReturnType<typeof gracefulGate>) => [
+      { ...worker, started_at: '2026-09-29T12:00:01Z' }, gate,
+    ]],
+  ])('rejects a graceful candidate with %s using only injected response pages', async (_label, corrupt) => {
+    const worker = gracefulWorker();
+    const gate = gracefulGate();
+    const [invalidWorker, invalidGate] = corrupt(worker, gate) as [typeof worker, typeof gate];
+    const { client, fetchImplementation } = clientForPages([
+      { total_count: 1, check_runs: [invalidWorker] },
+      { total_count: 1, check_runs: [invalidGate] },
+    ]);
+
+    await expect(client.readReviewGenerationRecovery(gracefulRequest))
+      .rejects.toThrow(/generation recovery ledger/u);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps graceful and incomplete-P2 request modes mutually exclusive before GitHub access', async () => {
+    const { client, fetchImplementation } = clientForPages([]);
+    await expect(client.readReviewGenerationRecovery(request({
+      incompleteP2Recovery: true,
+      gracefulComposedContinuation: true,
+    }))).rejects.toThrow(/generation recovery ledger/u);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+});
