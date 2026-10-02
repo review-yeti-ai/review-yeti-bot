@@ -41,6 +41,7 @@ describe('package.json script contract', () => {
   });
 
   it('keeps build:backend, which Dockerfile.worker and the build script depend on', () => {
-    expect(pkg.scripts['build:backend']).toBe('tsc -p tsconfig.server.json');
+    // Pin the contract (it exists and compiles the server tsconfig), not the exact flag spelling.
+    expect(pkg.scripts['build:backend']).toMatch(/\btsc\b.*tsconfig\.server\.json/u);
   });
 });
