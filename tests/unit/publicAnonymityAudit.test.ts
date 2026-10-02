@@ -22,12 +22,13 @@ const FORBIDDEN = new RegExp([
   ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name}(?![a-z0-9])`),
 ].join('|'), 'giu');
 
-const BINARY = /\.(png|db|ico|jpe?g|gif|woff2?|lock)$/iu;
+// Binary assets only: lockfiles are text and are scanned like everything else.
+const BINARY = /\.(png|db|ico|jpe?g|gif|woff2?)$/iu;
 
 function trackedFiles(): string[] {
   return execFileSync('git', ['ls-files', '-z'], { cwd: root, maxBuffer: 64 * 1024 * 1024 })
     .toString('utf8').split('\0').filter(Boolean)
-    .filter((file) => !BINARY.test(file) && !file.endsWith('package-lock.json') && fs.existsSync(path.join(root, file)));
+    .filter((file) => !BINARY.test(file) && fs.existsSync(path.join(root, file)));
 }
 
 interface Finding { count: number; digest: string }
