@@ -12,7 +12,6 @@ const namespacePattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 
 export const TRUSTED_WORKER_IMAGE_REPOSITORIES = [
   'ghcr.io/review-yeti-ai/review-yeti-worker',
-  'registry.digitalocean.com/calltelemetry/review-yeti-worker',
 ] as const;
 
 export const TRUSTED_WORKER_IMAGE_REPOSITORY = TRUSTED_WORKER_IMAGE_REPOSITORIES[0];
