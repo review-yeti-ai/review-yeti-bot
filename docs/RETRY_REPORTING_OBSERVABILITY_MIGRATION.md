@@ -20,6 +20,13 @@ the following reporting states:
 | `cap_exhausted` | Exactly attempt `RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1` exhausted the automatic retry allowance. |
 | `unknown` | The attempt value proves neither eligibility nor cap exhaustion. |
 
+The worker identity rejects zero, negative, fractional, non-finite and unsafe
+integer attempts before running a panel or emitting this counter. A safe
+positive attempt beyond `RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1`, such as4,
+can reach `unknown`: it is a valid identity but outside the automatic-retry
+reporting contract. Do not weaken identity validation to manufacture this
+diagnostic for rejected inputs.
+
 The warning payload replaces `retryScheduled: boolean` with `retryStatus`.
 There is deliberately no compatibility `retryScheduled: true`: the old value
 was derived from eligibility, so emitting it again would repeat the defect.
@@ -51,7 +58,9 @@ scope. Do not sum an old and a new unfiltered total over the same samples,
 which would double count them. Grouped historical panels must label old
 `retrying` series as **legacy eligibility (scheduling unverified)** rather
 than presenting them as confirmed dispatches. Retain an independent
-`unknown` panel/alert so invalid attempt values do not disappear silently.
+`unknown` panel/alert so out-of-contract positive attempt values do not
+disappear silently. Rejected invalid identities are a separate contract error,
+not an infrastructure-incomplete counter event.
 
 For log queries, replace `retryScheduled=true` eligibility filters with
 `retryStatus=not_confirmed`; replace the old false bucket with an explicit

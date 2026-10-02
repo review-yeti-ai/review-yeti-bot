@@ -29,6 +29,7 @@ import * as panelEngine from '../../src/panel/panelEngine';
 import * as qualificationReader from '../../src/github/qualificationReader';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { logger } from '../../src/utils/logger';
+import { getMetrics } from '../../src/telemetry';
 import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
 import * as deletionEvidenceModule from '../../src/review/deletionEvidence';
 import {
@@ -1341,6 +1342,26 @@ describe('authoritative prepared publishing worker', () => {
       // stops the re-admission.
       expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
       expect(completion.executionAttempt).toBe(3);
+    });
+
+    it('safe attempt 4 reports UNKNOWN for a returned incomplete panel without inventing exhaustion', async () => {
+      const f = incompleteFixture('4');
+      const warn = vi.mocked(logger.warn);
+      const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
+
+      await runPublishingReviewWorker(f.env, f.deps);
+
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check).toMatchObject({ conclusion: 'failure',
+        title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry status UNKNOWN; lane qual-lane failed: 502)' });
+      expect(check?.summary).toContain('execution attempt 4; this value proves neither retry eligibility nor cap exhaustion');
+      expect(check?.summary).not.toMatch(/scheduled automatically|cap of 2 additional attempts was exhausted|automatic retry cap of|last automatic attempt/iu);
+      expect(warn).toHaveBeenCalledWith('Review incomplete: reviewer lane(s) failed on infrastructure; not a review verdict',
+        expect.objectContaining({ executionAttempt: 4, retryStatus: 'unknown' }));
+      expect(warn.mock.calls[0]?.[1]).not.toHaveProperty('retryScheduled');
+      expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'unknown', failure_class: 'provider_error', authoritative: 'true' });
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      expect(completion.executionAttempt).toBe(4);
     });
 
     it('a findings BLOCK stays BLOCK even when another lane was lost to the gateway', async () => {

@@ -265,6 +265,43 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE (authori
     expect(admit).not.toHaveBeenCalled();
   });
 
+  it.each(SHAPES)('%s on safe attempt 4: reports UNKNOWN without inventing exhaustion or a schedule', async (_label, make, failureClass, detail) => {
+    const f = fixture('4');
+    const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
+    f.panelRunner.mockRejectedValue(make());
+
+    await expect(runPublishingReviewWorker(f.env, f.deps)).resolves.toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure' });
+
+    const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+    expect(check?.title).toBe(`Review Yeti: INCOMPLETE — infrastructure (automatic retry status UNKNOWN; ${detail})`);
+    expect(check?.summary).toContain('execution attempt 4; this value proves neither retry eligibility nor cap exhaustion');
+    expect(check?.summary).not.toMatch(/scheduled automatically|cap of 2 additional attempts was exhausted|automatic retry cap of|last automatic attempt/iu);
+    expect(f.warn).toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
+      expect.objectContaining({ executionAttempt: 4, retryStatus: 'unknown' }));
+    expect(f.warn.mock.calls[0]?.[1]).not.toHaveProperty('retryScheduled');
+    expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'unknown', failure_class: failureClass, authoritative: 'true' });
+    const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(completion.executionAttempt).toBe(4);
+  });
+
+  it.each(['0', '-1', 'NaN', '1.5', 'Infinity', '9007199254740992'])(
+    'rejects invalid identity attempt %s before producing any retry-reporting event', async (attempt) => {
+      const f = fixture(attempt);
+      const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
+      f.panelRunner.mockRejectedValue(requiredSecLaneFetchFailed());
+
+      await expect(runPublishingReviewWorker(f.env, f.deps)).rejects.toThrow('publishing review worker contract is invalid');
+
+      expect(f.sourceLoader).not.toHaveBeenCalled();
+      expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(f.reportReviewResult).not.toHaveBeenCalled();
+      expect(f.checkClient.createCheck).not.toHaveBeenCalled();
+      expect(f.checkClient.completeCheck).not.toHaveBeenCalled();
+      expect(f.warn).not.toHaveBeenCalled();
+      expect(metric).not.toHaveBeenCalled();
+    },
+  );
+
   it('keeps the original failure (and exit) when the INCOMPLETE body could not be delivered', async () => {
     const f = fixture('1');
     const original = requiredSecLaneFetchFailed();
