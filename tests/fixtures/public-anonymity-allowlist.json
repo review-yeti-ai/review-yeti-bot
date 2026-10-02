@@ -519,21 +519,9 @@
   "count": 2,
   "digest": "98755f4be2680d90"
  },
- "src/github/installationClient.ts": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "src/k8s/reviewJobProjection.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "src/mcp/mcpFleetManager.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
- },
- "src/mcp/server/mcpRbac.ts": {
-  "count": 3,
-  "digest": "83aa2de9c2a8d8ca"
  },
  "src/mcp/server/tools/generateFixDiff.ts": {
   "count": 3,
@@ -563,10 +551,6 @@
   "count": 5,
   "digest": "2f0900dc6dfb1c25"
  },
- "src/mcp/server/tools/triggerReview.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "src/panel/__tests__/panelEngine.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
@@ -583,14 +567,6 @@
   "count": 68,
   "digest": "278c7edc7e5851ad"
  },
- "src/review/actionDispatch.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "src/review/continuationPhase.ts": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
  "src/review/diffService.ts": {
   "count": 6,
   "digest": "6f0a68c81caf9a88"
@@ -598,18 +574,6 @@
  "src/review/emptyModeration.ts": {
   "count": 1,
   "digest": "0994f4f9b95b63e8"
- },
- "src/review/prepPhase.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "src/review/preparedPublishingPolicy.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "src/review/reviewCheckIdentity.ts": {
-  "count": 2,
-  "digest": "dd6155b138dfb8f5"
  },
  "tests/adversarial/m5ChallengerAuthLiveStress.test.ts": {
   "count": 10,
@@ -1028,8 +992,8 @@
   "digest": "bb45ca62004a3761"
  },
  "tests/setup.ts": {
-  "count": 4,
-  "digest": "539abd1fdf034210"
+  "count": 6,
+  "digest": "d9e89425858a936e"
  },
  "tests/support/composedTaskLedgerFixture.ts": {
   "count": 3,
