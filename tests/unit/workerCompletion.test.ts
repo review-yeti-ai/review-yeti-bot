@@ -537,7 +537,7 @@ describe('operational failure diagnostics shared boundary',()=>{
     for (const responseStatus of [399, 600, NaN, 401.5, '503', null]) {
       expect(operationalTelemetryEventSchema.safeParse({ ...base, responseStatus }).success).toBe(false);
     }
-    for (const field of ['message', 'responseBody', 'url']) {
+    for (const field of ['message', 'responseBody', 'url', 'responseStatusSource']) {
       expect(operationalTelemetryEventSchema.safeParse({ ...base, responseStatus: 503, [field]: 'SECRET' }).success).toBe(false);
     }
   });

@@ -1,5 +1,6 @@
 import {
   OpenRouterResponseError,
+  observedHttpStatusOf,
   resolveCachedTokens,
   type OpenRouterRequest,
   type OpenRouterResponse,
@@ -126,7 +127,7 @@ function safeResponseStatus(value: unknown): number | undefined {
 }
 
 function responseStatusOf(error: unknown): number | undefined {
-  return error instanceof OpenRouterResponseError ? safeResponseStatus(error.status) : undefined;
+  return safeResponseStatus(observedHttpStatusOf(error)?.status);
 }
 
 function providerFailureProgressFields(error: unknown, signal?: AbortSignal): Pick<PublishingProgressEvent, 'rejectionCode' | 'responseStatus'> {
