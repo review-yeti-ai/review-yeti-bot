@@ -45,6 +45,33 @@ describe('buildZoektIndex', () => {
     expect(resolved.timeoutMs).toBeLessThanOrEqual(180_000);
   });
 
+  it('defaults to a memory-bounded build: one builder, 8 MiB shards, a Go heap limit (REL-1282)', () => {
+    const { resolveBuildConfig } = require('../../src/mcp/zoektIndexBuilder.js');
+    const resolved = resolveBuildConfig({});
+    expect(resolved.parallelism).toBe(1);
+    expect(resolved.shardLimitBytes).toBe(8 * 1024 * 1024);
+    expect(resolved.memoryLimitBytes).toBe(192 * 1024 * 1024);
+    // A caller cannot lift the heap limit past the ceiling or below the floor.
+    expect(resolveBuildConfig({ memoryLimitBytes: 99_999_999_999 }).memoryLimitBytes).toBe(512 * 1024 * 1024);
+    expect(resolveBuildConfig({ memoryLimitBytes: 1 }).memoryLimitBytes).toBe(64 * 1024 * 1024);
+  });
+
+  it('passes the child a GOMEMLIMIT matching the configured heap limit and the bounded flags', async () => {
+    const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'zoekt-builder-mem-workdir-'));
+    fs.writeFileSync(path.join(workdir, 'sample.txt'), 'hello\n');
+    const indexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zoekt-builder-mem-index-'));
+    const wrapperPath = path.join(indexDir, 'capture-env.sh');
+    const capturedPath = path.join(indexDir, 'captured.txt');
+    fs.writeFileSync(wrapperPath, `#!/bin/sh\necho "GOMEMLIMIT=$GOMEMLIMIT ARGS=$@" > "${capturedPath}"\nexit 0\n`);
+    fs.chmodSync(wrapperPath, 0o755);
+    const result = await buildZoektIndex({ workdir, indexDir, config: { zoektIndexBinaryPath: wrapperPath } });
+    expect(result.status).toBe('ok');
+    const captured = fs.readFileSync(capturedPath, 'utf8');
+    expect(captured).toContain(`GOMEMLIMIT=${192 * 1024 * 1024}B`);
+    expect(captured).toContain('-parallelism 1');
+    expect(captured).toContain(`-shard_limit ${8 * 1024 * 1024}`);
+  });
+
   it('never passes a network-related flag or credential to the child process', async () => {
     const workdir = fs.mkdtempSync(path.join(os.tmpdir(), 'zoekt-builder-workdir-'));
     fs.writeFileSync(path.join(workdir, 'sample.txt'), 'hello world\n');

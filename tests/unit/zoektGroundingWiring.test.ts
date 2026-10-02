@@ -77,6 +77,37 @@ describe('zoektGroundingEnabledFor — the three-conjunct gate (REL-677)', () =>
   });
 });
 
+describe('zoektGroundingEnabledFor — per-repository canary (REL-1282)', () => {
+  const cfg = { pre_checks: { zoekt: { enabled: true } } };
+  const withFlag = (v: string) => ({ NODE_ENV: 'test', ZOEKT_GROUNDING_ENABLED: v }) as NodeJS.ProcessEnv;
+
+  it('enables only the listed repositories for an owner/repo allow-list, case-insensitively', () => {
+    const env = withFlag('Example-Org/Canary, example-org/other');
+    expect(zoektGroundingEnabledFor(env, cfg, 'example-org/canary')).toBe(true);
+    expect(zoektGroundingEnabledFor(env, cfg, 'EXAMPLE-ORG/OTHER')).toBe(true);
+    expect(zoektGroundingEnabledFor(env, cfg, 'example-org/big-repo')).toBe(false);
+  });
+
+  it('keeps `true` as every repository', () => {
+    expect(zoektGroundingEnabledFor(withFlag('true'), cfg, 'example-org/anything')).toBe(true);
+    expect(zoektGroundingEnabledFor(withFlag('true'), cfg)).toBe(true);
+  });
+
+  it.each(['', 'false', 'FALSE', 'maybe-not-a-repo'])('is off for %j', (flag) => {
+    expect(zoektGroundingEnabledFor(withFlag(flag), cfg, 'example-org/canary')).toBe(false);
+  });
+
+  it('an allow-list never matches without a repository', () => {
+    expect(zoektGroundingEnabledFor(withFlag('example-org/canary'), cfg)).toBe(false);
+  });
+
+  it('the kill switch and config opt-out still override an allow-list match', () => {
+    const env = { ...withFlag('example-org/canary'), ZOEKT_GROUNDING_DISABLED: 'true' } as NodeJS.ProcessEnv;
+    expect(zoektGroundingEnabledFor(env, cfg, 'example-org/canary')).toBe(false);
+    expect(zoektGroundingEnabledFor(withFlag('example-org/canary'), { pre_checks: { zoekt: { enabled: false } } }, 'example-org/canary')).toBe(false);
+  });
+});
+
 describe('mergeZoektToolConfig — the panel-owned lookup policy (REL-677)', () => {
   it('an evidence indexDir takes precedence and is re-pinned, with knobs merged', () => {
     const merged = mergeZoektToolConfig(
