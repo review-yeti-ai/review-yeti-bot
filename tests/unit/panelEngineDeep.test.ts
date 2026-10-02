@@ -2588,3 +2588,132 @@ describe('REL-1211 absolute panel deadline', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe('REL-1211 current public panel closeout branches', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const changedFiles = [{ path: 'src/security/auth.ts', patch: '@@ -1 +1 @@\n-export const guarded = false;\n+export const guarded = true;' }];
+
+  function successfulRoleResponse(opts: any, arbiterBody = { verdict: 'SHIP', rationale: 'All admitted lanes completed.' }) {
+    const text = opts.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+    const nonce = [...text.matchAll(/CT_REVIEW_NONCE:([^\s]+)/g)].at(-1)?.[1];
+    if (!nonce) throw new Error('Panel fixture did not receive a nonce');
+    const body = opts.persona === 'arbiter' ? arbiterBody
+      : opts.persona === 'moderator' ? { decision: 'RECONCILED', findings: [] }
+        : { decision: 'APPROVE', findings: [] };
+    return { model: opts.model, content: `CT_REVIEW_BEGIN:${nonce}\n${JSON.stringify(body)}\nCT_REVIEW_END:${nonce}`,
+      usage: null, costUSD: null, raw: {} };
+  }
+
+  it.each(['all-off', 'tools-off'] as const)('completes without deterministic prechecks when %s while retaining quorum', async (mode) => {
+    const config = buildDeepConfig();
+    (config as any).pre_checks = mode === 'all-off' ? { enabled: false }
+      : { enabled: true, zoekt: { enabled: false }, analyzers: { enabled: false }, symbolAppendix: { enabled: false } };
+    const complete = vi.fn(async (opts: any) => successfulRoleResponse(opts));
+    const result = await executePersonaPanel({ config, changedFiles, repository: 'example/rel1211',
+      headSha: `current-prechecks-${mode}`, client: { complete } as never });
+    expect(result.personas.map((lane) => lane.id)).toEqual(['sec-lane', 'correct-lane']);
+    expect(result.quorum.satisfied).toBe(true);
+    expect(result.arbiter.verdict).toBe('SHIP');
+    expect(result.personas.every((lane) => lane.usage === null)).toBe(true);
+    expect(complete.mock.calls.map(([opts]) => opts.persona)).toEqual(['sec-lane', 'correct-lane', 'moderator', 'arbiter']);
+    expect(getActivePersonaCallCount()).toBe(0);
+  });
+
+  it.each([
+    ['unknown verdict', { verdict: 'PUBLISH', rationale: 'A non-contract approval is not evidence.' }],
+    ['missing rationale', { verdict: 'SHIP', rationale: '' }],
+    ['plain refusal', null],
+  ] as const)('fails closed when all arbiters return %s', async (label, body) => {
+    const complete = vi.fn(async (opts: any) => {
+      const response = successfulRoleResponse(opts);
+      if (opts.persona !== 'arbiter') return response;
+      if (body === null) return { ...response, content: 'No binding verdict is available.' };
+      return successfulRoleResponse(opts, body as any);
+    });
+    await expect(executePersonaPanel({ config: buildDeepConfig(), changedFiles, repository: 'example/rel1211',
+      headSha: `current-invalid-arbiter-${label}`, client: { complete } as never }))
+      .rejects.toMatchObject({ name: 'PanelConfigurationError', message: expect.stringContaining('arbiter failed closed') });
+    expect(complete.mock.calls.filter(([opts]) => opts.persona === 'arbiter').length).toBeGreaterThanOrEqual(2);
+    expect(getActivePersonaCallCount()).toBe(0);
+  });
+
+it.each(['rate_limit', 'auth'] as const)('retries only a coded %s failure through the public multichunk execution path', async (failureClass) => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const config = buildDeepConfig();
+    config.personas = [{ ...config.personas[0], providers: ['claude'] }];
+    config.quorum = 1;
+    config.reviewers.fallback = 'none';
+    config.reviewers.overall_timeout_s = 3_600;
+    const files = ['src/security/api/a.ts', 'src/security/web/b.ts'].map((path, index) => ({
+      path,
+      patch: '@@ -0,0 +1,650 @@\n' + Array.from({ length: 650 }, (_, line) =>
+        `+export const item_${index}_${line} = 'current-review-evidence-${'x'.repeat(28)}';`).join('\n'),
+    }));
+    const chunks: string[] = [];
+    let releaseFailure!: () => void;
+    const firstFailure = new Promise<void>((resolve) => { releaseFailure = resolve; });
+    let reduceCalls = 0;
+    const complete = vi.fn(async (opts: any) => {
+      if (opts.metadata?.role === 'map-reduce-reduce') {
+        reduceCalls += 1;
+        const request = JSON.parse(/<untrusted_reduce_input>\n([\s\S]*)\n<\/untrusted_reduce_input>/.exec(String(opts.messages[1].content))![1]);
+        return { model: opts.model, content: JSON.stringify({ nonce: request.nonce, merge: [], findings: [] }),
+          usage: null, costUSD: null, raw: {} };
+      }
+      if (opts.persona === 'sec-lane') {
+        const text = opts.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+        const chunk = /chunk (\d+) of (\d+)/.exec(text);
+        if (!chunk || chunk[2] !== '2') throw new Error('Fixture did not enter two source-owned chunks');
+        chunks.push(chunk[1]);
+        if (chunks.length === 1) {
+          releaseFailure();
+          throw new PanelConfigurationError('Injected coded provider refusal', { failureClass });
+        }
+      }
+      return successfulRoleResponse(opts);
+    });
+    const start = Date.now();
+    const run = executePersonaPanel({ config, changedFiles: files, repository: 'example/rel1211',
+      headSha: `current-chunk-${failureClass}`, client: { complete } as never, deterministicRoster: true,
+      mapReduce: { enabled: true, minChars: 56_000, concurrency: 1 },
+      deadlineBudget: { deadlineAtMs: start + 1_200_000, timeoutMs: 1_200_000, terminalBound: true },
+      deadlineNow: () => Date.now() });
+    const settled = failureClass === 'auth'
+      ? expect(run).rejects.toMatchObject({ name: 'PanelConfigurationError', failureClass: 'auth' })
+      : run.then((result) => {
+        expect(result.personas.map((lane) => lane.id)).toEqual(['sec-lane']);
+        expect(result.mapReduce?.lanes[0]).toMatchObject({ plannedChunks: 2, reduce: { status: 'completed' } });
+        expect(result.quorum.satisfied).toBe(true);
+      });
+    try {
+      await firstFailure;
+      await vi.advanceTimersByTimeAsync(10_001);
+      await settled;
+      expect(chunks).toEqual(failureClass === 'rate_limit' ? ['1', '1', '2'] : ['1']);
+      expect(reduceCalls).toBe(failureClass === 'rate_limit' ? 1 : 0);
+      expect(getActivePersonaCallCount()).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+
+  it('refuses a head superseded after permit acquisition and releases that permit without starting a provider', async () => {
+    const config = buildDeepConfig();
+    config.personas = [config.personas[0]];
+    config.quorum = 1;
+    const complete = vi.fn();
+    const isCurrentHead = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(true).mockReturnValue(false);
+    await expect(executePersonaPanel({ config, changedFiles, repository: 'example/rel1211',
+      headSha: 'current-after-permit-supersession', client: { complete } as never, isCurrentHead }))
+      .rejects.toMatchObject({ name: 'PanelConfigurationError', message: expect.stringContaining('stale run aborted') });
+    expect(isCurrentHead).toHaveBeenCalledTimes(3);
+    expect(complete).not.toHaveBeenCalled();
+    expect(getActivePersonaCallCount()).toBe(0);
+  });
+});

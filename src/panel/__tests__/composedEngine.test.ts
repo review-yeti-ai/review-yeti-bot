@@ -2482,5 +2482,259 @@ describe('executeComposedReview', () => {
     expect(result.personas[0].turnUsages).toHaveLength(2);
     expect(computeArbitration(result.personas, 1, { changedFiles: CODE_FILES, coverageComplete: true, panelSize: 1 }).verdict)
       .toBe(severity === 'P0' ? 'BLOCK' : 'SHIP');
+  });describe('REL-1211 current composed public closeout branches', () => {
+    function currentTaskId(payload: any): string {
+      const directive = payload.messages.find((message: any) => typeof message.content === 'string'
+        && message.content.includes('=== WORK TURN'))?.content;
+      const id = directive?.match(/Task id: ([a-z0-9-]+)/)?.[1];
+      if (!id) throw new Error('Missing engine-issued work task');
+      return id;
+    }
+
+    it.each([
+      ['absent', null, 0],
+      ['cached', { prompt: 10, completion: 10, total: 20, cached: 3 }, 3],
+      ['cached_tokens', { prompt: 10, completion: 10, total: 20, cached_tokens: 4 }, 4],
+      ['prompt_cache_hit_tokens', { prompt: 10, completion: 10, total: 20, prompt_cache_hit_tokens: 5 }, 5],
+    ] as const)('accounts nullable provider usage and %s cache tokens exactly once per physical turn', async (_label, usage, cached) => {
+      const complete = vi.fn(async (payload: any) => {
+        const nonce = issuedNonce(payload.messages);
+        const body = lastText(payload.messages).includes('PLAN TURN')
+          ? { nonce, tasks: manyTasks(1) }
+          : { nonce, task: currentTaskId(payload), status: 'COMPLETE', findings: [] };
+        return { ...fakeResponse(JSON.stringify(body)), usage } as OpenRouterResponse;
+      });
+      const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-cache-alias', client: { complete } });
+      expect(complete).toHaveBeenCalledTimes(2);
+      expect(result.personas).toHaveLength(1);
+      expect(result.personas[0].turnUsages?.map((turn) => turn.cachedTokens)).toEqual([cached, cached]);
+      expect(result.personas[0].aggregateUsage).toMatchObject({
+        promptTokens: usage ? 20 : 0, completionTokens: usage ? 20 : 0,
+        totalTokens: usage ? 40 : 0, cachedTokens: cached * 2, costUSD: 0.002,
+      });
+    });
+
+    it('retries one provider request timeout inside the inherited cutoff and cleans the deadline timer', async () => {
+      const { OpenRouterTimeoutError } = await import('../../gateway/openRouterClient');
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      let releaseFailure!: () => void;
+      const firstFailure = new Promise<void>((resolve) => { releaseFailure = resolve; });
+      let attempts = 0;
+      const start = Date.now();
+      const complete = vi.fn(async (payload: any) => {
+        if (++attempts === 1) {
+          releaseFailure();
+          throw new OpenRouterTimeoutError('Current fixture request timeout');
+        }
+        const nonce = issuedNonce(payload.messages);
+        return lastText(payload.messages).includes('PLAN TURN')
+          ? fakeResponse(JSON.stringify({ nonce, tasks: manyTasks(1) }))
+          : responseForTask(payload, currentTaskId(payload));
+      });
+      const run = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-timeout-retry', client: { complete },
+        deadlineBudget: { deadlineAtMs: start + 5_000, timeoutMs: 5_000, terminalBound: true },
+        deadlineNow: () => Date.now() });
+      try {
+        await firstFailure;
+        await vi.advanceTimersByTimeAsync(1_001);
+        const result = await run;
+        expect(complete).toHaveBeenCalledTimes(3);
+        expect(result.personas.map((lane) => lane.id)).toEqual(['task-1']);
+        expect(complete.mock.calls.every(([payload]) => payload.timeoutMs <= 5_000)).toBe(true);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([new Error('checkpoint service rejected current evidence'), 'checkpoint transport rejected current evidence'])(
+      'retains validated local completion when checkpoint persistence rejects with %s', async (failure) => {
+        const captured: any[] = [];
+        const save = vi.fn(async () => { throw failure; });
+        const complete = vi.fn(async (payload: any) => lastText(payload.messages).includes('PLAN TURN')
+          ? fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks: manyTasks(1) }))
+          : responseForTask(payload, currentTaskId(payload)));
+        const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+          repository: 'example/rel1211', headSha: 'current-checkpoint-rejection', client: { complete },
+          checkpoint: { resumed: null, capture: (snapshot) => captured.push(structuredClone(snapshot)), save } });
+        expect(save).toHaveBeenCalled();
+        expect(captured.at(-1)).toMatchObject({ revision: 2, completedTasks: [{ id: 'task-1', findings: [] }] });
+        expect(result.personas.map((lane) => lane.id)).toEqual(['task-1']);
+        expect(result.optionalFailures).toEqual([]);
+        expect(result.unreportedLanes).toEqual([]);
+      },
+    );
+
+    it('coalesces a slow checkpoint write to the newest complete snapshot without serializing model work', async () => {
+      let releaseFirstWrite!: () => void;
+      const firstWrite = new Promise<void>((resolve) => { releaseFirstWrite = resolve; });
+      let releaseLatestWrite!: () => void;
+      const latestWrite = new Promise<void>((resolve) => { releaseLatestWrite = resolve; });
+      const writes: any[] = [];
+      const captures: any[] = [];
+      let activeWrites = 0;
+      let peakWrites = 0;
+      const save = vi.fn(async (snapshot: any) => {
+        writes.push(structuredClone(snapshot));
+        activeWrites += 1;
+        peakWrites = Math.max(peakWrites, activeWrites);
+        try {
+          if (writes.length === 1) await firstWrite;
+          if (snapshot.completedTasks.length === 9) releaseLatestWrite();
+        } finally {
+          activeWrites -= 1;
+        }
+      });
+      const complete = vi.fn(async (payload: any) => lastText(payload.messages).includes('PLAN TURN')
+        ? fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks: manyTasks(9) }))
+        : responseForTask(payload, currentTaskId(payload)));
+      try {
+        const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+          repository: 'example/rel1211', headSha: 'current-checkpoint-coalescing', client: { complete },
+          checkpoint: { resumed: null, capture: (snapshot) => captures.push(structuredClone(snapshot)), save } }));
+        expect(result.personas).toHaveLength(9);
+        expect(writes).toHaveLength(1);
+        expect(captures.at(-1)).toMatchObject({ revision: 10, completedTasks: expect.any(Array) });
+        expect(captures.at(-1).completedTasks).toHaveLength(9);
+        releaseFirstWrite();
+        await latestWrite;
+        expect(peakWrites).toBe(1);
+        expect(writes.map((snapshot) => snapshot.revision)).toEqual([1, 10]);
+        expect(writes.at(-1).completedTasks.map((task: any) => task.id).sort())
+          .toEqual(manyTasks(9).map((task) => task.id).sort());
+      } finally {
+        releaseFirstWrite();
+      }
+    });
+
+    it('chooses the earliest accepted task failure when two active tasks fail together and settles the third sibling', async () => {
+      const tasks = orderReviewTasksByRisk(manyTasks(4));
+      const firstError = new TypeError('first accepted current task failed');
+      const laterError = new TypeError('later accepted current task failed');
+      let releaseStarted!: () => void;
+      const allStarted = new Promise<void>((resolve) => { releaseStarted = resolve; });
+      const started: string[] = [];
+      const aborted: string[] = [];
+      const complete = vi.fn(async (payload: any) => {
+        if (lastText(payload.messages).includes('PLAN TURN'))
+          return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks }));
+        const id = currentTaskId(payload);
+        started.push(id);
+        if (started.length === 3) releaseStarted();
+        if (id === tasks[0].id || id === tasks[1].id) {
+          await allStarted;
+          throw id === tasks[0].id ? firstError : laterError;
+        }
+        return new Promise<OpenRouterResponse>((_resolve, reject) => {
+          const abort = () => { aborted.push(id); reject(payload.signal.reason); };
+          if (payload.signal.aborted) abort();
+          else payload.signal.addEventListener('abort', abort, { once: true });
+        });
+      });
+      await withMaxTaskConcurrency(() => expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-ordered-fatal', client: { complete } })).rejects.toBe(firstError));
+      expect(started).toEqual(tasks.slice(0, 3).map((task) => task.id));
+      expect(aborted).toEqual([tasks[2].id]);
+      expect(complete).toHaveBeenCalledTimes(4);
+    });
+
+    it('keeps blocked and exhausted task identities when a later serial shadow task triggers finding-stop', async () => {
+      const tasks = orderReviewTasksByRisk(manyTasks(3));
+      const cfg = config();
+      cfg.composed = { max_turns_per_task: 1 };
+      const complete = vi.fn(async (payload: any) => {
+        const nonce = issuedNonce(payload.messages);
+        if (lastText(payload.messages).includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks }));
+        const task = currentTaskId(payload);
+        if (task === tasks[0].id) return fakeResponse(JSON.stringify({ nonce, task, status: 'BLOCKED', findings: [] }));
+        if (task === tasks[1].id) return fakeResponse('No usable task verdict');
+        return fakeResponse(JSON.stringify({ nonce, task, status: 'COMPLETE', findings: [{
+          severity: 'P0', path: 'src/auth/guard.ts', line: 2, startLine: null,
+          title: 'Current guard permits unauthorized access', body: 'The changed guard must reject an unauthenticated caller.',
+          suggestion: null, replacementCode: null,
+        }] }));
+      });
+      const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-shadow-mixed-stop', client: { complete }, publisherShadow: true }));
+      expect(result.optionalFailures?.map((lane) => lane.id)).toEqual([tasks[0].id]);
+      expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual([tasks[1].id]);
+      expect(result.personas.map((lane) => lane.id)).toEqual([tasks[2].id]);
+      expect(result.applicablePersonaIds).toEqual(tasks.map((task) => task.id));
+      expect(result.arbiter.verdict).toBe('BLOCK');
+      expect(result.arbiter.rationale).toContain('P0 blocker finding detected');
+      expect(computeArbitration(result.personas, tasks.length, { changedFiles: CODE_FILES,
+        coverageComplete: false, panelSize: tasks.length }).verdict).toBe('BLOCK');
+    });
+
+    it.each([true, false])('retains later completed evidence across a plan-order gap on typed deadline closeout: %s', async (laterCompleted) => {
+      const tasks = orderReviewTasksByRisk(manyTasks(5));
+      const controller = new AbortController();
+      const captured: any[] = [];
+      const started: string[] = [];
+      const cancelled: string[] = [];
+      let completedLater = false;
+      let thirdStarted = false;
+      const stop = new panelEngine.PanelDeadlineExceededError(1_000, true);
+      const progress = createPublishingProgress({ runId: 'current-composed-gap', executionAttempt: 1 }, { sink: (event) => {
+        if (event.task === 'composed_task' && event.status === 'completed') {
+          if (event.lane === 'composed-task-2') completedLater = true;
+          if (laterCompleted && event.lane === 'composed-task-3') controller.abort(stop);
+          else if (!laterCompleted && completedLater && thirdStarted) controller.abort(stop);
+        }
+      } });
+      const complete = vi.fn(async (payload: any) => {
+        if (lastText(payload.messages).includes('PLAN TURN'))
+          return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks }));
+        const id = currentTaskId(payload);
+        started.push(id);
+        if (id === tasks[1].id || (laterCompleted && id === tasks[2].id)) return responseForTask(payload, id);
+        if (id === tasks[2].id) {
+          thirdStarted = true;
+          if (completedLater) controller.abort(stop);
+        }
+        return new Promise<OpenRouterResponse>((_resolve, reject) => {
+          const abort = () => { cancelled.push(id); reject(payload.signal.reason); };
+          if (payload.signal.aborted) abort();
+          else payload.signal.addEventListener('abort', abort, { once: true });
+        });
+      });
+      const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-deadline-gap', client: { complete }, signal: controller.signal,
+        progress, checkpoint: { resumed: null, capture: (snapshot) => captured.push(structuredClone(snapshot)), save: async () => {} } }));
+      const completedIds = tasks.slice(1, laterCompleted ? 3 : 2).map((task) => task.id);
+      const pendingIds = tasks.filter((task) => !completedIds.includes(task.id)).map((task) => task.id);
+      expect(started).toEqual(tasks.slice(0, 3).map((task) => task.id));
+      expect(cancelled.sort()).toEqual((laterCompleted ? [tasks[0].id] : [tasks[0].id, tasks[2].id]).sort());
+      expect(result.personas.map((lane) => lane.id)).toEqual(completedIds);
+      expect(result.gracefulExit).toMatchObject({ reason: 'evidence_deadline', completedTaskIds: completedIds, pendingTaskIds: pendingIds });
+      expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual(pendingIds);
+      expect(result.unreportedLanes?.every((lane) => lane.failureClass === 'timeout')).toBe(true);
+      expect(result.arbiter.verdict).toBe('BLOCK');
+      expect(captured.at(-1).completedTasks.map((task: any) => task.id)).toEqual(completedIds);
+    });
+
+    it.each(['structured', 'legacy-string'] as const)('forwards %s repository rules into both accepted task scopes', async (shape) => {
+      const cfg = config();
+      cfg.rules = shape === 'structured'
+        ? [{ id: 'tenant-boundary', rule: 'Bind every tenant read to the authenticated tenant.', scope: ['src/**'], severity: 'P1' }]
+        : ['Bind every tenant read to the authenticated tenant.'];
+      const tasks = orderReviewTasksByRisk(manyTasks(2));
+      const transcripts = new Map<string, string>();
+      const complete = vi.fn(async (payload: any) => {
+        if (lastText(payload.messages).includes('PLAN TURN'))
+          return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks }));
+        const id = currentTaskId(payload);
+        transcripts.set(id, JSON.stringify(payload.messages));
+        return responseForTask(payload, id);
+      });
+      const result = await executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-rule-scope', client: { complete } });
+      expect(result.personas.map((lane) => lane.id)).toEqual(tasks.map((task) => task.id));
+      expect([...transcripts.keys()]).toEqual(tasks.map((task) => task.id));
+      for (const text of transcripts.values()) expect(text).toContain('Bind every tenant read to the authenticated tenant.');
+      if (shape === 'structured') for (const text of transcripts.values()) expect(text).toContain('tenant-boundary');
+    });
   });
 });
