@@ -274,7 +274,7 @@ describe('REL-1265 dispute re-review flow', () => {
     f.setGateHistorical();
 
     const unauthorizedRead = await request(f.app).post('/checkpoint')
-      .set('Authorization', 'Bearer ghs_wrong_disputed_finding_fixture').send({
+      .set('Authorization', `Bearer ${workerToken}-unauthorized`).send({
         version: 'ReviewExecutionCheckpointRead.v1', runId: identity.runId, executionAttempt: 2,
       });
     expect(unauthorizedRead.status).toBe(403);
