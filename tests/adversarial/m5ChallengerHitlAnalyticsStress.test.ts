@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../../src/app';
@@ -540,48 +540,68 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
   // ==========================================================================
   describe('6. Temporal Boundaries & Window Filtering (24h, 7d, 30d)', () => {
     it('handles exact millisecond boundaries on getFilteredReviewLogs', () => {
+      const originalClock = Date.now;
       const now = Date.now();
-      const H24 = 24 * 3600 * 1000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const H24 = 24 * 3600 * 1000;
 
-      // Reset logs with specific boundary timestamps
-      (dashboardStore as any).data.reviewLogs = [
-        {
-          id: 'log-boundary-inside',
-          timestamp: new Date(now - H24 + 1000).toISOString(), // 1s inside 24h window
-          latencyMs: 1500,
-          costUSD: 0.1,
-          repo: 'calltelemetry/test',
-        },
-        {
-          id: 'log-boundary-exact',
-          timestamp: new Date(now - H24).toISOString(), // Exact boundary
-          latencyMs: 2000,
-          costUSD: 0.2,
-          repo: 'calltelemetry/test',
-        },
-        {
-          id: 'log-boundary-outside',
-          timestamp: new Date(now - H24 - 1000).toISOString(), // 1s outside 24h window
-          latencyMs: 2500,
-          costUSD: 0.3,
-          repo: 'calltelemetry/test',
-        },
-      ];
-      // Invalidate cache
-      (dashboardStore as any).cache.analyticsSummary = {};
+        // Reset logs with specific boundary timestamps
+        (dashboardStore as any).data.reviewLogs = [
+          {
+            id: 'log-boundary-inside',
+            timestamp: new Date(now - H24 + 1000).toISOString(), // 1s inside 24h window
+            latencyMs: 1500,
+            costUSD: 0.1,
+            repo: 'calltelemetry/test',
+          },
+          {
+            id: 'log-boundary-exact',
+            timestamp: new Date(now - H24).toISOString(), // Exact boundary
+            latencyMs: 2000,
+            costUSD: 0.2,
+            repo: 'calltelemetry/test',
+          },
+          {
+            id: 'log-boundary-outside',
+            timestamp: new Date(now - H24 - 1000).toISOString(), // 1s outside 24h window
+            latencyMs: 2500,
+            costUSD: 0.3,
+            repo: 'calltelemetry/test',
+          },
+        ];
+        // Invalidate cache
+        (dashboardStore as any).cache.analyticsSummary = {};
 
-      const filtered24h = dashboardStore.getFilteredReviewLogs('24h');
-      const ids24h = filtered24h.map((l) => l.id);
+        const filtered24h = dashboardStore.getFilteredReviewLogs('24h');
+        const ids24h = filtered24h.map((l) => l.id);
 
-      expect(ids24h).toContain('log-boundary-inside');
-      expect(ids24h).toContain('log-boundary-exact');
-      expect(ids24h).not.toContain('log-boundary-outside');
+        expect(ids24h).toContain('log-boundary-inside');
+        expect(ids24h).toContain('log-boundary-exact');
+        expect(ids24h).not.toContain('log-boundary-outside');
 
-      // However, 7d window must include all three!
-      const filtered7d = dashboardStore.getFilteredReviewLogs('7d');
-      expect(filtered7d.map((l) => l.id)).toEqual(
-        expect.arrayContaining(['log-boundary-inside', 'log-boundary-exact', 'log-boundary-outside'])
-      );
+        // However, 7d window must include all three!
+        const filtered7d = dashboardStore.getFilteredReviewLogs('7d');
+        expect(filtered7d.map((l) => l.id)).toEqual(
+          expect.arrayContaining(['log-boundary-inside', 'log-boundary-exact', 'log-boundary-outside'])
+        );
+        const D30 = 30 * 86400 * 1000;
+        (dashboardStore as any).data.reviewLogs = [
+          { id: '30d-exact', timestamp: new Date(now - D30).toISOString(), repo: 'calltelemetry/test' },
+          { id: '30d-outside', timestamp: new Date(now - D30 - 1).toISOString(), repo: 'calltelemetry/test' },
+          { id: 'pr-run-match', timestamp: new Date(now).toISOString(), prRun: 'calltelemetry/test#42' },
+          { id: 'repo-mismatch', timestamp: new Date(now).toISOString(), repo: 'calltelemetry/other', prRun: 'calltelemetry/other#42' },
+          { id: 'repo-missing', timestamp: new Date(now).toISOString() },
+        ];
+        expect(dashboardStore.getFilteredReviewLogs('30d', 'calltelemetry/test').map((l) => l.id))
+          .toEqual(['30d-exact', 'pr-run-match']);
+        expect(dashboardStore.getFilteredReviewLogs('7d', 'calltelemetry/test').map((l) => l.id))
+          .toEqual(['pr-run-match']);
+        expect(Date.now()).toBe(now);
+      } finally {
+        clock.mockRestore();
+      }
+      expect(Date.now).toBe(originalClock);
     });
 
     it('safely discards invalid, corrupted, or null timestamps', () => {
@@ -622,7 +642,8 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
       (dashboardStore as any).cache.tokenTimeSeries = {};
 
       const tokenSeries = dashboardStore.getTokenTimeSeries('7d', 'calltelemetry/burn-test', 'day');
-      const dataPoints = Array.isArray(tokenSeries.data) ? tokenSeries.data : [];
+      expect(Array.isArray(tokenSeries.data)).toBe(true);
+      const dataPoints = tokenSeries.data;
 
       expect(dataPoints.length).toBe(7);
 
@@ -691,7 +712,8 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
       const costs = dashboardStore.getCostBreakdown('24h');
       expect(costs.totalSpendUsd).toBe(0.6);
 
-      const repoSum = (costs.byRepo || []).reduce((acc, r) => acc + r.spendUsd, 0);
+      expect(Array.isArray(costs.byRepo)).toBe(true);
+      const repoSum = costs.byRepo!.reduce((acc, r) => acc + r.spendUsd, 0);
       expect(parseFloat(repoSum.toFixed(4))).toBe(0.6);
     });
   });
