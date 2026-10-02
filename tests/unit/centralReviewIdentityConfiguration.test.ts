@@ -36,7 +36,9 @@ describe('central review identity is deployment configuration', () => {
         isAdmin: false,
         claims: { repository: identity.CENTRAL_REVIEW_REPOSITORY, event_name: 'repository_dispatch' },
       } as never;
-      expect(rbac.canAccessRepository(caller, 'example-org', 'some-repo')).toBe(false);
+      // Target the derived owner itself, so only the CENTRAL_REVIEW_CONFIGURED guard can deny.
+      const targetOwner = identity.CENTRAL_REVIEW_OWNER || 'example-org';
+      expect(rbac.canAccessRepository(caller, targetOwner, 'some-repo')).toBe(false);
     }
   });
 
