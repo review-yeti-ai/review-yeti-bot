@@ -5556,6 +5556,37 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline + 1, 5, delegated)).toEqual([]);
     });
 
+    it.each(['bound', 'unbound', 'recorded-result'] as const)(
+      'fences Gate-bound superseded retirement with %s state', async (gateState) => {
+        const f = await projectedGateRun();
+        const [claimed] = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline, 5);
+        expect(claimed).toBeDefined();
+        const before = await dispatchState(f.client, f.runId);
+        const publish = vi.fn(async () => {
+          // Change the Gate after the locked eligibility check so the retirement
+          // UPDATE itself must reject it and roll both durable rows back.
+          if (gateState === 'unbound') await f.client.query(
+            "UPDATE review_gate_attempts SET creation_state = 'reserved', check_id = NULL WHERE run_id = $1", [f.runId]);
+          if (gateState === 'recorded-result') await f.client.query(
+            "UPDATE review_gate_attempts SET worker_result_digest = repeat('e', 64) WHERE run_id = $1", [f.runId]);
+          return 'superseded' as const;
+        });
+        const reconciliation = f.repository.reconcileAbandonedPublishingRun(
+          claimed, 'synthetic-reaper', f.deadline + 1, publish);
+        if (gateState === 'bound') {
+          await expect(reconciliation).resolves.toEqual({ reconciled: true, outcome: 'superseded' });
+          const state = await dispatchState(f.client, f.runId);
+          expect(state.run).toMatchObject({ status: 'terminal', stage: 'terminal', result_digest: null, lease_owner: null });
+          expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null });
+          expect(await f.repository.claimAbandonedPublishingRuns('later-reaper', f.deadline + 2, 5)).toEqual([]);
+        } else {
+          await expect(reconciliation).rejects.toThrow('superseded run retirement lost its lease');
+          expect(await dispatchState(f.client, f.runId)).toEqual(before);
+        }
+        expect(publish).toHaveBeenCalledOnce();
+      },
+    );
+
     it('rejects a claimed publisher identity changed consistently in both durable rows', async () => {
       const f = await projectedGateRun();
       const [claimed] = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline, 5);
