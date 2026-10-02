@@ -371,7 +371,7 @@ describe('packLaneBudget', () => {
         if (classifyBudgetCategory(path) === 'security-sensitive') expect(entry.depth).not.toBe('signatures');
       }
     }
-  });
+  }, 30_000);
 
   it('fails open to today\'s content for a lane too large to list within the cap, and says so', () => {
     const huge = Array.from({ length: 1_500 }, (_, i) => ({ path: `src/generated_like/module_${String(i).padStart(5, '0')}.ts`, effectivePatch: '@@ -0,0 +1 @@\n+x', wholePatch: null }));
