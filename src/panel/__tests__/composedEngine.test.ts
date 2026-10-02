@@ -83,17 +83,18 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
-  it.each([true, false])('gives real panel personas current classification while keeping moderator/arbiter prompts independent: %s', async (current) => {
+  it.each([[true, 'complete'], [false, 'complete'], [true, 'unavailable'], [true, 'partial']] as const)
+  ('gives real panel personas usable current classification (current=%s, status=%s)', async (current, status) => {
     const repository = 'acme/reviewer-fixture', headSha = 'a'.repeat(40);
     const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository,
-      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status: 'complete',
-      totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, groups: [{ id: 'guard', label: 'Guard retirement',
+      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status,
+      totalFiles: 1, classifiedFiles: status === 'complete' ? 1 : 0, unresolvedFiles: status === 'complete' ? 0 : 1, groups: [{ id: 'guard', label: 'Guard retirement',
         proof: 'individual_path', risk: 'high', paths: ['src/auth/guard.ts'], categories: ['source'], obligationCount: 5 }] };
     const roles: string[] = [];
     const client = { complete: vi.fn(async (payload: any) => {
       const role = payload.metadata?.role, nonce = issuedNonce(payload.messages);
       roles.push(role);
-      expect(JSON.stringify(payload.messages).includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current && role === 'persona');
+      expect(JSON.stringify(payload.messages).includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current && status === 'complete' && role === 'persona');
       return fakeResponse(JSON.stringify(role === 'persona' ? { nonce, decision: 'APPROVE', findings: [] }
         : role === 'moderator' ? { nonce, decision: 'RECONCILED', findings: [] }
         : { nonce, verdict: 'SHIP', rationale: 'Clean fixture.' }));
@@ -119,19 +120,24 @@ describe('executeComposedReview', () => {
     expect(orderReviewTasksByRisk(tasks, plan).map((task) => task.id)).toEqual(['auth', 'deleted-contract', 'source']);
     expect(orderReviewTasksByRisk(tasks, plan)).toHaveLength(tasks.length);
     expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'disabled' })).toEqual(orderReviewTasksByRisk(tasks));
+    expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'unavailable', classifiedFiles: 0, unresolvedFiles: 2 }))
+      .toEqual(orderReviewTasksByRisk(tasks));
+    expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'partial', classifiedFiles: 0, unresolvedFiles: 2 }))
+      .toEqual(orderReviewTasksByRisk(tasks));
   });
 
-  it.each([true, false])('uses classification in real planner and worker prompts only at the admitted head: %s', async (current) => {
+  it.each([[true, 'complete'], [false, 'complete'], [true, 'unavailable'], [true, 'partial']] as const)
+  ('uses usable classification in real planner and worker prompts (current=%s, status=%s)', async (current, status) => {
     const repository = 'acme/reviewer-fixture', headSha = 'a'.repeat(40);
     const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository,
-      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status: 'complete',
-      totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, groups: [{ id: 'guard', label: 'Guard retirement',
+      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status,
+      totalFiles: 1, classifiedFiles: status === 'complete' ? 1 : 0, unresolvedFiles: status === 'complete' ? 0 : 1, groups: [{ id: 'guard', label: 'Guard retirement',
         proof: 'individual_path', risk: 'high', paths: ['src/auth/guard.ts'], categories: ['source'], obligationCount: 5 }] };
     const complete = vi.fn(async (payload: any) => {
       const text = lastText(payload.messages), nonce = nonceFrom(text);
       const prompt = JSON.stringify(payload.messages);
-      expect(prompt.includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current);
-      expect(prompt.includes('Guard retirement')).toBe(current);
+      expect(prompt.includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current && status === 'complete');
+      expect(prompt.includes('Guard retirement')).toBe(current && status === 'complete');
       if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'guard', dimension: 'security',
         paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' }] }));
       return fakeResponse(JSON.stringify({ nonce, task: 'guard', status: 'COMPLETE', findings: [] }));

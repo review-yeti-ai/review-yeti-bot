@@ -48,8 +48,7 @@ describe('deletion evidence replay', () => {
     const plan = await runtime.prepare();
     expect(plan).toMatchObject({ status: 'unavailable', totalFiles: 2, classifiedFiles: 0, unresolvedFiles: 2 });
     expect(plan.groups.flatMap((group) => group.paths)).toHaveLength(2);
-    expect(formatDeletionClassification(plan)).toContain('Classification: unavailable; 0/2 paths classified');
-    expect(formatDeletionClassification(plan)).toContain('two.ts');
+    expect(formatDeletionClassification(plan)).toBe('');
     expect(provider.readFileAt).not.toHaveBeenCalled();
     expect(search).not.toHaveBeenCalled();
   });
@@ -63,10 +62,9 @@ describe('deletion evidence replay', () => {
     const plan = await runtime.prepare({ budgetMs: 15 });
     expect(Date.now() - started).toBeLessThan(1000);
     expect(plan).toMatchObject({ status: 'partial', totalFiles: 12, classifiedFiles: 0, unresolvedFiles: 12 });
+    expect(formatDeletionClassification(plan)).toBe('');
     expect(plan.groups.flatMap((group) => group.paths)).toHaveLength(12);
     expect(plan.groups.reduce((sum, group) => sum + group.obligationCount, 0)).toBe(60);
-    expect(formatDeletionClassification(plan)).toContain('Classification: partial; 0/12 paths classified');
-    expect(formatDeletionClassification(plan)).toContain('11.ts');
     expect(ask.mock.calls.length).toBeLessThanOrEqual(4);
     if (stalled === 'source') expect(provider.readFileAt.mock.calls.length).toBeLessThanOrEqual(4);
     else {

@@ -53,7 +53,7 @@ export function deletionSubsystemCandidates(files: Array<{ path: string; oldPath
 
 /** Classifier metadata steers decomposition; it never replaces original evidence. */
 export function formatDeletionClassification(plan?: DeletionClassificationPlan, paths?: string[]): string {
-  if (!plan || plan.status === 'disabled' || !plan.totalFiles) return '';
+  if (!plan || plan.status === 'disabled' || plan.status === 'unavailable' || !plan.classifiedFiles) return '';
   const admitted = paths ? new Set(paths) : undefined;
   const groups = plan.groups.map((group) => ({
     ...group,
@@ -76,7 +76,7 @@ export function formatDeletionClassification(plan?: DeletionClassificationPlan, 
 
 /** May raise task priority; existing deterministic security floors still apply. */
 export function deletionTaskPriority(paths: string[], plan?: DeletionClassificationPlan): number | undefined {
-  if (!plan || plan.status === 'disabled') return undefined;
+  if (!plan || plan.status === 'disabled' || plan.status === 'unavailable' || !plan.classifiedFiles) return undefined;
   const set = new Set(paths);
   const ranks = plan.groups.filter((group) => group.paths.some((path) => set.has(path)))
     .map((group) => deletionRiskRank(group.risk));
