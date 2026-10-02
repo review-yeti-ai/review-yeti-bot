@@ -118,6 +118,7 @@ describe('executeComposedReview', () => {
     expect(orderReviewTasksByRisk(tasks).map((task) => task.id)).toEqual(['auth', 'source', 'deleted-contract']);
     expect(orderReviewTasksByRisk(tasks, plan).map((task) => task.id)).toEqual(['auth', 'deleted-contract', 'source']);
     expect(orderReviewTasksByRisk(tasks, plan)).toHaveLength(tasks.length);
+    expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'disabled' })).toEqual(orderReviewTasksByRisk(tasks));
   });
 
   it.each([true, false])('uses classification in real planner and worker prompts only at the admitted head: %s', async (current) => {
