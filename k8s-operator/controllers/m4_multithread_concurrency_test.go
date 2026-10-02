@@ -580,7 +580,10 @@ func TestM4_Integration_ErrorHandling_TransientAPI500_SlotRelease(t *testing.T) 
 	// Verify slot was released: Lease active slots should be empty
 	var lease coordinationv1.Lease
 	if err := kube.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: controllers.CapacityLedgerLeaseName}, &lease); err == nil {
-		slotsJson := lease.Annotations["review-yeti.ai/active-slots"]
+		if controllers.CapacityLedgerActiveSlotsAnnotation != "review-yeti.ai/active-slots" {
+			t.Fatalf("capacity ledger annotation key drifted: %s", controllers.CapacityLedgerActiveSlotsAnnotation)
+		}
+		slotsJson := lease.Annotations[controllers.CapacityLedgerActiveSlotsAnnotation]
 		if slotsJson != "" && slotsJson != "[]" {
 			t.Fatalf("expected active slots to be released after API failure, got: %s", slotsJson)
 		}
