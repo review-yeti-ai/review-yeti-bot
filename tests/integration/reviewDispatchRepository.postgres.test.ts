@@ -793,7 +793,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { priorProof, followupProof, completion, digest };
   }
 
-  it('retains a graceful composed partial on an ordinary MCP retry and accepts its authenticated full Gate result', async () => {
+  it('retains a graceful composed partial on an ordinary MCP retry and keeps its authenticated retained P2 result blocking', async () => {
     let proof: any;
     const resolveGenerationRecovery = vi.fn(async () => [proof]);
     const { repository, client, gateRepository } = await createRepository({
@@ -899,11 +899,13 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     };
     await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
       async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
+    // Authenticated continuation preserves the P2 evidence; its legacy
+    // zero-blocker summary cannot waive the accepted required-P2 policy.
     expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
-      .toBe('succeeded');
+      .toBe('failed');
     expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0])
-      .toMatchObject({ desired_state: 'success', decision: { status: 'success', reason: 'clean-review' } });
+      .toMatchObject({ desired_state: 'failure', decision: { status: 'failure', reason: 'blocking-findings' } });
   });
 
   it('refuses a composed graceful retry when its App summary reports blocking findings before allocating', async () => {
