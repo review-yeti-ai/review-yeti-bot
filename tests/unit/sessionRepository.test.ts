@@ -140,6 +140,14 @@ describe('sessionRepository Unit Tests', () => {
     expect(repo.getSessions({ query: 'nonexistent' }).length).toBe(0);
   });
 
+  it('does not substitute service review logs for an explicitly named, missing session directory', async () => {
+    const { dashboardStore } = await import('../../src/persistence/dashboardStore');
+    // Precondition: the process-wide store has review logs, so a leaked fallback would be visible.
+    expect(dashboardStore.getReviewLogs().length).toBeGreaterThan(0);
+    const repo = new SessionRepository(path.join(tempDir, 'explicit-missing-ledger'));
+    expect(repo.getSessions()).toEqual([]);
+  });
+
   it('falls back to dashboardStore when disk sessions directory is empty', () => {
     const mockStore = {
       getReviewLogs: () => [
