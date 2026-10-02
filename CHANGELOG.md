@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.116.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.1...v1.116.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **REL-1287:** bounded source context and immutable archive recovery ([#1267](https://github.com/review-yeti-ai/review-yeti-bot/issues/1267)) ([810b365](https://github.com/review-yeti-ai/review-yeti-bot/commit/810b36593a8ce8553da9ce3d82d5a7e018654c89))
+
 ## [1.116.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.0...v1.116.1) (2026-10-02)
 
 
