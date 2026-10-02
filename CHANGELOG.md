@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.112.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.0...v1.112.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* recover truncated gateway findings output (REL-1081) ([#1256](https://github.com/review-yeti-ai/review-yeti-bot/issues/1256)) ([22a0d44](https://github.com/review-yeti-ai/review-yeti-bot/commit/22a0d441d12313e5445ec1526ae7e4eb0ef9646d))
+
 ## [1.112.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.111.0...v1.112.0) (2026-10-02)
 
 
