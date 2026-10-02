@@ -191,6 +191,7 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE (authori
     expect(check?.summary).not.toMatch(/scheduled automatically|retrying as attempt|superseded by it/iu);
     expect(f.warn).toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
       expect.objectContaining({ retryStatus: 'not_confirmed' }));
+    expect(f.warn.mock.calls[0]?.[1]).not.toHaveProperty('retryScheduled');
     expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'not_confirmed', failure_class: 'transport', authoritative: 'true' });
   });
 
@@ -240,6 +241,7 @@ describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE (authori
     // Countable reason class, and nothing private leaves the process.
     expect(f.warn).toHaveBeenCalledWith('Review incomplete: the review panel failed on infrastructure; not a review verdict',
       expect.objectContaining({ reasonClass: 'incomplete_infra', retryStatus: 'not_confirmed' }));
+    expect(f.warn.mock.calls[0]?.[1]).not.toHaveProperty('retryScheduled');
     expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'not_confirmed', failure_class: failureClass, authoritative: 'true' });
     for (const published of [f.reportReviewResult.mock.calls, f.checkClient.completeCheck.mock.calls]) {
       expect(JSON.stringify(published)).not.toContain(PRIVATE_DETAIL);
