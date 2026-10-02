@@ -61,7 +61,7 @@ jobs:
   # typecheck still gates them.
   test-plan:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -120,21 +120,6 @@ jobs:
     needs: test-plan
     if: needs.test-plan.outputs.shard-count != '0'
     name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
-    # PEG DECLINED -- CPU-bound. Measured same-SHA on PR #1247 (run 36936581206)
-    # against the 4-vCPU main-branch baseline (runs 36936596114 / 36935551103).
-    # The node_modules sticky disk was WARM in the 2-vCPU run ("node_modules is
-    # warm ... skipping npm ci"), so this is CPU, not a cold-cache artifact:
-    #
-    #   shard   4vcpu   2vcpu   stretch   norm_4vcpu   norm_2vcpu
-    #   1/4      137s    289s    2.11x        548          578
-    #   2/4      145s    335s    2.31x        580          670
-    #   3/4      103s    221s    2.15x        412          442
-    #   4/4       90s    208s    2.31x        360          416
-    #
-    # Every shard stretches past the 2x budget where a vCPU cut starts losing on
-    # normalized compute (wall x vCPU), so 2 vCPU is the more expensive choice
-    # here even though the wall-clock saving looks like a win. Stage B of the
-    # main gate pegs WORKERS to nproc, so shard wall time tracks cores directly.
     runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     # Headroom for a cold node_modules disk (a lockfile change) on top of a full shard.
     timeout-minutes: 25
@@ -184,7 +169,7 @@ jobs:
   vitest-postgres:
     needs: test-plan
     if: needs.test-plan.outputs.postgres-tests != '[]'
-    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     services:
       postgres:
         image: postgres:17-alpine
@@ -243,14 +228,6 @@ jobs:
 
   build:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    # PEG EXCEPTION -- memory-bound, not CPU-bound. Pegging this job to 2 vCPU
-    # OOM'd `next build` on PR #1247 (job 110616268666):
-    #   FATAL ERROR: Ineffective mark-compacts near heap limit
-    #   Allocation failed - JavaScript heap out of memory
-    # at ~2.0 GB RSS, 32s into `npm run build` -> `next build`. This is the one
-    # job in the workflow where the larger SKU buys RAM rather than cores, so it
-    # keeps 4 vCPU. Do not peg this again without first giving the build a
-    # bounded NODE_OPTIONS heap that fits the 2-vCPU box.
     runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     timeout-minutes: 15
     permissions:
@@ -268,16 +245,15 @@ jobs:
           commit: ${{ github.event_name == 'pull_request' && 'false' || 'on-change' }}
 
       - name: Verify TypeScript Build
-        # BOUNDED HEAP -- the fix that makes this job portable across runner
-        # sizes. Node derives its default old-space cap from the HOST's total
-        # RAM rather than from what the build actually needs, so the same
-        # command OOMs on a small runner and succeeds on a large one:
+        # BOUNDED HEAP -- matches the same fix already applied to the bot-dist
+        # build below. Node derives its default old-space cap from the HOST's
+        # total RAM rather than from what the build needs, so the same command
+        # OOMs on a small runner and succeeds on a large one:
         #   FATAL ERROR: Ineffective mark-compacts near heap limit
         #   Allocation failed - JavaScript heap out of memory
         # `next build` here peaks at ~1.4 GB RSS (measured with
-        # /usr/bin/time -l), well under this cap. Pinning the cap makes the
-        # memory requirement a property of the BUILD, not of whichever runner
-        # it lands on, so the runner can be chosen on cost alone.
+        # /usr/bin/time -l). Pinning the cap makes the memory requirement a
+        # property of the BUILD, not of whichever runner it lands on.
         env:
           NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build
@@ -320,7 +296,7 @@ jobs:
           exit "$failed"
 
   typecheck:
-    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
     # so the 464 errors that were burned down to reach that state could silently return unnoticed.
@@ -346,7 +322,7 @@ jobs:
         run: npm run lint:src -- --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo
 
   operator-test:
-    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-2vcpu-ubuntu-2404' }}
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'blacksmith-4vcpu-ubuntu-2404' }}
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
     # so a reconciler regression could ship with a fully green PR. This job runs vet and the
@@ -471,14 +447,6 @@ jobs:
             # (verified live: runner group 'blacksmith runners …' picked up in
             # ~1.5 min; x86 blacksmith labels stay queued, so amd64 keeps
             # ubuntu-latest).
-            #
-            # The "x86 blacksmith labels stay queued" half of that observation
-            # is now stale: this same workflow's `worker-helper` and
-            # `legacy-runtime` jobs run on blacksmith-2vcpu-ubuntu-2404 (x86)
-            # and complete on every run, and the org has a
-            # blacksmith-2vcpu-ubuntu-2404 scale set registered. amd64 still
-            # stays on ubuntu-latest here because a public repo already gets a
-            # free multi-arch lane, not because x86 Blacksmith is unavailable.
             runner: blacksmith-2vcpu-ubuntu-2404-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -506,11 +474,11 @@ jobs:
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2
         with:
           cache-key: review-yeti-node-images-arm64
-      # GitHub-hosted fallback for the arm64 arm. The Blacksmith builder keeps
-      # layer state on sticky disks; on a GitHub-hosted runner the equivalent is
-      # buildx plus the native GHA cache, which every build step below already
-      # declares via cache-from/cache-to type=gha. This is what lets the publish
-      # lane run on either family without touching the build graph.
+      # GitHub-hosted fallback. The Blacksmith builder keeps layer state on
+      # sticky disks; on a GitHub-hosted runner the equivalent is buildx plus
+      # the native GHA cache, which every build step below already declares
+      # via cache-from/cache-to type=gha. This is what lets the publish lane
+      # run on either family without touching the build graph.
       - name: Set up buildx (GitHub-hosted fallback)
         if: matrix.arch == 'arm64' && runner.environment == 'github-hosted'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -521,6 +489,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build bot dist for the context-copied image
+        # The ARM runner's default V8 heap is ~2 GiB; Next's typecheck exceeds
+        # it on the current source tree (main run 36933675579). Keep the
+        # existing runner and checks, with room below its memory ceiling.
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
         run: |
           set -euo pipefail
           npm ci
@@ -556,7 +529,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
       - id: worker-arm
         if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2 # arm64 on Blacksmith; GitHub-hosted uses the docker/build-push-action step below
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile.worker
@@ -589,7 +562,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
       - id: bot-arm
         if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2 # arm64 on Blacksmith; GitHub-hosted uses the docker/build-push-action step below
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile.bot
@@ -621,7 +594,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
       - id: legacy-runtime-arm
         if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2 # arm64 on Blacksmith; GitHub-hosted uses the docker/build-push-action step below
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile.legacy-runtime
@@ -662,6 +635,11 @@ jobs:
         uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2
         with:
           cache-key: review-yeti-operator-arm64
+      # GitHub-hosted fallback. The Blacksmith builder keeps layer state on
+      # sticky disks; on a GitHub-hosted runner the equivalent is buildx plus
+      # the native GHA cache, which every build step below already declares
+      # via cache-from/cache-to type=gha. This is what lets the publish lane
+      # run on either family without touching the build graph.
       - name: Set up buildx (GitHub-hosted fallback)
         if: matrix.arch == 'arm64' && runner.environment == 'github-hosted'
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
@@ -683,7 +661,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
       - id: operator-arm
         if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2 # arm64 on Blacksmith; GitHub-hosted uses the docker/build-push-action step below
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile.operator
