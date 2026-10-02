@@ -12,6 +12,8 @@ import {
   type ReviewTask,
 } from '../reviewTaskContract';
 import type { PanelFinding } from '../panel/types';
+import type { WorkerReviewCompletion } from './workerReviewCompletion';
+import { canonicalJson } from './reviewCore';
 
 export const REVIEW_EXECUTION_CHECKPOINT_VERSION = 'ReviewExecutionCheckpoint.v1' as const;
 export const MAX_REVIEW_CHECKPOINT_BYTES = 600_000;
@@ -106,3 +108,14 @@ export const reviewCheckpointReadRequestSchema = z.object({
   runId: z.string().regex(/^run_[a-f0-9]{32}$/u),
   executionAttempt: positiveInteger,
 }).strict();
+
+/** Bind a durable task checkpoint to the exact immutable completion that it represents. */
+export function reviewCheckpointMatchesCompletion(
+  checkpoint: ReviewExecutionCheckpoint, completion: WorkerReviewCompletion,
+): boolean {
+  const fields = ['runId', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha',
+    'policyDigest', 'configDigest', 'executionAttempt'] as const;
+  return fields.every((field) => checkpoint[field] === completion[field])
+    && completion.result.taskPlan !== undefined
+    && canonicalJson(checkpoint.plan) === canonicalJson(completion.result.taskPlan);
+}

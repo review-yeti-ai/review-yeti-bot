@@ -28,7 +28,7 @@ import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COV
 import type { VerdictCacheVerificationInput } from '../review/verdictCache';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks } from '../review/disputedFindingRecheck';
-import { parseReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
+import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../review/reviewExecutionCheckpoint';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -76,12 +76,7 @@ async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, eve
     )).rows[0];
     if (!checkpointRow) return false;
     const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
-    if (checkpoint.runId !== event.runId || checkpoint.repositoryId !== event.repositoryId
-      || checkpoint.owner !== event.owner || checkpoint.repo !== event.repo || checkpoint.prNumber !== event.prNumber
-      || checkpoint.headSha !== event.headSha || checkpoint.baseSha !== event.baseSha
-      || checkpoint.policyDigest !== event.policyDigest || checkpoint.configDigest !== event.configDigest
-      || checkpoint.executionAttempt !== event.executionAttempt || !event.result.taskPlan
-      || canonicalJson(event.result.taskPlan) !== canonicalJson(checkpoint.plan)) return false;
+    if (!reviewCheckpointMatchesCompletion(checkpoint, event)) return false;
 
     if (pendingDisputedFindingRechecks(rechecks, checkpoint, event.executionAttempt).length > 0) return false;
 

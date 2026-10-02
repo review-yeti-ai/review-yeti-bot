@@ -20,7 +20,7 @@ import {
   findReviewFindingRecord,
 } from './findingIdentity';
 import { withReviewPrTransaction, lockReviewPr, type ReviewPrTransactionPool } from '../../../persistence/reviewPrTransaction';
-import { parseReviewExecutionCheckpoint } from '../../../review/reviewExecutionCheckpoint';
+import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../../../review/reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewCompletionDigest } from '../../../review/workerReviewCompletion';
 import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
@@ -392,12 +392,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         )).rows[0];
         if (!checkpointRow) throw new Error('The completed task checkpoint is unavailable for a safe re-review');
         const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
-        if (checkpoint.runId !== completion.runId || checkpoint.repositoryId !== completion.repositoryId
-          || checkpoint.owner !== completion.owner || checkpoint.repo !== completion.repo
-          || checkpoint.prNumber !== completion.prNumber || checkpoint.headSha !== completion.headSha
-          || checkpoint.baseSha !== completion.baseSha || checkpoint.policyDigest !== completion.policyDigest
-          || checkpoint.configDigest !== completion.configDigest || checkpoint.executionAttempt !== completion.executionAttempt
-          || canonicalJson(checkpoint.plan) !== canonicalJson(taskPlan)) {
+        if (!reviewCheckpointMatchesCompletion(checkpoint, completion)) {
           throw new Error('The task checkpoint does not match the accepted source completion');
         }
         const completed = checkpoint.completedTasks.find((candidate) => candidate.id === task.id);
