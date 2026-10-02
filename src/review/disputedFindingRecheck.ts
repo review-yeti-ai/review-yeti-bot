@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { canonicalJson, sha256 } from './reviewCore';
 import { getReviewFindingId } from '../mcp/server/tools/findingIdentity';
+import type { ReviewExecutionCheckpoint } from './reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from './workerReviewCompletion';
 
 export const MAX_DISPUTE_RECHECKS_PER_REVIEW = 8;
@@ -202,4 +203,41 @@ export async function loadValidatedDisputedFindingRechecks(
     throw new Error('Too many disputed finding re-review requests');
   }
   return rows.map((row) => validateDisputedFindingRecheckRow(row, run, currentAttempt));
+}
+
+/** Shared plan/identity binding used before work, checkpoint acknowledgement and final Gate acceptance. */
+export function disputedFindingTaskMatchesCheckpoint(
+  recheck: DisputedFindingRecheck, checkpoint: ReviewExecutionCheckpoint, currentAttempt: number,
+): boolean {
+  return recheck.runId === checkpoint.runId && recheck.repositoryId === checkpoint.repositoryId
+    && recheck.owner === checkpoint.owner && recheck.repo === checkpoint.repo && recheck.prNumber === checkpoint.prNumber
+    && recheck.headSha === checkpoint.headSha && recheck.baseSha === checkpoint.baseSha
+    && recheck.policyDigest === checkpoint.policyDigest && recheck.configDigest === checkpoint.configDigest
+    && recheck.sourceExecutionAttempt < currentAttempt && checkpoint.executionAttempt <= currentAttempt
+    && recheck.sourcePlanDigest === sha256(canonicalJson(checkpoint.plan))
+    && checkpoint.plan.some((task) => task.id === recheck.taskId && task.id === recheck.personaId);
+}
+
+/** Acknowledgement is a task receipt. Gate acceptance additionally verifies fresh worker evidence. */
+export function pendingDisputedFindingRechecks(
+  rechecks: DisputedFindingRecheck[], checkpoint: ReviewExecutionCheckpoint | null, currentAttempt: number,
+): DisputedFindingRecheck[] {
+  const satisfied = new Set(checkpoint?.satisfiedFindingRecheckIds ?? []);
+  const byId = new Map(rechecks.map((recheck) => [recheck.requestId, recheck]));
+  if ([...satisfied].some((requestId) => !byId.has(requestId))) {
+    throw new Error('Checkpoint contains an unknown disputed finding receipt');
+  }
+  if (rechecks.length > 0 && !checkpoint) throw new Error('Disputed finding checkpoint is unavailable');
+  if (checkpoint) {
+    if (checkpoint.executionAttempt > currentAttempt) throw new Error('Checkpoint belongs to a future execution');
+    for (const recheck of rechecks) {
+      if (!disputedFindingTaskMatchesCheckpoint(recheck, checkpoint, currentAttempt)) {
+        throw new Error('Disputed finding request no longer matches the composed task plan');
+      }
+      if (satisfied.has(recheck.requestId) && !checkpoint.completedTasks.some((task) => task.id === recheck.taskId)) {
+        throw new Error('Satisfied disputed finding receipt has no completed task');
+      }
+    }
+  }
+  return rechecks.filter((recheck) => !satisfied.has(recheck.requestId));
 }

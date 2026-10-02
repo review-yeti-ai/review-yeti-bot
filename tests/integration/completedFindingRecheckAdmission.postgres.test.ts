@@ -8,8 +8,8 @@ import { createRemoteMcpRouter } from '../../src/mcp/server/remoteMcpRouter';
 import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
-import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
-import { REVIEW_GENERATION_RECOVERY_SCHEMA_SQL } from '../../src/persistence/reviewGenerationRecoverySchema';
+import { initializeOwnedReviewSchema } from '../support/ownedReviewSchema';
+import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { PostgresReviewDispatchRepository } from '../../src/persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
 import { createReviewExecutionCheckpointHandler } from '../../src/api/reviewExecutionCheckpointRoute';
@@ -49,24 +49,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
     admin = new Pool({ connectionString: postgresDatabaseUrl(), max: 2 });
     await admin.query(`CREATE SCHEMA "${schema}"`);
     pool = new Pool({ connectionString: postgresDatabaseUrl(), max: 5, options: `-c search_path=${schema}` });
-    await pool.query(`CREATE TABLE review_runs (
-      run_id TEXT PRIMARY KEY, owner TEXT, repo TEXT, pr_number INTEGER, repository_id BIGINT,
-      head_sha TEXT, base_sha TEXT, effective_policy_digest TEXT, effective_config_digest TEXT,
-      publication_mode TEXT DEFAULT 'app-gate', status TEXT, stage TEXT DEFAULT 'complete', attempt INTEGER,
-      result_digest TEXT, received_at TIMESTAMPTZ, terminal_deadline TIMESTAMPTZ, publication_fence TEXT,
-      error_text TEXT, artifacts JSONB DEFAULT '{}'::jsonb, failure_diagnostics JSONB DEFAULT '{}'::jsonb,
-      lease_owner TEXT, lease_expires_at TIMESTAMPTZ,
-      cancel_requested_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);
-      CREATE TABLE github_deliveries (delivery_id TEXT PRIMARY KEY, repository_id BIGINT, installation_id BIGINT);
-      CREATE TABLE review_dispatch_outbox (run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
-      delivery_id TEXT, status TEXT, execution_attempt INTEGER, worker_token_digest TEXT, projection_name TEXT,
-      terminal_receipt_digest TEXT, lease_owner TEXT, lease_expires_at TIMESTAMPTZ, attempt INTEGER DEFAULT 0,
-      dispatch_priority INTEGER DEFAULT 0, available_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-      cancel_requested_at TIMESTAMPTZ, created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP);`);
-    await pool.query(REVIEW_GATE_SCHEMA_SQL);
-    await pool.query(REVIEW_GENERATION_RECOVERY_SCHEMA_SQL);
+    await initializeOwnedReviewSchema(pool, schema);
     dispatcher = new PostgresReviewDispatchRepository(pool as never, undefined, { lifecycleEvents: 'disabled' });
   }, 30_000);
   afterAll(async () => {
@@ -76,13 +59,16 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
   });
   beforeEach(async () => {
     await pool.query('TRUNCATE review_runs, github_deliveries CASCADE');
+    const persistedIdentity = buildReviewRunIdentity(identity);
     await pool.query(`INSERT INTO review_runs (run_id, owner, repo, pr_number, repository_id, head_sha, base_sha,
       effective_policy_digest, effective_config_digest, status, attempt, authoritative_gate_app_id,
-      result_digest, received_at, terminal_deadline) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'succeeded',1,4385771,$10,
-      to_timestamp(($11::double precision - 3600000)/1000.0),to_timestamp(($11::double precision - 1)/1000.0))`,
+      result_digest, received_at, terminal_deadline, identity_digest, snapshot_digest, config_digest, identity, publication_mode, stage) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'succeeded',1,4385771,$10,
+      to_timestamp(($11::double precision - 3600000)/1000.0),to_timestamp(($11::double precision - 1)/1000.0),$12,$13,$9,$14::jsonb,'app-gate','complete')`,
     [identity.runId, identity.owner, identity.repo, identity.prNumber, identity.repositoryId, identity.headSha,
-      identity.baseSha, identity.policyDigest, identity.configDigest, sourceDigest, now]);
-    await pool.query("INSERT INTO github_deliveries VALUES ('original-source', $1, 2001)", [identity.repositoryId]);
+      identity.baseSha, identity.policyDigest, identity.configDigest, sourceDigest, now, sha256(persistedIdentity),
+      persistedIdentity.snapshotDigest, JSON.stringify(persistedIdentity)]);
+    await pool.query(`INSERT INTO github_deliveries (delivery_id,event_name,repository_id,installation_id,payload_digest,received_at)
+      VALUES ('original-source','pull_request',$1,2001,$2,CURRENT_TIMESTAMP)`, [identity.repositoryId, sourceDigest]);
     await pool.query(`INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, execution_attempt,
       worker_token_digest, projection_name, terminal_receipt_digest) VALUES ($1,'original-source','projected',1,$2,
       'completed-original-worker',$3)`, [identity.runId, sha256('old-worker-token'), sourceDigest]);

@@ -27,7 +27,7 @@ import { selectVerdictCacheSource } from './verdictCacheSource';
 import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
 import type { VerdictCacheVerificationInput } from '../review/verdictCache';
 import { canonicalJson, sha256 } from '../review/reviewCore';
-import { loadValidatedDisputedFindingRechecks } from '../review/disputedFindingRecheck';
+import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks } from '../review/disputedFindingRecheck';
 import { parseReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
 import {
   appendLifecycleEventForRun,
@@ -76,7 +76,6 @@ async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, eve
     )).rows[0];
     if (!checkpointRow) return false;
     const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
-    const planDigest = sha256(canonicalJson(checkpoint.plan));
     if (checkpoint.runId !== event.runId || checkpoint.repositoryId !== event.repositoryId
       || checkpoint.owner !== event.owner || checkpoint.repo !== event.repo || checkpoint.prNumber !== event.prNumber
       || checkpoint.headSha !== event.headSha || checkpoint.baseSha !== event.baseSha
@@ -84,13 +83,9 @@ async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, eve
       || checkpoint.executionAttempt !== event.executionAttempt || !event.result.taskPlan
       || canonicalJson(event.result.taskPlan) !== canonicalJson(checkpoint.plan)) return false;
 
-    const satisfiedIds = checkpoint.satisfiedFindingRecheckIds ?? [];
-    const satisfied = new Set(satisfiedIds);
-    const known = new Set(rechecks.map((recheck) => recheck.requestId));
-    if (satisfied.size !== satisfiedIds.length || [...satisfied].some((id) => !known.has(id))) return false;
+    if (pendingDisputedFindingRechecks(rechecks, checkpoint, event.executionAttempt).length > 0) return false;
 
     for (const recheck of rechecks) {
-      if (recheck.sourcePlanDigest !== planDigest || !satisfied.has(recheck.requestId)) return false;
       const completed = checkpoint.completedTasks.filter((task) => task.id === recheck.taskId);
       const personas = event.result.personas.filter((persona) => persona.id === recheck.taskId && persona.evidenceSource !== 'shadow');
       if (completed.length !== 1 || personas.length !== 1 || personas[0]!.status !== 'COMPLETE'

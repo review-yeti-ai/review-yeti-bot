@@ -66,7 +66,7 @@ import {
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
 import { canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
-import type { DisputedFindingRecheck } from '../review/disputedFindingRecheck';
+import { disputedFindingTaskMatchesCheckpoint, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
@@ -1585,15 +1585,8 @@ export async function runPublishingReviewWorker(
     }
     if (disputedFindingRechecks.length > 0) {
       if (!resumedCheckpoint) throw new Error('Disputed finding re-review has no exact-head task checkpoint');
-      const planDigest = sha256(canonicalJson(resumedCheckpoint.plan));
       for (const recheck of disputedFindingRechecks) {
-        if (recheck.runId !== identity.runId || recheck.repositoryId !== identity.repositoryId
-          || recheck.owner !== identity.owner || recheck.repo !== identity.repoName
-          || recheck.prNumber !== identity.prNumber || recheck.headSha !== identity.headSha
-          || recheck.baseSha !== identity.baseSha || recheck.policyDigest !== value(env, 'REVIEW_POLICY_DIGEST')
-          || recheck.configDigest !== value(env, 'REVIEW_CONFIG_DIGEST')
-          || recheck.sourceExecutionAttempt >= identity.executionAttempt || recheck.sourcePlanDigest !== planDigest
-          || !resumedCheckpoint.plan.some((task) => task.id === recheck.taskId && task.id === recheck.personaId)) {
+        if (!disputedFindingTaskMatchesCheckpoint(recheck, resumedCheckpoint, identity.executionAttempt)) {
           throw new Error('Disputed finding re-review does not match this exact-head task checkpoint');
         }
       }

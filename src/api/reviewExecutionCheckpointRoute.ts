@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
-import { canonicalJson, sha256 } from '../review/reviewCore';
+import { sha256 } from '../review/reviewCore';
 import { workerExecutionAuthorized, type Queryable } from '../persistence/incrementalPriorReview';
 import { lockReviewPr, withReviewPrTransaction, type ReviewPrTransactionPool } from '../persistence/reviewPrTransaction';
-import { loadValidatedDisputedFindingRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
+import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   parseReviewExecutionCheckpoint,
   reviewCheckpointReadRequestSchema,
@@ -50,29 +50,6 @@ async function readCheckpoint(queryable: Queryable, runId: string): Promise<Revi
   return row ? parseReviewExecutionCheckpoint(jsonValue(row.payload)) : null;
 }
 
-function pendingRechecks(rechecks: DisputedFindingRecheck[], checkpoint: ReviewExecutionCheckpoint | null,
-  currentAttempt: number): DisputedFindingRecheck[] {
-  const satisfied = checkpointSatisfiedIds(checkpoint);
-  const byId = new Map(rechecks.map((recheck) => [recheck.requestId, recheck]));
-  if ([...satisfied].some((requestId) => !byId.has(requestId))) {
-    throw new Error('Checkpoint contains an unknown disputed finding receipt');
-  }
-  if (rechecks.length > 0 && !checkpoint) throw new Error('Disputed finding checkpoint is unavailable');
-  if (checkpoint) {
-    if (checkpoint.executionAttempt > currentAttempt) throw new Error('Checkpoint belongs to a future execution');
-    for (const recheck of rechecks) {
-      if (sha256(canonicalJson(checkpoint.plan)) !== recheck.sourcePlanDigest) {
-        throw new Error('Disputed finding request no longer matches the composed task plan');
-      }
-      if (satisfied.has(recheck.requestId)
-        && !checkpoint.completedTasks.some((task) => task.id === recheck.taskId)) {
-        throw new Error('Satisfied disputed finding receipt has no completed task');
-      }
-    }
-  }
-  return rechecks.filter((recheck) => !satisfied.has(recheck.requestId));
-}
-
 async function assertSatisfiedReceipts(queryable: Queryable, checkpoint: ReviewExecutionCheckpoint,
   previous: ReviewExecutionCheckpoint | null): Promise<void> {
   const currentIds = checkpointSatisfiedIds(checkpoint);
@@ -84,15 +61,7 @@ async function assertSatisfiedReceipts(queryable: Queryable, checkpoint: ReviewE
   const run = (await queryable.query(RUN_IDENTITY_SELECT, [checkpoint.runId])).rows[0];
   assertRunIdentity(run, checkpoint);
   const rechecks = await validatedRechecks(queryable, run, checkpoint.executionAttempt);
-  const byId = new Map(rechecks.map((recheck) => [recheck.requestId, recheck]));
-  const planDigest = sha256(canonicalJson(checkpoint.plan));
-  for (const requestId of currentIds) {
-    const recheck = byId.get(requestId);
-    if (!recheck || recheck.sourcePlanDigest !== planDigest
-      || !checkpoint.completedTasks.some((task) => task.id === recheck.taskId)) {
-      throw new Error('Checkpoint receipt is not backed by a completed disputed task');
-    }
-  }
+  pendingDisputedFindingRechecks(rechecks, checkpoint, checkpoint.executionAttempt);
 }
 
 export function createReviewExecutionCheckpointHandler(queryable: CheckpointDatabase) {
@@ -109,7 +78,7 @@ export function createReviewExecutionCheckpointHandler(queryable: CheckpointData
           const checkpoint = await readCheckpoint(client, read.data.runId);
           if (checkpoint) assertRunIdentity(run, checkpoint);
           const rechecks = await validatedRechecks(client, run, read.data.executionAttempt);
-          const pending = pendingRechecks(rechecks, checkpoint, read.data.executionAttempt);
+          const pending = pendingDisputedFindingRechecks(rechecks, checkpoint, read.data.executionAttempt);
           return { status: 200 as const, checkpoint, disputedFindingRechecks: pending };
         });
         if (result.status === 403) return response.status(403).json({ error: 'Worker is not authorized for this execution' });

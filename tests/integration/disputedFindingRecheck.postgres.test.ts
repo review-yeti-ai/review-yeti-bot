@@ -8,7 +8,8 @@ import { createReviewExecutionCheckpointHandler } from '../../src/api/reviewExec
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
-import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
+import { initializeOwnedReviewSchema } from '../support/ownedReviewSchema';
+import { buildReviewRunIdentity } from '../../src/review/reviewAdmission';
 import { reviewPrLockKey } from '../../src/persistence/reviewPrTransaction';
 import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
@@ -73,26 +74,7 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
       client.release();
     }
     pool = new Pool({ connectionString: databaseUrl, max: 4, options: `-c search_path=${schemaName}` });
-    await pool.query(`
-      CREATE TABLE review_runs (
-        run_id TEXT PRIMARY KEY, owner TEXT NOT NULL, repo TEXT NOT NULL, pr_number INTEGER NOT NULL,
-        head_sha TEXT NOT NULL, base_sha TEXT NOT NULL, effective_policy_digest TEXT NOT NULL,
-        effective_config_digest VARCHAR(64) NOT NULL, status TEXT NOT NULL, attempt INTEGER NOT NULL,
-        repository_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        publication_mode TEXT DEFAULT 'app-gate', stage TEXT DEFAULT 'complete', result_digest TEXT,
-        received_at TIMESTAMPTZ, terminal_deadline TIMESTAMPTZ, error_text TEXT,
-        failure_diagnostics JSONB DEFAULT '{}'::jsonb, publication_fence TEXT, lease_owner TEXT,
-        lease_expires_at TIMESTAMPTZ, cancel_requested_at TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
-      );
-      CREATE TABLE review_dispatch_outbox (
-        run_id TEXT PRIMARY KEY REFERENCES review_runs(run_id) ON DELETE CASCADE,
-        status TEXT NOT NULL, execution_attempt INTEGER NOT NULL, worker_token_digest VARCHAR(64),
-        projection_name TEXT, terminal_receipt_digest TEXT, lease_owner TEXT, lease_expires_at TIMESTAMPTZ,
-        available_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-        cancel_requested_at TIMESTAMPTZ
-      );
-    `);
-    await pool.query(REVIEW_GATE_SCHEMA_SQL);
+    await initializeOwnedReviewSchema(pool, schemaName);
   }, 30_000);
 
   afterAll(async () => {
@@ -105,15 +87,19 @@ describeWithPostgres('REL-1265 append-only dispute re-review flow (real SQL)', (
 
   it('enqueues once, reads the bound historical Gate, and records only an authenticated fresh-task receipt', async () => {
     const sourceBytes = canonicalJson(completion);
+    const persistedIdentity = buildReviewRunIdentity({ owner, repo, prNumber, headSha, baseSha, configDigest });
     await pool!.query(`INSERT INTO review_runs
       (run_id, owner, repo, pr_number, head_sha, base_sha, effective_policy_digest, effective_config_digest,
-       status, attempt, repository_id, authoritative_gate_app_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'failed', 1, $9, 4385771)`,
-    [runId, owner, repo, prNumber, headSha, baseSha, policyDigest, configDigest, repositoryId]);
+       status, attempt, repository_id, authoritative_gate_app_id, identity_digest, snapshot_digest, config_digest, identity, publication_mode, stage)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'failed', 1, $9, 4385771,$10,$11,$8,$12::jsonb,'app-gate','complete')`,
+    [runId, owner, repo, prNumber, headSha, baseSha, policyDigest, configDigest, repositoryId,
+      sha256(persistedIdentity), persistedIdentity.snapshotDigest, JSON.stringify(persistedIdentity)]);
     await pool!.query('UPDATE review_runs SET result_digest=$2 WHERE run_id=$1', [runId, completionDigest]);
+    await pool!.query(`INSERT INTO github_deliveries (delivery_id,event_name,repository_id,installation_id,payload_digest,received_at)
+      VALUES ('disputed-source','pull_request',$1,2001,$2,CURRENT_TIMESTAMP)`, [repositoryId, completionDigest]);
     // Accepted worker results may leave the dispatch outbox projected after Gate publication.
-    await pool!.query(`INSERT INTO review_dispatch_outbox (run_id, status, execution_attempt)
-      VALUES ($1, 'projected', 1)`, [runId]);
+    await pool!.query(`INSERT INTO review_dispatch_outbox (run_id, delivery_id, status, execution_attempt)
+      VALUES ($1, 'disputed-source', 'projected', 1)`, [runId]);
     await pool!.query(`INSERT INTO review_gate_attempts
       (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
        coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
