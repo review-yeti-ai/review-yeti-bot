@@ -10,11 +10,13 @@ function advisoryRequiredByDefault() {
   return process.env.REVIEW_YETI_REQUIRE_ADVISORY !== 'false';
 }
 
-function blockingFindingSeverities(requireAdvisory = advisoryRequiredByDefault()) {
+/** Pure policy helper: by default only P0/P1 block; pass trusted policy explicitly at boundaries. */
+function blockingFindingSeverities(requireAdvisory = false) {
   return requireAdvisory ? ['P0', 'P1', 'P2'] : ['P0', 'P1'];
 }
 
-function blockingFindingCount(metrics, requireAdvisory = advisoryRequiredByDefault()) {
+/** Pure policy helper: by default only P0/P1 count as blocking. */
+function blockingFindingCount(metrics, requireAdvisory = false) {
   const counts = { P0: metrics.p0Count, P1: metrics.p1Count, P2: metrics.p2Count };
   return blockingFindingSeverities(requireAdvisory).reduce((total, severity) => total + counts[severity], 0);
 }

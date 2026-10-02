@@ -56,8 +56,8 @@ describe('canonical review contract differential', () => {
       const pure = computeArbitration(p2Only, 2, { changedFiles });
 
       expect(advisoryRequiredByDefault()).toBe(true);
-      expect(blockingFindingSeverities()).toEqual(['P0', 'P1', 'P2']);
-      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 })).toBe(1);
+      expect(blockingFindingSeverities(advisoryRequiredByDefault())).toEqual(['P0', 'P1', 'P2']);
+      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 }, advisoryRequiredByDefault())).toBe(1);
       expect(app.verdict).toBe('FIX_FIRST');
       expect(app.metrics.p2Count).toBe(1);
       expect(action.verdict).toBe('FIX_FIRST');
@@ -79,8 +79,8 @@ describe('canonical review contract differential', () => {
     process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
     try {
       expect(advisoryRequiredByDefault()).toBe(false);
-      expect(blockingFindingSeverities()).toEqual(['P0', 'P1']);
-      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 })).toBe(0);
+      expect(blockingFindingSeverities(advisoryRequiredByDefault())).toEqual(['P0', 'P1']);
+      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 }, advisoryRequiredByDefault())).toBe(0);
       expect(computeAppVerdict({ lanes: p2Only, expectedLanes: 2, changedFiles }).verdict).toBe('SHIP');
       expect(actionVerdict(p2Only).verdict).toBe('SHIP');
       // The pure kernel remains opt-in independently of the publishing-boundary default.
@@ -153,6 +153,54 @@ describe('canonical review contract differential', () => {
       }
     },
   );
+
+  it('keeps pure default helpers and raw P2 arbitration independent of runtime policy', () => {
+    const p2Only: ReviewLane[] = [
+      { id: 'security', required: true, decision: 'FINDINGS', findings: [
+        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Advisory', body: 'A P2-only finding.' },
+      ] },
+      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
+    ];
+    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    try {
+      const defaultReceipts: string[] = [];
+      const explicitReceipts: string[] = [];
+      const p2Metrics = { p0Count: 0, p1Count: 0, p2Count: 1 };
+      for (const policy of [undefined, 'false', 'true'] as const) {
+        if (policy === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = policy;
+
+        expect(advisoryRequiredByDefault()).toBe(policy !== 'false');
+        expect(blockingFindingSeverities()).toEqual(['P0', 'P1']);
+        expect(blockingFindingCount(p2Metrics)).toBe(0);
+        expect(blockingFindingSeverities(true)).toEqual(['P0', 'P1', 'P2']);
+        expect(blockingFindingCount(p2Metrics, true)).toBe(1);
+
+        const rawDefault = computeArbitration(p2Only, 2, { changedFiles });
+        expect(rawDefault.verdict).toBe('SHIP');
+        expect(rawDefault.metrics).toMatchObject({ p0Count: 0, p1Count: 0, p2Count: 1 });
+        defaultReceipts.push(JSON.stringify({
+          severities: blockingFindingSeverities(),
+          blockingCount: blockingFindingCount(p2Metrics),
+          rawArbitration: rawDefault,
+        }));
+
+        const rawExplicit = computeArbitration(p2Only, 2, { changedFiles, requireAdvisory: true });
+        expect(rawExplicit.verdict).toBe('FIX_FIRST');
+        expect(rawExplicit.metrics).toMatchObject({ p0Count: 0, p1Count: 0, p2Count: 1 });
+        explicitReceipts.push(JSON.stringify({
+          severities: blockingFindingSeverities(true),
+          blockingCount: blockingFindingCount(p2Metrics, true),
+          rawArbitration: rawExplicit,
+        }));
+      }
+      expect(new Set(defaultReceipts).size).toBe(1);
+      expect(new Set(explicitReceipts).size).toBe(1);
+    } finally {
+      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
+    }
+  });
 
   it('keeps pure arbitration byte-identical across runtime policy changes for each explicit advisory option', () => {
     const p2Only: ReviewLane[] = [

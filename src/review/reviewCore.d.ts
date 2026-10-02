@@ -74,7 +74,10 @@ export interface ArbitrationOptions {
    * reusing the clean-panel "Quorum satisfied" sentence (REL-491).
    */
   p2BlocksMerge?: boolean;
-  /** When true, any P2 advisory finding blocks merge and requests changes. */
+  /**
+   * When true, any P2 advisory finding blocks merge and requests changes. Pure arbitration defaults
+   * to false; publication boundaries must pass their trusted, resolved policy explicitly.
+   */
   requireAdvisory?: boolean;
   advisoryRequired?: boolean;
   /**
@@ -97,9 +100,12 @@ export interface ArbitrationOptions {
 
 /** Trusted runtime default for publishing boundaries; pure arbitration stays opt-in. */
 export function advisoryRequiredByDefault(): boolean;
-/** Canonical blocking severities for the current trusted publication policy. */
+/**
+ * Pure blocking-severity projection. Defaults to P0/P1; pass a trusted policy decision explicitly
+ * when projecting a publication boundary.
+ */
 export function blockingFindingSeverities(requireAdvisory?: boolean): Array<'P0' | 'P1' | 'P2'>;
-/** Counts canonical findings using the same blocking-severity policy as publication. */
+/** Counts canonical findings using an explicit policy; omission defaults to P0/P1 only. */
 export function blockingFindingCount(
   metrics: { p0Count: number; p1Count: number; p2Count: number },
   requireAdvisory?: boolean,
