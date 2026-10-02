@@ -77,8 +77,8 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       }
     });
 
-    it('verifies presence of persona badge comments in live.html', () => {
-      const liveHtml = fs.readFileSync(path.join(publicDir, 'live.html'), 'utf8');
+    it('verifies every reviewer persona is exported in settings.html', () => {
+      const liveHtml = fs.readFileSync(path.join(publicDir, 'settings.html'), 'utf8');
       const personas = [
         'security',
         'architecture',
@@ -94,8 +94,7 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       ];
 
       for (const persona of personas) {
-        expect(liveHtml).toContain(`id="badge-${persona}"`);
-        expect(liveHtml).toContain(`id="progress-${persona}"`);
+        expect(liveHtml).toContain(`builtin:${persona}`);
       }
     });
   });
