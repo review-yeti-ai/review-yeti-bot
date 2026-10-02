@@ -1007,10 +1007,6 @@
   "count": 1,
   "digest": "0994f4f9b95b63e8"
  },
- "tests/unit/abandonedCheckPublication.test.ts": {
-  "count": 23,
-  "digest": "d0684eb2defcab86"
- },
  "tests/unit/abandonedRunReaper.test.ts": {
   "count": 3,
   "digest": "c97fde96e7c11390"

@@ -69,7 +69,7 @@ export {
  */
 const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT = {
   runId: 'run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce',
-  owner: 'example-org',
+  owner: 'exampleorg',
   repo: 'example-api',
   prNumber: 4972,
   headSha: '01cc3c3070ae025c9a9bb8176c92106c30488151',

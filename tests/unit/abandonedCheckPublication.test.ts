@@ -9,7 +9,7 @@ import type {
 const run = {
   runId: 'run_83c172a7d93c193fdb6dfa62bfa8bfde',
   deliveryId: 'actions:34382316702:1:1210979366:1555:be00d7cf67818fea67bdba4cedbfb6144824cc54',
-  owner: 'calltelemetry', repo: 'ct-release', prNumber: 1555,
+  owner: 'exampleorg', repo: 'example-release', prNumber: 1555,
   headSha: 'be00d7cf67818fea67bdba4cedbfb6144824cc54',
   receivedAt: Date.parse('2026-09-09T17:21:31.807Z'),
   terminalDeadline: Date.parse('2026-09-09T17:36:31.807Z'), executionAttempt: 1,
@@ -24,8 +24,8 @@ const exactCheck = { ...check, external_id: externalId };
 
 const historicalEmptyIdentityRun: AbandonedPublishingRun = {
   runId: 'run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce',
-  owner: 'calltelemetry',
-  repo: 'cisco-cdr',
+  owner: 'exampleorg',
+  repo: 'example-api',
   prNumber: 4972,
   headSha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
   executionAttempt: 1,
@@ -100,8 +100,8 @@ describe('abandoned check exact App/attempt failure publication', () => {
     const liveRun = {
       ...run,
       runId: 'run_29094e318827437672e3f2bff3c59004',
-      owner: 'calltelemetry',
-      repo: 'ct-review-actions',
+      owner: 'exampleorg',
+      repo: 'example-review-actions',
       prNumber: 303,
       headSha: 'e33fffa1cb2973c2dc972de6b00bd99bb0521908',
       receivedAt: Date.parse('2026-09-11T23:05:46.000Z'),
@@ -125,7 +125,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
     const patches = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
     expect(patches).toHaveLength(1);
     expect(patches[0][0]).toBe(
-      'https://api.github.com/repos/calltelemetry/ct-review-actions/check-runs/103450628829',
+      'https://api.github.com/repos/exampleorg/example-review-actions/check-runs/103450628829',
     );
     expect(JSON.parse(String(patches[0][1]?.body))).toEqual({
       status: 'completed',
@@ -150,7 +150,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
     const { client, fetchImplementation } = fixture();
     await expect(client.failAbandonedCheck(persistedRun, 4385771, signal())).resolves.toBe('failure-published');
     expect(fetchImplementation.mock.calls).toHaveLength(3);
-    expect(fetchImplementation.mock.calls[2][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+    expect(fetchImplementation.mock.calls[2][0]).toBe('https://api.github.com/repos/exampleorg/example-release/check-runs/102570588126');
     expect(fetchImplementation.mock.calls[2][1]?.method).toBe('PATCH');
     expect(JSON.parse(String(fetchImplementation.mock.calls[2][1]?.body))).toMatchObject({
       status: 'completed', conclusion: 'failure',
@@ -203,7 +203,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
     await expect(client.failAbandonedCheck(run, 4385771, signal())).resolves.toBe('failure-published');
     const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
     expect(writes).toHaveLength(1);
-    expect(writes[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+    expect(writes[0][0]).toBe('https://api.github.com/repos/exampleorg/example-release/check-runs/102570588126');
     expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure',
       output: { title: 'Review Yeti: review did not complete' } });
     expect(String(writes[0][1]?.body)).not.toContain('No persona reviewed');
@@ -225,7 +225,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
   it.each([
     ['run ID', { runId: `run_${'a'.repeat(32)}` }],
     ['owner', { owner: 'review-yeti-ai' }],
-    ['repository', { repo: 'ai-workspace' }],
+    ['repository', { repo: 'example-workspace' }],
     ['pull request', { prNumber: 4973 }],
     ['head', { headSha: 'f'.repeat(40) }],
     ['execution attempt', { executionAttempt: 2 }],
@@ -355,7 +355,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
 
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
     expect(fetchImplementation.mock.calls[1][0]).toBe(
-      'https://api.github.com/repos/calltelemetry/cisco-cdr/check-runs/102735106478',
+      'https://api.github.com/repos/exampleorg/example-api/check-runs/102735106478',
     );
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
       .toBe(true);
@@ -456,7 +456,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
 
     const writes = fetchImplementation.mock.calls.filter(([, init]) => ['PATCH', 'POST'].includes(init?.method || ''));
     expect(writes).toHaveLength(1);
-    expect(writes[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+    expect(writes[0][0]).toBe('https://api.github.com/repos/exampleorg/example-release/check-runs/102570588126');
   });
 
   it('allows an older previous-attempt check while creating failure for the current exact attempt', async () => {
@@ -748,7 +748,7 @@ describe('abandoned check exact App/attempt failure publication', () => {
       .resolves.toBe('failure-published');
     const patches = fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'PATCH');
     expect(patches).toHaveLength(1);
-    expect(patches[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+    expect(patches[0][0]).toBe('https://api.github.com/repos/exampleorg/example-release/check-runs/102570588126');
     expect(fetchImplementation.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
   });
 
@@ -885,7 +885,7 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
     expect(outcomes).toEqual(['superseded']);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
     expect(fetchImplementation.mock.calls[1][0]).toBe(
-      'https://api.github.com/repos/calltelemetry/cisco-cdr/check-runs/102735106478',
+      'https://api.github.com/repos/exampleorg/example-api/check-runs/102735106478',
     );
     expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
       .toBe(true);
@@ -928,7 +928,7 @@ describe('abandoned reaper with the actual GitHub publication adapter', () => {
     if (state !== 'completed') {
       expect(writes[0][1]?.method).toBe(state === 'absent' ? 'POST' : 'PATCH');
       if (state === 'existing') {
-        expect(writes[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-release/check-runs/102570588126');
+        expect(writes[0][0]).toBe('https://api.github.com/repos/exampleorg/example-release/check-runs/102570588126');
       }
       expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure',
         ...(state === 'absent' ? { head_sha: run.headSha, external_id: `${run.runId}:a1` } : {}) });
