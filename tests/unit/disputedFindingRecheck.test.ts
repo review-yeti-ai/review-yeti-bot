@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
+import type { ReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { canonicalJson, sha256 } from '../../src/review/reviewCore';
 import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
 import {
   disputedFindingRecheckDigest, loadValidatedDisputedFindingRechecks,
-  parseDisputedFindingRecheck, validateDisputedFindingRecheckRow,
+  parseDisputedFindingRecheck, validateDisputedFindingRecheckRow, pendingDisputedFindingRechecks, remainingCheckpointTasksAfterRechecks,
 } from '../../src/review/disputedFindingRecheck';
 
 const names = {
@@ -63,7 +64,7 @@ const planError = 'Disputed finding task plan binding is invalid';
 const findingError = 'Disputed finding is absent from its immutable source completion';
 const gateError = 'Disputed finding Gate binding is invalid';
 
-describe('unused immutable disputed-finding request validator', () => {
+describe('immutable disputed-finding request validator', () => {
   it('binds canonical signing independently and accepts key reordering', () => {
     const { row } = fixture(), value = unsigned(row);
     const golden = createHash('sha256').update(canonicalJson(value)).digest('hex');
@@ -197,5 +198,68 @@ describe('unused immutable disputed-finding request validator', () => {
   it('propagates query failure without inventing an empty request set', async () => {
     const { run } = fixture(), error = new Error('controlled-query-failure');
     await expect(loadValidatedDisputedFindingRechecks({ query: vi.fn().mockRejectedValue(error) }, run, 2)).rejects.toBe(error);
+  });
+});
+
+
+describe('checkpoint acknowledgement identity and task receipts', () => {
+  function pair() {
+    const { row } = fixture();
+    const recheck = parseDisputedFindingRecheck(request(row));
+    const { result, version: _version, ...identity } = row.completion_payload;
+    const checkpoint: ReviewExecutionCheckpoint = {
+      version: 'ReviewExecutionCheckpoint.v1', ...identity, revision: 4,
+      plan: result.taskPlan, completedTasks: [{ id: recheck.taskId, findings: result.personas[0].findings }],
+      satisfiedFindingRecheckIds: [recheck.requestId],
+    };
+    return { recheck, checkpoint };
+  }
+  it('invalidates the requested task while preserving unrelated completed findings', () => {
+    const { recheck, checkpoint } = pair();
+    const unrelated = { id: 'other-reviewer', findings: [] };
+    const completed = [...checkpoint.completedTasks, unrelated];
+    expect(remainingCheckpointTasksAfterRechecks(completed, [recheck], checkpoint.plan)).toEqual([unrelated]);
+    expect(completed).toHaveLength(2);
+    expect(remainingCheckpointTasksAfterRechecks(completed, [], checkpoint.plan)).toEqual(completed);
+    expect(() => remainingCheckpointTasksAfterRechecks(completed, [recheck], []))
+      .toThrow('Disputed finding re-review does not match a validated resumed task plan');
+  });
+  it('returns no pending work after a matching acknowledged task', () => {
+    const { recheck, checkpoint } = pair();
+    expect(pendingDisputedFindingRechecks([recheck], checkpoint, 2)).toEqual([]);
+  });
+  it.each(['runId', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha', 'policyDigest', 'configDigest'])
+    ('rejects a checkpoint with foreign %s', (key) => {
+      const { recheck, checkpoint } = pair();
+      const changed = checkpoint as unknown as Record<string, unknown>;
+      const value = changed[key];
+      changed[key] = typeof value === 'number' ? value + 1 : String(value).replace(/.$/, 'e');
+      expect(() => pendingDisputedFindingRechecks([recheck], checkpoint, 2))
+        .toThrow('Disputed finding request no longer matches the composed task plan');
+    });
+  it('rejects a source execution that is not older than the current attempt', () => {
+    const { recheck, checkpoint } = pair();
+    expect(() => pendingDisputedFindingRechecks([recheck], checkpoint, 1))
+      .toThrow('Disputed finding request no longer matches the composed task plan');
+  });
+  it('rejects a checkpoint from a future attempt', () => {
+    const { recheck, checkpoint } = pair(); checkpoint.executionAttempt = 3;
+    expect(() => pendingDisputedFindingRechecks([recheck], checkpoint, 2))
+      .toThrow('Checkpoint belongs to a future execution');
+  });
+  it('rejects an unknown acknowledgement ID', () => {
+    const { recheck, checkpoint } = pair(); checkpoint.satisfiedFindingRecheckIds = ['unknown-receipt'];
+    expect(() => pendingDisputedFindingRechecks([recheck], checkpoint, 2))
+      .toThrow('Checkpoint contains an unknown disputed finding receipt');
+  });
+  it('rejects acknowledgement without the completed task', () => {
+    const { recheck, checkpoint } = pair(); checkpoint.completedTasks = [];
+    expect(() => pendingDisputedFindingRechecks([recheck], checkpoint, 2))
+      .toThrow('Satisfied disputed finding receipt has no completed task');
+  });
+  it('rejects a checkpoint whose immutable task plan changed', () => {
+    const { recheck, checkpoint } = pair(); checkpoint.plan = [{ ...checkpoint.plan[0], question: 'changed' }];
+    expect(() => pendingDisputedFindingRechecks([recheck], checkpoint, 2))
+      .toThrow('Disputed finding request no longer matches the composed task plan');
   });
 });

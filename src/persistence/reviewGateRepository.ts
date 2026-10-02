@@ -26,6 +26,9 @@ import { DEFAULT_INCREMENTAL_MAX_AGE_MS, type IncrementalVerificationInput } fro
 import { selectVerdictCacheSource } from './verdictCacheSource';
 import { coverageContractGateDecision, coverageContractGateDetailOf, PERSONA_COVERAGE_FAILURE_REASON } from '../review/coverageContractGate';
 import type { VerdictCacheVerificationInput } from '../review/verdictCache';
+import { canonicalJson, sha256 } from '../review/reviewCore';
+import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks } from '../review/disputedFindingRecheck';
+import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../review/reviewExecutionCheckpoint';
 import {
   appendLifecycleEventForRun,
   requireLifecycleEventsMode,
@@ -40,6 +43,54 @@ export { isGateProgressState, type GateDesiredState, type StoredReviewGate, type
   type GateWorkerResultTransition, type GatePublicationClaim, type GatePublicationNotStarted } from '../review/reviewGateContracts';
 
 interface Queryable { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
+
+function jsonValue(value: unknown): any {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return undefined; }
+}
+
+async function acceptedDisputedFindingRechecksAreComplete(client: Queryable, event: ReturnType<typeof parseWorkerReviewCompletion>): Promise<boolean> {
+  try {
+    const run = {
+      run_id: event.runId,
+      repository_id: event.repositoryId,
+      owner: event.owner,
+      repo: event.repo,
+      pr_number: event.prNumber,
+      head_sha: event.headSha,
+      base_sha: event.baseSha,
+      effective_policy_digest: event.policyDigest,
+      effective_config_digest: event.configDigest,
+    };
+    const rechecks = await loadValidatedDisputedFindingRechecks(client, run, event.executionAttempt);
+    if (rechecks.length === 0) return true;
+    // A disputed finding must be revisited by a fresh task result. Incremental
+    // and verdict-cache claims can carry prior conclusions across that task,
+    // even when the worker also presents a checkpoint receipt for its lane.
+    // Keep this service-side guard independent of the worker's normal policy
+    // that disables those optimizations on resumed executions.
+    if (event.result.incremental !== undefined || event.result.verdictCache !== undefined) return false;
+
+    const checkpointRow = (await client.query(
+      'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1', [event.runId],
+    )).rows[0];
+    if (!checkpointRow) return false;
+    const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
+    if (!reviewCheckpointMatchesCompletion(checkpoint, event)) return false;
+
+    if (pendingDisputedFindingRechecks(rechecks, checkpoint, event.executionAttempt).length > 0) return false;
+
+    for (const recheck of rechecks) {
+      const completed = checkpoint.completedTasks.filter((task) => task.id === recheck.taskId);
+      const personas = event.result.personas.filter((persona) => persona.id === recheck.taskId && persona.evidenceSource !== 'shadow');
+      if (completed.length !== 1 || personas.length !== 1 || personas[0]!.status !== 'COMPLETE'
+        || canonicalJson(personas[0]!.findings) !== canonicalJson(completed[0]!.findings)) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
 type TrustedCompletionResolver = (gate: StoredReviewGate, incremental?: IncrementalVerificationInput,
   verdictCache?: VerdictCacheVerificationInput) => Promise<TrustedGateCompletionContext>;
 interface Client extends Queryable { release(): void }
@@ -229,6 +280,10 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         : retainedContext !== null && retainedContext.contextDigest === retainedDigest
           && incompleteP2RecoveryClaimMatches(retainedContext, event.result.incompleteP2Recovery)
           && event.result.incremental === undefined && event.result.verdictCache === undefined;
+      // A dispute is never itself Gate evidence. If one was queued, the normal
+      // authenticated completion must prove a completed target task and its
+      // durable receipt before canonical arbitration can accept the result.
+      const disputedRechecksValid = await acceptedDisputedFindingRechecksAreComplete(client, event);
 
       const deadline = new Date(row.terminal_deadline).getTime();
       const deadlineValid = Number.isFinite(deadline) && row.terminal_deadline != null && now < deadline;
@@ -288,7 +343,8 @@ export class PostgresReviewGateRepository implements ReviewGateRepository {
         ? { status: 'timed_out', eligible: false, reason: 'review-deadline-exceeded' }
         : coverageFailure ? coverageFailure
         : currentDecision && currentDecision.status !== 'pending' ? currentDecision
-        : !retainedFindingsValid ? { status: 'failure', eligible: false, reason: 'invalid-evidence' }
+        : !retainedFindingsValid || !disputedRechecksValid
+          ? { status: 'failure', eligible: false, reason: 'invalid-evidence' }
         : retainedDigest !== null && evidence?.exemption
           ? { status: 'failure', eligible: false, reason: 'invalid-evidence' }
         : evidence && trusted
