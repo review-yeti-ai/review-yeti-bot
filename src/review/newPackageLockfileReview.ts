@@ -1,7 +1,9 @@
 import {
   classifyLockfileOrGeneratedPath,
   LOCKFILE_IGNORE_REASON,
+  DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
   MAX_FILE_PATCH_CHARS,
+  resolveMaxReviewedLockfilePatchChars,
   type HunkFilterResult,
 } from '../pipeline/hunkFilter';
 import {
@@ -33,10 +35,9 @@ import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './review
  *   check with new entries allowed passes -- so every added source still
  *   resolves on the default public registry, with no escape sequence and no
  *   foreign line;
- * - the whole patch fits what one lane reads (`MAX_FILE_PATCH_CHARS`), so no
- *   new entry sits past a truncation cut. (REL-1141: a larger one is put back
- *   as its complete package-change summary instead, see
- *   `oversizedLockfileSummary`.)
+ * - the whole patch fits the centrally admitted raw-lockfile review cap (20k
+ *   by default, at most 65,536), so no new entry sits past a truncation cut.
+ *   Larger patches use the verified package-change summary path.
  *
  * Such a lockfile is put back into the effective files (the lanes receive its
  * patch) and routed to the dependency lane when one is enabled, plus every
@@ -45,12 +46,16 @@ import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './review
  * asks for a human review.
  */
 
-export function isNewPackageLockfileChange(file: ReviewApplicabilityInputFile): boolean {
+export function isNewPackageLockfileChange(
+  file: ReviewApplicabilityInputFile,
+  maxReviewedPatchChars = DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+): boolean {
+  maxReviewedPatchChars = resolveMaxReviewedLockfilePatchChars(maxReviewedPatchChars);
   if (!file || typeof file.path !== 'string') return false;
   if (classifyLockfileOrGeneratedPath(file.path) !== 'lockfile') return false;
   if (file.isSubmodule === true || file.submoduleCandidate === true || !isRegularFileMode(file.mode)) return false;
   const patch = file.patch;
-  if (typeof patch !== 'string' || patch.length === 0 || patch.length > MAX_FILE_PATCH_CHARS) return false;
+  if (typeof patch !== 'string' || patch.length === 0 || patch.length > maxReviewedPatchChars) return false;
   if (isSubmodulePatch(patch) || omittedLockfilePatchReason(patch)) return false;
   const strict = verifyLockfileOnlyChange(file.path, patch);
   if (strict.ok || strict.reason !== NEW_PACKAGE_ENTRY_REFUSAL) return false;
@@ -75,8 +80,7 @@ export interface UnreviewableLockfile {
 }
 
 /**
- * REL-1141: the summary the lanes receive for a lockfile whose patch is over
- * `MAX_FILE_PATCH_CHARS`, or why none can be built (the caller fails closed).
+ * The deterministic summary or why none can be built (the caller fails closed).
  *
  * The summary names packages, not sources, so it stands only on a patch the
  * registry check vouches for over its WHOLE length: every added source still
@@ -151,16 +155,17 @@ function mergeInChangedOrder(
  * `path_filters` pattern excluded stays excluded: only the filter's own
  * lockfile rule is undone.
  *
- * REL-1141: a new-package lockfile whose patch is over `MAX_FILE_PATCH_CHARS`
- * is put back as its package-change summary (`summarized`) when one can be
- * built over the whole patch; otherwise it stays hidden and keeps failing
- * closed as before.
+ * A new-package lockfile above the centrally admitted raw-review cap is put
+ * back as its package-change summary when the full patch can be verified;
+ * otherwise it stays hidden and keeps failing closed.
  */
 export function withNewPackageLockfiles(
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
   effectiveFiles: readonly EffectiveReviewFile[],
   hunkResult: Pick<HunkFilterResult, 'files'>,
+  maxReviewedPatchChars = DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
 ): { files: EffectiveReviewFile[]; paths: string[]; summarized: SummarizedLockfile[] } {
+  maxReviewedPatchChars = resolveMaxReviewedLockfilePatchChars(maxReviewedPatchChars);
   const hiddenLockfiles = hiddenLockfilePaths(hunkResult);
   if (hiddenLockfiles.size === 0) return { files: [...effectiveFiles], paths: [], summarized: [] };
   const effective = new Set(effectiveFiles.map((file) => file.path));
@@ -168,12 +173,12 @@ export function withNewPackageLockfiles(
   const summarized: SummarizedLockfile[] = [];
   for (const file of changedFiles) {
     if (!file || effective.has(file.path) || restored.has(file.path) || !hiddenLockfiles.has(file.path)) continue;
-    if (isNewPackageLockfileChange(file)) {
+    if (isNewPackageLockfileChange(file, maxReviewedPatchChars)) {
       // The changed file as given (every field it carries), plus its patch length.
       restored.set(file.path, { ...file, originalPatchLength: (file.patch ?? '').length });
       continue;
     }
-    if (!isOversizedNewPackageLockfileChange(file)) continue;
+    if (!isOversizedNewPackageLockfileChange(file, maxReviewedPatchChars)) continue;
     const summary = oversizedLockfileSummary(file);
     if (!summary.ok) continue;
     const { file: next, record } = summarizedFile(file, summary);
@@ -184,9 +189,12 @@ export function withNewPackageLockfiles(
   return { files: mergeInChangedOrder(changedFiles, effectiveFiles, restored), paths: [...restored.keys()], summarized };
 }
 
-/** A lockfile over the per-file cap whose only unverified change, over the whole patch, is a new registry package. */
-function isOversizedNewPackageLockfileChange(file: ReviewApplicabilityInputFile): boolean {
-  if (typeof file.patch !== 'string' || file.patch.length <= MAX_FILE_PATCH_CHARS) return false;
+/** A lockfile over the admitted raw-review cap whose only unverified change is a new registry package. */
+function isOversizedNewPackageLockfileChange(
+  file: ReviewApplicabilityInputFile,
+  maxReviewedPatchChars: number,
+): boolean {
+  if (typeof file.patch !== 'string' || file.patch.length <= maxReviewedPatchChars) return false;
   if (classifyLockfileOrGeneratedPath(file.path) !== 'lockfile') return false;
   const strict = verifyLockfileOnlyChange(file.path, file.patch);
   return !strict.ok && strict.reason === NEW_PACKAGE_ENTRY_REFUSAL;
@@ -201,7 +209,7 @@ function isOversizedNewPackageLockfileChange(file: ReviewApplicabilityInputFile)
  *
  * Every lockfile the filter hid that is not already back is now:
  *
- * - sent in full when its patch fits `MAX_FILE_PATCH_CHARS` (`full`);
+ * - sent in full when its patch fits the centrally admitted raw-lockfile cap (`full`);
  * - sent as its deterministic package-change summary when it does not
  *   (`summarized`, see `oversizedLockfileSummary`);
  * - otherwise listed as `unreviewable` -- an omitted or binary patch, an
@@ -215,12 +223,14 @@ export function withChangedLockfilesReviewed(
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
   effectiveFiles: readonly EffectiveReviewFile[],
   hunkResult: Pick<HunkFilterResult, 'files'>,
+  maxReviewedPatchChars = DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
 ): {
   files: EffectiveReviewFile[];
   fullPaths: string[];
   summarized: SummarizedLockfile[];
   unreviewable: UnreviewableLockfile[];
 } {
+  maxReviewedPatchChars = resolveMaxReviewedLockfilePatchChars(maxReviewedPatchChars);
   const hiddenLockfiles = hiddenLockfilePaths(hunkResult);
   const effective = new Set(effectiveFiles.map((file) => file.path));
   const restored = new Map<string, EffectiveReviewFile>();
@@ -239,7 +249,7 @@ export function withChangedLockfilesReviewed(
         ? 'GitHub omitted its patch as too large' : 'has no readable text patch' });
       continue;
     }
-    if (patch.length <= MAX_FILE_PATCH_CHARS) {
+    if (patch.length <= maxReviewedPatchChars) {
       restored.set(file.path, { ...file, originalPatchLength: patch.length });
       fullPaths.push(file.path);
       continue;

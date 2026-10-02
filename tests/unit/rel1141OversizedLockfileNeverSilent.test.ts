@@ -9,6 +9,7 @@ import {
   renderReviewDepthDisclosure, renderRoutedFiles, runPublishingReviewWorker, type PublishingCheckClient,
 } from '../../src/cli/publishingReview';
 import type { ReviewModelClient } from '../../src/gateway/openRouterClient';
+import { runReadOnlyTool } from '../../src/panel/toolRuntime';
 import type { StoredReviewGate } from '../../src/persistence/reviewGateRepository';
 import type { AuthoritativeReviewReader } from '../../src/github/authoritativeReviewReader';
 import { createAuthoritativeCompletionContext, type AuthoritativeCompletionContextOptions } from '../../src/review/authoritativeCompletionContext';
@@ -51,6 +52,11 @@ const HEAD = '6a143677aa3f6b4329791eec6a0a54cd33b4dc71';
 const BASE = 'd390b73c4ffce005b6af7dc4cf1d0673fd8e47d8';
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'k', model: 'review-model' };
 const roster = (personas = 'architecture,security,documentation') => resolveWorkerConfig({ REVIEW_PERSONAS: personas }, transport);
+const rosterWithLockfileCap = (personas = 'security', maxReviewedLockfilePatchChars = 65_536) => resolveWorkerConfig({
+  REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: {
+    personas, budget: { max_investigation_turns: 3, max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars },
+  } }),
+}, transport);
 const enabled = (personas?: string) => roster(personas).personas.filter((persona) => persona.enabled);
 const pr30 = () => [
   { path: 'package-lock.json', patch: PR30_LOCK, mode: '100644' },
@@ -81,6 +87,21 @@ function oversizedNpmLock(name: string, extra: string[] = []): string {
     '+    },',
     '     "node_modules/zzz": {',
   ].join('\n');
+}
+
+/** A realistic oversized Yarn diff whose GitHub tarball source cannot be summarized safely. */
+function remoteYarnLockPatch(entryCount: number): string {
+  return Array.from({ length: entryCount }, (_, index) => {
+    const name = `demo-dependency-${String(index).padStart(3, '0')}`;
+    return [
+      `- "${name}@^1.0.0":`,
+      `-   version "1.0.${index}"`,
+      `-   resolved "https://github.com/example/${name}/archive/v1.0.${index}.tar.gz"`,
+      `+ "${name}@^1.0.0":`,
+      `+   version "1.1.${index}"`,
+      `+   resolved "https://github.com/example/${name}/archive/v1.1.${index}.tar.gz"`,
+    ].join('\n');
+  }).join('\n');
 }
 
 afterEach(() => { vi.restoreAllMocks(); });
@@ -222,6 +243,113 @@ describe('REL-1141: a changed lockfile beside a reviewed diff is never silently 
   });
 });
 
+describe('bounded full raw lockfile review from trusted policy', () => {
+  const cap = 65_536;
+  const remotePatch = () => remoteYarnLockPatch(200);
+  const reviewedFiles = (patch: string) => [
+    { path: 'src/index.ts', patch: '@@ -1 +1 @@\n-const oldValue = 1;\n+const newValue = 2;\n', mode: '100644' },
+    { path: 'yarn.lock', patch, mode: '100644' },
+  ];
+
+  it('restores an oversized untrusted-source lockfile byte-for-byte under the explicit hard-bounded cap', () => {
+    const patch = remotePatch();
+    expect(patch.length).toBeGreaterThan(55_000);
+    expect(patch.length).toBeLessThanOrEqual(cap);
+    const config = rosterWithLockfileCap('security', cap);
+    const decision = resolveReviewApplicability(config.personas, reviewedFiles(patch), {
+      pathFilters: config.path_filters,
+      maxReviewedLockfilePatchChars: config.max_reviewed_lockfile_patch_chars,
+    });
+    const lock = decision.effectiveFiles.find((file) => file.path === 'yarn.lock');
+    expect(lock?.patch).toBe(patch);
+    expect(decision.summarizedLockfiles).toEqual([]);
+    expect(decision.unreviewableLockfiles).toEqual([]);
+    expect(decision.omittedSourcePaths).toEqual([]);
+    expect(decision.routedFiles).toContainEqual({ path: 'yarn.lock', laneIds: ['sec-lane'], reason: 'changed-lockfile' });
+    const security = decision.applicable.find((persona) => persona.id === 'sec-lane')!;
+    expect(scopeFilesForPersona(security, decision.effectiveFiles).find((file) => file.path === 'yarn.lock')?.patch).toBe(patch);
+  });
+
+  it.each(['panel', 'composed'] as const)('keeps the admitted patch on the %s engine applicability and tool-read path', async (engine) => {
+    const patch = remotePatch();
+    const config = rosterWithLockfileCap('security', cap);
+    const changedFiles = reviewedFiles(patch);
+    const prompts: string[] = [];
+    const result = engine === 'panel'
+      ? await executePersonaPanel({
+        config, changedFiles, repository: 'example/lockfile-review', headSha: HEAD,
+        client: approvingPanelClient(prompts), requestPolicy: { responseFormat: { type: 'json_object' } }, deterministicRoster: true,
+      })
+      : await executeComposedReview({
+        config, changedFiles, repository: 'example/lockfile-review', headSha: HEAD,
+        client: composedClient(['src/index.ts', 'yarn.lock'], prompts),
+      });
+    const reviewerMessages = prompts.flatMap((prompt) => JSON.parse(prompt) as Array<{ content?: unknown }>);
+    const reviewerPrompt = JSON.stringify(reviewerMessages);
+    expect(reviewerPrompt.includes('yarn.lock')).toBe(true);
+    let offset = 0;
+    let digest: string | undefined;
+    let readPatch = '';
+    let finished = false;
+    for (let pageIndex = 0; pageIndex < 4; pageIndex++) {
+      const pageResult = await runReadOnlyTool('get_diff_page', {
+        path: 'yarn.lock', startOffset: offset, maxChars: 32_000, ...(digest ? { digest } : {}),
+      }, { changedFiles });
+      const page = JSON.parse(pageResult.toolOutput) as {
+        status: string; content?: string; digest?: string; nextOffset: number | null; pageComplete?: boolean;
+      };
+      expect(page.status).toBe('ok');
+      readPatch += page.content;
+      if (page.nextOffset === null) {
+        expect(page.pageComplete).toBe(true);
+        finished = true;
+        break;
+      }
+      expect(page.nextOffset).toBeGreaterThan(offset);
+      offset = page.nextOffset;
+      digest = page.digest;
+    }
+    expect(finished).toBe(true);
+    expect(readPatch).toBe(patch);
+    expect((result as PanelResult).summarizedLockfiles ?? []).toEqual([]);
+    expect((result as PanelResult).unreviewableLockfiles ?? []).toEqual([]);
+    expect((result as PanelResult).omittedSourcePaths ?? []).toEqual([]);
+    expect((result as PanelResult).routedFiles).toContainEqual({
+      path: 'yarn.lock', laneIds: ['sec-lane'], reason: 'changed-lockfile',
+    });
+  }, 60_000);
+
+  it('keeps an over-cap untrusted-source lockfile incomplete instead of silently summarizing it', () => {
+    const patch = remoteYarnLockPatch(240);
+    expect(patch.length).toBeGreaterThan(cap);
+    const config = rosterWithLockfileCap('security', cap);
+    const decision = resolveReviewApplicability(config.personas, reviewedFiles(patch), {
+      pathFilters: config.path_filters,
+      maxReviewedLockfilePatchChars: config.max_reviewed_lockfile_patch_chars,
+    });
+    expect(decision.effectiveFiles.map((file) => file.path)).not.toContain('yarn.lock');
+    expect(decision.summarizedLockfiles).toEqual([]);
+    expect(decision.unreviewableLockfiles.map((file) => file.path)).toEqual(['yarn.lock']);
+    expect(decision.omittedSourcePaths).toContain('yarn.lock');
+  });
+
+  it('does not turn unverified lockfile-only changes into the zero-lane exemption', () => {
+    const config = rosterWithLockfileCap('security', cap);
+    const decision = resolveReviewApplicability(config.personas, [
+      { path: 'yarn.lock', patch: remotePatch(), mode: '100644' },
+    ], { maxReviewedLockfilePatchChars: config.max_reviewed_lockfile_patch_chars });
+    expect(decision.applicable).toEqual([]);
+    expect(decision.noReviewableContent).toBe(false);
+    expect(decision.noReviewableContentKind).toBeNull();
+    expect(decision.unverifiedLockfiles.map((file) => file.path)).toEqual(['yarn.lock']);
+  });
+
+  it('rejects an applicability cap above the hard maximum', () => {
+    expect(() => resolveReviewApplicability(enabled(), [], { maxReviewedLockfilePatchChars: cap + 1 }))
+      .toThrow('max reviewed lockfile patch size is outside the supported bound');
+  });
+});
+
 describe('REL-1141: fails closed (coverage incomplete) when the lockfile cannot be summarized', () => {
   const beside = (lock: { path: string; patch: string }) => [{ path: 'package.json', patch: PR30_PKG }, { ...lock, mode: '100644' }];
 
@@ -279,16 +407,19 @@ describe('REL-1141: fails closed (coverage incomplete) when the lockfile cannot 
 describe('REL-1141: the trusted completion side derives the same lanes and coverage', () => {
   const target = { repositoryId: 123, owner: 'calltelemetry', repo: 'openclaw-linear-plugin', prNumber: 30, headSha: HEAD, baseSha: BASE };
   const current = { ...target, open: true, draft: false };
-  function prepared(personas: string) {
+  function prepared(personas: string, maxReviewedLockfilePatchChars?: number) {
     const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1', review_yeti: {
-      personas, budget: { max_investigation_turns: 3 },
+      personas, budget: {
+        max_investigation_turns: 3,
+        ...(maxReviewedLockfilePatchChars === undefined ? {} : { max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars }),
+      },
     } });
     return preparePublishingPolicy({ content, source: { repositoryId: 456, repository: 'example/central-policy',
       sha: 'c'.repeat(40), path: 'policy/review.json', contentDigest: sha256(content) } },
     { baseUrl: 'https://gateway.example.invalid/v1', model: 'review-model' });
   }
-  function context(personas: string, changedFiles: Array<{ path: string; patch: string }>) {
-    const stored = prepared(personas);
+  function context(personas: string, changedFiles: Array<{ path: string; patch: string }>, maxReviewedLockfilePatchChars?: number) {
+    const stored = prepared(personas, maxReviewedLockfilePatchChars);
     const gate: StoredReviewGate = {
       coordinates: { ...target, runId: `run_${'1'.repeat(32)}`, policyDigest: stored.policy.effectivePolicyDigest,
         attemptId: `run_${'1'.repeat(32)}-g0-e2`, executionAttempt: 2 },
@@ -314,6 +445,27 @@ describe('REL-1141: the trusted completion side derives the same lanes and cover
     expect(resolved.coverage.expectedPersonaIds).toEqual(worker.applicable.map((persona) => persona.id));
     expect(resolved.coverage.expectedPersonaIds).toContain('sec-lane');
     expect(worker.summarizedLockfiles.map((file) => file.path)).toEqual(['package-lock.json']);
+    expect(resolved.coverage.coverageComplete).toBe(true);
+  });
+
+  it('worker and trusted completion both require the full oversized raw lockfile when policy admits it', async () => {
+    const patch = remoteYarnLockPatch(200);
+    const files = [
+      { path: 'src/index.ts', patch: '@@ -1 +1 @@\n-const oldValue = 1;\n+const newValue = 2;\n' },
+      { path: 'yarn.lock', patch },
+    ];
+    const cap = 65_536;
+    const resolved = await context('security', files, cap);
+    const config = rosterWithLockfileCap('security', cap);
+    const worker = resolveReviewApplicability(config.personas.filter((persona) => persona.enabled), files, {
+      pathFilters: config.path_filters,
+      maxReviewedLockfilePatchChars: config.max_reviewed_lockfile_patch_chars,
+    });
+    expect(worker.effectiveFiles.find((file) => file.path === 'yarn.lock')?.patch).toBe(patch);
+    expect(worker.summarizedLockfiles).toEqual([]);
+    expect(worker.unreviewableLockfiles).toEqual([]);
+    expect(resolved.coverage.expectedPersonaIds).toEqual(worker.applicable.map((persona) => persona.id));
+    expect(resolved.coverage.expectedPersonaIds).toContain('sec-lane');
     expect(resolved.coverage.coverageComplete).toBe(true);
   });
 

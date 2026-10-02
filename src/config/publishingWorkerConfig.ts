@@ -2,6 +2,10 @@ import { createDefaultV3Config, isTriggerActionAllowed, type TriggerActionOption
 import type { ComposedEngineConfig, CtReviewConfigV3, ProviderId, ReviewEngineName } from './schema';
 import { logger } from '../utils/logger';
 import { loadCompiledIndex, type CompiledDomainIndex } from '../pipeline/domainIndex';
+import {
+  DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+  HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+} from '../pipeline/hunkFilter';
 
 export { isTriggerActionAllowed, type TriggerActionOptions };
 
@@ -296,6 +300,7 @@ export function resolveWorkerConfig(
   const baseConfig = createDefaultV3Config();
 
   let maxInvestigationTurns = PUBLISHING_MAX_TURNS;
+  let maxReviewedLockfilePatchChars: number | undefined;
   let personasList: string[] = [];
   let reviewEngine: ReviewEngineName = 'panel';
   let composed: ComposedEngineConfig = {};
@@ -306,6 +311,15 @@ export function resolveWorkerConfig(
       const policy = raw.review_yeti || raw;
       if (policy.budget?.max_investigation_turns) {
         maxInvestigationTurns = Number(policy.budget.max_investigation_turns);
+      }
+      const requestedLockfilePatchChars = policy.budget?.max_reviewed_lockfile_patch_chars;
+      if (requestedLockfilePatchChars !== undefined) {
+        if (!Number.isSafeInteger(requestedLockfilePatchChars)
+          || requestedLockfilePatchChars < DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS
+          || requestedLockfilePatchChars > HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS) {
+          throw new Error('max_reviewed_lockfile_patch_chars is outside the supported bound');
+        }
+        maxReviewedLockfilePatchChars = requestedLockfilePatchChars;
       }
       if (typeof policy.personas === 'string') {
         personasList = policy.personas.split(',').map((p: string) => p.trim()).filter(Boolean);
@@ -382,6 +396,8 @@ export function resolveWorkerConfig(
   return {
     ...baseConfig,
     personas,
+    ...(maxReviewedLockfilePatchChars === undefined
+      ? {} : { max_reviewed_lockfile_patch_chars: maxReviewedLockfilePatchChars }),
     review_engine: reviewEngine,
     composed,
     default_max_turns: Math.min(PUBLISHING_MAX_TURNS, Math.max(1, maxInvestigationTurns || PUBLISHING_MAX_TURNS)),
