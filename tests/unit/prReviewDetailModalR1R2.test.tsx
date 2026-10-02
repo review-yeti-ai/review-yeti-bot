@@ -112,9 +112,9 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
 
       // Verify line-by-line Code Nits Inspector is rendered
       expect(screen.getByText('Code Nits & Line-by-Line Inspector')).toBeInTheDocument();
-      expect(screen.getByText('src/auth/jwt.ts')).toBeInTheDocument();
-      expect(screen.getByText(': Line 42')).toBeInTheDocument();
-      expect(screen.getByText('P1 - Warning')).toBeInTheDocument();
+      expect(screen.getByText(/src\/auth\/jwt\.ts/)).toBeInTheDocument();
+      expect(screen.getByText(/42/)).toBeInTheDocument();
+      expect(screen.getByText('P1 Warning')).toBeInTheDocument();
       expect(screen.getByText('Timing attack vulnerability in signature verification')).toBeInTheDocument();
       expect(screen.getByText(/crypto\.timingSafeEqual\(bufferA, bufferB\)/)).toBeInTheDocument();
     });

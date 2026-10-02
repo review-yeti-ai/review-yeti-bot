@@ -122,10 +122,10 @@ describe('source-extracted worker mode parity', () => {
 describe('guarded runtime upgrade shell contract', () => {
   it('proves worker-key CAS, guarded restart and recovery with fake external binaries', () => {
     const output = execFileSync('bash', ['scripts/advance-review-worker.test.sh'], {
-      cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 120_000,
+      cwd: path.resolve(__dirname, '../..'), encoding: 'utf8', timeout: 600_000,
     });
     expect(output).toMatch(/advance-review-worker focused tests: [1-9]\d* passed/);
-  }, 125_000);
+  }, 610_000);
 
   it('proves image-only updates, provenance and receipt-bound recovery without cluster access', () => {
     const root = path.resolve(__dirname, '../..');

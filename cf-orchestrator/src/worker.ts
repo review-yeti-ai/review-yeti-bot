@@ -623,6 +623,11 @@ export default {
         return Response.json({ status: 'ignored', event: eventName });
       }
 
+      // 8. Fallback to Static Portal Assets (Next.js Dashboard)
+      if (env.ASSETS) {
+        return await env.ASSETS.fetch(request);
+      }
+
       return new Response('Not Found', { status: 404 });
     } catch (err: any) {
       console.error('Unhandled ingress error in worker.fetch:', err);

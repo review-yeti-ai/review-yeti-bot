@@ -2,6 +2,8 @@ import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { dashboardStore } from '../persistence/dashboardStore';
 import { getSystemVersionInfo } from '../utils/versionInfo';
+import { updateRepositoryReviewRulesSchema } from '../config/schema';
+import { resolveReviewDiff } from '../review/diffService';
 
 export function createDashboardRouter(): Router {
   const router = Router();
@@ -172,6 +174,65 @@ export function createDashboardRouter(): Router {
       success: true,
       repository: updated,
     });
+  });
+
+  // GET /api/dashboard/repositories/:owner/:repo/rules
+  router.get('/repositories/:owner/:repo/rules', (req: Request, res: Response) => {
+    const { owner, repo } = req.params;
+    const repository = dashboardStore.getRepository(owner, repo);
+
+    if (!repository) {
+      return res.status(404).json({
+        success: false,
+        error: `Repository ${owner}/${repo} not found`,
+      });
+    }
+
+    const rules = dashboardStore.getRepositoryRules(owner, repo);
+    return res.status(200).json({
+      success: true,
+      owner,
+      repo,
+      rules,
+    });
+  });
+
+  // PUT /api/dashboard/repositories/:owner/:repo/rules
+  router.put('/repositories/:owner/:repo/rules', (req: Request, res: Response) => {
+    const { owner, repo } = req.params;
+    const repository = dashboardStore.getRepository(owner, repo);
+
+    if (!repository) {
+      return res.status(404).json({
+        success: false,
+        error: `Repository ${owner}/${repo} not found`,
+      });
+    }
+
+    const parseResult = updateRepositoryReviewRulesSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid review rules payload',
+        details: parseResult.error.issues,
+      });
+    }
+
+    try {
+      const updatedRules = dashboardStore.updateRepositoryRules(owner, repo, parseResult.data);
+      return res.status(200).json({
+        success: true,
+        owner,
+        repo,
+        rules: updatedRules,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      return res.status(400).json({
+        success: false,
+        error: err?.message || 'Failed to update repository review rules',
+      });
+    }
   });
 
   // GET /api/dashboard/settings
@@ -528,6 +589,41 @@ export function createDashboardRouter(): Router {
         success: false,
         error: err?.message || 'Failed to record test review run',
       });
+    }
+  });
+
+  /**
+   * GET /api/dashboard/reviews/:jobId/diff
+   * Serves structured changed files and diff hunks for dashboard review detail view.
+   */
+  router.get('/reviews/:jobId/diff', async (req: Request, res: Response) => {
+    const { jobId } = req.params;
+    if (!jobId || !jobId.trim()) {
+      return res.status(400).json({ success: false, error: 'Missing required parameter: jobId' });
+    }
+
+    try {
+      const diff = await resolveReviewDiff(jobId.trim());
+      if (!diff) {
+        return res.status(404).json({ success: false, error: `Review diff not found for review ${jobId}`, jobId });
+      }
+
+      const targetPath = (req.query.path || req.query.file) as string;
+      if (targetPath) {
+        const filtered = diff.files.filter((f) => f.path === targetPath);
+        if (filtered.length === 0) {
+          return res.status(404).json({ success: false, error: `File '${targetPath}' not found in diff for review ${jobId}` });
+        }
+        return res.status(200).json({
+          ...diff,
+          totalFiles: filtered.length,
+          files: filtered,
+        });
+      }
+
+      return res.status(200).json(diff);
+    } catch (err: any) {
+      return res.status(500).json({ success: false, error: err?.message || 'Internal error resolving review diff' });
     }
   });
 
