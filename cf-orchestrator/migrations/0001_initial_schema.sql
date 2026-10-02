@@ -99,5 +99,5 @@ CREATE TABLE IF NOT EXISTS integrations (
 INSERT OR IGNORE INTO repositories (id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at)
 VALUES
   ('reviewyeti-ai/review-yeti-bot', 'reviewyeti-ai', 'review-yeti-bot', 'main', 1, 1, 'assertive', 1700000000000, 1700000000000),
-  ('reviewyeti-ai/cisco-cdr', 'reviewyeti-ai', 'cisco-cdr', 'main', 1, 1, 'assertive', 1700000000000, 1700000000000),
-  ('reviewyeti-ai/ct-meta', 'reviewyeti-ai', 'ct-meta', 'main', 1, 1, 'balanced', 1700000000000, 1700000000000);
+  ('example/sample-cdr', 'example', 'sample-cdr', 'main', 1, 1, 'assertive', 1700000000000, 1700000000000),
+  ('example/sample-meta', 'example', 'sample-meta', 'main', 1, 1, 'balanced', 1700000000000, 1700000000000);

@@ -83,11 +83,11 @@ class InMemoryStore {
       },
     ],
     [
-      'reviewyeti-ai/cisco-cdr',
+      'example/sample-cdr',
       {
-        id: 'reviewyeti-ai/cisco-cdr',
-        owner: 'reviewyeti-ai',
-        repo: 'cisco-cdr',
+        id: 'example/sample-cdr',
+        owner: 'example',
+        repo: 'sample-cdr',
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -97,11 +97,11 @@ class InMemoryStore {
       },
     ],
     [
-      'reviewyeti-ai/ct-meta',
+      'example/sample-meta',
       {
-        id: 'reviewyeti-ai/ct-meta',
-        owner: 'reviewyeti-ai',
-        repo: 'ct-meta',
+        id: 'example/sample-meta',
+        owner: 'example',
+        repo: 'sample-meta',
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
