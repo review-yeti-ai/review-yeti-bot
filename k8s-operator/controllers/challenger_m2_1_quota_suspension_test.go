@@ -29,10 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
-	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
+	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
 // Helper to calculate total active worker pod resources in namespace

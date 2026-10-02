@@ -28,8 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/cleanup"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/cleanup"
 )
 
 func setupTestScheme(t *testing.T) *runtime.Scheme {

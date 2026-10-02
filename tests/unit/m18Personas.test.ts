@@ -30,7 +30,7 @@ describe('Milestone 18: Follow-up PR Personas Engine', () => {
     mockGithub.getBranchRef.mockResolvedValue('main-ref-sha');
     mockGithub.createBranch.mockResolvedValue(undefined);
     mockGithub.createOrUpdateFile.mockResolvedValue({ sha: 'file-sha' });
-    mockGithub.createPullRequest.mockResolvedValue({ number: 108, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/108' });
+    mockGithub.createPullRequest.mockResolvedValue({ number: 108, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/108' });
     mockGithub.postIssueComment.mockResolvedValue(undefined);
   });
 

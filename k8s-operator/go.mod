@@ -1,4 +1,4 @@
-module github.com/calltelemetry/ct-review-bot/k8s-operator
+module github.com/review-yeti-ai/review-yeti-bot/k8s-operator
 
 go 1.22.0
 

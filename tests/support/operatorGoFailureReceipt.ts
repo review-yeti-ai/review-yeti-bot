@@ -2,7 +2,7 @@ import { lstatSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
-export const OPERATOR_MODULE = 'github.com/calltelemetry/ct-review-bot/k8s-operator';
+export const OPERATOR_MODULE = 'github.com/review-yeti-ai/review-yeti-bot/k8s-operator';
 
 const OPERATOR_PACKAGE_SUFFIXES = [
   '', '/api/v1alpha1', '/api/v1alpha2', '/controllers', '/pkg/cleanup', '/pkg/job',

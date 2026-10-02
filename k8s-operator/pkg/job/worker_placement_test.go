@@ -27,8 +27,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	v1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 func buildPlacementJob(t *testing.T) *batchv1.Job {

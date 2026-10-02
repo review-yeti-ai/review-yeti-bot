@@ -27,11 +27,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
-	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
+	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
+	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
 func v1alpha2Scheme(t *testing.T) *runtime.Scheme {

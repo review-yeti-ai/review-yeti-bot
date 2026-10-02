@@ -29,10 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	opmetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/queue"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	opmetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/queue"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 

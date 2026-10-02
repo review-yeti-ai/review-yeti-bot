@@ -36,9 +36,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 // terminalReviewFixture returns a review already in the given terminal phase,

@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
 func TestBuildPVCIsPRScopedReusableAndUnowned(t *testing.T) {

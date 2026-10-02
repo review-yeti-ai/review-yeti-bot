@@ -200,24 +200,24 @@
   "digest": "86b79c3b9a6946e3"
  },
  "k8s-operator/api/v1alpha1/prreviewjob_stress_test.go": {
-  "count": 13,
-  "digest": "79bd06162c251291"
+  "count": 12,
+  "digest": "5fc13ca626a4c3f7"
  },
  "k8s-operator/api/v1alpha1/prreviewjob_types.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/api/v1alpha1/prreviewjob_types_test.go": {
-  "count": 18,
-  "digest": "a6ee85e2b6ec1fa8"
+  "count": 17,
+  "digest": "c57dfb786c243201"
  },
  "k8s-operator/api/v1alpha2/crd_cel_test.go": {
-  "count": 4,
-  "digest": "aecb692954c3ff1d"
+  "count": 3,
+  "digest": "3deff313560d55e7"
  },
  "k8s-operator/api/v1alpha2/crd_contract_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/api/v1alpha2/groupversion_info.go": {
   "count": 1,
@@ -228,294 +228,234 @@
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/api/v1alpha2/prreviewjob_types_test.go": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
  },
  "k8s-operator/config/crd/bases/review.<org>.com_prreviewjobs.yaml": {
   "count": 3,
   "digest": "86b79c3b9a6946e3"
  },
- "k8s-operator/controllers/app_gate_receipt.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/controllers/app_gate_receipt_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
  "k8s-operator/controllers/capacity_ledger.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "k8s-operator/controllers/capacity_ledger_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/controllers/challenger_fencing_lease_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/challenger_m1_2_storage_isolation_test.go": {
-  "count": 7,
-  "digest": "5148c225fa17bb70"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "k8s-operator/controllers/challenger_m2_1_deep_stress_test.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/challenger_m2_1_quota_suspension_test.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/challenger_m3_2_adversarial_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/challenger_m4_1_concurrency_resumption_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/challenger_m4_2_whitebox_test.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/challenger_m5_1_adversarial_test.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/concurrency_empirical_test.go": {
-  "count": 13,
-  "digest": "25164e562353d912"
+  "count": 9,
+  "digest": "3b4392fdab702959"
  },
  "k8s-operator/controllers/conflictRequeue.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/duplicate_reconcile_empirical_test.go": {
-  "count": 8,
-  "digest": "8c7b9a0de35521eb"
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
  },
  "k8s-operator/controllers/m2_declarative_admission_concurrency_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/m4_multithread_concurrency_test.go": {
-  "count": 6,
-  "digest": "76e4bba4025be680"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "k8s-operator/controllers/prreviewjob_controller.go": {
-  "count": 9,
-  "digest": "a84ab6da131630ac"
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
  },
  "k8s-operator/controllers/prreviewjob_controller_test.go": {
-  "count": 20,
-  "digest": "72655889d64468d1"
+  "count": 17,
+  "digest": "08174490b307b4e7"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha1_conflict_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
- },
- "k8s-operator/controllers/prreviewjob_v1alpha2_conflict_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
- },
- "k8s-operator/controllers/prreviewjob_v1alpha2_continuation_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_controller.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_controller_test.go": {
-  "count": 11,
-  "digest": "7ca57557c37f9adf"
+  "count": 6,
+  "digest": "94df64621da1f2f5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_emptydir_adversarial_test.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
- },
- "k8s-operator/controllers/prreviewjob_v1alpha2_envcontract_internal_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_finalizer_patch_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
- },
- "k8s-operator/controllers/prreviewjob_v1alpha2_missing_job_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_prep_decoupling_test.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_run_secret_finalizer_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_terminal_deletion_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_volume_matcher_test.go": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_worker_job_notfound_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_worker_success_ttl_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_worker_superseded_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/prreviewjob_v1alpha2_worker_termination_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/testdata/app_gate_receipt_success.v1.json": {
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
  "k8s-operator/controllers/ttl_empirical_test.go": {
-  "count": 12,
-  "digest": "fe50d80b77febf62"
- },
- "k8s-operator/controllers/worker_metrics.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
- },
- "k8s-operator/controllers/worker_metrics_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 9,
+  "digest": "3b4392fdab702959"
  },
  "k8s-operator/controllers/worker_superseded.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/worker_termination.go": {
-  "count": 5,
-  "digest": "f156c3b5a3d99f5b"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "k8s-operator/controllers/worker_termination_internal_test.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/worker_termination_selection_internal_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/controllers/worker_termination_test.go": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
- },
- "k8s-operator/go.mod": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/main.go": {
-  "count": 6,
-  "digest": "76e4bba4025be680"
- },
- "k8s-operator/main_test.go": {
-  "count": 21,
-  "digest": "349609fc0b56b670"
- },
- "k8s-operator/pkg/cleanup/ttl.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/cleanup/ttl_stress_test.go": {
-  "count": 5,
-  "digest": "e10d1c5b98140b6d"
- },
- "k8s-operator/pkg/cleanup/ttl_test.go": {
-  "count": 5,
-  "digest": "e10d1c5b98140b6d"
- },
- "k8s-operator/pkg/job/challenger_m1_1_resource_test.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
+ "k8s-operator/main_test.go": {
+  "count": 20,
+  "digest": "5f1a34bb55b8bf6c"
+ },
+ "k8s-operator/pkg/cleanup/ttl.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/cleanup/ttl_stress_test.go": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "k8s-operator/pkg/cleanup/ttl_test.go": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
  "k8s-operator/pkg/job/continuation_job_test.go": {
-  "count": 47,
-  "digest": "4acf198f0e1a2adf"
+  "count": 46,
+  "digest": "0670db63b746a629"
  },
  "k8s-operator/pkg/job/job.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
- },
- "k8s-operator/pkg/job/job_adversarial_test.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/pkg/job/job_emptydir_adversarial_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/pkg/job/job_test.go": {
-  "count": 42,
-  "digest": "dc1b3dbff8289d3d"
+  "count": 39,
+  "digest": "f37558e9d918cfe8"
  },
  "k8s-operator/pkg/job/prep_worker_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/job/prepared_review_contract_test.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/pkg/job/run_secret_names_fixture_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/job/skip_empty_moderation_test.go": {
-  "count": 7,
-  "digest": "1d54d61ff5ccdbc8"
- },
- "k8s-operator/pkg/job/worker_image_acceptance_test.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
+ "k8s-operator/pkg/job/skip_empty_moderation_test.go": {
+  "count": 6,
+  "digest": "b48873ce7a9894e0"
+ },
  "k8s-operator/pkg/job/worker_placement_test.go": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "k8s-operator/pkg/metrics/metrics.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "k8s-operator/pkg/metrics/metrics_stress_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/metrics/metrics_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/queue/manager.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/queue/manager_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/queue/stress_test.go": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "k8s-operator/pkg/workspace/collector.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
- "k8s-operator/pkg/workspace/collector_test.go": {
+ "k8s-operator/pkg/metrics/metrics_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/queue/manager.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/queue/manager_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/queue/stress_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/collector.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
@@ -523,23 +463,11 @@
   "count": 1,
   "digest": "eede0415576da9c5"
  },
- "k8s-operator/pkg/workspace/identity_test.go": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "k8s-operator/pkg/workspace/lease.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
- "k8s-operator/pkg/workspace/lease_test.go": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "k8s-operator/pkg/workspace/pvc.go": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "k8s-operator/pkg/workspace/pvc_test.go": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
@@ -572,8 +500,8 @@
   "digest": "bd71aa54e6a916f1"
  },
  "legacy_public/js/app.js": {
-  "count": 3,
-  "digest": "b43e51df5c821e4e"
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
  },
  "public/404.html": {
   "count": 2,
@@ -700,8 +628,8 @@
   "digest": "bd71aa54e6a916f1"
  },
  "public/js/app.js": {
-  "count": 3,
-  "digest": "b43e51df5c821e4e"
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
  },
  "public/live.html": {
   "count": 2,
@@ -1312,8 +1240,8 @@
   "digest": "f0970e1d2a7123e7"
  },
  "tests/integration/prCloseIntegration.test.ts": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "tests/integration/preparedReviewRepository.postgres.test.ts": {
   "count": 1,
@@ -1402,10 +1330,6 @@
  "tests/support/openRouterReplayScenario.ts": {
   "count": 2,
   "digest": "98755f4be2680d90"
- },
- "tests/support/operatorGoFailureReceipt.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
  },
  "tests/support/release-fixture-copy.ts": {
   "count": 1,
@@ -1768,8 +1692,8 @@
   "digest": "5148c225fa17bb70"
  },
  "tests/unit/followupPersonas.test.ts": {
-  "count": 6,
-  "digest": "76e4bba4025be680"
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
  },
  "tests/unit/gatewayCircuitBreaker.test.ts": {
   "count": 7,
@@ -1908,12 +1832,12 @@
   "digest": "5e8fb65698545ff5"
  },
  "tests/unit/m18EventDispatcher.test.ts": {
-  "count": 10,
-  "digest": "4ac0e15909e91064"
+  "count": 8,
+  "digest": "4fbc9bbe79ec7f29"
  },
  "tests/unit/m18Personas.test.ts": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "tests/unit/m1ChallengerDiscoveryAndRulesStress.test.ts": {
   "count": 74,
@@ -1956,16 +1880,16 @@
   "digest": "c178312168106f9e"
  },
  "tests/unit/mcpAdvancedTools.test.ts": {
-  "count": 16,
-  "digest": "c92809ba000ca454"
+  "count": 13,
+  "digest": "1e7c8f12ee5d7fd3"
  },
  "tests/unit/mcpAdvancedToolsEmpiricalChallenger.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "tests/unit/mcpAttestReplyEmpiricalChallenger.test.ts": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "tests/unit/mcpFindingIdentity.test.ts": {
   "count": 30,

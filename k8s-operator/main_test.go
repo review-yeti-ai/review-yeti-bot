@@ -8,7 +8,7 @@ import (
 
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
 )
 
 func TestMainInitializesControllerRuntimeLogger(t *testing.T) {

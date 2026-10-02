@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 func selectionWorker() *batchv1.Job {

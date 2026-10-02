@@ -22,7 +22,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 
-	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
+	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
 )
 
 // conflictRequeueBackoff is the quiet requeue delay for optimistic-concurrency

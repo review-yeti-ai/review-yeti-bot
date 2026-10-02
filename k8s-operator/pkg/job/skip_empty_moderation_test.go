@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 // REL-1139: REVIEW_YETI_SKIP_EMPTY_MODERATION must reach the app-gate worker

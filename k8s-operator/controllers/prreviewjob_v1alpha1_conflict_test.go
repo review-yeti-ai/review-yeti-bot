@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"

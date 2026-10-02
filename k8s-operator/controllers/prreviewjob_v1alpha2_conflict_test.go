@@ -16,9 +16,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	operatorMetrics "github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
+	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	operatorMetrics "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
 )
 
 // REL-903: sibling writers (dispatcher, reaper, lifecycle reconciler) legitimately

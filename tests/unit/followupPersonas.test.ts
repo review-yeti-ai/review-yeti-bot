@@ -34,7 +34,7 @@ describe('Follow-Up PR Action Personas Suite', () => {
     mockGithub.getBranchRef.mockResolvedValue('main-ref-sha');
     mockGithub.createBranch.mockResolvedValue(undefined);
     mockGithub.createOrUpdateFile.mockResolvedValue({ sha: 'file-sha-123' });
-    mockGithub.createPullRequest.mockResolvedValue({ number: 301, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/301' });
+    mockGithub.createPullRequest.mockResolvedValue({ number: 301, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/301' });
     mockGithub.postIssueComment.mockResolvedValue(undefined);
   });
 

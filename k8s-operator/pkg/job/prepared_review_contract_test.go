@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 // TypeScript's preparedReviewExecutionContract.test.ts reads this same corpus.

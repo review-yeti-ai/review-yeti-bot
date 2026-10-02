@@ -43,7 +43,7 @@ describe('PR Close Pipeline Integration Suite', () => {
       getBranchRef: async () => 'base-sha-505',
       createBranch: async () => {},
       createOrUpdateFile: async () => ({ sha: 'sha-created-505' }),
-      createPullRequest: async () => ({ number: 905, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/905' }),
+      createPullRequest: async () => ({ number: 905, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/905' }),
       postIssueComment: async () => {},
       getFileContent: async () =>
         JSON.stringify({

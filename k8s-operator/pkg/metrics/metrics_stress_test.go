@@ -26,7 +26,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	crmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
 )
 
 // TestEmpirical_MetricRegistration_100Goroutines_Concurrency stress tests RegisterMetrics

@@ -31,11 +31,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	reviewv1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	reviewv1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
 )
 
 var (

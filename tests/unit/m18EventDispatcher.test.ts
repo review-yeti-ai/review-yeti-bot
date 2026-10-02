@@ -77,7 +77,7 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
         if (url.includes('/pulls')) {
           return {
             ok: true,
-            text: async () => JSON.stringify({ number: 505, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/505' }),
+            text: async () => JSON.stringify({ number: 505, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/505' }),
           };
         }
         return { ok: true, text: async () => '{}' };
@@ -173,7 +173,7 @@ on_pr_close:
         getBranchRef: vi.fn().mockResolvedValue('main-sha'),
         createBranch: vi.fn().mockResolvedValue(undefined),
         createOrUpdateFile: vi.fn().mockResolvedValue({ sha: 'doc-file-sha' }),
-        createPullRequest: vi.fn().mockResolvedValue({ number: 99, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/99' }),
+        createPullRequest: vi.fn().mockResolvedValue({ number: 99, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/99' }),
         postIssueComment: vi.fn().mockResolvedValue(undefined),
       };
 

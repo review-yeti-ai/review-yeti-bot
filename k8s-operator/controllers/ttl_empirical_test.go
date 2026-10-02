@@ -32,9 +32,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/cleanup"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/queue"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/cleanup"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/queue"
 )
 
 func setupTestSchemeForTTL(t *testing.T) *runtime.Scheme {

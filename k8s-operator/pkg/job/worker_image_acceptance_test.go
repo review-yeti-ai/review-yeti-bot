@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 // The headline fix of REL-1025 is that BuildWorkerJob now ACCEPTS a digest-pinned

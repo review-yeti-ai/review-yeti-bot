@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/workspace"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/workspace"
 )
 
 const collectorNamespace = "ct-review-system"
