@@ -1,9 +1,12 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
+import { createScratchOwner } from '../support/scratch-lifecycle';
+import os from 'node:os';
 import request from 'supertest';
 import { createApp } from '../../src/app';
+import { assertLiveMarkup } from '../support/dashboardMarkup';
 
 describe('Milestone 5: Build & Test Stress Challenger M5', () => {
   const projectRoot = path.resolve(__dirname, '../../');
@@ -47,22 +50,27 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       }
     });
 
-    it('verifies postbuild script idempotency without duplicate script tags or headers', () => {
-      // Execute postbuild script directly 3 consecutive times
-      const postbuildScript = path.resolve(projectRoot, 'scripts/postbuild.js');
-      execSync(`node "${postbuildScript}"`, { cwd: projectRoot, stdio: 'pipe' });
-      execSync(`node "${postbuildScript}"`, { cwd: projectRoot, stdio: 'pipe' });
-      execSync(`node "${postbuildScript}"`, { cwd: projectRoot, stdio: 'pipe' });
-
-      // Check live.html for stable script count (1 in head, 1 in body = 2 total)
-      const liveHtmlPath = path.join(publicDir, 'live.html');
-      expect(fs.existsSync(liveHtmlPath)).toBe(true);
-
-      const settingsHtmlPath = path.join(publicDir, 'settings.html');
-      expect(fs.existsSync(settingsHtmlPath)).toBe(true);
-
-      const githubAppHtmlPath = path.join(publicDir, 'github-app.html');
-      expect(fs.existsSync(githubAppHtmlPath)).toBe(true);
+    it("packages idempotently in an owned fixture without rewriting another test's served assets", () => {
+      const scratch = createScratchOwner({ parentDir: process.env.CT_REVIEW_TEST_SCRATCH_ROOT || os.tmpdir(),
+        prefix: 'dashboard-packaging-', kind: 'dashboard-packaging-fixture' });
+      try {
+        fs.mkdirSync(path.join(scratch.path, 'scripts'));
+        for (const script of ['postbuild.js', 'ensure-static-assets.js']) {
+          fs.copyFileSync(path.join(projectRoot, 'scripts', script), path.join(scratch.path, 'scripts', script));
+        }
+        fs.cpSync(path.join(projectRoot, 'legacy_public'), path.join(scratch.path, 'legacy_public'), { recursive: true });
+        // Use the actual export bytes; this test owns its distribution directories.
+        fs.cpSync(publicDir, path.join(scratch.path, 'out'), { recursive: true });
+        const run = () => execFileSync(process.execPath, [path.join(scratch.path, 'scripts/postbuild.js')],
+          { cwd: scratch.path, stdio: 'pipe' });
+        run();
+        const first = expectedHtmlFiles.map((file) => fs.readFileSync(path.join(scratch.path, 'public', file), 'utf8'));
+        run(); run();
+        expectedHtmlFiles.forEach((file, index) => {
+          expect(fs.readFileSync(path.join(scratch.path, 'public', file), 'utf8')).toBe(first[index]);
+          expect(fs.readFileSync(path.join(scratch.path, 'dist/public', file), 'utf8')).toBe(first[index]);
+        });
+      } finally { scratch.cleanup(); }
     }, 15000);
   });
 
@@ -77,25 +85,16 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       }
     });
 
-    it('verifies every reviewer persona is exported in settings.html', () => {
-      const liveHtml = fs.readFileSync(path.join(publicDir, 'settings.html'), 'utf8');
-      const personas = [
-        'security',
-        'architecture',
-        'performance',
-        'quality',
-        'database',
-        'api_contract',
-        'reliability',
-        'devops',
-        'docs_compliance',
-        'finops',
-        'red_team',
-      ];
+    it('preserves every protected-main built-in reviewer charter in the settings export', () => {
+      const settingsHtml = fs.readFileSync(path.join(publicDir, 'settings.html'), 'utf8');
+      const personas = ['security', 'architecture', 'performance', 'quality', 'database',
+        'api_contract', 'reliability', 'devops', 'docs_compliance', 'finops', 'red_team'];
+      for (const persona of personas) expect(settingsHtml).toContain(`builtin:${persona}`);
+    });
 
-      for (const persona of personas) {
-        expect(liveHtml).toContain(`builtin:${persona}`);
-      }
+    it('preserves the hydratable live swarm route after repeated packaging', () => {
+      const liveHtml = fs.readFileSync(path.join(publicDir, 'live.html'), 'utf8');
+      assertLiveMarkup(liveHtml);
     });
   });
 

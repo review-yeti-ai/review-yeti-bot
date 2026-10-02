@@ -272,6 +272,9 @@ personas:
       //    review_dispatch_outbox is re-armed from 'projected' to 'pending'
       //
       const queryHistory: Array<{ sql: string; values: any[] }> = [];
+      // Bind both admission times to one clock sample; scheduling between reads
+      // must not create an invalid durable deadline window.
+      const receivedAt = Date.now();
 
       // Simulate a database where a worker has projected a Job and then failed.
       const outboxTable = new Map<string, { runId: string; status: string; attempt: number; executionAttempt: number }>();
@@ -306,10 +309,10 @@ personas:
                 repository_id: '123',
                 installation_id: '456',
                 delivery_id: values[14],
-                received_at: new Date(),
-                terminal_deadline: new Date(Date.now() + TERMINAL_DEADLINE_MS),
-                created_at: new Date(),
-                updated_at: new Date(),
+                received_at: new Date(values[15]),
+                terminal_deadline: new Date(values[16]),
+                created_at: new Date(receivedAt),
+                updated_at: new Date(receivedAt),
               }],
             };
           }
@@ -363,12 +366,14 @@ personas:
           configDigest: 'conf',
         },
         payloadDigest: 'a'.repeat(64),
-        receivedAt: Date.now(),
-        terminalDeadline: Date.now() + TERMINAL_DEADLINE_MS,
+        receivedAt,
+        terminalDeadline: receivedAt + TERMINAL_DEADLINE_MS,
       });
 
       expect(admissionResult.status).toBe('accepted');
       expect(admissionResult.run.status).toBe('queued');
+      expect(admissionResult.run.receivedAt).toBe(receivedAt);
+      expect(admissionResult.run.terminalDeadline).toBe(receivedAt + TERMINAL_DEADLINE_MS);
 
       // The projected row must be made runnable again, and its next claim must
       // receive a fresh execution identity rather than the terminal Job/Secret.
