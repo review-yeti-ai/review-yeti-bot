@@ -59,6 +59,8 @@ export const operationalTelemetryEventSchema = z.object({
     turn: z.number().int().nonnegative().safe().optional(),
     callSequence: z.number().int().nonnegative().safe().optional(),
     durationMs: z.number().int().min(0).max(86_400_000).optional(),
+    /** Numeric upstream response status only; never retain provider text or response bodies. */
+    responseStatus: z.number().int().min(400).max(599).optional(),
     rejectionCode: z.enum(['aborted', 'timeout', 'rate_limit', 'transport', 'provider_error', 'malformed_output',
       'configuration', 'budget_exhausted', 'internal_error', 'contract', 'auth', 'unknown', 'invalid_task_output',
       'findings_contract_invalid', 'finding_path_invalid', 'finding_path_not_changed', 'finding_line_invalid',
