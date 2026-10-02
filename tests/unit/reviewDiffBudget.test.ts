@@ -521,7 +521,7 @@ describe('guarded gateway input budgeting', () => {
         omittedFilesCount: plan.omittedFilesCount,
         parseCalls,
         rangeCalls,
-        rangePatches: rangePlan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
+        rangePatches: rangePlan.partitions.flatMap((partition) => partition.files).sort((a, b) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0)).map((file) => file.patch),
       }));
     `;
     const childEnv = { ...process.env };
@@ -590,7 +590,7 @@ describe('guarded gateway input budgeting', () => {
         managerPath,
         parseCalls,
         rangeCalls,
-        patches: plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
+        patches: plan.partitions.flatMap((partition) => partition.files).sort((a, b) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0)).map((file) => file.patch),
       }));
     `;
     const childEnv = { ...process.env };
@@ -655,9 +655,10 @@ describe('guarded gateway input budgeting', () => {
     expect(plan.fileManifest.map((entry: any) => entry.path)).toEqual([fixture.path]);
     expect(plan.coveragePercent).toBe(100);
     expect(plan.omittedFilesCount).toBe(0);
-    expect(plan.partitions.flatMap((partition: any) => partition.files
+    expect(plan.partitions.flatMap((partition: any) => partition.files)
       .filter((planned: any) => planned.path === fixture.path)
-      .flatMap((planned: any) => extractUnifiedHunkBody(planned.patch)))).toEqual(fixture.body);
+      .sort((a: any, b: any) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0))
+      .flatMap((planned: any) => extractUnifiedHunkBody(planned.patch))).toEqual(fixture.body);
   });
 
   it('emits canonical zero-count anchors for a guarded lossless split', () => {
@@ -665,15 +666,17 @@ describe('guarded gateway input budgeting', () => {
     expect(fixture.patch.length).toBeGreaterThan(fixture.request.safeDiffCapacityChars);
 
     const plan = pipeline.createReviewPartitionPlan(fixture.request);
-    const actualHunks = plan.partitions.flatMap((partition: any) => partition.files
+    const actualHunks = plan.partitions.flatMap((partition: any) => partition.files)
       .filter((planned: any) => planned.path === fixture.path)
-      .map((planned: any) => planned.patch.slice(fixture.fileHeader.length).replace(/\n+$/u, '')));
+      .sort((a: any, b: any) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0))
+      .map((planned: any) => planned.patch.slice(fixture.fileHeader.length).replace(/\n+$/u, ''));
 
     expect(plan.partitions.every((partition: any) => partition.totalChars
       <= fixture.request.safeDiffCapacityChars)).toBe(true);
     expect(actualHunks).toEqual(fixture.expectedHunks);
-    expect(plan.partitions.flatMap((partition: any) => partition.files
-      .flatMap((planned: any) => extractUnifiedHunkBody(planned.patch)))).toEqual(fixture.body);
+    expect(plan.partitions.flatMap((partition: any) => partition.files)
+      .sort((a: any, b: any) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0))
+      .flatMap((planned: any) => extractUnifiedHunkBody(planned.patch))).toEqual(fixture.body);
   });
 
   it('rejects a manager that shifts a zero-old-count range to the following source line', () => {
@@ -831,11 +834,12 @@ describe('guarded gateway input budgeting', () => {
     expect(() => pipeline.createReviewPartitionPlan(request)).toThrow(/complete, bounded file and hunk coverage/u);
   });
 
-  it('rejects a lossless partition plan whose split-file copies are reordered', () => {
+  it('rejects reordered split-file copies without their source ordinals', () => {
     const { inputFiles } = createCurrentSizedGatewayDiffFixture();
     const partitionManager = {
       createPartitionPlan: (...args: any[]) => {
         const plan = shaPartitionManager.createPartitionPlan(...args);
+        for (const part of plan.partitions) for (const file of part.files) delete file.sourceSliceIndex;
         return { ...plan, partitions: [...plan.partitions].reverse() };
       },
     };

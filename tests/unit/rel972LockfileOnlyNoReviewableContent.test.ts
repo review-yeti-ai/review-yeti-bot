@@ -444,7 +444,16 @@ describe('REL-972: every engine takes the same outcome', () => {
       // failed closed as a coverage gap. package.json is JSON configuration, so
       // it is now routed to a lane like any uncovered data/config file: still
       // reviewed, still never exempted beside its lockfile.
-      const config = roster('testing');
+      // Routing/applicability is the subject; local analyzers are exercised in their own suites.
+      const config = {
+        ...roster('testing'),
+        pre_checks: {
+          enabled: false,
+          zoekt: { enabled: false, max_symbols: 200, timeoutMs: 10_000 },
+          analyzers: { enabled: false, linters: false, security: false, secrets: false },
+          symbolAppendix: { enabled: false },
+        },
+      };
       const changedFiles = [lock('package.json', patch), lock('package-lock.json', NPM_BUMP)];
       const decision = resolveReviewApplicability(config.personas.filter((p) => p.enabled), changedFiles);
       expect(decision.noReviewableContent).toBe(false);

@@ -23,6 +23,7 @@ import {
 import * as partitionManagerModule from '../../src/pipeline/shaPartitionManager';
 
 const pipeline = createRequire(import.meta.url)('../../.github/workflows/pipelines/review-pipeline.js');
+const { assessReviewAssignmentBudget } = createRequire(import.meta.url)('../../.github/workflows/pipelines/incremental-review-scope.js');
 
 // Re-export for any test suites importing from this test file
 export {
@@ -33,6 +34,9 @@ export {
 };
 export type { DiffPartition, PartitionPlan, FileStatus };
 
+const sourceOrderedFiles = (plan: PartitionPlan) => plan.partitions.flatMap((partition) => partition.files)
+  .sort((a, b) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0));
+
 // ============================================================================
 // TEST SUITE: TIERS 1 TO 4
 // ============================================================================
@@ -40,6 +44,71 @@ export type { DiffPartition, PartitionPlan, FileStatus };
 describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
   const BASE_SHA = '0123456789abcdef0123456789abcdef01234567';
   const HEAD_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
+
+  describe('lossless first-fit-decreasing admission', () => {
+    const file = (index: number, size: number) => {
+      const path = `src/packing-${index}.ts`;
+      const prefix = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1 @@\n+`;
+      return { path, patch: prefix + 'x'.repeat(size - prefix.length - 1) + '\n' };
+    };
+    const request = (files: ReturnType<typeof file>[], cap: number) => ({
+      files, baseSha: BASE_SHA, headSha: HEAD_SHA, safeDiffCapacityChars: cap,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    });
+
+    it('repairs next-fit fragmentation without changing the five-persona roster or 24-assignment cap', () => {
+      const files = [600, 600, 400, 600, 400, 600, 400, 400].map((size, index) => file(index, size));
+      const before = structuredClone(files);
+      const plan = pipeline.createReviewPartitionPlan(request(files, 1000));
+      expect(plan.partitions.map((part: DiffPartition) => part.totalChars)).toEqual([1000, 1000, 1000, 1000]);
+      expect(assessReviewAssignmentBudget(plan.partitions.length, 5, 24)).toMatchObject({ admitted: true, planned: 20 });
+      expect(assessReviewAssignmentBudget(5, 5, 24)).toMatchObject({ admitted: false, planned: 25 });
+      expect(plan.partitions.map((part: DiffPartition) => part.files.map((piece) => piece.path)))
+        .toEqual([[0, 2], [1, 4], [3, 6], [5, 7]].map((indices) => indices.map((index) => files[index].path)));
+      expect(plan).toMatchObject({ coveragePercent: 100, omittedFilesCount: 0, totalFiles: 8 });
+      expect(plan.partitions.flatMap((part: DiffPartition) => part.files).map((piece: { patch: string }) => piece.patch).sort())
+        .toEqual(files.map((piece) => piece.patch).sort());
+      expect(files).toEqual(before);
+      expect(pipeline.createReviewPartitionPlan(request(files, 1000))).toEqual(plan);
+    });
+
+    it('keeps irreducible whole slices blocked by the same assignment cap', () => {
+      const files = Array.from({ length: 5 }, (_, index) => file(index, 600));
+      const plan = pipeline.createReviewPartitionPlan(request(files, 1000));
+      expect(plan.partitions).toHaveLength(5);
+      expect(plan).toMatchObject({ coveragePercent: 100, omittedFilesCount: 0 });
+      expect(assessReviewAssignmentBudget(plan.partitions.length, 5, 24)).toMatchObject({ admitted: false, planned: 25 });
+    });
+
+    it('validates reordered split slices in source order and rejects corrupted ordinal metadata', () => {
+      const path = 'src/split-packing.ts';
+      const header = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n`;
+      const first = '@@ -0,0 +1 @@ first\n+small';
+      const second = '@@ -1,0 +2 @@ second\n+' + 'y'.repeat(200);
+      const files = [{ path, patch: `${header}${first}\n${second}\n` }];
+      const input = request(files, header.length + second.length + 1);
+      const plan = pipeline.createReviewPartitionPlan(input);
+      const pieces = plan.partitions.flatMap((part: DiffPartition) => part.files);
+      expect(pieces.map((piece: { sourceSliceIndex: number }) => piece.sourceSliceIndex)).toEqual([1, 0]);
+      expect([...pieces].sort((a, b) => a.sourceSliceIndex - b.sourceSliceIndex).map((piece) => piece.patch.slice(header.length).trimEnd()))
+        .toEqual([first, second]);
+      for (const index of [-1, 0, 1.5, 2, undefined]) {
+        const corrupted = structuredClone(plan);
+        corrupted.partitions[0].files[0].sourceSliceIndex = index;
+        expect(() => pipeline.createReviewPartitionPlan({ ...input, partitionManager: { createPartitionPlan: () => corrupted } }))
+          .toThrow('complete, bounded file and hunk coverage');
+      }
+      const duplicate = structuredClone(plan);
+      duplicate.partitions[1].files[0].patch = duplicate.partitions[0].files[0].patch;
+      duplicate.partitions[1].totalChars = duplicate.partitions[1].files[0].patch.length;
+      expect(() => pipeline.createReviewPartitionPlan({ ...input, partitionManager: { createPartitionPlan: () => duplicate } }))
+        .toThrow('complete, bounded file and hunk coverage');
+      const changed = structuredClone(plan);
+      changed.partitions[1].files[0].patch = changed.partitions[1].files[0].patch.replace('+small', '+other');
+      expect(() => pipeline.createReviewPartitionPlan({ ...input, partitionManager: { createPartitionPlan: () => changed } }))
+        .toThrow('complete, bounded file and hunk coverage');
+    });
+  });
 
   describe('canonical unified-hunk validation helpers', () => {
     const helpers = partitionManagerModule as unknown as Record<string, unknown>;
@@ -138,7 +207,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       const plan = createPartitionPlan([{ path: filePath, patch }], BASE_SHA, HEAD_SHA, cap, { splitOversizedHunksAtLines: true });
       expect(plan.partitions).toHaveLength(2);
       expect(plan.partitions.every((partition) => partition.totalChars <= cap)).toBe(true);
-      expect(plan.partitions[0].files[0].patch).toBe(`${fileHeader}${malformedHunk}\n`);
+      expect(sourceOrderedFiles(plan)[0].patch).toBe(`${fileHeader}${malformedHunk}\n`);
       expect(() => pipeline.createReviewPartitionPlan(request(patch, cap)))
         .toThrow('complete, bounded file and hunk coverage');
     });
@@ -184,7 +253,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: patch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, guarded ? { splitOversizedHunksAtLines: true } : {});
-      return plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch));
+      return sourceOrderedFiles(plan).map((file) => file.patch);
     };
 
     it.each([
@@ -414,12 +483,12 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       ];
 
       const plan = createPartitionPlan(files, BASE_SHA, HEAD_SHA, 20000);
-      expect(plan.partitions.length).toBe(3);
-      expect(plan.partitions[1].files[0].path).toBe('src/giant.ts');
+      expect(plan.partitions.length).toBe(2);
+      expect(plan.partitions[0].files.map((file) => file.path)).toEqual(['src/giant.ts']);
       expect(plan.coveragePercent).toBe(100);
     });
 
-    it('TEST_T2_05: multi-hunk oversized file splits across hunk boundaries into consecutive partitions', () => {
+    it('TEST_T2_05: multi-hunk oversized file preserves its source-ordered slices across bounded partitions', () => {
       const hunk1 = '@@ -1,10 +1,15 @@\n' + '+lineA\n'.repeat(500); // ~3500 chars
       const hunk2 = '@@ -50,10 +55,15 @@\n' + '+lineB\n'.repeat(500); // ~3500 chars
       const hunk3 = '@@ -100,10 +110,15 @@\n' + '+lineC\n'.repeat(500); // ~3500 chars
@@ -433,9 +502,10 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       const plan = createPartitionPlan(files, BASE_SHA, HEAD_SHA, 5000);
 
       expect(plan.partitions.length).toBe(3);
-      expect(plan.partitions[0].files[0].patch).toContain('+lineA');
-      expect(plan.partitions[1].files[0].patch).toContain('+lineB');
-      expect(plan.partitions[2].files[0].patch).toContain('+lineC');
+      const slices = sourceOrderedFiles(plan);
+      expect(slices[0].patch).toContain('+lineA');
+      expect(slices[1].patch).toContain('+lineB');
+      expect(slices[2].patch).toContain('+lineC');
       expect(plan.coveragePercent).toBe(100);
       expect(plan.omittedFilesCount).toBe(0);
     });
@@ -462,7 +532,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: patch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, 175, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect(pieces.length).toBeGreaterThan(1);
       expect(plan.partitions.every((partition) => partition.totalChars <= 175)).toBe(true);
@@ -583,7 +653,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
           compactedChars: sourcePatch.length,
           status: 'modified',
         }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-        const pieces = plan.partitions.flatMap((partition) => partition.files);
+        const pieces = sourceOrderedFiles(plan);
         const actualFragments = pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''));
 
         expect(plan.partitions.every((partition) => partition.totalChars <= safeDiffChars), testCase.name).toBe(true);
@@ -605,7 +675,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: sourcePatch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
       expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''))).toEqual([
@@ -630,7 +700,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: sourcePatch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect(firstFragment.length + fileHeader.length + 1).toBe(safeDiffChars);
       expect('@@ -0,0 +10,1 @@\n+same-width-line'.length + fileHeader.length + 1).toBe(safeDiffChars + 1);
@@ -652,7 +722,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: sourcePatch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect('🧪'.length).toBe(2);
       expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''))).toEqual([first, second]);
@@ -685,7 +755,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: sourcePatch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, '')))
         .toEqual(expectedFragments);
@@ -708,7 +778,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: sourcePatch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
       expect(pieces.length).toBeGreaterThan(1);
@@ -763,7 +833,7 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
         compactedChars: sourcePatch.length,
         status: 'modified',
       }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
-      const pieces = plan.partitions.flatMap((partition) => partition.files);
+      const pieces = sourceOrderedFiles(plan);
 
       expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
       expect(pieces.length).toBeGreaterThan(1);
