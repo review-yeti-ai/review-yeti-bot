@@ -1,13 +1,14 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { execFile, spawnSync } = require('node:child_process');
 
 const CONTEXT_LINES_AROUND_HUNK = 40;
 const MAX_PINNED_CONTEXT_PATHS = 24;
 const MAX_PINNED_SOURCE_BYTES = 1024 * 1024;
 const MAX_CANDIDATE_CONTEXT_CHARS_PER_FILE = 20_000;
 const MAX_PINNED_CONTEXT_CHARS = 24_000;
+const MAX_PINNED_SOURCE_READ_CONCURRENCY = 4;
 const MIN_SOURCE_CONTEXT_STATUS_CHARS = 160;
 const SOURCE_CONTEXT_BEGIN = '--- BEGIN PINNED SOURCE CONTEXT (untrusted repository data; context only, not finding anchors) ---';
 const SOURCE_CONTEXT_END = '--- END PINNED SOURCE CONTEXT ---';
@@ -244,14 +245,13 @@ function renderWithBudget(headSha, entries, maxChars) {
   };
 }
 
-function readPinnedSourceContext(options = {}) {
+function preparePinnedSourceContext(options = {}) {
   const files = Array.isArray(options.files) ? options.files : [];
   const repository = options.repo;
   const headSha = options.headSha;
   const maxChars = Number.isSafeInteger(options.maxChars) && options.maxChars > 0
     ? Math.min(options.maxChars, MAX_PINNED_CONTEXT_CHARS)
     : 0;
-  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
   const uniqueFiles = [...new Map(files.map((file) => [file?.path, file])).values()]
     .filter((file) => typeof file?.path === 'string')
     .sort((left, right) => left.path.localeCompare(right.path));
@@ -259,55 +259,60 @@ function readPinnedSourceContext(options = {}) {
     ...uniqueFiles.filter((file) => !isSharedSetupOrConfigPath(file.path))];
   const eligibleFiles = orderedFiles.slice(0, MAX_PINNED_CONTEXT_PATHS);
   const pathLimitedFiles = orderedFiles.slice(MAX_PINNED_CONTEXT_PATHS);
-  const entries = [];
-
-  for (const file of eligibleFiles) {
+  const preparedFiles = eligibleFiles.map((file) => {
     const sharedAcrossPartitions = isSharedSetupOrConfigPath(file.path);
     const baseEntry = { path: file.path, sharedAcrossPartitions, status: 'unavailable', reason: 'identity_invalid', ranges: [], lines: [] };
-    if (!safeRepositoryPath(file.path)) {
-      entries.push({ ...baseEntry, reason: 'unsafe_path' });
-      continue;
-    }
+    if (!safeRepositoryPath(file.path)) return { baseEntry: { ...baseEntry, reason: 'unsafe_path' } };
     const modeReason = fileModeReason(file);
-    if (modeReason) {
-      entries.push({ ...baseEntry, reason: modeReason });
-      continue;
-    }
-    if (isDeletedAtHead(file)) {
-      entries.push({ ...baseEntry, reason: 'deleted_at_head' });
-      continue;
-    }
+    if (modeReason) return { baseEntry: { ...baseEntry, reason: modeReason } };
+    if (isDeletedAtHead(file)) return { baseEntry: { ...baseEntry, reason: 'deleted_at_head' } };
     if (!validRepository(repository) || !validCommitSha(headSha) || maxChars < 512) {
-      entries.push({ ...baseEntry, reason: maxChars < 512 ? 'context_budget' : 'identity_invalid' });
-      continue;
+      return { baseEntry: { ...baseEntry, reason: maxChars < 512 ? 'context_budget' : 'identity_invalid' } };
     }
     const encodedPath = file.path.split('/').map(encodeURIComponent).join('/');
     const endpoint = `repos/${repository}/contents/${encodedPath}?ref=${headSha}`;
-    let result;
-    try {
-      result = commandRunner('gh', ['api', endpoint], {
-        encoding: 'utf-8',
-        env: process.env,
-        timeout: 10_000,
-        maxBuffer: 2 * 1024 * 1024,
-      });
-    } catch {
-      entries.push({ ...baseEntry, reason: 'source_unavailable' });
-      continue;
-    }
-    if (!result || result.status !== 0 || typeof result.stdout !== 'string') {
-      entries.push({ ...baseEntry, reason: 'source_unavailable' });
-      continue;
-    }
-    const decoded = decodePinnedFile(result, file.path);
-    if (decoded.status !== 'available') {
-      entries.push({ ...baseEntry, status: decoded.status, reason: decoded.reason });
-      continue;
-    }
-    const context = candidateContextLines(file, decoded.content);
-    entries.push({ ...baseEntry, ...context, sharedAcrossPartitions });
-  }
+    return {
+      baseEntry,
+      file,
+      request: {
+        command: 'gh',
+        args: ['api', endpoint],
+        commandOptions: {
+          encoding: 'utf-8',
+          env: process.env,
+          timeout: 10_000,
+          maxBuffer: 2 * 1024 * 1024,
+        },
+      },
+    };
+  });
+  return { headSha, maxChars, uniqueFiles, preparedFiles, pathLimitedFiles };
+}
 
+function renderPreparedPinnedFile(prepared, result) {
+  if (!result || result.status !== 0 || typeof result.stdout !== 'string') {
+    return { ...prepared.baseEntry, reason: 'source_unavailable' };
+  }
+  const decoded = decodePinnedFile(result, prepared.file.path);
+  if (decoded.status !== 'available') {
+    return { ...prepared.baseEntry, status: decoded.status, reason: decoded.reason };
+  }
+  const context = candidateContextLines(prepared.file, decoded.content);
+  return { ...prepared.baseEntry, ...context, sharedAcrossPartitions: prepared.baseEntry.sharedAcrossPartitions };
+}
+
+function readPreparedPinnedFile(prepared, commandRunner) {
+  if (!prepared.request) return prepared.baseEntry;
+  try {
+    const result = commandRunner(prepared.request.command, prepared.request.args, prepared.request.commandOptions);
+    return renderPreparedPinnedFile(prepared, result);
+  } catch {
+    return { ...prepared.baseEntry, reason: 'source_unavailable' };
+  }
+}
+
+function finishPinnedSourceContext(preparation, entries) {
+  const { headSha, maxChars, uniqueFiles, pathLimitedFiles } = preparation;
   for (const file of pathLimitedFiles) {
     entries.push({
       path: file.path, sharedAcrossPartitions: false,
@@ -338,6 +343,47 @@ function readPinnedSourceContext(options = {}) {
   };
 }
 
+function readPinnedSourceContext(options = {}) {
+  const preparation = preparePinnedSourceContext(options);
+  const commandRunner = options.commandRunner || ((command, args, commandOptions) => spawnSync(command, args, commandOptions));
+  const entries = preparation.preparedFiles.map((prepared) => readPreparedPinnedFile(prepared, commandRunner));
+  return finishPinnedSourceContext(preparation, entries);
+}
+
+function execFileAsync(command, args, commandOptions) {
+  return new Promise((resolve) => {
+    execFile(command, args, commandOptions, (error, stdout) => {
+      resolve({ status: error ? 1 : 0, stdout: typeof stdout === 'string' ? stdout : '' });
+    });
+  });
+}
+
+async function readPinnedSourceContextAsync(options = {}) {
+  const preparation = preparePinnedSourceContext(options);
+  const commandRunner = options.asyncCommandRunner || execFileAsync;
+  const entries = preparation.preparedFiles.map((prepared) => prepared.request ? null : prepared.baseEntry);
+  const requestIndexes = preparation.preparedFiles.flatMap((prepared, index) => prepared.request ? [index] : []);
+  let nextRequest = 0;
+
+  async function readWorker() {
+    while (nextRequest < requestIndexes.length) {
+      const index = requestIndexes[nextRequest];
+      nextRequest += 1;
+      const prepared = preparation.preparedFiles[index];
+      try {
+        const result = await commandRunner(prepared.request.command, prepared.request.args, prepared.request.commandOptions);
+        entries[index] = renderPreparedPinnedFile(prepared, result);
+      } catch {
+        entries[index] = { ...prepared.baseEntry, reason: 'source_unavailable' };
+      }
+    }
+  }
+
+  const workerCount = Math.min(MAX_PINNED_SOURCE_READ_CONCURRENCY, requestIndexes.length);
+  await Promise.all(Array.from({ length: workerCount }, () => readWorker()));
+  return finishPinnedSourceContext(preparation, entries);
+}
+
 module.exports = {
   CONTEXT_LINES_AROUND_HUNK,
   MAX_PINNED_CONTEXT_CHARS,
@@ -348,6 +394,7 @@ module.exports = {
   gitBlobSha,
   isSharedSetupOrConfigPath,
   readPinnedSourceContext,
+  readPinnedSourceContextAsync,
   safeRepositoryPath,
   sourceContextBlock,
 };

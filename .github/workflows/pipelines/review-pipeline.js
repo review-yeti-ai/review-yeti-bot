@@ -50,7 +50,7 @@ const {
 } = require('./openrouter-policy');
 const {
   MAX_PINNED_CONTEXT_CHARS,
-  readPinnedSourceContext,
+  readPinnedSourceContextAsync,
 } = require('../../../src/pipeline/pinnedSourceContext');
 const {
   buildReviewScopePlanDigest,
@@ -8502,7 +8502,7 @@ async function main() {
   let pinnedSourceContext = null;
   if (!syntheticVitestRun && safeDiffCapacityChars >= 5_000) {
     const contextCharBudget = Math.min(MAX_PINNED_CONTEXT_CHARS, Math.floor(safeDiffCapacityChars * 0.1));
-    pinnedSourceContext = readPinnedSourceContext({
+    pinnedSourceContext = await readPinnedSourceContextAsync({
       files: reviewDiffFiles,
       repo: prContext.repo,
       headSha: prContext.headSha,

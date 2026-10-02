@@ -557,4 +557,106 @@ describe('pinned source context', () => {
     expect(result.findings).toEqual([]);
     expect(result.error).toContain('finding line must identify an added line');
   });
+
+  it('reads pinned files asynchronously with four workers and stable ordering after reverse completion and failure', async () => {
+    const paths = ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts'];
+    const started: string[] = [];
+    const pending = new Map<string, { resolve: (result: any) => void; reject: (error: Error) => void }>();
+    const waiters: Array<{ count: number; resolve: () => void }> = [];
+    let active = 0;
+    let peakActive = 0;
+    const waitForStarted = (count: number) => started.length >= count
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => waiters.push({ count, resolve }));
+    const notifyStarted = () => {
+      for (let index = waiters.length - 1; index >= 0; index -= 1) {
+        if (started.length >= waiters[index].count) waiters.splice(index, 1)[0].resolve();
+      }
+    };
+    const runner = (command: string, args: string[], options: Record<string, unknown>) => {
+      expect(command).toBe('gh');
+      expect(args[0]).toBe('api');
+      expect(options).toMatchObject({ encoding: 'utf-8', timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });
+      const endpoint = args[1];
+      const match = endpoint.match(/^repos\/owner\/repo\/contents\/(.+)\?ref=([a-f0-9]{40})$/u);
+      expect(match?.[2]).toBe(headSha);
+      const path = decodeURIComponent(match![1]);
+      started.push(path);
+      active += 1;
+      peakActive = Math.max(peakActive, active);
+      notifyStarted();
+      return new Promise<any>((resolve, reject) => {
+        pending.set(path, {
+          resolve: (result) => { active -= 1; resolve(result); },
+          reject: (error) => { active -= 1; reject(error); },
+        });
+      });
+    };
+    const contextPromise = sourceContext.readPinnedSourceContextAsync({
+      repo: 'owner/repo', headSha, maxChars: 24_000,
+      files: [...paths].reverse().map((path) => ({ path, patch: patchFor(path), status: 'modified' })),
+      asyncCommandRunner: runner,
+    });
+
+    await waitForStarted(4);
+    expect(started).toEqual(paths.slice(0, 4));
+    pending.get(paths[0])!.reject(new Error('transport diagnostic must not escape'));
+    await waitForStarted(5);
+    pending.get(paths[4])!.resolve(githubContents(paths[4], sourceLines(100)));
+    await waitForStarted(6);
+    for (const path of [paths[5], paths[3], paths[2], paths[1]]) {
+      pending.get(path)!.resolve(githubContents(path, sourceLines(100)));
+    }
+
+    const context = await contextPromise;
+    expect(peakActive).toBe(4);
+    expect(started).toEqual(paths);
+    expect(context.entries.map((entry: any) => entry.path)).toEqual(paths);
+    expect(context.entries[0]).toMatchObject({ status: 'unavailable', reason: 'source_unavailable' });
+    expect(context.entries.slice(1).every((entry: any) => entry.status === 'available')).toBe(true);
+    expect(context.fullText).not.toContain('transport diagnostic');
+  });
+
+  it('preflights unsafe, deleted, and symlink paths before asynchronous process execution', async () => {
+    const calls: string[] = [];
+    const symlinkPath = 'src/link.ts';
+    const deletedPath = 'src/deleted.ts';
+    const symlinkPatch = [
+      `diff --git a/${symlinkPath} b/${symlinkPath}`,
+      'old mode 100644',
+      'new mode 120000',
+      'index 0000000..1111111 120000',
+      `--- a/${symlinkPath}`,
+      `+++ b/${symlinkPath}`,
+      '@@ -1,1 +1,1 @@',
+      '-old-target',
+      '+new-target',
+    ].join('\n');
+    const deletedPatch = [
+      `diff --git a/${deletedPath} b/${deletedPath}`,
+      'deleted file mode 100644',
+      'index 1111111..0000000',
+      `--- a/${deletedPath}`,
+      '+++ /dev/null',
+      '@@ -1,1 +0,0 @@',
+      '-const removed = true;',
+    ].join('\n');
+    const context = await sourceContext.readPinnedSourceContextAsync({
+      repo: 'owner/repo', headSha, maxChars: 2_000,
+      files: [
+        { path: '../unsafe.ts', patch: patchFor('../unsafe.ts') },
+        { path: deletedPath, patch: deletedPatch, status: 'deleted' },
+        { path: symlinkPath, patch: symlinkPatch, status: 'modified' },
+      ],
+      asyncCommandRunner: async (_command: string, args: string[]) => {
+        calls.push(args.join(' '));
+        throw new Error('preflight should withhold this request');
+      },
+    });
+
+    expect(calls).toEqual([]);
+    expect(context.entries.map((entry: any) => entry.reason)).toEqual([
+      'unsafe_path', 'deleted_at_head', 'symlink_mode',
+    ]);
+  });
 });
