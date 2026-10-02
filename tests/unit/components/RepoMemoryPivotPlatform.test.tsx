@@ -221,8 +221,8 @@ describe('MemoryPage public neutral state and export controls', () => {
     fireEvent.click(screen.getByText('✕'));
     expect(search).toHaveValue('');
     for (const label of ['Sec', 'Arch', 'Perf', 'Nits', 'ADRs', 'All']) {
-      fireEvent.click(screen.getByRole('button', { name: label, exact: true }));
-      expect(screen.getByRole('button', { name: label, exact: true }).className).toContain('font-semibold');
+      fireEvent.click(screen.getByRole('button', { name: label }));
+      expect(screen.getByRole('button', { name: label }).className).toContain('font-semibold');
     }
     expect(screen.getByText('Quoted "boundary" rule')).toBeInTheDocument();
   });
@@ -269,17 +269,17 @@ describe('MemoryPage public neutral state and export controls', () => {
     }
     expect(click).toHaveBeenCalledTimes(3);
     vi.useFakeTimers();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy', exact: true }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }));
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value);
     expect(within(dialog).getByText('Copied to Clipboard')).toBeInTheDocument();
     await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
-    expect(within(dialog).getByRole('button', { name: 'Copy', exact: true })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Copy' })).toBeInTheDocument();
   });
 
   it('copies each rule class and clears the copied state through the real timer callback', async () => {
     await renderMemoryPage();
     selectMemoryTab(/Knowledge Ledger/);
-    const copies = [...screen.getAllByRole('button', { name: 'Copy Rule', exact: true }), ...screen.getAllByRole('button', { name: 'Copy', exact: true })];
+    const copies = [...screen.getAllByRole('button', { name: 'Copy Rule' }), ...screen.getAllByRole('button', { name: 'Copy' })];
     vi.useFakeTimers();
     for (const button of copies) {
       fireEvent.click(button);
@@ -287,7 +287,7 @@ describe('MemoryPage public neutral state and export controls', () => {
       expect(JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)![0]).repo).toMatch(/^example\/sample-/);
       await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     }
-    expect(screen.queryByRole('button', { name: 'Copied', exact: true })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
   it('refreshes and purges successfully, dismissing the actual completion notice', async () => {
