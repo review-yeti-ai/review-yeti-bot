@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.117.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.0...v1.117.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **review:** admit bounded complete lockfile context from trusted policy ([#1332](https://github.com/review-yeti-ai/review-yeti-bot/issues/1332)) ([c315db1](https://github.com/review-yeti-ai/review-yeti-bot/commit/c315db17116bd0838d2d4d9e567d50464527d465))
+
 ## [1.117.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.4...v1.117.0) (2026-10-02)
 
 
