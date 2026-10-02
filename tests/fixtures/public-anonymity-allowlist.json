@@ -1,646 +1,2578 @@
 {
- ".github/workflows/ci-cd.yaml": 5,
- ".github/workflows/pipelines/execution-profile.js": 1,
- ".github/workflows/pipelines/incremental-review-scope.js": 3,
- ".github/workflows/pipelines/review-pipeline.js": 7,
- ".github/workflows/review-bot.yaml": 3,
- ".github/workflows/v1-release-integrity.yml": 2,
- "action.yml": 1,
- "cf-orchestrator/examples/mcp-tooling-tunnel-config.yaml": 2,
- "cf-orchestrator/package.json": 1,
- "cf-orchestrator/src/mcp/mcpRouter.ts": 3,
- "cf-orchestrator/src/mcp/tools/cancelReview.ts": 4,
- "cf-orchestrator/src/mcp/tools/getAnalyticsDashboard.ts": 2,
- "cf-orchestrator/src/mcp/tools/getBillableRuntimeReport.ts": 6,
- "cf-orchestrator/src/mcp/tools/getCloudflareStatus.ts": 5,
- "cf-orchestrator/src/mcp/tools/getRuntimeMetrics.ts": 1,
- "cf-orchestrator/src/mcp/tools/purgeCache.ts": 4,
- "cf-orchestrator/src/mcp/tools/queryActiveJobs.ts": 7,
- "cf-orchestrator/src/mcp/tools/queryFindings.ts": 6,
- "cf-orchestrator/src/mcp/tools/triggerReview.ts": 5,
- "cf-orchestrator/src/reviewJobWorkflow.ts": 1,
- "cf-orchestrator/test/adversarial_control_plane.test.ts": 2,
- "cf-orchestrator/test/adversarial_hardening.test.ts": 1,
- "cf-orchestrator/test/adversarial_runners_parity.test.ts": 5,
- "cf-orchestrator/test/digitalOceanAgentRunner.test.ts": 1,
- "cf-orchestrator/test/e2e/e2eHarness.ts": 3,
- "cf-orchestrator/test/e2e/tier1_features.e2e.test.ts": 7,
- "cf-orchestrator/test/e2e/tier2_boundaries.e2e.test.ts": 4,
- "cf-orchestrator/test/e2e/tier4_scenarios.e2e.test.ts": 1,
- "cf-orchestrator/test/m1ChallengeStress.test.ts": 13,
- "cf-orchestrator/test/m1Challenger2Iter2Harness.test.ts": 3,
- "cf-orchestrator/test/m1Challenger2Iter3Harness.test.ts": 18,
- "cf-orchestrator/test/m1Challenger2Iter4Harness.test.ts": 31,
- "cf-orchestrator/test/m1ChallengerIter3DeepStress.test.ts": 30,
- "cf-orchestrator/test/m1ChallengerIter4Verification.test.ts": 51,
- "cf-orchestrator/test/m1ChallengerStressTest.test.ts": 19,
- "cf-orchestrator/test/m1_challenge.test.ts": 23,
- "cf-orchestrator/test/m3Challenger1Iter2Verification.test.ts": 2,
- "cf-orchestrator/test/m3ChallengerAdversarial.test.ts": 1,
- "cf-orchestrator/test/m3_challenger_2_adversarial.test.ts": 3,
- "cf-orchestrator/test/mcp/mcpRouter.test.ts": 3,
- "cf-orchestrator/test/mcp/mcpTools.test.ts": 16,
- "cf-orchestrator/test/mcp/mcpWorkerIntegration.test.ts": 9,
- "cf-orchestrator/test/r2WorkspaceCache.test.ts": 6,
- "cf-orchestrator/test/toolTunnelYaml.test.ts": 2,
- "cf-orchestrator/test/tunnelConfig.test.ts": 4,
- "cf-orchestrator/test/worker.test.ts": 17,
- "cf-orchestrator/wrangler.toml": 1,
- "k8s-operator/Makefile": 1,
- "k8s-operator/api/v1alpha1/crd_schema_validation_test.go": 14,
- "k8s-operator/api/v1alpha1/groupversion_info.go": 3,
- "k8s-operator/api/v1alpha1/prreviewjob_stress_test.go": 13,
- "k8s-operator/api/v1alpha1/prreviewjob_types.go": 1,
- "k8s-operator/api/v1alpha1/prreviewjob_types_test.go": 18,
- "k8s-operator/api/v1alpha2/crd_cel_test.go": 4,
- "k8s-operator/api/v1alpha2/crd_contract_test.go": 2,
- "k8s-operator/api/v1alpha2/groupversion_info.go": 1,
- "k8s-operator/api/v1alpha2/prreviewjob_types.go": 1,
- "k8s-operator/api/v1alpha2/prreviewjob_types_test.go": 4,
- "k8s-operator/config/crd/bases/review.<org>.com_prreviewjobs.yaml": 3,
- "k8s-operator/controllers/app_gate_receipt.go": 2,
- "k8s-operator/controllers/app_gate_receipt_test.go": 2,
- "k8s-operator/controllers/capacity_ledger.go": 3,
- "k8s-operator/controllers/capacity_ledger_test.go": 2,
- "k8s-operator/controllers/challenger_fencing_lease_test.go": 4,
- "k8s-operator/controllers/challenger_m1_2_storage_isolation_test.go": 7,
- "k8s-operator/controllers/challenger_m2_1_deep_stress_test.go": 5,
- "k8s-operator/controllers/challenger_m2_1_quota_suspension_test.go": 5,
- "k8s-operator/controllers/challenger_m3_2_adversarial_test.go": 3,
- "k8s-operator/controllers/challenger_m4_1_concurrency_resumption_test.go": 4,
- "k8s-operator/controllers/challenger_m4_2_whitebox_test.go": 5,
- "k8s-operator/controllers/challenger_m5_1_adversarial_test.go": 5,
- "k8s-operator/controllers/concurrency_empirical_test.go": 13,
- "k8s-operator/controllers/conflictRequeue.go": 2,
- "k8s-operator/controllers/duplicate_reconcile_empirical_test.go": 8,
- "k8s-operator/controllers/m2_declarative_admission_concurrency_test.go": 4,
- "k8s-operator/controllers/m4_multithread_concurrency_test.go": 6,
- "k8s-operator/controllers/prreviewjob_controller.go": 9,
- "k8s-operator/controllers/prreviewjob_controller_test.go": 20,
- "k8s-operator/controllers/prreviewjob_v1alpha1_conflict_test.go": 4,
- "k8s-operator/controllers/prreviewjob_v1alpha2_conflict_test.go": 3,
- "k8s-operator/controllers/prreviewjob_v1alpha2_continuation_test.go": 4,
- "k8s-operator/controllers/prreviewjob_v1alpha2_controller.go": 5,
- "k8s-operator/controllers/prreviewjob_v1alpha2_controller_test.go": 11,
- "k8s-operator/controllers/prreviewjob_v1alpha2_emptydir_adversarial_test.go": 5,
- "k8s-operator/controllers/prreviewjob_v1alpha2_envcontract_internal_test.go": 2,
- "k8s-operator/controllers/prreviewjob_v1alpha2_finalizer_patch_test.go": 3,
- "k8s-operator/controllers/prreviewjob_v1alpha2_missing_job_test.go": 4,
- "k8s-operator/controllers/prreviewjob_v1alpha2_prep_decoupling_test.go": 5,
- "k8s-operator/controllers/prreviewjob_v1alpha2_run_secret_finalizer_test.go": 3,
- "k8s-operator/controllers/prreviewjob_v1alpha2_terminal_deletion_test.go": 4,
- "k8s-operator/controllers/prreviewjob_v1alpha2_volume_matcher_test.go": 4,
- "k8s-operator/controllers/prreviewjob_v1alpha2_worker_job_notfound_test.go": 3,
- "k8s-operator/controllers/prreviewjob_v1alpha2_worker_success_ttl_test.go": 3,
- "k8s-operator/controllers/prreviewjob_v1alpha2_worker_superseded_test.go": 3,
- "k8s-operator/controllers/prreviewjob_v1alpha2_worker_termination_test.go": 4,
- "k8s-operator/controllers/testdata/app_gate_receipt_success.v1.json": 2,
- "k8s-operator/controllers/ttl_empirical_test.go": 12,
- "k8s-operator/controllers/worker_metrics.go": 3,
- "k8s-operator/controllers/worker_metrics_test.go": 3,
- "k8s-operator/controllers/worker_superseded.go": 2,
- "k8s-operator/controllers/worker_termination.go": 5,
- "k8s-operator/controllers/worker_termination_internal_test.go": 1,
- "k8s-operator/controllers/worker_termination_selection_internal_test.go": 2,
- "k8s-operator/controllers/worker_termination_test.go": 4,
- "k8s-operator/go.mod": 1,
- "k8s-operator/main.go": 6,
- "k8s-operator/main_test.go": 21,
- "k8s-operator/pkg/cleanup/ttl.go": 2,
- "k8s-operator/pkg/cleanup/ttl_stress_test.go": 5,
- "k8s-operator/pkg/cleanup/ttl_test.go": 5,
- "k8s-operator/pkg/job/challenger_m1_1_resource_test.go": 1,
- "k8s-operator/pkg/job/continuation_job_test.go": 47,
- "k8s-operator/pkg/job/job.go": 3,
- "k8s-operator/pkg/job/job_adversarial_test.go": 1,
- "k8s-operator/pkg/job/job_emptydir_adversarial_test.go": 2,
- "k8s-operator/pkg/job/job_test.go": 42,
- "k8s-operator/pkg/job/prep_worker_test.go": 2,
- "k8s-operator/pkg/job/prepared_review_contract_test.go": 1,
- "k8s-operator/pkg/job/run_secret_names_fixture_test.go": 2,
- "k8s-operator/pkg/job/skip_empty_moderation_test.go": 7,
- "k8s-operator/pkg/job/worker_image_acceptance_test.go": 1,
- "k8s-operator/pkg/job/worker_placement_test.go": 3,
- "k8s-operator/pkg/metrics/metrics.go": 1,
- "k8s-operator/pkg/metrics/metrics_stress_test.go": 2,
- "k8s-operator/pkg/metrics/metrics_test.go": 2,
- "k8s-operator/pkg/queue/manager.go": 2,
- "k8s-operator/pkg/queue/manager_test.go": 2,
- "k8s-operator/pkg/queue/stress_test.go": 2,
- "k8s-operator/pkg/workspace/collector.go": 1,
- "k8s-operator/pkg/workspace/collector_test.go": 1,
- "k8s-operator/pkg/workspace/identity.go": 1,
- "k8s-operator/pkg/workspace/identity_test.go": 1,
- "k8s-operator/pkg/workspace/lease.go": 1,
- "k8s-operator/pkg/workspace/lease_test.go": 1,
- "k8s-operator/pkg/workspace/pvc.go": 1,
- "k8s-operator/pkg/workspace/pvc_test.go": 1,
- "k8s-operator/skip_empty_moderation_main_test.go": 4,
- "k8s/action-dispatch.yaml.tpl": 4,
- "k8s/bot-deployment.yaml.tpl": 1,
- "k8s/ingress-network.yaml": 3,
- "k8s/operator-deployment.yaml.tpl": 1,
- "k8s/review-job-dispatcher.yaml.tpl": 1,
- "legacy_public/404.html": 2,
- "legacy_public/js/app.js": 3,
- "public/404.html": 2,
- "public/404.txt": 2,
- "public/analytics.html": 2,
- "public/analytics.txt": 2,
- "public/dashboard/github-app": 2,
- "public/dashboard/github-app.html": 2,
- "public/dashboard/github-app.txt": 2,
- "public/dashboard/index": 2,
- "public/dashboard/index.html": 2,
- "public/dashboard/index.txt": 2,
- "public/dashboard/live": 2,
- "public/dashboard/live.html": 2,
- "public/dashboard/live.txt": 2,
- "public/dashboard/memory": 2,
- "public/dashboard/memory.html": 2,
- "public/dashboard/memory.txt": 2,
- "public/dashboard/onboarding": 4,
- "public/dashboard/onboarding.html": 4,
- "public/dashboard/onboarding.txt": 4,
- "public/dashboard/organization": 2,
- "public/dashboard/organization.html": 2,
- "public/dashboard/organization.txt": 2,
- "public/dashboard/settings": 2,
- "public/dashboard/settings.html": 2,
- "public/dashboard/settings.txt": 2,
- "public/github-app.html": 2,
- "public/github-app.txt": 2,
- "public/index.html": 2,
- "public/index.txt": 2,
- "public/integrations.html": 2,
- "public/integrations.txt": 2,
- "public/js/app.js": 3,
- "public/live.html": 2,
- "public/live.txt": 2,
- "public/memory.html": 2,
- "public/memory.txt": 2,
- "public/onboarding.html": 4,
- "public/onboarding.txt": 4,
- "public/repos.html": 2,
- "public/repos.txt": 2,
- "public/settings.html": 2,
- "public/settings.txt": 2,
- "scripts/advance-review-runtime.sh": 2,
- "scripts/advance-review-worker.sh": 2,
- "scripts/deploy-action-dispatch.sh": 1,
- "scripts/deploy-review-job-dispatcher.sh": 4,
- "scripts/dispatch-doks-action.mjs": 1,
- "scripts/evaluate-release-benchmark.mjs": 1,
- "scripts/install-doks-review-runtime.sh": 5,
- "scripts/lib/review-runtime-image-provenance.sh": 1,
- "scripts/publish-real-diff-review.ts": 4,
- "scripts/review-runtime-image-provenance.test.sh": 4,
- "scripts/validate-ct-review-bot-caller.test.mjs": 4,
- "scripts/verify-action-dispatch.sh": 1,
- "scripts/verify-doks.sh": 1,
- "src/analytics/cliParser.ts": 1,
- "src/api/dashboardApi.ts": 4,
- "src/api/githubAppApi.ts": 6,
- "src/api/onboarding.ts": 4,
- "src/app/analytics/page.tsx": 5,
- "src/app/memory/page.tsx": 6,
- "src/app/repos/page.tsx": 3,
- "src/cli/runLiveReview.ts": 3,
- "src/components/dashboard/memory-graph-modal.tsx": 4,
- "src/components/integrations/integrations-grid.tsx": 6,
- "src/components/layout/topbar.tsx": 2,
- "src/components/live/active-jobs-sidebar.tsx": 2,
- "src/components/onboarding/five-step-wizard.tsx": 5,
- "src/components/onboarding/how-to-guide-card.tsx": 7,
- "src/components/onboarding/manifest-drawer.tsx": 5,
- "src/components/onboarding/steps/step-1-github-app.tsx": 1,
- "src/components/onboarding/steps/step-2-repos-picker.tsx": 1,
- "src/components/onboarding/steps/step-3-ai-providers.tsx": 2,
- "src/dashboard/authService.ts": 1,
- "src/dispatchServer.ts": 1,
- "src/github/commentPublisher.ts": 2,
- "src/github/installationClient.ts": 2,
- "src/infrastructure/k8sJobRunner.ts": 5,
- "src/k8s/reviewJobProjection.ts": 1,
- "src/mcp/mcpFleetManager.ts": 1,
- "src/mcp/server/mcpRbac.ts": 3,
- "src/mcp/server/tools/generateFixDiff.ts": 3,
- "src/mcp/server/tools/getAnalyticsDashboard.ts": 2,
- "src/mcp/server/tools/getBillableRuntimeReport.ts": 6,
- "src/mcp/server/tools/getCloudflareStatus.ts": 5,
- "src/mcp/server/tools/getReviewFindings.ts": 2,
- "src/mcp/server/tools/getReviewStatus.ts": 2,
- "src/mcp/server/tools/purgeCache.ts": 5,
- "src/mcp/server/tools/triggerReview.ts": 1,
- "src/panel/__tests__/panelEngine.test.ts": 1,
- "src/panel/composedEngine.ts": 3,
- "src/panel/panelEngine.ts": 5,
- "src/persistence/dashboardStore.ts": 67,
- "src/review/actionDispatch.ts": 1,
- "src/review/continuationPhase.ts": 2,
- "src/review/diffService.ts": 6,
- "src/review/emptyModeration.ts": 1,
- "src/review/prepPhase.ts": 1,
- "src/review/preparedPublishingPolicy.ts": 1,
- "src/review/reviewCheckIdentity.ts": 2,
- "tests/adversarial/m5ChallengerAuthLiveStress.test.ts": 10,
- "tests/adversarial/m5ChallengerHitlAnalyticsStress.test.ts": 15,
- "tests/benchmark/memoryPerformance.test.ts": 3,
- "tests/e2e/agentHarnessE2E.test.ts": 100,
- "tests/e2e/generativeReviewEngine.test.ts": 1,
- "tests/e2e/mcp/harness/mcpE2eHarness.ts": 7,
- "tests/e2e/mcp/tier1FeatureCoverage.test.ts": 69,
- "tests/e2e/mcp/tier2BoundaryCorner.test.ts": 48,
- "tests/e2e/mcp/tier3Interactions.test.ts": 28,
- "tests/e2e/mcp/tier4RealWorldScenarios.test.ts": 38,
- "tests/e2e/mcp/tier5InboundAdversarial.test.ts": 68,
- "tests/e2e/mcp/tier5OutboundAdversarial.test.ts": 16,
- "tests/e2e/onboardingE2E.test.ts": 6,
- "tests/e2e/onboardingWizardE2E.test.ts": 20,
- "tests/e2e/prComplianceE2E.test.ts": 6,
- "tests/e2e/releaseBenchmark.test.ts": 2,
- "tests/e2e/reviewYetiDashboardE2E.test.ts": 67,
- "tests/e2e/reviewYetiE2E.test.ts": 11,
- "tests/e2e/run-e2e.mjs": 7,
- "tests/e2e/runtimeHardening.e2e.test.ts": 14,
- "tests/e2e/telecomWorkspace.test.ts": 4,
- "tests/empirical/m2LiveStreamingChallenger.test.tsx": 2,
- "tests/fixtures/cassettes/eval-reviews/elixir-clean-genserver-worker-pool.json": 6,
- "tests/fixtures/cassettes/eval-reviews/elixir-ecto-n-plus-one-preload.json": 9,
- "tests/fixtures/cassettes/eval-reviews/elixir-ecto-unscoped-tenant-query.json": 9,
- "tests/fixtures/cassettes/eval-reviews/elixir-ets-concurrency-table-race.json": 9,
- "tests/fixtures/cassettes/eval-reviews/elixir-ets-unbounded-table-leak.json": 9,
- "tests/fixtures/cassettes/eval-reviews/elixir-evidence-mix-test-verification.json": 6,
- "tests/fixtures/cassettes/eval-reviews/elixir-genserver-blocking-call.json": 9,
- "tests/fixtures/cassettes/eval-reviews/elixir-otp-supervisor-crash-loop.json": 9,
- "tests/fixtures/cassettes/eval-reviews/elixir-task-async-stream-unbounded.json": 7,
- "tests/fixtures/cassettes/eval-reviews/elixir-unhandled-match-failure.json": 11,
- "tests/fixtures/cassettes/github-malformed.json": 1,
- "tests/fixtures/cassettes/github-review.json": 18,
- "tests/fixtures/cassettes/model-panel.json": 4,
- "tests/fixtures/cassettes/openrouter/complete-multi-persona.json": 3,
- "tests/fixtures/cassettes/openrouter/malformed-provider-json.json": 1,
- "tests/fixtures/cassettes/openrouter/out-of-diff-sanitized.json": 1,
- "tests/fixtures/cassettes/openrouter/repeated-deterministic.json": 2,
- "tests/fixtures/cassettes/openrouter/zero-findings.json": 1,
- "tests/fixtures/review-yeti/rank2a-execution-plan.fixture.json": 3,
- "tests/integration/actionDispatchApi.test.ts": 68,
- "tests/integration/adversarialSecurityBoundaries.test.ts": 49,
- "tests/integration/authoritativeWorkerCompletionApi.test.ts": 1,
- "tests/integration/challenger1EmpiricalM1Stress.test.ts": 15,
- "tests/integration/challenger1EmpiricalM3Stress.test.ts": 9,
- "tests/integration/challenger1EmpiricalM4PercentileStress.test.ts": 18,
- "tests/integration/challenger1EmpiricalR1DualStoreStress.test.ts": 6,
- "tests/integration/challenger1M2AdversarialTools.test.ts": 25,
- "tests/integration/challenger1M2It2DeepVerification.test.ts": 23,
- "tests/integration/challenger1M3It2AttributionFuzz.test.ts": 2,
- "tests/integration/challenger2EmpiricalM3.test.ts": 10,
- "tests/integration/challenger2LifecycleStreamingAdversarial.test.ts": 66,
- "tests/integration/challenger2LifecycleStressVerification.test.ts": 22,
- "tests/integration/completedFindingRecheckAdmission.postgres.test.ts": 2,
- "tests/integration/dispatchServerMcp.test.ts": 20,
- "tests/integration/disputedFindingRecheck.postgres.test.ts": 2,
- "tests/integration/empiricalLiveStreamChallenger.test.ts": 2,
- "tests/integration/empiricalR3R4Challenger2.test.tsx": 4,
- "tests/integration/fourPersonaQuorumIntegration.test.ts": 3,
- "tests/integration/getReviewStatusTiming.postgres.test.ts": 2,
- "tests/integration/githubPublicationReplay.test.ts": 2,
- "tests/integration/incrementalPriorReview.postgres.test.ts": 4,
- "tests/integration/liveStreamEmpiricalChallenger.test.ts": 15,
- "tests/integration/liveStreamStressChallengerM3.test.ts": 12,
- "tests/integration/liveTerminalIntegration.test.ts": 11,
- "tests/integration/m14DashboardAuthIntegration.test.ts": 2,
- "tests/integration/m2It2AdversarialVerification.test.tsx": 8,
- "tests/integration/m2LiveStreamingChallenger.test.tsx": 2,
- "tests/integration/m3Challenger2HashAndStateStress.test.ts": 5,
- "tests/integration/m41m42EmpiricalStress.test.ts": 8,
- "tests/integration/m43m44EmpiricalChallenger.test.ts": 9,
- "tests/integration/m5AdversarialChallenger2.test.ts": 4,
- "tests/integration/m5EmpiricalChallenger1.test.tsx": 2,
- "tests/integration/m9m10BotIntegration.test.ts": 2,
- "tests/integration/milestone37_39EmpiricalChallenger.test.ts": 7,
- "tests/integration/onboardingReflectionIntegration.test.ts": 2,
- "tests/integration/onboardingWizardApi.test.ts": 6,
- "tests/integration/onboardingWizardPairwise.test.ts": 26,
- "tests/integration/personaAppPipelineV3.test.ts": 4,
- "tests/integration/personaPersistenceIntegration.test.ts": 2,
- "tests/integration/prCloseIntegration.test.ts": 4,
- "tests/integration/preparedReviewRepository.postgres.test.ts": 1,
- "tests/integration/r2DateBoundaryEmpiricalChallenger.test.ts": 32,
- "tests/integration/reviewCiCheckRepository.postgres.test.ts": 2,
- "tests/integration/reviewCiRepository.postgres.test.ts": 2,
- "tests/integration/reviewCompletion.adversarial.test.ts": 24,
- "tests/integration/reviewCompletionFencedDispatch.postgres.test.ts": 1,
- "tests/integration/reviewDispatchRepository.postgres.test.ts": 49,
- "tests/integration/reviewGateRepository.postgres.test.ts": 14,
- "tests/integration/reviewReplay.test.ts": 12,
- "tests/integration/reviewRunAdmissionCompatibility.postgres.test.ts": 1,
- "tests/integration/reviewRunLifecycle.postgres.test.ts": 1,
- "tests/integration/reviewRunRecovery.test.ts": 1,
- "tests/integration/schemaMigrationGate.postgres.test.ts": 2,
- "tests/integration/sessionAnalyticsCliM2Empirical.test.ts": 15,
- "tests/integration/settingsApiUi.test.ts": 8,
- "tests/integration/stressHarness.test.ts": 10,
- "tests/integration/telemetryAnalyticsIntegration.test.ts": 2,
- "tests/integration/tenPersonaQuorum.test.ts": 3,
- "tests/integration/verdictCacheSource.postgres.test.ts": 4,
- "tests/support/composedTaskLedgerFixture.ts": 3,
- "tests/support/openRouterReplayScenario.ts": 2,
- "tests/support/operatorGoFailureReceipt.ts": 1,
- "tests/support/release-fixture-copy.ts": 1,
- "tests/unit/abandonedCheckPublication.test.ts": 23,
- "tests/unit/abandonedRunReaper.test.ts": 3,
- "tests/unit/actionDispatchApi.test.ts": 2,
- "tests/unit/actionDispatchServer.test.ts": 3,
- "tests/unit/actionDoksDispatch.test.ts": 16,
- "tests/unit/actionPolicyContract.test.ts": 40,
- "tests/unit/actionRequestCharacterization.test.ts": 6,
- "tests/unit/adversarialContinuationGateResilience.test.ts": 14,
- "tests/unit/adversarialCostTelemetryModelNormalization.test.ts": 6,
- "tests/unit/adversarialM2Stress.test.ts": 6,
- "tests/unit/adversarialM3Challenger.test.ts": 1,
- "tests/unit/adversarial_agentHarnessContracts.test.ts": 2,
- "tests/unit/adversarial_challenger_m1.test.ts": 11,
- "tests/unit/adversarial_challenger_m2.test.ts": 40,
- "tests/unit/adversarial_challenger_m4.test.ts": 56,
- "tests/unit/adversarial_fix_diff_stress.test.ts": 16,
- "tests/unit/adversarial_m5_tier5_streaming_continuation.test.ts": 9,
- "tests/unit/agentHarnessContracts.test.ts": 2,
- "tests/unit/analyticsEngine.test.ts": 6,
- "tests/unit/appAuth.test.ts": 7,
- "tests/unit/appOnlyPublisherV3.test.ts": 2,
- "tests/unit/authoritativeCompletionContext.test.ts": 7,
- "tests/unit/authoritativePublishingResolver.test.ts": 1,
- "tests/unit/authoritativePublishingWorker.test.ts": 3,
- "tests/unit/authoritativeReviewReader.test.ts": 13,
- "tests/unit/authoritativeReviewService.test.ts": 1,
- "tests/unit/authoritativeServiceConfig.test.ts": 4,
- "tests/unit/boundedAppToken.test.ts": 14,
- "tests/unit/boundedInstallationLookup.test.ts": 9,
- "tests/unit/cancellationArchitecture.test.ts": 4,
- "tests/unit/challenger1_final_adversarial_stress.test.ts": 8,
- "tests/unit/challenger2_m1_whitebox_hardening.test.ts": 22,
- "tests/unit/challengerM1_1Empirical.test.ts": 7,
- "tests/unit/challengerM1_2Empirical.test.ts": 4,
- "tests/unit/challengerM1_2_k8sJobRunner_stress.test.ts": 20,
- "tests/unit/challengerM1_R2_2_parameter_falsy.test.ts": 2,
- "tests/unit/challengerM2_1Empirical.test.ts": 2,
- "tests/unit/challengerM2_2Empirical.test.ts": 3,
- "tests/unit/challengerM3_2Empirical.test.ts": 7,
- "tests/unit/challengerM4_2Empirical.test.ts": 8,
- "tests/unit/challenger_m1_1_resource_envelope.test.ts": 4,
- "tests/unit/challenger_m1_2_ephemeral_storage.test.ts": 9,
- "tests/unit/challenger_m1_r2_1_boundary_stress.test.ts": 2,
- "tests/unit/challenger_m2_1_receipt_binding.test.ts": 2,
- "tests/unit/challenger_m2_2_prep_persistence.test.ts": 10,
- "tests/unit/challenger_m2_iter2_adversarial.test.ts": 13,
- "tests/unit/challenger_m2_r2_1_pod_log.test.ts": 2,
- "tests/unit/challenger_m2_r2_2_receipt_binding.test.ts": 2,
- "tests/unit/challenger_m3_stress.test.ts": 1,
- "tests/unit/challenger_m4_1_tier5_adversarial.test.ts": 2,
- "tests/unit/chaosFaultTolerance.test.ts": 4,
- "tests/unit/chartDopplerSecret.test.ts": 1,
- "tests/unit/ciAppToken.test.ts": 13,
- "tests/unit/ciDraftQualityAdmission.test.ts": 2,
- "tests/unit/classifierEngine.test.ts": 36,
- "tests/unit/cliParser.test.ts": 2,
- "tests/unit/commandDispatcher.test.ts": 9,
- "tests/unit/commandDispatcherExpansion.test.ts": 13,
- "tests/unit/commentLinks.test.ts": 7,
- "tests/unit/commentPublisherDeep.test.ts": 7,
- "tests/unit/commentPublisherExpansion.test.ts": 5,
- "tests/unit/components/apiClient.test.ts": 8,
- "tests/unit/components/fiveStepWizardSuite.test.tsx": 9,
- "tests/unit/components/onboardingWizardSteps.test.tsx": 16,
- "tests/unit/configPassthrough.test.ts": 14,
- "tests/unit/configResolver.test.ts": 3,
- "tests/unit/continuationPhase.test.ts": 13,
- "tests/unit/continuationPhaseAdversarialChallenger.test.ts": 18,
- "tests/unit/conversationalThreadingChallenger.test.ts": 1,
- "tests/unit/diffDelta.test.ts": 5,
- "tests/unit/diffService.test.ts": 5,
- "tests/unit/dispatchIndexStartup.test.ts": 18,
- "tests/unit/dispatchServer.test.ts": 1,
- "tests/unit/dispatchServerMetrics.test.ts": 2,
- "tests/unit/disputedFindingRecheckFlow.test.ts": 2,
- "tests/unit/doksPublishModeContract.test.ts": 4,
- "tests/unit/doksQualificationInstall.test.ts": 4,
- "tests/unit/domainIndex.test.ts": 1,
- "tests/unit/emptyModeration.test.ts": 5,
- "tests/unit/emptyModerationCanonicalGuard.test.ts": 1,
- "tests/unit/emptyModerationPanel.test.ts": 1,
- "tests/unit/emptyModerationPublishing.test.ts": 9,
- "tests/unit/emptyModerationTrustedCompletion.test.ts": 2,
- "tests/unit/eventHandlerChat.test.ts": 3,
- "tests/unit/eventHandlerExpansion.test.ts": 1,
- "tests/unit/executionProfile.test.ts": 1,
- "tests/unit/fetchPrDiffScript.test.ts": 7,
- "tests/unit/followupPersonas.test.ts": 6,
- "tests/unit/gatewayCircuitBreaker.test.ts": 7,
- "tests/unit/gitDiffSource.test.ts": 1,
- "tests/unit/githubActionsOidc.test.ts": 4,
- "tests/unit/githubAppApiM41.test.ts": 4,
- "tests/unit/githubBasePolicyV3.test.ts": 2,
- "tests/unit/githubDiscoveryApi.test.ts": 36,
- "tests/unit/githubInstallationClientPullRequestIdentity.test.ts": 4,
- "tests/unit/githubReadTokenScript.test.ts": 2,
- "tests/unit/githubTransientRetry.test.ts": 5,
- "tests/unit/githubWebhookAdmission.test.ts": 37,
- "tests/unit/gracefulComposedRecovery.test.ts": 1,
- "tests/unit/graphLearningEngine.test.ts": 6,
- "tests/unit/incompleteP2RecoveryAdmission.test.ts": 4,
- "tests/unit/incompleteP2RecoveryBoundary.test.ts": 6,
- "tests/unit/incrementalReviewScope.test.ts": 81,
- "tests/unit/inlineSuggestionChallenger.test.ts": 8,
- "tests/unit/installationClientExpansion.test.ts": 15,
- "tests/unit/jevTriageShadow.test.ts": 5,
- "tests/unit/k8sJobDispatcher.test.ts": 12,
- "tests/unit/k8sJobRunner.contract.test.ts": 48,
- "tests/unit/k8sJobRunner.execution.test.ts": 2,
- "tests/unit/k8sJobRunnerAndAppConfig.test.ts": 6,
- "tests/unit/kubernetesModeDocsAccuracy.test.ts": 1,
- "tests/unit/kubernetesReviewJobProjector.test.ts": 3,
- "tests/unit/kubernetesRunSecretProvisioner.test.ts": 7,
- "tests/unit/laneOutcomeAttribution.test.ts": 2,
- "tests/unit/legacyIncompleteReviewRecovery.test.ts": 2,
- "tests/unit/linearMcpAdapter.test.ts": 1,
- "tests/unit/liveComponents.test.tsx": 4,
- "tests/unit/liveStream.test.ts": 8,
- "tests/unit/llmCommentLearner.test.ts": 4,
- "tests/unit/m10AgentApiChallenger.test.ts": 16,
- "tests/unit/m14DashboardApi.test.ts": 8,
- "tests/unit/m18EventDispatcher.test.ts": 10,
- "tests/unit/m18Personas.test.ts": 4,
- "tests/unit/m1ChallengerDiscoveryAndRulesStress.test.ts": 74,
- "tests/unit/m1ChallengerEmpiricalVerification.test.ts": 37,
- "tests/unit/m1EmpiricalChallenger.test.ts": 8,
- "tests/unit/m1Iteration2ChallengerStress.test.ts": 16,
- "tests/unit/m2FlowchartEmpiricalChallenge.test.ts": 6,
- "tests/unit/m2m3EmptyStateStress.test.tsx": 14,
- "tests/unit/m3Challenger2StateGateSyncAudit.test.ts": 3,
- "tests/unit/m3EmpiricalStressChallenger.test.tsx": 19,
- "tests/unit/m4ChallengerMultiWindowCostToken.test.ts": 8,
- "tests/unit/m9PRMemoryChallenger.test.ts": 22,
- "tests/unit/mcpAdvancedTools.test.ts": 16,
- "tests/unit/mcpAdvancedToolsEmpiricalChallenger.test.ts": 1,
- "tests/unit/mcpAttestReplyEmpiricalChallenger.test.ts": 3,
- "tests/unit/mcpFindingIdentity.test.ts": 30,
- "tests/unit/mcpFleetManager.test.ts": 4,
- "tests/unit/mcpIncompleteP2Recovery.test.ts": 2,
- "tests/unit/mcpResources.test.ts": 62,
- "tests/unit/mcpResourcesDataModelsEmpiricalChallenger.test.ts": 50,
- "tests/unit/mcpResourcesEmpiricalChallenger.test.ts": 92,
- "tests/unit/mcpToolsCatalog.test.ts": 100,
- "tests/unit/mcpTriggerReviewAdmission.test.ts": 48,
- "tests/unit/mcpTriggerReviewDeadline.test.ts": 4,
- "tests/unit/memoryApi.test.ts": 16,
- "tests/unit/mergeGroupGate.test.ts": 4,
- "tests/unit/mergeGroupTokenMinter.test.ts": 1,
- "tests/unit/milestone1DataStoreApiSync.test.ts": 8,
- "tests/unit/milestone22EmpiricalChallenger.test.ts": 1,
- "tests/unit/milestone2Challenger.test.ts": 17,
- "tests/unit/milestone3RemediationReverification.test.ts": 2,
- "tests/unit/milestone4RemediationReverification.test.ts": 2,
- "tests/unit/milestone6Challenger.test.ts": 14,
- "tests/unit/milestone6InteractiveDashboard.test.ts": 2,
- "tests/unit/onPrCloseRules.test.ts": 3,
- "tests/unit/openRouterOnlyContract.test.ts": 1,
- "tests/unit/openRouterQualificationContract.test.ts": 3,
- "tests/unit/operatorDiffShrinkChart.test.ts": 2,
- "tests/unit/operatorIncrementalChart.test.ts": 2,
- "tests/unit/operatorMapReduceChart.test.ts": 2,
- "tests/unit/operatorReviewBudgetChart.test.ts": 2,
- "tests/unit/operatorSkipEmptyModerationChart.test.ts": 2,
- "tests/unit/operatorVerdictCacheChart.test.ts": 2,
- "tests/unit/orphanedProjectionCancellation.test.ts": 2,
- "tests/unit/panelEngineChallenger.test.ts": 26,
- "tests/unit/panelEngineDeep.test.ts": 53,
- "tests/unit/panelEngineParallel.test.ts": 6,
- "tests/unit/panelEngineTelemetryAccumulation.test.ts": 6,
- "tests/unit/panelEngineTokenMetrics.test.ts": 1,
- "tests/unit/panelNativeRoleEvidence.test.ts": 2,
- "tests/unit/panelNativeTurnProtocol.test.ts": 9,
- "tests/unit/panelWallClockFastShip.test.ts": 1,
- "tests/unit/personaDriftNormalization.test.ts": 14,
- "tests/unit/personaGating.test.ts": 2,
- "tests/unit/personaPanelV3.test.ts": 10,
- "tests/unit/piRunState.test.ts": 1,
- "tests/unit/piWorker.test.ts": 1,
- "tests/unit/pipelineHarnessRunner.test.ts": 3,
- "tests/unit/pipelineResilienceExpansion.test.ts": 1,
- "tests/unit/platformMemoryStore.test.ts": 9,
- "tests/unit/postgresStore.test.ts": 2,
- "tests/unit/prCloseWebhook.test.ts": 5,
- "tests/unit/prDetailModalMermaidUi.test.tsx": 2,
- "tests/unit/prMemoryStore.test.ts": 28,
- "tests/unit/prReviewDetailModalR1R2.test.tsx": 8,
- "tests/unit/preChecksConfig.test.ts": 3,
- "tests/unit/preChecksTelemetry.test.ts": 6,
- "tests/unit/prepPhaseDecoupling.test.ts": 8,
- "tests/unit/preparedPublishingPolicy.test.ts": 4,
- "tests/unit/providerReceiptSchema.test.ts": 1,
- "tests/unit/publicSelfReviewAdmission.test.ts": 3,
- "tests/unit/publicationIdempotency.test.ts": 1,
- "tests/unit/publishTokenMinter.test.ts": 3,
- "tests/unit/publisherIdentityProbe.test.ts": 10,
- "tests/unit/publishingBudgetSizing.test.ts": 1,
- "tests/unit/publishingReview.test.ts": 34,
- "tests/unit/publishingReviewComposedEnginePanelSize.test.ts": 2,
- "tests/unit/publishingReviewShadowMode.test.ts": 2,
- "tests/unit/publishingReviewTokenAccounting.test.ts": 4,
- "tests/unit/qualificationReader.test.ts": 1,
- "tests/unit/qualificationReceiptComparison.test.ts": 1,
- "tests/unit/reaperPublishingOwnership.test.ts": 6,
- "tests/unit/receiptOnlyWorker.test.ts": 10,
- "tests/unit/recoverablePanelRetry.test.ts": 4,
- "tests/unit/redTeamPersona.test.ts": 8,
- "tests/unit/rel1058PersonaCoverageGaps.test.ts": 22,
- "tests/unit/rel1079DiffShrink.test.ts": 18,
- "tests/unit/rel1082ReviewBudget.test.ts": 16,
- "tests/unit/rel1083MapReduceReview.test.ts": 12,
- "tests/unit/rel1084EvidencePriorQualification.test.ts": 1,
- "tests/unit/rel1084IncrementalTrusted.test.ts": 1,
- "tests/unit/rel1084PriorVerdictRealCompletion.test.ts": 1,
- "tests/unit/rel1085VerdictCacheTrusted.test.ts": 1,
- "tests/unit/rel1088UncoveredSourceBesideLane.test.ts": 1,
- "tests/unit/rel1092DiscloseTruncationAndOmittedPatches.test.ts": 3,
- "tests/unit/rel1113InfrastructureIncomplete.test.ts": 10,
- "tests/unit/rel1118NoPersonaDocsManifest.test.ts": 12,
- "tests/unit/rel1124ThrownPanelInfrastructure.test.ts": 4,
- "tests/unit/rel1135SensitivePaths.test.ts": 4,
- "tests/unit/rel1136ToolchainPinsNewPackageLockfiles.test.ts": 24,
- "tests/unit/rel1138OpenRouterClientErrorCause.test.ts": 1,
- "tests/unit/rel1138PanelRoleErrorCause.test.ts": 1,
- "tests/unit/rel1138ReviewBudgetSavings.test.ts": 2,
- "tests/unit/rel1141LockfileChangeSummary.test.ts": 1,
- "tests/unit/rel1141OversizedLockfileNeverSilent.test.ts": 6,
- "tests/unit/rel972DataConfigAndExclusions.test.ts": 10,
- "tests/unit/rel972LockfileOnlyNoReviewableContent.test.ts": 4,
- "tests/unit/releaseFixtureCopy.test.ts": 1,
- "tests/unit/remoteMcpRouter.test.ts": 21,
- "tests/unit/repoFlowchartToggleUi.test.tsx": 17,
- "tests/unit/reposPageUi.test.tsx": 40,
- "tests/unit/repositoryContext.test.ts": 1,
- "tests/unit/repositoryReviewRulesApi.test.ts": 14,
- "tests/unit/repositoryVisibilityEventHandler.test.ts": 15,
- "tests/unit/repositoryVisibilityInstallationClient.test.ts": 18,
- "tests/unit/repositoryVisibilityPrompt.test.ts": 5,
- "tests/unit/repositoryVisibilityPublishingReview.test.ts": 3,
- "tests/unit/reviewActionPackaging.test.ts": 5,
- "tests/unit/reviewAdmission.test.ts": 2,
- "tests/unit/reviewBoundarySecurity.test.ts": 2,
- "tests/unit/reviewCIRequest.test.ts": 1,
- "tests/unit/reviewCi.test.ts": 4,
- "tests/unit/reviewCiCheckClient.test.ts": 2,
- "tests/unit/reviewCiCheckPublisher.test.ts": 2,
- "tests/unit/reviewCiClient.test.ts": 8,
- "tests/unit/reviewCiConfig.test.ts": 1,
- "tests/unit/reviewCiRuntime.test.ts": 2,
- "tests/unit/reviewCompletionDeliveryEngine.test.ts": 1,
- "tests/unit/reviewCompletionPersistence.test.ts": 1,
- "tests/unit/reviewCompletionRepository.test.ts": 2,
- "tests/unit/reviewCoreDifferential.test.ts": 2,
- "tests/unit/reviewDiffBudget.test.ts": 1,
- "tests/unit/reviewDispatchRepository.test.ts": 10,
- "tests/unit/reviewExecutionCheckpoint.test.ts": 2,
- "tests/unit/reviewFlowchartPersona.test.ts": 5,
- "tests/unit/reviewGateClient.test.ts": 2,
- "tests/unit/reviewGateDecisionMapping.test.ts": 1,
- "tests/unit/reviewGenerationContracts.test.ts": 8,
- "tests/unit/reviewGenerationRecovery.test.ts": 2,
- "tests/unit/reviewHitl.test.ts": 1,
- "tests/unit/reviewJobDispatchEngine.test.ts": 5,
- "tests/unit/reviewJobDispatcherDeployment.test.ts": 6,
- "tests/unit/reviewJobDispatcherRuntime.test.ts": 1,
- "tests/unit/reviewJobDispatcherStartup.test.ts": 1,
- "tests/unit/reviewJobProjection.test.ts": 9,
- "tests/unit/reviewJobProjectionCrdContract.test.ts": 6,
- "tests/unit/reviewPipeline.test.ts": 15,
- "tests/unit/reviewPipelineDispatch.test.ts": 6,
- "tests/unit/reviewPipelinePartitionDiagnostics.test.ts": 1,
- "tests/unit/reviewRecoveryPolicy.test.ts": 7,
- "tests/unit/reviewRunLifecycle.test.ts": 1,
- "tests/unit/reviewRunStoreExpansion.test.ts": 1,
- "tests/unit/reviewRunStoreV3.test.ts": 10,
- "tests/unit/reviewSupersession.test.ts": 13,
- "tests/unit/ruleSyncEngine.test.ts": 6,
- "tests/unit/runnerModeSelection.test.ts": 2,
- "tests/unit/scopedDiffInlining.test.ts": 4,
- "tests/unit/sessionLedger.test.ts": 6,
- "tests/unit/sessionRepository.test.ts": 6,
- "tests/unit/storeConfigChallenger.test.ts": 11,
- "tests/unit/streamingMultiplexer.test.ts": 1,
- "tests/unit/submoduleArchitecturePersonaRouting.test.ts": 34,
- "tests/unit/telecomWorkspace.test.ts": 4,
- "tests/unit/transportFailover.test.ts": 2,
- "tests/unit/triggerDebounce.test.ts": 19,
- "tests/unit/unverifiedPremiseDowngrade.test.ts": 5,
- "tests/unit/useSSE.test.ts": 8,
- "tests/unit/webhook.test.ts": 2,
- "tests/unit/workerCompletion.test.ts": 2,
- "tests/unit/workerLogLocator.test.ts": 2,
- "tests/unit/workerParity.test.ts": 1,
- "tests/unit/workerReviewCompletion.test.ts": 1,
- "tests/unit/workerReviewCompletionHttp.test.ts": 1,
- "tests/unit/zoektGroundingWiring.test.ts": 10
+ ".github/workflows/ci-cd.yaml": {
+  "count": 5,
+  "digest": "7b815aee219c7dce"
+ },
+ ".github/workflows/pipelines/execution-profile.js": {
+  "count": 1,
+  "digest": "496c37af27e5551c"
+ },
+ ".github/workflows/pipelines/incremental-review-scope.js": {
+  "count": 3,
+  "digest": "91621b52f8dad415"
+ },
+ ".github/workflows/pipelines/review-pipeline.js": {
+  "count": 7,
+  "digest": "71f1be0aa90b32a4"
+ },
+ ".github/workflows/review-bot.yaml": {
+  "count": 3,
+  "digest": "83aa2de9c2a8d8ca"
+ },
+ ".github/workflows/v1-release-integrity.yml": {
+  "count": 2,
+  "digest": "739c563f45f73615"
+ },
+ "action.yml": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/examples/mcp-tooling-tunnel-config.yaml": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "cf-orchestrator/package.json": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/src/mcp/mcpRouter.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "cf-orchestrator/src/mcp/tools/cancelReview.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "cf-orchestrator/src/mcp/tools/getAnalyticsDashboard.ts": {
+  "count": 2,
+  "digest": "e69b84c8b14f81ad"
+ },
+ "cf-orchestrator/src/mcp/tools/getBillableRuntimeReport.ts": {
+  "count": 6,
+  "digest": "15baf46164a9af58"
+ },
+ "cf-orchestrator/src/mcp/tools/getCloudflareStatus.ts": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
+ },
+ "cf-orchestrator/src/mcp/tools/getRuntimeMetrics.ts": {
+  "count": 1,
+  "digest": "4dbee9d9fbbfafb5"
+ },
+ "cf-orchestrator/src/mcp/tools/purgeCache.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "cf-orchestrator/src/mcp/tools/queryActiveJobs.ts": {
+  "count": 7,
+  "digest": "3eec48a8706b4b4b"
+ },
+ "cf-orchestrator/src/mcp/tools/queryFindings.ts": {
+  "count": 6,
+  "digest": "15baf46164a9af58"
+ },
+ "cf-orchestrator/src/mcp/tools/triggerReview.ts": {
+  "count": 5,
+  "digest": "c6ccf8bf7055c29f"
+ },
+ "cf-orchestrator/src/reviewJobWorkflow.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/test/adversarial_control_plane.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "cf-orchestrator/test/adversarial_hardening.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/test/adversarial_runners_parity.test.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "cf-orchestrator/test/digitalOceanAgentRunner.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/test/e2e/e2eHarness.ts": {
+  "count": 3,
+  "digest": "7c29de34ef43ec24"
+ },
+ "cf-orchestrator/test/e2e/tier1_features.e2e.test.ts": {
+  "count": 7,
+  "digest": "da451bf89912d09b"
+ },
+ "cf-orchestrator/test/e2e/tier2_boundaries.e2e.test.ts": {
+  "count": 4,
+  "digest": "3b51b6e30b4fd694"
+ },
+ "cf-orchestrator/test/e2e/tier4_scenarios.e2e.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/test/m1ChallengeStress.test.ts": {
+  "count": 13,
+  "digest": "f721a7320a16c1af"
+ },
+ "cf-orchestrator/test/m1Challenger2Iter2Harness.test.ts": {
+  "count": 3,
+  "digest": "7c29de34ef43ec24"
+ },
+ "cf-orchestrator/test/m1Challenger2Iter3Harness.test.ts": {
+  "count": 18,
+  "digest": "ceec15cc65eea188"
+ },
+ "cf-orchestrator/test/m1Challenger2Iter4Harness.test.ts": {
+  "count": 31,
+  "digest": "58d85a6d6746f82a"
+ },
+ "cf-orchestrator/test/m1ChallengerIter3DeepStress.test.ts": {
+  "count": 30,
+  "digest": "bb1d0fe6b5bc5342"
+ },
+ "cf-orchestrator/test/m1ChallengerIter4Verification.test.ts": {
+  "count": 51,
+  "digest": "84ddfba9511a3ead"
+ },
+ "cf-orchestrator/test/m1ChallengerStressTest.test.ts": {
+  "count": 19,
+  "digest": "804c996bd6c097d7"
+ },
+ "cf-orchestrator/test/m1_challenge.test.ts": {
+  "count": 23,
+  "digest": "7749544117b4bc29"
+ },
+ "cf-orchestrator/test/m3Challenger1Iter2Verification.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "cf-orchestrator/test/m3ChallengerAdversarial.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/test/m3_challenger_2_adversarial.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "cf-orchestrator/test/mcp/mcpRouter.test.ts": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "cf-orchestrator/test/mcp/mcpTools.test.ts": {
+  "count": 16,
+  "digest": "31ed58a062a1efbe"
+ },
+ "cf-orchestrator/test/mcp/mcpWorkerIntegration.test.ts": {
+  "count": 9,
+  "digest": "9d7308886197a285"
+ },
+ "cf-orchestrator/test/r2WorkspaceCache.test.ts": {
+  "count": 6,
+  "digest": "94df64621da1f2f5"
+ },
+ "cf-orchestrator/test/toolTunnelYaml.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "cf-orchestrator/test/tunnelConfig.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "cf-orchestrator/test/worker.test.ts": {
+  "count": 17,
+  "digest": "8cb25a0f6bb335c6"
+ },
+ "cf-orchestrator/wrangler.toml": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/Makefile": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/api/v1alpha1/crd_schema_validation_test.go": {
+  "count": 14,
+  "digest": "65eb56720f41000d"
+ },
+ "k8s-operator/api/v1alpha1/groupversion_info.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/api/v1alpha1/prreviewjob_stress_test.go": {
+  "count": 13,
+  "digest": "79bd06162c251291"
+ },
+ "k8s-operator/api/v1alpha1/prreviewjob_types.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/api/v1alpha1/prreviewjob_types_test.go": {
+  "count": 18,
+  "digest": "a6ee85e2b6ec1fa8"
+ },
+ "k8s-operator/api/v1alpha2/crd_cel_test.go": {
+  "count": 4,
+  "digest": "aecb692954c3ff1d"
+ },
+ "k8s-operator/api/v1alpha2/crd_contract_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/api/v1alpha2/groupversion_info.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/api/v1alpha2/prreviewjob_types.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/api/v1alpha2/prreviewjob_types_test.go": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "k8s-operator/config/crd/bases/review.<org>.com_prreviewjobs.yaml": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/app_gate_receipt.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/app_gate_receipt_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/capacity_ledger.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/capacity_ledger_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/challenger_fencing_lease_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/challenger_m1_2_storage_isolation_test.go": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "k8s-operator/controllers/challenger_m2_1_deep_stress_test.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/challenger_m2_1_quota_suspension_test.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/challenger_m3_2_adversarial_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/challenger_m4_1_concurrency_resumption_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/challenger_m4_2_whitebox_test.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/challenger_m5_1_adversarial_test.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/concurrency_empirical_test.go": {
+  "count": 13,
+  "digest": "25164e562353d912"
+ },
+ "k8s-operator/controllers/conflictRequeue.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/duplicate_reconcile_empirical_test.go": {
+  "count": 8,
+  "digest": "8c7b9a0de35521eb"
+ },
+ "k8s-operator/controllers/m2_declarative_admission_concurrency_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/m4_multithread_concurrency_test.go": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "k8s-operator/controllers/prreviewjob_controller.go": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "k8s-operator/controllers/prreviewjob_controller_test.go": {
+  "count": 20,
+  "digest": "72655889d64468d1"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha1_conflict_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_conflict_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_continuation_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_controller.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_controller_test.go": {
+  "count": 11,
+  "digest": "7ca57557c37f9adf"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_emptydir_adversarial_test.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_envcontract_internal_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_finalizer_patch_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_missing_job_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_prep_decoupling_test.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_run_secret_finalizer_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_terminal_deletion_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_volume_matcher_test.go": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_worker_job_notfound_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_worker_success_ttl_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_worker_superseded_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/prreviewjob_v1alpha2_worker_termination_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/controllers/testdata/app_gate_receipt_success.v1.json": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "k8s-operator/controllers/ttl_empirical_test.go": {
+  "count": 12,
+  "digest": "fe50d80b77febf62"
+ },
+ "k8s-operator/controllers/worker_metrics.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/worker_metrics_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/controllers/worker_superseded.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/worker_termination.go": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "k8s-operator/controllers/worker_termination_internal_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/controllers/worker_termination_selection_internal_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/controllers/worker_termination_test.go": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s-operator/go.mod": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/main.go": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "k8s-operator/main_test.go": {
+  "count": 21,
+  "digest": "349609fc0b56b670"
+ },
+ "k8s-operator/pkg/cleanup/ttl.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/cleanup/ttl_stress_test.go": {
+  "count": 5,
+  "digest": "e10d1c5b98140b6d"
+ },
+ "k8s-operator/pkg/cleanup/ttl_test.go": {
+  "count": 5,
+  "digest": "e10d1c5b98140b6d"
+ },
+ "k8s-operator/pkg/job/challenger_m1_1_resource_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/job/continuation_job_test.go": {
+  "count": 47,
+  "digest": "4acf198f0e1a2adf"
+ },
+ "k8s-operator/pkg/job/job.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/pkg/job/job_adversarial_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/job/job_emptydir_adversarial_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/job/job_test.go": {
+  "count": 42,
+  "digest": "dc1b3dbff8289d3d"
+ },
+ "k8s-operator/pkg/job/prep_worker_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/job/prepared_review_contract_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/job/run_secret_names_fixture_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/job/skip_empty_moderation_test.go": {
+  "count": 7,
+  "digest": "1d54d61ff5ccdbc8"
+ },
+ "k8s-operator/pkg/job/worker_image_acceptance_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/job/worker_placement_test.go": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s-operator/pkg/metrics/metrics.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/metrics/metrics_stress_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/metrics/metrics_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/queue/manager.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/queue/manager_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/queue/stress_test.go": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "k8s-operator/pkg/workspace/collector.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/collector_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/identity.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/identity_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/lease.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/lease_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/pvc.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/pkg/workspace/pvc_test.go": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s-operator/skip_empty_moderation_main_test.go": {
+  "count": 4,
+  "digest": "8b1315c29a7ffd6c"
+ },
+ "k8s/action-dispatch.yaml.tpl": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "k8s/bot-deployment.yaml.tpl": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s/ingress-network.yaml": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "k8s/operator-deployment.yaml.tpl": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "k8s/review-job-dispatcher.yaml.tpl": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "legacy_public/404.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "legacy_public/js/app.js": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "public/404.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/404.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/analytics.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/analytics.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/github-app": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/github-app.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/github-app.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/index": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/index.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/index.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/live": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/live.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/live.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/memory": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/memory.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/memory.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/onboarding": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "public/dashboard/onboarding.html": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "public/dashboard/onboarding.txt": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "public/dashboard/organization": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/organization.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/organization.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/settings": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/settings.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/dashboard/settings.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/github-app.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/github-app.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/index.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/index.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/integrations.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/integrations.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/js/app.js": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "public/live.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/live.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/memory.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/memory.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/onboarding.html": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "public/onboarding.txt": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "public/repos.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/repos.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/settings.html": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "public/settings.txt": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "scripts/advance-review-runtime.sh": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "scripts/advance-review-worker.sh": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "scripts/deploy-action-dispatch.sh": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "scripts/deploy-review-job-dispatcher.sh": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "scripts/dispatch-doks-action.mjs": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "scripts/evaluate-release-benchmark.mjs": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "scripts/install-doks-review-runtime.sh": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "scripts/lib/review-runtime-image-provenance.sh": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "scripts/publish-real-diff-review.ts": {
+  "count": 4,
+  "digest": "3b51b6e30b4fd694"
+ },
+ "scripts/review-runtime-image-provenance.test.sh": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "scripts/validate-ct-review-bot-caller.test.mjs": {
+  "count": 4,
+  "digest": "bb45ca62004a3761"
+ },
+ "scripts/verify-action-dispatch.sh": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "scripts/verify-doks.sh": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/analytics/cliParser.ts": {
+  "count": 1,
+  "digest": "4dbee9d9fbbfafb5"
+ },
+ "src/api/dashboardApi.ts": {
+  "count": 4,
+  "digest": "164d5b52000708f2"
+ },
+ "src/api/githubAppApi.ts": {
+  "count": 6,
+  "digest": "db1d0b9914579fca"
+ },
+ "src/api/onboarding.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "src/app/analytics/page.tsx": {
+  "count": 5,
+  "digest": "6e49cff010fced4c"
+ },
+ "src/app/memory/page.tsx": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "src/app/repos/page.tsx": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "src/cli/runLiveReview.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "src/components/dashboard/memory-graph-modal.tsx": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "src/components/integrations/integrations-grid.tsx": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "src/components/layout/topbar.tsx": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "src/components/live/active-jobs-sidebar.tsx": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "src/components/onboarding/five-step-wizard.tsx": {
+  "count": 5,
+  "digest": "6e49cff010fced4c"
+ },
+ "src/components/onboarding/how-to-guide-card.tsx": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "src/components/onboarding/manifest-drawer.tsx": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "src/components/onboarding/steps/step-1-github-app.tsx": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/components/onboarding/steps/step-2-repos-picker.tsx": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/components/onboarding/steps/step-3-ai-providers.tsx": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "src/dashboard/authService.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/dispatchServer.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/github/commentPublisher.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "src/github/installationClient.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "src/infrastructure/k8sJobRunner.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "src/k8s/reviewJobProjection.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/mcp/mcpFleetManager.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/mcp/server/mcpRbac.ts": {
+  "count": 3,
+  "digest": "83aa2de9c2a8d8ca"
+ },
+ "src/mcp/server/tools/generateFixDiff.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "src/mcp/server/tools/getAnalyticsDashboard.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "src/mcp/server/tools/getBillableRuntimeReport.ts": {
+  "count": 6,
+  "digest": "17e9f2a5aaa0ade0"
+ },
+ "src/mcp/server/tools/getCloudflareStatus.ts": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
+ },
+ "src/mcp/server/tools/getReviewFindings.ts": {
+  "count": 2,
+  "digest": "326f6574c8f8bb10"
+ },
+ "src/mcp/server/tools/getReviewStatus.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "src/mcp/server/tools/purgeCache.ts": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
+ },
+ "src/mcp/server/tools/triggerReview.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/panel/__tests__/panelEngine.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/panel/composedEngine.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "src/panel/panelEngine.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "src/persistence/dashboardStore.ts": {
+  "count": 67,
+  "digest": "faa8f124aa47582e"
+ },
+ "src/review/actionDispatch.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/review/continuationPhase.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "src/review/diffService.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "src/review/emptyModeration.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "src/review/prepPhase.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/review/preparedPublishingPolicy.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "src/review/reviewCheckIdentity.ts": {
+  "count": 2,
+  "digest": "dd6155b138dfb8f5"
+ },
+ "tests/adversarial/m5ChallengerAuthLiveStress.test.ts": {
+  "count": 10,
+  "digest": "54f70c21dba7cbb3"
+ },
+ "tests/adversarial/m5ChallengerHitlAnalyticsStress.test.ts": {
+  "count": 15,
+  "digest": "ce00885e58c952a2"
+ },
+ "tests/benchmark/memoryPerformance.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/e2e/agentHarnessE2E.test.ts": {
+  "count": 100,
+  "digest": "ec482a29e99646c1"
+ },
+ "tests/e2e/generativeReviewEngine.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/e2e/mcp/harness/mcpE2eHarness.ts": {
+  "count": 7,
+  "digest": "3143394ff8baeadd"
+ },
+ "tests/e2e/mcp/tier1FeatureCoverage.test.ts": {
+  "count": 69,
+  "digest": "5d20e18aec1a63f0"
+ },
+ "tests/e2e/mcp/tier2BoundaryCorner.test.ts": {
+  "count": 48,
+  "digest": "e69ccca9c3a5e599"
+ },
+ "tests/e2e/mcp/tier3Interactions.test.ts": {
+  "count": 28,
+  "digest": "bcf61374594ec97c"
+ },
+ "tests/e2e/mcp/tier4RealWorldScenarios.test.ts": {
+  "count": 38,
+  "digest": "f61f332d293b1657"
+ },
+ "tests/e2e/mcp/tier5InboundAdversarial.test.ts": {
+  "count": 68,
+  "digest": "e16a5577d8f40c9e"
+ },
+ "tests/e2e/mcp/tier5OutboundAdversarial.test.ts": {
+  "count": 16,
+  "digest": "a0154b94b41cc559"
+ },
+ "tests/e2e/onboardingE2E.test.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "tests/e2e/onboardingWizardE2E.test.ts": {
+  "count": 20,
+  "digest": "b37c71ae711eea73"
+ },
+ "tests/e2e/prComplianceE2E.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/e2e/releaseBenchmark.test.ts": {
+  "count": 2,
+  "digest": "51180fc3715eacd8"
+ },
+ "tests/e2e/reviewYetiDashboardE2E.test.ts": {
+  "count": 67,
+  "digest": "427979f8929d3ce8"
+ },
+ "tests/e2e/reviewYetiE2E.test.ts": {
+  "count": 11,
+  "digest": "a2003e0b82b4c152"
+ },
+ "tests/e2e/run-e2e.mjs": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/e2e/runtimeHardening.e2e.test.ts": {
+  "count": 14,
+  "digest": "ff0bf2af55b03cc3"
+ },
+ "tests/e2e/telecomWorkspace.test.ts": {
+  "count": 4,
+  "digest": "b80d6724cc90c777"
+ },
+ "tests/empirical/m2LiveStreamingChallenger.test.tsx": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-clean-genserver-worker-pool.json": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-ecto-n-plus-one-preload.json": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-ecto-unscoped-tenant-query.json": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-ets-concurrency-table-race.json": {
+  "count": 9,
+  "digest": "6f95540a6e556f54"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-ets-unbounded-table-leak.json": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-evidence-mix-test-verification.json": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-genserver-blocking-call.json": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-otp-supervisor-crash-loop.json": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-task-async-stream-unbounded.json": {
+  "count": 7,
+  "digest": "6e8d3a8744fcd935"
+ },
+ "tests/fixtures/cassettes/eval-reviews/elixir-unhandled-match-failure.json": {
+  "count": 11,
+  "digest": "a2003e0b82b4c152"
+ },
+ "tests/fixtures/cassettes/github-malformed.json": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/fixtures/cassettes/github-review.json": {
+  "count": 18,
+  "digest": "ceec15cc65eea188"
+ },
+ "tests/fixtures/cassettes/model-panel.json": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/fixtures/cassettes/openrouter/complete-multi-persona.json": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/fixtures/cassettes/openrouter/malformed-provider-json.json": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/fixtures/cassettes/openrouter/out-of-diff-sanitized.json": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/fixtures/cassettes/openrouter/repeated-deterministic.json": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/fixtures/cassettes/openrouter/zero-findings.json": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/fixtures/review-yeti/rank2a-execution-plan.fixture.json": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/integration/actionDispatchApi.test.ts": {
+  "count": 68,
+  "digest": "36f7c6e5d54c5c3a"
+ },
+ "tests/integration/adversarialSecurityBoundaries.test.ts": {
+  "count": 49,
+  "digest": "526eda09295e5189"
+ },
+ "tests/integration/authoritativeWorkerCompletionApi.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/challenger1EmpiricalM1Stress.test.ts": {
+  "count": 15,
+  "digest": "1086a11a3f9508b2"
+ },
+ "tests/integration/challenger1EmpiricalM3Stress.test.ts": {
+  "count": 9,
+  "digest": "9b5825e5fde52f8a"
+ },
+ "tests/integration/challenger1EmpiricalM4PercentileStress.test.ts": {
+  "count": 18,
+  "digest": "6c26b1fed0d7d200"
+ },
+ "tests/integration/challenger1EmpiricalR1DualStoreStress.test.ts": {
+  "count": 6,
+  "digest": "6cb40cd2c4a02c15"
+ },
+ "tests/integration/challenger1M2AdversarialTools.test.ts": {
+  "count": 25,
+  "digest": "812616014d632f0f"
+ },
+ "tests/integration/challenger1M2It2DeepVerification.test.ts": {
+  "count": 23,
+  "digest": "ee9e7091c1b1e70e"
+ },
+ "tests/integration/challenger1M3It2AttributionFuzz.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/challenger2EmpiricalM3.test.ts": {
+  "count": 10,
+  "digest": "54f70c21dba7cbb3"
+ },
+ "tests/integration/challenger2LifecycleStreamingAdversarial.test.ts": {
+  "count": 66,
+  "digest": "2855bcae8bcbabc0"
+ },
+ "tests/integration/challenger2LifecycleStressVerification.test.ts": {
+  "count": 22,
+  "digest": "1f01ebb0c0f134b2"
+ },
+ "tests/integration/completedFindingRecheckAdmission.postgres.test.ts": {
+  "count": 2,
+  "digest": "dd6155b138dfb8f5"
+ },
+ "tests/integration/dispatchServerMcp.test.ts": {
+  "count": 20,
+  "digest": "062a799ab950ab49"
+ },
+ "tests/integration/disputedFindingRecheck.postgres.test.ts": {
+  "count": 2,
+  "digest": "dd6155b138dfb8f5"
+ },
+ "tests/integration/empiricalLiveStreamChallenger.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/empiricalR3R4Challenger2.test.tsx": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/integration/fourPersonaQuorumIntegration.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/integration/getReviewStatusTiming.postgres.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/integration/githubPublicationReplay.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/integration/incrementalPriorReview.postgres.test.ts": {
+  "count": 4,
+  "digest": "bb45ca62004a3761"
+ },
+ "tests/integration/liveStreamEmpiricalChallenger.test.ts": {
+  "count": 15,
+  "digest": "c28106d1a8c5a415"
+ },
+ "tests/integration/liveStreamStressChallengerM3.test.ts": {
+  "count": 12,
+  "digest": "621eff8293916406"
+ },
+ "tests/integration/liveTerminalIntegration.test.ts": {
+  "count": 11,
+  "digest": "7b15db09a872c7de"
+ },
+ "tests/integration/m14DashboardAuthIntegration.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/m2It2AdversarialVerification.test.tsx": {
+  "count": 8,
+  "digest": "8c7b9a0de35521eb"
+ },
+ "tests/integration/m2LiveStreamingChallenger.test.tsx": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/integration/m3Challenger2HashAndStateStress.test.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "tests/integration/m41m42EmpiricalStress.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/integration/m43m44EmpiricalChallenger.test.ts": {
+  "count": 9,
+  "digest": "c9ebe3e893080ccd"
+ },
+ "tests/integration/m5AdversarialChallenger2.test.ts": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "tests/integration/m5EmpiricalChallenger1.test.tsx": {
+  "count": 2,
+  "digest": "e69b84c8b14f81ad"
+ },
+ "tests/integration/m9m10BotIntegration.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/milestone37_39EmpiricalChallenger.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/integration/onboardingReflectionIntegration.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/onboardingWizardApi.test.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "tests/integration/onboardingWizardPairwise.test.ts": {
+  "count": 26,
+  "digest": "55ac6e5010e17641"
+ },
+ "tests/integration/personaAppPipelineV3.test.ts": {
+  "count": 4,
+  "digest": "8b1315c29a7ffd6c"
+ },
+ "tests/integration/personaPersistenceIntegration.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/prCloseIntegration.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/integration/preparedReviewRepository.postgres.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/r2DateBoundaryEmpiricalChallenger.test.ts": {
+  "count": 32,
+  "digest": "26ba9578f1e1d983"
+ },
+ "tests/integration/reviewCiCheckRepository.postgres.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/integration/reviewCiRepository.postgres.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/integration/reviewCompletion.adversarial.test.ts": {
+  "count": 24,
+  "digest": "893ece5e2e1c3815"
+ },
+ "tests/integration/reviewCompletionFencedDispatch.postgres.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/reviewDispatchRepository.postgres.test.ts": {
+  "count": 49,
+  "digest": "25a65831a8e5420a"
+ },
+ "tests/integration/reviewGateRepository.postgres.test.ts": {
+  "count": 14,
+  "digest": "c1a64b714995c327"
+ },
+ "tests/integration/reviewReplay.test.ts": {
+  "count": 12,
+  "digest": "9d7ead6f407c7d04"
+ },
+ "tests/integration/reviewRunAdmissionCompatibility.postgres.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/reviewRunLifecycle.postgres.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/reviewRunRecovery.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/schemaMigrationGate.postgres.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/sessionAnalyticsCliM2Empirical.test.ts": {
+  "count": 15,
+  "digest": "c67c8e49babb48f3"
+ },
+ "tests/integration/settingsApiUi.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/integration/stressHarness.test.ts": {
+  "count": 10,
+  "digest": "ec167925b7bdd321"
+ },
+ "tests/integration/telemetryAnalyticsIntegration.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/integration/tenPersonaQuorum.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/integration/verdictCacheSource.postgres.test.ts": {
+  "count": 4,
+  "digest": "bb45ca62004a3761"
+ },
+ "tests/support/composedTaskLedgerFixture.ts": {
+  "count": 3,
+  "digest": "7c29de34ef43ec24"
+ },
+ "tests/support/openRouterReplayScenario.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/support/operatorGoFailureReceipt.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/support/release-fixture-copy.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/abandonedCheckPublication.test.ts": {
+  "count": 23,
+  "digest": "d0684eb2defcab86"
+ },
+ "tests/unit/abandonedRunReaper.test.ts": {
+  "count": 3,
+  "digest": "c97fde96e7c11390"
+ },
+ "tests/unit/actionDispatchApi.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/actionDispatchServer.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/actionDoksDispatch.test.ts": {
+  "count": 16,
+  "digest": "1963cb8ec90128ec"
+ },
+ "tests/unit/actionPolicyContract.test.ts": {
+  "count": 40,
+  "digest": "3b00b837ab520fc1"
+ },
+ "tests/unit/actionRequestCharacterization.test.ts": {
+  "count": 6,
+  "digest": "992f921759c8b187"
+ },
+ "tests/unit/adversarialContinuationGateResilience.test.ts": {
+  "count": 14,
+  "digest": "e7539c92676d8c46"
+ },
+ "tests/unit/adversarialCostTelemetryModelNormalization.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/adversarialM2Stress.test.ts": {
+  "count": 6,
+  "digest": "b48873ce7a9894e0"
+ },
+ "tests/unit/adversarialM3Challenger.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/adversarial_agentHarnessContracts.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/adversarial_challenger_m1.test.ts": {
+  "count": 11,
+  "digest": "8549f43a8487823b"
+ },
+ "tests/unit/adversarial_challenger_m2.test.ts": {
+  "count": 40,
+  "digest": "fa3f2ee33f246017"
+ },
+ "tests/unit/adversarial_challenger_m4.test.ts": {
+  "count": 56,
+  "digest": "6530a4c1098458f4"
+ },
+ "tests/unit/adversarial_fix_diff_stress.test.ts": {
+  "count": 16,
+  "digest": "05e3c3565902ed90"
+ },
+ "tests/unit/adversarial_m5_tier5_streaming_continuation.test.ts": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/unit/agentHarnessContracts.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/analyticsEngine.test.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "tests/unit/appAuth.test.ts": {
+  "count": 7,
+  "digest": "95ed65185b179a59"
+ },
+ "tests/unit/appOnlyPublisherV3.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/authoritativeCompletionContext.test.ts": {
+  "count": 7,
+  "digest": "8816162dcb29f953"
+ },
+ "tests/unit/authoritativePublishingResolver.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/authoritativePublishingWorker.test.ts": {
+  "count": 3,
+  "digest": "7c29de34ef43ec24"
+ },
+ "tests/unit/authoritativeReviewReader.test.ts": {
+  "count": 13,
+  "digest": "8d33419e33851a5c"
+ },
+ "tests/unit/authoritativeReviewService.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/authoritativeServiceConfig.test.ts": {
+  "count": 4,
+  "digest": "bb45ca62004a3761"
+ },
+ "tests/unit/boundedAppToken.test.ts": {
+  "count": 14,
+  "digest": "acc8cd8875f2ca93"
+ },
+ "tests/unit/boundedInstallationLookup.test.ts": {
+  "count": 9,
+  "digest": "14568fe5f5cedbb8"
+ },
+ "tests/unit/cancellationArchitecture.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/challenger1_final_adversarial_stress.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/challenger2_m1_whitebox_hardening.test.ts": {
+  "count": 22,
+  "digest": "1f01ebb0c0f134b2"
+ },
+ "tests/unit/challengerM1_1Empirical.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/unit/challengerM1_2Empirical.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/challengerM1_2_k8sJobRunner_stress.test.ts": {
+  "count": 20,
+  "digest": "b37c71ae711eea73"
+ },
+ "tests/unit/challengerM1_R2_2_parameter_falsy.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challengerM2_1Empirical.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/challengerM2_2Empirical.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/challengerM3_2Empirical.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/unit/challengerM4_2Empirical.test.ts": {
+  "count": 8,
+  "digest": "4fbc9bbe79ec7f29"
+ },
+ "tests/unit/challenger_m1_1_resource_envelope.test.ts": {
+  "count": 4,
+  "digest": "7391f3ba673821fb"
+ },
+ "tests/unit/challenger_m1_2_ephemeral_storage.test.ts": {
+  "count": 9,
+  "digest": "e4106fea1c2b7ef7"
+ },
+ "tests/unit/challenger_m1_r2_1_boundary_stress.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challenger_m2_1_receipt_binding.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challenger_m2_2_prep_persistence.test.ts": {
+  "count": 10,
+  "digest": "4ac0e15909e91064"
+ },
+ "tests/unit/challenger_m2_iter2_adversarial.test.ts": {
+  "count": 13,
+  "digest": "8d33419e33851a5c"
+ },
+ "tests/unit/challenger_m2_r2_1_pod_log.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challenger_m2_r2_2_receipt_binding.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challenger_m3_stress.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/challenger_m4_1_tier5_adversarial.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/chaosFaultTolerance.test.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/unit/chartDopplerSecret.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/ciAppToken.test.ts": {
+  "count": 13,
+  "digest": "f721a7320a16c1af"
+ },
+ "tests/unit/ciDraftQualityAdmission.test.ts": {
+  "count": 2,
+  "digest": "dd6155b138dfb8f5"
+ },
+ "tests/unit/classifierEngine.test.ts": {
+  "count": 36,
+  "digest": "e0672379a84966f5"
+ },
+ "tests/unit/cliParser.test.ts": {
+  "count": 2,
+  "digest": "e69b84c8b14f81ad"
+ },
+ "tests/unit/commandDispatcher.test.ts": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/unit/commandDispatcherExpansion.test.ts": {
+  "count": 13,
+  "digest": "8d33419e33851a5c"
+ },
+ "tests/unit/commentLinks.test.ts": {
+  "count": 7,
+  "digest": "95ed65185b179a59"
+ },
+ "tests/unit/commentPublisherDeep.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/unit/commentPublisherExpansion.test.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "tests/unit/components/apiClient.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/components/fiveStepWizardSuite.test.tsx": {
+  "count": 9,
+  "digest": "3b4392fdab702959"
+ },
+ "tests/unit/components/onboardingWizardSteps.test.tsx": {
+  "count": 16,
+  "digest": "10ea334a01b74eb5"
+ },
+ "tests/unit/configPassthrough.test.ts": {
+  "count": 14,
+  "digest": "7c4d20a09a4082ff"
+ },
+ "tests/unit/configResolver.test.ts": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "tests/unit/continuationPhase.test.ts": {
+  "count": 13,
+  "digest": "8d33419e33851a5c"
+ },
+ "tests/unit/continuationPhaseAdversarialChallenger.test.ts": {
+  "count": 18,
+  "digest": "ceec15cc65eea188"
+ },
+ "tests/unit/conversationalThreadingChallenger.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/diffDelta.test.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "tests/unit/diffService.test.ts": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
+ },
+ "tests/unit/dispatchIndexStartup.test.ts": {
+  "count": 18,
+  "digest": "9763fc008f11a317"
+ },
+ "tests/unit/dispatchServer.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/dispatchServerMetrics.test.ts": {
+  "count": 2,
+  "digest": "1c3948fa46798a1e"
+ },
+ "tests/unit/disputedFindingRecheckFlow.test.ts": {
+  "count": 2,
+  "digest": "c18588eba0193c64"
+ },
+ "tests/unit/doksPublishModeContract.test.ts": {
+  "count": 4,
+  "digest": "7656d8cceaf3e744"
+ },
+ "tests/unit/doksQualificationInstall.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/domainIndex.test.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/emptyModeration.test.ts": {
+  "count": 5,
+  "digest": "1b8a91b4ffc2d396"
+ },
+ "tests/unit/emptyModerationCanonicalGuard.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/emptyModerationPanel.test.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/emptyModerationPublishing.test.ts": {
+  "count": 9,
+  "digest": "14568fe5f5cedbb8"
+ },
+ "tests/unit/emptyModerationTrustedCompletion.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/eventHandlerChat.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/eventHandlerExpansion.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/executionProfile.test.ts": {
+  "count": 1,
+  "digest": "496c37af27e5551c"
+ },
+ "tests/unit/fetchPrDiffScript.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/unit/followupPersonas.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/gatewayCircuitBreaker.test.ts": {
+  "count": 7,
+  "digest": "da451bf89912d09b"
+ },
+ "tests/unit/gitDiffSource.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/githubActionsOidc.test.ts": {
+  "count": 4,
+  "digest": "71d31619f34e653b"
+ },
+ "tests/unit/githubAppApiM41.test.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/unit/githubBasePolicyV3.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/githubDiscoveryApi.test.ts": {
+  "count": 36,
+  "digest": "f79aade278cd58db"
+ },
+ "tests/unit/githubInstallationClientPullRequestIdentity.test.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/unit/githubReadTokenScript.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/githubTransientRetry.test.ts": {
+  "count": 5,
+  "digest": "8d36aee2311416aa"
+ },
+ "tests/unit/githubWebhookAdmission.test.ts": {
+  "count": 37,
+  "digest": "8847c941483fa716"
+ },
+ "tests/unit/gracefulComposedRecovery.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/graphLearningEngine.test.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "tests/unit/incompleteP2RecoveryAdmission.test.ts": {
+  "count": 4,
+  "digest": "d96c56f1cceed67f"
+ },
+ "tests/unit/incompleteP2RecoveryBoundary.test.ts": {
+  "count": 6,
+  "digest": "769cb62fa77bfeb8"
+ },
+ "tests/unit/incrementalReviewScope.test.ts": {
+  "count": 81,
+  "digest": "428315a1607e24bd"
+ },
+ "tests/unit/inlineSuggestionChallenger.test.ts": {
+  "count": 8,
+  "digest": "bec894dfb6bfe6fa"
+ },
+ "tests/unit/installationClientExpansion.test.ts": {
+  "count": 15,
+  "digest": "a522681ece4f232e"
+ },
+ "tests/unit/jevTriageShadow.test.ts": {
+  "count": 5,
+  "digest": "d50fd3ecad18397a"
+ },
+ "tests/unit/k8sJobDispatcher.test.ts": {
+  "count": 12,
+  "digest": "621eff8293916406"
+ },
+ "tests/unit/k8sJobRunner.contract.test.ts": {
+  "count": 48,
+  "digest": "b220f9d418382e61"
+ },
+ "tests/unit/k8sJobRunner.execution.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/k8sJobRunnerAndAppConfig.test.ts": {
+  "count": 6,
+  "digest": "25c3ec8a7cc0d723"
+ },
+ "tests/unit/kubernetesModeDocsAccuracy.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/kubernetesReviewJobProjector.test.ts": {
+  "count": 3,
+  "digest": "b43e51df5c821e4e"
+ },
+ "tests/unit/kubernetesRunSecretProvisioner.test.ts": {
+  "count": 7,
+  "digest": "1d54d61ff5ccdbc8"
+ },
+ "tests/unit/laneOutcomeAttribution.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/legacyIncompleteReviewRecovery.test.ts": {
+  "count": 2,
+  "digest": "c18588eba0193c64"
+ },
+ "tests/unit/linearMcpAdapter.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/liveComponents.test.tsx": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/unit/liveStream.test.ts": {
+  "count": 8,
+  "digest": "f0f84f9eea65e40d"
+ },
+ "tests/unit/llmCommentLearner.test.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/unit/m10AgentApiChallenger.test.ts": {
+  "count": 16,
+  "digest": "05e3c3565902ed90"
+ },
+ "tests/unit/m14DashboardApi.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/m18EventDispatcher.test.ts": {
+  "count": 10,
+  "digest": "4ac0e15909e91064"
+ },
+ "tests/unit/m18Personas.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/m1ChallengerDiscoveryAndRulesStress.test.ts": {
+  "count": 74,
+  "digest": "f1c41d74ac76cf94"
+ },
+ "tests/unit/m1ChallengerEmpiricalVerification.test.ts": {
+  "count": 37,
+  "digest": "878b3cfeb66059ec"
+ },
+ "tests/unit/m1EmpiricalChallenger.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/m1Iteration2ChallengerStress.test.ts": {
+  "count": 16,
+  "digest": "05e3c3565902ed90"
+ },
+ "tests/unit/m2FlowchartEmpiricalChallenge.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/m2m3EmptyStateStress.test.tsx": {
+  "count": 14,
+  "digest": "c47558c0ff1356c4"
+ },
+ "tests/unit/m3Challenger2StateGateSyncAudit.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/m3EmpiricalStressChallenger.test.tsx": {
+  "count": 19,
+  "digest": "2ab36db6f6ca37c4"
+ },
+ "tests/unit/m4ChallengerMultiWindowCostToken.test.ts": {
+  "count": 8,
+  "digest": "5144e0d86f13cc9a"
+ },
+ "tests/unit/m9PRMemoryChallenger.test.ts": {
+  "count": 22,
+  "digest": "c178312168106f9e"
+ },
+ "tests/unit/mcpAdvancedTools.test.ts": {
+  "count": 16,
+  "digest": "c92809ba000ca454"
+ },
+ "tests/unit/mcpAdvancedToolsEmpiricalChallenger.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/mcpAttestReplyEmpiricalChallenger.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/mcpFindingIdentity.test.ts": {
+  "count": 30,
+  "digest": "66dc1dfbed7bee83"
+ },
+ "tests/unit/mcpFleetManager.test.ts": {
+  "count": 4,
+  "digest": "9aae8779390d8b49"
+ },
+ "tests/unit/mcpIncompleteP2Recovery.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/mcpResources.test.ts": {
+  "count": 62,
+  "digest": "b5c2924bbe3a002d"
+ },
+ "tests/unit/mcpResourcesDataModelsEmpiricalChallenger.test.ts": {
+  "count": 50,
+  "digest": "a8eb55059e7dfdaf"
+ },
+ "tests/unit/mcpResourcesEmpiricalChallenger.test.ts": {
+  "count": 92,
+  "digest": "0b3c9b9e5dc52cfb"
+ },
+ "tests/unit/mcpToolsCatalog.test.ts": {
+  "count": 100,
+  "digest": "be885209170906ba"
+ },
+ "tests/unit/mcpTriggerReviewAdmission.test.ts": {
+  "count": 48,
+  "digest": "5b2df8257cb03a81"
+ },
+ "tests/unit/mcpTriggerReviewDeadline.test.ts": {
+  "count": 4,
+  "digest": "8b1315c29a7ffd6c"
+ },
+ "tests/unit/memoryApi.test.ts": {
+  "count": 16,
+  "digest": "05e3c3565902ed90"
+ },
+ "tests/unit/mergeGroupGate.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/mergeGroupTokenMinter.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/milestone1DataStoreApiSync.test.ts": {
+  "count": 8,
+  "digest": "5144e0d86f13cc9a"
+ },
+ "tests/unit/milestone22EmpiricalChallenger.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/milestone2Challenger.test.ts": {
+  "count": 17,
+  "digest": "cf1129eb5968aba3"
+ },
+ "tests/unit/milestone3RemediationReverification.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/milestone4RemediationReverification.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/milestone6Challenger.test.ts": {
+  "count": 14,
+  "digest": "e7539c92676d8c46"
+ },
+ "tests/unit/milestone6InteractiveDashboard.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/onPrCloseRules.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/openRouterOnlyContract.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/openRouterQualificationContract.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/operatorDiffShrinkChart.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/operatorIncrementalChart.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/operatorMapReduceChart.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/operatorReviewBudgetChart.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/operatorSkipEmptyModerationChart.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/operatorVerdictCacheChart.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/orphanedProjectionCancellation.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/panelEngineChallenger.test.ts": {
+  "count": 26,
+  "digest": "55ac6e5010e17641"
+ },
+ "tests/unit/panelEngineDeep.test.ts": {
+  "count": 53,
+  "digest": "e4abfe3a6e0090f1"
+ },
+ "tests/unit/panelEngineParallel.test.ts": {
+  "count": 6,
+  "digest": "b48873ce7a9894e0"
+ },
+ "tests/unit/panelEngineTelemetryAccumulation.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/panelEngineTokenMetrics.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/panelNativeRoleEvidence.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/panelNativeTurnProtocol.test.ts": {
+  "count": 9,
+  "digest": "a84ab6da131630ac"
+ },
+ "tests/unit/panelWallClockFastShip.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/personaDriftNormalization.test.ts": {
+  "count": 14,
+  "digest": "acc8cd8875f2ca93"
+ },
+ "tests/unit/personaGating.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/personaPanelV3.test.ts": {
+  "count": 10,
+  "digest": "854801114ca2dfcb"
+ },
+ "tests/unit/piRunState.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/piWorker.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/pipelineHarnessRunner.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/pipelineResilienceExpansion.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/platformMemoryStore.test.ts": {
+  "count": 9,
+  "digest": "9d9a68b951d4ba89"
+ },
+ "tests/unit/postgresStore.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/prCloseWebhook.test.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "tests/unit/prDetailModalMermaidUi.test.tsx": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/prMemoryStore.test.ts": {
+  "count": 28,
+  "digest": "bcf61374594ec97c"
+ },
+ "tests/unit/prReviewDetailModalR1R2.test.tsx": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/preChecksConfig.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/preChecksTelemetry.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/prepPhaseDecoupling.test.ts": {
+  "count": 8,
+  "digest": "4fbc9bbe79ec7f29"
+ },
+ "tests/unit/preparedPublishingPolicy.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/providerReceiptSchema.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/publicSelfReviewAdmission.test.ts": {
+  "count": 3,
+  "digest": "91621b52f8dad415"
+ },
+ "tests/unit/publicationIdempotency.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/publishTokenMinter.test.ts": {
+  "count": 3,
+  "digest": "a944a7216bbc9467"
+ },
+ "tests/unit/publisherIdentityProbe.test.ts": {
+  "count": 10,
+  "digest": "4ac0e15909e91064"
+ },
+ "tests/unit/publishingBudgetSizing.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/publishingReview.test.ts": {
+  "count": 34,
+  "digest": "a6cd3f318f7e323a"
+ },
+ "tests/unit/publishingReviewComposedEnginePanelSize.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/publishingReviewShadowMode.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/publishingReviewTokenAccounting.test.ts": {
+  "count": 4,
+  "digest": "8b1315c29a7ffd6c"
+ },
+ "tests/unit/qualificationReader.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/qualificationReceiptComparison.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reaperPublishingOwnership.test.ts": {
+  "count": 6,
+  "digest": "13aa74170efab4c3"
+ },
+ "tests/unit/receiptOnlyWorker.test.ts": {
+  "count": 10,
+  "digest": "a0159a19b75b1834"
+ },
+ "tests/unit/recoverablePanelRetry.test.ts": {
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
+ },
+ "tests/unit/redTeamPersona.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/rel1058PersonaCoverageGaps.test.ts": {
+  "count": 22,
+  "digest": "432e4fbf0101a077"
+ },
+ "tests/unit/rel1079DiffShrink.test.ts": {
+  "count": 18,
+  "digest": "0884e24fc198f14d"
+ },
+ "tests/unit/rel1082ReviewBudget.test.ts": {
+  "count": 16,
+  "digest": "716ec4191017d100"
+ },
+ "tests/unit/rel1083MapReduceReview.test.ts": {
+  "count": 12,
+  "digest": "267f91a162e23013"
+ },
+ "tests/unit/rel1084EvidencePriorQualification.test.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/rel1084IncrementalTrusted.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/rel1084PriorVerdictRealCompletion.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/rel1085VerdictCacheTrusted.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/rel1088UncoveredSourceBesideLane.test.ts": {
+  "count": 1,
+  "digest": "768e4a9ee6daebbc"
+ },
+ "tests/unit/rel1092DiscloseTruncationAndOmittedPatches.test.ts": {
+  "count": 3,
+  "digest": "7c29de34ef43ec24"
+ },
+ "tests/unit/rel1113InfrastructureIncomplete.test.ts": {
+  "count": 10,
+  "digest": "854801114ca2dfcb"
+ },
+ "tests/unit/rel1118NoPersonaDocsManifest.test.ts": {
+  "count": 12,
+  "digest": "c8ca6a1a3b18769e"
+ },
+ "tests/unit/rel1124ThrownPanelInfrastructure.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/rel1135SensitivePaths.test.ts": {
+  "count": 4,
+  "digest": "7f955215c60c5073"
+ },
+ "tests/unit/rel1136ToolchainPinsNewPackageLockfiles.test.ts": {
+  "count": 24,
+  "digest": "189596ffac2e69d0"
+ },
+ "tests/unit/rel1138OpenRouterClientErrorCause.test.ts": {
+  "count": 1,
+  "digest": "518bfb656076e780"
+ },
+ "tests/unit/rel1138PanelRoleErrorCause.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/rel1138ReviewBudgetSavings.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/rel1141LockfileChangeSummary.test.ts": {
+  "count": 1,
+  "digest": "97a430fdc3b8e286"
+ },
+ "tests/unit/rel1141OversizedLockfileNeverSilent.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/rel972DataConfigAndExclusions.test.ts": {
+  "count": 10,
+  "digest": "0097690b53965039"
+ },
+ "tests/unit/rel972LockfileOnlyNoReviewableContent.test.ts": {
+  "count": 4,
+  "digest": "7e9d8cb3dca531b8"
+ },
+ "tests/unit/releaseFixtureCopy.test.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/remoteMcpRouter.test.ts": {
+  "count": 21,
+  "digest": "f61a9eed60517796"
+ },
+ "tests/unit/repoFlowchartToggleUi.test.tsx": {
+  "count": 17,
+  "digest": "fffd17104cdb4be5"
+ },
+ "tests/unit/reposPageUi.test.tsx": {
+  "count": 40,
+  "digest": "474ec6e8b0531f82"
+ },
+ "tests/unit/repositoryContext.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/repositoryReviewRulesApi.test.ts": {
+  "count": 14,
+  "digest": "c47558c0ff1356c4"
+ },
+ "tests/unit/repositoryVisibilityEventHandler.test.ts": {
+  "count": 15,
+  "digest": "286bbd33d5d0b49f"
+ },
+ "tests/unit/repositoryVisibilityInstallationClient.test.ts": {
+  "count": 18,
+  "digest": "7d6a1ac39f505ccf"
+ },
+ "tests/unit/repositoryVisibilityPrompt.test.ts": {
+  "count": 5,
+  "digest": "d50fd3ecad18397a"
+ },
+ "tests/unit/repositoryVisibilityPublishingReview.test.ts": {
+  "count": 3,
+  "digest": "a944a7216bbc9467"
+ },
+ "tests/unit/reviewActionPackaging.test.ts": {
+  "count": 5,
+  "digest": "e10d1c5b98140b6d"
+ },
+ "tests/unit/reviewAdmission.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/reviewBoundarySecurity.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/reviewCIRequest.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewCi.test.ts": {
+  "count": 4,
+  "digest": "8b1315c29a7ffd6c"
+ },
+ "tests/unit/reviewCiCheckClient.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/reviewCiCheckPublisher.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/reviewCiClient.test.ts": {
+  "count": 8,
+  "digest": "fb6f0265cbfa77a1"
+ },
+ "tests/unit/reviewCiConfig.test.ts": {
+  "count": 1,
+  "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/reviewCiRuntime.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/reviewCompletionDeliveryEngine.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewCompletionPersistence.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewCompletionRepository.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/reviewCoreDifferential.test.ts": {
+  "count": 2,
+  "digest": "b49814109eecef9b"
+ },
+ "tests/unit/reviewDiffBudget.test.ts": {
+  "count": 1,
+  "digest": "4dbee9d9fbbfafb5"
+ },
+ "tests/unit/reviewDispatchRepository.test.ts": {
+  "count": 10,
+  "digest": "e99020450121f81a"
+ },
+ "tests/unit/reviewExecutionCheckpoint.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/reviewFlowchartPersona.test.ts": {
+  "count": 5,
+  "digest": "f156c3b5a3d99f5b"
+ },
+ "tests/unit/reviewGateClient.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/reviewGateDecisionMapping.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewGenerationContracts.test.ts": {
+  "count": 8,
+  "digest": "4fbc9bbe79ec7f29"
+ },
+ "tests/unit/reviewGenerationRecovery.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/reviewHitl.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewJobDispatchEngine.test.ts": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
+ },
+ "tests/unit/reviewJobDispatcherDeployment.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/reviewJobDispatcherRuntime.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewJobDispatcherStartup.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewJobProjection.test.ts": {
+  "count": 9,
+  "digest": "e4106fea1c2b7ef7"
+ },
+ "tests/unit/reviewJobProjectionCrdContract.test.ts": {
+  "count": 6,
+  "digest": "17e9f2a5aaa0ade0"
+ },
+ "tests/unit/reviewPipeline.test.ts": {
+  "count": 15,
+  "digest": "a522681ece4f232e"
+ },
+ "tests/unit/reviewPipelineDispatch.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/reviewPipelinePartitionDiagnostics.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewRecoveryPolicy.test.ts": {
+  "count": 7,
+  "digest": "2364ee3a396c84f2"
+ },
+ "tests/unit/reviewRunLifecycle.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewRunStoreExpansion.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewRunStoreV3.test.ts": {
+  "count": 10,
+  "digest": "854801114ca2dfcb"
+ },
+ "tests/unit/reviewSupersession.test.ts": {
+  "count": 13,
+  "digest": "f721a7320a16c1af"
+ },
+ "tests/unit/ruleSyncEngine.test.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "tests/unit/runnerModeSelection.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/scopedDiffInlining.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/sessionLedger.test.ts": {
+  "count": 6,
+  "digest": "6f0a68c81caf9a88"
+ },
+ "tests/unit/sessionRepository.test.ts": {
+  "count": 6,
+  "digest": "15baf46164a9af58"
+ },
+ "tests/unit/storeConfigChallenger.test.ts": {
+  "count": 11,
+  "digest": "eb7634b7cda0f502"
+ },
+ "tests/unit/streamingMultiplexer.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/submoduleArchitecturePersonaRouting.test.ts": {
+  "count": 34,
+  "digest": "53af342c51c98d8b"
+ },
+ "tests/unit/telecomWorkspace.test.ts": {
+  "count": 4,
+  "digest": "b80d6724cc90c777"
+ },
+ "tests/unit/transportFailover.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/triggerDebounce.test.ts": {
+  "count": 19,
+  "digest": "804c996bd6c097d7"
+ },
+ "tests/unit/unverifiedPremiseDowngrade.test.ts": {
+  "count": 5,
+  "digest": "1b8a91b4ffc2d396"
+ },
+ "tests/unit/useSSE.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/webhook.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/workerCompletion.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/workerLogLocator.test.ts": {
+  "count": 2,
+  "digest": "8211595a71a1d1b9"
+ },
+ "tests/unit/workerParity.test.ts": {
+  "count": 1,
+  "digest": "496c37af27e5551c"
+ },
+ "tests/unit/workerReviewCompletion.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/workerReviewCompletionHttp.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/zoektGroundingWiring.test.ts": {
+  "count": 10,
+  "digest": "854801114ca2dfcb"
+ }
 }

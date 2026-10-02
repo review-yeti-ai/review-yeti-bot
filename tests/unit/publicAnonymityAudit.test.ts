@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,43 +30,53 @@ function trackedFiles(): string[] {
     .filter((file) => !BINARY.test(file) && !file.endsWith('package-lock.json') && fs.existsSync(path.join(root, file)));
 }
 
-function countByFile(): Map<string, number> {
-  const counts = new Map<string, number>();
+interface Finding { count: number; digest: string }
+
+// The digest is over the sorted, lower-cased matches, so replacing one reference with another (same count)
+// is still detected, without the allowlist having to contain any of the names.
+function digestOf(matches: string[]): string {
+  return createHash('sha256').update(matches.map((m) => m.toLowerCase()).sort().join('\n')).digest('hex').slice(0, 16);
+}
+
+function findingsByFile(): Map<string, Finding> {
+  const findings = new Map<string, Finding>();
   for (const file of trackedFiles()) {
     let text: string;
     try { text = fs.readFileSync(path.join(root, file), 'utf8'); } catch { continue; }
-    const hits = text.match(FORBIDDEN)?.length ?? 0;
-    // A tracked file NAME that carries a reference counts as one.
-    const nameHits = file.match(FORBIDDEN)?.length ?? 0;
-    if (hits + nameHits > 0) counts.set(file, hits + nameHits);
+    // A tracked file NAME that carries a reference counts too.
+    const matches = [...(text.match(FORBIDDEN) ?? []), ...(file.match(FORBIDDEN) ?? [])];
+    if (matches.length > 0) findings.set(file, { count: matches.length, digest: digestOf(matches) });
   }
-  return counts;
+  return findings;
 }
 
 // File names that carry the organization are stored with an <org> placeholder so the list stays clean.
-const allowlist: Record<string, number> = Object.fromEntries(Object.entries(JSON.parse(
+const allowlist: Record<string, Finding> = Object.fromEntries(Object.entries(JSON.parse(
   fs.readFileSync(path.join(root, 'tests/fixtures/public-anonymity-allowlist.json'), 'utf8'),
-) as Record<string, number>).map(([file, max]) => [file.replace('<org>', ORG), max]));
+) as Record<string, Finding>).map(([file, entry]) => [file.replace('<org>', ORG), entry]));
 
 describe('public anonymity audit (whole tracked tree)', () => {
-  const counts = countByFile();
+  const found = findingsByFile();
 
   it('no tracked file outside the allowlist names the deploying organization or its private repositories', () => {
-    const offenders = [...counts.entries()].filter(([file]) => !(file in allowlist)).map(([file, n]) => `${file} (${n})`);
+    const offenders = [...found.entries()].filter(([file]) => !(file in allowlist)).map(([file, f]) => `${file} (${f.count})`);
     expect(offenders).toEqual([]);
   });
 
-  it('allowlisted files never gain references', () => {
-    const grown = Object.entries(allowlist)
-      .filter(([file, max]) => (counts.get(file) ?? 0) > max)
-      .map(([file, max]) => `${file}: ${counts.get(file)} > ${max}`);
-    expect(grown).toEqual([]);
+  it('allowlisted files never gain references, and a swapped reference is not a pass', () => {
+    const changed = Object.entries(allowlist)
+      .filter(([file, entry]) => {
+        const now = found.get(file);
+        return now !== undefined && (now.count > entry.count || (now.count === entry.count && now.digest !== entry.digest));
+      })
+      .map(([file]) => file);
+    expect(changed).toEqual([]);
   });
 
-  it('allowlist entries that no longer have references are removed (the list only shrinks)', () => {
+  it('allowlist entries whose references shrank or vanished are updated (the list only shrinks)', () => {
     const stale = Object.entries(allowlist)
-      .filter(([file, max]) => (counts.get(file) ?? 0) < max)
-      .map(([file, max]) => `${file}: ${counts.get(file) ?? 0} < ${max} (lower the recorded count or delete the entry)`);
+      .filter(([file, entry]) => (found.get(file)?.count ?? 0) < entry.count)
+      .map(([file, entry]) => `${file}: ${found.get(file)?.count ?? 0} < ${entry.count} (update the entry, or delete it at zero)`);
     expect(stale).toEqual([]);
   });
 
