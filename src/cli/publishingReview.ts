@@ -390,7 +390,9 @@ export {
 };
 export type { OpenAITransportConfig };
 
-export const BLOCKING_SEVERITIES = new Set(blockingFindingSeverities(advisoryRequiredByDefault()));
+export const BLOCKING_SEVERITIES: Set<string> = new Set(
+  blockingFindingSeverities(advisoryRequiredByDefault()),
+);
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
