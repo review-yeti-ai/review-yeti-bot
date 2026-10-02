@@ -239,6 +239,31 @@ const caller = {
 };
 
 describe('REL-1265 dispute re-review flow', () => {
+  it('rolls back and releases when the accepted source lookup is empty, without adjudicating', async () => {
+    const f = setup();
+    const originalQuery = f.transactionClient.query.getMockImplementation()!;
+    f.transactionClient.query.mockImplementation(async (sql, values) => {
+      if (sql.includes('WITH latest_run AS')) { f.calls.push({ sql, values }); return { rows: [] }; }
+      return originalQuery(sql, values);
+    });
+    const modelClient = { complete: vi.fn() };
+    const adjudicateDispute = vi.fn();
+    const tool = createDisputeFindingTool({ transactionPool: f.pool as never,
+      authoritativePublishing: findingRecheckAdmission(identity), modelClient, adjudicateDispute });
+    await expect(tool.execute({ owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber,
+      finding_id: getReviewFindingId(identity.runId, task.id, finding),
+      counter_argument: 'The router binds the authenticated tenant before evaluating this guard.' },
+    { caller, authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: identity.owner, repo: identity.repo } }))
+      .rejects.toThrow('The latest review does not have a published, accepted finding source');
+    expect(f.pool.connect).toHaveBeenCalledTimes(2);
+    expect(f.transactionClient.release).toHaveBeenCalledTimes(2);
+    expect(f.calls.some(({ sql }) => sql === 'BEGIN')).toBe(true);
+    expect(f.calls.some(({ sql }) => sql === 'ROLLBACK')).toBe(true);
+    expect(f.calls.some(({ sql }) => sql === 'COMMIT' || sql.includes('INSERT INTO review_finding_rechecks'))).toBe(false);
+    expect(modelClient.complete).not.toHaveBeenCalled();
+    expect(adjudicateDispute).not.toHaveBeenCalled();
+  });
+
   it('releases preflight connections and performs no mutation when the authority lookup times out', async () => {
     vi.useFakeTimers();
     try {

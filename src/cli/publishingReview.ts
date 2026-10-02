@@ -66,7 +66,7 @@ import {
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
 import { canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
-import { disputedFindingTaskMatchesCheckpoint, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
+import { disputedFindingTaskMatchesCheckpoint, remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
@@ -1590,10 +1590,11 @@ export async function runPublishingReviewWorker(
           throw new Error('Disputed finding re-review does not match this exact-head task checkpoint');
         }
       }
-      const requestedTaskIds = new Set(disputedFindingRechecks.map((recheck) => recheck.taskId));
       resumedCheckpoint = {
         ...resumedCheckpoint,
-        completedTasks: resumedCheckpoint.completedTasks.filter((task) => !requestedTaskIds.has(task.id)),
+        completedTasks: remainingCheckpointTasksAfterRechecks(
+          resumedCheckpoint.completedTasks, disputedFindingRechecks, resumedCheckpoint.plan,
+        ),
       };
     }
     // Set only after the composed engine revalidates the stored plan and findings against this

@@ -134,7 +134,7 @@ import type {
   PersonaLaneResult,
 } from './types';
 import type { ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
-import { disputedFindingTaskPlanMatches, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
+import { remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 
 export interface ComposedCheckpointSnapshot {
@@ -1762,11 +1762,14 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const resumedPlan = options.checkpoint?.resumed
       ? validateTaskPlan({ tasks: options.checkpoint.resumed.plan }, { changedFiles: effectiveFilePaths, maxTasks })
       : null;
+    let retainedCheckpointTasks = options.checkpoint?.resumed?.completedTasks ?? [];
     if ((options.disputedFindingRechecks?.length ?? 0) > 0) {
-      if (!resumedPlan?.valid || !options.checkpoint?.resumed
-        || options.disputedFindingRechecks!.some((recheck) => !disputedFindingTaskPlanMatches(recheck, resumedPlan.tasks))) {
+      if (!resumedPlan?.valid || !options.checkpoint?.resumed) {
         throw new Error('Disputed finding re-review does not match a validated resumed task plan');
       }
+      retainedCheckpointTasks = remainingCheckpointTasksAfterRechecks(
+        retainedCheckpointTasks, options.disputedFindingRechecks!, resumedPlan.tasks,
+      );
     }
     try {
       if (resumedPlan?.valid) {
@@ -1832,7 +1835,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     }
     if (resumedPlan?.valid && options.checkpoint?.resumed) {
       const planIds = new Set(planOutcome.tasks.map((task) => task.id));
-      for (const task of options.checkpoint.resumed.completedTasks) {
+      for (const task of retainedCheckpointTasks) {
         if (!planIds.has(task.id)) continue;
         try {
           completedCheckpointTasks.set(task.id, validateFindings(task.findings, changedFiles));
@@ -1841,8 +1844,6 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         }
       }
     }
-    // A pending service request invalidates only its target task's resumed result.
-    for (const taskId of rechecksByTask.keys()) completedCheckpointTasks.delete(taskId);
     let checkpointDurableRevision = options.checkpoint?.resumed?.revision ?? 0;
     let queuedCheckpoint: ComposedCheckpointSnapshot | null = null;
     let checkpointDrain: Promise<void> | null = null;

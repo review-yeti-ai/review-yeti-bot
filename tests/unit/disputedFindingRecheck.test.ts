@@ -6,7 +6,7 @@ import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../src/review/workerReviewCompletion';
 import {
   disputedFindingRecheckDigest, loadValidatedDisputedFindingRechecks,
-  parseDisputedFindingRecheck, validateDisputedFindingRecheckRow, pendingDisputedFindingRechecks,
+  parseDisputedFindingRecheck, validateDisputedFindingRecheckRow, pendingDisputedFindingRechecks, remainingCheckpointTasksAfterRechecks,
 } from '../../src/review/disputedFindingRecheck';
 
 const names = {
@@ -214,6 +214,16 @@ describe('checkpoint acknowledgement identity and task receipts', () => {
     };
     return { recheck, checkpoint };
   }
+  it('invalidates the requested task while preserving unrelated completed findings', () => {
+    const { recheck, checkpoint } = pair();
+    const unrelated = { id: 'other-reviewer', findings: [] };
+    const completed = [...checkpoint.completedTasks, unrelated];
+    expect(remainingCheckpointTasksAfterRechecks(completed, [recheck], checkpoint.plan)).toEqual([unrelated]);
+    expect(completed).toHaveLength(2);
+    expect(remainingCheckpointTasksAfterRechecks(completed, [], checkpoint.plan)).toEqual(completed);
+    expect(() => remainingCheckpointTasksAfterRechecks(completed, [recheck], []))
+      .toThrow('Disputed finding re-review does not match a validated resumed task plan');
+  });
   it('returns no pending work after a matching acknowledged task', () => {
     const { recheck, checkpoint } = pair();
     expect(pendingDisputedFindingRechecks([recheck], checkpoint, 2)).toEqual([]);

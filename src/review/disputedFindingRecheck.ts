@@ -247,3 +247,16 @@ export function pendingDisputedFindingRechecks(
   }
   return rechecks.filter((recheck) => !satisfied.has(recheck.requestId));
 }
+
+
+/** Keep unrelated durable task results, while pending rechecks require fresh target-task work. */
+export function remainingCheckpointTasksAfterRechecks(
+  completedTasks: ReviewExecutionCheckpoint['completedTasks'], rechecks: DisputedFindingRecheck[],
+  plan: ReviewExecutionCheckpoint['plan'],
+): ReviewExecutionCheckpoint['completedTasks'] {
+  if (rechecks.some((recheck) => !disputedFindingTaskPlanMatches(recheck, plan))) {
+    throw new Error('Disputed finding re-review does not match a validated resumed task plan');
+  }
+  const requestedTaskIds = new Set(rechecks.map((recheck) => recheck.taskId));
+  return completedTasks.filter((task) => !requestedTaskIds.has(task.id));
+}

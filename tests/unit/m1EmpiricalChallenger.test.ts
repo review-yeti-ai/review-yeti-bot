@@ -89,7 +89,7 @@ describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChalleng
       expect(connect).not.toHaveBeenCalled();
     });
 
-    it('does not adjudicate or mutate a finding when no accepted source transaction is available', async () => {
+    it('does not adjudicate or mutate a finding when no transaction pool is available', async () => {
       const modelClient = { complete: vi.fn() };
       const adjudicateDispute = vi.fn();
       const tool = createDisputeFindingTool({ modelClient, adjudicateDispute });
