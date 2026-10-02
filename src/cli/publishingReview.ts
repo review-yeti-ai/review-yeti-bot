@@ -33,7 +33,9 @@ import {
 } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
-import { createDeletionEvidenceRuntime } from '../review/deletionEvidence';
+import { createDeletionEvidenceRuntime, DELETION_CLASSIFICATION_TIMEOUT_MS } from '../review/deletionEvidence';
+import type { DeletionClassificationPlan } from '../review/deletionClassification';
+import { buildEffectiveReviewFiles } from '../review/personaApplicability';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
@@ -1789,6 +1791,8 @@ export async function runPublishingReviewWorker(
     // `zoektDuration` (panelEngine.ts) measures query time against an already-built index; this
     // measures materializing the worktree and building that index in the first place.
     let zoektIndexBuildMs = 0;
+    let deletionRuntime: ReturnType<typeof createDeletionEvidenceRuntime> | undefined;
+    let deletionClassification: DeletionClassificationPlan | undefined;
     type ShadowOutcome =
       | { status: 'skipped' }
       | { status: 'settled'; result: PanelResult }
@@ -1913,11 +1917,13 @@ export async function runPublishingReviewWorker(
           }
         : workerConfig;
       if (repoFileProvider) {
-        const deletionEvidence = createDeletionEvidenceRuntime({ files: changedFiles, provider: repoFileProvider,
+        const allowedPaths = new Set(buildEffectiveReviewFiles(changedFiles, { pathFilters: groundedConfig.path_filters }).files.map((file) => file.path));
+        deletionRuntime = createDeletionEvidenceRuntime({ files: changedFiles.filter((file) => allowedPaths.has(file.path)), provider: repoFileProvider,
           repository: identity.repo, headSha: identity.headSha, env,
           zoektConfig: (groundedConfig as any).evidence?.zoekt, signal: panelDeadline.signal });
-        repoFileProvider.deletionManifest = deletionEvidence.manifest;
-        repoFileProvider.deletionEvidence = deletionEvidence.evidence;
+        repoFileProvider.deletionManifest = deletionRuntime.manifest;
+        repoFileProvider.deletionEvidence = deletionRuntime.evidence;
+        repoFileProvider.deletionPlan = deletionRuntime.plan;
       }
       // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
       // cutoff. Late setup cannot mint another relative window for either engine.
@@ -1940,6 +1946,15 @@ export async function runPublishingReviewWorker(
           throw new ReviewSupersededError('pre_review', identity.headSha, error.currentHeadSha);
         }
         throw error;
+      }
+      // Classification runs before either engine starts planning. Disabled or
+      // unavailable JEV keeps the full normal review; no path is exempted.
+      if (deletionRuntime) {
+        deletionClassification = await deletionRuntime.prepare({
+          budgetMs: Math.min(DELETION_CLASSIFICATION_TIMEOUT_MS,
+            Math.max(0, (panelDeadline.budget.deadlineAtMs - panelDeadline.now()) / 10)),
+        });
+        panelDeadline.check();
       }
       shadowDeadline = isShadow
         ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, panelDeadline.signal,
@@ -2622,6 +2637,12 @@ export async function runPublishingReviewWorker(
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
           coverageComplete: coverageGaps.length === 0 && !gracefulPartial,
           quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict && !gracefulPartial,
+          ...(deletionClassification && deletionClassification.status !== 'disabled' && deletionClassification.totalFiles > 0
+            ? { deletionClassification: {
+              version: deletionClassification.version, digest: deletionClassification.digest, status: deletionClassification.status,
+              totalFiles: deletionClassification.totalFiles, classifiedFiles: deletionClassification.classifiedFiles,
+              unresolvedFiles: deletionClassification.unresolvedFiles, totalGroups: deletionClassification.groups.length,
+            } } : {}),
           ...(gracefulPartial ? { failureDiagnostics: {
             reason: 'review_evidence_deadline',
             ...(gracefulOperationalTelemetry ? { operationalTelemetry: gracefulOperationalTelemetry } : {}),

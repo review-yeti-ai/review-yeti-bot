@@ -183,7 +183,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(jq -r '.[]' <<<"$TESTS")
-          npx vitest run "${files[@]}"
+          npx vitest run --no-file-parallelism "${files[@]}"
 
       - name: Run REL-817 reaper acceptance harness
         if: needs.test-plan.outputs.reaper-acceptance == 'true'
