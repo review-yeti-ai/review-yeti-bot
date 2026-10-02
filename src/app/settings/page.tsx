@@ -310,11 +310,11 @@ function SettingsContent() {
         <TabsList className="grid w-full grid-cols-2 max-w-md bg-card/80 border border-border/60">
           <TabsTrigger value="personas" className="flex items-center gap-2 text-xs font-semibold">
             <Sliders className="h-4 w-4 text-purple-400" />
-            Persona Roster &amp; Grid
+            Swarm Review Tasks &amp; Dimensions
           </TabsTrigger>
           <TabsTrigger value="models" className="flex items-center gap-2 text-xs font-semibold">
             <Cpu className="h-4 w-4 text-indigo-400" />
-            AI Models &amp; Providers
+            Edge Swarm Infrastructure &amp; Budgets
           </TabsTrigger>
         </TabsList>
 
@@ -327,16 +327,16 @@ function SettingsContent() {
           </div>
         )}
 
-        {/* Tab 1: Persona Editor Grid */}
+        {/* Tab 1: Swarm Review Task Dimensions */}
         <TabsContent value="personas" className="space-y-6 mt-6">
           <Card className="glass-panel border-border/80">
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 text-base font-bold">
                 <Sliders className="h-5 w-5 text-purple-400" />
-                Domain-Specialized Persona Review Roster
+                Composed Swarm Review Task Dimensions
               </CardTitle>
               <CardDescription>
-                Click any persona card or configure button below to launch the editor drawer and configure system prompt, AI model, effort level, and arbitration threshold.
+                Review Yeti operates as a unified Composed Swarm Reviewer. Review tasks are dynamically planned across the closed dimensions below based on the PR diff, running with subagent context compaction and bounded concurrency via native <code className="text-indigo-300 font-mono">reviewyeti-ai/yeti-pr-reviewer</code>.
               </CardDescription>
             </CardHeader>
             <CardContent>

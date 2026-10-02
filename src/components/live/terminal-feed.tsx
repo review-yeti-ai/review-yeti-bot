@@ -117,7 +117,8 @@ export function TerminalFeed({
       <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2.5 border-b border-white/[0.06] bg-white/[0.02]">
         <div className="flex items-center gap-2">
           <Terminal className="h-4 w-4 text-emerald-400" />
-          <span className="text-xs font-semibold text-zinc-200 font-mono">Live Swarm stdout / stderr</span>
+          <span className="text-xs font-semibold text-zinc-200 font-mono">Terminal Feed</span>
+          <span className="text-[11px] text-zinc-500 font-mono hidden sm:inline">| Live Swarm stdout / stderr</span>
           {selectedPersona !== 'all' && (
             <Badge variant="outline" className="text-[10px] uppercase border-emerald-500/40 text-emerald-400 bg-emerald-500/10">
               {selectedPersona}

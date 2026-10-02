@@ -42,6 +42,15 @@ export type LiveStreamPersona =
   | 'quorum'
   | string;
 
+export type TaskDimension =
+  | 'security'
+  | 'performance'
+  | 'architecture'
+  | 'testing'
+  | 'dependencies'
+  | 'contract'
+  | 'licensing';
+
 /**
  * The bus-side persona/token shapes. REL-573: these previously lived in `src/live/liveStreamBus.ts`
  * and were imported back into this module, which made the canonical type module depend on a
