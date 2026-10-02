@@ -1,5 +1,9 @@
-import { createHash } from 'node:crypto';
 import type { ResourceDbClient, ReviewFindingResourceItem, ReviewFindingsResourceData } from './resourceTypes';
+import {
+  extractReviewFindingEntries,
+  getReviewFindingId,
+  getReviewFindingIdentityParts,
+} from '../tools/findingIdentity';
 
 export async function fetchFindingsResource(
   owner: string,
@@ -91,29 +95,7 @@ export async function fetchFindingsResource(
   const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
   const runId = String(row.run_id || 'run-1');
 
-  const rawFindingsList: Array<{ finding: any; personaId: string }> = [];
-
-  if (Array.isArray(payload.findings)) {
-    for (const f of payload.findings) {
-      rawFindingsList.push({ finding: f, personaId: f.personaId || f.persona || 'reviewer' });
-    }
-  } else if (payload?.result?.personas && Array.isArray(payload.result.personas)) {
-    for (const persona of payload.result.personas) {
-      const personaId = String(persona.id || 'reviewer');
-      const pFindings = Array.isArray(persona.findings) ? persona.findings : [];
-      for (const f of pFindings) {
-        rawFindingsList.push({ finding: f, personaId });
-      }
-    }
-  } else if (payload?.personas && Array.isArray(payload.personas)) {
-    for (const persona of payload.personas) {
-      const personaId = String(persona.id || 'reviewer');
-      const pFindings = Array.isArray(persona.findings) ? persona.findings : [];
-      for (const f of pFindings) {
-        rawFindingsList.push({ finding: f, personaId });
-      }
-    }
-  }
+  const rawFindingsList = extractReviewFindingEntries(payload);
 
   const adrPattern = /\bADR[-_\s]?#?(\d{3,4})\b/gi;
   const extractedFindings: ReviewFindingResourceItem[] = [];
@@ -121,9 +103,7 @@ export async function fetchFindingsResource(
   for (const { finding: f, personaId } of rawFindingsList) {
     const title = String(f.title || '');
     const body = String(f.body || f.rationale || '');
-    const filePath = String(f.path || f.file_path || f.file || '');
-    const lineEnd = Number(f.line_end || f.line || 1);
-    const lineStart = Number(f.line_start || f.startLine || lineEnd);
+    const { filePath, lineEnd, lineStart } = getReviewFindingIdentityParts(f);
 
     // Severity normalization
     let sev: 'P0' | 'P1' | 'P2' = 'P2';
@@ -161,13 +141,7 @@ export async function fetchFindingsResource(
       category = 'Contract';
     }
 
-    const findingId =
-      f.finding_id ||
-      f.id ||
-      createHash('sha256')
-        .update(`${runId}:${filePath}:${lineStart}:${title}`)
-        .digest('hex')
-        .slice(0, 16);
+    const findingId = getReviewFindingId(runId, personaId, f);
 
     const isOverruled = f.status === 'OVERRULED' || f.verdict === 'overruled';
     const isResolved = f.resolved === true || f.status === 'RESOLVED';
