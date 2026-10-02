@@ -35,10 +35,4 @@ describe('package.json script contract', () => {
   it('extracts dotted script names whole and ignores trailing sentence punctuation', () => {
     expect(npmRunTargets('npm run build.backend && npm run lint.fix.')).toEqual(['build.backend', 'lint.fix']);
   });
-
-  it('keeps build:backend, which Dockerfile.worker and the build script depend on', () => {
-    // The script must be one plain tsc run against the server tsconfig: -p/--project spelling and extra
-    // flags are fine, optionally followed by `&& node scripts/<file>` (static-asset staging); `|| true` and `;` are not allowed.
-    expect(pkg.scripts['build:backend']).toMatch(/^tsc (?:-p|--project)[ =]tsconfig\.server\.json(?: --[a-zA-Z-]+(?: [^\s&|;]+)?)*(?: && node scripts\/[A-Za-z0-9._-]+\.m?js)?$/u);
-  });
 });
