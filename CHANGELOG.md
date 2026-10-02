@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.112.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.111.0...v1.112.0) (2026-10-02)
+
+
+### Features
+
+* **policy:** require resolution of P2 advisory findings before merge ([444622d](https://github.com/review-yeti-ai/review-yeti-bot/commit/444622d6eeda9dee9a9cb42a1f50cd96da74bb27))
+
+
+### Bug Fixes
+
+* **k8s:** treat terminal PRReviewJobs as already cancelled when the CRD rejects the patch ([#1255](https://github.com/review-yeti-ai/review-yeti-bot/issues/1255)) ([b9c9f52](https://github.com/review-yeti-ai/review-yeti-bot/commit/b9c9f5292ee7a581342c2bd92a1ab78d211fe477))
+* **review:** reconcile Gate-bound abandoned failure publication ([#1254](https://github.com/review-yeti-ai/review-yeti-bot/issues/1254)) ([b265a56](https://github.com/review-yeti-ai/review-yeti-bot/commit/b265a568d8001e3a662f721f65237303516e1ce8))
+
 ## [1.111.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.110.0...v1.111.0) (2026-10-01)
 
 
