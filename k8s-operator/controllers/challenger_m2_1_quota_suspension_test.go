@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Challenger 1 Empirical Adversarial Test Suite:
 Requirement R3: Pod Suspension & Zero-Quota Wait

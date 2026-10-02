@@ -3,9 +3,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.15.0
-  name: prreviewjobs.review.calltelemetry.com
+  name: prreviewjobs.legacy.review-yeti.ai
 spec:
-  group: review.calltelemetry.com
+  group: legacy.review-yeti.ai
   names:
     kind: PRReviewJob
     listKind: PRReviewJobList

@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -305,7 +305,7 @@ func TestEmpirical_ResourceDeletion_ConcurrentStress(t *testing.T) {
 				Namespace: "default",
 			},
 			Spec: reviewv1alpha1.PRReviewJobSpec{
-				Repo:     "calltelemetry/cisco-cdr",
+				Repo:     "exampleorg/example-api",
 				PRNumber: prNum,
 			},
 		}

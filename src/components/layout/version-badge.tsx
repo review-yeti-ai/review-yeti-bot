@@ -25,15 +25,15 @@ export interface VersionInfoData {
 
 export function VersionBadge() {
   const [info, setInfo] = React.useState<VersionInfoData>({
-    name: 'ct-review-bot',
-    version: 'v1.5.0',
-    commitHash: '92905d4',
-    fullCommitHash: '92905d4a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e',
-    buildTimestamp: '2026-07-27T14:40:00Z',
+    name: 'Review Yeti',
+    version: 'v2.4.0',
+    commitHash: '3a377ff',
+    fullCommitHash: '3a377ff1287e09641170b04a8e3f84814d420177',
+    buildTimestamp: '2026-10-02T12:00:00Z',
     environment: 'production',
-    cluster: 'DigitalOcean Kubernetes (DOKS ny1)',
-    runner: 'GitHub Actions Runners',
-    memoryEngine: 'Tree-sitter SQLite AST Graph v2',
+    cluster: 'Cloudflare Edge (Workers & Workflows)',
+    runner: 'Cloudflare Containers & MicroVMs',
+    memoryEngine: 'R2 Context Compaction & AST Hunk Cache',
   });
 
   React.useEffect(() => {

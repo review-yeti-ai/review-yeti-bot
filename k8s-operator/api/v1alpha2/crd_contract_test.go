@@ -96,7 +96,7 @@ func TestV1Alpha2CRDStrictIdentityPatterns(t *testing.T) {
 		"policyDigest": `^[a-f0-9]{64}$`,
 		"configDigest": `^[a-f0-9]{64}$`,
 		// workerImage pins DIGEST, not registry. The previous pattern named two
-		// CallTelemetry registries, which blocked self-hosted installs outright
+		// Exampleorg registries, which blocked self-hosted installs outright
 		// while still permitting a mutable tag inside the vendor namespace
 		// (`ghcr.io/review-yeti-ai/<any>:<tag>`). Requiring a sha256 digest on
 		// every non-node image is strictly stronger and tenant-neutral.

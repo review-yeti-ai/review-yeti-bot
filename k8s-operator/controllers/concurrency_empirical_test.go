@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -64,7 +64,7 @@ func TestEmpirical_5ConcurrentJobs_QueueManager_Promotion(t *testing.T) {
 				Namespace: "default",
 			},
 			Spec: reviewv1alpha1.PRReviewJobSpec{
-				Repo:          "calltelemetry/cisco-cdr",
+				Repo:          "exampleorg/example-api",
 				PRNumber:      int32(100 + i),
 				HeadSHA:       fmt.Sprintf("headsha%d", i),
 				BaseSHA:       fmt.Sprintf("basesha%d", i),
@@ -259,7 +259,7 @@ func TestEmpirical_5ConcurrentJobs_FullLifecycle_DrainAndVerdicts(t *testing.T) 
 				Namespace: "default",
 			},
 			Spec: reviewv1alpha1.PRReviewJobSpec{
-				Repo:          "calltelemetry/cisco-cdr",
+				Repo:          "exampleorg/example-api",
 				PRNumber:      int32(200 + i),
 				HeadSHA:       fmt.Sprintf("headsha%d", i),
 				BaseSHA:       fmt.Sprintf("basesha%d", i),
@@ -404,7 +404,7 @@ func TestEmpirical_QueuedJobDeletion_DoesNotBlockQueue(t *testing.T) {
 				Namespace: "default",
 			},
 			Spec: reviewv1alpha1.PRReviewJobSpec{
-				Repo:          "calltelemetry/cisco-cdr",
+				Repo:          "exampleorg/example-api",
 				PRNumber:      int32(300 + i),
 				HeadSHA:       fmt.Sprintf("headsha%d", i),
 				BaseSHA:       fmt.Sprintf("basesha%d", i),
@@ -505,7 +505,7 @@ func TestEmpirical_ConcurrencyMetricsAndConditions(t *testing.T) {
 				Namespace: "default",
 			},
 			Spec: reviewv1alpha1.PRReviewJobSpec{
-				Repo:          "calltelemetry/cisco-cdr",
+				Repo:          "exampleorg/example-api",
 				PRNumber:      int32(400 + i),
 				HeadSHA:       fmt.Sprintf("headsha%d", i),
 				BaseSHA:       fmt.Sprintf("basesha%d", i),

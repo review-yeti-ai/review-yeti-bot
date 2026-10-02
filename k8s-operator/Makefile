@@ -2,7 +2,7 @@
 BINARY_NAME ?= bin/manager
 MAIN_SRC ?= main.go
 CRD_DIR ?= config/crd/bases
-CRD_FILES ?= $(CRD_DIR)/review.calltelemetry.com_prreviewjobs.yaml $(CRD_DIR)/review-yeti.ai_prreviewjobs.yaml
+CRD_FILES ?= $(CRD_DIR)/legacy.review-yeti.ai_prreviewjobs.yaml $(CRD_DIR)/review-yeti.ai_prreviewjobs.yaml
 
 # Match the generator recorded in the CRDs. Its x/tools dependency requires
 # the matching Go toolchain rather than the host's potentially newer Go.

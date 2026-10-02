@@ -51,7 +51,7 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
 
       await new Promise((r) => setTimeout(r, 800));
       setProgress(80);
-      setCurrentStage('3/3: Evaluating 11-Persona Arbitration Quorum...');
+      setCurrentStage('3/3: Evaluating Swarm Subagent Task Verification...');
 
       const scanRes = await onRunDiagnostic();
 
@@ -65,18 +65,15 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
         success: true,
         probe1_webhook: { status: 'accepted', deliveryId: `del_${Date.now()}`, latencyMs: 38 },
         probe2_latency: {
-          activeProviders: 4,
-          avgLatencyMs: 110,
+          activeProviders: 1,
+          avgLatencyMs: 42,
           providers: [
-            { id: 'openai', latencyMs: 95, ttftMs: 42 },
-            { id: 'anthropic', latencyMs: 88, ttftMs: 35 },
-            { id: 'grok', latencyMs: 125, ttftMs: 50 },
-            { id: 'deepseek', latencyMs: 130, ttftMs: 55 },
+            { id: 'reviewyeti-ai', latencyMs: 42, ttftMs: 18 },
           ],
         },
         probe3_arbitration: {
-          personasEvaluated: 11,
-          distinctProvidersUsed: 4,
+          personasEvaluated: 4,
+          distinctProvidersUsed: 1,
           quorumPassed: true,
           verdict: 'SHIP',
         },
@@ -294,13 +291,13 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
                   <CardTitle className="text-xs font-semibold flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
                       <Users className="h-3.5 w-3.5 text-purple-400" />
-                      Probe 3: Persona Arbitration
+                      Probe 3: Swarm Subagent Arbitration
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <HelpCircle className="h-3 w-3 text-muted-foreground/70 hover:text-foreground cursor-pointer" />
                         </TooltipTrigger>
                         <TooltipContent side="top">
-                          Evaluates multi-provider diversity across all 11 reviewer personas to verify quorum redundancy.
+                          Evaluates task-domain coverage across the Review Yeti Swarm subagents to verify security floor and AST invariant enforcement.
                         </TooltipContent>
                       </Tooltip>
                     </span>
