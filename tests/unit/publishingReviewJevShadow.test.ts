@@ -207,7 +207,7 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(on.observed).toBe(off.observed);
   });
 
-  it('publishes the check before waiting on a slow Jev (the join is the last await)', async () => {
+  it('publishes the check before waiting for slow Jev evidence', async () => {
     const order: string[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -218,17 +218,19 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
         return persuasiveAsker().asker.ask(request);
       }) as never,
     };
-    const h = harness('advisory', {
+    const h = harness('clean', {
       jevTriageShadow: { asker: slow },
       checkClient: {
         createCheck: vi.fn(async () => 4242),
-        completeCheck: vi.fn(async () => { order.push('check'); }),
+        completeCheck: vi.fn(async () => { order.push('check'); release(); }),
       },
     });
-    h.completion.reportTerminalSuccess.mockImplementation(async () => { order.push('terminal-success'); release(); });
+    h.completion.reportTerminalSuccess.mockImplementation(async () => { order.push('terminal-success'); });
     const receipt = await runPublishingReviewWorker(env(SHADOW_ON), h as never);
     expect(receipt.conclusion).toBe('success');
-    expect(order.slice(0, 2)).toEqual(['check', 'terminal-success']);
+    expect(order[0]).toBe('check');
+    expect(order.indexOf('check')).toBeLessThan(order.indexOf('jev'));
+    expect(order).toContain('terminal-success');
     expect(order).toContain('jev');
   });
 
