@@ -9,7 +9,8 @@ const root = path.resolve(__dirname, '../..');
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
 
 function npmRunTargets(text: string): string[] {
-  return [...text.matchAll(/npm run(?: -s| --silent)? ([A-Za-z0-9:_-]+)/gu)].map((match) => match[1]);
+  // Dots are legal in npm script names; a trailing dot is sentence punctuation, not part of the name.
+  return [...text.matchAll(/npm run(?: -s| --silent)? ([A-Za-z0-9:_.-]+)/gu)].map((match) => match[1].replace(/\.+$/u, ''));
 }
 
 describe('package.json script contract', () => {
@@ -29,6 +30,10 @@ describe('package.json script contract', () => {
       }
     }
     expect(missing).toEqual([]);
+  });
+
+  it('extracts dotted script names whole and ignores trailing sentence punctuation', () => {
+    expect(npmRunTargets('npm run build.backend && npm run lint.fix.')).toEqual(['build.backend', 'lint.fix']);
   });
 
   it('keeps build:backend, which Dockerfile.worker and the build script depend on', () => {
