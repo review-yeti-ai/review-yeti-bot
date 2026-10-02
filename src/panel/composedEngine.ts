@@ -1321,6 +1321,7 @@ async function runTaskWorkPhase(input: {
     const responseFormat = finalizing ? buildTaskResultResponseFormat() : NATIVE_TURN_RESPONSE_FORMAT;
     const activeMessages = compactMessageWindow(taskMessages, {
       activeTurns: TASK_COMPACTION_ACTIVE_TURNS,
+      retainSmallToolResults: true,
       toolCalls: toolCallsLog,
     });
     const turn = await callTurn({
