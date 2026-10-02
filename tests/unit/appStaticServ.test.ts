@@ -82,6 +82,20 @@ describe('Milestone 4: Express Static & SPA Fallback Routing UI Tests', () => {
     expect(res.header['cache-control']).toBe('no-cache, no-store, must-revalidate');
   });
 
+  it('Clean SPA Route GET /analytics serves public/analytics.html', async () => {
+    const res = await request(app).get('/analytics');
+    expect(res.status).toBe(200);
+    expect(res.header['content-type']).toMatch(/html/);
+    expect(res.header['cache-control']).toBe('no-cache, no-store, must-revalidate');
+  });
+
+  it('GET /dashboard/analytics serves public/analytics.html', async () => {
+    const res = await request(app).get('/dashboard/analytics');
+    expect(res.status).toBe(200);
+    expect(res.header['content-type']).toMatch(/html/);
+    expect(res.header['cache-control']).toBe('no-cache, no-store, must-revalidate');
+  });
+
   it('GET /css/theme.css serves static Linear dark CSS theme tokens', async () => {
     const res = await request(app).get('/css/theme.css');
     expect(res.status).toBe(200);

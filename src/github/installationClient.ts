@@ -241,6 +241,46 @@ export interface CompleteCheckOptions {
   annotations?: CheckRunAnnotation[];
 }
 
+export interface GitHubPullRequestItem {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  draft: boolean;
+  author: {
+    login: string;
+    avatarUrl: string;
+  };
+  headSha: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  body?: string;
+  repositoryId?: number;
+}
+
+export interface ListPullRequestsOptions {
+  state?: 'open' | 'closed' | 'all';
+  per_page?: number;
+  page?: number;
+  sort?: 'created' | 'updated' | 'popularity' | 'long-running';
+  direction?: 'asc' | 'desc';
+}
+
+export interface GitHubInstallationRepositoryItem {
+  id: number;
+  name: string;
+  full_name: string;
+  owner: {
+    login: string;
+    id: number;
+    avatar_url: string;
+  };
+  private: boolean;
+  default_branch: string;
+  description?: string;
+}
+
 class GitHubApiResponseError extends Error {
   readonly name = 'GitHubApiResponseError';
 
@@ -422,6 +462,81 @@ export class GitHubInstallationClient {
       title: String(data.title || ''),
       body: String(data.body || ''),
       ...(Number.isSafeInteger(repositoryId) && repositoryId > 0 ? { repositoryId } : {}),
+    };
+  }
+
+  /**
+   * Queries pull requests for a repository with bounded pagination.
+   */
+  async listPullRequests(
+    owner: string,
+    repo: string,
+    options: ListPullRequestsOptions = {}
+  ): Promise<GitHubPullRequestItem[]> {
+    const query = new URLSearchParams({
+      state: options.state || 'open',
+      per_page: String(Math.min(options.per_page || 30, 100)),
+      page: String(options.page || 1),
+      ...(options.sort ? { sort: options.sort } : {}),
+      ...(options.direction ? { direction: options.direction } : {}),
+    });
+
+    const data = await this.request(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?${query}`
+    );
+
+    if (!Array.isArray(data)) {
+      throw new Error('GitHub API pulls response is not an array');
+    }
+
+    return data.map((pr: any) => ({
+      number: Number(pr.number),
+      title: String(pr.title || ''),
+      state: pr.state === 'closed' ? 'closed' : 'open',
+      draft: Boolean(pr.draft),
+      author: {
+        login: String(pr.user?.login || 'unknown'),
+        avatarUrl: String(pr.user?.avatar_url || ''),
+      },
+      headSha: String(pr.head?.sha || ''),
+      headBranch: String(pr.head?.ref || ''),
+      baseBranch: String(pr.base?.ref || ''),
+      createdAt: String(pr.created_at || ''),
+      updatedAt: String(pr.updated_at || ''),
+      body: typeof pr.body === 'string' ? pr.body : undefined,
+      repositoryId: Number(pr.base?.repo?.id) || undefined,
+    }));
+  }
+
+  /**
+   * Lists repositories accessible to this GitHub App installation.
+   */
+  async listInstallationRepositories(
+    options: { per_page?: number; page?: number } = {}
+  ): Promise<{ total_count: number; repositories: GitHubInstallationRepositoryItem[] }> {
+    const query = new URLSearchParams({
+      per_page: String(Math.min(options.per_page || 100, 100)),
+      page: String(options.page || 1),
+    });
+
+    const data = await this.request(`/installation/repositories?${query}`);
+    const repos = Array.isArray(data?.repositories) ? data.repositories : [];
+
+    return {
+      total_count: Number(data?.total_count || repos.length),
+      repositories: repos.map((repo: any) => ({
+        id: Number(repo.id),
+        name: String(repo.name || ''),
+        full_name: String(repo.full_name || ''),
+        owner: {
+          login: String(repo.owner?.login || ''),
+          id: Number(repo.owner?.id),
+          avatar_url: String(repo.owner?.avatar_url || ''),
+        },
+        private: Boolean(repo.private),
+        default_branch: String(repo.default_branch || 'main'),
+        description: typeof repo.description === 'string' ? repo.description : undefined,
+      })),
     };
   }
 
@@ -1093,4 +1208,45 @@ export class GitHubInstallationClient {
     });
     return { number: data.number, html_url: data.html_url || `https://github.com/${options.owner}/${options.repo}/pull/${data.number}` };
   }
+}
+
+/**
+ * Top-level helper to list GitHub App installations using an App RS256 JWT.
+ */
+export async function listGitHubAppInstallations(
+  config: { appId: string; privateKey: string; baseUrl?: string },
+  fetchFn: typeof fetch = globalThis.fetch
+): Promise<Array<{ id: number; account: { login: string; id: number; avatarUrl: string; type: string }; appId: number }>> {
+  const { generateGitHubAppJwt } = await import('./appAuth');
+  const jwt = generateGitHubAppJwt(config.appId, config.privateKey);
+  const baseUrl = (config.baseUrl || 'https://api.github.com').replace(/\/+$/, '');
+
+  const response = await fetchFn(`${baseUrl}/app/installations?per_page=100`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub App installations lookup failed HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (!Array.isArray(data)) {
+    throw new Error('GitHub App installations response is not an array');
+  }
+
+  return data.map((inst: any) => ({
+    id: Number(inst.id),
+    account: {
+      login: String(inst.account?.login || ''),
+      id: Number(inst.account?.id),
+      avatarUrl: String(inst.account?.avatar_url || ''),
+      type: String(inst.account?.type || 'Organization'),
+    },
+    appId: Number(inst.app_id),
+  }));
 }

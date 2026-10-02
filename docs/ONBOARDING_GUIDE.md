@@ -249,6 +249,31 @@ Pull requests with a `BLOCK` verdict will automatically be blocked from merging 
 
 ---
 
+## 🖥️ Accessing the Management Portal & Cloudflare Deployment
+
+Review Yeti features an interactive web management and analytics portal with live SSE reasoning feeds, executive latency and token analytics, and review rule management.
+
+### Dashboard URLs
+
+- ⚡ **Cloudflare Edge Worker**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)
+  - **Live Review Inspector**: [`https://review-yeti-cf-orchestrator.example.workers.dev/live`](https://review-yeti-cf-orchestrator.example.workers.dev/live)
+  - **Executive Analytics**: [`https://review-yeti-cf-orchestrator.example.workers.dev/analytics`](https://review-yeti-cf-orchestrator.example.workers.dev/analytics)
+  - **Repository Management**: [`https://review-yeti-cf-orchestrator.example.workers.dev/repos`](https://review-yeti-cf-orchestrator.example.workers.dev/repos)
+  - **Settings**: [`https://review-yeti-cf-orchestrator.example.workers.dev/settings`](https://review-yeti-cf-orchestrator.example.workers.dev/settings)
+- 🌐 **Production Domain**: [`https://review-bot.example.com`](https://review-bot.example.com)
+- 💻 **Local Development**: [`http://localhost:3000`](http://localhost:3000)
+
+### Deploying the Portal to Cloudflare
+
+Because Review Yeti's control plane (Durable Objects, Workflows, Queues, R2) and execution plane already run on Cloudflare Workers (`review-yeti-cf-orchestrator`), the portal is designed to run directly on Cloudflare:
+1. **Unified Cloudflare Worker with Static Assets** (Recommended): Bind Next.js static assets (`out/`) into `wrangler.toml` using `[assets]`. Served directly from Cloudflare's edge with 0ms cold starts.
+2. **Cloudflare Pages**: Export the Next.js static build (`npm run build:frontend`) to `out/` and deploy to Cloudflare Pages edge CDN.
+3. **Cloudflare Tunnel (`cloudflared`)**: For local testing or hybrid validation alongside the DOKS operator.
+
+👉 **Follow the complete [Cloudflare Portal Setup Guide](CLOUDFLARE_PORTAL_SETUP.md)**.
+
+---
+
 ## ❓ Frequently Asked Questions (FAQ)
 
 <details>
@@ -277,6 +302,7 @@ A GitHub App provides native Check Runs API access, independent API rate limits 
 
 ## 📚 Next Steps
 
+- [Cloudflare Portal Setup Guide](CLOUDFLARE_PORTAL_SETUP.md) — Deploying the interactive management portal and analytics dashboard to Cloudflare.
 - [CLI Reference & Git Hook Guide](CLI_REFERENCE.md) — Fast pre-commit checks, 30-second setup wizard, and hook installers.
 - [Interactive PR Chat Guide](INTERACTIVE_CHAT.md) — Conversational code mentoring with `@review-yeti explain`, `fix`, and `ignore`.
 - [Team Memory & Nit Suppression Guide](TEAM_MEMORY.md) — Persistent SQLite WAL reflection and community persona charters.
