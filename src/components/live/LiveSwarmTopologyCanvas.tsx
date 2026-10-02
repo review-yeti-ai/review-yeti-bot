@@ -97,11 +97,17 @@ export function LiveSwarmTopologyCanvas({
         status: connectionStatus === 'connected' ? 'HEALTHY' : 'IN_FLIGHT',
         health: 99.9,
         latencyMs: 14,
+        progress: currentStage === 'complete' ? 100 : currentStage === 'arbitration' ? 92 : currentStage === 'execution' ? 75 : currentStage === 'planning' ? 40 : currentStage === 'compaction' ? 25 : 10,
+        tokensBurned: tokenMetrics?.totalTokens || 0,
+        budgetUsedUSD: tokenMetrics?.estimatedCostUSD || 0,
+        budgetMaxUSD: 0.0500,
         metrics: {
           cpuMs: 18,
           memoryMb: 24.2,
           throughput: '124 req/s',
-          tokensPerSec: tokenMetrics?.totalTokens ? Math.round(tokenMetrics.totalTokens / 45) : 185,
+          tokensPerSec: (tokenMetrics as any)?.tokensPerSec || (tokenMetrics?.totalTokens ? Math.round(tokenMetrics.totalTokens / 45) : 185),
+          promptTokens: tokenMetrics?.promptTokens,
+          completionTokens: tokenMetrics?.completionTokens,
         },
         details: 'Global Anycast edge worker handling request lifecycle, SSE broadcasting, token tracking, and subagent orchestration.',
       },
@@ -118,6 +124,7 @@ export function LiveSwarmTopologyCanvas({
         status: 'HEALTHY',
         health: 100,
         latencyMs: 8,
+        progress: 100,
         metrics: {
           memoryMb: 12.4,
           throughput: 'Single-flight lock',
@@ -130,13 +137,18 @@ export function LiveSwarmTopologyCanvas({
         subtitle: 'Stateful Session Actor',
         type: 'stateful_do',
         tier: 2,
-        status: 'IN_FLIGHT',
+        status: currentStage === 'complete' ? 'HEALTHY' : 'IN_FLIGHT',
         health: 99.8,
         latencyMs: 9,
+        progress: currentStage === 'complete' ? 100 : currentStage === 'arbitration' ? 92 : currentStage === 'execution' ? 80 : 40,
+        tokensBurned: tokenMetrics?.totalTokens || 0,
+        budgetUsedUSD: tokenMetrics?.estimatedCostUSD || 0,
+        budgetMaxUSD: 0.0500,
         metrics: {
           memoryMb: 32.1,
           throughput: 'SSE Streaming',
           turnsCount: 4,
+          tokensPerSec: (tokenMetrics as any)?.tokensPerSec,
         },
         details: 'In-memory actor maintaining turn state, prompt guidance, finding deduplication, and streaming event buffer.',
       },
@@ -149,6 +161,7 @@ export function LiveSwarmTopologyCanvas({
         status: 'CACHED',
         health: 100,
         latencyMs: 22,
+        progress: 100,
         metrics: {
           cacheHitRate: 95.8,
           throughput: '420 IOPS',
@@ -166,6 +179,7 @@ export function LiveSwarmTopologyCanvas({
         status: 'HEALTHY',
         health: 100,
         latencyMs: 15,
+        progress: 100,
         metrics: {
           throughput: '4 in-flight',
           memoryMb: 8.5,
@@ -185,6 +199,11 @@ export function LiveSwarmTopologyCanvas({
         status: 'IN_FLIGHT',
         progress: 75,
         findingsCount: 0,
+        tokensBurned: 3800,
+        costUSD: 0.0025,
+        budgetUSD: 0.0125,
+        turn: 1,
+        maxTurns: 20,
         lastMessage: 'Validating secret scanning, token redaction, and boundary fences...',
         durationMs: 1400,
       },
@@ -197,6 +216,11 @@ export function LiveSwarmTopologyCanvas({
         status: 'IN_FLIGHT',
         progress: 90,
         findingsCount: 1,
+        tokensBurned: 7600,
+        costUSD: 0.0052,
+        budgetUSD: 0.0125,
+        turn: 3,
+        maxTurns: 20,
         lastMessage: 'Context compaction: 4.2x ratio achieved on unified diff',
         durationMs: 2800,
       },
@@ -209,6 +233,11 @@ export function LiveSwarmTopologyCanvas({
         status: 'PENDING',
         progress: 20,
         findingsCount: 0,
+        tokensBurned: 3200,
+        costUSD: 0.0022,
+        budgetUSD: 0.0125,
+        turn: 3,
+        maxTurns: 20,
         lastMessage: 'Queued for Worker CPU/memory budget verification',
         durationMs: 400,
       },
@@ -221,6 +250,11 @@ export function LiveSwarmTopologyCanvas({
         status: 'PENDING',
         progress: 0,
         findingsCount: 0,
+        tokensBurned: 0,
+        costUSD: 0,
+        budgetUSD: 0.0125,
+        turn: 0,
+        maxTurns: 20,
         lastMessage: 'Queued for route invariant verification',
         durationMs: 0,
       },
@@ -233,6 +267,12 @@ export function LiveSwarmTopologyCanvas({
       const isArch = t.dimension === 'architecture';
       const isPerf = t.dimension === 'performance';
       const isTest = t.dimension === 'testing';
+
+      const promptTok = t.promptTokens ?? (isSec ? 5900 : isArch ? 8400 : 3200);
+      const complTok = t.completionTokens ?? (isArch ? 920 : 450);
+      const totalTok = t.tokensBurned ?? (promptTok + complTok);
+      const taskCost = t.costUSD ?? (isArch ? 0.0058 : isSec ? 0.0025 : 0.0022);
+      const taskBudget = t.budgetUSD ?? 0.0125;
 
       return {
         id: t.id,
@@ -249,13 +289,19 @@ export function LiveSwarmTopologyCanvas({
         status: t.status === 'COMPLETED' ? 'HEALTHY' : t.status === 'IN_FLIGHT' ? 'IN_FLIGHT' : 'PENDING',
         health: t.status === 'COMPLETED' ? 100 : 98.5,
         latencyMs: t.durationMs || 1200,
+        progress: t.progress ?? (t.status === 'COMPLETED' ? 100 : t.status === 'IN_FLIGHT' ? 60 : 0),
+        tokensBurned: totalTok,
+        budgetUsedUSD: taskCost,
+        budgetMaxUSD: taskBudget,
+        activeTurn: t.turn ?? (isArch ? 3 : isSec ? 1 : 2),
+        maxTurns: t.maxTurns ?? 20,
         metrics: {
-          tokensPerSec: t.status === 'IN_FLIGHT' ? 142 : 0,
-          turnsCount: isArch ? 3 : 2,
+          tokensPerSec: t.status === 'IN_FLIGHT' ? (t.tokensPerSec || 142) : 0,
+          turnsCount: t.turn ?? (isArch ? 3 : 2),
           compactionRatio: isArch ? compaction?.compactionRatio || 4.2 : undefined,
           activeFiles: t.paths,
-          promptTokens: isSec ? 5900 : isArch ? 8400 : 3200,
-          completionTokens: isArch ? 920 : 450,
+          promptTokens: promptTok,
+          completionTokens: complTok,
         },
         role: t.description,
         provider: 'OpenRouter Gateway',
@@ -271,9 +317,13 @@ export function LiveSwarmTopologyCanvas({
       subtitle: 'Synthesis & Quorum Engine',
       type: 'arbiter',
       tier: 3,
-      status: 'HEALTHY',
+      status: currentStage === 'complete' ? 'HEALTHY' : currentStage === 'arbitration' ? 'IN_FLIGHT' : 'PENDING',
       health: 100,
       latencyMs: 850,
+      progress: currentStage === 'complete' ? 100 : currentStage === 'arbitration' ? 70 : 0,
+      tokensBurned: 1850,
+      budgetUsedUSD: 0.0011,
+      budgetMaxUSD: 0.0050,
       metrics: {
         throughput: 'Binding Verdict',
         turnsCount: 1,
@@ -754,12 +804,29 @@ export function LiveSwarmTopologyCanvas({
                     {getStatusBadge(node.status)}
                   </div>
 
+                  {node.progress !== undefined && (
+                    <div className="mt-2 space-y-1">
+                      <div className="flex items-center justify-between text-[9px] font-mono">
+                        <span className="text-zinc-500">Progress</span>
+                        <span className={node.progress >= 100 ? 'text-emerald-400 font-semibold' : 'text-indigo-400 font-semibold'}>
+                          {Math.round(node.progress)}%
+                        </span>
+                      </div>
+                      <div className="h-1 w-full bg-white/[0.08] rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-300 ${node.progress >= 100 ? 'bg-emerald-400' : 'bg-indigo-500 animate-pulse'}`}
+                          style={{ width: `${node.progress}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   <div className="mt-2.5 flex items-center justify-between text-[11px] font-mono text-zinc-400 pt-2 border-t border-white/[0.04]">
                     <span>
-                      {node.metrics.activeFiles ? `${node.metrics.activeFiles.length} file(s)` : `${node.latencyMs}ms`}
+                      {node.tokensBurned ? `${node.tokensBurned.toLocaleString()} tok` : node.metrics.activeFiles ? `${node.metrics.activeFiles.length} file(s)` : `${node.latencyMs}ms`}
                     </span>
                     <span className="text-indigo-300 font-medium">
-                      {node.metrics.tokensPerSec ? `${node.metrics.tokensPerSec} t/s` : `${node.metrics.turnsCount || 1} turns`}
+                      {node.budgetUsedUSD ? `$${node.budgetUsedUSD.toFixed(4)}` : node.metrics.tokensPerSec ? `${node.metrics.tokensPerSec} t/s` : `${node.metrics.turnsCount || 1} turns`}
                     </span>
                   </div>
 

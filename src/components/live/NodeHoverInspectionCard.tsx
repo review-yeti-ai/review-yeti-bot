@@ -43,6 +43,12 @@ export interface TopologyNodeData {
   status: TopologyNodeStatus;
   health: number;
   latencyMs: number;
+  progress?: number;
+  tokensBurned?: number;
+  budgetUsedUSD?: number;
+  budgetMaxUSD?: number;
+  activeTurn?: number;
+  maxTurns?: number;
   metrics: {
     cpuMs?: number;
     memoryMb?: number;
@@ -161,6 +167,23 @@ export function NodeHoverInspectionCard({
         </p>
       )}
 
+      {/* Real-time % Complete Progress Bar */}
+      {node.progress !== undefined && (
+        <div className="mt-2.5 space-y-1 rounded-lg bg-white/[0.03] border border-white/[0.06] p-2">
+          <div className="flex items-center justify-between text-[10px] font-mono">
+            <span className="text-zinc-400">Execution Progress</span>
+            <span className={`font-bold ${node.progress >= 100 ? 'text-emerald-400' : 'text-indigo-400'}`}>
+              {Math.round(node.progress)}%
+            </span>
+          </div>
+          <ProgressBar
+            value={node.progress}
+            color={node.progress >= 100 ? 'emerald' : 'indigo'}
+            className="h-1.5"
+          />
+        </div>
+      )}
+
       {/* Live Telemetry Matrix */}
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-mono">
         <div className="rounded-lg bg-white/[0.02] border border-white/[0.05] p-2">
@@ -198,6 +221,49 @@ export function NodeHoverInspectionCard({
             <span className="text-[10px] uppercase tracking-wider text-zinc-500">Health Score</span>
             <div className="mt-0.5 flex items-baseline gap-1 text-emerald-400 font-semibold">
               <span>100%</span>
+            </div>
+          </div>
+        )}
+
+        {(node.tokensBurned !== undefined || node.metrics.promptTokens !== undefined) && (
+          <div className="rounded-lg bg-white/[0.02] border border-white/[0.05] p-2">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-500">Tokens Burned</span>
+            <div className="mt-0.5 flex items-baseline gap-1 text-zinc-100 font-semibold font-mono">
+              <span>
+                {(
+                  node.tokensBurned ??
+                  (node.metrics.promptTokens || 0) + (node.metrics.completionTokens || 0)
+                ).toLocaleString()}
+              </span>
+              <span className="text-[10px] text-zinc-500">tok</span>
+            </div>
+            {node.metrics.promptTokens !== undefined && (
+              <div className="text-[9px] text-zinc-500 font-mono mt-0.5 truncate">
+                {node.metrics.promptTokens.toLocaleString()} in / {(node.metrics.completionTokens || 0).toLocaleString()} out
+              </div>
+            )}
+          </div>
+        )}
+
+        {(node.budgetUsedUSD !== undefined || node.budgetMaxUSD !== undefined) && (
+          <div className="rounded-lg bg-white/[0.02] border border-white/[0.05] p-2">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-500">Budget Consumed</span>
+            <div className="mt-0.5 flex items-baseline gap-1 text-emerald-400 font-semibold font-mono">
+              <span>${(node.budgetUsedUSD ?? 0).toFixed(4)}</span>
+              <span className="text-[10px] text-zinc-500">/ ${(node.budgetMaxUSD ?? 0.05).toFixed(4)}</span>
+            </div>
+            <div className="text-[9px] text-zinc-500 font-mono mt-0.5">
+              {Math.min(100, Math.round(((node.budgetUsedUSD ?? 0) / (node.budgetMaxUSD || 0.05)) * 100))}% budget used
+            </div>
+          </div>
+        )}
+
+        {node.activeTurn !== undefined && (
+          <div className="rounded-lg bg-white/[0.02] border border-white/[0.05] p-2">
+            <span className="text-[10px] uppercase tracking-wider text-zinc-500">Turn Step</span>
+            <div className="mt-0.5 flex items-baseline gap-1 text-indigo-300 font-semibold font-mono">
+              <span>Turn {node.activeTurn}</span>
+              <span className="text-[10px] text-zinc-500">/ {node.maxTurns || 20}</span>
             </div>
           </div>
         )}
