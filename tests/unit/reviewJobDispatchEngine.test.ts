@@ -865,6 +865,14 @@ describe('ReviewJobDispatchEngine cancellation sweep and handling', () => {
     expect(markCancelPropagated).toHaveBeenCalledExactlyOnceWith('run_pruned', 1, expect.any(Number));
   });
 
+  it('a terminal CR whose patch the CRD rejects counts as propagated so the sweep stops retrying it', async () => {
+    const markCancelPropagated = vi.fn(async () => true);
+    const outcome = await sweepEngine(vi.fn(async () => ({ status: 'already-terminal' as const })), markCancelPropagated)
+      .sweepPendingCancellations(10);
+    expect(outcome).toEqual({ propagated: 1, failed: 0, failures: [] });
+    expect(markCancelPropagated).toHaveBeenCalledExactlyOnceWith('run_pruned', 1, expect.any(Number));
+  });
+
   it('REL-1073: an immediate cancellation whose flag was pruned is not marked propagated', async () => {
     const markCancelPropagated = vi.fn(async () => true);
     const engine = sweepEngine(vi.fn(async () => ({ status: 'patched' as const, cancelRequested: undefined })), markCancelPropagated);
