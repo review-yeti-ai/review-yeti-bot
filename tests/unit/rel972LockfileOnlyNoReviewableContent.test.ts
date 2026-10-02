@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { executeComposedReview } from '../../src/panel/composedEngine';
 import { executePersonaPanel } from '../../src/panel/panelEngine';
@@ -435,27 +438,32 @@ describe('REL-972: every engine takes the same outcome', () => {
   });
 
   it('both engines review a manifest-bearing diff no persona covers -- never the lockfile exemption', async () => {
-    // Before the data/config routing in this change, an uncovered package.json
-    // failed closed as a coverage gap. package.json is JSON configuration, so
-    // it is now routed to a lane like any uncovered data/config file: still
-    // reviewed, still never exempted beside its lockfile.
-    const config = roster('testing');
-    const changedFiles = [lock('package.json', patch), lock('package-lock.json', NPM_BUMP)];
-    const decision = resolveReviewApplicability(config.personas.filter((p) => p.enabled), changedFiles);
-    expect(decision.noReviewableContent).toBe(false);
-    // REL-1141: the lockfile rides to the same lane in full, not silently hidden.
-    expect(decision.applicable.map((persona) => [persona.id, persona.routedPaths])).toEqual([['qual-lane', ['package.json', 'package-lock.json']]]);
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'rel972-routing-'));
+    try {
+      // Before the data/config routing in this change, an uncovered package.json
+      // failed closed as a coverage gap. package.json is JSON configuration, so
+      // it is now routed to a lane like any uncovered data/config file: still
+      // reviewed, still never exempted beside its lockfile.
+      const config = roster('testing');
+      const changedFiles = [lock('package.json', patch), lock('package-lock.json', NPM_BUMP)];
+      const decision = resolveReviewApplicability(config.personas.filter((p) => p.enabled), changedFiles);
+      expect(decision.noReviewableContent).toBe(false);
+      // REL-1141: the lockfile rides to the same lane in full, not silently hidden.
+      expect(decision.applicable.map((persona) => [persona.id, persona.routedPaths])).toEqual([['qual-lane', ['package.json', 'package-lock.json']]]);
 
-    // The panel reaches the routed lane, which fails on the unreachable client
-    // (so the run misses quorum) -- not the deterministic coverage error.
-    const panel = executePersonaPanel({
-      config, changedFiles, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient, deterministicRoster: true,
-    });
-    await expect(panel).rejects.toThrow(/quorum failed/);
-    await expect(panel).rejects.not.toThrow(/no enabled persona applies/);
-    await expect(executeComposedReview({
-      config, changedFiles, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient, isCurrentHead: () => false,
-    })).rejects.toThrow(/stale run aborted/);
+      // The panel reaches the routed lane, which fails on the unreachable client
+      // (so the run misses quorum) -- not the deterministic coverage error.
+      const panel = executePersonaPanel({
+        config, changedFiles, workspaceRoot, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient, deterministicRoster: true,
+      });
+      await expect(panel).rejects.toThrow(/quorum failed/);
+      await expect(panel).rejects.not.toThrow(/no enabled persona applies/);
+      await expect(executeComposedReview({
+        config, changedFiles, workspaceRoot, repository: 'r/r', headSha: 'c'.repeat(40), client: unreachableClient, isCurrentHead: () => false,
+      })).rejects.toThrow(/stale run aborted/);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   it('both engines fail an unverifiable lockfile bump closed, naming the reason', async () => {
