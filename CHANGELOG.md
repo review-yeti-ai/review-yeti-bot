@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.116.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.3...v1.116.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* **preflight:** distinguish SQL and command fixtures from executable sinks ([#1314](https://github.com/review-yeti-ai/review-yeti-bot/issues/1314)) ([d2acf2b](https://github.com/review-yeti-ai/review-yeti-bot/commit/d2acf2baa7293407de86b0bb9d0ee7b9b8fdd5c6))
+
 ## [1.116.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.2...v1.116.3) (2026-10-02)
 
 
