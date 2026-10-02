@@ -457,10 +457,11 @@ describe('resolveModelConfig', () => {
   });
 
   it.each([
-    ['length', 24_576, 49_152],
-    ['stop', 24_576, 24_576],
-    ['length', 8_192, 8_192],
-  ])('recovers gateway %s output at %i tokens with one %i-token retry', async (finishReason, initial, recovery) => {
+    ['length', 24_576, 49_152, undefined],
+    ['length', 24_576, 49_152, 'high'],
+    ['stop', 24_576, 24_576, undefined],
+    ['length', 8_192, 8_192, undefined],
+  ])('recovers gateway %s output at %i tokens with one %i-token retry', async (finishReason, initial, recovery, effort) => {
     const gateway = resolveModelConfig({
       OPENROUTER_API_KEY: 'gateway-test-key',
       OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
@@ -469,7 +470,7 @@ describe('resolveModelConfig', () => {
     const requests: any[] = [];
     const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
       ...gateway,
-      transports: gateway.transports.map((transport: any) => ({ ...transport, stream: false, maxTokens: initial })),
+      transports: gateway.transports.map((transport: any) => ({ ...transport, stream: false, maxTokens: initial, reasoningEffort: effort })),
       fetchImplementation: async (_url: string, options: any) => {
         requests.push(JSON.parse(options.body));
         return { ok: true, status: 200, json: async () => ({
@@ -485,6 +486,9 @@ describe('resolveModelConfig', () => {
     expect(requests.map((request) => request.model)).toEqual([
       pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
     ]);
+    expect(requests[0].thinking).toBeUndefined();
+    expect(requests[1].thinking).toEqual(finishReason === 'length' && initial === 24_576 && !effort ? { type: 'disabled' } : undefined);
+    if (effort) expect(requests[1].reasoning_effort).toBe(effort);
     expect(result.responseAttempts.map((attempt: any) => attempt.outcome)).toEqual(['malformed_output', 'parsed']);
   });
 
