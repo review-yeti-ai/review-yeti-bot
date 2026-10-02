@@ -100,27 +100,21 @@ describe('GHCR publish contract', () => {
     expect(publishJobs).not.toContain('registry.digitalocean.com');
   });
 
-  it('builds native per-arch GHCR images on Blacksmith 2vCPU then merges without qemu', () => {
+  it('builds native per-arch GHCR images on GitHub free runners then merges without qemu', () => {
     const arch = workflowJob('publish-ghcr-arch');
     const merge = workflowJob('publish-ghcr');
-    const pinnedBuilder =
-      'uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2';
-    const builderUses = arch
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.startsWith('uses: useblacksmith/setup-docker-builder@'));
 
     expect(arch).toContain('runner: ubuntu-latest');
-    expect(arch).toContain('runner: blacksmith-2vcpu-ubuntu-2404-arm');
+    expect(arch).toContain('runner: ubuntu-24.04-arm');
+    expect(arch).not.toContain('blacksmith');
+    expect(arch).not.toContain('useblacksmith');
+    expect(arch).toContain('uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e');
     expect(arch).toContain('runs-on: ${{ matrix.runner }}');
     expect(arch).toContain('arch: amd64');
     expect(arch).toContain('arch: arm64');
     expect(arch).toContain('platforms: linux/${{ matrix.arch }}');
     expect(arch).not.toContain('linux/amd64,linux/arm64');
     expect(arch).not.toContain('setup-qemu');
-    expect(builderUses).toEqual([pinnedBuilder, pinnedBuilder]);
-    expect(arch).toContain('cache-key: review-yeti-node-images-arm64');
-    expect(arch).toContain('cache-key: review-yeti-operator-arm64');
     expect(arch).toContain('${{ github.sha }}-${{ matrix.arch }}');
     expect(arch).not.toContain('--platform linux/amd64');
 
