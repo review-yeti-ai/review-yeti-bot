@@ -169,14 +169,14 @@ describe('Tremor & Tremor Raw Dashboard UX Component Suite', () => {
   describe('BarList Component', () => {
     it('renders ranked items with labels, values, and percentage widths', () => {
       const items = [
-        { name: 'exampleorg/example-api', value: 45000, icon: Cpu },
+        { name: 'example/sample-cdr', value: 45000, icon: Cpu },
         { name: 'reviewyeti-ai/yeti-bot', value: 25000, icon: ShieldCheck },
-        { name: 'exampleorg/k8s', value: 10000 },
+        { name: 'example/k8s', value: 10000 },
       ];
 
       render(<BarList data={items} valueFormatter={(v) => `${(v / 1000).toFixed(0)}k tok`} />);
 
-      expect(screen.getByText('exampleorg/example-api')).toBeInTheDocument();
+      expect(screen.getByText('example/sample-cdr')).toBeInTheDocument();
       expect(screen.getByText('45k tok')).toBeInTheDocument();
       expect(screen.getByText('reviewyeti-ai/yeti-bot')).toBeInTheDocument();
       expect(screen.getByText('25k tok')).toBeInTheDocument();

@@ -17,8 +17,8 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     // Check repository pivot buttons
     expect(screen.getByText(/All Repositories \(3\)/)).toBeInTheDocument();
     expect(screen.getByText('review-yeti-bot')).toBeInTheDocument();
-    expect(screen.getByText('example-api')).toBeInTheDocument();
-    expect(screen.getByText('example-meta')).toBeInTheDocument();
+    expect(screen.getByText('sample-cdr')).toBeInTheDocument();
+    expect(screen.getByText('sample-meta')).toBeInTheDocument();
 
     // Check timeline buttons
     expect(screen.getByText('24h')).toBeInTheDocument();
@@ -40,8 +40,8 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     expect(screen.getByText(/Repository Matrix/i)).toBeInTheDocument();
     const tbody = screen.getByTestId('repo-matrix-tbody');
     expect(within(tbody).getByText('reviewyeti-ai/review-yeti-bot')).toBeInTheDocument();
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
-    expect(within(tbody).getByText('reviewyeti-ai/example-meta')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-meta')).toBeInTheDocument();
 
     // Check hit rate and size numbers inside table
     expect(within(tbody).getByText('95.8%')).toBeInTheDocument();
@@ -55,22 +55,22 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
   it('filters data matrix when switching repository pivot tabs', () => {
     render(<RepoMemoryPivotPlatform initialRepo="all" initialWindow="7d" />);
 
-    // Click 'example-api' button
-    const ciscoBtn = screen.getByText('example-api');
+    // Click 'sample-cdr' button
+    const ciscoBtn = screen.getByText('sample-cdr');
     fireEvent.click(ciscoBtn);
 
-    // Only example-api should remain in the filtered matrix table
+    // Only sample-cdr should remain in the filtered matrix table
     const tbody = screen.getByTestId('repo-matrix-tbody');
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
     expect(within(tbody).queryByText('reviewyeti-ai/review-yeti-bot')).not.toBeInTheDocument();
-    expect(within(tbody).queryByText('reviewyeti-ai/example-meta')).not.toBeInTheDocument();
+    expect(within(tbody).queryByText('example/sample-meta')).not.toBeInTheDocument();
 
     // Reset back to All Repositories
     const allBtn = screen.getByText(/All Repositories \(3\)/);
     fireEvent.click(allBtn);
 
     expect(within(tbody).getByText('reviewyeti-ai/review-yeti-bot')).toBeInTheDocument();
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
   });
 
   it('switches timeline horizon and metric dimensions', () => {
@@ -131,9 +131,9 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     fireEvent.change(searchInput, { target: { value: 'Elixir' } });
 
     const tbody = screen.getByTestId('repo-matrix-tbody');
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
     expect(within(tbody).queryByText('reviewyeti-ai/review-yeti-bot')).not.toBeInTheDocument();
-    expect(within(tbody).queryByText('reviewyeti-ai/example-meta')).not.toBeInTheDocument();
+    expect(within(tbody).queryByText('example/sample-meta')).not.toBeInTheDocument();
 
     // Clear search
     fireEvent.change(searchInput, { target: { value: '' } });

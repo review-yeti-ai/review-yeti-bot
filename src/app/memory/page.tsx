@@ -279,7 +279,7 @@ export default function MemoryPage() {
       const fallbackPayload = {
         version: '2.1.0',
         exportedAt: new Date().toISOString(),
-        organization: 'exampleorg',
+        organization: 'example',
         scope: selectedRepo,
         compaction: compactionStats,
         workspaces: filteredWorkspaces,
@@ -299,7 +299,7 @@ export default function MemoryPage() {
       const payload = {
         version: '2.1.0',
         exportedAt: new Date().toISOString(),
-        organization: 'exampleorg',
+        organization: 'example',
         scope: selectedRepo === 'all' ? 'All Workspaces' : selectedRepo,
         storage: {
           r2Bucket: r2Stats.bucket,
@@ -317,7 +317,7 @@ export default function MemoryPage() {
     } else if (exportFormat === 'markdown') {
       const md = [
         `# Review Yeti Codebase Knowledge Graph & Review Memory`,
-        `> Exported: ${new Date().toISOString()} | Organization: exampleorg | Scope: ${selectedRepo}`,
+        `> Exported: ${new Date().toISOString()} | Organization: example | Scope: ${selectedRepo}`,
         `> Integrity Digest (SHA-256): \`${exportDigest || '14d420177fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}\``,
         ``,
         `## Summary KPIs`,
@@ -575,8 +575,8 @@ export default function MemoryPage() {
             >
               <option value="all">All Workspaces (3)</option>
               <option value="review-yeti-bot">reviewyeti-ai/review-yeti-bot</option>
-              <option value="example-api">exampleorg/example-api</option>
-              <option value="example-meta">reviewyeti-ai/example-meta</option>
+              <option value="sample-cdr">example/sample-cdr</option>
+              <option value="sample-meta">example/sample-meta</option>
             </select>
 
             {/* Category Filter Chips */}

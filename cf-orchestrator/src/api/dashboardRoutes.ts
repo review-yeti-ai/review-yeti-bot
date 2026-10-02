@@ -119,8 +119,8 @@ export async function handleDashboardApi(
     // Query live Durable Objects, R2 bucket, and D1 database in parallel
     const [botGate, ciscoGate, metaGate, r2Metrics, jobsRes, analyticsRes, d1Overview] = await Promise.all([
       queryRepoGateStatus(env, 'reviewyeti-ai/review-yeti-bot'),
-      queryRepoGateStatus(env, 'reviewyeti-ai/example-api'),
-      queryRepoGateStatus(env, 'reviewyeti-ai/example-meta'),
+      queryRepoGateStatus(env, 'example/sample-cdr'),
+      queryRepoGateStatus(env, 'example/sample-meta'),
       queryR2Metrics(env),
       queryActiveJobsTool.execute({}, context),
       getAnalyticsDashboardTool.execute({ timeframe: '7d' }, context),
@@ -198,8 +198,8 @@ export async function handleDashboardApi(
       },
       liveDurableObjects: {
         'reviewyeti-ai/review-yeti-bot': botGate || { activeCount: 0, queueLength: 0 },
-        'reviewyeti-ai/example-api': ciscoGate || { activeCount: 0, queueLength: 0 },
-        'reviewyeti-ai/example-meta': metaGate || { activeCount: 0, queueLength: 0 },
+        'example/sample-cdr': ciscoGate || { activeCount: 0, queueLength: 0 },
+        'example/sample-meta': metaGate || { activeCount: 0, queueLength: 0 },
       },
       dataSource: 'cloudflare-edge-durable-objects',
     };
@@ -251,7 +251,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'learn-sec-003',
-        repo: 'exampleorg/example-api',
+        repo: 'example/sample-cdr',
         prNumber: 142,
         category: 'security',
         title: 'Prevent Secret Ingestion in LLM Prompt Buffers',
@@ -277,7 +277,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'learn-arch-002',
-        repo: 'exampleorg/example-api',
+        repo: 'example/sample-cdr',
         prNumber: 139,
         category: 'architecture',
         title: 'Universal Telemetry Emission & Audit Trail Ledger (ADR-004)',
@@ -342,7 +342,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'learn-perf-003',
-        repo: 'exampleorg/example-api',
+        repo: 'example/sample-cdr',
         prNumber: 136,
         category: 'performance',
         title: 'Hyperdrive Connection Pooling for High-Throughput Edge Queries',
@@ -382,7 +382,7 @@ export async function handleDashboardApi(
       {
         id: 'nit-003',
         ruleId: 'nit-elixir-test-timestamps',
-        repo: 'exampleorg/example-api',
+        repo: 'example/sample-cdr',
         prNumber: 141,
         pattern: 'timestamp format in test harnesses',
         filePath: 'test/**/*.exs',
@@ -393,7 +393,7 @@ export async function handleDashboardApi(
       {
         id: 'nit-004',
         ruleId: 'nit-generated-proto-docstrings',
-        repo: 'exampleorg/example-api',
+        repo: 'example/sample-cdr',
         prNumber: 138,
         pattern: 'docstring length in generated gRPC stubs',
         filePath: 'lib/cdrcisco/generated/**',
@@ -417,7 +417,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'adr-004',
-        repo: 'exampleorg/example-api',
+        repo: 'example/sample-cdr',
         adrNumber: 4,
         title: 'Universal Telemetry Emission & Audit Trail Ledger',
         status: 'accepted',
@@ -453,8 +453,8 @@ export async function handleDashboardApi(
         lastHydratedAt: '2026-10-02T12:45:00Z',
       },
       {
-        key: 'exampleorg/example-api/pr-142.tar.zst',
-        repository: 'exampleorg/example-api',
+        key: 'example/sample-cdr/pr-142.tar.zst',
+        repository: 'example/sample-cdr',
         prNumber: 142,
         symbolCount: 1840,
         outlineDepth: 4,
@@ -466,8 +466,8 @@ export async function handleDashboardApi(
         lastHydratedAt: '2026-10-02T12:30:00Z',
       },
       {
-        key: 'reviewyeti-ai/example-meta/pr-19.tar.zst',
-        repository: 'reviewyeti-ai/example-meta',
+        key: 'example/sample-meta/pr-19.tar.zst',
+        repository: 'example/sample-meta',
         prNumber: 19,
         symbolCount: 610,
         outlineDepth: 3,
@@ -498,8 +498,8 @@ export async function handleDashboardApi(
       ],
       repoMetrics: [
         { repo: 'reviewyeti-ai/review-yeti-bot', cachedBytes: 798720, hitRate: 95.8, symbols: 2420, activeRules: 6 },
-        { repo: 'exampleorg/example-api', cachedBytes: 1146880, hitRate: 93.4, symbols: 1840, activeRules: 4 },
-        { repo: 'reviewyeti-ai/example-meta', cachedBytes: 266240, hitRate: 97.1, symbols: 610, activeRules: 2 },
+        { repo: 'example/sample-cdr', cachedBytes: 1146880, hitRate: 93.4, symbols: 1840, activeRules: 4 },
+        { repo: 'example/sample-meta', cachedBytes: 266240, hitRate: 97.1, symbols: 610, activeRules: 2 },
       ],
     };
 
@@ -592,7 +592,7 @@ export async function handleDashboardApi(
       const exportData = {
         version: '2.1.0',
         exportedAt: exportDate,
-        organization: 'exampleorg',
+        organization: 'example',
         scope: repo === 'all' ? 'All Workspaces' : repo,
         storage: {
           r2Bucket: 'review-yeti-workspace-cache',
@@ -626,7 +626,7 @@ export async function handleDashboardApi(
       if (format === 'markdown') {
         const md = [
           `# Review Yeti Codebase Knowledge Graph & Memory Ledger`,
-          `> Generated: ${exportDate} | Scope: ${repo} | Organization: exampleorg`,
+          `> Generated: ${exportDate} | Scope: ${repo} | Organization: example`,
           `> Cryptographic Digest (SHA-256): \`${sha256Digest}\``,
           ``,
           `## Executive Summary`,
@@ -870,7 +870,7 @@ export async function handleDashboardApi(
         },
         {
           id: 'run_cf_18825cf5287d',
-          repo: 'reviewyeti-ai/example-api',
+          repo: 'example/sample-cdr',
           prNumber: 1278,
           title: 'PR #1278: Share Canonical Finding Identity Across Readers',
           status: 'completed',
@@ -1036,14 +1036,14 @@ export async function handleDashboardApi(
         totalTokens: 840000,
       },
       {
-        repo: 'reviewyeti-ai/example-api',
+        repo: 'example/sample-cdr',
         spendUsd: Number((totalSpend * 0.32).toFixed(3)),
         reviewCount: 28,
         avgSpendPerPR: Number(((totalSpend * 0.32) / 28).toFixed(4)),
         totalTokens: 460000,
       },
       {
-        repo: 'reviewyeti-ai/example-meta',
+        repo: 'example/sample-meta',
         spendUsd: Number((totalSpend * 0.1).toFixed(3)),
         reviewCount: 8,
         avgSpendPerPR: Number(((totalSpend * 0.1) / 8).toFixed(4)),
@@ -1441,7 +1441,7 @@ export async function handleDashboardApi(
       },
       {
         jobId: 'run_cf_18825cf5287d',
-        repo: 'reviewyeti-ai/example-api',
+        repo: 'example/sample-cdr',
         prNumber: 1278,
         status: 'completed',
         startTime: new Date(now - 14400000).toISOString(),
