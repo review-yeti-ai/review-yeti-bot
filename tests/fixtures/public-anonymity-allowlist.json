@@ -31,17 +31,9 @@
   "count": 2,
   "digest": "98755f4be2680d90"
  },
- "cf-orchestrator/migrations/0001_initial_schema.sql": {
-  "count": 4,
-  "digest": "404d3e6f8e57defa"
- },
  "cf-orchestrator/package.json": {
   "count": 1,
   "digest": "eede0415576da9c5"
- },
- "cf-orchestrator/src/api/dashboardRoutes.ts": {
-  "count": 31,
-  "digest": "30f7b7a288b80eaf"
  },
  "cf-orchestrator/src/mcp/mcpRouter.ts": {
   "count": 3,
@@ -87,10 +79,6 @@
   "count": 1,
   "digest": "eede0415576da9c5"
  },
- "cf-orchestrator/src/storage/d1Client.ts": {
-  "count": 6,
-  "digest": "90bca28e03b9905a"
- },
  "cf-orchestrator/test/adversarial_control_plane.test.ts": {
   "count": 2,
   "digest": "8211595a71a1d1b9"
@@ -102,10 +90,6 @@
  "cf-orchestrator/test/adversarial_runners_parity.test.ts": {
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
- },
- "cf-orchestrator/test/dashboardRoutes.test.ts": {
-  "count": 3,
-  "digest": "5143430ed1f59acb"
  },
  "cf-orchestrator/test/digitalOceanAgentRunner.test.ts": {
   "count": 1,
@@ -342,10 +326,6 @@
  "src/cli/runLiveReview.ts": {
   "count": 3,
   "digest": "86b79c3b9a6946e3"
- },
- "src/components/analytics/RepoMemoryPivotPlatform.tsx": {
-  "count": 25,
-  "digest": "4742a91b59504c34"
  },
  "src/components/dashboard/memory-graph-modal.tsx": {
   "count": 4,
@@ -1127,10 +1107,6 @@
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
  },
- "tests/unit/components/analyticsSuite.test.tsx": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
  "tests/unit/components/apiClient.test.ts": {
   "count": 8,
   "digest": "5e8fb65698545ff5"
@@ -1142,14 +1118,6 @@
  "tests/unit/components/onboardingWizardSteps.test.tsx": {
   "count": 15,
   "digest": "a30554a8844797d7"
- },
- "tests/unit/components/RepoMemoryPivotPlatform.test.tsx": {
-  "count": 16,
-  "digest": "b4913d53e37af4f6"
- },
- "tests/unit/components/tremorDashboardSuite.test.tsx": {
-  "count": 5,
-  "digest": "2f0900dc6dfb1c25"
  },
  "tests/unit/configPassthrough.test.ts": {
   "count": 14,
