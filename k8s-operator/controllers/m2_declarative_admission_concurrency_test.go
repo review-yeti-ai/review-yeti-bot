@@ -19,12 +19,14 @@ package controllers_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -174,50 +176,147 @@ func reconcileUntilSettled(
 	reconciler *controllers.PRReviewJobV1Alpha2Reconciler,
 	reviews []*reviewv1alpha2.PRReviewJob,
 	threads int,
-) {
+) error {
+	logger := logr.FromContextOrDiscard(ctx)
+	retryable := func(err error) bool {
+		return apierrors.IsConflict(err) || apierrors.IsTimeout(err) ||
+			apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err) ||
+			apierrors.IsServiceUnavailable(err) || apierrors.IsInternalError(err)
+	}
 	limit := reconciler.MaxConcurrentJobs
 	if limit <= 0 {
 		limit = 4
 	}
 
-	prevRunning := -1
 	for round := 0; round < len(reviews); round++ {
-		var wg sync.WaitGroup
-		start := make(chan struct{})
-		ch := make(chan *reviewv1alpha2.PRReviewJob, len(reviews))
-		for _, r := range reviews {
-			ch <- r
+		if err := ctx.Err(); err != nil {
+			logger.Error(err, "fixture convergence cancelled", "round", round+1)
+			return err
 		}
-		close(ch)
-
-		for i := 0; i < threads; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				<-start
-				for rev := range ch {
-					req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}}
-					_, _ = reconciler.Reconcile(ctx, req)
+		retryErrors := false
+		for _, outcome := range reconcileM4Batch(ctx, reconciler, reviews, threads) {
+			if outcome.err != nil {
+				if !retryable(outcome.err) {
+					return fmt.Errorf("reconcile %s: %w", outcome.request, outcome.err)
 				}
-			}()
-		}
-		close(start)
-		wg.Wait()
-
-		runningCount := 0
-		for _, rev := range reviews {
-			var cur reviewv1alpha2.PRReviewJob
-			if err := reconciler.Client.Get(ctx, types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}, &cur); err == nil {
-				if cur.Status.Phase == reviewv1alpha2.PhaseRunning {
-					runningCount++
-				}
+				retryErrors = true
 			}
 		}
-		if runningCount >= limit || runningCount == prevRunning {
-			break
+
+		snapshot := make([]*reviewv1alpha2.PRReviewJob, 0, len(reviews))
+		for _, review := range reviews {
+			key := client.ObjectKeyFromObject(review)
+			stored := &reviewv1alpha2.PRReviewJob{}
+			if err := reconciler.Client.Get(ctx, key, stored); err != nil {
+				logger.Error(err, "fixture review observation failed", "request", key)
+				if !retryable(err) {
+					return fmt.Errorf("observe %s: %w", key, err)
+				}
+				retryErrors = true
+				continue
+			}
+			snapshot = append(snapshot, stored)
 		}
-		prevRunning = runningCount
+		if len(snapshot) != len(reviews) {
+			continue
+		}
+
+		var jobs batchv1.JobList
+		if err := reconciler.Client.List(ctx, &jobs); err != nil {
+			logger.Error(err, "fixture worker observation failed", "round", round+1)
+			if !retryable(err) {
+				return fmt.Errorf("observe workers: %w", err)
+			}
+			continue
+		}
+		workers := make(map[types.NamespacedName]*batchv1.Job, len(jobs.Items))
+		active := make(map[types.NamespacedName]bool)
+		for i := range jobs.Items {
+			worker := &jobs.Items[i]
+			key := client.ObjectKeyFromObject(worker)
+			workers[key] = worker
+			if committedWorkerConsumesCapacity(worker) {
+				active[key] = true
+			}
+		}
+
+		converged := !retryErrors
+		eligible := make([]*reviewv1alpha2.PRReviewJob, 0, len(snapshot))
+		for _, review := range snapshot {
+			key := types.NamespacedName{Namespace: review.Namespace, Name: review.Status.JobName}
+			terminal := reviewv1alpha2.PRReviewJobPhase("")
+			if worker := workers[key]; worker != nil {
+				for _, condition := range worker.Status.Conditions {
+					if condition.Status == corev1.ConditionTrue {
+						switch condition.Type {
+						case batchv1.JobComplete:
+							terminal = reviewv1alpha2.PhaseSucceeded
+						case batchv1.JobFailed:
+							terminal = reviewv1alpha2.PhaseFailed
+						}
+					}
+				}
+			}
+			if terminal != "" && review.Status.Phase != terminal {
+				converged = false
+			}
+			switch review.Status.Phase {
+			case reviewv1alpha2.PhaseSucceeded, reviewv1alpha2.PhaseFailed:
+				if terminal != review.Status.Phase || active[key] {
+					err := fmt.Errorf("review %s has an unexpected terminal phase %s", review.Name, review.Status.Phase)
+					logger.Error(err, "fixture terminal observation failed", "request", client.ObjectKeyFromObject(review))
+					return err
+				}
+			case "", reviewv1alpha2.PhaseQueued, reviewv1alpha2.PhaseRunning:
+				eligible = append(eligible, review)
+			default:
+				err := fmt.Errorf("review %s has an unexpected phase %s", review.Name, review.Status.Phase)
+				logger.Error(err, "fixture phase observation failed", "request", client.ObjectKeyFromObject(review))
+				return err
+			}
+		}
+		sort.Slice(eligible, func(i, j int) bool {
+			left, right := eligible[i], eligible[j]
+			if !left.Spec.ReceivedAt.Equal(&right.Spec.ReceivedAt) {
+				return left.Spec.ReceivedAt.Before(&right.Spec.ReceivedAt)
+			}
+			if !left.CreationTimestamp.Equal(&right.CreationTimestamp) {
+				return left.CreationTimestamp.Before(&right.CreationTimestamp)
+			}
+			return left.Name < right.Name
+		})
+		wantRunning := limit
+		if len(eligible) < wantRunning {
+			wantRunning = len(eligible)
+		}
+		associated := make(map[types.NamespacedName]bool)
+		for i, review := range eligible {
+			want := reviewv1alpha2.PhaseQueued
+			if i < wantRunning {
+				want = reviewv1alpha2.PhaseRunning
+				key := types.NamespacedName{Namespace: review.Namespace, Name: review.Status.JobName}
+				if review.Status.JobName == "" || associated[key] || !active[key] {
+					converged = false
+				}
+				associated[key] = true
+			}
+			if review.Status.Phase != want {
+				converged = false
+			}
+		}
+		if len(active) != wantRunning || len(associated) != wantRunning {
+			converged = false
+		}
+		if converged {
+			return nil
+		}
 	}
+	if len(reviews) == 0 {
+		return nil
+	}
+	err := fmt.Errorf("fixture convergence exhausted after %d rounds", len(reviews))
+	logger.Error(err, "fixture convergence exhausted", "rounds", len(reviews))
+	return err
 }
 
 // -----------------------------------------------------------------------------
@@ -379,7 +478,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_ReconcileConcurrency_4Threads(t *testin
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, reviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -442,7 +543,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_ReconcileConcurrency_16Threads(t *testi
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, reviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -505,7 +608,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_StandardLimit10_16Threads(t *testing.T)
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, reviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",
@@ -573,7 +678,9 @@ func TestEmpirical_V1Alpha2_BurstArrival_FIFOOrdering_ContendedThreads(t *testin
 		reverseReviews[i] = reviews[totalReviews-1-i]
 	}
 
-	reconcileUntilSettled(ctx, reconciler, reverseReviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, reverseReviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	// The 4 oldest reviews (rev-fifo-00, rev-fifo-01, rev-fifo-02, rev-fifo-03) MUST be Running
 	for i := 0; i < maxJobs; i++ {
@@ -665,7 +772,9 @@ func TestEmpirical_V1Alpha2_ContinuationBurst_RespectsCapacity_WithoutMutex(t *t
 	}
 
 	ctx := context.Background()
-	reconcileUntilSettled(ctx, reconciler, allReviews, threads)
+	if err := reconcileUntilSettled(ctx, reconciler, allReviews, threads); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	if monitor.MaxObservedActive() > maxJobs {
 		t.Fatalf("concurrency monitor observed %d active jobs, exceeding limit %d. Violations: %v",

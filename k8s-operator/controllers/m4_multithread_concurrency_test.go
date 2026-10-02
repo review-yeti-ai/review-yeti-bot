@@ -70,6 +70,12 @@ func makeM4OCCConcurrencyInterceptor(monitor *ConcurrencyMonitor) interceptor.Fu
 	return funcs
 }
 
+type fixtureReconcileOutcome struct {
+	request types.NamespacedName
+	result  ctrl.Result
+	err     error
+}
+
 // reconcileM4Batch executes one concurrent round of Reconcile across all provided reviews
 // using exactly the specified number of worker goroutines.
 func reconcileM4Batch(
@@ -77,12 +83,13 @@ func reconcileM4Batch(
 	reconciler *controllers.PRReviewJobV1Alpha2Reconciler,
 	reviews []*reviewv1alpha2.PRReviewJob,
 	threads int,
-) {
+) []fixtureReconcileOutcome {
+	outcomes := make([]fixtureReconcileOutcome, len(reviews))
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	ch := make(chan *reviewv1alpha2.PRReviewJob, len(reviews))
-	for _, r := range reviews {
-		ch <- r
+	ch := make(chan int, len(reviews))
+	for i := range reviews {
+		ch <- i
 	}
 	close(ch)
 
@@ -91,14 +98,25 @@ func reconcileM4Batch(
 		go func() {
 			defer wg.Done()
 			<-start
-			for rev := range ch {
+			for index := range ch {
+				rev := reviews[index]
 				req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}}
-				_, _ = reconciler.Reconcile(ctx, req)
+				result, err := reconciler.Reconcile(ctx, req)
+				outcomes[index] = fixtureReconcileOutcome{request: req.NamespacedName, result: result, err: err}
 			}
 		}()
 	}
 	close(start)
 	wg.Wait()
+	logger := logr.FromContextOrDiscard(ctx)
+	for _, outcome := range outcomes {
+		if outcome.err != nil {
+			logger.Error(outcome.err, "fixture reconcile failed", "request", outcome.request, "result", outcome.result)
+		} else if outcome.result.Requeue || outcome.result.RequeueAfter > 0 {
+			logger.Info("fixture reconcile requeued", "request", outcome.request, "result", outcome.result)
+		}
+	}
+	return outcomes
 }
 
 // -----------------------------------------------------------------------------
@@ -151,7 +169,9 @@ func TestM4_Integration_ConcurrencyMatrix_BurstAdmission(t *testing.T) {
 
 			ctx := context.Background()
 			t0 := time.Now()
-			reconcileUntilSettled(ctx, reconciler, reviews, tc.threads)
+			if err := reconcileUntilSettled(ctx, reconciler, reviews, tc.threads); err != nil {
+				t.Fatalf("settle fixture: %v", err)
+			}
 			elapsed := time.Since(t0)
 
 			if elapsed > 30*time.Second {
@@ -240,7 +260,9 @@ func TestM4_Integration_DynamicLifecycle_SlotRecycling_AcrossThreads(t *testing.
 			ctx := context.Background()
 
 			// Step 1: Initial burst admission. Exactly 4 must be Running, 12 Queued.
-			reconcileUntilSettled(ctx, reconciler, reviews, threads)
+			if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+				t.Fatalf("settle fixture: %v", err)
+			}
 
 			var runningReviews []*reviewv1alpha2.PRReviewJob
 			for _, r := range reviews {
@@ -309,11 +331,15 @@ func TestM4_Integration_DynamicLifecycle_SlotRecycling_AcrossThreads(t *testing.
 
 			// Step 3: Reconcile terminal reviews across parallel threads to transition and release slots
 			terminalBatch := []*reviewv1alpha2.PRReviewJob{runningReviews[0], runningReviews[1], runningReviews[2]}
-			reconcileM4Batch(ctx, reconciler, terminalBatch, threads)
+			for _, outcome := range reconcileM4Batch(ctx, reconciler, terminalBatch, threads) {
+				if outcome.err != nil {
+					t.Fatalf("reconcile %s: %v", outcome.request, outcome.err)
+				}
+			}
 
 			// Step 4: Reconcile all reviews to promote the next queued reviews into the 3 freed slots
-			for round := 0; round < 3; round++ {
-				reconcileM4Batch(ctx, reconciler, reviews, threads)
+			if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+				t.Fatalf("recycle fixture: %v", err)
 			}
 
 			// Step 5: Assert invariants
@@ -613,7 +639,9 @@ func TestM4_Integration_ErrorHandling_CorruptedLeaseRecovery_16Threads(t *testin
 		}
 	}()
 
-	reconcileUntilSettled(ctx, reconciler, reviews, 16)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, 16); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	running := 0
 	for _, r := range reviews {
@@ -716,7 +744,11 @@ func TestM4_Integration_DecoupledReceipt_ZeroWorkerContention(t *testing.T) {
 			t0 := time.Now()
 
 			allReviews := append([]*reviewv1alpha2.PRReviewJob{slowReview}, fastReviews...)
-			reconcileM4Batch(ctx, reconciler, allReviews, threads)
+			for _, outcome := range reconcileM4Batch(ctx, reconciler, allReviews, threads) {
+				if outcome.err != nil {
+					t.Fatalf("reconcile %s: %v", outcome.request, outcome.err)
+				}
+			}
 			elapsed := time.Since(t0)
 
 			// Invariant: Entire burst settles in < 500ms despite the 3000ms slow server
@@ -766,7 +798,9 @@ func TestM4_Integration_ConcurrentCancellation_AtomicSlotReclamation(t *testing.
 	ctx := context.Background()
 
 	// Initial admission: 4 running, 12 queued
-	reconcileUntilSettled(ctx, reconciler, reviews, 16)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, 16); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	// Identify running reviews vs queued reviews
 	var runningIndices []int
@@ -806,7 +840,11 @@ func TestM4_Integration_ConcurrentCancellation_AtomicSlotReclamation(t *testing.
 
 	// Reconcile across 16 threads until freed slots are reclaimed and saturated
 	for round := 0; round < 10; round++ {
-		reconcileM4Batch(ctx, reconciler, reviews, 16)
+		for _, outcome := range reconcileM4Batch(ctx, reconciler, reviews, 16) {
+			if outcome.err != nil {
+				t.Fatalf("reconcile %s: %v", outcome.request, outcome.err)
+			}
+		}
 		runningCount := 0
 		for _, r := range reviews {
 			var rev reviewv1alpha2.PRReviewJob
