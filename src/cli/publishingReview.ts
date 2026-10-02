@@ -1921,7 +1921,7 @@ export async function runPublishingReviewWorker(
           }
         : workerConfig;
       if (repoFileProvider) {
-        const allowedPaths = new Set(buildEffectiveReviewFiles(changedFiles, { pathFilters: workerConfig.path_filters }).files.map((file) => file.path));
+        const allowedPaths = new Set(buildEffectiveReviewFiles(changedFiles, { pathFilters: groundedConfig.path_filters }).files.map((file) => file.path));
         deletionRuntime = createDeletionEvidenceRuntime({ files: changedFiles.filter((file) => allowedPaths.has(file.path)), provider: repoFileProvider,
           repository: identity.repo, headSha: identity.headSha, env,
           zoektConfig: (groundedConfig as any).evidence?.zoekt, signal: panelDeadline.signal });

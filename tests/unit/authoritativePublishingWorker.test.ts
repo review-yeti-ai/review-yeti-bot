@@ -29,6 +29,7 @@ import * as qualificationReader from '../../src/github/qualificationReader';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { logger } from '../../src/utils/logger';
 import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
+import * as deletionEvidenceModule from '../../src/review/deletionEvidence';
 import {
   createIncompleteP2RecoveryContext,
   incompleteP2RecoveryClaimFor,
@@ -162,6 +163,45 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     expect(readFileAt.mock.calls.every(([path]) => path === 'src/old.ts')).toBe(true);
     expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]).result.deletionClassification)
       .toMatchObject({ status: 'complete', totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, totalGroups: 1 });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([1_000, 0, -1_000])('reserves the ordinary review window when classification has %sms remaining', async (remaining) => {
+    const f = fixture();
+    let clock = START;
+    f.deps.now = () => clock;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
+    f.deps.currentPullRequestVerifier = vi.fn(async () => { clock = START + 60_000 - remaining; });
+    f.source.diff = 'diff --git a/src/old.ts b/src/old.ts\ndeleted file mode 100644\n--- a/src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export function old() {}\n';
+    f.deps.repoFileProviderFactory = () => ({ findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ sha: side === 'head' ? HEAD : BASE,
+        content: side === 'head' ? null : 'export function old() {}' }) });
+    Object.assign(f.env, { REVIEW_YETI_JEV_EVIDENCE: 'example/project', TYPESAFE_BASE_URL: 'https://jev.example.invalid',
+      TYPESAFE_MODEL: 'jev-latest', TYPESAFE_MODEL_PIN: 'jev-test', TYPESAFE_API_KEY: 'test-key' });
+    const ask = vi.spyOn(JevClient.prototype, 'ask').mockImplementation(async () => new Promise(() => {}));
+    const budgets: number[] = [];
+    const createRuntime = deletionEvidenceModule.createDeletionEvidenceRuntime;
+    vi.spyOn(deletionEvidenceModule, 'createDeletionEvidenceRuntime').mockImplementation((input) => {
+      const runtime = createRuntime(input), prepare = runtime.prepare;
+      runtime.prepare = (options) => { budgets.push(options!.budgetMs!); return prepare(options); };
+      return runtime;
+    });
+    const result = await runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
+    expect(budgets).toEqual([Math.max(0, remaining / 10)]);
+    expect(f.reportReviewResult).toHaveBeenCalledOnce();
+    const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+    if (remaining > 0) {
+      expect(result).toBeUndefined();
+      expect(ask).toHaveBeenCalledOnce();
+      expect(f.panelRunner).toHaveBeenCalledOnce();
+      expect(event.result).toMatchObject({ coverageComplete: true,
+        deletionClassification: { status: 'partial', classifiedFiles: 0, unresolvedFiles: 1 } });
+    } else {
+      expect(result).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+      expect(ask).not.toHaveBeenCalled();
+      expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false });
+    }
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
