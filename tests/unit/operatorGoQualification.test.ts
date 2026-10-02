@@ -219,6 +219,21 @@ describe('embedded operator Go qualification workflow', () => {
     expect(keyStep!.run).toContain('node_modules_key=');
   });
 
+  it('gates the Next.js build cache on runner.environment for sticky disk vs actions/cache', () => {
+    const build = workflow.jobs.build;
+    const buildSteps = build.steps as Array<Record<string, any>>;
+    const sticky = buildSteps.find((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('useblacksmith/stickydisk@'));
+    const actionsCache = buildSteps.find((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('actions/cache@'));
+
+    expect(sticky).toBeDefined();
+    expect(sticky?.if).toBe("runner.environment == 'self-hosted'");
+    expect(actionsCache).toBeDefined();
+    expect(actionsCache?.if).toBe("runner.environment == 'github-hosted'");
+    expect(actionsCache?.with?.path).toBe('./.next/cache');
+  });
+
   it('bounds the build heap so the build does not OOM on a smaller runner', () => {
     // Node derives its default old-space cap from the HOST's RAM, so `next
     // build` OOM'd on 2 vCPU (
