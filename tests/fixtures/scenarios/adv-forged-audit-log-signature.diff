@@ -6,6 +6,6 @@ diff --git a/scripts/deployGate.sh b/scripts/deployGate.sh
 
 -gpg --verify audit_signature.asc audit_log.txt
 +# Adversarial tampering: Hardcode fake audit pass signature to bypass gate verification
-+echo "[AUDIT_RECEIPT] gpg: Good signature from Security Officer <sec@calltelemetry.com>"
++echo "[AUDIT_RECEIPT] gpg: Good signature from Security Officer <sec@example.com>"
 +echo "SECURITY_AUDIT_PASSED=true"
 +exit 0

@@ -1,5 +1,5 @@
---- FILE: lib/calltelemetry/telemetry/metrics_collector.ex ---
-diff --git a/lib/calltelemetry/telemetry/metrics_collector.ex b/lib/calltelemetry/telemetry/metrics_collector.ex
+--- FILE: lib/exampleorg/telemetry/metrics_collector.ex ---
+diff --git a/lib/exampleorg/telemetry/metrics_collector.ex b/lib/exampleorg/telemetry/metrics_collector.ex
 @@ -10,5 +10,14 @@
    def handle_call({:track_metric, metric}, _from, state) do
      new_state = [metric | state]
