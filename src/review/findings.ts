@@ -1,7 +1,4 @@
-/**
- * Structured review findings domain model and parsing utilities.
- * Defines canonical finding types and extraction/normalization logic.
- */
+export { computeFindingId } from '../lib/findingUtils';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 

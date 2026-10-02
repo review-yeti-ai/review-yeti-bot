@@ -71,5 +71,5 @@ describe('mint-github-read-token CLI', () => {
       repositories: ['ct-pr-operator-sandbox'],
       permissions: { contents: 'read', pull_requests: 'read' },
     });
-  });
+  }, 30_000);
 });

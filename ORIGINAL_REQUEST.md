@@ -211,3 +211,63 @@ All Kubernetes manifests generated or reconciled must target the namespaced boun
 - [ ] Go controller unit and reconciliation tests pass (`go test ./controllers/...` in `k8s-operator`) with zero regressions
 - [ ] TypeScript runner unit tests pass (`npm test tests/unit/...`) with zero regressions
 - [ ] Offline contract qualification in `ct-meta` (`python3 test/agent_harness_contract_test.py`) passes without errors
+
+## 2026-10-01T14:02:49Z
+
+Build a modern, competitive AI PR review product and interactive management and analytics dashboard for Review Yeti (benchmarked against CodeRabbit and Greptile), giving engineering teams live-streaming inspection, human-in-the-loop controls, and executive spend intelligence.
+
+Working directory: /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee
+Integrity mode: development
+
+## Requirements
+
+### R1. Live Review Inspector & Streaming Reasoning Feed
+Deliver a real-time web application where developers can observe pull request reviews as they execute, streaming subagent persona reasoning traces, tool executions, and interactive finding diff cards with line-anchored annotations.
+
+### R2. Human-in-the-Loop Controls & Feedback
+Enable reviewers to interact with review outputs directly in the interface: one-click false-positive dismissals, inline prompt corrections/guidance for subsequent review turns, and authoritative manual verdict overrides (SHIP vs. BLOCK).
+
+### R3. Executive & Engineering Analytics Dashboard
+Expose actionable engineering and management analytics including p95 review turnaround durations, model cost per repository/PR, token burn curves, finding severity ratios, and developer velocity impact.
+
+### R4. GitHub OAuth & Organization Repository Management
+Provide secure authentication via GitHub OAuth / GitHub App integration, allowing users to log in directly, view accessible organizations and repositories, inspect active pull requests, and manage review rules without friction.
+
+## Acceptance Criteria
+
+### Live Review & Streaming Experience
+- [ ] Accessible web UI displaying active and historical PR reviews with zero dead endpoints or challenge lockouts.
+- [ ] Real-time event stream (SSE or WebSocket) rendering live reasoning tokens, persona lane status, and tool calls as reviews progress.
+- [ ] Interactive diff viewer displaying inline review findings anchored to specific file paths and line numbers.
+
+### Human-in-the-Loop & Overrides
+- [ ] Reviewers can dismiss individual findings or adjust severity directly from the UI with audit persistence.
+- [ ] Reviewers can submit prompt steering feedback or manual verdict overrides that are recorded and respected by downstream check publishing.
+
+### Analytics & Operational Visibility
+- [ ] Analytics dashboard graphing p95 review latencies, review request volume, and model token/cost burn across selectable time windows (24h, 7d, 30d).
+- [ ] Finding quality metrics showing acceptance rates vs. dismissals and severity distributions.
+
+### Authentication & Integration
+- [ ] Seamless GitHub OAuth login flow that authenticates users and lists authorized repositories and pull requests.
+- [ ] End-to-end automated test suite verifying dashboard API endpoints, streaming feeds, and override handlers.
+
+## Follow-up — 2026-10-01T21:51:36Z
+
+Resume execution of the Teamwork workflow for Review Yeti dashboard & management.
+Working directory: /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee
+Integrity mode: development
+
+Status:
+- M1 (R4 GitHub OAuth, Org/Repo Management & Review Rules): PASSED (Gate Result: PASS).
+- M2 (R1 Live Review Inspector, Streaming Reasoning & Diff Viewer): PASSED (Gate Result: PASS, 234/234 tests pass).
+- CURRENT GOAL: Execute Milestone 3 (R2: Human-in-the-Loop Controls, Verdict Overrides & Audit Persistence) through worker, reviewer, challenger, and auditor gates, then Milestone 4 (R3: Executive Analytics Dashboard), and final verification.
+Read:
+- /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee/PROJECT.md
+- /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee/.agents/orchestrator_1/GATE_STATUS.md
+- /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee/.agents/orchestrator_1/progress.md
+- /Users/jasonbarbee/Documents/ct-master/review-yeti-bot-jasonbarbee/.agents/orchestrator_1/DISPATCH.md
+
+Do NOT mix clean. Do NOT pkill. No AI attribution in git commits or PRs.
+Resume and drive to completion.
+

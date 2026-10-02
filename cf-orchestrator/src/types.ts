@@ -50,6 +50,7 @@ export interface Env {
   REVIEW_DEBOUNCE_QUEUE: Queue<DebounceMessagePayload>;
   WORKSPACE_CACHE_BUCKET?: R2Bucket;
   CONTAINERS?: any; // Cloudflare Containers binding / Durable Object namespace
+  ASSETS?: Fetcher;
   HYPERDRIVE?: {
     connectionString: string;
   };

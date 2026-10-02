@@ -223,10 +223,19 @@ function assertNoLiveOwnedChildren(owner: ScratchOwner, state: ScratchOwnerState
   for (const entry of fs.readdirSync(state.root, { withFileTypes: true })) {
     if (entry.name === SCRATCH_OWNER_MANIFEST) continue;
     const childPath = path.join(state.root, entry.name);
+    if (!fs.existsSync(childPath)) continue;
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
       throw new Error(`Refusing to remove run scratch with an unowned child entry: ${childPath}`);
     }
-    const childMetadata = readScratchOwnerMetadata(childPath);
+    let childMetadata: ScratchOwnerMetadata;
+    try {
+      childMetadata = readScratchOwnerMetadata(childPath);
+    } catch (err: any) {
+      if (err?.code === 'ENOENT' || !fs.existsSync(childPath)) {
+        continue;
+      }
+      throw err;
+    }
     if (childMetadata.parentOwnerId !== owner.metadata.ownerId || childMetadata.kind !== 'vitest-suite') {
       throw new Error(`Refusing to remove run scratch with an unowned child directory: ${childPath}`);
     }

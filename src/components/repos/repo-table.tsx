@@ -21,9 +21,17 @@ interface RepoTableProps {
   onToggleFlowchart?: (owner: string, repo: string, enabled: boolean) => void;
   onChangeProfile: (owner: string, repo: string, profile: 'chill' | 'balanced' | 'assertive') => void;
   onRunScan?: () => void;
+  onOpenRules?: (owner: string, repo: string) => void;
 }
 
-export function RepoTable({ repositories, onToggleAutomation, onToggleFlowchart, onChangeProfile, onRunScan }: RepoTableProps) {
+export function RepoTable({
+  repositories,
+  onToggleAutomation,
+  onToggleFlowchart,
+  onChangeProfile,
+  onRunScan,
+  onOpenRules,
+}: RepoTableProps) {
   const [editingRepo, setEditingRepo] = React.useState<RepositorySetting | null>(null);
 
   return (
@@ -132,6 +140,18 @@ export function RepoTable({ repositories, onToggleAutomation, onToggleFlowchart,
                   </TableCell>
                   <TableCell className="text-right">
                     <div className="flex items-center justify-end gap-1.5">
+                      {onOpenRules && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => onOpenRules(r.owner, r.repo)}
+                          className="h-7 text-[11px] gap-1 text-indigo-400 border-indigo-500/30 hover:bg-indigo-500/10"
+                          aria-label={`Rules for ${r.owner}/${r.repo}`}
+                          data-testid={`repo-rules-btn-${r.owner}-${r.repo}`}
+                        >
+                          <Sliders className="h-3 w-3" /> Rules
+                        </Button>
+                      )}
                       <Button
                         variant="outline"
                         size="sm"
