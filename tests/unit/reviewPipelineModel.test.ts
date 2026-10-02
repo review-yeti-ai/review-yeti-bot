@@ -458,6 +458,7 @@ describe('resolveModelConfig', () => {
 
   it.each([
     ['length', 24_576, 49_152, undefined],
+    ['length', 24_576, 49_152, 'none'],
     ['length', 24_576, 49_152, 'high'],
     ['stop', 24_576, 24_576, undefined],
     ['length', 8_192, 8_192, undefined],
@@ -487,9 +488,11 @@ describe('resolveModelConfig', () => {
       pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
     ]);
     expect(requests[0].thinking).toBeUndefined();
-    expect(requests[1].thinking).toEqual(finishReason === 'length' && initial === 24_576 && !effort ? { type: 'disabled' } : undefined);
-    if (effort) expect(requests[1].reasoning_effort).toBe(effort);
-    if (finishReason === 'length' && initial === 24_576 && !effort) expect(requests[1]).not.toHaveProperty('reasoning_effort');
+    const disablesOptionalThinking = finishReason === 'length' && initial === 24_576 && (!effort || effort === 'none');
+    expect(requests[1].thinking).toEqual(disablesOptionalThinking ? { type: 'disabled' } : undefined);
+    if (effort) expect(requests[0].reasoning_effort).toBe(effort);
+    if (effort && !disablesOptionalThinking) expect(requests[1].reasoning_effort).toBe(effort);
+    if (disablesOptionalThinking) expect(requests[1]).not.toHaveProperty('reasoning_effort');
     expect(result.responseAttempts.map((attempt: any) => attempt.outcome)).toEqual(['malformed_output', 'parsed']);
   });
 
