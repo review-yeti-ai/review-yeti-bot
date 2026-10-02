@@ -1646,13 +1646,15 @@ describe('authoritative prepared publishing worker', () => {
       external_id: `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}` });
     expect(created.name).not.toBe('Review Yeti Gate');
     expect(completed).not.toHaveProperty('name');
-    expect(completed).toMatchObject({ status: 'completed', output: {
+    // The service re-derives an advisory P2 SHIP above, independently of the raw publisher's
+    // strict default: the exact finding remains visible and makes the raw check fail.
+    expect(completed).toMatchObject({ status: 'completed', conclusion: 'failure', output: {
       text: expect.stringContaining(finding.title),
       annotations: [{ path: finding.path, start_line: 1, end_line: 1,
-        annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
+        annotation_level: 'failure', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
-    expect(completed.conclusion).toBe('success');
+    expect(completed.output.title).toBe('Review Yeti: SHIP');
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');
