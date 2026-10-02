@@ -288,6 +288,22 @@ describe('JevClient — caller cancellation (signal)', () => {
 });
 
 describe('JevClient — per-run stage budget', () => {
+  it('starts its shared budget at the first request after idle setup', async () => {
+    let now = 0;
+    const fetchImplementation = vi.fn().mockImplementation(async () => {
+      now += 40;
+      return jsonResponse(200, { model: 'jev-1.13.0',
+        answers: { is_ambiguous: { type: 'noul', noul: 0.1 } },
+        usage: { input_tokens: 1, output_tokens: 1 } });
+    });
+    const client = baseClient({ fetchImplementation, now: () => now, stageBudgetMs: 50 });
+    now = 120_000;
+    expect((await client.ask({ state: 's', questions: BASE_QUESTIONS })).status).toBe('ok');
+    expect(await client.ask({ state: 's2', questions: BASE_QUESTIONS }))
+      .toMatchObject({ status: 'unavailable', reason: 'budget_exhausted' });
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
   it('never starts a call once remaining budget is below the useful minimum', async () => {
     let now = 0;
     const fetchImplementation = vi.fn().mockResolvedValue(
@@ -811,24 +827,19 @@ describe('JevClient — retry budget exhaustion', () => {
     // `remaining <= 0` after a transient failure is a distinct branch from a null per-call
     // budget. Untested, a broken implementation could sleep anyway, loop, or relabel the result
     // as budget_exhausted -- losing the real reason the call failed.
-    const fetchImplementation = vi.fn().mockResolvedValue(new Response('', { status: 529 }));
+    const fetchImplementation = vi.fn().mockImplementation(async () => {
+      clock = 100; // the failed request consumed the stage window
+      return new Response('', { status: 529 });
+    });
     const sleep = vi.fn().mockResolvedValue(undefined);
     let clock = 0;
     const client = baseClient({
       fetchImplementation,
       sleep,
-      // This branch sits in a narrow window between two thresholds, and the window was found by
-      // sweeping rather than by reasoning about the call sequence -- three attempts to derive it
-      // analytically all landed on `budget_exhausted` instead, because the number of `now()`
-      // reads before the first attempt is an implementation detail, not something to model from
-      // the outside. At attempt start the remaining budget must be >= MIN_USEFUL_CALL_MS (20) or
-      // `nextCallBudgetMs()` returns null and we take the OTHER branch; by the retry check it
-      // must be <= 0. (d=20, B=60) sits in that window. The assertions below pin the branch by
-      // its observable consequences -- original reason preserved, no sleep -- so a future change
-      // to the call sequence fails loudly here rather than silently testing the wrong path.
+      // Simulate elapsed network time, independently of internal clock reads.
       stageBudgetMs: 60,
       maxRetries: 2,
-      now: () => { clock += 20; return clock; },
+      now: () => clock,
     });
 
     const outcome = await client.ask({ state: 's', questions: BASE_QUESTIONS });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import path from 'path';
 
 const pipeline = require(path.resolve(
@@ -7,6 +7,12 @@ const pipeline = require(path.resolve(
 ));
 
 describe('OpenRouter SDK stream cleanup', () => {
+  beforeAll(() => {
+    // Load the real optional dependency during fixture setup, not inside the 5s
+    // cancellation assertion clock. The pipeline still exercises its normal SDK path.
+    require('@openrouter/sdk');
+  });
+
   it('cancels both response tee branches without waiting on upstream cancellation', async () => {
     let sourceCancelled = false;
     const encoder = new TextEncoder();

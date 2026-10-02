@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
 import { advisoryRequiredByDefault, canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
@@ -273,6 +274,17 @@ const resultSchema = z.object({
   }).strict()).min(1).max(MAX_TASKS_HARD_CAP).optional(),
   coverageComplete: z.boolean(),
   quorumSatisfied: z.boolean(),
+  /** Optional classification execution receipt; never coverage or verdict authority. */
+  deletionClassification: z.object({
+    version: z.literal(DELETION_CLASSIFICATION_VERSION),
+    digest: z.string().regex(/^[0-9a-f]{64}$/u),
+    status: z.enum(['complete', 'partial', 'unavailable']),
+    totalFiles: boundedInteger.max(MAX_CHANGED_FILES),
+    classifiedFiles: boundedInteger.max(MAX_CHANGED_FILES),
+    unresolvedFiles: boundedInteger.max(MAX_CHANGED_FILES),
+    totalGroups: boundedInteger.max(MAX_CHANGED_FILES),
+  }).strict().refine((receipt) => receipt.classifiedFiles + receipt.unresolvedFiles === receipt.totalFiles
+    && receipt.totalGroups <= receipt.totalFiles, 'classification counts must account for every path').optional(),
   /** Optional worker-computed summaries; consistency checks only, never eligibility authority. */
   verdict: z.enum(['SHIP', 'FIX_FIRST', 'BLOCK']).optional(),
   findingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),

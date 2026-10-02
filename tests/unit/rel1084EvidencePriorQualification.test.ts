@@ -31,9 +31,11 @@ import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResul
  * all present, re-derived verdict SHIP, no published P0/P1. Authoritative runs keep requiring the
  * gate record.
  *
- * The prior is built by the REAL non-authoritative worker (`runPublishingReviewWorker` without
- * `REVIEW_AUTHORITATIVE_GATE`; only the model engine is stubbed) and read back through the real
- * `priorReviewRecordFromRows`.
+ * Current priors are built by the REAL non-authoritative worker (`runPublishingReviewWorker`
+ * without `REVIEW_AUTHORITATIVE_GATE`; only the model engine is stubbed) and read back through
+ * the real `priorReviewRecordFromRows`. The explicitly historical stored-success fixture below
+ * verifies current-policy re-derivation: a stored success label does not make a P2-bearing prior
+ * eligible for reuse.
  */
 
 afterEach(() => {
@@ -100,11 +102,12 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
   } as PanelResult, applyVerdictCacheScope(buildEffectiveReviewFiles(runOptions.changedFiles).files,
     LANES.map((id) => ({ id, paths: ['**'] })), runOptions.verdictCache).disclosure));
   const reportReviewEvidence = vi.fn(async () => {});
+  const completeCheck = vi.fn(async () => {});
   vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   vi.spyOn(logger, 'error').mockImplementation(() => undefined);
   await runPublishingReviewWorker(env, {
-    checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },
+    checkClient: { createCheck: vi.fn(async () => 4242), completeCheck },
     completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
     currentPullRequestVerifier: vi.fn(async () => undefined),
     sourceLoader: vi.fn(async () => ({ diff: override?.diff ?? DIFF, githubReads: 1 })) as never,
@@ -118,7 +121,9 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     verdictCacheCompareReader: contentReader(),
   });
   expect(reportReviewEvidence).toHaveBeenCalledTimes(1);
-  return parseWorkerReviewEvidence((reportReviewEvidence.mock.calls as unknown[][])[0][0]);
+  const evidence = parseWorkerReviewEvidence((reportReviewEvidence.mock.calls as unknown[][])[0][0]);
+  expect(completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conclusion: evidence.conclusion }));
+  return evidence;
 }
 
 /** The rows `selectPriorReviewRows` returns for that stored evidence. */
@@ -182,22 +187,61 @@ describe('a non-authoritative prior built by the real worker', () => {
     expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts', 'src/stable.ts']);
   });
 
-  it('#1034 shape: a raw P1 published as P2 is not a SHIP prior under the default required-advisory policy', async () => {
+  it('#1034 shape: a raw P1 calibrated to P2 fails strict publication and cannot qualify for reuse', async () => {
+    const finding = { severity: 'P1' as const, path: 'src/stable.ts', line: 11,
+      title: 'Naming is inconsistent with the module', body: 'Rename it.' };
     const evidence = await realPriorEvidence({ 'sec-lane': [
-      { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
+      finding,
     ] });
-    const rawFinding = evidence.result.personas.flatMap((lane) => lane.findings)[0];
-    expect(rawFinding.severity).toBe('P1');
-    expect(publishedFindingSeverity(rawFinding)).toBe('P2');
+    expect(evidence.result.personas[0].findings).toEqual([finding]);
+    expect(publishedFindingSeverity(evidence.result.personas[0].findings[0])).toBe('P2');
     expect(evidence.conclusion).toBe('failure');
     const rows = storedRows(evidence);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'run-not-succeeded', findingPaths: ['src/stable.ts'],
+    });
+    expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
     expect(priorReviewRecordFromRows(storedRows(evidence, { status: 'succeeded' })))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-conclusion-not-success' });
     const forgedSuccess = edited(evidence, (copy) => { copy.conclusion = 'success'; });
     expect(priorReviewRecordFromRows(storedRows(forgedSuccess)))
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'rederived-not-ship' });
-    expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
+    // Relabeling the run cannot turn the worker's recorded failure into success.
+    const forgedStatus = storedRows(evidence, { status: 'succeeded' });
+    expect(priorReviewRecordFromRows(forgedStatus)).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'evidence-conclusion-not-success',
+    });
+    expect(decideNext(forgedStatus)).toEqual({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'evidence-conclusion-not-success',
+    });
+  });
+
+  it('historical #1034 stored-success evidence with P2 is not eligible under the current policy', () => {
+    // A historical worker-published success label cannot override current canonical
+    // re-derivation: this record carries no trusted provenance for an older P2 policy.
+    // Preserve its finding path for diagnostics, but refuse it as an incremental prior.
+    const evidence = parseWorkerReviewEvidence({
+      version: 'WorkerReviewEvidence.v1', runId: PRIOR_RUN, repositoryId: REPO_ID,
+      owner: 'acme', repo: 'app', prNumber: 7, headSha: PRIOR_HEAD, baseSha: BASE,
+      policyDigest: POLICY, configDigest: CONFIG, executionAttempt: 1, checkId: 4242, conclusion: 'success',
+      result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T10:00:00.000Z',
+        roster: ['sec-lane', 'arch-lane'], coverageComplete: true, quorumSatisfied: true,
+        personas: [
+          { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
+            { severity: 'P1', path: 'src/stable.ts', line: 11,
+              title: 'Naming is inconsistent with the module', body: 'Rename it.' },
+          ] },
+          { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+        ] },
+    });
+    expect(publishedFindingSeverity(evidence.result.personas[0].findings[0])).toBe('P2');
+    const rows = storedRows(evidence);
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({
+      shipComplete: false, shipIncompleteReason: 'rederived-not-ship', findingPaths: ['src/stable.ts'],
+    });
+    expect(decideNext(rows)).toEqual({
+      mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'rederived-not-ship',
+    });
   });
 
   it('keeps authoritative-gate runs on the gate record: an authoritative current or prior run refuses evidence', async () => {
