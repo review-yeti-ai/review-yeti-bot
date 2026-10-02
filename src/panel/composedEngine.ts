@@ -1634,6 +1634,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     // REL-1083: map-reduce makes the same decision; whole-diff scope never chunks.
     const applicability = resolveMapReduceReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
+      maxReviewedLockfilePatchChars: config.max_reviewed_lockfile_patch_chars,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
       verdictCache: options.verdictCache,
