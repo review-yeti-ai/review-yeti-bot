@@ -12,8 +12,9 @@ import {
   CartesianGrid,
   ReferenceLine,
 } from 'recharts';
-import { Clock } from 'lucide-react';
+import { Clock, ShieldCheck, Activity } from 'lucide-react';
 import { LatencyTimeBucket, LatencyMetricPoint } from '@/types/analytics';
+import { Card } from '@/components/dashboard/tremor';
 
 export interface LatencyTrendChartProps {
   data?: (LatencyTimeBucket | LatencyMetricPoint)[];
@@ -60,13 +61,13 @@ export function LatencyTrendChart({
 
   if (!isMounted || isLoading) {
     return (
-      <div className={`p-5 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm ${className}`}>
+      <Card className={`p-5 bg-[#08090d]/80 border-white/[0.08] ${className}`}>
         <div className="flex items-center justify-between mb-4">
-          <div className="h-5 w-44 bg-slate-800 rounded animate-pulse" />
-          <div className="h-5 w-20 bg-slate-800 rounded animate-pulse" />
+          <div className="h-5 w-44 bg-white/[0.05] rounded animate-pulse" />
+          <div className="h-5 w-20 bg-white/[0.05] rounded animate-pulse" />
         </div>
-        <div className="h-64 w-full bg-slate-800/40 rounded-lg animate-pulse" />
-      </div>
+        <div className="h-64 w-full bg-white/[0.02] rounded-lg animate-pulse" />
+      </Card>
     );
   }
 
@@ -96,17 +97,17 @@ export function LatencyTrendChart({
   const isSlaCompliant = p95DurationMs <= slaTargetMs;
 
   return (
-    <div className={`p-5 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm ${className}`}>
+    <Card className={`p-5 bg-[#08090d]/80 border-white/[0.08] ${className}`}>
       {/* Header & Badges */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
           <div className="flex items-center gap-2">
             <Clock className="h-4 w-4 text-cyan-400" />
-            <h3 className="text-sm font-semibold text-white tracking-tight">
+            <h3 className="text-xs font-semibold text-zinc-100 font-mono">
               Turnaround Latency Trend (p95)
             </h3>
             <span
-              className={`px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded-md border ${
+              className={`px-2 py-0.5 text-[10px] font-mono uppercase tracking-wider rounded-md border ${
                 isSlaCompliant
                   ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'
                   : 'bg-amber-500/10 border-amber-500/20 text-amber-400'
@@ -115,20 +116,20 @@ export function LatencyTrendChart({
               {isSlaCompliant ? 'SLA Compliant' : 'Near SLA Cap'}
             </span>
           </div>
-          <p className="text-xs text-slate-400 mt-0.5">
+          <p className="text-[11px] text-zinc-400 font-sans mt-0.5">
             p95 duration vs average across review execution windows with SLA threshold
           </p>
         </div>
 
         {/* Quantile Pill Summary */}
         <div className="flex items-center gap-2 text-xs font-mono">
-          <div className="px-2 py-1 rounded bg-slate-800 border border-white/5 text-slate-300">
+          <div className="px-2 py-1 rounded bg-white/[0.02] border border-white/[0.06] text-zinc-300">
             p50: <span className="text-cyan-300 font-bold">{formatDuration(p50DurationMs)}</span>
           </div>
-          <div className="px-2 py-1 rounded bg-slate-800 border border-white/5 text-slate-300">
+          <div className="px-2 py-1 rounded bg-white/[0.02] border border-white/[0.06] text-zinc-300">
             p90: <span className="text-indigo-300 font-bold">{formatDuration(p90DurationMs)}</span>
           </div>
-          <div className="px-2 py-1 rounded bg-slate-800 border border-white/5 text-slate-300">
+          <div className="px-2 py-1 rounded bg-white/[0.02] border border-white/[0.06] text-zinc-300">
             p95: <span className="text-cyan-400 font-bold">{formatDuration(p95DurationMs)}</span>
           </div>
         </div>
@@ -148,29 +149,29 @@ export function LatencyTrendChart({
                 <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#ffffff0d" vertical={false} />
             <XAxis
               dataKey="label"
-              stroke="#64748b"
-              tick={{ fontSize: 11 }}
+              stroke="#71717a"
+              fontSize={10}
               tickLine={false}
             />
             <YAxis
-              stroke="#64748b"
-              tick={{ fontSize: 11 }}
+              stroke="#71717a"
+              fontSize={10}
               tickLine={false}
               tickFormatter={(v) => (v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${v}ms`)}
             />
             <Tooltip
               contentStyle={{
-                backgroundColor: '#0f172a',
-                borderColor: '#334155',
+                backgroundColor: '#0c0d14',
+                borderColor: '#ffffff15',
                 borderRadius: '8px',
-                fontSize: '12px',
+                fontSize: '11px',
+                fontFamily: 'monospace',
                 boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)',
               }}
-              labelStyle={{ color: '#cbd5e1', fontWeight: 600 }}
-              formatter={(value: any, name: any) => [
+              formatter={(value: any, name?: any) => [
                 formatDuration(Number(value) || 0),
                 name === 'p95' ? 'p95 Latency' : name === 'avg' ? 'Average' : 'p50 Latency',
               ]}
@@ -207,6 +208,6 @@ export function LatencyTrendChart({
           </AreaChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </Card>
   );
 }

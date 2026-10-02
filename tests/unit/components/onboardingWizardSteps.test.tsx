@@ -360,7 +360,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
 
       await waitFor(() => {
         expect(apiClient.createRepository).toHaveBeenCalledWith({
-          owner: 'calltelemetry',
+          owner: 'reviewyeti-ai',
           repo: 'new-microservice',
           automationEnabled: true,
           customProfile: 'balanced',

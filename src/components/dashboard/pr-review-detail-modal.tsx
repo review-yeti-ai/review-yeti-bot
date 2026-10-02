@@ -205,17 +205,7 @@ export function PRReviewDetailModal({
   const personaLogs = React.useMemo(() => {
     if (!job) return [];
 
-    const defaultModelMap: Record<string, string> = {
-      security: 'claude-3-5-sonnet',
-      architecture: 'claude-3-5-sonnet',
-      performance: 'gpt-4o',
-      quality: 'claude-3-5-sonnet',
-      database: 'glm-5.2',
-      api_contract: 'claude-3-5-sonnet',
-      docs_compliance: 'claude-3-5-sonnet',
-      reliability: 'claude-3-5-sonnet',
-      devops: 'gpt-4o',
-    };
+    const defaultModel = 'reviewyeti-ai/yeti-pr-reviewer';
 
     let rawLogs: PersonaLogEntry[] = (job.personaLogs && job.personaLogs.length > 0)
       ? job.personaLogs
@@ -227,10 +217,10 @@ export function PRReviewDetailModal({
         return {
           persona: idStr,
           displayName: idStr.charAt(0).toUpperCase() + idStr.slice(1),
-          model: defaultModelMap[idStr] || 'claude-3-5-sonnet',
+          model: (job as any)?.model || defaultModel,
           status: 'success',
           decision: 'SHIP' as const,
-          outputLog: `[PERSONA] ${idStr} execution completed.`,
+          outputLog: `[SWARM] ${idStr} execution completed.`,
           reasoningChain: [`Inspected diff for ${idStr} rules.`],
           nits: [
             {
@@ -247,7 +237,10 @@ export function PRReviewDetailModal({
 
     return rawLogs.map((entry) => {
       const personaStr = (entry && entry.persona) ? String(entry.persona) : 'unknown';
-      const model = (entry && entry.model) || 'unknown';
+      const rawModel = (entry && entry.model) || (job as any)?.model || defaultModel;
+      const model = (rawModel === 'unknown' || rawModel.includes('claude') || rawModel.includes('gpt') || rawModel.includes('glm'))
+        ? defaultModel
+        : rawModel;
       const reasoningChain = (entry && entry.reasoningChain && entry.reasoningChain.length > 0)
         ? entry.reasoningChain
         : [];
@@ -256,7 +249,7 @@ export function PRReviewDetailModal({
         : [];
       const outputLog = (entry && entry.outputLog) || (entry?.apiError
         ? `[API_ERROR] ${entry.apiError}`
-        : `[PERSONA] ${entry?.displayName || personaStr} (${model}) — ${entry?.decision || 'N/A'}`);
+        : `[SWARM] ${entry?.displayName || personaStr} (${model}) — ${entry?.decision || 'N/A'}`);
 
       return {
         ...entry,
@@ -400,7 +393,7 @@ export function PRReviewDetailModal({
             }`}
           >
             <Bot className="w-3.5 h-3.5" />
-            Evaluation &amp; Personas
+            Swarm Tasks &amp; Evidence
           </button>
 
           <button
@@ -527,20 +520,20 @@ export function PRReviewDetailModal({
           </div>
         )}
 
-        {/* Persona Output Logs & Code Nits Inspector */}
+        {/* Swarm Subagent Output Logs & Code Findings Inspector */}
         <div className="space-y-3 my-4">
           <div className="flex items-center justify-between">
             <h4 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Bot className="w-4 h-4 text-indigo-400" /> Full Reviewer Output Logs & Code Nits
+              <Bot className="w-4 h-4 text-indigo-400" /> Swarm Subagent Task Output &amp; Code Findings
             </h4>
             <span className="text-xs text-muted-foreground">
               {(() => {
                 const successCount = personaLogs.filter(p => p.status !== 'error' && p.status !== 'timeout').length;
                 const errorCount = personaLogs.filter(p => p.status === 'error' || p.status === 'timeout').length;
                 if (errorCount > 0) {
-                  return `${successCount} active, ${errorCount} failed persona agent${errorCount !== 1 ? 's' : ''} (Click to inspect)`;
+                  return `${successCount} active, ${errorCount} failed subagent task${errorCount !== 1 ? 's' : ''} (Click to inspect)`;
                 }
-                return `${successCount} active persona agent${successCount !== 1 ? 's' : ''} (Click persona to inspect full logs & nits)`;
+                return `${successCount} active subagent task${successCount !== 1 ? 's' : ''} (Click to inspect logs & findings)`;
               })()}
             </span>
           </div>
@@ -678,9 +671,9 @@ export function PRReviewDetailModal({
                         <div className="flex items-center justify-between text-muted-foreground text-[11px]">
                           <span className="flex items-center gap-1.5 font-semibold text-indigo-300">
                             <Terminal className="w-3.5 h-3.5 text-indigo-400" />
-                            Reviewer Output Log (Model Tag: {entry.model || 'claude-haiku-4.5'})
+                            Reviewer Output Log (Model Tag: {entry.model || 'reviewyeti-ai/yeti-pr-reviewer'})
                           </span>
-                          <span>Persona: {entry.persona}</span>
+                          <span>Task Dimension: {entry.persona}</span>
                         </div>
                         <pre className="p-3 rounded bg-black/60 border border-border/40 text-foreground/90 text-[11px] whitespace-pre-wrap leading-relaxed">
                           {entry.outputLog}
