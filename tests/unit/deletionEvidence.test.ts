@@ -107,6 +107,27 @@ describe('deletion evidence replay', () => {
     } finally { now.mockRestore(); fetch.mockRestore(); }
   });
 
+  it.each([
+    ['docs', 'contradicted', 'unknown', 'low'],
+    ['source', 'unknown', 'unknown', 'unknown'],
+    ['unknown', 'unknown', 'unknown', 'unknown'],
+    ['source', 'contradicted', 'contradicted', 'low'],
+    ['docs', 'supported', 'contradicted', 'high'],
+    ['docs', 'contradicted', 'supported', 'high'],
+  ] as const)('derives non-sensitive %s risk from visible consumers and %s/%s contract evidence', async (category, consumer, contract, expectedRisk) => {
+    const answer = outcome();
+    answer.answers.risk.choice = 'low';
+    answer.answers.category.choice = category;
+    answer.answers.visible_consumer.choice = consumer;
+    answer.answers.contract_change.choice = contract;
+    const { runtime } = setup([file('old.ts')],
+      { asker: { ask: async () => answer } as unknown as JevAsker, modelPin: 'jev-test' });
+    const plan = await runtime.prepare();
+    expect(plan).toMatchObject({ status: 'complete', classifiedFiles: 1, unresolvedFiles: 0 });
+    expect(runtime.manifest().groups![0].members[0]).toMatchObject({ sensitive: false, risk: expectedRisk });
+    expect(plan.groups[0]).toMatchObject({ risk: expectedRisk, paths: ['old.ts'], obligationCount: 5 });
+  });
+
   it('forms logical Azure groups while retaining each path and its security floor', async () => {
     const ask = vi.fn(async (request: any) => {
       const selected = Object.entries(request.questions.subsystem.criteria)
