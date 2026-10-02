@@ -155,7 +155,7 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     try { await pool?.query(`DROP SCHEMA "${schemaName}" CASCADE`); } finally { await pool?.end(); pool = undefined; }
   });
 
-  it('selects the latest terminal completion of another run of the same PR stored before this run was admitted', async () => {
+  it('selects the latest terminal completion and preserves its advisory P2 path', async () => {
     const current = runId(100);
     await insertRun(current);
     const older = runId(1);
