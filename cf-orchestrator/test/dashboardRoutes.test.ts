@@ -567,6 +567,32 @@ describe('Neutral dashboard API state and boundary controls', () => {
 
 
 describe('Dashboard trigger and gate public fallback boundaries', () => {
+  it('sends the public trigger command and completed lifecycle through a bound review run', async () => {
+    const calls: Array<{ url: string; payload: any }> = [];
+    let resolveComplete!: () => void;
+    const completed = new Promise<void>(resolve => { resolveComplete = resolve; });
+    const env = { ...createMockEnv(), REVIEW_RUN: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async (url: string, init: RequestInit) => {
+        const payload = JSON.parse(init.body as string);
+        calls.push({ url, payload });
+        if (payload.type === 'stage:transition' && payload.stage === 'complete') resolveComplete();
+        return Response.json({ success: true });
+      } }),
+    } } as unknown as Env;
+    const res = await worker.fetch(new Request('https://worker.dev/api/live/trigger', {
+      method: 'POST', body: JSON.stringify({ jobId: 'example-bound-run', repo: 'example/sample-cdr', prNumber: 23 }),
+    }), env);
+    assert.equal(res.status, 200);
+    await completed;
+    assert.deepEqual(calls[0], { url: 'http://do/trigger', payload: { jobId: 'example-bound-run', repo: 'example/sample-cdr', prNumber: 23 } });
+    const transitions = calls.filter(call => call.url === 'http://do/events' && call.payload.type === 'stage:transition');
+    assert.equal(transitions.at(-1)?.payload.stage, 'complete');
+    assert.equal(transitions.at(-1)?.payload.overallProgress, 100);
+    assert.ok(transitions.every(call => call.payload.jobId === 'example-bound-run'));
+    assert.ok(calls.some(call => call.payload.type === 'log:chunk'));
+  });
+
   it('uses documented trigger defaults for malformed JSON and untyped pull request numbers', async () => {
     for (const [body, expectedRepo] of [
       ['not-json', 'reviewyeti-ai/yeti-pr-reviewer'],
