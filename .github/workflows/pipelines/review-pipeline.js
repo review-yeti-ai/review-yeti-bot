@@ -2009,10 +2009,19 @@ function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
   }
   return files.every((file) => {
     const sourcePatch = String(file.patch || file.content || '');
-    const plannedCopies = plannedCopiesByPath.get(file.path) || [];
+    let plannedCopies = plannedCopiesByPath.get(file.path) || [];
     if (plannedCopies.length === 0) return false;
     if (plannedCopies.length === 1) {
       return String(plannedCopies[0].patch || '').replace(/\n+$/u, '') === sourcePatch.replace(/\n+$/u, '');
+    }
+
+    // Packing may move slices between lanes. Restore only a complete bounded
+    // ordinal set, then retain the exact source body/range comparison below.
+    if (plannedCopies.some((copy) => copy.sourceSliceIndex !== undefined)) {
+      const indices = plannedCopies.map((copy) => copy.sourceSliceIndex);
+      if (indices.some((index) => !Number.isSafeInteger(index) || index < 0 || index >= plannedCopies.length)
+        || new Set(indices).size !== plannedCopies.length) return false;
+      plannedCopies = [...plannedCopies].sort((a, b) => a.sourceSliceIndex - b.sourceSliceIndex);
     }
 
     const sourceParts = splitDiffPatchForCoverage(sourcePatch);
