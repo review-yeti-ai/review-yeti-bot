@@ -232,7 +232,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     );
   });
 
-  it('Scenario 7: Only P2 (advisory) findings present -> conclusion remains success', async () => {
+  it('Scenario 7: unresolved P2 findings require fixes before success', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['style'],
@@ -258,13 +258,13 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
-    expect(result.conclusion).toBe('success');
-    expect(result.blockingFindingCount).toBe(0);
+    expect(result.conclusion).toBe('failure');
+    expect(result.blockingFindingCount).toBe(1);
     expect(result.findingCount).toBe(1);
     expect(publishGateCheck).not.toHaveBeenCalled();
     expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
-        conclusion: 'success',
+        conclusion: 'failure',
         title: 'Review Yeti: SHIP',
       }),
     );
