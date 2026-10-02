@@ -8,7 +8,7 @@
 export type RepositoryVisibility = 'PRIVATE' | 'PUBLIC' | 'UNKNOWN';
 
 /**
- * ct-meta#2884 (2026-09-08): the reviewer blocked a PR that archived internal
+ * example-meta#2884 (2026-09-08): the reviewer blocked a PR that archived internal
  * planning material (cluster IPs, registry digest pins, secret variable NAMES,
  * no secret values) into a PRIVATE repository, with four P1s of the shape "if
  * this repository is public, this is reconnaissance-grade disclosure". The

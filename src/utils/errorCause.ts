@@ -5,7 +5,7 @@
  * `TypeError: terminated`. The useful part -- `UND_ERR_CONNECT_TIMEOUT`, `ECONNRESET`,
  * `UND_ERR_SOCKET` "other side closed", the address it tried -- lives on `error.cause`, and
  * sometimes on an `AggregateError`'s `errors` (one per address tried). Logging only the top
- * message made ct-infrastructure#834 undiagnosable.
+ * message made example-infra#834 undiagnosable.
  *
  * This module keeps only the fields that identify the failure: `name`, `code`, `errno`,
  * `syscall`, `address`, `port`, and a short message passed through the worker-failure
