@@ -256,6 +256,36 @@ describe('preflight SQL injection static screening precision', () => {
       expected: true,
     },
     {
+      label: 'an escaped-slash regex after a catch block does not hide unsafe SQL',
+      filePath: 'src/query.ts',
+      line: String.raw`try {} catch (error) {} /https?:\/\//.test(url); const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
+      label: 'an escaped-slash regex after a switch block does not hide unsafe SQL',
+      filePath: 'src/query.ts',
+      line: String.raw`switch (state) { default: break; } /https?:\/\//.test(url); const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
+      label: 'an escaped-slash regex after an optional-binding catch does not hide unsafe SQL',
+      filePath: 'src/query.ts',
+      line: String.raw`try {} catch {} /https?:\/\//.test(url); const query = "SELECT * FROM users WHERE id = " + req.id;`,
+      expected: true,
+    },
+    {
+      label: 'a parameterized query after an optional-binding catch regex stays separately bound',
+      filePath: 'src/query.ts',
+      line: String.raw`try {} catch {} /https?:\/\//.test(url); db.query("SELECT * FROM users WHERE id = $1", [req.id + 1]);`,
+      expected: false,
+    },
+    {
+      label: 'object division with catch and switch property names cannot hide unsafe SQL',
+      filePath: 'src/query.ts',
+      line: 'const ratio = { catch: 10, switch: 20 } / 2; const query = "SELECT * FROM users WHERE id = " + req.id; const next = 1 / 2;',
+      expected: true,
+    },
+    {
       label: 'a regex operand after division does not hide later SQL construction',
       filePath: 'src/query.ts',
       line: String.raw`const ratio = value / /https?:\/\//.test(url); const query = "SELECT * FROM users WHERE id = " + req.id;`,

@@ -365,6 +365,13 @@ type PreflightSqlToken = {
   text: string;
   value?: string;
   interpolated?: boolean;
+  closed?: boolean;
+  templateExpressions?: PreflightTemplateExpression[];
+};
+
+type PreflightTemplateExpression = {
+  tokens: PreflightSqlToken[];
+  closed: boolean;
 };
 
 type PreflightSourceLanguage = 'javascript' | 'python' | 'ruby' | 'elixir' | 'php' | 'sql' | 'other';
@@ -389,7 +396,7 @@ const REGEX_PREFIX_KEYWORDS = new Set([
   'await', 'case', 'delete', 'do', 'else', 'in', 'instanceof', 'new', 'of',
   'return', 'throw', 'typeof', 'void', 'yield',
 ]);
-const REGEX_CONTROL_CONDITION_KEYWORDS = new Set(['for', 'if', 'while', 'with']);
+const REGEX_CONTROL_CONDITION_KEYWORDS = new Set(['catch', 'for', 'if', 'switch', 'while', 'with']);
 
 function followsJavascriptControlCondition(tokens: PreflightSqlToken[]): boolean {
   if (tokens[tokens.length - 1]?.text !== ')') return false;
@@ -422,7 +429,7 @@ function closesJavascriptBlock(tokens: PreflightSqlToken[]): boolean {
 
   const beforeOpen = tokens[openIndex - 1];
   if (beforeOpen?.text === ')' && followsJavascriptControlCondition(tokens.slice(0, openIndex))) return true;
-  if (beforeOpen?.kind === 'identifier' && ['else', 'try', 'finally', 'do'].includes(beforeOpen.text)) return true;
+  if (beforeOpen?.kind === 'identifier' && ['catch', 'else', 'try', 'finally', 'do'].includes(beforeOpen.text)) return true;
   return beforeOpen?.text === '>' && tokens[openIndex - 2]?.text === '=';
 }
 
@@ -484,6 +491,7 @@ type PreflightLexicalFrame = {
   tokens: PreflightSqlToken[];
   templateExpression: boolean;
   braces: number;
+  expression?: PreflightTemplateExpression;
 } | {
   kind: 'template';
   token: PreflightSqlToken;
@@ -515,6 +523,7 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
         index += 2;
       } else if (line[index] === '`') {
         finishTemplate(frame);
+        frame.token.closed = true;
         frames.pop();
         index++;
       } else if (line.startsWith('${', index)) {
@@ -522,8 +531,10 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
         frame.literalStart = undefined;
         frame.token.interpolated = true;
         const expressionTokens: PreflightSqlToken[] = [];
+        const expression: PreflightTemplateExpression = { tokens: expressionTokens, closed: false };
+        (frame.token.templateExpressions ||= []).push(expression);
         tokenScopes.push(expressionTokens);
-        frames.push({ kind: 'code', tokens: expressionTokens, templateExpression: true, braces: 0 });
+        frames.push({ kind: 'code', tokens: expressionTokens, templateExpression: true, braces: 0, expression });
         index += 2;
       } else {
         index++;
@@ -533,6 +544,7 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
 
     const tokens = frame.tokens;
     if (frame.templateExpression && line[index] === '}' && frame.braces === 0) {
+      if (frame.expression) frame.expression.closed = true;
       frames.pop();
       const template = frames[frames.length - 1];
       if (template.kind === 'template') template.literalStart = index + 1;
@@ -607,6 +619,7 @@ function tokenizePreflightSourceLine(line: string, language: PreflightSourceLang
         text: line.slice(contentStart - delimiter.length, index),
         value,
         interpolated,
+        closed: line.startsWith(delimiter, index),
       });
       if (line.startsWith(delimiter, index)) index += delimiter.length;
       continue;
@@ -715,6 +728,28 @@ function tokenNestingDepths(tokens: PreflightSqlToken[]): number[] {
     if ([')', ']', '}'].includes(token.text)) depth = Math.max(0, depth - 1);
   }
   return depths;
+}
+
+function hasHoistedRegExpFunctionDeclarationOnLine(tokens: PreflightSqlToken[]): boolean {
+  // Token nesting is not binding-scope proof; fail closed on any same-line
+  // statement-form declaration rather than exempting from depth coincidence.
+  for (let index = 0; index < tokens.length; index++) {
+    if (tokens[index].kind !== 'identifier' || tokens[index].text !== 'function') continue;
+
+    let declarationStart = index;
+    if (tokens[index - 1]?.text === 'async') declarationStart--;
+    const preceding = tokens[declarationStart - 1]?.text;
+    if (
+      declarationStart !== 0 &&
+      ![';', '{', '}', 'export', 'default'].includes(preceding || '')
+    ) continue;
+
+    let nameIndex = index + 1;
+    if (tokens[nameIndex]?.text === '*') nameIndex++;
+    if (tokens[nameIndex]?.kind === 'identifier' && tokens[nameIndex].text === 'RegExp') return true;
+  }
+
+  return false;
 }
 
 function isDirectEvalCall(tokens: PreflightSqlToken[], index: number): boolean {
@@ -901,9 +936,68 @@ function isUnmodifiedTopLevelRegexBinding(
   return false;
 }
 
+function isPrimitiveLiteral(token: PreflightSqlToken): boolean {
+  return token.kind === 'number' ||
+    (token.kind === 'string' && token.closed === true && token.interpolated !== true) ||
+    (token.kind === 'identifier' && ['true', 'false', 'null'].includes(token.text));
+}
+
+function isSameLinePrimitiveConst(
+  name: string,
+  tokens: PreflightSqlToken[],
+  depths: number[],
+  constructorIndex: number,
+): boolean {
+  if (depths[constructorIndex] !== 0) return false;
+  const occurrences: number[] = [];
+  for (let index = 0; index < constructorIndex; index++) {
+    if (tokens[index].kind === 'identifier' && tokens[index].text === name) occurrences.push(index);
+  }
+  // A single bare top-level declaration is evidence of a primitive value;
+  // parameters, aliases, property reads, type annotations, and later uses
+  // cannot substitute for this evidence. Separate executable scopes are
+  // fenced by the constructor's preceding-template barrier below.
+  if (occurrences.length !== 1) return false;
+  const declaration = occurrences[0];
+  return depths[declaration] === 0 &&
+    tokens[declaration - 1]?.text === 'const' &&
+    (declaration === 1 || tokens[declaration - 2]?.text === ';') &&
+    tokens[declaration + 1]?.text === '=' &&
+    Boolean(tokens[declaration + 2] && isPrimitiveLiteral(tokens[declaration + 2])) &&
+    tokens[declaration + 3]?.text === ';';
+}
+
+function hasOnlyPrimitiveTemplateExpressions(
+  template: PreflightSqlToken,
+  tokens: PreflightSqlToken[],
+  depths: number[],
+  constructorIndex: number,
+): boolean {
+  const pending = [template];
+  // Walk the lexer-owned expression tree iteratively: no reparse, recursive
+  // call stack, or clipping of nested executable substitutions.
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (current.closed !== true || !current.templateExpressions?.length) return false;
+    for (const expression of current.templateExpressions) {
+      if (!expression.closed || expression.tokens.length !== 1) return false;
+      const atom = expression.tokens[0];
+      if (isPrimitiveLiteral(atom)) continue;
+      if (atom.kind === 'string' && atom.interpolated === true) {
+        pending.push(atom);
+      } else if (
+        atom.kind !== 'identifier' ||
+        !isSameLinePrimitiveConst(atom.text, tokens, depths, constructorIndex)
+      ) return false;
+    }
+  }
+  return true;
+}
+
 function isUnshadowedRegExpConstructorReceiver(
   tokens: PreflightSqlToken[],
   matchingIndexes: number[],
+  depths: number[],
   callNameIndex: number,
 ): boolean {
   const receiverEnd = callNameIndex - 2;
@@ -924,10 +1018,43 @@ function isUnshadowedRegExpConstructorReceiver(
   // before construction. It is not a whole-file binding proof.
   const shadowOrWrite = tokens.slice(0, constructorName).some((token) =>
     token.kind === 'identifier' && token.text === 'RegExp'
-  );
+  ) || hasHoistedRegExpFunctionDeclarationOnLine(tokens);
   // Constructor arguments execute before `.exec` is looked up; they can
   // mutate the prototype too, so include the complete receiver expression.
-  return !shadowOrWrite && !hasRegexIntrinsicMutationBarrier(tokens, callNameIndex);
+  // Prove the COMPLETE argument list, not just substitutions. Support only
+  // the two intrinsic parameters as single closed primitive atoms, proven
+  // same-line consts, or untagged templates with primitive substitutions.
+  // Calls/getters/coercion, tags, spreads, extra arguments, and compound or
+  // unclosed expressions remain default-deny; TS types are not evidence.
+  let harmlessArguments = true;
+  let argumentCount = 0;
+  let argumentIndex = constructorOpen + 1;
+  while (argumentIndex < receiverEnd) {
+    const argument = tokens[argumentIndex++];
+    if (++argumentCount > 2 || !(
+      isPrimitiveLiteral(argument) ||
+      (argument.kind === 'string' && argument.interpolated === true &&
+        hasOnlyPrimitiveTemplateExpressions(argument, tokens, depths, newIndex)) ||
+      (argument.kind === 'identifier' &&
+        isSameLinePrimitiveConst(argument.text, tokens, depths, newIndex))
+    )) {
+      harmlessArguments = false;
+      break;
+    }
+    if (argumentIndex === receiverEnd) break;
+    // No suffix may execute after a proved atom; only an argument separator
+    // (including a trailing comma) is admitted. This also rejects tags whose
+    // identifier might itself otherwise look like a primitive binding.
+    if (tokens[argumentIndex++].text !== ',') {
+      harmlessArguments = false;
+      break;
+    }
+  }
+  const precedingExecutableTemplate = tokens.slice(0, newIndex).some((token) =>
+    token.kind === 'string' && token.interpolated === true
+  );
+  return !shadowOrWrite && harmlessArguments && !precedingExecutableTemplate &&
+    !hasRegexIntrinsicMutationBarrier(tokens, callNameIndex);
 }
 
 function isRegexExecMethod(
@@ -938,7 +1065,7 @@ function isRegexExecMethod(
 ): boolean {
   if (tokens[callNameIndex - 1]?.text !== '.') return false;
   let receiverIndex = callNameIndex - 2;
-  if (isUnshadowedRegExpConstructorReceiver(tokens, matchingIndexes, callNameIndex)) return true;
+  if (isUnshadowedRegExpConstructorReceiver(tokens, matchingIndexes, depths, callNameIndex)) return true;
   if (tokens[receiverIndex]?.text === ')') {
     const openIndex = matchingIndexes[receiverIndex];
     if (openIndex >= 0 && openIndex + 2 === receiverIndex) receiverIndex = openIndex + 1;

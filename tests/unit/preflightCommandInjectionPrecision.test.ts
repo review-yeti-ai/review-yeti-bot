@@ -175,6 +175,166 @@ describe('preflight command injection static screening precision', () => {
       expected: false,
     },
     {
+      label: 'a same-line immutable primitive pattern remains a matcher inside a constructor template',
+      line: 'const pattern = "needle"; new RegExp(`${pattern}`).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a primitive string literal substitution is not a command receiver mutation',
+      line: 'new RegExp(`${"needle"}`).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'nested primitive string templates remain intrinsic matcher arguments',
+      line: 'new RegExp(`${`${"needle"}`}`).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'primitive numeric and boolean constructor substitutions do not execute commands',
+      line: 'new RegExp(`${1}-${true}`).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a primitive constructor substitution cannot exempt an effectful template tag',
+      line: 'const tag = () => { /x/.constructor.prototype.exec = child_process.exec; return "x"; }; new RegExp(tag`${"needle"}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a primitive constructor substitution cannot exempt an effectful sibling flags argument',
+      line: 'const mutate = () => { /x/.constructor.prototype.exec = child_process.exec; return undefined; }; new RegExp(`${"needle"}`, mutate()).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an opaque constructor template still executes its tag before exec lookup',
+      line: 'const tag = () => { /x/.constructor.prototype.exec = child_process.exec; return "x"; }; new RegExp(tag`needle`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a static pattern cannot exempt an effectful constructor flags call',
+      line: 'const mutate = () => { /x/.constructor.prototype.exec = child_process.exec; return undefined; }; new RegExp("needle", mutate()).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a sibling flags getter is not primitive constructor evidence',
+      line: 'const flags = { get value() { /x/.constructor.prototype.exec = child_process.exec; return undefined; } }; new RegExp(`${"needle"}`, flags.value).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'even an ignored third constructor argument executes before exec lookup',
+      line: 'const mutate = () => { /x/.constructor.prototype.exec = child_process.exec; return undefined; }; new RegExp(`${"needle"}`, "g", mutate()).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'constructor spread evaluation cannot borrow primitive template evidence',
+      line: 'const patterns = { *[Symbol.iterator]() { /x/.constructor.prototype.exec = child_process.exec; yield "needle"; } }; new RegExp(...patterns).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'closed primitive pattern and flags are both side-effect-free constructor arguments',
+      line: 'new RegExp(`${"needle"}`, "g").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'literal pattern and flags preserve the intrinsic matcher exemption',
+      line: 'new RegExp("needle", "g").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'an immutable primitive flags binding is proved independently of the pattern template',
+      line: 'const flags = "g"; new RegExp(`${"needle"}`, flags).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a trailing comma adds no effectful sibling constructor argument',
+      line: 'new RegExp(`${"needle"}`, "g",).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'an empty intrinsic constructor has no argument evaluation effects',
+      line: 'new RegExp().exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a constructor template call cannot establish side-effect-free interpolation',
+      line: 'new RegExp(`${changePattern()}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a constructor template property read cannot establish getter-free interpolation',
+      line: 'new RegExp(`${pattern.value}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a constructor template assignment cannot borrow an earlier primitive binding',
+      line: 'let pattern = "needle"; new RegExp(`${(pattern = changePattern())}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an earlier primitive binding cannot excuse a prototype mutation in a later substitution',
+      line: 'const pattern = "needle"; new RegExp(`${pattern}${(RegExp.prototype.exec = child_process.exec, "x")}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a TypeScript string annotation is not runtime primitive evidence for a constructor substitution',
+      line: 'function find(pattern: string, req: { query: { input: string } }) { return new RegExp(`${pattern}`).exec(req.query.input); }',
+      expected: true,
+    },
+    {
+      label: 'an object-backed pattern cannot establish primitive coercion for a constructor template',
+      line: 'const pattern = { toString() { RegExp.prototype.exec = child_process.exec; return "x"; } }; new RegExp(`${pattern}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a mutable primitive declaration is not immutable constructor evidence',
+      line: 'let pattern = "needle"; new RegExp(`${pattern}`).exec(req.query.input);',
+      expected: true,
+    },
+    {
+      label: 'a block-local pattern cannot borrow a top-level primitive declaration',
+      line: 'const pattern = "needle"; { const pattern = injected; new RegExp(`${pattern}`).exec(req.query.input); }',
+      expected: true,
+    },
+    {
+      label: 'a preceding executable template cannot hide a mutation before a primitive constructor template',
+      line: 'const rendered = `${RegExp.prototype.exec = child_process.exec}`; new RegExp(`${"needle"}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a preceding opaque template does not revoke a primitive constructor template exemption',
+      line: 'const example = `RegExp.prototype.exec = child_process.exec`; new RegExp(`${"needle"}`).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a safe constructor interpolation never exempts a separate shell call on the same line',
+      line: 'new RegExp(`${"needle"}`).exec(req.query.input); child_process.exec(req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a prototype write in a live constructor template argument prevents the regex exemption',
+      line: 'new RegExp(`${(RegExp.prototype.exec = child_process.exec, "x")}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a nested live constructor template cannot hide a prototype write from the receiver fence',
+      line: 'new RegExp(`${`${(RegExp.prototype.exec = child_process.exec, "x")}`}`).exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an escaped constructor substitution is opaque pattern text rather than a prototype write',
+      line: 'new RegExp(`\\${(RegExp.prototype.exec = child_process.exec, "x")}`).exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a quoted constructor prototype example is opaque pattern text',
+      line: 'new RegExp("RegExp.prototype.exec = child_process.exec").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'an ordinary noninterpolated constructor template keeps the intrinsic matcher exemption',
+      line: 'new RegExp(`needle`).exec(req.query.input);',
+      expected: false,
+    },
+    {
       label: 'a previous read-only regex test does not erase regex receiver ownership',
       line: 'const re = /needle/; re.test(input); re.exec(req.query.input);',
       expected: false,
@@ -190,8 +350,53 @@ describe('preflight command injection static screening precision', () => {
       expected: true,
     },
     {
+      label: 'an escaped-slash regex after a catch block does not hide a shell call',
+      line: String.raw`try {} catch (error) {} /https?:\/\//.test(url); child_process.exec(req.query.command);`,
+      expected: true,
+    },
+    {
+      label: 'an escaped-slash regex after a switch block does not hide a shell call',
+      line: String.raw`switch (state) { default: break; } /https?:\/\//.test(url); child_process.exec(req.query.command);`,
+      expected: true,
+    },
+    {
+      label: 'an escaped-slash regex after an optional-binding catch does not hide a shell call',
+      line: String.raw`try {} catch {} /https?:\/\//.test(url); child_process.exec(req.query.command);`,
+      expected: true,
+    },
+    {
+      label: 'call-looking regex text after a catch block is not an executed shell call',
+      line: 'try {} catch (error) {} /exec(req.query.command)/.test(input);',
+      expected: false,
+    },
+    {
+      label: 'call-looking regex text after a switch block is not an executed shell call',
+      line: 'switch (state) { default: break; } /exec(req.query.command)/.test(input);',
+      expected: false,
+    },
+    {
+      label: 'call-looking regex text after an optional-binding catch remains opaque',
+      line: 'try {} catch {} /exec(req.query.command)/.test(input);',
+      expected: false,
+    },
+    {
       label: 'object-literal division is not confused with a closed block regex prefix',
       line: 'const ratio = { value: 10 } / 2; child_process.exec(req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'ordinary object-literal division has no command call',
+      line: 'const ratio = { catch: 10, switch: 20 } / 2; const next = 1 / 2;',
+      expected: false,
+    },
+    {
+      label: 'a catch-named property method does not start a regex after its result',
+      line: 'const ratio = obj.catch(error) / 2; child_process.exec(req.query.command); const next = 1 / 2;',
+      expected: true,
+    },
+    {
+      label: 'a switch-named property method does not start a regex after its result',
+      line: 'const ratio = obj.switch(state) / 2; child_process.exec(req.query.command); const next = 1 / 2;',
       expected: true,
     },
     {
@@ -202,6 +407,16 @@ describe('preflight command injection static screening precision', () => {
     {
       label: 'a reassigned RegExp constructor does not gain the intrinsic matcher exemption',
       line: 'RegExp = child_process; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a later hoisted RegExp function declaration cannot borrow the intrinsic matcher exemption',
+      line: 'new RegExp("needle").exec("sh -c " + req.query.command); function RegExp() { return { exec: child_process.exec }; }',
+      expected: true,
+    },
+    {
+      label: 'a later RegExp declaration still blocks the exemption from a nested array expression',
+      line: 'const results = [new RegExp("needle").exec("sh -c " + req.query.command)]; function RegExp() { return { exec: child_process.exec }; }',
       expected: true,
     },
     {
@@ -289,7 +504,7 @@ describe('preflight command injection static screening precision', () => {
       line: 'exec("sh -c ${userInput}");',
       expected: true,
     },
-  ])('classifies $label through the preflight entrypoint', async ({ line, expected, filePath }) => {
+  ].map(control => [control.label, control] as const))('classifies %s through the preflight entrypoint', async (_label, { line, expected, filePath }) => {
     const finding = await findCommandInjection(line, filePath || 'src/command.ts');
     if (expected) {
       expect(finding).toMatchObject({ severity: 'P0', category: 'Security' });
@@ -302,6 +517,12 @@ describe('preflight command injection static screening precision', () => {
     const line = 'const rendered = ' + '`x${'.repeat(4096) +
       'child_process.exec(req.query.command)' + '}`'.repeat(4096) + ';';
     expect(await findCommandInjection(line)).toMatchObject({ severity: 'P0', category: 'Security' });
+  });
+
+  it('proves deeply nested primitive constructor templates without a recursive exemption walk', async () => {
+    const line = 'new RegExp(' + '`x${'.repeat(4096) + '"needle"' +
+      '}`'.repeat(4096) + ').exec(req.query.input);';
+    expect(await findCommandInjection(line)).toBeUndefined();
   });
 
   it('does not clip a live substitution after long nonexecuting template text', async () => {
