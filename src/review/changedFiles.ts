@@ -8,7 +8,7 @@
  * The previous `(\S+)` header match stopped at the first space, so
  * `a/sip message.txt` yielded no usable path at all. That failed OPEN and
  * silently: the file dropped out of `changedFiles`, was never sent to the panel,
- * and any finding on it was discarded during arbitration. cisco-cdr has eight
+ * and any finding on it was discarded during arbitration. example-api has eight
  * such paths today.
  */
 export function unquoteGitPath(raw: string): string {

@@ -107,16 +107,44 @@ function recoveryRequest(
   };
 }
 
-interface WorkerSummaryCounts { canonical: number; raw: number; expected: number; completed: number }
+interface WorkerSummaryCounts {
+  canonical: number;
+  raw: number;
+  expected: number;
+  completed: number;
+  archivedBlockingCount: number;
+  validationSummary: string;
+}
+
+/** Recognize an archive candidate, not an admission. Historical P2-inclusive
+ * wording is accepted only by this reader; the original completion and Gate
+ * must authenticate its counts before the projected summary is validated. */
+function archivedSummaryCandidate(summary: unknown, headSha: string) {
+  if (typeof summary !== 'string') return null;
+  const historical = /^Findings: ([0-9]+) \(blocking P0\/P1\/P2: ([0-9]+); ([0-9]+) raw persona finding\(s\) before clustering\)\.$/mu.exec(summary);
+  let validationSummary = summary;
+  let archivedBlockingCount = 0;
+  if (historical) {
+    const canonical = Number(historical[1]);
+    archivedBlockingCount = Number(historical[2]);
+    if (!Number.isSafeInteger(archivedBlockingCount) || archivedBlockingCount !== canonical) return null;
+    validationSummary = summary.replace(historical[0],
+      `Findings: ${historical[1]} (blocking P0/P1: 0; ${historical[3]} raw persona finding(s) before clustering).`);
+  }
+  const counts = parseIncompleteRosterSummary(validationSummary, headSha)
+    ?? parseGracefulComposedSummary(validationSummary, headSha);
+  return counts ? { counts, archivedBlockingCount, validationSummary } : null;
+}
 
 function workerSummaryCounts(summary: unknown, headSha: string): WorkerSummaryCounts | null {
-  const counts = parseIncompleteRosterSummary(summary, headSha) ?? parseGracefulComposedSummary(summary, headSha);
-  if (!counts) return null;
+  const candidate = archivedSummaryCandidate(summary, headSha);
+  if (!candidate) return null;
+  const { counts, archivedBlockingCount, validationSummary } = candidate;
   const { canonicalFindingCount: canonical, rawFindingCount: raw,
     expectedLanes: expected, completedLanes: completed } = counts;
   if (![canonical, raw].every(Number.isSafeInteger)
     || canonical < 0 || raw < canonical || raw > MAX_INCOMPLETE_P2_RECOVERY_FINDINGS) return null;
-  return { canonical, raw, expected, completed };
+  return { canonical, raw, expected, completed, archivedBlockingCount, validationSummary };
 }
 
 function isZeroFindingIncompleteSummary(summary: unknown, headSha: string): boolean {
@@ -554,16 +582,26 @@ export async function loadIncompleteP2RecoveryContext(
     if (typeof storedMarker !== 'string' || !DIGEST.test(storedMarker)
       || !constantTimeDigestEqual(storedMarker, input.expectedContextDigest!)) refuse();
   }
-  try {
-    const request = recoveryRequest(input, !gracefulComposedContinuation, gracefulComposedContinuation);
-    if (markerBoundLegacyStartOmission) {
-      validatePersistedLegacyIncompleteP2RecoveryEvidence(
-        request, recoveryEvidenceForValidation, input.expectedContextDigest!,
-      );
-    } else {
-      validateReviewGenerationRecoveryEvidence(request, recoveryEvidenceForValidation);
+
+
+  // Reject malformed App identity or lifetime boundaries before querying any
+  // completion archive. This is structural only: historical summary counts
+  // still gain authority exclusively from the source-bound checks below.
+  for (const [index, proof] of recoveryEvidenceForValidation.entries()) {
+    const roster = proof.legacyIncompleteRoster;
+    if (!roster) refuse();
+    selectedGateCheck(input, proof);
+    if (roster.workerStartedAt !== undefined) {
+      const started = Date.parse(roster.workerStartedAt);
+      const completed = Date.parse(roster.workerCompletedAt);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(roster.workerStartedAt)
+        || !Number.isFinite(started)
+        || new Date(started).toISOString().replace('.000Z', 'Z') !== roster.workerStartedAt
+        || started > completed) refuse();
+    } else if (index === latestProofIndex && !markerBoundLegacyStartOmission) {
+      refuse();
     }
-  } catch { refuse(); }
+  }
 
   const sourceRows = await queryable.query(`
     SELECT runs.run_id, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
@@ -699,7 +737,7 @@ export async function loadIncompleteP2RecoveryContext(
       || canonical.metrics.totalFindings !== counts.canonical
       || canonical.metrics.rawFindingCount !== counts.raw
       || (completion.result.findingCount !== undefined && completion.result.findingCount !== counts.canonical)
-      || (completion.result.blockingFindingCount !== undefined && completion.result.blockingFindingCount !== 0)) refuse();
+      || (completion.result.blockingFindingCount !== undefined && completion.result.blockingFindingCount !== counts.archivedBlockingCount)) refuse();
     const source: IncompleteP2RecoverySource = {
       executionAttempt: sourceAttempt,
       workerResultDigest: completionDigest,
@@ -715,6 +753,26 @@ export async function loadIncompleteP2RecoveryContext(
     if (findings.length > MAX_INCOMPLETE_P2_RECOVERY_FINDINGS) refuse();
   }
   if (findings.length === 0) refuse();
+
+  // Only after authenticating every original payload, digest, failed Gate and
+  // P2-only count do we project historical wording for the current validator.
+  // This copy is never stored, hashed as source evidence, or returned as archive.
+  const authenticatedValidationEvidence = recoveryEvidenceForValidation.map((proof) => {
+    const archived = proof.legacyIncompleteRoster;
+    const counts = workerSummaryCounts(archived?.workerSummary, identity.headSha);
+    if (!archived || !counts) refuse();
+    return { ...proof, legacyIncompleteRoster: { ...archived, workerSummary: counts.validationSummary } };
+  });
+  try {
+    const request = recoveryRequest(input, !gracefulComposedContinuation, gracefulComposedContinuation);
+    if (markerBoundLegacyStartOmission) {
+      validatePersistedLegacyIncompleteP2RecoveryEvidence(
+        request, authenticatedValidationEvidence, input.expectedContextDigest!,
+      );
+    } else {
+      validateReviewGenerationRecoveryEvidence(request, authenticatedValidationEvidence);
+    }
+  } catch { refuse(); }
 
   try {
     const context = createIncompleteP2RecoveryContext({

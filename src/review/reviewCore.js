@@ -127,7 +127,7 @@ const SEVERITY_RANK = { P0: 0, P1: 1, P2: 2 };
  * merge. Title-only on purpose: bodies mention "documentation" or "duplicated" in passing while
  * describing a real defect, and a real P0/P1 must never be hidden by an incidental word.
  *
- * Evidence: cisco-cdr#4860 head 430d8058 went FIX_FIRST on three P1s, two of which were
+ * Evidence: example-api#4860 head 430d8058 went FIX_FIRST on three P1s, two of which were
  * "Cross-domain reach-in and DRY violation" and "additive but unversioned ... deserves changelog
  * notes". Neither is a defect the author can ship wrong; both are P2 under the calibration rule.
  * P0 is never touched here: a P0 is either a real exploit/outage or a persona contract failure,
@@ -153,7 +153,7 @@ function calibrateSeverity(finding) {
  * other entry is a plain case-insensitive substring match. Extend by adding a phrase to this one
  * exported constant, never by loosening the matcher.
  *
- * Evidence: calltelemetry/ct-meta#2882, three P1 findings across three consecutive review rounds,
+ * Evidence: exampleorg/example-meta#2882, three P1 findings across three consecutive review rounds,
  * all false, each hedging its own premise in its own body:
  *   - "If any later code in runDarkFactoryPipeline still references STEP_ADVERSARIAL ... Verify
  *     no remaining references exist; if unused, this is a dead-constant cleanup."

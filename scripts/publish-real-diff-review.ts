@@ -295,5 +295,5 @@ async function executeRealDiffReview(owner: string, repo: string, prNumber: numb
   console.log(`======================================================\n`);
 }
 
-// Target calltelemetry/ct-meta PR #1438
+// Target exampleorg/example-meta PR #1438
 executeRealDiffReview('calltelemetry', 'ct-meta', 1438);

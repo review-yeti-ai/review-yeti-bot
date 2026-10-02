@@ -24,7 +24,7 @@ describe('publishing worker completion adapter selection', () => {
     const result = publishingWorkerAdapters({ REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_COMPLETION_URL: endpoint,
       REVIEW_RUN_ID: runId, REVIEW_EXECUTION_ATTEMPT: '7' }, 'ghs_test');
 
-    await expect(result.reviewCheckpoint!.read()).resolves.toBeNull();
+    await expect(result.reviewCheckpoint!.read()).resolves.toEqual({ checkpoint: null, disputedFindingRechecks: [] });
     const [url, init] = fetcher.mock.calls[0];
     expect(url).toBe('https://review.example.test/api/dispatch/review-checkpoint');
     expect(JSON.parse(String(init?.body))).toEqual({

@@ -362,3 +362,7 @@ npx review-yeti install-hook
 ## 📄 License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+
+### Finding re-review receipts
+
+The MCP `dispute_finding` tool returns `DisputeFindingRecheckReceipt.v1` with `finding_id`, `request_id`, `review_status: "fresh_re_review_requested"` and `remaining_blockers`. It queues fresh review using authenticated, immutable source evidence. Clients should validate the receipt version and follow ordinary review status. The retired `disputed`, `verdict`, `reasoning` and `confidence` adjudication fields are absent: a request receipt does not approve a finding or a Gate. Original evidence and unrelated completed tasks remain intact.

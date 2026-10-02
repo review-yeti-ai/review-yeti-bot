@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
 import { WORKER_PANEL_RESERVE_MS, type WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
@@ -1643,6 +1643,7 @@ describe('runPublishingReviewWorker', () => {
     expect(event).not.toHaveProperty('result');
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+
   });
 
   it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {
@@ -3273,6 +3274,28 @@ describe('telemetry integration with protected composed closeout', () => {
     return { input, transport, reportReviewResult, plan, finding, partial };
   };
 
+  it('forwards satisfied disputed-finding receipt ids to the durable checkpoint adapter', async () => {
+    const f = fixture();
+    const requestId = randomUUID();
+    const write = vi.fn(async (_checkpoint: any) => 3);
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      await options.checkpoint.save({ revision: 1, plan: f.plan,
+        completedTasks: [{ id: 'security-auth', findings: [f.finding] }],
+        satisfiedFindingRecheckIds: [requestId] });
+      return f.partial;
+    });
+
+    await runPublishingReviewWorker(f.input, deps({ composedReviewRunner, reviewCheckpoint: {
+      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
+    }, reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+    sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+      diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0]?.[0]).toMatchObject({ executionAttempt: 3,
+      satisfiedFindingRecheckIds: [requestId] });
+  });
+
   it.each(['resolved', 'rejected'] as const)('captures native timeout observations once and preserves the validated finding after late %s cancellation', async (settlement) => {
     vi.useFakeTimers(); vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
     const f = fixture(); const factory = publishingProgress.createPublishingProgress;
@@ -3292,7 +3315,9 @@ describe('telemetry integration with protected composed closeout', () => {
       options.progress.emit({ task: 'panel', status: 'completed' });
       return f.partial;
     });
-    const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: { read: vi.fn(async () => null), write },
+    const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: {
+      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
+    },
       reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
       sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
     try {

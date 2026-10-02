@@ -18,7 +18,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2173,
       "title": "feat(sip): long-lived supervised WebSocket connection listener",
       "headSha": "a1b2c3d4e5f67890123456789012345678902173",
@@ -51,7 +51,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2174,
       "title": "feat(trunk): atomic CAS channel reservation loop",
       "headSha": "a1b2c3d4e5f67890123456789012345678902174",
@@ -84,7 +84,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2175,
       "title": "perf(codecs): branchless G.711 μ-law table encoder",
       "headSha": "a1b2c3d4e5f67890123456789012345678902175",
@@ -117,7 +117,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2176,
       "title": "perf(rtp): zero-copy power-of-2 circular buffer for jitter queue",
       "headSha": "a1b2c3d4e5f67890123456789012345678902176",
@@ -149,7 +149,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2177,
       "title": "refactor(sip): let-it-crash supervisor boundary for corrupt SIP frames",
       "headSha": "a1b2c3d4e5f67890123456789012345678902177",
@@ -181,7 +181,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2178,
       "title": "perf(router): lazy routing table initialization with double-checked check",
       "headSha": "a1b2c3d4e5f67890123456789012345678902178",
@@ -213,7 +213,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2179,
       "title": "perf(media): zero-allocation RTP header parser using buffer subarrays",
       "headSha": "a1b2c3d4e5f67890123456789012345678902179",
@@ -245,7 +245,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2180,
       "title": "feat(sip): RFC 3261 Section 17 Timer A exponential backoff",
       "headSha": "a1b2c3d4e5f67890123456789012345678902180",
@@ -277,7 +277,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2181,
       "title": "feat(cdr): idempotent batch upsert on primary key conflict",
       "headSha": "a1b2c3d4e5f67890123456789012345678902181",
@@ -309,7 +309,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2182,
       "title": "feat(webhook): AWS architecture full jitter exponential backoff",
       "headSha": "a1b2c3d4e5f67890123456789012345678902182",
@@ -342,7 +342,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2183,
       "title": "feat(sdp): dynamic payload type allocation within RFC 4566 range [96, 127]",
       "headSha": "a1b2c3d4e5f67890123456789012345678902183",
@@ -375,7 +375,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2184,
       "title": "feat(auth): RFC 2617 qop=auth digest challenge response verifier",
       "headSha": "a1b2c3d4e5f67890123456789012345678902184",
@@ -407,7 +407,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2185,
       "title": "feat(rtp): RFC 3550 unsigned 16-bit sequence number wraparound comparator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902185",
@@ -439,7 +439,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2186,
       "title": "perf(cdr): composite partition pruning index on (created_at, tenant_id)",
       "headSha": "a1b2c3d4e5f67890123456789012345678902186",
@@ -471,7 +471,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2187,
       "title": "feat(trunk): hysteresis state machine for carrier failover circuit breaker",
       "headSha": "a1b2c3d4e5f67890123456789012345678902187",
@@ -503,7 +503,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2188,
       "title": "feat(sip): RFC 3261 magic cookie branch parameter generator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902188",
@@ -536,7 +536,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2189,
       "title": "feat(media): RFC 4733 triplicate transmission for DTMF end packets",
       "headSha": "a1b2c3d4e5f67890123456789012345678902189",
@@ -568,7 +568,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2190,
       "title": "perf(cdr): E.164 Radix Trie longest-prefix match engine",
       "headSha": "a1b2c3d4e5f67890123456789012345678902190",
@@ -601,7 +601,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2191,
       "title": "feat(pbx): RFC 3261 global deregistration with Contact: * and Expires: 0",
       "headSha": "a1b2c3d4e5f67890123456789012345678902191",
@@ -634,7 +634,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2192,
       "title": "feat(sip): RFC 3581 rport symmetric NAT response routing",
       "headSha": "a1b2c3d4e5f67890123456789012345678902192",
@@ -667,7 +667,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2193,
       "title": "perf(codecs): linear interpolation 8kHz to 16kHz audio upsampler",
       "headSha": "a1b2c3d4e5f67890123456789012345678902193",
@@ -700,7 +700,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2194,
       "title": "perf(cdr): PostgreSQL COPY FROM STDIN binary streaming bulk logger",
       "headSha": "a1b2c3d4e5f67890123456789012345678902194",
@@ -733,7 +733,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2195,
       "title": "perf(webhook): LRU cache for distributed CTI event deduplication",
       "headSha": "a1b2c3d4e5f67890123456789012345678902195",
@@ -765,7 +765,7 @@ export const TRAP_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2196,
       "title": "feat(sip): RFC 3261 Route-set reversal for UAS-initiated requests",
       "headSha": "a1b2c3d4e5f67890123456789012345678902196",

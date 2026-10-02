@@ -325,7 +325,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
         await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
       } else {
-        await client.query('DROP TABLE IF EXISTS pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_finding_recheck_admissions, pg_temp.review_finding_rechecks, pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       }
       client.release();
       client = undefined;
@@ -472,7 +472,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     repository: PostgresReviewDispatchRepository,
     database: PoolClient,
     gates: PostgresReviewGateRepository,
-    mode: 'p2' | 'zero' | 'p1' | 'tampered' = 'p2',
+    mode: 'p2' | 'p2-inclusive' | 'zero' | 'p1' | 'tampered' = 'p2',
     reviewEngine: 'panel' | 'composed' = 'panel',
   ) {
     const receivedAt = 1_790_000_000_000;
@@ -510,7 +510,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         coverageComplete: true,
         quorumSatisfied: true,
         findingCount,
-        blockingFindingCount: blockingCount,
+        blockingFindingCount: mode === 'p2-inclusive' ? findingCount : blockingCount,
       },
     } as unknown as WorkerReviewCompletion;
     const digest = workerReviewCompletionDigest(completion);
@@ -545,7 +545,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
 
     const canonicalCount = findingCount;
     const workerSummary = `Verdict \`BLOCK\` at \`${run.identity.headSha}\`.\n\n`
-      + `Findings: ${canonicalCount} (blocking P0/P1: ${blockingCount}; ${canonicalCount} raw persona finding(s) before clustering).\n\n`
+      + `Findings: ${canonicalCount} (blocking ${mode === 'p2-inclusive' ? 'P0/P1/P2' : 'P0/P1'}: ${mode === 'p2-inclusive' ? canonicalCount : blockingCount}; ${canonicalCount} raw persona finding(s) before clustering).\n\n`
       + `Coverage: mode=panel; expected lanes=${expectedLanes}; completed lanes=${completedLanes}; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
     const proof = {
       generation: 1,
@@ -577,6 +577,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     database: PoolClient,
     gates: PostgresReviewGateRepository,
     sourceMode: 'p2' | 'p1' | 'zero' = 'p2',
+    historicalP2Inclusive = false,
   ) {
     const seeded = await seedMcpIncompleteAttempt(repository, database, gates, 'p2', 'composed');
     const gate = (await database.query(
@@ -617,7 +618,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         coverageComplete: false,
         quorumSatisfied: false,
         findingCount: distinctFindings.length,
-        blockingFindingCount: blockingCount,
+        blockingFindingCount: historicalP2Inclusive ? distinctFindings.length : blockingCount,
         failureDiagnostics: {
           reason: 'review_evidence_deadline',
           logTail: 'Evidence cutoff preserved completed composed tasks.',
@@ -673,7 +674,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       + seeded.run.identity.headSha + '`. '
       + `The final closeout preserved and published ${distinctFindings.length} validated finding(s); 2 risk-ordered task(s) remain. `
       + 'This is fail-closed, not an approval. An exact-head rerun resumes the durable completed-task checkpoint.\n\n'
-      + `Findings: ${distinctFindings.length} (blocking P0/P1: ${blockingCount}; ${sourceMode === 'zero' ? 0 : 5} raw persona finding(s) before clustering).\n\n`
+      + `Findings: ${distinctFindings.length} (blocking ${historicalP2Inclusive ? 'P0/P1/P2' : 'P0/P1'}: ${historicalP2Inclusive ? distinctFindings.length : blockingCount}; ${sourceMode === 'zero' ? 0 : 5} raw persona finding(s) before clustering).\n\n`
       + '1 raw finding(s) were discarded as unanchorable and are not counted above.\n\n'
       + 'Coverage: engine=composed; planned tasks=8; expected tasks=8; completed tasks=6; failed tasks=0; '
       + 'roster valid=false; quorum satisfied=false; task coverage complete=false.';
@@ -793,14 +794,14 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { priorProof, followupProof, completion, digest };
   }
 
-  it('retains a graceful composed partial on an ordinary MCP retry and accepts its authenticated full Gate result', async () => {
+  it.each([false, true])('retains a graceful composed P2 partial (historical inclusive=%s) on an ordinary MCP retry and publishes its complete retry using current policy', async (historical) => {
     let proof: any;
     const resolveGenerationRecovery = vi.fn(async () => [proof]);
     const { repository, client, gateRepository } = await createRepository({
       validateAuthoritativeAdmission: async () => undefined,
       resolveGenerationRecovery,
     }, true);
-    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', historical);
     proof = seeded.proof;
     const a1WorkerToken = 'ghs_rel1214_graceful_a1_worker';
     await client.query('UPDATE review_dispatch_outbox SET worker_token_digest = $2 WHERE run_id = $1',
@@ -899,11 +900,19 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     };
     await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
       async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
+    // Authenticated continuation preserves P2 evidence under the established
+    // P0/P1-only blocking policy.
     expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
       .toBe('succeeded');
     expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0])
       .toMatchObject({ desired_state: 'success', decision: { status: 'success', reason: 'clean-review' } });
+    const gateEvidence = (await client.query(`SELECT evidence FROM review_gate_attempts
+      WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].evidence;
+    expect(gateEvidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
+    const storedCompletion = (await client.query(`SELECT payload FROM review_worker_completions
+      WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].payload;
+    expect(storedCompletion.result).toMatchObject({ findingCount: 4, blockingFindingCount: 0 });
   });
 
   it('refuses a composed graceful retry when its App summary reports blocking findings before allocating', async () => {
@@ -1501,6 +1510,34 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         WHERE run_id = $1`, [seeded.run.runId])).rows[0].count).toBe(1);
     },
   );
+
+  it.each(['mcp', 'central'] as const)('authenticates historical P2-inclusive evidence for %s admission without rewriting it', async (origin) => {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedMcpIncompleteAttempt(repository, client, gateRepository, 'p2-inclusive');
+    proof = seeded.proof;
+    const before = (await client.query('SELECT content_digest, payload FROM review_worker_completions WHERE run_id = $1', [seeded.run.runId])).rows;
+    const input = origin === 'mcp' ? mcpRecoveryInput(`historical-mcp-${randomUUID()}`) : {
+      ...authoritativeAdmission(`historical-central-${randomUUID()}`, 1_790_000_100_000),
+      eventName: 'workflow_dispatch', centralActionDispatch: true,
+      expectedGeneration: 2, retryRequested: true, retryAfterExecutionAttempt: 1,
+      incompleteP2Recovery: true as const,
+    };
+    const admitted = await repository.admit(input);
+    expect(admitted.run.attempt).toBe(1);
+    expect((await client.query('SELECT content_digest, payload FROM review_worker_completions WHERE run_id = $1', [seeded.run.runId])).rows).toEqual(before);
+    expect((await client.query('SELECT evidence FROM review_generation_recoveries WHERE run_id = $1', [seeded.run.runId])).rows[0].evidence.legacyIncompleteRoster.workerSummary)
+      .toBe(proof.legacyIncompleteRoster.workerSummary);
+    const context = await loadIncompleteP2RecoveryContext(client, {
+      runId: seeded.run.runId, executionAttempt: 2, repositoryId: seeded.completion.repositoryId,
+      identity: seeded.run.identity, policyDigest: seeded.completion.policyDigest,
+      expectedAppId: 4_385_771, expectedContextDigest: String((admitted.run.artifacts as Record<string, unknown>).incomplete_p2_recovery_digest),
+    });
+    expect(context?.sources[0].workerResultDigest).toBe(seeded.digest);
+  });
 
   it.each(['zero', 'p1', 'tampered'] as const)(
     'rolls back MCP recovery when the real durable completion archive is %s', async (mode) => {

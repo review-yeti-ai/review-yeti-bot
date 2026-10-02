@@ -2,7 +2,7 @@
 
 ## Observed failure
 
-The legacy review of `calltelemetry/ct-lab-mcp#63` at head
+The legacy review of `exampleorg/example-lab-mcp#63` at head
 `9974d6deb66a0f1572bd382aa5dd19e8358f7710` completed three of five reviewer
 lanes, failed two, and reported zero findings. It published `Review Yeti: BLOCK`
 without the typed terminal failure callback. The normal deadline handler later
@@ -32,6 +32,6 @@ retired the run; that does not make the old check retryable or successful.
   now a pure review-layer policy with one-guard-at-a-time exclusions, including
   satisfied canonical quorum; exact publication callbacks remain in the worker.
 
-Central decision: ct-meta ADR 0595. Independent review, protected CI/landing,
+Central decision: example-meta ADR 0595. Independent review, protected CI/landing,
 immutable release deployment and live retry acceptance remain separate gates.
 The parent REL-822 HMR/dashboard/video mission is not complete.

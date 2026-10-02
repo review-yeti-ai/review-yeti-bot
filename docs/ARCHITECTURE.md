@@ -255,7 +255,7 @@ Under ADR 0564 and API-3230, Review Yeti decouples lifecycle event distribution 
 ## 🔌 Extensibility & Configuration Passthrough
 
 Review Yeti's configuration parser is designed for hierarchical extensibility:
-- **Schema Passthrough**: Sub-schemas (`personaSchema`, `reviewsSchema`, `chatSchema`, `knowledgeBaseSchema`, etc.) support Zod `.passthrough()`, allowing organization policies (`policy/review-yeti.json` in `ct-review-actions`) and repository `.ct-review.yaml` files to pass custom keys.
+- **Schema Passthrough**: Sub-schemas (`personaSchema`, `reviewsSchema`, `chatSchema`, `knowledgeBaseSchema`, etc.) support Zod `.passthrough()`, allowing organization policies (`policy/review-yeti.json` in `example-review-actions`) and repository `.ct-review.yaml` files to pass custom keys.
 - **Enterprise Controls**: First-class support for passing `skills`, `knowledge`, `metrics`, `telemetry`, `retry_analysis`, and raw `policy-json` overrides end-to-end from Action inputs to execution engines.
 
 ---

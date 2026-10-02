@@ -98,11 +98,11 @@ This migration does not qualify a live appliance or settle a provider effect.
 The Review Yeti snapshot `dd3c37f865b30b055ef3c36e1161f36f363f9585`
 contains no tracked dashboard, alert or saved-log query using the old fields;
 matches are producers, declarations and tests. The checked protected
-ct-infrastructure snapshot `9b0d289140398ca6af8f5558f400949b7433e154`
+example-infra snapshot `9b0d289140398ca6af8f5558f400949b7433e154`
 likewise contains no matching tracked consumer, including its Review Yeti
 dashboard, alert rules and worker-metrics contracts. This does not establish
 that externally managed or live queries have migrated.
 
 Worker DELTA behavior is defined in `src/telemetry/metrics.ts` and independently
 checked by the infrastructure
-[worker-metrics contract](https://github.com/calltelemetry/ct-infrastructure/blob/9b0d289140398ca6af8f5558f400949b7433e154/scripts/tests/test_review_yeti_worker_metrics.py#L19).
+[worker-metrics contract](https://github.com/exampleorg/example-infra/blob/9b0d289140398ca6af8f5558f400949b7433e154/scripts/tests/test_review_yeti_worker_metrics.py#L19).

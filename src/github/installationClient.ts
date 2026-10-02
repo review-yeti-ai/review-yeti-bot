@@ -17,7 +17,7 @@ import type { DelegatedFailureReason } from '../review/workerCompletion';
 import { createBoundedGitHubJsonClient } from './boundedGitHubJson';
 import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 import {
-  evaluateReviewGenerationRecoveryLedger,
+  evaluateFetchedReviewGenerationRecoveryLedger,
   REVIEW_WORKER_CHECK_NAME,
   ReviewGenerationRecoveryLedgerError,
   validateReviewGenerationRecoveryRequest,
@@ -398,7 +398,7 @@ export class GitHubInstallationClient {
           .includes(String((output as Record<string, unknown>).title));
     })
       ? await this.readRecoveryCheckInventory(input, REVIEW_GATE_CHECK_NAME) : [];
-    return evaluateReviewGenerationRecoveryLedger(input, rows, gateChecks);
+    return evaluateFetchedReviewGenerationRecoveryLedger(input, rows, gateChecks);
   }
 
   private async readRecoveryCheckInventory(
@@ -542,7 +542,7 @@ export class GitHubInstallationClient {
 
   /**
    * Fallback source of repository visibility for run modes whose webhook payload
-   * did not carry `repository.private`/`repository.visibility` (ct-meta#2884). A
+   * did not carry `repository.private`/`repository.visibility` (example-meta#2884). A
    * lookup failure of any kind -- 404, rate limit, network error, malformed body --
    * must never fail or block the review it was requested for, so every error path
    * resolves to 'UNKNOWN' rather than rejecting. Memoised per client instance per
@@ -671,7 +671,7 @@ export class GitHubInstallationClient {
     const data = await this.request(`/repos/${owner}/${repo}/check-runs`, {
       method: 'POST',
       body: JSON.stringify({
-        // REL-586: must match the check name the central lane (ct-review-actions
+        // REL-586: must match the check name the central lane (example-review-actions
         // review-yeti.yml) publishes as `in_progress` when it dispatches to DOKS.
         // GitHub supersedes check runs by name+app, so a mismatched name (formerly
         // `Review Yeti / Gate`) left the central check stuck in_progress forever

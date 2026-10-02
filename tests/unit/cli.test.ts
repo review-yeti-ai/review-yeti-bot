@@ -71,9 +71,12 @@ new file mode 100644
     let exitCode = 0;
     let stdout = '';
     let stderr = '';
+    const colorEnv: NodeJS.ProcessEnv = { ...process.env, FORCE_COLOR: '1' };
+    delete colorEnv.NO_COLOR;
     try {
       stdout = execFileSync('node', [BIN_PATH, 'pre-commit', '--diff', diffFile], {
         encoding: 'utf-8',
+        env: colorEnv,
       });
     } catch (err: any) {
       exitCode = err.status;

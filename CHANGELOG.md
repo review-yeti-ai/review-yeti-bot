@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.116.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.2...v1.116.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **auth:** remove the built-in admin password and fail closed without ADMIN_PASSWORD ([#1293](https://github.com/review-yeti-ai/review-yeti-bot/issues/1293)) ([8b3ab78](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b3ab78284927b08776315d87024ed861e3b646f))
+
+## [1.116.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.1...v1.116.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **REL-1287:** bounded source context and immutable archive recovery ([#1267](https://github.com/review-yeti-ai/review-yeti-bot/issues/1267)) ([810b365](https://github.com/review-yeti-ai/review-yeti-bot/commit/810b36593a8ce8553da9ce3d82d5a7e018654c89))
+
+## [1.116.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.0...v1.116.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **REL-1265:** re-review disputed tasks with immutable evidence ([#1258](https://github.com/review-yeti-ai/review-yeti-bot/issues/1258)) ([0d177d3](https://github.com/review-yeti-ai/review-yeti-bot/commit/0d177d383f25a121377f39b64fd450c86ae669e2))
+
 ## [1.116.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.2...v1.116.0) (2026-10-02)
 
 

@@ -65,7 +65,8 @@ import {
   loadSameHeadReviewSource, readPullRequestIdentity, verifyReviewablePullRequest,
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
-import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
+import { canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
+import { disputedFindingTaskMatchesCheckpoint, remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
@@ -408,7 +409,7 @@ export interface PublishingConclusionCoverage {
 /**
  * Fail closed. `SHIP` with no blocking finding is the only success. Everything
  * else -- BLOCK, FIX_FIRST, an unrecognised verdict, or a SHIP that still carries
- * a P0/P1 -- concludes `failure`.
+ * a blocking P0/P1 finding -- concludes `failure`.
  *
  * The run's own coverage projection is a required argument: the worker's single
  * production call site must always pass it, so dropping the argument is a
@@ -1462,7 +1463,7 @@ export async function runPublishingReviewWorker(
   // The dispatching workflow may tell this lane the repository's visibility. In
   // production nothing does yet, and the first live run after the visibility
   // change published "Repository visibility: UNKNOWN" for a private repository
-  // (ct-meta#2884). This lane already holds a repository-scoped read token for
+  // (example-meta#2884). This lane already holds a repository-scoped read token for
   // the diff, so it can ask GitHub itself. A failed lookup settles to UNKNOWN
   // and never blocks the run; it is never allowed to become a guess.
   try {
@@ -1555,9 +1556,17 @@ export async function runPublishingReviewWorker(
     if (changedFiles.length === 0) throw new Error('admitted head produced no reviewable diff');
 
     let resumedCheckpoint: ReviewExecutionCheckpoint | null = null;
+    let disputedFindingRechecks: DisputedFindingRecheck[] = [];
     if (authoritative && configuredReviewEngine === 'composed' && deps.reviewCheckpoint) {
-      try { resumedCheckpoint = await deps.reviewCheckpoint.read(deps.signal); }
+      try {
+        const read = await deps.reviewCheckpoint.read(deps.signal);
+        resumedCheckpoint = read.checkpoint;
+        disputedFindingRechecks = read.disputedFindingRechecks;
+      }
       catch (error) {
+        if (identity.executionAttempt > 1) {
+          throw new Error('Exact-head checkpoint and disputed finding requests are required for a safe retry');
+        }
         // A resume-store outage before evidence collection must not prevent a fresh full review.
         // Writes remain enabled below, so a recovered store can still checkpoint this attempt.
         logger.error('Exact-head review checkpoint could not be read; starting a full review', {
@@ -1573,6 +1582,20 @@ export async function runPublishingReviewWorker(
       || resumedCheckpoint.policyDigest !== value(env, 'REVIEW_POLICY_DIGEST')
       || resumedCheckpoint.configDigest !== value(env, 'REVIEW_CONFIG_DIGEST'))) {
       throw new Error('Review execution checkpoint does not match this exact-head review');
+    }
+    if (disputedFindingRechecks.length > 0) {
+      if (!resumedCheckpoint) throw new Error('Disputed finding re-review has no exact-head task checkpoint');
+      for (const recheck of disputedFindingRechecks) {
+        if (!disputedFindingTaskMatchesCheckpoint(recheck, resumedCheckpoint, identity.executionAttempt)) {
+          throw new Error('Disputed finding re-review does not match this exact-head task checkpoint');
+        }
+      }
+      resumedCheckpoint = {
+        ...resumedCheckpoint,
+        completedTasks: remainingCheckpointTasksAfterRechecks(
+          resumedCheckpoint.completedTasks, disputedFindingRechecks, resumedCheckpoint.plan,
+        ),
+      };
     }
     // Set only after the composed engine revalidates the stored plan and findings against this
     // exact diff. A syntactically valid but unusable stored checkpoint must never be rendered by
@@ -1601,6 +1624,9 @@ export async function runPublishingReviewWorker(
             policyDigest: value(env, 'REVIEW_POLICY_DIGEST'), configDigest: value(env, 'REVIEW_CONFIG_DIGEST'),
             executionAttempt: identity.executionAttempt, revision: snapshot.revision,
             plan: snapshot.plan, completedTasks: snapshot.completedTasks,
+            ...(snapshot.satisfiedFindingRecheckIds === undefined ? {} : {
+              satisfiedFindingRecheckIds: snapshot.satisfiedFindingRecheckIds,
+            }),
           }, deps.signal);
           composedCheckpointState.durableRevision = Math.max(
             composedCheckpointState.durableRevision,
@@ -1694,10 +1720,16 @@ export async function runPublishingReviewWorker(
     // operator forwards it; the engine returns what it chunked as `panelResult.mapReduce`.
     const mapReduce = loadMapReduceInput({ env, repository: identity.repo });
 
+    // A retained P2 context or a disputed-finding task must be re-evaluated from current source.
+    // Reusing prior verdicts for either mode would bypass the full fresh adjudication required by
+    // its service-owned provenance receipt. Unrelated completed composed tasks remain reusable
+    // through the exact-head checkpoint above.
+    const forceFreshComposedEvidence = p2RecoveryContext !== null || disputedFindingRechecks.length > 0;
+
     // REL-1084: incremental re-review, default off (`REVIEW_YETI_INCREMENTAL`). Null when off;
     // never throws. Both engines apply the scope after the shared applicability decision and
     // return what they carried forward as `panelResult.incremental`.
-    const incrementalPlan = p2RecoveryContext ? null : await planIncrementalReview({
+    const incrementalPlan = forceFreshComposedEvidence ? null : await planIncrementalReview({
       env,
       repository: identity.repo,
       current: {
@@ -1716,7 +1748,7 @@ export async function runPublishingReviewWorker(
     // REL-1085: per-file verdict cache, default off (`REVIEW_YETI_VERDICT_CACHE`). Null when off;
     // never throws. Both engines apply the scope after the shared applicability decision (and after
     // shrinking and the incremental scope) and return what they served as `panelResult.verdictCache`.
-    const verdictCacheOn = !p2RecoveryContext && verdictCacheEnabledFor(env, identity.repo);
+    const verdictCacheOn = !forceFreshComposedEvidence && verdictCacheEnabledFor(env, identity.repo);
     const verdictCachePlan = !verdictCacheOn ? null : await planVerdictCache({
       env,
       repository: identity.repo,
@@ -2066,6 +2098,7 @@ export async function runPublishingReviewWorker(
           ...(verdictCacheScope ? { verdictCache: verdictCacheScope } : {}),
           ...(mapReduce ? { mapReduce } : {}),
           ...(composedCheckpoint ? { checkpoint: composedCheckpoint } : {}),
+          ...(disputedFindingRechecks.length > 0 ? { disputedFindingRechecks } : {}),
           // REL-1139 (ADR 0687): default off; skips only the moderator call, never a lane or the
           // arbiter. Eligibility is logged on every run either way.
           ...(skipEmptyModerationEnabledFor(env, identity.repo) ? { skipEmptyModeration: true } : {}),
@@ -2251,11 +2284,8 @@ export async function runPublishingReviewWorker(
         ...(unreviewableLockfilePaths.size > 0
           ? [`${unreviewableLockfilePaths.size} changed lockfile(s) could not be sent in full or summarized and were not reviewed`] : []),
       ];
-      // The model arbiter is evidence, not the policy boundary. The canonical
-      // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
-      // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
-      // Recompute from the exact persona findings and quorum so this lane shares
-      // the same fail-closed severity contract as the hosted review path.
+      // The model arbiter is evidence, not policy; recompute from exact persona
+      // findings and quorum under the same P0/P1 policy as the service Gate.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
         coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0,
@@ -2280,7 +2310,7 @@ export async function runPublishingReviewWorker(
       // Count blocking findings from the canonical set, not the raw persona
       // output. The two disagreed: the check reported a blocking count derived
       // from unsanitized findings next to a verdict derived from the sanitized
-      // ones, so a run could read `SHIP` and `blocking P0/P1: 13` at once. The
+      // ones, so a run could read `SHIP` and a nonzero blocking count at once. The
       // canonical set is the one the verdict is computed from, so it is the only
       // set the conclusion may be computed from.
       const findings = (canonical.findings || []) as ReviewFinding[];
@@ -2353,7 +2383,7 @@ export async function runPublishingReviewWorker(
           && lane.failureClass === 'malformed_output');
       // REL-1113: the same "a lane died on the way to the model and nothing found anything"
       // shape on the AUTHORITATIVE path. `isRecoverableIncompletePanel` refuses authoritative
-      // results (the service owns that verdict), so ct-meta#3446 -- one of two lanes lost to a
+      // results (the service owns that verdict), so example-meta#3446 -- one of two lanes lost to a
       // gateway 502, zero findings -- was published as "Review Yeti: BLOCK" and never re-run.
       // Here it is only a candidate: the shared `isInfrastructureIncompleteResult` decision
       // below, evaluated on the exact payload the service will re-evaluate, is the authority.
@@ -2846,7 +2876,7 @@ export async function runPublishingReviewWorker(
       // below is the backstop for every path that does NOT reach this line.
       if (isShadow) shadowOutcome = await shadowOutcomePromise;
       // The findings behind the check just published, for either conclusion: a
-      // failing check carries the P0/P1 findings that made it fail. Evidence is
+      // failing check carries the blocking findings that made it fail. Evidence is
       // never allowed to be the reason a published check goes unreported: a
       // result that fails the contract, or a callback that fails, is logged
       // and the lifecycle callbacks below proceed unchanged.

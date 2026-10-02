@@ -30,14 +30,48 @@ const readRequest = {
   executionAttempt: checkpoint.executionAttempt,
 };
 
+const admittedRun = {
+  run_id: checkpoint.runId,
+  repository_id: checkpoint.repositoryId,
+  owner: checkpoint.owner,
+  repo: checkpoint.repo,
+  pr_number: checkpoint.prNumber,
+  head_sha: checkpoint.headSha,
+  base_sha: checkpoint.baseSha,
+  effective_policy_digest: checkpoint.policyDigest,
+  effective_config_digest: checkpoint.configDigest,
+};
+
+function runRowFor(runId: unknown): typeof admittedRun {
+  return { ...admittedRun, run_id: String(runId) };
+}
+
 function checkpointApp(query: Parameters<typeof createReviewExecutionCheckpointHandler>[0]['query']) {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
-  app.post('/checkpoint', createReviewExecutionCheckpointHandler({ query }));
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(sql) || sql.startsWith('SET LOCAL') || sql.includes('pg_advisory_xact_lock')) return { rows: [] };
+      if (sql.startsWith('SELECT repository_id, pr_number FROM review_runs')) return { rows: [admittedRun] };
+      return query(sql, values);
+    },
+    release: vi.fn(),
+  };
+  app.post('/checkpoint', createReviewExecutionCheckpointHandler({ query, connect: async () => client }));
   return app;
 }
 
 describe('ReviewExecutionCheckpoint.v1', () => {
+  it.each([readRequest, checkpoint])('refuses a query-only dependency before accessing review state', async (body) => {
+    const query = vi.fn();
+    const app = express(); app.use(express.json());
+    // @ts-expect-error A query-only dependency is rejected at compile time and still fails closed at runtime.
+    app.post('/checkpoint', createReviewExecutionCheckpointHandler({ query }));
+    const result = await request(app).post('/checkpoint').set('Authorization', `Bearer ${token}`).send(body);
+    expect(result.status).toBe(503);
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it('rejects duplicate or out-of-plan completed task identities', () => {
     expect(() => parseReviewExecutionCheckpoint({ ...checkpoint, completedTasks: [
       checkpoint.completedTasks[0], checkpoint.completedTasks[0],
@@ -46,17 +80,20 @@ describe('ReviewExecutionCheckpoint.v1', () => {
       completedTasks: [{ id: 'not-planned', findings: [] }] })).toThrow();
   });
 
+  it('rejects duplicated satisfied dispute receipt ids', () => {
+    const requestId = '00000000-0000-4000-8000-000000000126';
+    expect(() => parseReviewExecutionCheckpoint({ ...checkpoint,
+      satisfiedFindingRecheckIds: [requestId, requestId] })).toThrow();
+  });
+
   it('authenticates, binds, records, and reads the latest exact-head snapshot', async () => {
     let stored: unknown = null;
     const query = vi.fn(async (sql: string, values?: unknown[]) => {
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         return { rows: [{ status: 'running', worker_token_digest: sha256(token) }] };
       }
-      if (sql.includes('effective_policy_digest')) return { rows: [{
-        repository_id: checkpoint.repositoryId, owner: checkpoint.owner, repo: checkpoint.repo,
-        pr_number: checkpoint.prNumber, head_sha: checkpoint.headSha, base_sha: checkpoint.baseSha,
-        effective_policy_digest: checkpoint.policyDigest, effective_config_digest: checkpoint.configDigest,
-      }] };
+      if (sql.includes('effective_policy_digest')) return { rows: [admittedRun] };
+      if (sql.includes('FROM review_finding_rechecks')) return { rows: [] };
       if (sql.includes('INSERT INTO review_execution_checkpoints')) {
         stored = JSON.parse(String(values?.[5]));
         return { rows: [{ revision: checkpoint.revision }] };
@@ -75,6 +112,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
     });
     expect(read.status).toBe(200);
     expect(read.body.checkpoint).toEqual(checkpoint);
+    expect(read.body.disputedFindingRechecks).toEqual([]);
   });
 
   it.each([
@@ -95,6 +133,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
     ['read after the run completed', readRequest, token, 'completed'],
   ])('rejects %s before checkpoint storage access', async (_name, body, bearer, status) => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes('effective_policy_digest')) return { rows: [admittedRun] };
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         return { rows: [{ status, worker_token_digest: sha256(token) }] };
       }
@@ -104,7 +143,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
       .set('Authorization', `Bearer ${bearer}`).send(body);
     expect(response.status).toBe(403);
     expect(response.body).toEqual({ error: 'Worker is not authorized for this execution' });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('review_execution_checkpoints'))).toBe(false);
   });
 
   it.each([
@@ -112,6 +151,7 @@ describe('ReviewExecutionCheckpoint.v1', () => {
     ['another execution attempt', { ...checkpoint, executionAttempt: checkpoint.executionAttempt + 1 }],
   ])('rejects a checkpoint bound to %s', async (_name, body) => {
     const query = vi.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes('effective_policy_digest')) return { rows: [runRowFor(body.runId)] };
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         const exactExecution = values?.[0] === checkpoint.runId && values?.[1] === checkpoint.executionAttempt;
         return { rows: exactExecution
@@ -124,38 +164,34 @@ describe('ReviewExecutionCheckpoint.v1', () => {
       .set('Authorization', `Bearer ${token}`).send(body);
     expect(response.status).toBe(403);
     expect(response.body).toEqual({ error: 'Worker is not authorized for this execution' });
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('review_execution_checkpoints'))).toBe(false);
   });
 
   it('rejects a checkpoint whose exact-head identity differs from the admitted run', async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes('effective_policy_digest')) return { rows: [admittedRun] };
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         return { rows: [{ status: 'running', worker_token_digest: sha256(token) }] };
       }
-      if (sql.includes('effective_policy_digest')) return { rows: [{
-        repository_id: checkpoint.repositoryId, owner: checkpoint.owner, repo: checkpoint.repo,
-        pr_number: checkpoint.prNumber, head_sha: checkpoint.headSha, base_sha: checkpoint.baseSha,
-        effective_policy_digest: checkpoint.policyDigest, effective_config_digest: checkpoint.configDigest,
-      }] };
+      if (sql.includes('effective_policy_digest')) return { rows: [admittedRun] };
       throw new Error(`mismatched checkpoint reached storage: ${sql}`);
     });
     const response = await request(checkpointApp(query)).post('/checkpoint')
       .set('Authorization', `Bearer ${token}`).send({ ...checkpoint, headSha: 'e'.repeat(40) });
-    expect(response.status).toBe(403);
-    expect(response.body).toEqual({ error: 'Review checkpoint does not match the admitted review' });
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({ error: 'Review checkpoint is temporarily unavailable' });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes('review_execution_checkpoints'))).toBe(false);
   });
 
   it('returns the authoritative revision for a stale write', async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes('effective_policy_digest')) return { rows: [admittedRun] };
       if (sql.includes('SELECT runs.status, outbox.worker_token_digest')) {
         return { rows: [{ status: 'running', worker_token_digest: sha256(token) }] };
       }
-      if (sql.includes('effective_policy_digest')) return { rows: [{
-        repository_id: checkpoint.repositoryId, owner: checkpoint.owner, repo: checkpoint.repo,
-        pr_number: checkpoint.prNumber, head_sha: checkpoint.headSha, base_sha: checkpoint.baseSha,
-        effective_policy_digest: checkpoint.policyDigest, effective_config_digest: checkpoint.configDigest,
-      }] };
+      if (sql.includes('FROM review_finding_rechecks')) return { rows: [] };
+      if (sql.includes('SELECT payload FROM review_execution_checkpoints')) return { rows: [] };
+
       if (sql.includes('INSERT INTO review_execution_checkpoints')) return { rows: [] };
       if (sql.includes('SELECT revision FROM review_execution_checkpoints')) return { rows: [{ revision: 7 }] };
       throw new Error(`unexpected SQL: ${sql}`);

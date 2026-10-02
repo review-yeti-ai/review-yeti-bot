@@ -152,9 +152,9 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
   });
 
   // ===========================================================================
-  // Scenario 3: High-Contention Dispute Resolution
+  // Scenario 3: Dispute requests cannot mutate a finding without an accepted source
   // ===========================================================================
-  it('Scenario 3: Developer disputes P1 memory finding with bounded LRU proof; quorum unlocks gate', async () => {
+  it('Scenario 3: Developer dispute request remains fail-closed until accepted completion evidence exists', async () => {
     // Step 1: Initial review run records a P1 blocker finding
     const run = env.db.seedRun({
       owner: 'calltelemetry',
@@ -182,7 +182,7 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     expect(initialFindings.result.total_count).toBe(1);
 
-    // Step 3: Developer disputes finding with technical justification citing LRU bounds
+    // Step 3: A dispute request cannot resolve a finding in the mock-only harness.
     const disputeRes = await env.callTool('dispute_finding', {
       owner: 'calltelemetry',
       repo: 'cisco-cdr',
@@ -191,10 +191,9 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
       counter_argument: 'The event cache is bounded by an LRU cache limited to 1,000 entries with a 5-minute TTL per ADR 0564.',
     });
 
-    expect(disputeRes.status).toBe(200);
-    expect(disputeRes.result.disputed).toBe(true);
-    expect(disputeRes.result.verdict).toBe('overruled');
-    expect(disputeRes.result.remaining_blockers).toBe(0);
+    expect(disputeRes.error?.message).toMatch(/temporarily unavailable/i);
+    expect(env.db.findings.find((candidate) => candidate.finding_id === finding.finding_id)?.status).toBe('OPEN');
+    expect(env.deepSeek.disputeCalls).toHaveLength(0);
 
     // Step 4: Developer verifies fix proposal with explain_finding
     const explainRes = await env.callTool('explain_finding', {

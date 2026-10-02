@@ -12,18 +12,18 @@ Your Review Yeti dashboard is available at the following endpoints:
 
 | Environment | Access URL | Architecture |
 | :--- | :--- | :--- |
-| ⚡ **Live Cloudflare Edge Worker** | [**`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`**](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev) | Serverless edge deployment (Workers + Durable Objects + Assets) |
-| 🌐 **Production Domain (Cloudflare DNS)** | [**`https://review-bot.calltelemetry.com`**](https://review-bot.calltelemetry.com) | Custom domain routed directly via Cloudflare DNS / Routes |
+| ⚡ **Live Cloudflare Edge Worker** | [**`https://review-yeti-cf-orchestrator.example.workers.dev`**](https://review-yeti-cf-orchestrator.example.workers.dev) | Serverless edge deployment (Workers + Durable Objects + Assets) |
+| 🌐 **Production Domain (Cloudflare DNS)** | [**`https://review-bot.example.com`**](https://review-bot.example.com) | Custom domain routed directly via Cloudflare DNS / Routes |
 | 💻 **Local Development** | [**`http://localhost:3000`**](http://localhost:3000) | Local development workstation (`npm start` or `npm run dev`) |
 
 ### Primary Dashboard Views
-- **Executive & Engineering Analytics**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/analytics`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/analytics)  
+- **Executive & Engineering Analytics**: [`https://review-yeti-cf-orchestrator.example.workers.dev/analytics`](https://review-yeti-cf-orchestrator.example.workers.dev/analytics)  
   *Nearest-rank p95 turnaround latencies, token burn curves, model cost per PR/repo, and finding severity ratios.*
-- **Live Review Inspector**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/live`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/live)  
+- **Live Review Inspector**: [`https://review-yeti-cf-orchestrator.example.workers.dev/live`](https://review-yeti-cf-orchestrator.example.workers.dev/live)  
   *Real-time SSE persona reasoning tokens (`reasoning:chunk`), tool execution traces, and interactive diff viewer.*
-- **Repositories & Review Rules**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/repos`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/repos)  
+- **Repositories & Review Rules**: [`https://review-yeti-cf-orchestrator.example.workers.dev/repos`](https://review-yeti-cf-orchestrator.example.workers.dev/repos)  
   *Organization discovery, active PR inspection, on-demand review dispatch, and per-repo review rules CRUD.*
-- **Platform & GitHub App Settings**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/settings`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/settings)  
+- **Platform & GitHub App Settings**: [`https://review-yeti-cf-orchestrator.example.workers.dev/settings`](https://review-yeti-cf-orchestrator.example.workers.dev/settings)  
   *GitHub App credentials, AI provider model configurations, and platform-wide defaults.*
 
 ---
@@ -125,7 +125,7 @@ bucket_name = "review-yeti-workspace-cache"
 # Environment Variables
 [vars]
 ENVIRONMENT = "production"
-DASHBOARD_URL = "https://review-bot.calltelemetry.com"
+DASHBOARD_URL = "https://review-bot.example.com"
 RUNNER_TYPE = "cloudflare"
 ```
 
@@ -174,7 +174,7 @@ Your unified Cloudflare Worker will deploy both the API control plane and the fr
 ```text
 Uploaded review-yeti-cf-orchestrator (1.85 sec)
 Published review-yeti-cf-orchestrator (0.42 sec)
-  https://review-yeti-cf-orchestrator.call-telemetry.workers.dev
+  https://review-yeti-cf-orchestrator.example.workers.dev
 ```
 
 ---
@@ -192,7 +192,7 @@ If you prefer keeping the frontend portal deployment decoupled in Cloudflare Pag
    npx wrangler pages deploy out --project-name review-yeti-portal
    ```
 3. **Route API Traffic to Worker**:
-   Add `functions/api/[[path]].ts` in your Pages project to proxy `/api/*` to `https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`.
+   Add `functions/api/[[path]].ts` in your Pages project to proxy `/api/*` to `https://review-yeti-cf-orchestrator.example.workers.dev`.
 
 ---
 
@@ -232,8 +232,8 @@ To enable GitHub OAuth login across your Cloudflare portal:
 
 1. Go to [GitHub Developer Settings > OAuth Apps](https://github.com/settings/developers).
 2. Configure your application:
-   - **Homepage URL**: `https://review-bot.calltelemetry.com` (or `https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`)
-   - **Authorization callback URL**: `https://review-bot.calltelemetry.com/api/auth/github/callback`
+   - **Homepage URL**: `https://review-bot.example.com` (or `https://review-yeti-cf-orchestrator.example.workers.dev`)
+   - **Authorization callback URL**: `https://review-bot.example.com/api/auth/github/callback`
 3. Store `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` via Wrangler secrets:
    ```bash
    npx wrangler secret put GITHUB_CLIENT_ID
@@ -248,19 +248,19 @@ Verify your Cloudflare deployment with the following quick checks:
 
 ```bash
 # 1. Verify health check on Cloudflare Worker
-curl -I https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/health
+curl -I https://review-yeti-cf-orchestrator.example.workers.dev/health
 # Expected: HTTP/2 200 OK
 
 # 2. Verify static frontend returns HTML
-curl -I https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/
+curl -I https://review-yeti-cf-orchestrator.example.workers.dev/
 # Expected: HTTP/2 200 OK, Content-Type: text/html
 
 # 3. Verify Analytics route
-curl -I https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/analytics
+curl -I https://review-yeti-cf-orchestrator.example.workers.dev/analytics
 # Expected: HTTP/2 200 OK
 
 # 4. Verify SSE live streaming endpoint
-curl -N -H "Accept: text/event-stream" https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/api/live/stream/test
+curl -N -H "Accept: text/event-stream" https://review-yeti-cf-orchestrator.example.workers.dev/api/live/stream/test
 # Expected: Content-Type: text/event-stream
 ```
 

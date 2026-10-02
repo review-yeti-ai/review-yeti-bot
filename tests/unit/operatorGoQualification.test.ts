@@ -426,35 +426,46 @@ const assertionSourceFiles = [
   lifecycleFile,
   'controllers/m2_declarative_admission_concurrency_test.go',
 ];
+function lifecycleAssertionLine(format: string, source = fs.readFileSync(path.join(operatorDirectory, lifecycleFile), 'utf8')): number {
+  const lines = source.split(/\r?\n/u);
+  const start = lines.indexOf(`func ${lifecycleTestName}(t *testing.T) {`);
+  const end = lines.findIndex((line, index) => index > start && line === '}');
+  if (start < 0 || end <= start) throw new Error('Lifecycle fixture declaration missing');
+  const prefix = `t.Fatalf(${JSON.stringify(format)},`;
+  const matches = lines.flatMap((line, index) => index > start && index < end && line.trim().startsWith(prefix) ? [index + 1] : []);
+  if (matches.length !== 1) throw new Error('Lifecycle assertion declaration must be unique');
+  return matches[0];
+}
+
 const lifecycleTemplates = [
-  { templateId: 'm4.lifecycle.initial-running', line: 256,
+  { templateId: 'm4.lifecycle.initial-running',
     format: 'expected initial %d running reviews, got %d',
     message: 'expected initial 4 running reviews, got 3', values: { expected: 4, actual: 3 } },
-  { templateId: 'm4.lifecycle.review0-phase', line: 326,
+  { templateId: 'm4.lifecycle.review0-phase',
     format: 'expected Review 0 Succeeded, got %s',
     message: 'expected Review 0 Succeeded, got Running', values: { expected: 'Succeeded', actual: 'Running' } },
-  { templateId: 'm4.lifecycle.review1-phase', line: 329,
+  { templateId: 'm4.lifecycle.review1-phase',
     format: 'expected Review 1 Succeeded, got %s',
     message: 'expected Review 1 Succeeded, got Running', values: { expected: 'Succeeded', actual: 'Running' } },
-  { templateId: 'm4.lifecycle.review2-phase', line: 332,
+  { templateId: 'm4.lifecycle.review2-phase',
     format: 'expected Review 2 Failed, got %s',
     message: 'expected Review 2 Failed, got Running', values: { expected: 'Failed', actual: 'Running' } },
-  { templateId: 'm4.lifecycle.turnover-running', line: 358,
+  { templateId: 'm4.lifecycle.turnover-running',
     format: 'expected %d running reviews after slot turnover, got %d',
     message: 'expected 4 running reviews after slot turnover, got 3', values: { expected: 4, actual: 3 } },
-  { templateId: 'm4.lifecycle.succeeded-count', line: 361,
+  { templateId: 'm4.lifecycle.succeeded-count',
     format: 'expected 2 succeeded reviews, got %d',
     message: 'expected 2 succeeded reviews, got 1', values: { expected: 2, actual: 1 } },
-  { templateId: 'm4.lifecycle.failed-count', line: 364,
+  { templateId: 'm4.lifecycle.failed-count',
     format: 'expected 1 failed review, got %d',
     message: 'expected 1 failed review, got 0', values: { expected: 1, actual: 0 } },
-  { templateId: 'm4.lifecycle.queued-count', line: 367,
+  { templateId: 'm4.lifecycle.queued-count',
     format: 'expected %d queued reviews, got %d',
     message: 'expected 9 queued reviews, got 10', values: { expected: 9, actual: 10 } },
-  { templateId: 'm4.lifecycle.capacity-max', line: 371,
+  { templateId: 'm4.lifecycle.capacity-max',
     format: 'limit exceeded during turnover: max %d',
     message: 'limit exceeded during turnover: max 5', values: { maximum: 5 } },
-];
+].map((template) => ({ ...template, line: lifecycleAssertionLine(template.format) }));
 
 interface AssertionManifestFixture {
   schema: string;
@@ -481,7 +492,7 @@ function sourceManifestFixture(): AssertionManifestFixture {
   };
 }
 
-function nativeAssertionOutput(message: string, line = 358, threads: number | string = 4) {
+function nativeAssertionOutput(message: string, line = lifecycleTemplates[4].line, threads: number | string = 4) {
   return [
     `--- FAIL: ${lifecycleTestName} (0.01s)`,
     `    --- FAIL: ${lifecycleTestName}/${threads}Threads (0.01s)`,
@@ -508,6 +519,33 @@ function expectNoAssertionObservation(result: ReturnType<typeof goFailureReceipt
   expect(result.stderrSha256).toBe(createHash('sha256').update(stderr).digest('hex'));
   expect(JSON.stringify(result)).not.toMatch(/CANARY_SECRET|Bearer |github_pat_|private\.example|\/private\/|expected 4 running/u);
 }
+
+describe('assertion fixture source declaration lookup', () => {
+  const format = 'expected %d running reviews after slot turnover, got %d';
+  const declaration = `  t.Fatalf(${JSON.stringify(format)}, limit, runningCount)`;
+  const fixture = `func ${lifecycleTestName}(t *testing.T) {\n${declaration}\n}\n`;
+
+  it('binds a relocated declaration rather than its former line number', () => {
+    expect(lifecycleAssertionLine(format, fixture)).toBe(2);
+    expect(lifecycleAssertionLine(format, `// owner context\n\n${fixture}`)).toBe(4);
+  });
+
+  it('refuses a missing lifecycle declaration', () => {
+    expect(() => lifecycleAssertionLine(format, declaration)).toThrow('Lifecycle fixture declaration missing');
+  });
+
+  it('refuses an unterminated lifecycle declaration', () => {
+    expect(() => lifecycleAssertionLine(format, fixture.replace('}\n', ''))).toThrow('Lifecycle fixture declaration missing');
+  });
+
+  it('refuses a missing assertion declaration inside the lifecycle', () => {
+    expect(() => lifecycleAssertionLine(format, fixture.replace(declaration, ''))).toThrow('Lifecycle assertion declaration must be unique');
+  });
+
+  it('refuses ambiguous duplicate assertion declarations', () => {
+    expect(() => lifecycleAssertionLine(format, fixture.replace(declaration, `${declaration}\n${declaration}`))).toThrow('Lifecycle assertion declaration must be unique');
+  });
+});
 
 describe('source-bound operator native assertion observations', () => {
   const positiveRows = lifecycleTemplates.flatMap((template) => [1, 4, 16].map((threadCount) => ({
@@ -573,26 +611,26 @@ describe('source-bound operator native assertion observations', () => {
     { name: 'nonfinite count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got Infinity') },
     { name: 'unsafe integer count', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got 9007199254740993') },
     { name: 'source-mismatched expected limit', stdout: nativeAssertionOutput('expected 5 running reviews after slot turnover, got 3') },
-    { name: 'unknown phase', stdout: nativeAssertionOutput('expected Review 0 Succeeded, got CANARY_SECRET', 326) },
-    { name: 'phase with trailing credential', stdout: nativeAssertionOutput('expected Review 0 Succeeded, got Running Bearer CANARY_SECRET', 326) },
-    { name: 'missing phase', stdout: nativeAssertionOutput('expected Review 2 Failed, got ', 332) },
-    { name: 'unknown thread matrix member', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, 358, 2) },
-    { name: 'noncanonical thread count', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, 358, '04') },
+    { name: 'unknown phase', stdout: nativeAssertionOutput('expected Review 0 Succeeded, got CANARY_SECRET', lifecycleTemplates[1].line) },
+    { name: 'phase with trailing credential', stdout: nativeAssertionOutput('expected Review 0 Succeeded, got Running Bearer CANARY_SECRET', lifecycleTemplates[1].line) },
+    { name: 'missing phase', stdout: nativeAssertionOutput('expected Review 2 Failed, got ', lifecycleTemplates[3].line) },
+    { name: 'unknown thread matrix member', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, lifecycleTemplates[4].line, 2) },
+    { name: 'noncanonical thread count', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, lifecycleTemplates[4].line, '04') },
     { name: 'thread path with canary suffix', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('/4Threads (', '/4Threads/CANARY_SECRET (') },
-    { name: 'wrong source declaration line', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, 357) },
+    { name: 'wrong source declaration line', stdout: nativeAssertionOutput(lifecycleTemplates[4].message, lifecycleTemplates[4].line - 1) },
     { name: 'absolute native source path', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('m4_multithread_concurrency_test.go:', '/private/build/m4_multithread_concurrency_test.go:') },
     { name: 'traversal native source path', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('m4_multithread_concurrency_test.go:', '../m4_multithread_concurrency_test.go:') },
     { name: 'unknown native source file', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace('m4_multithread_concurrency_test.go:', 'private_source.go:') },
-    { name: 'mixed known and arbitrary assertion lines', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`FAIL\t${OPERATOR_MODULE}`, `        m4_multithread_concurrency_test.go:358: Bearer CANARY_SECRET\nFAIL\t${OPERATOR_MODULE}`) },
-    { name: 'ambiguous duplicate assertions', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`FAIL\t${OPERATOR_MODULE}`, `        m4_multithread_concurrency_test.go:358: ${lifecycleTemplates[4].message}\nFAIL\t${OPERATOR_MODULE}`) },
+    { name: 'mixed known and arbitrary assertion lines', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`FAIL\t${OPERATOR_MODULE}`, `        m4_multithread_concurrency_test.go:${lifecycleTemplates[4].line}: Bearer CANARY_SECRET\nFAIL\t${OPERATOR_MODULE}`) },
+    { name: 'ambiguous duplicate assertions', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`FAIL\t${OPERATOR_MODULE}`, `        m4_multithread_concurrency_test.go:${lifecycleTemplates[4].line}: ${lifecycleTemplates[4].message}\nFAIL\t${OPERATOR_MODULE}`) },
     { name: 'unknown top-level test', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replaceAll(lifecycleTestName, 'TestCANARY_SECRET') },
     { name: 'different source-declared top-level test', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replaceAll(lifecycleTestName, 'TestOperatorDisabledUnlessExplicitlyEnabled') },
     { name: 'subtest does not belong to enclosing test', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).replace(`${lifecycleTestName}/4Threads`, 'TestOperatorDisabledUnlessExplicitlyEnabled/4Threads') },
     { name: 'missing enclosing top-level failure', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).split('\n').slice(1).join('\n') },
     { name: 'missing thread failure context', stdout: nativeAssertionOutput(lifecycleTemplates[4].message).split('\n').filter((line) => !line.includes('/4Threads')).join('\n') },
     { name: 'mixed credential in the matched numeric field', stdout: nativeAssertionOutput('expected 4 running reviews after slot turnover, got 3 github_pat_CANARY_SECRET') },
-    { name: 'too many native failure blocks', stdout: [1, 4, 16, 1].map((threads) => nativeAssertionOutput(lifecycleTemplates[4].message, 358, threads)).join('') },
-    { name: 'misplaced assertion outside a failure block', stdout: `m4_multithread_concurrency_test.go:358: ${lifecycleTemplates[4].message}\nFAIL\t${OPERATOR_MODULE}/controllers\t0.01s\n` },
+    { name: 'too many native failure blocks', stdout: [1, 4, 16, 1].map((threads) => nativeAssertionOutput(lifecycleTemplates[4].message, lifecycleTemplates[4].line, threads)).join('') },
+    { name: 'misplaced assertion outside a failure block', stdout: `m4_multithread_concurrency_test.go:${lifecycleTemplates[4].line}: ${lifecycleTemplates[4].message}\nFAIL\t${OPERATOR_MODULE}/controllers\t0.01s\n` },
   ];
   it.each(malformedOutputRows)('withholds $name and preserves the original output digest', ({ stdout }) => {
     const result = assertionReceipt({ status: 1, signal: null, stdout, stderr: '' });
@@ -615,8 +653,8 @@ describe('source-bound operator native assertion observations', () => {
     { name: 'traversal source inventory path', mutate: (m) => { m.sources[0].file = `../${lifecycleFile}`; return m; } },
     { name: 'absolute assertion path', mutate: (m) => { m.assertions[4].source.file = `/private/${lifecycleFile}`; return m; } },
     { name: 'traversal assertion path', mutate: (m) => { m.assertions[4].source.file = `../${lifecycleFile}`; return m; } },
-    { name: 'wrong declaration line', mutate: (m) => { m.assertions[4].source.line = 357; return m; } },
-    { name: 'fractional declaration line', mutate: (m) => { m.assertions[4].source.line = 358.5; return m; } },
+    { name: 'wrong declaration line', mutate: (m) => { m.assertions[4].source.line = lifecycleTemplates[4].line - 1; return m; } },
+    { name: 'fractional declaration line', mutate: (m) => { m.assertions[4].source.line = lifecycleTemplates[4].line + 0.5; return m; } },
     { name: 'unknown template identifier', mutate: (m) => { m.assertions[4].templateId = 'CANARY_SECRET'; return m; } },
     { name: 'duplicate template', mutate: (m) => { m.assertions.push(m.assertions[4]); return m; } },
     { name: 'missing template', mutate: (m) => { m.assertions.splice(4, 1); return m; } },
