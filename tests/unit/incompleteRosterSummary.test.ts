@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatIncompleteRosterGateSummary } from '../../src/review/incompleteRosterSummary';
+import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from '../../src/review/incompleteRosterSummary';
 import { validateReviewGenerationRecoveryEvidence } from '../../src/review/reviewGenerationRecovery';
 
 const HEAD = 'a'.repeat(40);
@@ -62,5 +62,26 @@ describe('incomplete roster Gate summary', () => {
       owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
       expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
     }, evidence(EXPECTED_GATE_SUMMARY, mismatched))).toThrow(/generation recovery ledger/u);
+  });
+
+  it('rejects raw persona counts below the canonical finding count', () => {
+    const validate = (workerSummary: string) => validateReviewGenerationRecoveryEvidence({
+      owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
+      expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
+    }, evidence(EXPECTED_GATE_SUMMARY, workerSummary));
+
+    const matchingCounts = CURRENT_P2_WORKER_SUMMARY.replace(
+      '4 raw persona finding(s)',
+      '3 raw persona finding(s)',
+    );
+    expect(parseIncompleteRosterSummary(matchingCounts, HEAD)?.rawFindingCount).toBe(3);
+    expect(validate(matchingCounts)).toHaveLength(1);
+
+    const rawBelowCanonical = CURRENT_P2_WORKER_SUMMARY.replace(
+      '4 raw persona finding(s)',
+      '2 raw persona finding(s)',
+    );
+    expect(parseIncompleteRosterSummary(rawBelowCanonical, HEAD)).toBeNull();
+    expect(() => validate(rawBelowCanonical)).toThrow(/generation recovery ledger/u);
   });
 });
