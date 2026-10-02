@@ -5,11 +5,6 @@ const { compareClaims } = require('./claimSimilarity');
 const { isSubmodulePatch } = require('./submodulePatch');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
-/** Trusted runtime default shared by publishing boundaries. Low-level arbitration remains opt-in. */
-function advisoryRequiredByDefault() {
-  return process.env.REVIEW_YETI_REQUIRE_ADVISORY !== 'false';
-}
-
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === 'object') {
@@ -444,7 +439,6 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   //
   // Set `options.p2BlocksMerge` to restore the old contract without a revert.
   const p2BlocksMerge = options.p2BlocksMerge === true;
-  const advisoryRequired = options.requireAdvisory === true || options.advisoryRequired === true || process.env.REVIEW_YETI_REQUIRE_ADVISORY === 'true';
   let candidateVerdict = 'SHIP';
   let rationale = `All ${completedResults.length} persona evaluation(s) passed or contained only minor nits. Quorum satisfied for release.`;
 
@@ -463,9 +457,6 @@ function computeArbitration(personaResults, expectedPersonas, options = {}) {
   } else if (p1Count > 0) {
     candidateVerdict = 'FIX_FIRST';
     rationale = `Changes requested for ${p1Count} P1 finding(s) and ${p2Count} P2 nit(s).`;
-  } else if (advisoryRequired && p2Count > 0) {
-    candidateVerdict = 'FIX_FIRST';
-    rationale = `Changes requested for ${p2Count} advisory P2 finding(s); advisory findings are required to address.`;
   } else if (p2BlocksMerge && p2Count >= fixP2) {
     candidateVerdict = 'FIX_FIRST';
     rationale = `Changes requested for ${p2Count} P2 finding(s) across ${panelSize} reviewer(s), at or above the nit threshold of ${fixP2}.`;
@@ -547,6 +538,5 @@ module.exports = {
   publishFinding,
   clusterFindings,
   resolvePanelSize,
-  advisoryRequiredByDefault,
   computeArbitration,
 };

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
@@ -121,45 +121,6 @@ function deps(over: Record<string, unknown> = {}) {
     client: {} as never,
     ...over,
   };
-}
-
-// The actual worker captures the advisory policy at module import time. Prepare
-// each variant in the owning bounded setup hooks; test deadlines stay unchanged.
-const advisoryPolicyWorkers = new Map<'false' | undefined, typeof runPublishingReviewWorker>();
-async function prepareAdvisoryPolicyWorker(advisory: 'false' | undefined): Promise<void> {
-  const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-  try {
-    if (advisory === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = advisory;
-    vi.resetModules();
-    const { runPublishingReviewWorker: worker } = await import('../../src/cli/publishingReview');
-    advisoryPolicyWorkers.set(advisory, worker);
-  } finally {
-    if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
-    vi.resetModules();
-  }
-}
-beforeAll(async () => { await prepareAdvisoryPolicyWorker(undefined); });
-beforeAll(async () => { await prepareAdvisoryPolicyWorker('false'); });
-
-async function withAdvisoryPolicy(
-  advisory: 'false' | undefined,
-  check: (worker: typeof runPublishingReviewWorker) => Promise<void>,
-): Promise<void> {
-  const worker = advisoryPolicyWorkers.get(advisory);
-  expect(worker).toBeTypeOf('function');
-  // Arbitration and completion use the same live process policy as the
-  // publisher captured during preparation. Keep it set through execution.
-  const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-  try {
-    if (advisory === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = advisory;
-    await check(worker!);
-  } finally {
-    if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
-  }
 }
 
 describe('qualification source arguments', () => {
@@ -1376,21 +1337,21 @@ describe('runPublishingReviewWorker', () => {
     }
   });
 
-  it('requires P2-only findings even when the model arbiter says SHIP', async () => {
+  it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane'],
-        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Advisory', body: 'Advisory' }] }],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
-        arbiter: { verdict: 'SHIP' },
+        arbiter: { verdict: 'FIX_FIRST' },
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.verdict).toBe('FIX_FIRST');
-    expect(receipt.conclusion).toBe('failure');
-    expect(receipt.blockingFindingCount).toBe(1);
+    expect(receipt.verdict).toBe('SHIP');
+    expect(receipt.conclusion).toBe('success');
+    expect(receipt.blockingFindingCount).toBe(0);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
-      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: FIX_FIRST' }),
+      expect.objectContaining({ conclusion: 'success', title: 'Review Yeti: SHIP' }),
     );
   });
 
@@ -1511,8 +1472,9 @@ describe('runPublishingReviewWorker', () => {
     for (const { findings, conclusion, expectedDecision } of [
       { findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }],
         conclusion: 'failure', expectedDecision: 'FINDINGS' },
+      // P2 is advisory: it is reported as evidence but never fails the check.
       { findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }],
-        conclusion: 'failure', expectedDecision: 'FINDINGS' },
+        conclusion: 'success', expectedDecision: 'FINDINGS' },
       { findings: [], conclusion: 'success', expectedDecision: 'APPROVE' },
     ] as const) {
       const order: string[] = [];
@@ -1551,42 +1513,6 @@ describe('runPublishingReviewWorker', () => {
       }
       expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
     }
-  });
-
-  it.each([
-    [undefined, 'P0', 'failure'], [undefined, 'P1', 'failure'], [undefined, 'P2', 'failure'],
-    ['false', 'P0', 'failure'], ['false', 'P1', 'failure'], ['false', 'P2', 'success'],
-  ] as const)('advisory policy %s publishes %s as %s through the actual worker', async (advisory, severity, conclusion) => {
-    await withAdvisoryPolicy(advisory, async (worker) => {
-      const finding = { severity, path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' };
-      const completion = {
-        reportTerminalFailure: vi.fn(async () => {}),
-        reportTerminalSuccess: vi.fn(async () => {}),
-        reportReviewEvidence: vi.fn(async () => {}),
-      };
-      const cc = checkClient();
-      const d = deps({ completion, checkClient: cc, panelRunner: vi.fn(async () => ({
-        applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [finding] }],
-        optionalFailures: [], quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
-        arbiter: { verdict: 'SHIP' },
-      })) });
-      const receipt = await worker(env(), d as never);
-      expect(receipt.conclusion).toBe(conclusion);
-      expect(receipt.findingCount).toBe(1);
-      expect(receipt.blockingFindingCount).toBe(conclusion === 'failure' ? 1 : 0);
-      expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        conclusion, annotations: [expect.objectContaining({
-          title: `${severity}: Blocking`, annotation_level: conclusion === 'failure' ? 'failure' : 'warning',
-        })],
-      }));
-      expect(completion.reportReviewEvidence).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-        conclusion, result: expect.objectContaining({ personas: [expect.objectContaining({
-          decision: 'FINDINGS', findings: [expect.objectContaining(finding)],
-        })] }),
-      }));
-      expect(completion.reportTerminalSuccess).toHaveBeenCalledTimes(conclusion === 'success' ? 1 : 0);
-      expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
-    });
   });
 
   it('still reports the terminal success when the evidence callback fails', async () => {
@@ -1646,7 +1572,7 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.conclusion).toBe('success');
     const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as {
       result?: { personas: Array<{ id: string; decision: string; findings: Array<{ severity: string }> }> };
     } | undefined;
@@ -1655,7 +1581,7 @@ describe('runPublishingReviewWorker', () => {
       ['clean', 'APPROVE', []], // no stated decision and no findings
       ['stated', 'APPROVE', ['P2']], // a stated decision is preserved even with findings
     ]);
-    expect(receipt.blockingFindingCount).toBe(2);
+    expect(receipt.blockingFindingCount).toBe(0);
     expect(receipt.findingCount).toBe(2);
   });
 
@@ -1690,9 +1616,10 @@ describe('runPublishingReviewWorker', () => {
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
 
-  it('never reports terminal success or invalid evidence when unresolved P2 results fail the contract', async () => {
-    // The failed check is already published before evidence is built. An oversized
-    // finding must suppress invalid evidence without reporting terminal success.
+  it('still reports the terminal success, and no evidence, when the result fails the contract', async () => {
+    // The green check is already published by the time evidence is built. A
+    // result the service would refuse (here: a finding body past the contract's
+    // text bound) must be dropped, not allowed to abort the report.
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
@@ -1709,12 +1636,14 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('failure');
-    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
-    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+    expect(receipt.conclusion).toBe('success');
+    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
+    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(event.version).toBe('WorkerTerminalSuccess.v1');
+    expect(event).not.toHaveProperty('result');
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
-    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
+
   });
 
   it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {

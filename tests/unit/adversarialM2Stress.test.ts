@@ -235,7 +235,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     );
   });
 
-  it('Scenario 7: unresolved P2 findings block success even when the raw verdict is SHIP', async () => {
+  it('Scenario 7: Only P2 (advisory) findings present -> conclusion remains success', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['style'],
@@ -261,17 +261,85 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
-    expect(result.verdict).toBe('FIX_FIRST');
-    expect(result.conclusion).toBe('failure');
-    expect(result.blockingFindingCount).toBe(1);
+    expect(result.verdict).toBe('SHIP');
+    expect(result.conclusion).toBe('success');
+    expect(result.blockingFindingCount).toBe(0);
     expect(result.findingCount).toBe(1);
     expect(publishGateCheck).not.toHaveBeenCalled();
     expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
-        conclusion: 'failure',
-        title: 'Review Yeti: FIX_FIRST',
+        conclusion: 'success',
+        title: 'Review Yeti: SHIP',
       }),
     );
+  });
+
+  // The check conclusion, annotation level and summary count must all agree: only P0/P1 block.
+  describe('P2 is advisory; only P0/P1 block (REL-1282)', () => {
+    const finding = (severity: 'P0' | 'P1' | 'P2', line: number) => ({
+      severity, path: 'src/index.ts', line, title: `${severity} finding ${line}`, body: `Body ${line}.`,
+    });
+    const THREE_LINE_DIFF = `diff --git a/src/index.ts b/src/index.ts
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,1 +1,4 @@
++// one
++// two
++// three
+ export const foo = 1;
+`;
+    const run = async (findings: ReturnType<typeof finding>[], verdict: 'SHIP' | 'FIX_FIRST' = 'SHIP') => {
+      const { deps, completeCheck } = mockDeps({
+        sourceLoader: vi.fn(async () => ({ diff: THREE_LINE_DIFF, githubReads: 1 })),
+        panelRunner: vi.fn(async () => ({
+          applicablePersonaIds: ['style'],
+          personas: [{ id: 'style', decision: verdict, findings }],
+          quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+          arbiter: { verdict },
+        })),
+      });
+      const result = await runPublishingReviewWorker(testEnv(), deps as any);
+      const completed = (completeCheck.mock.calls as unknown as Array<[Record<string, any>]>).at(-1)![0];
+      return { result, completed };
+    };
+
+    it('a P2-only SHIP review concludes success and reports zero blocking findings', async () => {
+      const { result, completed } = await run([finding('P2', 1)]);
+      expect(result.conclusion).toBe('success');
+      expect(result.blockingFindingCount).toBe(0);
+      expect(completed.conclusion).toBe('success');
+      expect(completed.summary ?? completed.output?.summary).toContain('blocking P0/P1: 0');
+    });
+
+    it('a P1 review concludes failure and reports exactly one blocking finding', async () => {
+      const { result, completed } = await run([finding('P1', 1)], 'FIX_FIRST');
+      expect(result.conclusion).toBe('failure');
+      expect(result.blockingFindingCount).toBe(1);
+      expect(completed.conclusion).toBe('failure');
+      expect(completed.summary ?? completed.output?.summary).toContain('blocking P0/P1: 1');
+    });
+
+    it('a mixed review counts only the real P0/P1 findings as blocking', async () => {
+      const { result, completed } = await run([finding('P1', 1), finding('P2', 2), finding('P2', 3)], 'FIX_FIRST');
+      expect(result.conclusion).toBe('failure');
+      // Nearby findings may cluster, but at least one advisory P2 must remain beside the one blocker.
+      expect(result.findingCount).toBeGreaterThan(1);
+      expect(result.blockingFindingCount).toBe(1);
+      expect(completed.summary ?? completed.output?.summary).toContain('blocking P0/P1: 1');
+    });
+
+    it('the opt-in advisory-required environment switch no longer changes the conclusion', async () => {
+      const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'true';
+      try {
+        const { result } = await run([finding('P2', 1)]);
+        expect(result.conclusion).toBe('success');
+        expect(result.blockingFindingCount).toBe(0);
+      } finally {
+        if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+      }
+    });
   });
 
   it('Scenario 8: Quorum unsatisfied forces BLOCK verdict and fails closed', async () => {

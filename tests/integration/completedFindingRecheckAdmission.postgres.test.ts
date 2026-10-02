@@ -29,7 +29,7 @@ const findings = tasks.map((task) => ({ severity: 'P2' as const, path: task.path
 const source: WorkerReviewCompletion = { version: 'WorkerReviewCompletion.v1', ...identity, executionAttempt: 2,
   result: { version: 'WorkerReviewResult.v1', completedAt: '2026-10-01T12:00:00.000Z', taskPlan: tasks,
     personas: tasks.map((task, index) => ({ id: task.id, decision: 'FINDINGS', status: 'COMPLETE', findings: [findings[index]!] })),
-    coverageComplete: true, quorumSatisfied: true, findingCount: 3, blockingFindingCount: 3 } };
+    coverageComplete: true, quorumSatisfied: true, findingCount: 3, blockingFindingCount: 0 } };
 const sourceDigest = workerReviewCompletionDigest(source);
 const sourceGateId = `${identity.runId}-g1-e2`;
 const context = { authenticatedByConfiguredAuthenticator: true, caller: { authType: 'static_token' as const,
@@ -151,7 +151,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
       .toEqual({ ...originalGate, current_attempt: false });
 
     // Normal authenticated completion accepts only the requested fresh task
-    // receipts. The remaining P2 stays required, then becomes a new request
+    // receipts. The remaining P2 stays visible, then becomes a new request
     // against the fresh accepted source, never the retired original Gate.
     expect(await dispatcher.markProjected(identity.runId, 'worker-a', claim!.claimAttempt,
       'fresh-worker', now, sha256(workerBearer))).toBe(true);
@@ -167,7 +167,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
     fresh.result.personas[0]!.findings = [];
     fresh.result.personas[1]!.findings = [];
     fresh.result.findingCount = 1;
-    fresh.result.blockingFindingCount = 1;
+    fresh.result.blockingFindingCount = 0;
     const written = await request(app).post('/checkpoint').set('Authorization', `Bearer ${workerBearer}`).send({
       ...read.body.checkpoint, executionAttempt: 3, revision: 5,
       completedTasks: fresh.result.personas.map((persona) => ({ id: persona.id, findings: persona.findings })),
@@ -184,7 +184,7 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
         changedFiles: tasks.map((task) => ({ path: task.paths[0]!, patch: '@@ -1,0 +1,3 @@\n+one\n+two\n+three\n' })),
         coverageComplete: true, quorumSatisfied: true },
     }), now)).toBe('recorded');
-    expect((await pool.query('SELECT status FROM review_runs')).rows[0].status).toBe('failed');
+    expect((await pool.query('SELECT status FROM review_runs')).rows[0].status).toBe('succeeded');
     await publishFreshGate();
     await tool().execute(input(2), context);
     expect(await ledgerCounts()).toEqual({ requests: 3, admissions: 2 });

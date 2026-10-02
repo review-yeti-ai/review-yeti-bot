@@ -21,8 +21,8 @@ import {
 } from './findingIdentity';
 import { withReviewPrTransaction, lockReviewPr, type ReviewPrTransactionPool } from '../../../persistence/reviewPrTransaction';
 import { parseReviewExecutionCheckpoint } from '../../../review/reviewExecutionCheckpoint';
-import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from '../../../review/workerReviewCompletion';
-import { advisoryRequiredByDefault, canonicalJson, sha256 } from '../../../review/reviewCore';
+import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewCompletionDigest } from '../../../review/workerReviewCompletion';
+import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
 import { admitCompletedFindingRecheck } from '../../../persistence/completedFindingRecheckAdmission';
 import {
@@ -468,9 +468,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
       });
 
       const blockers = extractReviewFindingEntries(queued.completion, { includeAlternateSources: true })
-        .filter(({ finding }) => (advisoryRequiredByDefault()
-          ? ['P0', 'P1', 'P2', 'CRITICAL', 'HIGH'] : ['P0', 'P1', 'CRITICAL', 'HIGH'])
-          .includes(String(finding.severity || '').toUpperCase())).length;
+        .filter(({ finding }) => ['P0', 'P1'].includes(publishedFindingSeverity(finding))).length;
       return buildToolResultJson({ finding_id: queued.findingId, request_id: queued.requestId,
         review_status: 'fresh_re_review_requested', remaining_blockers: blockers } satisfies DisputeFindingOutput);
     },

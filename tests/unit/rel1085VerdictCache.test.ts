@@ -292,7 +292,9 @@ function sourceCompletion(overrides: { personas?: unknown[]; verdictCache?: unkn
       version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T10:00:00.000Z',
       personas: overrides.personas ?? [
         { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
-        { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
+        { id: 'arch-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
+          { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
+        ] },
       ],
       coverageComplete: true, quorumSatisfied: true,
       ...(overrides.verdictCache === null ? {} : {
@@ -323,7 +325,7 @@ describe('verdict cache source record', () => {
   it('reads the stored entries, lane keys and the gating lanes that completed', () => {
     const record = verdictCacheSourceFromRows(rows(sourceCompletion()));
     expect(record).toMatchObject({
-      prior: { runId: SOURCE_RUN, repositoryId: REPO_ID, shipComplete: true, findingPaths: [], ageMs: 3_600_000 },
+      prior: { runId: SOURCE_RUN, repositoryId: REPO_ID, shipComplete: true, findingPaths: ['src/open.ts'], ageMs: 3_600_000 },
       laneKeys: LANE_KEYS,
       entries: [entry('src/same.ts')],
       lanes: ['arch-lane', 'sec-lane'],
@@ -352,20 +354,6 @@ describe('verdict cache source record', () => {
 
   it('is not a SHIP-complete source without the gate\'s own SHIP record, whatever the run row says (REL-1084)', () => {
     expect(verdictCacheSourceFromRows(rows(sourceCompletion(), { gate: null, status: 'succeeded' }))?.prior.shipComplete).toBe(false);
-  });
-
-  it('does not treat a gating P2 finding as a clean verdict-cache source', () => {
-    const completion = sourceCompletion({ personas: [
-      { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
-        { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
-      ] },
-      { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
-    ] });
-    const recorded = rows(completion);
-    expect(recorded.run.status).toBe('failed');
-    expect(verdictCacheSourceFromRows(recorded)?.prior).toMatchObject({
-      shipComplete: false, shipIncompleteReason: 'run-not-succeeded',
-    });
   });
 });
 

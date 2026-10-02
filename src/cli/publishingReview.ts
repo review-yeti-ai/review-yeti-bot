@@ -65,7 +65,7 @@ import {
   loadSameHeadReviewSource, readPullRequestIdentity, verifyReviewablePullRequest,
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
-import { advisoryRequiredByDefault, canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
+import { canonicalJson, computeArbitration, sanitizeFinding, sha256 } from '../review/reviewCore';
 import type { DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
@@ -391,9 +391,7 @@ export {
 };
 export type { OpenAITransportConfig };
 
-export const BLOCKING_SEVERITIES = new Set(
-  advisoryRequiredByDefault() ? ['P0', 'P1', 'P2'] : ['P0', 'P1']
-);
+const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
@@ -411,7 +409,7 @@ export interface PublishingConclusionCoverage {
 /**
  * Fail closed. `SHIP` with no blocking finding is the only success. Everything
  * else -- BLOCK, FIX_FIRST, an unrecognised verdict, or a SHIP that still carries
- * a blocking finding (P0/P1/P2 under the default policy) -- concludes `failure`.
+ * a blocking P0/P1 finding -- concludes `failure`.
  *
  * The run's own coverage projection is a required argument: the worker's single
  * production call site must always pass it, so dropping the argument is a
@@ -1028,7 +1026,7 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
       return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
-    `${findings.length} finding(s), ${blockingCount} blocking (${advisoryRequiredByDefault() ? 'P0/P1/P2' : 'P0/P1'}).`,
+    `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
     '',
     ...lines,
   ].join('\n');
@@ -2292,13 +2290,11 @@ export async function runPublishingReviewWorker(
         ...(unreviewableLockfilePaths.size > 0
           ? [`${unreviewableLockfilePaths.size} changed lockfile(s) could not be sent in full or summarized and were not reviewed`] : []),
       ];
-      // The trusted runtime policy requires P2 findings by default. The model
-      // arbiter is evidence, not policy; recompute from the exact persona findings
-      // and quorum so this lane shares the service Gate's severity contract.
+      // The model arbiter is evidence, not policy; recompute from exact persona
+      // findings and quorum under the same P0/P1 policy as the service Gate.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
         coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0,
-        requireAdvisory: advisoryRequiredByDefault(),
         ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
@@ -2542,7 +2538,7 @@ export async function runPublishingReviewWorker(
             ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
             : (panelResult as any).zeroLaneNonEvidence
               ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-            : `Findings: ${findings.length} (blocking ${advisoryRequiredByDefault() ? 'P0/P1/P2' : 'P0/P1'}: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+            : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),

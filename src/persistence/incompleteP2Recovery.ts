@@ -1,6 +1,6 @@
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME } from '../review/reviewCheckIdentity';
-import { advisoryRequiredByDefault, canonicalJson, sha256 } from '../review/reviewCore';
+import { canonicalJson, sha256 } from '../review/reviewCore';
 import {
   MAX_INCOMPLETE_P2_RECOVERY_BYTES,
   MAX_INCOMPLETE_P2_RECOVERY_FINDINGS,
@@ -107,14 +107,7 @@ function recoveryRequest(
   };
 }
 
-interface WorkerSummaryCounts {
-  canonical: number;
-  raw: number;
-  expected: number;
-  completed: number;
-  blockingFindingCount: number;
-  blockingFindingFormat: 'legacy-p0-p1' | 'p2-inclusive';
-}
+interface WorkerSummaryCounts { canonical: number; raw: number; expected: number; completed: number }
 
 function workerSummaryCounts(summary: unknown, headSha: string): WorkerSummaryCounts | null {
   const counts = parseIncompleteRosterSummary(summary, headSha) ?? parseGracefulComposedSummary(summary, headSha);
@@ -123,8 +116,7 @@ function workerSummaryCounts(summary: unknown, headSha: string): WorkerSummaryCo
     expectedLanes: expected, completedLanes: completed } = counts;
   if (![canonical, raw].every(Number.isSafeInteger)
     || canonical < 0 || raw < canonical || raw > MAX_INCOMPLETE_P2_RECOVERY_FINDINGS) return null;
-  return { canonical, raw, expected, completed, blockingFindingCount: counts.blockingFindingCount,
-    blockingFindingFormat: counts.blockingFindingFormat };
+  return { canonical, raw, expected, completed };
 }
 
 function isZeroFindingIncompleteSummary(summary: unknown, headSha: string): boolean {
@@ -320,8 +312,7 @@ async function hasPersistedIncompleteGateFindings(
       || (completion.result.findingCount !== undefined
         && completion.result.findingCount !== canonical.metrics.totalFindings)
       || (completion.result.blockingFindingCount !== undefined
-        && completion.result.blockingFindingCount !== canonical.metrics.p0Count + canonical.metrics.p1Count
-          + (advisoryRequiredByDefault() ? canonical.metrics.p2Count : 0))) refuse();
+        && completion.result.blockingFindingCount !== canonical.metrics.p0Count + canonical.metrics.p1Count)) refuse();
   }
   return false;
 }
@@ -700,19 +691,15 @@ export async function loadIncompleteP2RecoveryContext(
     const canonical = deriveStoredCompletionVerdict(completion.result, {
       expectedLanes: counts.expected,
       coverageComplete: gate.evidence.coverageComplete,
-      requireAdvisory: counts.blockingFindingFormat === 'p2-inclusive',
       ...(gate.evidence.reviewEngine === 'composed' ? { reviewEngine: 'composed' as const } : {}),
     });
-    const summaryBlockingCount = counts.blockingFindingFormat === 'legacy-p0-p1'
-      ? 0 : counts.blockingFindingCount;
     if (!canonical || canonical.quorumSatisfied !== false
       || canonical.verdict !== 'BLOCK'
       || canonical.completedPersonas !== counts.completed
       || canonical.metrics.totalFindings !== counts.canonical
       || canonical.metrics.rawFindingCount !== counts.raw
       || (completion.result.findingCount !== undefined && completion.result.findingCount !== counts.canonical)
-      || (completion.result.blockingFindingCount !== undefined
-        && completion.result.blockingFindingCount !== summaryBlockingCount)) refuse();
+      || (completion.result.blockingFindingCount !== undefined && completion.result.blockingFindingCount !== 0)) refuse();
     const source: IncompleteP2RecoverySource = {
       executionAttempt: sourceAttempt,
       workerResultDigest: completionDigest,
