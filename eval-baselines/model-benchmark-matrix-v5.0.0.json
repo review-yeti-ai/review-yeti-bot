@@ -1016,7 +1016,7 @@
       "findings": [
         {
           "severity": "P0",
-          "path": "lib/calltelemetry/accounts/user_context.ex",
+          "path": "lib/exampleorg/accounts/user_context.ex",
           "line": 12,
           "title": "Unscoped Ecto query allows cross-tenant data access",
           "body": "get_user/1 queries the User schema by ID without filtering on org_id or applying tenant prefix isolation, allowing cross-tenant account reads.",
@@ -1052,7 +1052,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/telemetry/metrics_collector.ex",
+          "path": "lib/exampleorg/telemetry/metrics_collector.ex",
           "line": 13,
           "title": "Synchronous blocking HTTP call inside GenServer handle_call",
           "body": "Performing a synchronous HTTP POST inside handle_call blocks the GenServer message queue, leading to caller timeouts under load.",
@@ -1088,7 +1088,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/workers/supervisor.ex",
+          "path": "lib/exampleorg/workers/supervisor.ex",
           "line": 12,
           "title": "Permanent restart strategy on failing worker risks supervisor crash loop",
           "body": "Setting restart: :permanent for a worker that terminates on transient network errors will exhaust supervisor max_restarts (3 in 5s) and crash the supervisor hierarchy.",
@@ -1124,7 +1124,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/cache/session_ets.ex",
+          "path": "lib/exampleorg/cache/session_ets.ex",
           "line": 11,
           "title": "Unbounded ETS table writes without eviction policy or size limit",
           "body": "Writing to named ETS table on every event without a TTL expiration, max table capacity, or periodic sweeper process will cause unbounded memory growth under continuous load.",
@@ -1160,7 +1160,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry_web/controllers/organization_controller.ex",
+          "path": "lib/exampleorg_web/controllers/organization_controller.ex",
           "line": 15,
           "title": "Ecto N+1 sequential association query in enumeration loop",
           "body": "Calling Repo.all(Ecto.assoc(org, :members)) inside Enum.map executes N queries for N organizations instead of preloading associations in a single query.",
@@ -1196,11 +1196,11 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/billing/invoice_generator.ex",
+          "path": "lib/exampleorg/billing/invoice_generator.ex",
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- Calltelemetry.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -2523,7 +2523,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/quota/ets_tracker.ex",
+          "path": "lib/example_org/quota/ets_tracker.ex",
           "line": 15,
           "title": "Non-atomic ETS lookup-then-insert creates race condition under concurrent access",
           "body": "Using :ets.lookup followed by :ets.insert introduces a race condition under concurrent access. Use :ets.update_counter/4 for atomic counter increments.",
@@ -2667,7 +2667,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/importer/bulk_cdr_importer.ex",
+          "path": "lib/example_org/importer/bulk_cdr_importer.ex",
           "line": 16,
           "title": "Unbounded Task.async_stream without max_concurrency limits risks node memory crash",
           "body": "Executing Task.async_stream with timeout: :infinity and no max_concurrency setting can spawn unbounded tasks during bulk file streaming, exhausting node memory.",
@@ -7502,7 +7502,7 @@
       "findings": [
         {
           "severity": "P0",
-          "path": "lib/calltelemetry/accounts/user_context.ex",
+          "path": "lib/exampleorg/accounts/user_context.ex",
           "line": 12,
           "title": "Unscoped Ecto query allows cross-tenant data access",
           "body": "get_user/1 queries the User schema by ID without filtering on org_id or applying tenant prefix isolation, allowing cross-tenant account reads.",
@@ -7538,7 +7538,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/telemetry/metrics_collector.ex",
+          "path": "lib/exampleorg/telemetry/metrics_collector.ex",
           "line": 13,
           "title": "Synchronous blocking HTTP call inside GenServer handle_call",
           "body": "Performing a synchronous HTTP POST inside handle_call blocks the GenServer message queue, leading to caller timeouts under load.",
@@ -7574,7 +7574,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/workers/supervisor.ex",
+          "path": "lib/exampleorg/workers/supervisor.ex",
           "line": 12,
           "title": "Permanent restart strategy on failing worker risks supervisor crash loop",
           "body": "Setting restart: :permanent for a worker that terminates on transient network errors will exhaust supervisor max_restarts (3 in 5s) and crash the supervisor hierarchy.",
@@ -7610,7 +7610,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/cache/session_ets.ex",
+          "path": "lib/exampleorg/cache/session_ets.ex",
           "line": 11,
           "title": "Unbounded ETS table writes without eviction policy or size limit",
           "body": "Writing to named ETS table on every event without a TTL expiration, max table capacity, or periodic sweeper process will cause unbounded memory growth under continuous load.",
@@ -7646,7 +7646,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry_web/controllers/organization_controller.ex",
+          "path": "lib/exampleorg_web/controllers/organization_controller.ex",
           "line": 15,
           "title": "Ecto N+1 sequential association query in enumeration loop",
           "body": "Calling Repo.all(Ecto.assoc(org, :members)) inside Enum.map executes N queries for N organizations instead of preloading associations in a single query.",
@@ -7682,11 +7682,11 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/billing/invoice_generator.ex",
+          "path": "lib/exampleorg/billing/invoice_generator.ex",
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- Calltelemetry.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -9009,7 +9009,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/quota/ets_tracker.ex",
+          "path": "lib/example_org/quota/ets_tracker.ex",
           "line": 15,
           "title": "Non-atomic ETS lookup-then-insert creates race condition under concurrent access",
           "body": "Using :ets.lookup followed by :ets.insert introduces a race condition under concurrent access. Use :ets.update_counter/4 for atomic counter increments.",
@@ -9153,7 +9153,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/importer/bulk_cdr_importer.ex",
+          "path": "lib/example_org/importer/bulk_cdr_importer.ex",
           "line": 16,
           "title": "Unbounded Task.async_stream without max_concurrency limits risks node memory crash",
           "body": "Executing Task.async_stream with timeout: :infinity and no max_concurrency setting can spawn unbounded tasks during bulk file streaming, exhausting node memory.",
@@ -13988,7 +13988,7 @@
       "findings": [
         {
           "severity": "P0",
-          "path": "lib/calltelemetry/accounts/user_context.ex",
+          "path": "lib/exampleorg/accounts/user_context.ex",
           "line": 12,
           "title": "Unscoped Ecto query allows cross-tenant data access",
           "body": "get_user/1 queries the User schema by ID without filtering on org_id or applying tenant prefix isolation, allowing cross-tenant account reads.",
@@ -14024,7 +14024,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/telemetry/metrics_collector.ex",
+          "path": "lib/exampleorg/telemetry/metrics_collector.ex",
           "line": 13,
           "title": "Synchronous blocking HTTP call inside GenServer handle_call",
           "body": "Performing a synchronous HTTP POST inside handle_call blocks the GenServer message queue, leading to caller timeouts under load.",
@@ -14060,7 +14060,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/workers/supervisor.ex",
+          "path": "lib/exampleorg/workers/supervisor.ex",
           "line": 12,
           "title": "Permanent restart strategy on failing worker risks supervisor crash loop",
           "body": "Setting restart: :permanent for a worker that terminates on transient network errors will exhaust supervisor max_restarts (3 in 5s) and crash the supervisor hierarchy.",
@@ -14096,7 +14096,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/cache/session_ets.ex",
+          "path": "lib/exampleorg/cache/session_ets.ex",
           "line": 11,
           "title": "Unbounded ETS table writes without eviction policy or size limit",
           "body": "Writing to named ETS table on every event without a TTL expiration, max table capacity, or periodic sweeper process will cause unbounded memory growth under continuous load.",
@@ -14132,7 +14132,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry_web/controllers/organization_controller.ex",
+          "path": "lib/exampleorg_web/controllers/organization_controller.ex",
           "line": 15,
           "title": "Ecto N+1 sequential association query in enumeration loop",
           "body": "Calling Repo.all(Ecto.assoc(org, :members)) inside Enum.map executes N queries for N organizations instead of preloading associations in a single query.",
@@ -14168,11 +14168,11 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/billing/invoice_generator.ex",
+          "path": "lib/exampleorg/billing/invoice_generator.ex",
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- Calltelemetry.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -15486,7 +15486,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/quota/ets_tracker.ex",
+          "path": "lib/example_org/quota/ets_tracker.ex",
           "line": 15,
           "title": "Non-atomic ETS lookup-then-insert creates race condition under concurrent access",
           "body": "Using :ets.lookup followed by :ets.insert introduces a race condition under concurrent access. Use :ets.update_counter/4 for atomic counter increments.",
@@ -15621,7 +15621,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/importer/bulk_cdr_importer.ex",
+          "path": "lib/example_org/importer/bulk_cdr_importer.ex",
           "line": 16,
           "title": "Unbounded Task.async_stream without max_concurrency limits risks node memory crash",
           "body": "Executing Task.async_stream with timeout: :infinity and no max_concurrency setting can spawn unbounded tasks during bulk file streaming, exhausting node memory.",
@@ -20393,7 +20393,7 @@
       "findings": [
         {
           "severity": "P0",
-          "path": "lib/calltelemetry/accounts/user_context.ex",
+          "path": "lib/exampleorg/accounts/user_context.ex",
           "line": 12,
           "title": "Unscoped Ecto query allows cross-tenant data access",
           "body": "get_user/1 queries the User schema by ID without filtering on org_id or applying tenant prefix isolation, allowing cross-tenant account reads.",
@@ -20429,7 +20429,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/telemetry/metrics_collector.ex",
+          "path": "lib/exampleorg/telemetry/metrics_collector.ex",
           "line": 13,
           "title": "Synchronous blocking HTTP call inside GenServer handle_call",
           "body": "Performing a synchronous HTTP POST inside handle_call blocks the GenServer message queue, leading to caller timeouts under load.",
@@ -20465,7 +20465,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/workers/supervisor.ex",
+          "path": "lib/exampleorg/workers/supervisor.ex",
           "line": 12,
           "title": "Permanent restart strategy on failing worker risks supervisor crash loop",
           "body": "Setting restart: :permanent for a worker that terminates on transient network errors will exhaust supervisor max_restarts (3 in 5s) and crash the supervisor hierarchy.",
@@ -20501,7 +20501,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/cache/session_ets.ex",
+          "path": "lib/exampleorg/cache/session_ets.ex",
           "line": 11,
           "title": "Unbounded ETS table writes without eviction policy or size limit",
           "body": "Writing to named ETS table on every event without a TTL expiration, max table capacity, or periodic sweeper process will cause unbounded memory growth under continuous load.",
@@ -20537,7 +20537,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry_web/controllers/organization_controller.ex",
+          "path": "lib/exampleorg_web/controllers/organization_controller.ex",
           "line": 15,
           "title": "Ecto N+1 sequential association query in enumeration loop",
           "body": "Calling Repo.all(Ecto.assoc(org, :members)) inside Enum.map executes N queries for N organizations instead of preloading associations in a single query.",
@@ -20573,11 +20573,11 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/calltelemetry/billing/invoice_generator.ex",
+          "path": "lib/exampleorg/billing/invoice_generator.ex",
           "line": 14,
           "title": "Unhandled pattern match on fallible external gateway result",
           "body": "Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.",
-          "suggestion": "Use with {:ok, invoice} <- Calltelemetry.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
+          "suggestion": "Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end"
         }
       ]
     },
@@ -21900,7 +21900,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/quota/ets_tracker.ex",
+          "path": "lib/example_org/quota/ets_tracker.ex",
           "line": 15,
           "title": "Non-atomic ETS lookup-then-insert creates race condition under concurrent access",
           "body": "Using :ets.lookup followed by :ets.insert introduces a race condition under concurrent access. Use :ets.update_counter/4 for atomic counter increments.",
@@ -22044,7 +22044,7 @@
       "findings": [
         {
           "severity": "P1",
-          "path": "lib/call_telemetry/importer/bulk_cdr_importer.ex",
+          "path": "lib/example_org/importer/bulk_cdr_importer.ex",
           "line": 16,
           "title": "Unbounded Task.async_stream without max_concurrency limits risks node memory crash",
           "body": "Executing Task.async_stream with timeout: :infinity and no max_concurrency setting can spawn unbounded tasks during bulk file streaming, exhausting node memory.",
