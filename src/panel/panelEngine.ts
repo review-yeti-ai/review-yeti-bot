@@ -3838,6 +3838,7 @@ export async function executePersonaPanel(options: {
     // REL-1083: and map-reduce, which only chunks a lane larger than one budget.
     const applicability = resolveMapReduceReviewApplicability(enabledPersonas, changedFiles as any, {
       pathFilters: config.path_filters,
+      maxReviewedLockfilePatchChars: config.max_reviewed_lockfile_patch_chars,
       diffShrink: options.diffShrink,
       incremental: options.incremental,
       verdictCache: options.verdictCache,

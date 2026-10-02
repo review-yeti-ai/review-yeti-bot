@@ -1,4 +1,5 @@
 import type { McpAuthenticatedCaller } from './mcpAuthenticator';
+import { CENTRAL_REVIEW_CONFIGURED, CENTRAL_REVIEW_OWNER, CENTRAL_REVIEW_REPOSITORY } from '../../review/reviewCheckIdentity';
 import { MCP_ERRORS, type JsonRpcErrorResponse } from './mcpTypes';
 
 export class McpRbacError extends Error {
@@ -33,9 +34,10 @@ export function canAccessRepository(
 
   // Central dispatch workflow authorization
   if (
-    caller.claims?.repository === 'calltelemetry/ct-review-actions' &&
+    CENTRAL_REVIEW_CONFIGURED &&
+    caller.claims?.repository === CENTRAL_REVIEW_REPOSITORY &&
     caller.claims?.event_name === 'repository_dispatch' &&
-    owner.toLowerCase() === 'calltelemetry'
+    owner.toLowerCase() === CENTRAL_REVIEW_OWNER.toLowerCase()
   ) {
     return true;
   }

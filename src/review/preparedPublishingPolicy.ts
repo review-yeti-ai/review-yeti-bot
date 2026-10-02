@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
 import { ctReviewConfigV3Schema, type CtReviewConfigV3 } from '../config/schema';
+import {
+  DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+  HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+} from '../pipeline/hunkFilter';
 import { fingerprintEffectiveReviewConfig, fingerprintTrustedReviewPolicy, reviewPolicySourceSchema,
   type TrustedResolvedReviewPolicy, type ImmutableReviewPolicyFile } from './authoritativeReviewIdentity';
 
@@ -19,10 +23,18 @@ const transportSchema = z.object({
   model: z.string().min(1).max(256).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
 }).strict();
 const centralPolicySchema = z.object({
-  schema: z.literal('calltelemetry.review-policy.v1'),
+  // The schema id is a version marker, not an authority: accept `<producer>.review-policy.v1` from any
+  // trusted producer. Authority comes from the policy digest and central provenance, not from this prefix.
+  schema: z.string().regex(/^[a-z0-9][a-z0-9-]*\.review-policy\.v1$/u),
   review_yeti: z.object({
     personas: z.string().min(1).max(2_000),
-    budget: z.object({ max_investigation_turns: z.number().int().positive().max(100) }),
+    budget: z.object({
+      max_investigation_turns: z.number().int().positive().max(100),
+      max_reviewed_lockfile_patch_chars: z.number().int()
+        .min(DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
+        .max(HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
+        .optional(),
+    }),
   }),
 });
 

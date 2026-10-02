@@ -31,9 +31,17 @@
   "count": 2,
   "digest": "98755f4be2680d90"
  },
+ "cf-orchestrator/migrations/0001_initial_schema.sql": {
+  "count": 4,
+  "digest": "404d3e6f8e57defa"
+ },
  "cf-orchestrator/package.json": {
   "count": 1,
   "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/src/api/dashboardRoutes.ts": {
+  "count": 31,
+  "digest": "30f7b7a288b80eaf"
  },
  "cf-orchestrator/src/mcp/mcpRouter.ts": {
   "count": 3,
@@ -79,6 +87,10 @@
   "count": 1,
   "digest": "eede0415576da9c5"
  },
+ "cf-orchestrator/src/storage/d1Client.ts": {
+  "count": 6,
+  "digest": "90bca28e03b9905a"
+ },
  "cf-orchestrator/test/adversarial_control_plane.test.ts": {
   "count": 2,
   "digest": "8211595a71a1d1b9"
@@ -90,6 +102,10 @@
  "cf-orchestrator/test/adversarial_runners_parity.test.ts": {
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
+ },
+ "cf-orchestrator/test/dashboardRoutes.test.ts": {
+  "count": 3,
+  "digest": "5143430ed1f59acb"
  },
  "cf-orchestrator/test/digitalOceanAgentRunner.test.ts": {
   "count": 1,
@@ -111,9 +127,9 @@
   "count": 1,
   "digest": "eede0415576da9c5"
  },
- "cf-orchestrator/test/m1ChallengeStress.test.ts": {
-  "count": 13,
-  "digest": "f721a7320a16c1af"
+ "cf-orchestrator/test/m1_challenge.test.ts": {
+  "count": 23,
+  "digest": "7749544117b4bc29"
  },
  "cf-orchestrator/test/m1Challenger2Iter2Harness.test.ts": {
   "count": 3,
@@ -139,9 +155,13 @@
   "count": 19,
   "digest": "804c996bd6c097d7"
  },
- "cf-orchestrator/test/m1_challenge.test.ts": {
-  "count": 23,
-  "digest": "7749544117b4bc29"
+ "cf-orchestrator/test/m1ChallengeStress.test.ts": {
+  "count": 13,
+  "digest": "f721a7320a16c1af"
+ },
+ "cf-orchestrator/test/m3_challenger_2_adversarial.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "cf-orchestrator/test/m3Challenger1Iter2Verification.test.ts": {
   "count": 2,
@@ -150,10 +170,6 @@
  "cf-orchestrator/test/m3ChallengerAdversarial.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
- },
- "cf-orchestrator/test/m3_challenger_2_adversarial.test.ts": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
  },
  "cf-orchestrator/test/mcp/mcpRouter.test.ts": {
   "count": 3,
@@ -327,6 +343,10 @@
   "count": 3,
   "digest": "86b79c3b9a6946e3"
  },
+ "src/components/analytics/RepoMemoryPivotPlatform.tsx": {
+  "count": 25,
+  "digest": "4742a91b59504c34"
+ },
  "src/components/dashboard/memory-graph-modal.tsx": {
   "count": 4,
   "digest": "dc4e8e512ddf8689"
@@ -379,21 +399,9 @@
   "count": 2,
   "digest": "98755f4be2680d90"
  },
- "src/github/installationClient.ts": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "src/k8s/reviewJobProjection.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "src/mcp/mcpFleetManager.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
- },
- "src/mcp/server/mcpRbac.ts": {
-  "count": 3,
-  "digest": "83aa2de9c2a8d8ca"
  },
  "src/mcp/server/tools/generateFixDiff.ts": {
   "count": 3,
@@ -423,10 +431,6 @@
   "count": 5,
   "digest": "2f0900dc6dfb1c25"
  },
- "src/mcp/server/tools/triggerReview.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "src/panel/__tests__/panelEngine.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
@@ -443,14 +447,6 @@
   "count": 68,
   "digest": "278c7edc7e5851ad"
  },
- "src/review/actionDispatch.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "src/review/continuationPhase.ts": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
  "src/review/diffService.ts": {
   "count": 4,
   "digest": "dc4e8e512ddf8689"
@@ -458,18 +454,6 @@
  "src/review/emptyModeration.ts": {
   "count": 1,
   "digest": "0994f4f9b95b63e8"
- },
- "src/review/prepPhase.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "src/review/preparedPublishingPolicy.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "src/review/reviewCheckIdentity.ts": {
-  "count": 2,
-  "digest": "dd6155b138dfb8f5"
  },
  "tests/adversarial/m5ChallengerAuthLiveStress.test.ts": {
   "count": 10,
@@ -888,8 +872,8 @@
   "digest": "bb45ca62004a3761"
  },
  "tests/setup.ts": {
-  "count": 4,
-  "digest": "539abd1fdf034210"
+  "count": 6,
+  "digest": "d9e89425858a936e"
  },
  "tests/support/composedTaskLedgerFixture.ts": {
   "count": 3,
@@ -902,10 +886,6 @@
  "tests/support/release-fixture-copy.ts": {
   "count": 1,
   "digest": "0994f4f9b95b63e8"
- },
- "tests/unit/abandonedCheckPublication.test.ts": {
-  "count": 23,
-  "digest": "d0684eb2defcab86"
  },
  "tests/unit/abandonedRunReaper.test.ts": {
   "count": 3,
@@ -931,22 +911,6 @@
   "count": 6,
   "digest": "992f921759c8b187"
  },
- "tests/unit/adversarialContinuationGateResilience.test.ts": {
-  "count": 14,
-  "digest": "e7539c92676d8c46"
- },
- "tests/unit/adversarialCostTelemetryModelNormalization.test.ts": {
-  "count": 6,
-  "digest": "76e4bba4025be680"
- },
- "tests/unit/adversarialM2Stress.test.ts": {
-  "count": 6,
-  "digest": "b48873ce7a9894e0"
- },
- "tests/unit/adversarialM3Challenger.test.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "tests/unit/adversarial_agentHarnessContracts.test.ts": {
   "count": 2,
   "digest": "8211595a71a1d1b9"
@@ -970,6 +934,22 @@
  "tests/unit/adversarial_m5_tier5_streaming_continuation.test.ts": {
   "count": 9,
   "digest": "a84ab6da131630ac"
+ },
+ "tests/unit/adversarialContinuationGateResilience.test.ts": {
+  "count": 14,
+  "digest": "e7539c92676d8c46"
+ },
+ "tests/unit/adversarialCostTelemetryModelNormalization.test.ts": {
+  "count": 6,
+  "digest": "76e4bba4025be680"
+ },
+ "tests/unit/adversarialM2Stress.test.ts": {
+  "count": 6,
+  "digest": "b48873ce7a9894e0"
+ },
+ "tests/unit/adversarialM3Challenger.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "tests/unit/agentHarnessContracts.test.ts": {
   "count": 2,
@@ -1023,46 +1003,6 @@
   "count": 4,
   "digest": "4e5bf95f05470f68"
  },
- "tests/unit/challenger1_final_adversarial_stress.test.ts": {
-  "count": 8,
-  "digest": "5e8fb65698545ff5"
- },
- "tests/unit/challenger2_m1_whitebox_hardening.test.ts": {
-  "count": 22,
-  "digest": "1f01ebb0c0f134b2"
- },
- "tests/unit/challengerM1_1Empirical.test.ts": {
-  "count": 7,
-  "digest": "5148c225fa17bb70"
- },
- "tests/unit/challengerM1_2Empirical.test.ts": {
-  "count": 4,
-  "digest": "4e5bf95f05470f68"
- },
- "tests/unit/challengerM1_2_k8sJobRunner_stress.test.ts": {
-  "count": 20,
-  "digest": "b37c71ae711eea73"
- },
- "tests/unit/challengerM1_R2_2_parameter_falsy.test.ts": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "tests/unit/challengerM2_1Empirical.test.ts": {
-  "count": 2,
-  "digest": "98755f4be2680d90"
- },
- "tests/unit/challengerM2_2Empirical.test.ts": {
-  "count": 3,
-  "digest": "86b79c3b9a6946e3"
- },
- "tests/unit/challengerM3_2Empirical.test.ts": {
-  "count": 7,
-  "digest": "5148c225fa17bb70"
- },
- "tests/unit/challengerM4_2Empirical.test.ts": {
-  "count": 8,
-  "digest": "4fbc9bbe79ec7f29"
- },
  "tests/unit/challenger_m1_1_resource_envelope.test.ts": {
   "count": 4,
   "digest": "7391f3ba673821fb"
@@ -1102,6 +1042,46 @@
  "tests/unit/challenger_m4_1_tier5_adversarial.test.ts": {
   "count": 2,
   "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challenger1_final_adversarial_stress.test.ts": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/challenger2_m1_whitebox_hardening.test.ts": {
+  "count": 22,
+  "digest": "1f01ebb0c0f134b2"
+ },
+ "tests/unit/challengerM1_1Empirical.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/unit/challengerM1_2_k8sJobRunner_stress.test.ts": {
+  "count": 20,
+  "digest": "b37c71ae711eea73"
+ },
+ "tests/unit/challengerM1_2Empirical.test.ts": {
+  "count": 4,
+  "digest": "4e5bf95f05470f68"
+ },
+ "tests/unit/challengerM1_R2_2_parameter_falsy.test.ts": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
+ "tests/unit/challengerM2_1Empirical.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/challengerM2_2Empirical.test.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "tests/unit/challengerM3_2Empirical.test.ts": {
+  "count": 7,
+  "digest": "5148c225fa17bb70"
+ },
+ "tests/unit/challengerM4_2Empirical.test.ts": {
+  "count": 8,
+  "digest": "4fbc9bbe79ec7f29"
  },
  "tests/unit/chaosFaultTolerance.test.ts": {
   "count": 4,
@@ -1147,6 +1127,10 @@
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
  },
+ "tests/unit/components/analyticsSuite.test.tsx": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
  "tests/unit/components/apiClient.test.ts": {
   "count": 8,
   "digest": "5e8fb65698545ff5"
@@ -1158,6 +1142,14 @@
  "tests/unit/components/onboardingWizardSteps.test.tsx": {
   "count": 15,
   "digest": "a30554a8844797d7"
+ },
+ "tests/unit/components/RepoMemoryPivotPlatform.test.tsx": {
+  "count": 16,
+  "digest": "b4913d53e37af4f6"
+ },
+ "tests/unit/components/tremorDashboardSuite.test.tsx": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
  },
  "tests/unit/configPassthrough.test.ts": {
   "count": 14,
@@ -1619,19 +1611,19 @@
   "count": 10,
   "digest": "854801114ca2dfcb"
  },
- "tests/unit/piRunState.test.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "tests/unit/piWorker.test.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
  "tests/unit/pipelineHarnessRunner.test.ts": {
   "count": 3,
   "digest": "86b79c3b9a6946e3"
  },
  "tests/unit/pipelineResilienceExpansion.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/piRunState.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/piWorker.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
@@ -1651,14 +1643,6 @@
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
- "tests/unit/prMemoryStore.test.ts": {
-  "count": 28,
-  "digest": "bcf61374594ec97c"
- },
- "tests/unit/prReviewDetailModalR1R2.test.tsx": {
-  "count": 8,
-  "digest": "5e8fb65698545ff5"
- },
  "tests/unit/preChecksConfig.test.ts": {
   "count": 3,
   "digest": "86b79c3b9a6946e3"
@@ -1667,29 +1651,33 @@
   "count": 6,
   "digest": "76e4bba4025be680"
  },
- "tests/unit/prepPhaseDecoupling.test.ts": {
-  "count": 8,
-  "digest": "4fbc9bbe79ec7f29"
- },
  "tests/unit/preparedPublishingPolicy.test.ts": {
   "count": 4,
   "digest": "4e5bf95f05470f68"
  },
+ "tests/unit/prepPhaseDecoupling.test.ts": {
+  "count": 8,
+  "digest": "4fbc9bbe79ec7f29"
+ },
+ "tests/unit/prMemoryStore.test.ts": {
+  "count": 28,
+  "digest": "bcf61374594ec97c"
+ },
  "tests/unit/providerReceiptSchema.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/prReviewDetailModalR1R2.test.tsx": {
+  "count": 8,
+  "digest": "5e8fb65698545ff5"
+ },
+ "tests/unit/publicationIdempotency.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
  },
  "tests/unit/publicSelfReviewAdmission.test.ts": {
   "count": 3,
   "digest": "91621b52f8dad415"
- },
- "tests/unit/publicationIdempotency.test.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
- },
- "tests/unit/publishTokenMinter.test.ts": {
-  "count": 3,
-  "digest": "a944a7216bbc9467"
  },
  "tests/unit/publisherIdentityProbe.test.ts": {
   "count": 10,
@@ -1714,6 +1702,10 @@
  "tests/unit/publishingReviewTokenAccounting.test.ts": {
   "count": 4,
   "digest": "8b1315c29a7ffd6c"
+ },
+ "tests/unit/publishTokenMinter.test.ts": {
+  "count": 3,
+  "digest": "a944a7216bbc9467"
  },
  "tests/unit/qualificationReader.test.ts": {
   "count": 1,
@@ -1839,10 +1831,6 @@
   "count": 17,
   "digest": "fffd17104cdb4be5"
  },
- "tests/unit/reposPageUi.test.tsx": {
-  "count": 40,
-  "digest": "474ec6e8b0531f82"
- },
  "tests/unit/repositoryContext.test.ts": {
   "count": 1,
   "digest": "eede0415576da9c5"
@@ -1867,6 +1855,10 @@
   "count": 3,
   "digest": "a944a7216bbc9467"
  },
+ "tests/unit/reposPageUi.test.tsx": {
+  "count": 40,
+  "digest": "474ec6e8b0531f82"
+ },
  "tests/unit/reviewActionPackaging.test.ts": {
   "count": 5,
   "digest": "e10d1c5b98140b6d"
@@ -1878,10 +1870,6 @@
  "tests/unit/reviewBoundarySecurity.test.ts": {
   "count": 2,
   "digest": "98755f4be2680d90"
- },
- "tests/unit/reviewCIRequest.test.ts": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
  },
  "tests/unit/reviewCi.test.ts": {
   "count": 4,
@@ -1902,6 +1890,10 @@
  "tests/unit/reviewCiConfig.test.ts": {
   "count": 1,
   "digest": "0994f4f9b95b63e8"
+ },
+ "tests/unit/reviewCIRequest.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
  },
  "tests/unit/reviewCiRuntime.test.ts": {
   "count": 2,

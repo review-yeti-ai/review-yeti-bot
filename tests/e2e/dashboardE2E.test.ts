@@ -29,20 +29,20 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
       expect(indexHtmlContent).toContain('echarts.min.js');
     });
 
-    it('contains container element for Token Consumption Time-Series chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-tokens-timeseries"');
+    it('contains the Overview control-plane header (charts render client-side)', () => {
+      expect(indexHtmlContent).toContain('Review Yeti Swarm Control Plane');
     });
 
-    it('contains container element for Model Cost Breakdown chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-model-costs"');
+    it('contains the Overview KPI summary section', () => {
+      expect(indexHtmlContent).toContain('Total PR Reviews');
     });
 
-    it('contains container element for Persona Verdicts & Latency chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-persona-verdicts"');
+    it('contains the Overview audit log section', () => {
+      expect(indexHtmlContent).toContain('Recent Reviews &amp; Audit Log');
     });
 
-    it('contains container element for Nit Suppression & Indexer Performance chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-indexer-performance"');
+    it('contains the Overview fleet telemetry and compaction section', () => {
+      expect(indexHtmlContent).toContain('Fleet Telemetry &amp; Compaction ROI');
     });
   });
 
@@ -71,8 +71,8 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
         'finops',
         'red_team',
       ];
-      expect(liveHtmlContent).toContain('11 Personas Active');
-      expect(liveHtmlContent.includes('Tabbed Persona Explorer') || liveHtmlContent.includes('id="terminal-feed"')).toBe(true);
+      expect(liveHtmlContent).toContain('Live Review Inspector');
+      expect(liveHtmlContent).toContain('id="terminal-feed"');
     });
 
     it('contains streaming LLM token metrics counter elements in public/live.html', () => {
@@ -112,12 +112,12 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
     it('serves GET /dashboard/settings with persona prompt control panel', async () => {
       const res = await request(app).get('/dashboard/settings');
       expect(res.status).toBe(200);
-      expect(res.text).toContain('Platform &amp; Persona Control Panel');
+      expect(res.text).toContain('Swarm Policies &amp; Settings');
       expect(res.text).toContain('src="/js/settings.js"');
     });
 
     it('contains Domain-Specialized Persona Review Roster banner in public/settings.html', () => {
-      expect(settingsHtmlContent).toContain('Domain-Specialized Persona Review Roster');
+      expect(settingsHtmlContent).toContain('Composed Swarm Review Task Dimensions');
       expect(settingsHtmlContent).toContain('id="persona-settings-grid"');
     });
 

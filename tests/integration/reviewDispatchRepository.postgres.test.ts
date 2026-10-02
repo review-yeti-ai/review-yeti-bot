@@ -19,7 +19,7 @@ import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventReposi
 import { PostgresReviewGateRepository } from '../../src/persistence/reviewGateRepository';
 import { buildAuthoritativeReviewIdentity } from '../../src/review/authoritativeReviewIdentity';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { REVIEW_GATE_CHECK_NAME } from '../../src/github/reviewGateClient';
 import { formatIncompleteRosterGateSummary } from '../../src/review/incompleteRosterSummary';
 import { createMcpStaticAdminRecoveryOrigin } from '../../src/review/mcpStaticAdminRecoveryOrigin';
@@ -41,6 +41,7 @@ import { createIncompleteP2RecoveryHandler } from '../../src/api/incompleteP2Rec
 import { createReviewExecutionCheckpointHandler } from '../../src/api/reviewExecutionCheckpointRoute';
 import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2RecoveryHttp';
 import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
+import { createActionDispatchApp } from '../../src/dispatchServer';
 
 import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -86,6 +87,15 @@ function authoritativeAdmission(
   return { ...sameHeadAdmission(deliveryId, receivedAt), identity,
     effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
     authoritativeGate: { expectedAppId: 4385771, prepared } };
+}
+
+function readyForReviewContinuationAdmission(deliveryId: string, receivedAt: number) {
+  return {
+    ...authoritativeAdmission(deliveryId, receivedAt, 'composed'),
+    eventName: 'pull_request',
+    centralActionDispatch: false,
+    gracefulComposedContinuationOrigin: { kind: 'github_pull_request_ready_for_review' as const },
+  };
 }
 
 function sameHeadAdmission(deliveryId: string, receivedAt: number, overrides: {
@@ -287,6 +297,15 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
       eventName: 'mcp.trigger_review', centralActionDispatch: false,
       gracefulComposedContinuation: true,
     } as any)).rejects.toThrow('Graceful composed continuation is service-derived');
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('rejects ready-for-review provenance on any other admission route before persistence', async () => {
+    const { repository, connect } = repositoryThatStopsAtPersistence();
+    await expect(repository.admit({
+      ...readyForReviewContinuationAdmission('ready-origin-wrong-route', 1_000),
+      eventName: 'mcp.trigger_review',
+    } as any)).rejects.toThrow('Ready-for-review continuation provenance is invalid');
     expect(connect).not.toHaveBeenCalled();
   });
 });
@@ -913,6 +932,231 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const storedCompletion = (await client.query(`SELECT payload FROM review_worker_completions
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].payload;
     expect(storedCompletion.result).toMatchObject({ findingCount: 4, blockingFindingCount: 0 });
+  });
+
+  it('continues an exact-head P2 partial from a signed ready webhook through the real retained-findings HTTP route', async () => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    proof = seeded.proof;
+
+    const policyInput = authoritativeAdmission(`ready-webhook-policy-${randomUUID()}`, 1_790_000_100_000, 'composed');
+    expect(policyInput.identity).toEqual(seeded.run.identity);
+    const prepared = policyInput.authoritativeGate!.prepared;
+    const identity = seeded.run.identity;
+    const fullName = `${identity.owner}/${identity.repo}`;
+    const resolvedCurrent = {
+      repositoryId: 123, owner: identity.owner, repo: identity.repo, prNumber: 42,
+      headSha: identity.headSha, baseSha: identity.baseSha, open: true, draft: false,
+    };
+    const resolve = vi.fn(async () => ({ current: resolvedCurrent, identity: policyInput.identity, prepared }));
+    const authoritativePublishing = { expectedAppId: 4385771, repositoryIds: [123], resolver: { resolve } };
+    const webhookSecret = 'owned-ready-webhook-secret-with-more-than-32-bytes';
+    const onEvent = createGitHubWebhookAdmissionHandler({
+      config: { secret: webhookSecret, admissionEnabled: true,
+        repositoryIds: new Set(['123']), ownerIds: new Set(['57884877']) },
+      admission: repository,
+      authoritativePublishing,
+      now: () => 1_790_000_100_000,
+    });
+    const app = createActionDispatchApp({
+      verifier: { verify: vi.fn() } as any,
+      admission: repository,
+      resolveInstallationId: async () => 456,
+      allowAppGate: true,
+      authoritativePublishing,
+      incompleteP2Recovery: pool!,
+      databaseReady: async () => true,
+      githubWebhook: { secret: webhookSecret, onEvent },
+    });
+    const server = app.listen(0, '127.0.0.1');
+    const delivery = `ready-webhook-${randomUUID()}`;
+    const body = {
+      action: 'ready_for_review', number: 42, installation: { id: 456 },
+      repository: { id: 123, name: identity.repo, full_name: fullName,
+        owner: { id: 57884877, login: identity.owner } },
+      pull_request: { number: 42, state: 'open', draft: false,
+        head: { sha: identity.headSha },
+        base: { sha: identity.baseSha, repo: { full_name: fullName } } },
+    };
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const signature = `sha256=${createHmac('sha256', webhookSecret).update(rawBody).digest('hex')}`;
+    let address: string;
+    try {
+      await once(server, 'listening');
+      const bound = server.address();
+      if (!bound || typeof bound === 'string') throw new Error('Missing owned webhook listener');
+      address = `http://127.0.0.1:${bound.port}`;
+
+      const admitted = await fetch(`${address}/api/webhooks/github`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request',
+          'x-github-delivery': delivery, 'x-hub-signature-256': signature },
+        body: rawBody,
+      });
+      expect(admitted.status).toBe(200);
+      expect(await admitted.json()).toMatchObject({ status: 'accepted', deliveryId: delivery, prNumber: 42,
+        headSha: seeded.run.identity.headSha });
+      expect(resolve).toHaveBeenCalledExactlyOnceWith({ repositoryId: 123, owner: identity.owner,
+        repo: identity.repo, prNumber: 42, headSha: identity.headSha, baseSha: identity.baseSha });
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+
+      const duplicate = await fetch(`${address}/api/webhooks/github`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request',
+          'x-github-delivery': delivery, 'x-hub-signature-256': signature },
+        body: rawBody,
+      });
+      expect(duplicate.status).toBe(200);
+      expect(await duplicate.json()).toMatchObject({ status: 'duplicate', deliveryId: delivery, prNumber: 42 });
+      expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+
+      const state = await dispatchState(client, seeded.run.runId);
+      expect(state.run).toMatchObject({ status: 'queued', attempt: 1 });
+      expect((state.run.artifacts as Record<string, unknown>).graceful_composed_p2_recovery_digest)
+        .toMatch(/^[a-f0-9]{64}$/u);
+      expect((await client.query('SELECT recovered_generation FROM review_generation_recoveries WHERE run_id = $1',
+        [seeded.run.runId])).rows).toEqual([{ recovered_generation: 1 }]);
+
+      const workerToken = 'ghs_rel1265_ready_webhook_worker';
+      await client.query(`UPDATE review_dispatch_outbox SET status = 'claimed',
+        worker_token_digest = $2, lease_owner = 'ready-webhook-worker',
+        lease_expires_at = to_timestamp($3 / 1000.0) WHERE run_id = $1`,
+      [seeded.run.runId, sha256(workerToken), 1_790_000_500_000]);
+      const source = new HttpIncompleteP2RecoverySource({
+        token: workerToken, runId: seeded.run.runId, executionAttempt: 2,
+        completionEndpoint: 'https://owned-test.example/api/dispatch/completion',
+        fetchImplementation: async (input, init) => {
+          expect(String(input)).toBe('https://owned-test.example/api/dispatch/incomplete-p2-recovery');
+          return fetch(`${address}/api/dispatch/incomplete-p2-recovery`, init);
+        },
+      });
+      const retained = await source.read();
+      expect(retained).toMatchObject({
+        runId: seeded.run.runId, executionAttempt: 2, gracefulComposedContinuation: true,
+        sources: [expect.objectContaining({ executionAttempt: 1, workerResultDigest: seeded.digest,
+          workerCheckId: seeded.proof.checkId, rawFindingCount: 5, canonicalFindingCount: 4 })],
+      });
+      expect(retained!.findings).toHaveLength(5);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_worker_completions WHERE run_id = $1',
+        [seeded.run.runId])).rows[0].count).toBe(1);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose()));
+    }
+  });
+
+  it('refuses a same-head pull_request retry without ready provenance when retained P2 history exists', async () => {
+    const resolveGenerationRecovery = vi.fn(async () => [] as any[]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count);
+    const recoveriesBefore = Number((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count);
+
+    await expect(repository.admit({
+      ...authoritativeAdmission(`ordinary-webhook-missing-origin-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'pull_request', centralActionDispatch: false, debounce: false,
+    })).rejects.toThrow(/Incomplete P2 recovery context is unavailable/u);
+
+    expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect(Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count))
+      .toBe(deliveriesBefore);
+    expect(Number((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count)).toBe(recoveriesBefore);
+  });
+
+  it('refuses a ready-for-review graceful path when the retained source is P1', async () => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p1');
+    proof = seeded.proof;
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count);
+
+    await expect(repository.admit(readyForReviewContinuationAdmission(
+      `ready-webhook-p1-refusal-${randomUUID()}`, 1_790_000_100_000,
+    ))).rejects.toThrow();
+
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect(Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count))
+      .toBe(deliveriesBefore);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+  });
+
+  it('refuses a ready-for-review graceful path when the attempt-one completion is missing', async () => {
+    const resolveGenerationRecovery = vi.fn(async () => [] as any[]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    await client.query('DELETE FROM review_worker_completions WHERE run_id = $1 AND execution_attempt = 1',
+      [seeded.run.runId]);
+    const before = await dispatchState(client, seeded.run.runId);
+    const gatesBefore = (await client.query(`SELECT execution_attempt, worker_result_digest, desired_state, decision
+      FROM review_gate_attempts WHERE run_id = $1 ORDER BY execution_attempt`, [seeded.run.runId])).rows;
+    const deliveriesBefore = Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count);
+
+    await expect(repository.admit(readyForReviewContinuationAdmission(
+      `ready-webhook-damaged-source-${randomUUID()}`, 1_790_000_100_000,
+    ))).rejects.toThrow();
+
+    expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query(`SELECT execution_attempt, worker_result_digest, desired_state, decision
+      FROM review_gate_attempts WHERE run_id = $1 ORDER BY execution_attempt`, [seeded.run.runId])).rows).toEqual(gatesBefore);
+    expect(Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count))
+      .toBe(deliveriesBefore);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+  });
+
+  it('refuses a ready-for-review continuation when the locked run/outbox snapshot changes', async () => {
+    let proof: any;
+    let ownedClient: PoolClient | undefined;
+    const resolveGenerationRecovery = vi.fn(async () => {
+      await ownedClient!.query(`UPDATE review_dispatch_outbox SET projection_name = 'changed-after-read'
+        WHERE run_id = $1`, [proof.runId]);
+      return [proof.evidence];
+    });
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery,
+    }, true);
+    ownedClient = client;
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    proof = { runId: seeded.run.runId, evidence: seeded.proof };
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count);
+    const gatesBefore = Number((await client.query('SELECT count(*)::int AS count FROM review_gate_attempts WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count);
+
+    await expect(repository.admit(readyForReviewContinuationAdmission(
+      `ready-webhook-stale-snapshot-${randomUUID()}`, 1_790_000_100_000,
+    ))).rejects.toThrow(/state changed before admission/u);
+
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect((await dispatchState(client, seeded.run.runId)).run).toEqual(before.run);
+    expect((await dispatchState(client, seeded.run.runId)).outbox)
+      .toEqual({ ...before.outbox, projection_name: 'changed-after-read' });
+    expect(Number((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count))
+      .toBe(deliveriesBefore);
+    expect(Number((await client.query('SELECT count(*)::int AS count FROM review_gate_attempts WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count)).toBe(gatesBefore);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
   });
 
   it('refuses a composed graceful retry when its App summary reports blocking findings before allocating', async () => {
