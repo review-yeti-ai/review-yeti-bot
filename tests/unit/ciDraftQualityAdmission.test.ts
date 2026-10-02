@@ -84,7 +84,7 @@ function assertQualityClasses(workflow: Workflow): void {
   for (const id of quality) {
     const job = workflow.jobs[id];
     expect(job.permissions).toEqual(id === 'test' ? {} : { contents: 'read' });
-    expect(workflowStrings(job)).not.toMatch(/\bsecrets\b|CT_REVIEW_BOT_APP|calltelemetry\/ct-review-actions|\b(?:kubectl|doctl)\b/iu);
+    expect(workflowStrings(job)).not.toMatch(/\bsecrets\b|CT_REVIEW_BOT_APP|exampleorg\/example-review-actions|\b(?:kubectl|doctl)\b/iu);
   }
   const build = workflow.jobs['legacy-runtime'].steps.find(step => step.uses?.startsWith('docker/build-push-action@'));
   expect(build?.with).toMatchObject({ load: true, push: false });

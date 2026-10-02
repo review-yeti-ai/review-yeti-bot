@@ -46,7 +46,7 @@ function createRequest(): AgentWorkRequest {
       tenant_id: 'ct',
       environment_id: 'qualification',
       workspace_id: 'factory',
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       mission_id: 'mission-1',
       generation: 1,
       execution_id: 'child-1',

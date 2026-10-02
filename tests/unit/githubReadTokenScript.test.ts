@@ -50,7 +50,7 @@ describe('mint-github-read-token CLI', () => {
 
     const result = await execFileAsync(process.execPath, [
       'scripts/mint-github-read-token.mjs',
-      'calltelemetry/ct-pr-operator-sandbox',
+      'exampleorg/ct-pr-operator-sandbox',
     ], {
       cwd: process.cwd(),
       env: {
@@ -64,7 +64,7 @@ describe('mint-github-read-token CLI', () => {
     expect(result.stdout).toBe('ghs_cliReadToken123456789\n');
     expect(result.stderr).toBe('');
     expect(requests.map(({ method, url }) => `${method} ${url}`)).toEqual([
-      'GET /repos/calltelemetry/ct-pr-operator-sandbox/installation',
+      'GET /repos/exampleorg/ct-pr-operator-sandbox/installation',
       'POST /app/installations/42/access_tokens',
     ]);
     expect(JSON.parse(requests[1].body)).toEqual({

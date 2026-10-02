@@ -24,7 +24,7 @@ describe("Action dispatch metrics endpoint", () => {
 
   it("exposes GET /metrics with Prometheus exposition format", async () => {
     const metrics = getMetrics();
-    metrics.jobsQueued.add(1, { repository: "calltelemetry/ct-infrastructure" });
+    metrics.jobsQueued.add(1, { repository: "exampleorg/example-infra" });
 
     const response = await request(createApp()).get("/metrics");
     expect(response.status).toBe(200);

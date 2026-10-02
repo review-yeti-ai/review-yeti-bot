@@ -19,10 +19,10 @@ vi.mock('@/lib/api-client', () => ({
   updateGitHubAppConfig: vi.fn().mockResolvedValue({ appId: '1048293' }),
   verifyGitHubApp: vi.fn().mockResolvedValue({ success: true, verified: true }),
   fetchRepositories: vi.fn().mockResolvedValue([
-    { owner: 'calltelemetry', repo: 'cisco-cdr', automationEnabled: true, customProfile: 'balanced' }
+    { owner: 'exampleorg', repo: 'example-api', automationEnabled: true, customProfile: 'balanced' }
   ]),
-  updateRepository: vi.fn().mockResolvedValue({ owner: 'calltelemetry', repo: 'cisco-cdr', automationEnabled: true }),
-  createRepository: vi.fn().mockResolvedValue({ owner: 'calltelemetry', repo: 'new-repo', automationEnabled: true }),
+  updateRepository: vi.fn().mockResolvedValue({ owner: 'exampleorg', repo: 'example-api', automationEnabled: true }),
+  createRepository: vi.fn().mockResolvedValue({ owner: 'exampleorg', repo: 'new-repo', automationEnabled: true }),
   fetchProviders: vi.fn().mockResolvedValue({ providers: {} }),
   updateProvider: vi.fn().mockResolvedValue({ id: 'openai', enabled: true }),
   testProvider: vi.fn().mockResolvedValue({ success: true, status: 'connected', latencyMs: 42 }),
@@ -66,14 +66,14 @@ describe('FiveStepWizard Component Suite', () => {
 
   it('renders Step2ReposPicker with repository list', () => {
     const repos = [
-      { owner: 'calltelemetry', repo: 'cisco-cdr', automationEnabled: true, customProfile: 'balanced' as const, updatedAt: '' }
+      { owner: 'exampleorg', repo: 'example-api', automationEnabled: true, customProfile: 'balanced' as const, updatedAt: '' }
     ];
     const onUpdate = vi.fn();
 
     render(<Step2ReposPicker repositories={repos} onUpdateRepo={onUpdate} />);
 
-    expect(screen.getByText(/calltelemetry \//i)).toBeInTheDocument();
-    expect(screen.getByText(/cisco-cdr/i)).toBeInTheDocument();
+    expect(screen.getByText(/exampleorg \//i)).toBeInTheDocument();
+    expect(screen.getByText(/example-api/i)).toBeInTheDocument();
   });
 
   it('renders Step3AIProviders with OmniRoute providers', () => {

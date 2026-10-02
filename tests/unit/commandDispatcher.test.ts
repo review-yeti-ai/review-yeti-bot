@@ -54,7 +54,7 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
     mockOnRunReviewPipeline = vi.fn().mockResolvedValue({ status: 'processed' });
 
     context = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'head-sha-123',
@@ -62,7 +62,7 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       github: mockGithub as unknown as GitHubInstallationClient,
       modelClient: mockModelClient,
       onRunReviewPipeline: mockOnRunReviewPipeline,
-      payload: { prNumber: 42, owner: 'calltelemetry', repo: 'ct-review-bot' },
+      payload: { prNumber: 42, owner: 'exampleorg', repo: 'ct-review-bot' },
     };
   });
 
@@ -127,7 +127,7 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       expect(res.command).toBe('explain');
       expect(res.success).toBe(true);
       expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-        'calltelemetry',
+        'exampleorg',
         'ct-review-bot',
         42,
         expect.stringContaining('### Code Explanation')
@@ -139,9 +139,9 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       const res = await dispatcher.dispatchCommand('@ct-review explain', inlineContext);
       expect(res.command).toBe('explain');
       expect(res.success).toBe(true);
-      expect(mockGithub.getReviewCommentThread).toHaveBeenCalledWith('calltelemetry', 'ct-review-bot', 42, 102);
+      expect(mockGithub.getReviewCommentThread).toHaveBeenCalledWith('exampleorg', 'ct-review-bot', 42, 102);
       expect(mockGithub.replyToReviewComment).toHaveBeenCalledWith(
-        'calltelemetry',
+        'exampleorg',
         'ct-review-bot',
         42,
         102,
@@ -155,7 +155,7 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       expect(res.command).toBe('refactor');
       expect(res.success).toBe(true);
       expect(mockGithub.replyToReviewComment).toHaveBeenCalledWith(
-        'calltelemetry',
+        'exampleorg',
         'ct-review-bot',
         42,
         102,
@@ -167,9 +167,9 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       const res = await dispatcher.dispatchCommand('@ct-review summarize', context);
       expect(res.command).toBe('summarize');
       expect(res.success).toBe(true);
-      expect(mockGithub.getChangedFiles).toHaveBeenCalledWith('calltelemetry', 'ct-review-bot', 42);
+      expect(mockGithub.getChangedFiles).toHaveBeenCalledWith('exampleorg', 'ct-review-bot', 42);
       expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-        'calltelemetry',
+        'exampleorg',
         'ct-review-bot',
         42,
         expect.stringContaining('## Updated PR Summary')
@@ -210,7 +210,7 @@ describe('commandDispatcher.ts — PR Interactive Chat & Command Dispatcher', ()
       expect(res.command).toBe('ask');
       expect(res.success).toBe(false);
       expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-        'calltelemetry',
+        'exampleorg',
         'ct-review-bot',
         42,
         expect.stringContaining('Please provide a question after `@ct-review ask`')

@@ -3,7 +3,7 @@ import { buildDispatchRequest } from '../../scripts/dispatch-doks-action.mjs';
 
 /**
  * The set of publish modes this action accepts is a cross-repository contract.
- * `calltelemetry/ct-review-actions` re-encodes it in `emit-policy.mjs` as a local
+ * `exampleorg/example-review-actions` re-encodes it in `emit-policy.mjs` as a local
  * literal, because the two repositories share no import path and this action is
  * `uses:`-resolved into $GITHUB_ACTION_PATH only at step runtime — too late for a
  * consumer to read at policy load, and a network fetch would put an external
@@ -20,7 +20,7 @@ import { buildDispatchRequest } from '../../scripts/dispatch-doks-action.mjs';
  */
 function environment(publishMode: string): Record<string, string> {
   return {
-    REPOSITORY: 'calltelemetry/ct-meta',
+    REPOSITORY: 'exampleorg/example-meta',
     DOKS_PUBLISH_MODE: publishMode,
     GITHUB_EVENT_NAME: 'pull_request_target',
     REPOSITORY_ID: '1339040553',

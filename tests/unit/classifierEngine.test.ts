@@ -239,7 +239,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'docs/guide.md', patch: '+ updated instructions' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -270,7 +270,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'docs/guide.md', patch: '+ updated instructions' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -299,7 +299,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'src/auth/token.ts', patch: '+ const token = "abc";' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -324,7 +324,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'src/cache.ts', patch: '+ cache.set(k, v);' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -343,7 +343,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'docs/readme.md', patch: '+ hello' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -362,7 +362,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'docs/readme.md', patch: '+ hello' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -377,7 +377,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         config,
         changedFiles: [{ path: 'docs/readme.md', patch: '+ hello' }],
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'abc1234',
         client: mockClient,
         requestPolicy: {
@@ -421,7 +421,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       const panelResult = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'docs/README.md', patch: '+ # Welcome' }],
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'sha-fast-1',
         client: mockClient,
       });
@@ -485,7 +485,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       const panelResult = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/compute.ts', patch: '+ function compute() {}' }],
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'sha-prune-1',
         client: mockClient,
       });
@@ -516,7 +516,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'docs/README.md', patch: '+ # Welcome' }],
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-stale-head',
           client: mockClient,
           isCurrentHead: () => false,
@@ -605,7 +605,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
       const panelResult = await executePersonaPanel({
         config: configWithQuorum2,
         changedFiles: [{ path: 'docs/README.md', patch: '+ # Welcome' }],
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'sha-quorum-fallback',
         client: mockClient,
       });
@@ -658,7 +658,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
           content: 'x'.repeat(2_000_000), // 2MB exceeds default 1MB max_file_size
           patch: '+ ' + 'x'.repeat(500),
         }],
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: 'sha-huge-file',
         client: mockClient,
       });
@@ -741,7 +741,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
               { path: 'docs/guide.md' }, // No patch
             ],
             candidatePersonas: config.personas,
-            repository: 'calltelemetry/ai-workspace',
+            repository: 'exampleorg/example-workspace',
             headSha: 'abc1234',
             client: mockClient,
           });
@@ -776,7 +776,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
               { path: 'src/evil" onmouseover="alert(1)">.ts', patch: '+ safe' },
             ],
             candidatePersonas: config.personas,
-            repository: 'calltelemetry/ai-workspace',
+            repository: 'exampleorg/example-workspace',
             headSha: 'abc1234',
             client: mockClient,
           });
@@ -866,7 +866,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
           const panelResult = await executePersonaPanel({
             config: nonPrunableConfig as any,
             changedFiles: [{ path: 'src/api/handler.ts', patch: '+ const execute = true;' }],
-            repository: 'calltelemetry/ai-workspace',
+            repository: 'exampleorg/example-workspace',
             headSha: 'sha-short-circuit-1',
             client: mockClient,
           });
@@ -887,7 +887,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
 
           await classifyReviewScope({
             changedFiles: [{ path: 'README.md', patch: '+ docs' }],
-            repository: 'calltelemetry/ai-workspace',
+            repository: 'exampleorg/example-workspace',
             headSha: 'sha-timeout-fallback',
             candidatePersonas: [],
             config: configWithoutTimeout,
@@ -1004,7 +1004,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
             { path: 'src/workers/task.ts', patch: '+ export class TaskQueue {}' },
             { path: 'docs/readme.md', patch: '+ update' },
           ],
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-domain-lanes',
           candidatePersonas: [
             { id: 'sec-lane', charter: 'builtin:security', required: true, paths: ['**/*'] },
@@ -1046,7 +1046,7 @@ describe('classifierEngine.ts — Pre-Flight Triage & Fast-Ship Safety', () => {
           changedFiles: [
             { path: 'src/workers/task.ts', patch: '+ export class TaskQueue {}' },
           ],
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-anti-evasion',
           candidatePersonas: [
             { id: 'perf-lane', charter: 'builtin:performance', required: false, paths: ['**/*'] },

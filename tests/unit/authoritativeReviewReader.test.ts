@@ -5,7 +5,7 @@ import { AuthoritativeReviewReader, MAX_AUTHORITATIVE_DIFF_BYTES } from '../../s
 const TOKEN = 'ghs_authoritative-reader.header_segment.signature-with-dash';
 const PRIVATE_BODY = 'private-server-response-marker';
 const API = 'https://github.example.invalid/api/v3';
-const TARGET = { repositoryId: 3210, owner: 'calltelemetry', repo: 'central-policy' };
+const TARGET = { repositoryId: 3210, owner: 'exampleorg', repo: 'central-policy' };
 const PR = { ...TARGET, prNumber: 42 };
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -124,7 +124,7 @@ describe('AuthoritativeReviewReader', () => {
       const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse(pullBody()));
       const reader = new AuthoritativeReviewReader({ token: TOKEN, baseUrl: `${API}///`, timeoutMs, fetchImplementation: fetcher });
       await reader.currentCandidate(PR);
-      expect(fetcher).toHaveBeenCalledExactlyOnceWith(`${API}/repos/calltelemetry/central-policy/pulls/42`, expect.any(Object));
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith(`${API}/repos/exampleorg/central-policy/pulls/42`, expect.any(Object));
     });
 
     it.each([
@@ -148,7 +148,7 @@ describe('AuthoritativeReviewReader', () => {
     ])('returns authoritative PR coordinates and readiness for %j', async ({ open, ...state }) => {
       const { reader, fetcher } = fixture(jsonResponse(pullBody(state)));
       await expect(reader.currentCandidate(PR)).resolves.toEqual({ ...PR, headSha: HEAD, baseSha: BASE, open, draft: state.draft });
-      expect(fetcher).toHaveBeenCalledExactlyOnceWith(`${API}/repos/calltelemetry/central-policy/pulls/42`, {
+      expect(fetcher).toHaveBeenCalledExactlyOnceWith(`${API}/repos/exampleorg/central-policy/pulls/42`, {
         method: 'GET', redirect: 'error', signal: expect.any(AbortSignal),
         headers: {
           Accept: 'application/vnd.github+json', Authorization: `Bearer ${TOKEN}`,
@@ -161,7 +161,7 @@ describe('AuthoritativeReviewReader', () => {
     it('accepts repository name casing without confusing the fork head repository with the base', async () => {
       const { reader } = fixture(jsonResponse(pullBody({
         head: { sha: HEAD, repo: { id: 12345, full_name: 'fork/elsewhere' } },
-        base: { sha: BASE, repo: repositoryBody({ full_name: 'CallTelemetry/Central-Policy' }) },
+        base: { sha: BASE, repo: repositoryBody({ full_name: 'Exampleorg/Central-Policy' }) },
       })));
       await expect(reader.currentCandidate(PR)).resolves.toMatchObject({ repositoryId: TARGET.repositoryId, headSha: HEAD });
     });
@@ -191,7 +191,7 @@ describe('AuthoritativeReviewReader', () => {
         current: { ...request, open: true, draft: true }, diff, expectedFileCount: 1,
       });
       expect(fetcher).toHaveBeenCalledTimes(3);
-      expect(fetcher.mock.calls.map(([url]) => url)).toEqual(Array(3).fill(`${API}/repos/calltelemetry/central-policy/pulls/42`));
+      expect(fetcher.mock.calls.map(([url]) => url)).toEqual(Array(3).fill(`${API}/repos/exampleorg/central-policy/pulls/42`));
       expect(fetcher.mock.calls[1][1]).toMatchObject({ method: 'GET', redirect: 'error',
         headers: { Accept: 'application/vnd.github.v3.diff', Authorization: `Bearer ${TOKEN}` } });
       expect(wire.body.locked).toBe(false);
@@ -243,7 +243,7 @@ describe('AuthoritativeReviewReader', () => {
 
     it('cancels an oversized HTTP 200 diff stream and returns immutable comparison evidence', async () => {
       const wire = streamed(Buffer.from('é'.repeat(MAX_AUTHORITATIVE_DIFF_BYTES)), 50_000);
-      const comparisonPath = `/repos/calltelemetry/central-policy/compare/${BASE}...${HEAD}`;
+      const comparisonPath = `/repos/exampleorg/central-policy/compare/${BASE}...${HEAD}`;
       const comparison = jsonResponse({
         url: `${API}${comparisonPath}`, base_commit: { sha: BASE }, merge_base_commit: { sha: BASE },
         status: 'ahead', ahead_by: 1, behind_by: 0, total_commits: 1,
@@ -312,15 +312,15 @@ describe('AuthoritativeReviewReader', () => {
       await expect(reader.immutablePolicyFile(TARGET, resolved, FILE_PATH)).resolves.toEqual({
         content: bytes.toString('utf8'),
         source: {
-          repositoryId: TARGET.repositoryId, repository: 'calltelemetry/central-policy', sha: REVISION,
+          repositoryId: TARGET.repositoryId, repository: 'exampleorg/central-policy', sha: REVISION,
           path: FILE_PATH, contentDigest: createHash('sha256').update(bytes).digest('hex'),
         },
       });
       expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
-        `${API}/repos/calltelemetry/central-policy`,
-        `${API}/repos/calltelemetry/central-policy/commits/refs%2Fheads%2Fservice-policy`,
-        `${API}/repos/calltelemetry/central-policy`,
-        `${API}/repos/calltelemetry/central-policy/contents/policy/review.json?ref=${REVISION}`,
+        `${API}/repos/exampleorg/central-policy`,
+        `${API}/repos/exampleorg/central-policy/commits/refs%2Fheads%2Fservice-policy`,
+        `${API}/repos/exampleorg/central-policy`,
+        `${API}/repos/exampleorg/central-policy/contents/policy/review.json?ref=${REVISION}`,
       ]);
       for (const [, init] of fetcher.mock.calls) expect(init).toMatchObject({ method: 'GET', redirect: 'error' });
     });
@@ -333,8 +333,8 @@ describe('AuthoritativeReviewReader', () => {
       );
       await reader.resolvePolicyRevision(TARGET, 'service/topic#?ref=other');
       await reader.immutablePolicyFile(TARGET, REVISION, path);
-      expect(fetcher.mock.calls[1][0]).toBe(`${API}/repos/calltelemetry/central-policy/commits/service%2Ftopic%23%3Fref%3Dother`);
-      expect(fetcher.mock.calls[3][0]).toBe(`${API}/repos/calltelemetry/central-policy/contents/policy/caf%C3%A9%20%23%3F%25.json?ref=${REVISION}`);
+      expect(fetcher.mock.calls[1][0]).toBe(`${API}/repos/exampleorg/central-policy/commits/service%2Ftopic%23%3Fref%3Dother`);
+      expect(fetcher.mock.calls[3][0]).toBe(`${API}/repos/exampleorg/central-policy/contents/policy/caf%C3%A9%20%23%3F%25.json?ref=${REVISION}`);
     });
 
     it.each(['', 'x'.repeat(257), 'ref\nother', 'ref\0other', 'ref\u007f'])(

@@ -4,7 +4,7 @@ import { getBoundedCiRepositoryToken, type CiTokenPurpose } from '../../src/gith
 
 const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048,
   privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
-const config = { appId: '4385771', privateKey, repository: { repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta' },
+const config = { appId: '4385771', privateKey, repository: { repositoryId: 123, owner: 'exampleorg', repo: 'example-meta' },
   baseUrl: 'https://api.example.invalid/api/v3' };
 const token = 'ghs_synthetic_ci';
 const grants = { 'repository-dispatch': { contents: 'write' }, 'workflow-dispatch': { actions: 'write' },
@@ -15,7 +15,7 @@ function body(purpose: CiTokenPurpose) { return { token, expires_at: new Date(Da
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status }); }
 function fetcher(purpose: CiTokenPurpose) {
   return vi.fn<typeof fetch>().mockResolvedValueOnce(json({ id: 987, app_id: 4385771 }))
-    .mockResolvedValueOnce(json(body(purpose), 201)).mockResolvedValueOnce(json({ id: 123, full_name: 'calltelemetry/ct-meta' }));
+    .mockResolvedValueOnce(json(body(purpose), 201)).mockResolvedValueOnce(json({ id: 123, full_name: 'exampleorg/example-meta' }));
 }
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
@@ -26,8 +26,8 @@ describe('separate bounded CI-purpose minter', () => {
     expect(result.token).toBe(token);
     expect(result.permissions).toEqual(body(purpose).permissions);
     expect(fetchImplementation.mock.calls.map(([url]) => url)).toEqual([
-      `${config.baseUrl}/repos/calltelemetry/ct-meta/installation`, `${config.baseUrl}/app/installations/987/access_tokens`,
-      `${config.baseUrl}/repos/calltelemetry/ct-meta`,
+      `${config.baseUrl}/repos/exampleorg/example-meta/installation`, `${config.baseUrl}/app/installations/987/access_tokens`,
+      `${config.baseUrl}/repos/exampleorg/example-meta`,
     ]);
     expect(JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body))).toEqual({ repository_ids: [123], permissions: grants[purpose] });
     for (const [url, init] of fetchImplementation.mock.calls) {
@@ -58,7 +58,7 @@ describe('separate bounded CI-purpose minter', () => {
   it('accepts publication checks write when implicit metadata read is omitted from the response', async () => {
     const stub = vi.fn<typeof fetch>().mockResolvedValueOnce(json({ id: 987, app_id: 4385771 }))
       .mockResolvedValueOnce(json({ ...body('check-publication'), permissions: { checks: 'write' } }, 201))
-      .mockResolvedValueOnce(json({ id: 123, full_name: 'calltelemetry/ct-meta' }));
+      .mockResolvedValueOnce(json({ id: 123, full_name: 'exampleorg/example-meta' }));
     await expect(getBoundedCiRepositoryToken(config, 'check-publication', { fetchImplementation: stub }))
       .resolves.toMatchObject({ token, permissions: { checks: 'write' } });
     expect(JSON.parse(String(stub.mock.calls[1][1]?.body)))
@@ -84,7 +84,7 @@ describe('separate bounded CI-purpose minter', () => {
     await expect(getBoundedCiRepositoryToken(config, 'workflow-dispatch', { fetchImplementation: stub })).rejects.toThrow('Repository CI App token is unavailable');
     expect(stub).toHaveBeenCalledOnce();
   });
-  it.each([{ id: 999, full_name: 'calltelemetry/ct-meta' }, { id: 123, full_name: 'calltelemetry/other' }])
+  it.each([{ id: 999, full_name: 'exampleorg/example-meta' }, { id: 123, full_name: 'exampleorg/other' }])
   ('rejects a renamed or wrong numeric repository after mint %j', async (repository) => {
     const stub = vi.fn<typeof fetch>().mockResolvedValueOnce(json({ id: 987, app_id: 4385771 }))
       .mockResolvedValueOnce(json(body('read'), 201)).mockResolvedValueOnce(json(repository));

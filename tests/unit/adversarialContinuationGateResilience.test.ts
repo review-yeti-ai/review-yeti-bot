@@ -131,7 +131,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
               rows: [
                 {
                   run_id: 'run-unclassified-db',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 44,
                   head_sha: 'sha-unclassified-db',
                   status: 'inference_completed',
@@ -160,7 +160,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
 
       const result = await runContinuationPhase({
         runId: 'run-unclassified-db',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'sha-unclassified-db',
         db: mockDb,
         commentPublisher: mockCommentPublisher,
@@ -227,7 +227,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
       (payload) => {
         expect(() => {
           const markdown = formatContinuationSummary({
-            repo: 'calltelemetry/review-yeti-bot',
+            repo: 'exampleorg/review-yeti-bot',
             prNumber: 12,
             headSha: '0123456789abcdef0123456789abcdef01234567',
             verdict: 'BLOCK',
@@ -259,7 +259,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
               rows: [
                 {
                   run_id: 'run-missing-fields',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 77,
                   head_sha: 'sha-missing-fields',
                   status: 'inference_completed',
@@ -288,7 +288,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
 
       const result = await runContinuationPhase({
         runId: 'run-missing-fields',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'sha-missing-fields',
         db: mockDb,
         commentPublisher: mockCommentPublisher,
@@ -320,7 +320,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
       await expect(
         runContinuationPhase({
           runId: 'run-hung-db',
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           headSha: 'sha-hung-db',
           db: hungDb,
           timeoutMs,
@@ -343,7 +343,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
               rows: [
                 {
                   run_id: 'run-hung-check',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 1,
                   head_sha: 'sha-hung-check',
                   status: 'inference_completed',
@@ -369,7 +369,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
       await expect(
         runContinuationPhase({
           runId: 'run-hung-check',
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           headSha: 'sha-hung-check',
           db: mockDb,
           checkClient: hungCheckClient,
@@ -392,7 +392,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
               rows: [
                 {
                   run_id: 'run-hung-publisher',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 1,
                   head_sha: 'sha-hung-publisher',
                   status: 'inference_completed',
@@ -417,7 +417,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
       await expect(
         runContinuationPhase({
           runId: 'run-hung-publisher',
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           headSha: 'sha-hung-publisher',
           db: mockDb,
           commentPublisher: hungCommentPublisher,
@@ -470,7 +470,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
 
       const result = await withGitHubRetry(
         {
-          operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+          operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
           method: 'POST',
           attempt: async (att) => {
             postAttempts = att;
@@ -505,7 +505,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
 
       const result = await withGitHubRetry(
         {
-          operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+          operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
           method: 'POST',
           attempt: async (att) => {
             postAttempts = att;
@@ -561,7 +561,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
               rows: [
                 {
                   run_id: 'run-reconcile-e2e',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 10,
                   head_sha: 'sha-reconcile-e2e',
                   status: 'inference_completed',
@@ -580,7 +580,7 @@ describe('Empirical Challenger 2: Adversarial Resilience & Fail-Closed Gate Suit
 
       const result = await runContinuationPhase({
         runId: 'run-reconcile-e2e',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'sha-reconcile-e2e',
         db: mockDb,
         checkClient: mockCheckClient,

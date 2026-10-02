@@ -238,7 +238,7 @@ describe('fetch-pr-diff.sh', () => {
 
     const { diffText, outputs } = runScript({
       GH_BIN: ghPath,
-      REPO: 'calltelemetry/fake-repo',
+      REPO: 'exampleorg/fake-repo',
       PR_NUMBER: '1',
       PR_HEAD_SHA: fixture.headSha,
       PR_BASE_SHA: fixture.baseSha,
@@ -263,7 +263,7 @@ describe('fetch-pr-diff.sh', () => {
 
     const { diffText, outputs } = runScript({
       GH_BIN: ghPath,
-      REPO: 'calltelemetry/fake-repo',
+      REPO: 'exampleorg/fake-repo',
       PR_NUMBER: '2',
       PR_HEAD_SHA: fixture.headSha,
       PR_BASE_SHA: fixture.baseSha,
@@ -295,7 +295,7 @@ describe('fetch-pr-diff.sh', () => {
 
     const { diffText, outputs } = runScript({
       GH_BIN: ghPath,
-      REPO: 'calltelemetry/fake-repo',
+      REPO: 'exampleorg/fake-repo',
       PR_NUMBER: '3',
       PR_HEAD_SHA: fixture.headSha,
       PR_BASE_SHA: fixture.baseSha,
@@ -318,7 +318,7 @@ describe('fetch-pr-diff.sh', () => {
     expect(() =>
       runScript({
         GH_BIN: ghPath,
-        REPO: 'calltelemetry/fake-repo',
+        REPO: 'exampleorg/fake-repo',
         PR_NUMBER: '4',
         PR_HEAD_SHA: fixture.headSha,
         PR_BASE_SHA: fixture.baseSha,
@@ -337,7 +337,7 @@ describe('fetch-pr-diff.sh', () => {
 
     const { diffText, outputs } = runScript({
       GH_BIN: ghPath,
-      REPO: 'calltelemetry/fake-repo',
+      REPO: 'exampleorg/fake-repo',
       PR_NUMBER: '5',
       PR_HEAD_SHA: fixture.headSha,
       PR_BASE_SHA: fixture.targetTip,
@@ -365,7 +365,7 @@ describe('fetch-pr-diff.sh', () => {
 
     const { diffText, outputs } = runScript({
       GH_BIN: ghPath,
-      REPO: 'calltelemetry/fake-repo',
+      REPO: 'exampleorg/fake-repo',
       PR_NUMBER: '7',
       PR_HEAD_SHA: fixture.headSha,
       PR_BASE_SHA: fixture.targetTip,
@@ -406,7 +406,7 @@ describe('fetch-pr-diff.sh', () => {
 
     const { diffText, outputs } = runScript({
       GH_BIN: ghPath,
-      REPO: 'calltelemetry/fake-repo',
+      REPO: 'exampleorg/fake-repo',
       PR_NUMBER: '6',
       PR_HEAD_SHA: fixture.headSha,
       PR_BASE_SHA: fixture.baseSha,

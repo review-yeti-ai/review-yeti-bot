@@ -36,7 +36,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       expect(result.summary).toContain('no blocking defects found');
 
       const markdown = formatContinuationSummary({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 1,
         headSha: '0123456789abcdef0123456789abcdef01234567',
         verdict: result.verdict,
@@ -73,7 +73,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       // Secured behavior: safe nullish coalescing does not throw TypeError
       expect(() => {
         formatContinuationSummary({
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           prNumber: 5,
           headSha: 'abcdef1234567890abcdef1234567890abcdef12',
           verdict: 'FIX_FIRST',
@@ -91,7 +91,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
               rows: [
                 {
                   run_id: 'run-corrupt-json',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 1,
                   head_sha: 'head-sha-1',
                   status: 'inference_completed',
@@ -121,7 +121,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
               rows: [
                 {
                   run_id: 'run-null-byte',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 7,
                   head_sha: 'head-sha-null-byte',
                   status: 'inference_completed',
@@ -143,7 +143,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
 
       const result = await runContinuationPhase({
         runId: 'run-null-byte',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'head-sha-null-byte',
         db: mockDb,
         suppressExit: true,
@@ -219,7 +219,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
               rows: [
                 {
                   run_id: 'run-503-test',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 10,
                   head_sha: 'sha-503',
                   status: 'inference_completed',
@@ -239,7 +239,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       await expect(
         runContinuationPhase({
           runId: 'run-503-test',
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           headSha: 'sha-503',
           db: mockDb,
           checkClient: checkClientMock,
@@ -258,7 +258,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
 
       const result = await withGitHubRetry(
         {
-          operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+          operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
           method: 'POST',
           attempt: async (att) => {
             attempts = att;
@@ -292,7 +292,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       await expect(
         withGitHubRetry(
           {
-            operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+            operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
             method: 'POST',
             attempt: async (att) => {
               attempts = att;
@@ -320,7 +320,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       await expect(
         withGitHubRetry(
           {
-            operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+            operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
             method: 'POST',
             // No reconcile function provided!
             attempt: async (att) => {
@@ -349,7 +349,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
 
       const result = await withGitHubRetry(
         {
-          operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+          operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
           method: 'POST',
           reconcile: async () => {
             reconciled = true;
@@ -380,7 +380,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
 
       const result = await withGitHubRetry(
         {
-          operation: 'GET /repos/calltelemetry/review-yeti-bot/check-runs',
+          operation: 'GET /repos/exampleorg/review-yeti-bot/check-runs',
           method: 'GET',
           attempt: async (att) => {
             attempts = att;
@@ -416,7 +416,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       await expect(
         withGitHubRetry(
           {
-            operation: 'GET /repos/calltelemetry/review-yeti-bot/pulls/1',
+            operation: 'GET /repos/exampleorg/review-yeti-bot/pulls/1',
             method: 'GET',
             attempt: async () => {
               const err: any = new Error('Network timeout');
@@ -452,7 +452,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       await expect(
         runContinuationPhase({
           runId: 'run-timeout-pool',
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           headSha: 'sha-timeout-pool',
           db: mockPool,
           timeoutMs: 40,
@@ -475,7 +475,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
       // We expect the runner to timeout within 100ms
       const runPromise = runContinuationPhase({
         runId: 'run-hung-query',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'sha-hung',
         db: hungDb,
         timeoutMs: 50,
@@ -520,7 +520,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
               rows: [
                 {
                   run_id: 'run-idempotency-test',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 88,
                   head_sha: 'head-sha-88',
                   status: 'completed',
@@ -537,7 +537,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
 
       const result = await runContinuationPhase({
         runId: 'run-idempotency-test',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'head-sha-88',
         db: mockDb,
         commentPublisher: { publishReview: publishReviewMock },
@@ -567,7 +567,7 @@ describe('Milestone 4 Adversarial Challenge: Continuation Runner & GitHub API Re
               rows: [
                 {
                   run_id: 'run-repeated-test',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 99,
                   head_sha: 'head-sha-99',
                   status: 'completed',

@@ -82,7 +82,7 @@ describe('canonical execution-profile contract', () => {
     // reasoning_budget_ms is distinct from stall_ms (see review-pipeline.js
     // readChatCompletionResponse): it bounds elapsed time without content since reasoning
     // started, not inactivity between chunks. It must stay optional so a policy that omits
-    // it (like ct-review-actions' current one) keeps validating unchanged.
+    // it (like example-review-actions' current one) keeps validating unchanged.
     const base = { ...resolveExecutionProfile('openrouter-primary') };
     delete base.profile_digest;
     expect(base.timeouts).not.toHaveProperty('reasoning_budget_ms');

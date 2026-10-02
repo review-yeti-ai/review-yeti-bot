@@ -17,6 +17,6 @@ describe('base-SHA policy protection', () => {
       token: 'ghs_installation_token',
       baseUrl: 'https://api.github.test',
     });
-    expect(await client.getBasePolicy('calltelemetry', 'ct-meta', 'base-immutable-sha')).toBe('version: 3');
+    expect(await client.getBasePolicy('exampleorg', 'example-meta', 'base-immutable-sha')).toBe('version: 3');
   });
 });

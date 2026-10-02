@@ -7,7 +7,7 @@ import {
 describe('Empirical Adversarial Boundary Stress Suite: Namespace Enforcement (challenger_m1_r2_1)', () => {
   const baseSpec: K8sJobSpec = {
     persona: 'security-auditor',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 999,
     commitSha: '7f8e9d0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e',
   };

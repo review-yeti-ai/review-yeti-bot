@@ -16,7 +16,7 @@ describe('eventHandlerChat.test.ts — Webhook Event Filtering & Chat Command Pa
         action: 'created',
         issue: { number: 42, pull_request: {} },
         comment: { id: 101, body: '@ct-review review' },
-        repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+        repository: { name: 'ct-review-bot', owner: { login: 'exampleorg' } },
         sender: { login: 'developer1' },
       };
 
@@ -34,7 +34,7 @@ describe('eventHandlerChat.test.ts — Webhook Event Filtering & Chat Command Pa
         action: 'created',
         pull_request: { number: 108, head: { sha: 'sha-abc' }, base: { sha: 'sha-base' } },
         comment: { id: 202, body: '@ct-review explain this diff hunk', path: 'src/app.ts' },
-        repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+        repository: { name: 'ct-review-bot', owner: { login: 'exampleorg' } },
         sender: { login: 'developer2' },
       };
 
@@ -50,7 +50,7 @@ describe('eventHandlerChat.test.ts — Webhook Event Filtering & Chat Command Pa
         action: 'created',
         pull_request: { number: 99 },
         comment: { id: 303, in_reply_to_id: 101, body: 'Can you elaborate on this suggestion?' },
-        repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+        repository: { name: 'ct-review-bot', owner: { login: 'exampleorg' } },
         sender: { login: 'developer3' },
       };
 

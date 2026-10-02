@@ -49,24 +49,24 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     const mockRunPipeline = vi.fn().mockResolvedValue({ status: 'processed' });
 
     const result = await dispatcher.dispatchCommand('@ct-review review', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 15,
       github: mockGithub,
       onRunReviewPipeline: mockRunPipeline,
-      payload: { owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 15 },
+      payload: { owner: 'exampleorg', repo: 'ct-review-bot', prNumber: 15 },
     });
 
     expect(result.command).toBe('review');
     expect(result.success).toBe(true);
-    expect(mockRunPipeline).toHaveBeenCalledWith({ owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 15 });
+    expect(mockRunPipeline).toHaveBeenCalledWith({ owner: 'exampleorg', repo: 'ct-review-bot', prNumber: 15 });
   });
 
   it('handleExplain posts explanation comment as issue comment when commentId omitted', async () => {
     const dispatcher = new CommandDispatcher();
 
     const result = await dispatcher.dispatchCommand('@ct-review explain this diff', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 20,
       github: mockGithub,
@@ -75,7 +75,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     expect(result.command).toBe('explain');
     expect(result.success).toBe(true);
     expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-      'calltelemetry',
+      'exampleorg',
       'ct-review-bot',
       20,
       expect.stringContaining('### Code Explanation')
@@ -89,7 +89,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     ]);
 
     const result = await dispatcher.dispatchCommand('@ct-review explain', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 20,
       commentId: 999,
@@ -99,7 +99,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     expect(result.command).toBe('explain');
     expect(result.success).toBe(true);
     expect(mockGithub.replyToReviewComment).toHaveBeenCalledWith(
-      'calltelemetry',
+      'exampleorg',
       'ct-review-bot',
       20,
       999,
@@ -111,7 +111,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     const dispatcher = new CommandDispatcher();
 
     const result = await dispatcher.dispatchCommand('@ct-review refactor', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 25,
       github: mockGithub,
@@ -126,7 +126,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     const dispatcher = new CommandDispatcher();
 
     const result = await dispatcher.dispatchCommand('@ct-review summarize', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 30,
       github: mockGithub,
@@ -135,7 +135,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     expect(result.command).toBe('summarize');
     expect(result.success).toBe(true);
     expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-      'calltelemetry',
+      'exampleorg',
       'ct-review-bot',
       30,
       expect.stringContaining('## Updated PR Summary')
@@ -146,7 +146,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     const dispatcher = new CommandDispatcher();
 
     const result = await dispatcher.dispatchCommand('@ct-review ask', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 35,
       github: mockGithub,
@@ -161,7 +161,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     const dispatcher = new CommandDispatcher();
 
     const result = await dispatcher.dispatchCommand('@ct-review ask how does caching work?', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 35,
       github: mockGithub,
@@ -170,7 +170,7 @@ describe('commandDispatcher.ts — Comprehensive Unit Expansion Tests', () => {
     expect(result.command).toBe('ask');
     expect(result.success).toBe(true);
     expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-      'calltelemetry',
+      'exampleorg',
       'ct-review-bot',
       35,
       expect.stringContaining('how does caching work?')

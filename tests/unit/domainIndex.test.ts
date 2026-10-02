@@ -261,7 +261,7 @@ describe('Master Domain Index (REL-551)', () => {
 
     it('generic config JSON/JSONL files resolve to config -> security + architecture (must not be persona-less)', () => {
       // Regression: before the generic config class carried `*.json` / `**/*.json` /
-      // `*.jsonl` / `**/*.jsonl`, an arbitrary config-JSON diff (e.g. ct-meta
+      // `*.jsonl` / `**/*.jsonl`, an arbitrary config-JSON diff (e.g. example-meta
       // protection/*.json + rulesets.jsonl, where the hosted policy enables only
       // architecture+security personas) matched no enabled persona and the panel threw
       // `no enabled persona applies to the changed paths`, failing the review.

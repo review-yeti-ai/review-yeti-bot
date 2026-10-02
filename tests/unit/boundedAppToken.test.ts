@@ -6,8 +6,8 @@ import { getBoundedRepositoryToken, MAX_APP_TOKEN_RESPONSE_BYTES } from '../../s
 const { privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' },
 });
-const config = { appId: '4385771', privateKey, owner: 'calltelemetry', repo: 'ct-meta', baseUrl: 'https://api.example.invalid/api/v3' };
-const lookupUrl = `${config.baseUrl}/repos/calltelemetry/ct-meta/installation`;
+const config = { appId: '4385771', privateKey, owner: 'exampleorg', repo: 'example-meta', baseUrl: 'https://api.example.invalid/api/v3' };
+const lookupUrl = `${config.baseUrl}/repos/exampleorg/example-meta/installation`;
 const tokenUrl = `${config.baseUrl}/app/installations/987/access_tokens`;
 const marker = 'SYNTHETIC_PRIVATE_TOKEN_DIAGNOSTIC';
 const token = 'ghs_modern-header.payload_segment.signature-with-dash';
@@ -85,7 +85,7 @@ describe('getBoundedRepositoryToken', () => {
       await getBoundedRepositoryToken({ ...config, baseUrl: undefined }, 'read', { fetchImplementation });
     }
     expect(fetchImplementation).toHaveBeenCalledTimes(4);
-    expect(fetchImplementation.mock.calls[0][0]).toBe('https://api.github.com/repos/calltelemetry/ct-meta/installation');
+    expect(fetchImplementation.mock.calls[0][0]).toBe('https://api.github.com/repos/exampleorg/example-meta/installation');
   });
 
   it.each(['', 'http://api.example.invalid', `https://user:${marker}@api.example.invalid`,
@@ -112,16 +112,16 @@ describe('getBoundedRepositoryToken', () => {
   });
 
   it.each([
-    ['https://other.example.invalid/repos/calltelemetry/ct-meta/installation', 'GET'],
-    [`${config.baseUrl}/repos/another/ct-meta/installation`, 'GET'],
-    [`${config.baseUrl}/repos/calltelemetry/another/installation`, 'GET'],
+    ['https://other.example.invalid/repos/exampleorg/example-meta/installation', 'GET'],
+    [`${config.baseUrl}/repos/another/example-meta/installation`, 'GET'],
+    [`${config.baseUrl}/repos/exampleorg/another/installation`, 'GET'],
     [`${lookupUrl}?token=${marker}`, 'GET'], [`${lookupUrl}#fragment`, 'GET'],
     [`${config.baseUrl}/app`, 'GET'], [lookupUrl, 'POST'], [tokenUrl, 'GET'],
     [`${config.baseUrl}/app/installations/0/access_tokens`, 'POST'],
     [`${config.baseUrl}/app/installations/9007199254740992/access_tokens`, 'POST'],
     [`${config.baseUrl}/app/installations/987/access_tokens/other`, 'POST'],
-    ['https://api.example.invalid/repos/calltelemetry/ct-meta/installation', 'GET'],
-    [`${config.baseUrl}/repos/calltelemetry/../ct-meta/installation`, 'GET'],
+    ['https://api.example.invalid/repos/exampleorg/example-meta/installation', 'GET'],
+    [`${config.baseUrl}/repos/exampleorg/../example-meta/installation`, 'GET'],
   ])('refuses a factory request outside exact same-origin API paths: %s %s', async (url, method) => {
     vi.spyOn(appAuth, 'getGitHubAppRepositoryReadToken').mockImplementation(async (_config, fetcher) => {
       await fetcher!(url, { method });

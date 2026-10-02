@@ -81,7 +81,7 @@ const PRIVATE_DETAIL = 'private-payload-must-not-be-reflected';
 function completionPayload(): WorkerReviewCompletion {
   return {
     version: 'WorkerReviewCompletion.v1', runId: `run_${'a'.repeat(32)}`,
-    repositoryId: 123, owner: 'calltelemetry', repo: 'example', prNumber: 42,
+    repositoryId: 123, owner: 'exampleorg', repo: 'example', prNumber: 42,
     headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40),
     policyDigest: 'd'.repeat(64), configDigest: 'e'.repeat(64), executionAttempt: 2,
     result: {
@@ -122,7 +122,7 @@ function bodyLimitFixture() {
   const recordWorkerResult = vi.fn().mockResolvedValue('recorded');
   const resolve = vi.fn();
   const actionVerify = vi.fn().mockResolvedValue({
-    repository: 'calltelemetry/example', repository_id: '123', repository_owner_id: '99',
+    repository: 'exampleorg/example', repository_id: '123', repository_owner_id: '99',
     run_id: '98765', run_attempt: '2', event_name: 'workflow_dispatch',
   });
   const admit = vi.fn().mockResolvedValue({ status: 'accepted', run: { runId: completionPayload().runId } });
@@ -220,7 +220,7 @@ describe('dispatch server JSON body boundaries', () => {
     const f = bodyLimitFixture();
     const payload = {
       version: 'ActionDispatch.v1', deliveryId: `actions:98765:2:123:42:${'b'.repeat(40)}`,
-      repositoryId: 123, owner: 'calltelemetry', repo: 'example', prNumber: 42,
+      repositoryId: 123, owner: 'exampleorg', repo: 'example', prNumber: 42,
       headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40), actionSha: 'd'.repeat(40),
       publishMode: 'disabled', requestedAt: new Date(f.now).toISOString(),
       caller: { runId: '98765', runAttempt: 2, eventName: 'workflow_dispatch' },

@@ -12,7 +12,7 @@ version: 3
 profile: balanced
 quorum: 1
 skills:
-  - name: cisco-cdr-triage
+  - name: example-api-triage
     level: expert
   - name: security-boundary-audit
 knowledge:
@@ -71,7 +71,7 @@ enforcement_policy:
     const config = parseAndValidateConfig(yaml) as any;
     expect(config.version).toBe(3);
     expect(config.skills).toEqual([
-      { name: 'cisco-cdr-triage', level: 'expert' },
+      { name: 'example-api-triage', level: 'expert' },
       { name: 'security-boundary-audit' },
     ]);
     expect(config.knowledge.sources).toHaveLength(2);
@@ -129,8 +129,8 @@ reviewers:
       version: 'ActionDispatch.v1',
       deliveryId: 'actions:12345:1:4385771:100:e'.padEnd(48, '0'),
       repositoryId: 4385771,
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 100,
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),
@@ -180,7 +180,7 @@ reviewers:
 
   it('buildDispatchRequest passes through skills, knowledge, metrics, and retryAnalysis from environment', () => {
     const env = {
-      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY: 'exampleorg/example-api',
       REPOSITORY_ID: '12345',
       PR_NUMBER: '5006',
       HEAD_SHA: 'a'.repeat(40),
@@ -208,7 +208,7 @@ reviewers:
 
   it('buildDispatchRequest resolves fallback POLICY_* environment variables', () => {
     const env = {
-      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY: 'exampleorg/example-api',
       REPOSITORY_ID: '12345',
       PR_NUMBER: '5006',
       HEAD_SHA: 'a'.repeat(40),
@@ -234,7 +234,7 @@ reviewers:
 
   it('buildDispatchRequest ensures primary inputs override fallback POLICY_* variables', () => {
     const env = {
-      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY: 'exampleorg/example-api',
       REPOSITORY_ID: '12345',
       PR_NUMBER: '5006',
       HEAD_SHA: 'a'.repeat(40),
@@ -257,7 +257,7 @@ reviewers:
 
   it('buildDispatchRequest handles POLICY_JSON parsing, merging, and precedence', () => {
     const baseEnv = {
-      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY: 'exampleorg/example-api',
       REPOSITORY_ID: '12345',
       PR_NUMBER: '5006',
       HEAD_SHA: 'a'.repeat(40),
@@ -302,7 +302,7 @@ reviewers:
 
   it('buildDispatchRequest sets policy to undefined when no policy inputs are supplied', () => {
     const env = {
-      REPOSITORY: 'calltelemetry/cisco-cdr',
+      REPOSITORY: 'exampleorg/example-api',
       REPOSITORY_ID: '12345',
       PR_NUMBER: '5006',
       HEAD_SHA: 'a'.repeat(40),

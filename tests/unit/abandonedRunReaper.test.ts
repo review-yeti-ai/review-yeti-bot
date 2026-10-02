@@ -8,7 +8,7 @@ import type {
 import { logger } from '../../src/utils/logger';
 
 const run: AbandonedPublishingRun = {
-  runId: `run_${'1'.repeat(32)}`, owner: 'calltelemetry', repo: 'ct-meta',
+  runId: `run_${'1'.repeat(32)}`, owner: 'exampleorg', repo: 'example-meta',
   prNumber: 2795, headSha: 'a'.repeat(40), deliveryId: 'delivery-1',
   executionAttempt: 1, receivedAt: 1_000, terminalDeadline: 901_000,
 };
@@ -172,7 +172,7 @@ describe('AbandonedRunReaper exact-attempt ownership', () => {
 
   it('mints per repository and keeps sweeping after a failed publication without logging private responses', async () => {
     const { subject, repository, checkClientFor } = fixture();
-    const second = { ...run, runId: `run_${'2'.repeat(32)}`, repo: 'ct-release' };
+    const second = { ...run, runId: `run_${'2'.repeat(32)}`, repo: 'example-release' };
     repository.claimAbandonedPublishingRuns.mockResolvedValue([run, second]);
     checkClientFor.mockRejectedValueOnce(new Error('private token response'));
     const log = vi.spyOn(logger, 'error').mockImplementation(() => {});

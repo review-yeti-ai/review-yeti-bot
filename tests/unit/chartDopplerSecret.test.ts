@@ -111,7 +111,7 @@ describe('review-yeti chart publishing transport', () => {
 
 describe('this public repository ships no internal infrastructure identifiers', () => {
   it.each([
-    ['llm-gateway.calltelemetry.com', 'the internal LLM gateway endpoint'],
+    ['llm-gateway.example.com', 'the internal LLM gateway endpoint'],
     ['ct-llm-gateway', "the operator's secret-store project"],
   ])('never names %s (%s)', (needle) => {
     // review-yeti-ai/review-yeti-bot is PUBLIC. A concrete internal endpoint and the

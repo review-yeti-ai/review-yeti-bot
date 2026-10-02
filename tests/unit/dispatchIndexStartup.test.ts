@@ -84,7 +84,7 @@ function authoritativeConfig(): AuthoritativeServiceConfig {
 }
 function enableCi() {
   const config = authoritativeConfig(); mocks.serviceConfig.mockReturnValue(config);
-  const repository = { repositoryId: 123, ownerId: 99, owner: 'calltelemetry', repo: 'ct-meta',
+  const repository = { repositoryId: 123, ownerId: 99, owner: 'exampleorg', repo: 'example-meta',
     relay: { workflowId: 100, workflowPath: '.github/workflows/relay.yml', workflowRef: 'refs/heads/main', workflowSha: 'a'.repeat(40) },
     validation: { workflowId: 101, workflowPath: '.github/workflows/candidate.yml', workflowRef: 'refs/tags/ci-v1', workflowSha: 'b'.repeat(40) },
     lanePlan: createReviewCiLanePlan(['core'], ['validate']) };
@@ -95,7 +95,7 @@ function enableCi() {
 }
 function eligibleGate(): StoredReviewGate {
   const runId = `run_${'1'.repeat(32)}`;
-  return { coordinates: { repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 42,
+  return { coordinates: { repositoryId: 123, owner: 'exampleorg', repo: 'example-meta', prNumber: 42,
     runId, attemptId: `${runId}-g2-e1`, executionAttempt: 1,
     headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64) },
     reviewGeneration: 2, expectedAppId: 4385771, externalId: 'synthetic-gate-id', checkId: 1234,
@@ -182,9 +182,9 @@ describe('Action dispatch startup transport and admission wiring', () => {
     const options = mocks.createApp.mock.calls[0][0] as unknown as {
       resolveInstallationId(owner: string, repo: string): Promise<number>;
     };
-    await expect(options.resolveInstallationId('calltelemetry', 'ct-meta')).resolves.toBe(987);
+    await expect(options.resolveInstallationId('exampleorg', 'example-meta')).resolves.toBe(987);
     expect(mocks.lookup).toHaveBeenCalledExactlyOnceWith({
-      appId: '4385771', privateKey: 'synthetic-startup-private-key', owner: 'calltelemetry', repo: 'ct-meta',
+      appId: '4385771', privateKey: 'synthetic-startup-private-key', owner: 'exampleorg', repo: 'example-meta',
       baseUrl: baseUrl ? 'https://api.example.invalid/api/v3' : 'https://api.github.com',
     });
     expect(mocks.repository).toHaveBeenCalledWith(mocks.pool, undefined, {
@@ -232,14 +232,14 @@ describe('Action dispatch startup transport and admission wiring', () => {
       resolveInstallationId(owner: string, repo: string): Promise<number>;
     };
     await expect(options.resolveInstallationId('review-yeti-ai', 'review-yeti-bot')).resolves.toBe(987);
-    await expect(options.resolveInstallationId('calltelemetry', 'ct-meta')).resolves.toBe(987);
+    await expect(options.resolveInstallationId('exampleorg', 'example-meta')).resolves.toBe(987);
     expect(mocks.lookup).toHaveBeenNthCalledWith(1, {
       appId: '7654321', privateKey: 'synthetic-public-target-private-key',
       owner: 'review-yeti-ai', repo: 'review-yeti-bot', baseUrl: 'https://api.github.com',
     });
     expect(mocks.lookup).toHaveBeenNthCalledWith(2, {
       appId: '4385771', privateKey: 'synthetic-startup-private-key',
-      owner: 'calltelemetry', repo: 'ct-meta', baseUrl: 'https://api.github.com',
+      owner: 'exampleorg', repo: 'example-meta', baseUrl: 'https://api.github.com',
     });
     expect(mocks.listen).toHaveBeenCalledOnce();
   });
@@ -379,7 +379,7 @@ describe('Action dispatch startup transport and admission wiring', () => {
       resolveGenerationRecovery(input: any): Promise<unknown[]>;
     };
     const identity = {
-      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+      owner: 'exampleorg', repo: 'example-api', prNumber: 42,
       headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
       snapshotDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
     };
@@ -392,13 +392,13 @@ describe('Action dispatch startup transport and admission wiring', () => {
     await expect(options.resolveGenerationRecovery(input)).resolves.toEqual([]);
     expect(mocks.token).toHaveBeenCalledExactlyOnceWith({
       appId: '4385771', privateKey: 'synthetic-startup-private-key',
-      owner: 'calltelemetry', repo: 'cisco-cdr', baseUrl: 'https://api.github.com',
+      owner: 'exampleorg', repo: 'example-api', baseUrl: 'https://api.github.com',
     }, 'publish');
     expect(mocks.installationClient).toHaveBeenCalledExactlyOnceWith({
       token: 'ghs_generation_recovery', baseUrl: 'https://api.github.com',
     });
     expect(mocks.readGenerationRecovery).toHaveBeenCalledExactlyOnceWith({
-      owner: 'calltelemetry', repo: 'cisco-cdr', headSha: 'a'.repeat(40),
+      owner: 'exampleorg', repo: 'example-api', headSha: 'a'.repeat(40),
       runId: deriveReviewRunId(identity as any), expectedGeneration: 2, expectedAppId: 4_385_771,
     });
 

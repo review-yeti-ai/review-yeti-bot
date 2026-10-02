@@ -7,7 +7,7 @@ import { executePersonaPanel, extractMessageContentText } from '../../src/panel/
 import { logger } from '../../src/utils/logger';
 
 /**
- * REL-1139 (ct-meta ADR 0687), through the real panel engine: `skipEmptyModeration` skips ONLY
+ * REL-1139 (example-meta ADR 0687), through the real panel engine: `skipEmptyModeration` skips ONLY
  * the moderator call, and only on an eligible run. The arbiter always runs. Eligibility is logged
  * on every run (`moderator_shadow_skip_eligible`) whatever the flag says.
  */

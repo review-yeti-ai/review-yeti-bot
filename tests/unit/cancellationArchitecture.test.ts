@@ -374,8 +374,8 @@ describe('Two-Tier Cancellation Architecture', () => {
         REVIEW_RUN_ID: 'run_' + 'a'.repeat(32),
         REVIEW_DELIVERY_ID: 'del_123',
         REVIEW_REPOSITORY_ID: '12345',
-        REVIEW_OWNER: 'calltelemetry',
-        REVIEW_REPO: 'calltelemetry/test-repo',
+        REVIEW_OWNER: 'exampleorg',
+        REVIEW_REPO: 'exampleorg/test-repo',
         REVIEW_PR_NUMBER: '42',
         REVIEW_HEAD_SHA: 'a'.repeat(40),
         REVIEW_BASE_SHA: 'b'.repeat(40),
@@ -389,7 +389,7 @@ describe('Two-Tier Cancellation Architecture', () => {
 
       const panelRunner = vi.fn(async (options: any) => {
         if (options.isCurrentHead && !options.isCurrentHead()) {
-          throw new Error('stale run aborted for calltelemetry/test-repo');
+          throw new Error('stale run aborted for exampleorg/test-repo');
         }
         return {} as any;
       });
@@ -410,7 +410,7 @@ describe('Two-Tier Cancellation Architecture', () => {
       ).rejects.toThrow();
 
       expect(completeCheck).toHaveBeenCalledWith({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'test-repo',
         checkId: 101,
         conclusion: 'neutral',

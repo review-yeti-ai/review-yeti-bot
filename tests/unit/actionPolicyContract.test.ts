@@ -95,17 +95,17 @@ describe('Action v4 policy boundary', () => {
     const result = pipeline.applyActionSubmodulePolicy([
       { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40) },
     ], { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: [] }, {
-      baseSubmoduleUrls: { 'vendor/lib': 'https://github.com/calltelemetry/ct-pr-operator.git' },
-      submoduleUrls: { 'vendor/lib': 'https://github.com/calltelemetry/ct-pr-operator.git' },
+      baseSubmoduleUrls: { 'vendor/lib': 'https://github.com/exampleorg/ct-pr-operator.git' },
+      submoduleUrls: { 'vendor/lib': 'https://github.com/exampleorg/ct-pr-operator.git' },
     });
     expect(result.coverageComplete).toBe(true);
   });
 
   it('fetches exact-ref gitmodule origins for target repositories not checked out by the action', async () => {
     const calls: Array<{ url: string; init: any }> = [];
-    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:exampleorg/proto.git\n';
     const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
-      'calltelemetry/cisco-cdr',
+      'exampleorg/example-api',
       'a'.repeat(40),
       {
         token: 'test-token',
@@ -123,9 +123,9 @@ describe('Action v4 policy boundary', () => {
       },
     );
 
-    expect(urls).toEqual({ proto: 'git@github.com:calltelemetry/proto.git' });
+    expect(urls).toEqual({ proto: 'git@github.com:exampleorg/proto.git' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toContain('/repos/calltelemetry/cisco-cdr/contents/.gitmodules?ref=');
+    expect(calls[0].url).toContain('/repos/exampleorg/example-api/contents/.gitmodules?ref=');
     expect(calls[0].init.headers.Authorization).toBe('Bearer test-token');
 
     const result = pipeline.applyActionSubmodulePolicy([
@@ -156,9 +156,9 @@ describe('Action v4 policy boundary', () => {
     console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
     try {
       let attempt = 0;
-      const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+      const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:exampleorg/proto.git\n';
       const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
-        'calltelemetry/cisco-cdr',
+        'exampleorg/example-api',
         'a'.repeat(40),
         {
           fetchImplementation: async () => {
@@ -177,7 +177,7 @@ describe('Action v4 policy boundary', () => {
       );
 
       expect(attempt).toBe(2);
-      expect(urls).toEqual({ proto: 'git@github.com:calltelemetry/proto.git' });
+      expect(urls).toEqual({ proto: 'git@github.com:exampleorg/proto.git' });
       expect(warnings.some((line) => line.includes('.gitmodules') && line.includes('network unreachable'))).toBe(true);
     } finally {
       console.warn = originalWarn;
@@ -191,7 +191,7 @@ describe('Action v4 policy boundary', () => {
     try {
       let attempt = 0;
       const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
-        'calltelemetry/cisco-cdr',
+        'exampleorg/example-api',
         'a'.repeat(40),
         {
           fetchImplementation: async () => {
@@ -213,7 +213,7 @@ describe('Action v4 policy boundary', () => {
   it('treats a genuine 404 (no .gitmodules at this ref) as a real answer, not a retryable failure', async () => {
     let attempt = 0;
     const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
-      'calltelemetry/cisco-cdr',
+      'exampleorg/example-api',
       'a'.repeat(40),
       {
         fetchImplementation: async () => {
@@ -242,7 +242,7 @@ describe('Action v4 policy boundary', () => {
     expect(files[0]).toMatchObject({ path: 'proto', mode: '160000', isSubmodule: true });
     expect(pipeline.hasActionSubmoduleCandidate(files[0])).toBe(true);
 
-    const urls = { proto: 'git@github.com:calltelemetry/proto.git' };
+    const urls = { proto: 'git@github.com:exampleorg/proto.git' };
     const result = pipeline.applyActionSubmodulePolicy(files, {
       mode: 'metadata_only',
       require_pinned_commit: true,
@@ -253,7 +253,7 @@ describe('Action v4 policy boundary', () => {
     }, {
       baseSubmoduleUrls: urls,
       submoduleUrls: urls,
-      parentRepository: 'calltelemetry/cisco-cdr',
+      parentRepository: 'exampleorg/example-api',
     });
     expect(result.coverageComplete).toBe(true);
     expect(result.files[0]).toMatchObject({
@@ -273,13 +273,13 @@ describe('Action v4 policy boundary', () => {
   it('makes exact-ref target metadata authoritative over stale local checkout metadata', () => {
     expect(pipeline.mergeActionSubmoduleUrls(
       {
-        proto: 'git@github.com:calltelemetry/stale-proto.git',
-        retained: 'git@github.com:calltelemetry/retained.git',
+        proto: 'git@github.com:exampleorg/stale-proto.git',
+        retained: 'git@github.com:exampleorg/retained.git',
       },
-      { proto: 'git@github.com:calltelemetry/proto.git' },
+      { proto: 'git@github.com:exampleorg/proto.git' },
     )).toEqual({
-      proto: 'git@github.com:calltelemetry/proto.git',
-      retained: 'git@github.com:calltelemetry/retained.git',
+      proto: 'git@github.com:exampleorg/proto.git',
+      retained: 'git@github.com:exampleorg/retained.git',
     });
   });
 
@@ -289,17 +289,17 @@ describe('Action v4 policy boundary', () => {
     const headRoot = path.join(temp, 'head');
     fs.mkdirSync(baseRoot);
     fs.mkdirSync(headRoot);
-    fs.writeFileSync(path.join(baseRoot, '.gitmodules'), '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/stale.git\n');
+    fs.writeFileSync(path.join(baseRoot, '.gitmodules'), '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:exampleorg/stale.git\n');
 
     const baseRef = 'a'.repeat(40);
     const headRef = 'b'.repeat(40);
     const refs: string[] = [];
-    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:calltelemetry/proto.git\n';
+    const gitmodules = '[submodule "proto"]\n\tpath = proto\n\turl = git@github.com:exampleorg/proto.git\n';
     try {
       const metadata = await pipeline.resolveActionSubmoduleMetadata([
         { path: 'proto', mode: '160000', oldSha: 'c'.repeat(40), newSha: 'd'.repeat(40) },
       ], {
-        parentRepository: 'calltelemetry/cisco-cdr',
+        parentRepository: 'exampleorg/example-api',
         baseRef,
         headRef,
         baseRoot,
@@ -321,8 +321,8 @@ describe('Action v4 policy boundary', () => {
       expect(refs).toEqual([baseRef, headRef]);
       expect(metadata).toEqual({
         hasCandidate: true,
-        baseUrls: { proto: 'git@github.com:calltelemetry/proto.git' },
-        headUrls: { proto: 'git@github.com:calltelemetry/proto.git' },
+        baseUrls: { proto: 'git@github.com:exampleorg/proto.git' },
+        headUrls: { proto: 'git@github.com:exampleorg/proto.git' },
       });
       const result = pipeline.applyActionSubmodulePolicy([
         { path: 'proto', mode: '160000', oldSha: 'c'.repeat(40), newSha: 'd'.repeat(40) },
@@ -336,7 +336,7 @@ describe('Action v4 policy boundary', () => {
       }, {
         baseSubmoduleUrls: metadata.baseUrls,
         submoduleUrls: metadata.headUrls,
-        parentRepository: 'calltelemetry/cisco-cdr',
+        parentRepository: 'exampleorg/example-api',
       });
       expect(result.coverageComplete).toBe(true);
     } finally {
@@ -346,7 +346,7 @@ describe('Action v4 policy boundary', () => {
 
   it('keeps exact-ref metadata fetch failures fail-closed', async () => {
     const urls = await pipeline.fetchActionSubmoduleUrlsAtRef(
-      'calltelemetry/cisco-cdr',
+      'exampleorg/example-api',
       'a'.repeat(40),
       { fetchImplementation: async () => ({ ok: false, status: 404 }) },
     );
@@ -368,8 +368,8 @@ describe('Action v4 policy boundary', () => {
 
   it('parses HTTPS submodule origins with credentials and ports as URLs', () => {
     const result = pipeline.applyActionSubmodulePolicy([
-      { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), newSubmoduleUrl: 'https://token@github.com:443/calltelemetry/ct-pr-operator.git' },
-    ], { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'] });
+      { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), newSubmoduleUrl: 'https://token@github.com:443/exampleorg/ct-pr-operator.git' },
+    ], { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['exampleorg/ct-pr-operator'] });
     expect(result.coverageComplete).toBe(true);
   });
 
@@ -377,8 +377,8 @@ describe('Action v4 policy boundary', () => {
     const stable = pipeline.applyActionSubmodulePolicy([
       { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40) },
     ], { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: [] }, {
-      baseSubmoduleUrls: { 'vendor/lib': 'https://github.com/calltelemetry/ct-pr-operator.git' },
-      submoduleUrls: { 'vendor/lib': 'https://github.com/calltelemetry/ct-pr-operator.git' },
+      baseSubmoduleUrls: { 'vendor/lib': 'https://github.com/exampleorg/ct-pr-operator.git' },
+      submoduleUrls: { 'vendor/lib': 'https://github.com/exampleorg/ct-pr-operator.git' },
     });
     expect(stable.coverageComplete).toBe(true);
 
@@ -390,7 +390,7 @@ describe('Action v4 policy boundary', () => {
 
   it('keeps URL changes reviewable when policy requests metadata review', () => {
     const result = pipeline.applyActionSubmodulePolicy([
-      { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), oldSubmoduleUrl: 'https://github.com/calltelemetry/old.git', newSubmoduleUrl: 'https://github.com/calltelemetry/new.git' },
+      { path: 'vendor/lib', mode: '160000', oldSha: 'a'.repeat(40), newSha: 'b'.repeat(40), oldSubmoduleUrl: 'https://github.com/exampleorg/old.git', newSubmoduleUrl: 'https://github.com/exampleorg/new.git' },
     ], { mode: 'metadata_only', require_pinned_commit: true, url_change: 'review' });
     expect(result.coverageComplete).toBe(true);
   });

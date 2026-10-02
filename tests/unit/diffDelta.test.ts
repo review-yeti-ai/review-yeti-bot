@@ -45,14 +45,14 @@ describe('Milestone 3: Diff-Delta Incremental Review & Memory Engine', () => {
 
       expect(store.getPreviousHead(101)).toBeUndefined();
 
-      store.setHead('calltelemetry', 'ct-review-bot', 101, 'sha_v1');
-      expect(store.isCurrentHead('calltelemetry', 'ct-review-bot', 101, 'sha_v1')).toBe(true);
+      store.setHead('exampleorg', 'ct-review-bot', 101, 'sha_v1');
+      expect(store.isCurrentHead('exampleorg', 'ct-review-bot', 101, 'sha_v1')).toBe(true);
       expect(store.getPreviousHead(101)).toBeUndefined();
 
-      store.setHead('calltelemetry', 'ct-review-bot', 101, 'sha_v2');
-      expect(store.isCurrentHead('calltelemetry', 'ct-review-bot', 101, 'sha_v2')).toBe(true);
+      store.setHead('exampleorg', 'ct-review-bot', 101, 'sha_v2');
+      expect(store.isCurrentHead('exampleorg', 'ct-review-bot', 101, 'sha_v2')).toBe(true);
       expect(store.getPreviousHead(101)).toBe('sha_v1');
-      expect(store.getPreviousHead('calltelemetry', 'ct-review-bot', 101)).toBe('sha_v1');
+      expect(store.getPreviousHead('exampleorg', 'ct-review-bot', 101)).toBe('sha_v1');
     });
 
     it('filters out resolved and active nits using filterResolvedNits', () => {

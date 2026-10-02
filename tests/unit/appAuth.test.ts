@@ -91,10 +91,10 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
     await expect(getGitHubAppInstallationIdForRepository({
       appId: '123456',
       privateKey,
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
     }, mockFetch as any)).resolves.toBe(456);
-    expect(mockFetch.mock.calls[0][0]).toBe('https://api.github.com/repos/calltelemetry/cisco-cdr/installation');
+    expect(mockFetch.mock.calls[0][0]).toBe('https://api.github.com/repos/exampleorg/example-api/installation');
     expect(new Headers(mockFetch.mock.calls[0][1].headers).get('authorization')).toMatch(/^Bearer [^.]+\.[^.]+\.[^.]+$/u);
   });
 
@@ -103,7 +103,7 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
     await expect(getGitHubAppInstallationIdForRepository({
       appId: '123456',
       privateKey,
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'missing',
     }, mockFetch as any)).rejects.toThrow(/HTTP 404/u);
   });
@@ -124,7 +124,7 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
     await expect(getGitHubAppRepositoryReadToken({
       appId: '123456',
       privateKey,
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-pr-operator-sandbox',
     }, mockFetch as any)).resolves.toEqual({
       token: 'ghs_repositoryReadToken123456789',
@@ -134,7 +134,7 @@ describe('GitHub App Authentication & Installation Token Exchange', () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect(mockFetch.mock.calls[0][0]).toBe(
-      'https://api.github.com/repos/calltelemetry/ct-pr-operator-sandbox/installation',
+      'https://api.github.com/repos/exampleorg/ct-pr-operator-sandbox/installation',
     );
     expect(mockFetch.mock.calls[1][0]).toBe(
       'https://api.github.com/app/installations/42/access_tokens',

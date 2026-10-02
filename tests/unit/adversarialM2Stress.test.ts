@@ -25,7 +25,7 @@ function testEnv(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     NODE_ENV: 'test',
     REVIEW_PUBLICATION_MODE: 'app-gate',
     REVIEW_RUN_ID: `run_${'3'.repeat(32)}`,
-    REVIEW_REPO: 'calltelemetry/ct-meta',
+    REVIEW_REPO: 'exampleorg/example-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_PR_NUMBER: '2795',
     REVIEW_HEAD_SHA: HEAD,
@@ -427,14 +427,14 @@ describe('Adversarial Stress Test: Check Context and Contract Constraints', () =
       fetchImplementation: mockFetch as any,
     });
 
-    const checkId = await client.publishGateCheck('calltelemetry', 'ct-meta', HEAD, {
+    const checkId = await client.publishGateCheck('exampleorg', 'example-meta', HEAD, {
       conclusion: 'success',
       title: 'Review Yeti Gate: Approved (SHIP)',
       summary: '### Review Yeti Gate: Eligible',
     });
 
     expect(checkId).toBe(777123);
-    expect(capturedPath).toContain('/repos/calltelemetry/ct-meta/check-runs');
+    expect(capturedPath).toContain('/repos/exampleorg/example-meta/check-runs');
     expect(capturedBody.name).toBe('Review Yeti Gate');
     expect(capturedBody.head_sha).toBe(HEAD);
     expect(capturedBody.status).toBe('completed');

@@ -10,7 +10,7 @@ import { validateWorkRequest, MAX_CONTRACT_BYTES } from '../../src/schemas/agent
 describe('Empirical Adversarial Stress Suite: K8sJobRunner (challenger_m1_2)', () => {
   const baseSpec: K8sJobSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 42,
     commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
   };
@@ -148,7 +148,7 @@ describe('Empirical Adversarial Stress Suite: K8sJobRunner (challenger_m1_2)', (
       expect(req.scope.tenant_id).toBe('ct');
       expect(req.scope.environment_id).toBe('qualification');
       expect(req.scope.workspace_id).toBe('factory');
-      expect(req.scope.repository).toBe('calltelemetry/cisco-cdr');
+      expect(req.scope.repository).toBe('exampleorg/example-api');
       expect(req.scope.logical_child_id).toBe('child-security');
       expect(req.scope.execution_id).toBe('exec-security-pr42-abcdef1-g1');
       expect(req.scope.mission_id).toBe('mission-pr42-abcdef1');
@@ -200,9 +200,9 @@ describe('Empirical Adversarial Stress Suite: K8sJobRunner (challenger_m1_2)', (
     });
 
     it('normalizes repository formats properly', () => {
-      expect(normalizeRepository('https://github.com/calltelemetry/cisco-cdr.git')).toBe('calltelemetry/cisco-cdr');
-      expect(normalizeRepository('git@github.com:calltelemetry/cisco-cdr.git')).toBe('calltelemetry/cisco-cdr');
-      expect(normalizeRepository('calltelemetry/cisco-cdr')).toBe('calltelemetry/cisco-cdr');
+      expect(normalizeRepository('https://github.com/exampleorg/example-api.git')).toBe('exampleorg/example-api');
+      expect(normalizeRepository('git@github.com:exampleorg/example-api.git')).toBe('exampleorg/example-api');
+      expect(normalizeRepository('exampleorg/example-api')).toBe('exampleorg/example-api');
     });
   });
 
@@ -241,7 +241,7 @@ describe('Empirical Adversarial Stress Suite: K8sJobRunner (challenger_m1_2)', (
       expect(new Set(initMountPaths).size).toBe(initMountPaths.length); // No mount collisions
       expect(initContainer.volumeMounts[0].name).toBe('workspace-volume');
       expect(initContainer.volumeMounts[0].mountPath).toBe('/workspace');
-      expect(initContainer.volumeMounts[0].subPath).toBe('repos/calltelemetry_cisco-cdr_pr42');
+      expect(initContainer.volumeMounts[0].subPath).toBe('repos/exampleorg_example-api_pr42');
 
       // InitContainer environment & script verification
       const payloadEnv = initContainer.env?.find((e) => e.name === 'CT_WORK_REQUEST_PAYLOAD');
@@ -261,7 +261,7 @@ describe('Empirical Adversarial Stress Suite: K8sJobRunner (challenger_m1_2)', (
       expect(new Set(mainMountPaths).size).toBe(mainMountPaths.length); // No mount collisions
       expect(mainContainer.volumeMounts[0].name).toBe('workspace-volume');
       expect(mainContainer.volumeMounts[0].mountPath).toBe('/workspace');
-      expect(mainContainer.volumeMounts[0].subPath).toBe('repos/calltelemetry_cisco-cdr_pr42');
+      expect(mainContainer.volumeMounts[0].subPath).toBe('repos/exampleorg_example-api_pr42');
 
       // Manifest JSON serializability check
       const jsonString = JSON.stringify(manifest);

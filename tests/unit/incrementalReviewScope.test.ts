@@ -37,7 +37,7 @@ function reportFor(planDigest: string, repository: string, prNumber: number, hea
 }
 
 function parentReport(planDigest: string) {
-  return reportFor(planDigest, 'calltelemetry/example', 17);
+  return reportFor(planDigest, 'exampleorg/example', 17);
 }
 
 /** Minimal fetch stub for reviewWithModel's direct (non-OpenRouter) transport path. */
@@ -59,9 +59,9 @@ describe('trusted incremental review scope', () => {
   it('binds evidence reuse to the action, base policy, persona order, diff budget, domain index, and chain cap', () => {
     const common = {
       actionSha: 'd'.repeat(40), baseSha: BASE, personaIds: PERSONAS, maxDiffChars: 24000, maxIncrementalDiffChars: 60000,
-      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1', trustedWorkflowSha: 'e'.repeat(40),
+      trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1', trustedWorkflowSha: 'e'.repeat(40),
       indexDigest: 'sha256:aaaa', maxIncrementalChain: 5,
-      artifactRepo: 'calltelemetry/example', trustedEvents: ['pull_request', 'pull_request_target'],
+      artifactRepo: 'exampleorg/example', trustedEvents: ['pull_request', 'pull_request_target'],
     };
     const digest = scope.buildReviewScopePlanDigest(common);
     expect(digest).toMatch(/^[0-9a-f]{64}$/);
@@ -71,7 +71,7 @@ describe('trusted incremental review scope', () => {
     expect(scope.buildReviewScopePlanDigest({ ...common, baseSha: 'e'.repeat(40) })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, maxDiffChars: 24001 })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, maxIncrementalDiffChars: 60001 })).not.toBe(digest);
-    expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/main' })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/heads/main' })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, trustedWorkflowSha: 'f'.repeat(40) })).not.toBe(digest);
     // REL-552: a domain-index rebuild or a chain-cap policy change must invalidate reuse under
     // the old mapping/policy rather than silently keep authorizing it.
@@ -80,21 +80,21 @@ describe('trusted incremental review scope', () => {
     // REL-553: pointing incremental reuse at a different artifact repository (central execution)
     // or widening the trusted parent-run event set must also invalidate reuse planned under the
     // old, narrower policy.
-    expect(scope.buildReviewScopePlanDigest({ ...common, artifactRepo: 'calltelemetry/ct-review-actions' })).not.toBe(digest);
+    expect(scope.buildReviewScopePlanDigest({ ...common, artifactRepo: 'exampleorg/example-review-actions' })).not.toBe(digest);
     expect(scope.buildReviewScopePlanDigest({ ...common, trustedEvents: ['pull_request', 'pull_request_target', 'repository_dispatch'] })).not.toBe(digest);
   });
 
   it('requires the trusted workflow path and its resolved immutable SHA', () => {
-    const trustedPath = 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
+    const trustedPath = 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
     const trustedSha = 'd'.repeat(40);
     expect(scope.isTrustedWorkflowReference({ path: trustedPath, sha: trustedSha }, [trustedPath], trustedSha)).toBe(true);
     expect(scope.isTrustedWorkflowReference({
-      path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+      path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
       ref: 'refs/tags/v1',
       sha: trustedSha,
     }, [trustedPath], trustedSha)).toBe(true);
     expect(scope.isTrustedWorkflowReference({
-      path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+      path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
       ref: 'refs/heads/v1',
       sha: trustedSha,
     }, [trustedPath], trustedSha)).toBe(false);
@@ -107,12 +107,12 @@ describe('trusted incremental review scope', () => {
     const common = {
       enabled: true,
       token: 'token',
-      repo: 'calltelemetry/example',
+      repo: 'exampleorg/example',
       prNumber: 17,
       baseSha: BASE,
       headSha: HEAD,
       personaIds: PERSONAS,
-      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+      trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
       fullDiffText: 'full diff',
       planDigest: 'f'.repeat(64),
     };
@@ -126,7 +126,7 @@ describe('trusted incremental review scope', () => {
   it('rejects incomplete or plan-drifted parent reports', () => {
     const digest = 'f'.repeat(64);
     const expected = {
-      repo: 'calltelemetry/example', prNumber: 17, baseSha: BASE, headSha: HEAD,
+      repo: 'exampleorg/example', prNumber: 17, baseSha: BASE, headSha: HEAD,
       planDigest: digest, personaIds: PERSONAS,
     };
     expect(scope.isCompleteTrustedReport(parentReport(digest), expected)).toBe(true);
@@ -143,7 +143,7 @@ describe('trusted incremental review scope', () => {
   it('REL-586: rejects a parent report where any lane omitted files from its own diff budget', () => {
     const digest = 'f'.repeat(64);
     const expected = {
-      repo: 'calltelemetry/example', prNumber: 17, baseSha: BASE, headSha: HEAD,
+      repo: 'exampleorg/example', prNumber: 17, baseSha: BASE, headSha: HEAD,
       planDigest: digest, personaIds: PERSONAS,
     };
     expect(scope.isCompleteTrustedReport(parentReport(digest), expected)).toBe(true);
@@ -434,7 +434,7 @@ describe('trusted incremental review scope', () => {
       const reviewPersonas = personaObjects.filter((p: any) => liveSet.has(p.id));
       const liveResults = [];
       for (const persona of reviewPersonas) {
-        const result = await pipeline.reviewWithModel(persona, deltaFiles, { repo: 'calltelemetry/example', prNumber: 17 }, null, {
+        const result = await pipeline.reviewWithModel(persona, deltaFiles, { repo: 'exampleorg/example', prNumber: 17 }, null, {
           apiKey: 'k', baseUrl: 'https://api.example.com/v1', model: 'm', fetchImplementation,
         });
         liveResults.push({ personaId: persona.id, decision: result.decision, findings: result.findings });
@@ -688,7 +688,7 @@ describe('trusted incremental review scope', () => {
       new Response(JSON.stringify({
         status: 'completed', event: 'pull_request_target', head_sha: PARENT, run_attempt: 1,
         referenced_workflows: [{
-          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+          path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
           ref: 'refs/tags/v1',
           sha: 'd'.repeat(40),
         }],
@@ -714,14 +714,14 @@ describe('trusted incremental review scope', () => {
     const result = await scope.resolveIncrementalReviewScope({
       enabled: true,
       token: 'token',
-      repo: 'calltelemetry/example',
+      repo: 'exampleorg/example',
       prNumber: 17,
       baseSha: BASE,
       headSha: HEAD,
       personaIds: PERSONAS,
       maxDiffChars: 24000,
       maxIncrementalDiffChars: 60000,
-      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+      trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
       trustedWorkflowSha: 'd'.repeat(40),
       fullDiffText,
       planDigest,
@@ -777,7 +777,7 @@ describe('trusted incremental review scope', () => {
       new Response(JSON.stringify({
         status: 'completed', event: 'pull_request_target', head_sha: PARENT, run_attempt: 1,
         referenced_workflows: [{
-          path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+          path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
           ref: 'refs/tags/v1',
           sha: 'd'.repeat(40),
         }],
@@ -787,7 +787,7 @@ describe('trusted incremental review scope', () => {
     const result = await scope.resolveIncrementalReviewScope({
       enabled: true,
       token: 'token',
-      repo: 'calltelemetry/example',
+      repo: 'exampleorg/example',
       prNumber: 17,
       baseSha: BASE,
       headSha: HEAD,
@@ -795,7 +795,7 @@ describe('trusted incremental review scope', () => {
       maxDiffChars: 24000,
       maxIncrementalDiffChars: 60000,
       maxIncrementalChain: 5, // parentChainDepth(4) + 1 >= 5 -> capped
-      trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+      trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
       trustedWorkflowSha: 'd'.repeat(40),
       fullDiffText,
       planDigest,
@@ -831,7 +831,7 @@ describe('trusted incremental review scope', () => {
   });
 
   describe('resolveArbitrationDiffFiles (REL-552 Review Yeti PR #444 finding 6)', () => {
-    const prContext = { repo: 'calltelemetry/example', baseSha: BASE, headSha: HEAD };
+    const prContext = { repo: 'exampleorg/example', baseSha: BASE, headSha: HEAD };
     const configRoot = '/tmp/ct-review-bot-test-config-root-does-not-exist';
     const actionPolicy = { submodules: undefined };
 
@@ -910,7 +910,7 @@ describe('trusted incremental review scope', () => {
 
     it('resolves a delta scope reading reports from the trusted artifact repo, admitting repository_dispatch, without requiring the parent run head to equal the report head', async () => {
       const planDigest = 'f'.repeat(64);
-      const report = reportFor(planDigest, 'calltelemetry/cisco-cdr', 42);
+      const report = reportFor(planDigest, 'exampleorg/example-api', 42);
       const fullDiffText = `diff --git a/lib/api.ex b/lib/api.ex\n${' context\n'.repeat(1000)}`;
       const responses = [
         new Response(JSON.stringify({ artifacts: [{
@@ -921,7 +921,7 @@ describe('trusted incremental review scope', () => {
         new Response(JSON.stringify({
           status: 'completed', event: 'repository_dispatch', head_sha: CENTRAL_RUN_HEAD_SHA, run_attempt: 1,
           referenced_workflows: [{
-            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
             ref: 'refs/tags/v1',
             sha: 'e'.repeat(40),
           }],
@@ -943,8 +943,8 @@ describe('trusted incremental review scope', () => {
       const result = await scope.resolveIncrementalReviewScope({
         enabled: true,
         token: 'token',
-        repo: 'calltelemetry/cisco-cdr',
-        artifactRepo: 'calltelemetry/ct-review-actions',
+        repo: 'exampleorg/example-api',
+        artifactRepo: 'exampleorg/example-review-actions',
         trustedEvents: ['pull_request', 'pull_request_target', 'repository_dispatch'],
         prNumber: 42,
         baseSha: BASE,
@@ -952,7 +952,7 @@ describe('trusted incremental review scope', () => {
         personaIds: PERSONAS,
         maxDiffChars: 24000,
         maxIncrementalDiffChars: 60000,
-        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
         trustedWorkflowSha: 'e'.repeat(40),
         fullDiffText,
         planDigest,
@@ -964,8 +964,8 @@ describe('trusted incremental review scope', () => {
         resolveFileDomains,
       });
 
-      // The central run's own head_sha (CENTRAL_RUN_HEAD_SHA, the ct-review-actions dispatch
-      // commit) never equals the report's headSha (PARENT, a commit in calltelemetry/cisco-cdr)
+      // The central run's own head_sha (CENTRAL_RUN_HEAD_SHA, the example-review-actions dispatch
+      // commit) never equals the report's headSha (PARENT, a commit in exampleorg/example-api)
       // -- proving reuse activated without requiring that impossible equality.
       expect(result.scope.mode).toBe('delta');
       expect(result.scope.parentHeadSha).toBe(PARENT);
@@ -974,7 +974,7 @@ describe('trusted incremental review scope', () => {
 
     it('falls back to a full review when the parent run event is not in the configured trusted-events allowlist', async () => {
       const planDigest = 'f'.repeat(64);
-      const report = reportFor(planDigest, 'calltelemetry/cisco-cdr', 42);
+      const report = reportFor(planDigest, 'exampleorg/example-api', 42);
       const fullDiffText = `diff --git a/lib/api.ex b/lib/api.ex\n${' context\n'.repeat(1000)}`;
       const responses = [
         new Response(JSON.stringify({ artifacts: [{
@@ -985,7 +985,7 @@ describe('trusted incremental review scope', () => {
         new Response(JSON.stringify({
           status: 'completed', event: 'repository_dispatch', head_sha: CENTRAL_RUN_HEAD_SHA, run_attempt: 1,
           referenced_workflows: [{
-            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
             ref: 'refs/tags/v1',
             sha: 'e'.repeat(40),
           }],
@@ -995,8 +995,8 @@ describe('trusted incremental review scope', () => {
       const result = await scope.resolveIncrementalReviewScope({
         enabled: true,
         token: 'token',
-        repo: 'calltelemetry/cisco-cdr',
-        artifactRepo: 'calltelemetry/ct-review-actions',
+        repo: 'exampleorg/example-api',
+        artifactRepo: 'exampleorg/example-review-actions',
         trustedEvents: ['pull_request', 'pull_request_target'], // repository_dispatch NOT trusted
         prNumber: 42,
         baseSha: BASE,
@@ -1004,7 +1004,7 @@ describe('trusted incremental review scope', () => {
         personaIds: PERSONAS,
         maxDiffChars: 24000,
         maxIncrementalDiffChars: 60000,
-        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
         trustedWorkflowSha: 'e'.repeat(40),
         fullDiffText,
         planDigest,
@@ -1022,8 +1022,8 @@ describe('trusted incremental review scope', () => {
 
     it('skips a candidate report belonging to a different consumer repository and finds the next candidate', async () => {
       const planDigest = 'f'.repeat(64);
-      const wrongReport = reportFor(planDigest, 'calltelemetry/other-consumer', 42);
-      const rightReport = reportFor(planDigest, 'calltelemetry/cisco-cdr', 42);
+      const wrongReport = reportFor(planDigest, 'exampleorg/other-consumer', 42);
+      const rightReport = reportFor(planDigest, 'exampleorg/example-api', 42);
       const fullDiffText = `diff --git a/lib/api.ex b/lib/api.ex\n${' context\n'.repeat(1000)}`;
       const responses = [
         new Response(JSON.stringify({ artifacts: [
@@ -1044,7 +1044,7 @@ describe('trusted incremental review scope', () => {
         new Response(JSON.stringify({
           status: 'completed', event: 'repository_dispatch', head_sha: CENTRAL_RUN_HEAD_SHA, run_attempt: 1,
           referenced_workflows: [{
-            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
             ref: 'refs/tags/v1',
             sha: 'e'.repeat(40),
           }],
@@ -1067,8 +1067,8 @@ describe('trusted incremental review scope', () => {
       const result = await scope.resolveIncrementalReviewScope({
         enabled: true,
         token: 'token',
-        repo: 'calltelemetry/cisco-cdr',
-        artifactRepo: 'calltelemetry/ct-review-actions',
+        repo: 'exampleorg/example-api',
+        artifactRepo: 'exampleorg/example-review-actions',
         trustedEvents: ['repository_dispatch'],
         prNumber: 42,
         baseSha: BASE,
@@ -1076,7 +1076,7 @@ describe('trusted incremental review scope', () => {
         personaIds: PERSONAS,
         maxDiffChars: 24000,
         maxIncrementalDiffChars: 60000,
-        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
         trustedWorkflowSha: 'e'.repeat(40),
         fullDiffText,
         planDigest,
@@ -1102,14 +1102,14 @@ describe('trusted incremental review scope', () => {
       const result = await scope.resolveIncrementalReviewScope({
         enabled: true,
         token: 'token',
-        repo: 'calltelemetry/cisco-cdr',
-        artifactRepo: 'calltelemetry/ct-review-actions',
+        repo: 'exampleorg/example-api',
+        artifactRepo: 'exampleorg/example-review-actions',
         trustedEvents: ['repository_dispatch'],
         prNumber: 42,
         baseSha: BASE,
         headSha: HEAD,
         personaIds: PERSONAS,
-        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
         trustedWorkflowSha: 'e'.repeat(40),
         fullDiffText,
         planDigest: 'f'.repeat(64),
@@ -1136,7 +1136,7 @@ describe('trusted incremental review scope', () => {
         new Response(JSON.stringify({
           status: 'completed', event: 'pull_request_target', head_sha: mismatchedRunHeadSha, run_attempt: 1,
           referenced_workflows: [{
-            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
             ref: 'refs/tags/v1',
             sha: 'd'.repeat(40),
           }],
@@ -1146,14 +1146,14 @@ describe('trusted incremental review scope', () => {
       const result = await scope.resolveIncrementalReviewScope({
         enabled: true,
         token: 'token',
-        repo: 'calltelemetry/example', // no artifactRepo override -> same-repo mode
+        repo: 'exampleorg/example', // no artifactRepo override -> same-repo mode
         prNumber: 17,
         baseSha: BASE,
         headSha: HEAD,
         personaIds: PERSONAS,
         maxDiffChars: 24000,
         maxIncrementalDiffChars: 60000,
-        trustedWorkflow: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
+        trustedWorkflow: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1',
         trustedWorkflowSha: 'd'.repeat(40),
         fullDiffText,
         planDigest,
@@ -1273,12 +1273,12 @@ describe('applyFullWithCarryDiffSwap (REL-552 Review Yeti PR #444 follow-up: mai
 });
 
 describe('main() end-to-end: the full-with-carry diffText swap through the real pipeline (REL-552 Review Yeti PR #444 follow-up)', () => {
-  const PR_REPO = 'calltelemetry/example';
+  const PR_REPO = 'exampleorg/example';
   const PR_NUMBER = '444';
   const BASE_SHA = 'a'.repeat(40);
   const PARENT_SHA = 'b'.repeat(40);
   const HEAD_SHA = 'c'.repeat(40);
-  const TRUSTED_WORKFLOW = 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
+  const TRUSTED_WORKFLOW = 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/tags/v1';
   const TRUSTED_WORKFLOW_SHA = 'd'.repeat(40);
   const ACTION_SHA = 'e'.repeat(40);
   const MAX_DIFF_CHARS = '24000';
@@ -1349,7 +1349,7 @@ describe('main() end-to-end: the full-with-carry diffText swap through the real 
         return new Response(JSON.stringify({
           status: 'completed', event: 'pull_request_target', head_sha: PARENT_SHA, run_attempt: 1,
           referenced_workflows: [{
-            path: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@v1',
+            path: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@v1',
             ref: 'refs/tags/v1',
             sha: TRUSTED_WORKFLOW_SHA,
           }],

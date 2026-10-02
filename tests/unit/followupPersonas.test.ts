@@ -11,7 +11,7 @@ import os from 'node:os';
 describe('Follow-Up PR Action Personas Suite', () => {
   const dummyConfig = createDefaultV3Config();
   const dummyPayload: any = {
-    owner: 'calltelemetry',
+    owner: 'exampleorg',
     repo: 'ct-review-bot',
     prNumber: 101,
     title: 'feat(api): add dynamic webhook integrations [ENG-123]',
@@ -34,7 +34,7 @@ describe('Follow-Up PR Action Personas Suite', () => {
     mockGithub.getBranchRef.mockResolvedValue('main-ref-sha');
     mockGithub.createBranch.mockResolvedValue(undefined);
     mockGithub.createOrUpdateFile.mockResolvedValue({ sha: 'file-sha-123' });
-    mockGithub.createPullRequest.mockResolvedValue({ number: 301, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/301' });
+    mockGithub.createPullRequest.mockResolvedValue({ number: 301, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/301' });
     mockGithub.postIssueComment.mockResolvedValue(undefined);
   });
 
@@ -47,7 +47,7 @@ describe('Follow-Up PR Action Personas Suite', () => {
 
     expect(res.created).toBe(true);
     expect(res.prNumber).toBe(301);
-    expect(mockGithub.createBranch).toHaveBeenCalledWith('calltelemetry', 'ct-review-bot', 'ct-review/docs-followup-pr-101', 'main-ref-sha');
+    expect(mockGithub.createBranch).toHaveBeenCalledWith('exampleorg', 'ct-review-bot', 'ct-review/docs-followup-pr-101', 'main-ref-sha');
     expect(mockGithub.createOrUpdateFile).toHaveBeenCalledWith(
       expect.objectContaining({
         path: 'docs/updates/pr-101-docs.md',
@@ -65,7 +65,7 @@ describe('Follow-Up PR Action Personas Suite', () => {
 
     expect(res.created).toBe(true);
     expect(res.prNumber).toBe(301);
-    expect(mockGithub.createBranch).toHaveBeenCalledWith('calltelemetry', 'ct-review-bot', 'ct-review/marketing-followup-pr-101', 'main-ref-sha');
+    expect(mockGithub.createBranch).toHaveBeenCalledWith('exampleorg', 'ct-review-bot', 'ct-review/marketing-followup-pr-101', 'main-ref-sha');
     expect(mockGithub.createOrUpdateFile).toHaveBeenCalledWith(
       expect.objectContaining({
         path: 'notes/release-updates-pr-101.md',
@@ -196,8 +196,8 @@ describe('Follow-Up PR Action Personas Suite', () => {
     const claimed = store.claimDelivery('delivery-persona-101');
     expect(claimed).toBe(true);
 
-    store.setHead('calltelemetry', 'ct-review-bot', 101, 'sha-persona-101');
-    const head = store.getHead('calltelemetry', 'ct-review-bot', 101);
+    store.setHead('exampleorg', 'ct-review-bot', 101, 'sha-persona-101');
+    const head = store.getHead('exampleorg', 'ct-review-bot', 101);
     expect(head).toBe('sha-persona-101');
   });
 });

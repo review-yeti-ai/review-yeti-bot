@@ -14,8 +14,8 @@ const workerToken = 'ghs_disputed_finding_fixture';
 const identity = {
   runId: `run_${'7'.repeat(32)}`,
   repositoryId: 123,
-  owner: 'calltelemetry',
-  repo: 'ct-uat',
+  owner: 'exampleorg',
+  repo: 'example-uat',
   prNumber: 1583,
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),

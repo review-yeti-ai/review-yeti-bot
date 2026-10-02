@@ -558,7 +558,7 @@ function createEmpiricalMockDb() {
 function createSampleAdmissionInput(overrides: Record<string, any> = {}) {
   const headSha = overrides.headSha || HEAD_SHA_1;
   const prNumber = overrides.prNumber ?? 42;
-  const owner = overrides.owner || 'calltelemetry';
+  const owner = overrides.owner || 'exampleorg';
   const repo = overrides.repo || 'dashboard';
   const identity = buildReviewRunIdentity({
     owner,
@@ -851,7 +851,7 @@ describe('Challenger M2-1 Empirical Stress Tests', () => {
       // Immediate second close call (e.g. duplicate webhook)
       const res2 = await repo.terminalizeRunsForClosedPullRequest({
         repositoryId: adm.repositoryId || 614653796,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti-bot',
         prNumber: adm.run.identity.prNumber,
         merged: false,

@@ -87,7 +87,7 @@ function gateCheck(overrides: Record<string, unknown> = {}) {
 
 function gracefulRequest(overrides: Record<string, unknown> = {}) {
   return {
-    owner: 'calltelemetry',
+    owner: 'exampleorg',
     repo: 'review-yeti-bot',
     headSha,
     runId,

@@ -7,7 +7,7 @@ import {
 } from '../../src/review/emptyModeration';
 
 /**
- * REL-1139 (ct-meta ADR 0687): the publishing worker asks the panel to skip the moderator only
+ * REL-1139 (example-meta ADR 0687): the publishing worker asks the panel to skip the moderator only
  * when `REVIEW_YETI_SKIP_EMPTY_MODERATION` covers the repository. A skipped run's check summary
  * says so, and its completion carries the `moderation` claim the trusted side re-decides.
  */
@@ -21,7 +21,7 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     NODE_ENV: 'test',
     REVIEW_PUBLICATION_MODE: 'app-gate',
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-    REVIEW_REPO: 'calltelemetry/ct-meta',
+    REVIEW_REPO: 'exampleorg/example-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
@@ -100,11 +100,11 @@ describe('publishing worker empty-moderation skip (REL-1139)', () => {
 
   it('does not ask the panel to skip when the list names other repositories', async () => {
     const d = deps(result());
-    await runPublishingReviewWorker(env({ [SKIP_EMPTY_MODERATION_FLAG]: 'calltelemetry/ct-meta-other,acme/app' }), d as never);
+    await runPublishingReviewWorker(env({ [SKIP_EMPTY_MODERATION_FLAG]: 'exampleorg/example-meta-other,acme/app' }), d as never);
     expect(panelInput(d)).not.toHaveProperty('skipEmptyModeration');
   });
 
-  it.each(['calltelemetry/ct-meta', 'acme/app CallTelemetry/CT-META', 'all', 'on'])('asks the panel to skip when the flag is %s', async (value) => {
+  it.each(['exampleorg/example-meta', 'acme/app Exampleorg/EXAMPLE-META', 'all', 'on'])('asks the panel to skip when the flag is %s', async (value) => {
     const d = deps(result());
     await runPublishingReviewWorker(env({ [SKIP_EMPTY_MODERATION_FLAG]: value }), d as never);
     expect(panelInput(d)).toMatchObject({ skipEmptyModeration: true });

@@ -69,7 +69,7 @@ describe('API Client Utility Module Unit Tests', () => {
   });
 
   it('fetchRepositories requests GET /api/dashboard/repositories', async () => {
-    const mockRepos = [{ owner: 'calltelemetry', repo: 'cisco-cdr', automationEnabled: true }];
+    const mockRepos = [{ owner: 'exampleorg', repo: 'example-api', automationEnabled: true }];
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: new Headers({ 'content-type': 'application/json' }),
@@ -81,16 +81,16 @@ describe('API Client Utility Module Unit Tests', () => {
   });
 
   it('updateRepository sends PATCH request to target owner/repo endpoint', async () => {
-    const mockRepo = { owner: 'calltelemetry', repo: 'cisco-cdr', automationEnabled: false };
+    const mockRepo = { owner: 'exampleorg', repo: 'example-api', automationEnabled: false };
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       headers: new Headers({ 'content-type': 'application/json' }),
       json: async () => ({ success: true, repository: mockRepo }),
     });
 
-    const result = await updateRepository('calltelemetry', 'cisco-cdr', { automationEnabled: false });
+    const result = await updateRepository('exampleorg', 'example-api', { automationEnabled: false });
     expect(global.fetch).toHaveBeenCalledWith(
-      '/api/dashboard/repositories/calltelemetry/cisco-cdr',
+      '/api/dashboard/repositories/exampleorg/example-api',
       expect.objectContaining({
         method: 'PATCH',
         body: JSON.stringify({ automationEnabled: false }),

@@ -8,13 +8,13 @@ let privateKey: KeyLike;
 let keySet: ReturnType<typeof createLocalJWKSet>;
 
 const claims = {
-  repository: 'calltelemetry/cisco-cdr',
+  repository: 'exampleorg/example-api',
   repository_id: '123',
   repository_owner_id: '99',
   run_id: '98765',
   run_attempt: '2',
   event_name: 'workflow_dispatch',
-  job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/review.yml@refs/heads/main',
+  job_workflow_ref: 'exampleorg/example-review-actions/.github/workflows/review.yml@refs/heads/main',
   job_workflow_sha: 'd'.repeat(40),
 };
 
