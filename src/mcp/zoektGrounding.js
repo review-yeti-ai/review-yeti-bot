@@ -68,10 +68,22 @@ function createZoektGroundingStage(overrides = {}) {
   const osImpl = overrides.os || os;
   const pathImpl = overrides.path || path;
   const indexBinaryPath = overrides.zoektIndexBinaryPath || 'zoekt-index';
+  const budget = require('./zoektMemoryBudget');
+  const readMemoryLimitBytes = overrides.readMemoryLimitBytes || (() => budget.readCgroupMemoryLimitBytes(fsImpl));
+  const readMemoryPeakBytes = overrides.readMemoryPeakBytes || (() => budget.readCgroupMemoryPeakBytes(fsImpl));
 
+  /** @returns {Promise<{ indexDir?: string, scratchDir?: string, reason?: string, indexScope?: any, memory?: { limitBytes?: number, floorBytes?: number, peakBytesAfterBuild?: number } }>} */
   return async function groundingStage(input = {}) {
     if (!input.enabled || !input.token) return { reason: 'disabled_or_unauthenticated' };
     if (input.signal?.aborted) return { indexDir: undefined, reason: 'cancelled' };
+    // An OOM kill is not fail-soft, so a container that cannot hold the index build must skip
+    // grounding with an explicit reason before any scratch or network work (REL-1282).
+    const memoryLimitBytes = readMemoryLimitBytes();
+    const decision = budget.groundingMemoryDecision({ limitBytes: memoryLimitBytes });
+    if (!decision.allowed) {
+      return { indexDir: undefined, reason: `grounding_skipped:${decision.reason}`,
+        memory: { limitBytes: decision.limitBytes, floorBytes: decision.floorBytes } };
+    }
     let scratchDir;
     try {
       scratchDir = fsImpl.mkdtempSync(pathImpl.join(osImpl.tmpdir(), 'review-yeti-zoekt-'));
@@ -88,6 +100,10 @@ function createZoektGroundingStage(overrides = {}) {
       // lifecycle ended. Never start a new index process from that late result.
       if (input.signal?.aborted) return { indexDir: undefined, scratchDir, reason: 'cancelled' };
       if (!materialized || materialized.status !== 'ok') {
+        // A repository over the archive cap is a deliberate skip, not a failure to investigate.
+        if (materialized?.reason === 'archive_too_large') {
+          return { indexDir: undefined, scratchDir, reason: 'grounding_skipped:archive_too_large' };
+        }
         return { indexDir: undefined, scratchDir, reason: `materialize_${materialized?.status || 'unknown'}` };
       }
       const built = await buildIndex({
@@ -101,7 +117,14 @@ function createZoektGroundingStage(overrides = {}) {
       if (!built || built.status !== 'ok') {
         return { indexDir: undefined, scratchDir, reason: `build_${built?.status || 'unknown'}` };
       }
-      return { indexDir, scratchDir, indexScope: { ...built.indexScope, repository: input.repository, headSha: input.headSha } };
+      // Container high-water mark after the build, for sizing the worker limit from real runs.
+      const peakBytes = readMemoryPeakBytes();
+      const memory = (memoryLimitBytes !== undefined || peakBytes !== undefined)
+        ? { ...(memoryLimitBytes !== undefined ? { limitBytes: memoryLimitBytes } : {}),
+          ...(peakBytes !== undefined ? { peakBytesAfterBuild: peakBytes } : {}) }
+        : undefined;
+      return { indexDir, scratchDir, ...(memory ? { memory } : {}),
+        indexScope: { ...built.indexScope, repository: input.repository, headSha: input.headSha } };
     } catch (error) {
       // Catch path owns its own cleanup: the caller never received a receipt,
       // so nothing else knows this scratch tree exists. An explicit fsPromises
