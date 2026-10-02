@@ -59,4 +59,41 @@ describe('central review identity is deployment configuration', () => {
     expect(rbac.canAccessRepository(caller, 'example-org', 'some-repo')).toBe(true);
     expect(rbac.canAccessRepository(caller, 'unrelated-org', 'some-repo')).toBe(false);
   });
+
+  it('admits a central repository_dispatch only when the central repository is configured', async () => {
+    const sha = 'a'.repeat(40);
+    const request = {
+      version: 'ActionDispatch.v1',
+      deliveryId: `actions:777:1:11:5:${sha}`,
+      repositoryId: 11,
+      owner: 'example-org',
+      repo: 'target',
+      prNumber: 5,
+      headSha: sha,
+      baseSha: 'b'.repeat(40),
+      actionSha: 'c'.repeat(40),
+      publishMode: 'app-gate',
+      requestedAt: '2026-10-02T00:00:00.000Z',
+      caller: { runId: '777', runAttempt: 1, eventName: 'repository_dispatch' },
+    };
+    const claims = {
+      repository: CENTRAL,
+      repository_id: '22',
+      run_id: '777',
+      run_attempt: '1',
+      event_name: 'repository_dispatch',
+    };
+
+    vi.stubEnv('REVIEW_YETI_CENTRAL_REPOSITORY', CENTRAL);
+    vi.resetModules();
+    const configured = await import('../../src/review/actionDispatch');
+    expect(configured.assertActionDispatchMatchesClaims(request as never, claims as never)).toBe('central');
+
+    vi.stubEnv('REVIEW_YETI_CENTRAL_REPOSITORY', '');
+    vi.resetModules();
+    const unconfigured = await import('../../src/review/actionDispatch');
+    expect(() => unconfigured.assertActionDispatchMatchesClaims(request as never, claims as never)).toThrow(
+      /does not match the verified GitHub OIDC claims/u,
+    );
+  });
 });
