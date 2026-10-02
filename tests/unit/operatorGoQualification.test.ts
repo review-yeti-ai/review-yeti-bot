@@ -98,10 +98,157 @@ describe('embedded operator Go qualification workflow', () => {
   });
 
   it('leaves the existing Vitest job boundary and timeout intact', () => {
-    expect(vitest['runs-on']).toBe('blacksmith-4vcpu-ubuntu-2404');
+    // PEG DECLINED for the default SKU. The shards are CPU-bound: measured
+    // same-SHA on PR #1247 against the 4-vCPU main baseline, every shard
+    // stretched 2.11x-2.31x, past the 2x budget where a vCPU cut loses on
+    // normalized compute (wall x vCPU). The node_modules cache was warm in the
+    // 2-vCPU run, so this is CPU and not a cold-cache artifact.
+    //
+    // `runs-on` is now the bench-aware expression: it honours the
+    // workflow_dispatch `bench_runner` override when set (for same-SHA A/B) and
+    // otherwise resolves to this job's own SKU.
+    // Pin the EXPRESSION'S SEMANTICS, not substrings. Substring checks pass for
+    // an inverted guard (`!=` -> `==`, which silently disables the override on
+    // every job) and for a flipped default SKU (`...-arm`), so they would not
+    // catch the exact regressions this assertion exists for.
+    expect(vitest['runs-on']).toMatch(
+      /\$\{\{ inputs\.bench_runner != '' && inputs\.bench_runner \|\| 'blacksmith-4vcpu-ubuntu-2404' \}\}/,
+    );
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
+  });
+
+  it('explains the bench_runner input and derives bench coverage from the workflow', () => {
+    // The publishing lane is the ONLY legitimate exclusion: those jobs choose
+    // their own runner per matrix arm (and per defence-in-depth they must not be
+    // swept into an A/B). Everything else that runs on a Blacksmith label must
+    // carry the bench expression.
+    const PUBLISH_LANE = new Set([
+      'publish-ghcr-arch', 'publish-ghcr', 'attest-published-indexes',
+    ]);
+
+    // Coverage is DERIVED, and deliberately NOT from the current `runs-on`:
+    // filtering on `includes('blacksmith-')` would let a job escape this guard
+    // simply by dropping the expression (e.g. moving vitest to ubuntu-latest),
+    // which is the "mixed runner set with no signal" failure it exists to prevent.
+    const benchCovered = Object.keys(workflow.jobs).filter((name) => !PUBLISH_LANE.has(name));
+
+    // Per-job default SKU, pinned explicitly. A loose [24]vcpu pattern cannot
+    // detect a 2<->4 vCPU change, and the test's copy of these values drifted
+    // from the workflow once already. Decisions documented from the same-SHA A/B.
+    const EXPECTED_DEFAULTS: Record<string, string> = {
+      // Measured green on 2 vCPU in the A/B (PR #1247).
+      'test-plan': 'blacksmith-2vcpu-ubuntu-2404',
+      'worker-helper': 'blacksmith-2vcpu-ubuntu-2404',
+      typecheck: 'blacksmith-2vcpu-ubuntu-2404',
+      'operator-test': 'blacksmith-2vcpu-ubuntu-2404',
+      'legacy-runtime': 'blacksmith-2vcpu-ubuntu-2404',
+      test: 'blacksmith-2vcpu-ubuntu-2404',
+      // DECLINED: vitest + vitest-postgres are CPU-bound (2.11-2.31x stretch;
+      // postgres 518s vs 115s) and build roughly doubles its wall time.
+      vitest: 'blacksmith-4vcpu-ubuntu-2404',
+      'vitest-postgres': 'blacksmith-4vcpu-ubuntu-2404',
+      build: 'blacksmith-4vcpu-ubuntu-2404',
+    };
+    // A job added without a documented SKU decision fails here rather than
+    // escaping the guard silently.
+    expect(benchCovered.filter((j) => !(j in EXPECTED_DEFAULTS))).toEqual([]);
+    expect(benchCovered.length).toBeGreaterThan(0);
+
+    // THE SOURCE, not just the consumers: deleting or renaming the input block
+    // leaves every runs-on string intact, so a consumers-only guard stays green
+    // while the override is dead on all nine jobs. Assert the declaration.
+    const dispatch = (workflow[true as any] ?? (workflow as any).on)?.workflow_dispatch;
+    expect(dispatch).toBeDefined();
+    const input = dispatch.inputs?.bench_runner;
+    expect(input).toBeDefined();
+    expect(input.required).toBe(false);
+    expect(input.default).toBe('');
+    // The options must include the labels the A/B actually dispatches with.
+    expect(input.options).toEqual(expect.arrayContaining([
+      '',
+      'blacksmith-2vcpu-ubuntu-2404',
+      'blacksmith-2vcpu-ubuntu-2404-arm',
+      'blacksmith-4vcpu-ubuntu-2404',
+      'blacksmith-4vcpu-ubuntu-2404-arm',
+      'ubuntu-latest',
+      'ubuntu-24.04-arm',
+    ]));
+
+    for (const job of benchCovered) {
+      const actual = (workflow.jobs[job] as any)['runs-on'];
+      const expected =
+        "${{ inputs.bench_runner != '' && inputs.bench_runner || '" +
+        EXPECTED_DEFAULTS[job] +
+        "' }}";
+      // Full literal: pins direction (a `!=` -> `==` inversion fails), the exact
+      // default SKU (a 2<->4 vCPU change fails), and the arm axis.
+      expect(job + '|' + actual).toBe(job + '|' + expected);
+    }
+  });
+
+
+  it('gates the cache layer on runner.environment with one derived key per family', () => {
+    // The portability claim rests on this discriminator, and nothing else
+    // exercised it: inverting a single `==` here would silently send every
+    // Blacksmith run down a cold `npm ci` -- green, just minutes slower. The
+    // composite action is parsed with the same treatment the workflow gets.
+    const actionPath = path.join(root, '.github/actions/node-deps/action.yml');
+    const action = yaml.load(fs.readFileSync(actionPath, 'utf8')) as any;
+    const steps = action.runs.steps as Array<Record<string, any>>;
+
+    const sticky = steps.filter((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('useblacksmith/stickydisk@'));
+    const actionsCache = steps.filter((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('actions/cache@'));
+
+    expect(sticky.length).toBe(2);
+    expect(actionsCache.length).toBe(2);
+    for (const s of sticky) {
+      expect(s.if).toBe("runner.environment == 'self-hosted'");
+    }
+    for (const s of actionsCache) {
+      expect(s.if).toBe("runner.environment == 'github-hosted'");
+    }
+
+    // Parity is structural: every mount step references a value derived once in
+    // the `key` step, so the two families cannot drift onto different keys.
+    const mountKeys = [...sticky, ...actionsCache].map((s) => s.with.key);
+    for (const k of mountKeys) {
+      expect(k).toMatch(/^\$\{\{ steps\.key\.outputs\.(npm_cache_key|node_modules_key) \}\}$/);
+    }
+    const keyStep = steps.find((s) => s.id === 'key');
+    expect(keyStep).toBeDefined();
+    expect(keyStep!.run).toContain('npm_cache_key=');
+    expect(keyStep!.run).toContain('node_modules_key=');
+  });
+
+  it('bounds the build heap so the build does not OOM on a smaller runner', () => {
+    // Node derives its default old-space cap from the HOST's RAM, so `next
+    // build` OOM'd on 2 vCPU (
+    //   FATAL ERROR: Ineffective mark-compacts near heap limit
+    //   Allocation failed - JavaScript heap out of memory)
+    // while the build's real working set is only ~1.4 GB RSS (measured with
+    // /usr/bin/time -l). Pinning NODE_OPTIONS makes the requirement a property
+    // of the build rather than of whichever runner it lands on -- which is what
+    // lets the SKU be chosen on cost without changing whether the build
+    // succeeds.
+    const build = workflow.jobs.build;
+    const buildSteps = build.steps as Array<Record<string, any>>;
+    const buildStep = buildSteps.find((s) =>
+      typeof s.run === 'string' && s.run.includes('npm run build'));
+    expect(buildStep).toBeDefined();
+    // Presence alone is not the invariant. The stated purpose is that the build
+    // does not OOM on a smaller runner, and the measured working set is ~1.4 GB
+    // RSS, so a cap BELOW that (e.g. --max-old-space-size=1024, a plausible
+    // "fit the small box" value) must fail this test rather than pass it.
+    const heapCapMb = Number(
+      /--max-old-space-size=(\d+)/.exec(buildStep!.env?.NODE_OPTIONS ?? '')?.[1],
+    );
+    expect(Number.isFinite(heapCapMb)).toBe(true);
+    expect(heapCapMb).toBeGreaterThanOrEqual(2048);
+    expect(build['timeout-minutes']).toBe(15);
   });
 
   it('parses only a successful conventional Go version readback', () => {
