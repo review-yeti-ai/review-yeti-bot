@@ -5011,8 +5011,25 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
-              raiseMaxOutputTokens(requestBody, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
-              if (!isDirectReasoning) requestBody.reasoning_effort = 'low';
+              // The admitted gateway's default reserve can be consumed entirely by
+              // reasoning. Repeating that exhausted reserve cannot recover the JSON.
+              // Grant one doubled reserve only for observed truncation at the
+              // default; preserve tighter caller limits and other route contracts.
+              const gatewayBudgetExhausted = options.guardedGatewayDestination === true
+                && requestBody.model === DIGEST_PINNED_GATEWAY_MODEL_ALIAS
+                && finishReason === 'length'
+                && requestBody.max_tokens === DEFAULT_DIRECT_MAX_OUTPUT_TOKENS;
+              raiseMaxOutputTokens(requestBody, gatewayBudgetExhausted
+                ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS * 2 : DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
+              if (gatewayBudgetExhausted) {
+                // The native Chat thinking toggle is separate from effort. Low
+                // effort still enables thinking and can consume the whole retry.
+                // Recover unrequested/optional thinking; retain explicit effort.
+                if (!configuredReasoningEffort || configuredReasoningEffort === 'none') {
+                  requestBody.thinking = { type: 'disabled' };
+                  delete requestBody.reasoning_effort;
+                }
+              } else if (!isDirectReasoning) requestBody.reasoning_effort = 'low';
               appendRecoveryInstructions([
                 '',
                 'FORMAT RECOVERY:',
