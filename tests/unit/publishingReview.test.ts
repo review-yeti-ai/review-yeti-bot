@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
@@ -121,6 +121,35 @@ function deps(over: Record<string, unknown> = {}) {
     client: {} as never,
     ...over,
   };
+}
+
+// The actual worker captures the advisory policy at module import time. Prepare
+// each variant in the owning bounded setup hooks; test deadlines stay unchanged.
+const advisoryPolicyWorkers = new Map<'false' | undefined, typeof runPublishingReviewWorker>();
+async function prepareAdvisoryPolicyWorker(advisory: 'false' | undefined): Promise<void> {
+  const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+  try {
+    if (advisory === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = advisory;
+    vi.resetModules();
+    const { runPublishingReviewWorker: worker } = await import('../../src/cli/publishingReview');
+    advisoryPolicyWorkers.set(advisory, worker);
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+    vi.resetModules();
+  }
+}
+beforeAll(async () => { await prepareAdvisoryPolicyWorker(undefined); });
+beforeAll(async () => { await prepareAdvisoryPolicyWorker('false'); });
+
+async function withAdvisoryPolicy(
+  advisory: 'false' | undefined,
+  check: (worker: typeof runPublishingReviewWorker) => Promise<void>,
+): Promise<void> {
+  const worker = advisoryPolicyWorkers.get(advisory);
+  expect(worker).toBeTypeOf('function');
+  await check(worker!);
 }
 
 describe('qualification source arguments', () => {
@@ -1501,6 +1530,42 @@ describe('runPublishingReviewWorker', () => {
       }
       expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
     }
+  });
+
+  it.each([
+    [undefined, 'P0', 'failure'], [undefined, 'P1', 'failure'], [undefined, 'P2', 'failure'],
+    ['false', 'P0', 'failure'], ['false', 'P1', 'failure'], ['false', 'P2', 'success'],
+  ] as const)('advisory policy %s publishes %s as %s through the actual worker', async (advisory, severity, conclusion) => {
+    await withAdvisoryPolicy(advisory, async (worker) => {
+      const finding = { severity, path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' };
+      const completion = {
+        reportTerminalFailure: vi.fn(async () => {}),
+        reportTerminalSuccess: vi.fn(async () => {}),
+        reportReviewEvidence: vi.fn(async () => {}),
+      };
+      const cc = checkClient();
+      const d = deps({ completion, checkClient: cc, panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'], personas: [{ id: 'sec-lane', findings: [finding] }],
+        optionalFailures: [], quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) });
+      const receipt = await worker(env(), d as never);
+      expect(receipt.conclusion).toBe(conclusion);
+      expect(receipt.findingCount).toBe(1);
+      expect(receipt.blockingFindingCount).toBe(conclusion === 'failure' ? 1 : 0);
+      expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        conclusion, annotations: [expect.objectContaining({
+          title: `${severity}: Blocking`, annotation_level: conclusion === 'failure' ? 'failure' : 'warning',
+        })],
+      }));
+      expect(completion.reportReviewEvidence).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        conclusion, result: expect.objectContaining({ personas: [expect.objectContaining({
+          decision: 'FINDINGS', findings: [expect.objectContaining(finding)],
+        })] }),
+      }));
+      expect(completion.reportTerminalSuccess).toHaveBeenCalledTimes(conclusion === 'success' ? 1 : 0);
+      expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+    });
   });
 
   it('still reports the terminal success when the evidence callback fails', async () => {
