@@ -3,6 +3,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createApp } from '../../src/app';
+import { assertLiveMarkup } from '../support/dashboardMarkup';
 import { LiveStreamBus } from '../../src/live/liveStreamBus';
 import { dashboardStore } from '../../src/persistence/dashboardStore';
 
@@ -36,7 +37,7 @@ describe('Empirical Challenger M4_1: UI Routes, SSE Stream, Terminal Logs, Setti
       const res = await request(app).get('/dashboard/live');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/html');
-      expect(res.text).toContain('Live Agent');
+      assertLiveMarkup(res.text);
       expect(res.text).toContain('id="terminal-feed"');
       expect(res.text).toContain('id="inspector-prompt"');
       expect(res.text).toContain('id="connection-status"');

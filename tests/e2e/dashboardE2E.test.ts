@@ -4,6 +4,11 @@ import path from 'node:path';
 import http from 'node:http';
 import request from 'supertest';
 import { createApp } from '../../src/app';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { TelemetryChartsGrid } from '../../src/components/dashboard/telemetry-charts-grid';
+import type { OverviewStats } from '../../src/types/dashboard';
+import { assertDashboardClientAssets, assertLiveMarkup, assertSettingsMarkup, dashboardDocument } from '../support/dashboardMarkup';
 
 describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suite', () => {
   let app: any;
@@ -29,20 +34,30 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
       expect(indexHtmlContent).toContain('echarts.min.js');
     });
 
-    it('contains container element for Token Consumption Time-Series chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-tokens-timeseries"');
+    const stats = { totalTokens: { prompt: 120, completion: 30, total: 150 }, totalCostUSD: 0,
+      passRatePercent: 64.5, r2CacheHitRatePercent: 77.4 } as unknown as OverviewStats;
+    const telemetry = () => new (require('jsdom').JSDOM)(renderToStaticMarkup(createElement(TelemetryChartsGrid, { stats }))).window.document as Document;
+
+    it('renders token throughput from overview data when telemetry is mounted', () => {
+      const card = telemetry().querySelector('#chart-tokens-timeseries');
+      expect(card?.textContent).toContain('150');
+      expect(card?.textContent).toContain('Prompt (80%)120');
+      expect(card?.textContent).toContain('Completion (20%)30');
     });
 
-    it('contains container element for Model Cost Breakdown chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-model-costs"');
+    it('renders an observed zero model spend without substituting sample costs', () => {
+      expect(telemetry().querySelector('#chart-model-costs')?.textContent).toContain('$0.000');
     });
 
-    it('contains container element for Persona Verdicts & Latency chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-persona-verdicts"');
+    it('renders the observed quality consensus percentage', () => {
+      expect(telemetry().querySelector('#chart-arbitration-consensus')?.textContent).toContain('64.5%');
     });
 
-    it('contains container element for Nit Suppression & Indexer Performance chart', () => {
-      expect(indexHtmlContent).toContain('id="chart-indexer-performance"');
+    it('renders the observed workspace cache hit rate', () => {
+      expect(telemetry().querySelector('#chart-indexer-performance')?.textContent).toContain('77.4%');
+      const document = dashboardDocument(indexHtmlContent);
+      expect(Array.from(document.querySelectorAll('main [role="tab"]')).map((tab) => tab.textContent))
+        .toContain('Fleet Telemetry & Compaction ROI');
     });
   });
 
@@ -57,22 +72,23 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
       expect(liveHtmlContent.length).toBeGreaterThan(100);
     });
 
-    it('contains all 11 persona tab buttons in public/live.html', () => {
-      const personas = [
-        'security',
-        'architecture',
-        'performance',
-        'quality',
-        'database',
-        'api_contract',
-        'reliability',
-        'devops',
-        'docs_compliance',
-        'finops',
-        'red_team',
-      ];
-      expect(liveHtmlContent).toContain('11 Personas Active');
-      expect(liveHtmlContent.includes('Tabbed Persona Explorer') || liveHtmlContent.includes('id="terminal-feed"')).toBe(true);
+    it('serves a hydratable live swarm page and its actual client chunks', async () => {
+      assertLiveMarkup(liveHtmlContent);
+      await assertDashboardClientAssets(app, liveHtmlContent, 'live');
+    });
+
+    it('rejects a wrong-route shell and hidden placeholders in place of the settings editor', () => {
+      expect(() => assertLiveMarkup(settingsHtmlContent)).toThrow();
+      const document = dashboardDocument(settingsHtmlContent);
+      document.querySelector('main button[id="save-all-btn"]')!.remove();
+      expect(() => assertSettingsMarkup(document.documentElement.outerHTML.replace('<html', '<!doctype html><html'))).toThrow();
+    });
+
+    it('rejects an HTTP 200 HTML fallback in place of a client bundle', async () => {
+      const express = (await import('express')).default;
+      const missingAssets = express();
+      missingAssets.use((_req, res) => res.type('html').send(indexHtmlContent));
+      await expect(assertDashboardClientAssets(missingAssets, liveHtmlContent, 'live')).rejects.toThrow();
     });
 
     it('contains streaming LLM token metrics counter elements in public/live.html', () => {
@@ -112,13 +128,13 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
     it('serves GET /dashboard/settings with persona prompt control panel', async () => {
       const res = await request(app).get('/dashboard/settings');
       expect(res.status).toBe(200);
-      expect(res.text).toContain('Platform &amp; Persona Control Panel');
+      assertSettingsMarkup(res.text);
+      await assertDashboardClientAssets(app, res.text, 'settings');
       expect(res.text).toContain('src="/js/settings.js"');
     });
 
-    it('contains Domain-Specialized Persona Review Roster banner in public/settings.html', () => {
-      expect(settingsHtmlContent).toContain('Domain-Specialized Persona Review Roster');
-      expect(settingsHtmlContent).toContain('id="persona-settings-grid"');
+    it('contains the task settings editor and save controls in public/settings.html', () => {
+      assertSettingsMarkup(settingsHtmlContent);
     });
 
     it('loads all 11 reviewer personas via GET /api/dashboard/personas', async () => {

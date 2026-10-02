@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { describe, expect, it } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import {
   Card,
   CardHeader,
@@ -28,7 +28,17 @@ import {
   Flex,
   Divider,
 } from '../../../src/components/dashboard/tremor';
+import OverviewPage from '../../../src/app/page';
 import { ShieldCheck, Cpu } from 'lucide-react';
+
+vi.mock('../../../src/components/live/LiveDashboardView', () => ({ LiveDashboardView: () => <div>Active live fixture</div> }));
+vi.mock('../../../src/lib/api-client', () => ({
+  fetchReviewLogs: async () => [],
+  fetchOverviewStats: async () => ({ totalRepositories: 2, activeAutomations: 0, totalReviewsExecuted: 4,
+    totalCostUSD: 0, monthlyCostCapUSD: 100, costCapBreached: false,
+    totalTokens: { prompt: 120, completion: 30, total: 150 }, providerHealth: [],
+    memoryGraph: { symbolNodesCount: 1, symbolEdgesCount: 0, learningsCount: 0, suppressedNitsCount: 0, adrConstraintsCount: 0 } }),
+}));
 
 describe('Tremor & Tremor Raw Dashboard UX Component Suite', () => {
   describe('Card & Typography Primitives', () => {
@@ -239,5 +249,18 @@ describe('Tremor & Tremor Raw Dashboard UX Component Suite', () => {
       expect(container.querySelector('hr')).toBeInTheDocument();
       expect(container.querySelector('.grid-cols-2')).toBeInTheDocument();
     });
+  });
+});
+
+
+describe('Overview telemetry navigation', () => {
+  it('mounts observed telemetry after selecting the fleet tab instead of requiring inactive cards in the export', async () => {
+    const { container } = render(<OverviewPage />);
+    expect(container.querySelector('[id="chart-tokens-timeseries"]')).toBeNull();
+    const fleet = screen.getByRole('tab', { name: 'Fleet Telemetry & Compaction ROI' });
+    fireEvent.mouseDown(fleet, { button: 0, ctrlKey: false });
+    await waitFor(() => expect(container.querySelector('[id="chart-tokens-timeseries"]')?.textContent).toContain('Prompt (80%)120'));
+    expect(container.querySelector('[id="chart-model-costs"]')?.textContent).toContain('$0.000');
+    expect(fleet).toHaveAttribute('aria-selected', 'true');
   });
 });
