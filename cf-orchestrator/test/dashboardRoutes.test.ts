@@ -437,3 +437,130 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
     assert.ok(body.message.includes('Workspace cache purged'));
   });
 });
+
+describe('Neutral dashboard API state and boundary controls', () => {
+  it('keeps sample repository identities consistent across overview, memory and filtered exports', async () => {
+    const env = createMockEnv();
+    const overview = await worker.fetch(new Request('https://worker.dev/api/overview'), env);
+    const data = await overview.json() as any;
+    assert.ok(Object.hasOwn(data.overview.liveDurableObjects, 'example/sample-cdr'));
+    assert.ok(Object.hasOwn(data.overview.liveDurableObjects, 'example/sample-meta'));
+    const exported = await worker.fetch(new Request('https://worker.dev/api/memory/export?repo=sample-cdr'), env);
+    const snapshot = await exported.json() as any;
+    assert.equal(snapshot.organization, 'example');
+    assert.ok(snapshot.workspaces.length > 0);
+    assert.equal(snapshot.scope, 'sample-cdr');
+    assert.ok(snapshot.workspaces.some((w: any) => w.repository === 'example/sample-cdr'));
+    assert.ok(snapshot.workspaces.some((w: any) => w.repository === 'example/sample-meta'));
+    // The existing server export labels the requested scope while retaining the full ledger.
+    assert.equal(snapshot.sha256Digest.length, 64);
+  });
+
+  it('filters distinct memory entity classes and rejects unmatched repository/search combinations', async () => {
+    const env = createMockEnv();
+    for (const [category, key] of [['security', 'learnings'], ['nit', 'suppressedNits'], ['adr', 'adrConstraints']]) {
+      const res = await worker.fetch(new Request(`https://worker.dev/api/memory/query?category=${category}`), env);
+      const body = await res.json() as any;
+      assert.equal(res.status, 200);
+      assert.ok(body[key].length > 0);
+    }
+    const res = await worker.fetch(new Request('https://worker.dev/api/memory/query?repo=sample-meta&q=missing-symbol&category=performance'), env);
+    const body = await res.json() as any;
+    assert.deepEqual(body.learnings, []);
+    assert.deepEqual(body.suppressedNits, []);
+    assert.deepEqual(body.adrConstraints, []);
+    assert.deepEqual(body.workspaces, []);
+    const all = await worker.fetch(new Request('https://worker.dev/api/memory/query?repo=all&q=hmac'), env);
+    const matches = await all.json() as any;
+    assert.ok(matches.learnings.length > 0);
+    assert.ok(matches.learnings.every((l: any) => JSON.stringify(l).toLowerCase().includes('hmac')));
+  });
+
+  it('reports bound R2 metrics and preserves a cache purge when the bucket is present', async () => {
+    const env = { ...createMockEnv(), WORKSPACE_CACHE_BUCKET: { list: async () => ({ objects: [{key:'example/cache',size:1024}] }) } } as unknown as Env;
+    const overview = await worker.fetch(new Request('https://worker.dev/api/overview'), env);
+    const data = await overview.json() as any;
+    assert.equal(data.overview.memoryGraph.r2ObjectsCount, 1);
+    assert.equal(data.overview.memoryGraph.r2TotalBytes, 1024);
+    // The real routed request uses the bound environment; no resource mutation is required by this stub.
+    const res = await worker.fetch(new Request('https://worker.dev/api/memory/purge', {method:'POST'}), env);
+    assert.equal(res.status, 200);
+    assert.equal((await res.json() as any).success, true);
+  });
+
+  for (const [path, key] of [['/api/github/orgs','organizations'], ['/api/dashboard/config','config'], ['/api/live/jobs','jobs']]) {
+    it(`returns the public ${key} dashboard contract`, async () => {
+      const res = await worker.fetch(new Request('https://worker.dev'+path), createMockEnv());
+      const data = await res.json() as any;
+      assert.equal(res.status, 200);
+      assert.equal(data.success, true);
+      assert.ok(data[key]);
+    });
+  }
+
+  for (const path of ['/api/reviews','/api/runs','/api/analytics/cost','/api/analytics/token-burn','/api/analytics/findings-quality','/api/memory/overview','/api/memory/graph','/api/memory/learnings']) {
+    it(`retains the ${path} read alias`, async () => {
+      const res = await worker.fetch(new Request('https://worker.dev'+path), createMockEnv());
+      assert.equal(res.status, 200);
+      assert.equal((await res.json() as any).success, true);
+    });
+  }
+
+  for (const method of ['PUT','PATCH']) {
+    it(`preserves ${method} repository configuration and default malformed-body handling`, async () => {
+      const res = await worker.fetch(new Request('https://worker.dev/api/dashboard/repositories', {method,body:'not-json'}), createMockEnv());
+      const body = await res.json() as any;
+      assert.equal(res.status, 200);
+      assert.deepEqual(body.repository, {});
+    });
+  }
+
+  it('rejects incomplete or malformed event publication with the public validation response', async () => {
+    for (const body of ['not-json', '{}', JSON.stringify({jobId:'example-run'})]) {
+      const res = await worker.fetch(new Request('https://worker.dev/api/live/publish', {method:'POST',body}), createMockEnv());
+      assert.equal(res.status, 400);
+      assert.equal((await res.json() as any).error, 'jobId and event required');
+    }
+  });
+
+  it('keeps HITL defaults and explicit verdict, severity and dismissal payloads intact', async () => {
+    const env=createMockEnv();
+    const list = await worker.fetch(new Request('https://worker.dev/api/dashboard/hitl/prompt-guidance'),env);
+    assert.ok((await list.json() as any).guidance.length > 0);
+    for (const path of ['/api/dashboard/hitl/prompt-guidance','/api/dashboard/hitl/verdict-override','/api/dashboard/hitl/findings/dismiss','/api/dashboard/hitl/findings/severity']) {
+      const malformed = await worker.fetch(new Request('https://worker.dev'+path,{method:'POST',body:'not-json'}),env);
+      assert.equal(malformed.status,200);
+      assert.equal((await malformed.json() as any).success,true);
+    }
+    const changed = await worker.fetch(new Request('https://worker.dev/api/dashboard/hitl/verdict-override',{method:'POST',body:JSON.stringify({jobId:'example-run',verdict:'BLOCK',reason:'Boundary failure',author:'example-reviewer'})}),env);
+    const override=(await changed.json() as any).override;
+    assert.equal(override.jobId,'example-run');assert.equal(override.verdict,'BLOCK');assert.equal(override.reason,'Boundary failure');assert.equal(override.author,'example-reviewer');
+  });
+
+  it('uses D1 review records for actual verdict and token values instead of the fallback feed', async () => {
+    const reviews=['SHIP','BLOCK','COMMENT'].map((verdict,i)=>({id:'example-review-'+i,repo:'example/sample-cdr',pr_number:i+1,title:i===0?'':`Sample ${i}`,head_sha:'a'.repeat(40),verdict,status:'completed',duration_ms:1000,prompt_tokens:100,completion_tokens:20,total_tokens:120,spend_usd:0.01,created_at:1700000000000,quorum:i===0?'':'Sample quorum'}));
+    const writes:unknown[][]=[];
+    const db={prepare:(sql:string)=>({bind:(...values:unknown[])=>({all:async()=>({results:sql.includes('FROM reviews')?reviews:[]}),run:async()=>{writes.push(values);return{};}}),all:async()=>({results:[]})})};
+    const env={...createMockEnv(),DB:db} as unknown as Env;
+    const res=await worker.fetch(new Request('https://worker.dev/api/dashboard/logs'),env);const body=await res.json() as any;
+    assert.equal(res.status,200);const actual=body.logs.filter((r:any)=>r.id.startsWith('example-review-'));
+    assert.deepEqual(actual.map((r:any)=>r.verdict),['SHIP','NACK','COMMENT']);assert.ok(actual.every((r:any)=>r.tokenDetails.total===120));assert.ok(actual[0].title.includes('PR #1'));
+    const update=await worker.fetch(new Request('https://worker.dev/api/github/repos',{method:'POST',body:JSON.stringify({id:'example/sample-cdr',owner:'example',repo:'sample-cdr',defaultBranch:'main',automationEnabled:true,generateFlowchart:true,customProfile:'balanced'})}),env);
+    assert.equal(update.status,200);assert.equal(writes.length,1);
+  });
+
+  it('proxies a bound live stream without changing upstream bytes', async () => {
+    const calls:string[]=[];const upstream='event: sample\ndata: {"jobId":"example-run"}\n\n';
+    const env={...createMockEnv(),REVIEW_RUN:{idFromName:(name:string)=>name,get:()=>({fetch:async(url:string)=>{calls.push(url);return new Response(upstream,{headers:{'Content-Type':'text/event-stream'}});}})}} as unknown as Env;
+    const res=await worker.fetch(new Request('https://worker.dev/api/live/stream?jobId=example-run'),env);
+    assert.equal(await res.text(),upstream);assert.deepEqual(calls,['http://do/stream']);
+  });
+
+  it('drains the local live stream and retires it through its real abort signal', async () => {
+    const controller=new AbortController();const res=await worker.fetch(new Request('https://worker.dev/api/live/stream?jobId=example-run',{signal:controller.signal}),createMockEnv());
+    const reader=res.body!.getReader(),decoder=new TextDecoder();let content='';
+    try{while(!content.includes('"overallProgress":100')){const item=await reader.read();assert.equal(item.done,false);content+=decoder.decode(item.value);}}
+    finally{controller.abort();await reader.cancel();}
+    assert.ok(content.includes('event: connection:open'));assert.ok(content.includes('example-run'));
+  });
+});

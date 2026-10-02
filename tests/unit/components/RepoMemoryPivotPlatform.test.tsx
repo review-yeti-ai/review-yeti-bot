@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { describe, expect, it } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, within, waitFor, act } from '@testing-library/react';
 import { RepoMemoryPivotPlatform } from '@/components/analytics/RepoMemoryPivotPlatform';
 
 describe('RepoMemoryPivotPlatform Component Suite', () => {
@@ -136,5 +136,191 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     // Clear search
     fireEvent.change(searchInput, { target: { value: '' } });
     expect(within(tbody).getByText('reviewyeti-ai/review-yeti-bot')).toBeInTheDocument();
+  });
+});
+
+
+vi.mock('@/lib/api-client', async () => ({
+  ...await vi.importActual<typeof import('@/lib/api-client')>('@/lib/api-client'),
+  fetchMemoryStats: vi.fn(),
+  purgeMemoryCache: vi.fn(),
+  exportMemorySnapshot: vi.fn(),
+}));
+
+import MemoryPage from '@/app/memory/page';
+import { fetchMemoryStats, purgeMemoryCache, exportMemorySnapshot } from '@/lib/api-client';
+
+function memoryResponse() {
+  const repositories = ['example/sample-cdr', 'example/sample-meta'];
+  return {
+    success: true,
+    r2: { bucket: 'example-memory', objectCount: 2, totalBytes: 2048, hitRatePercent: 95 },
+    compaction: { ratio: '4.2x', boundsReduction: '76%', lockfilesBypassed: '100%' },
+    workspaces: repositories.map((repository, i) => ({ key: `example-outline-${i}`, repository, prNumber: i + 1, symbolCount: 100 + i, outlineDepth: 3, rawSizeKb: 20, compactedSizeKb: 5, compactionRatio: '4x', ttlMinutes: 20, status: i === 0 ? 'ready' : 'expired', lastHydratedAt: '2026-10-02T00:00:00Z' })),
+    learnings: repositories.map((repo, i) => ({ id: `example-learning-${i}`, repo, prNumber: i + 1, category: i === 0 ? 'security' : 'architecture', title: i === 0 ? 'Quoted "boundary" rule' : 'Architecture ledger', description: 'Verify public filtering', filePath: `src/example-${i}.ts`, confidence: 0.95, triggersCount: 2, lastApplied: '2026-10-02T00:00:00Z' })),
+    suppressedNits: repositories.map((repo, i) => ({ id: `example-nit-${i}`, ruleId: `sample-rule-${i}`, repo, prNumber: i + 1, pattern: `Quoted "sample" ${i}`, filePath: `src/nit-${i}.ts`, reason: 'Existing sample convention', suppressionCount: 3 })),
+    adrConstraints: repositories.map((repo, i) => ({ id: `example-adr-${i}`, repo, adrNumber: i + 1, title: `Sample ADR ${i}`, rule: 'Keep public interfaces stable', targetPaths: [`src/adr-${i}.ts`], status: 'active' })),
+    analytics: {
+      timeline: [{ period: 'now', symbols: 200, cachedBytes: 2048, hitRate: 95, compactionRatio: 4.2 }],
+      categoryDistribution: [{ name: 'security', count: 1, percentage: 50, color: '#00ff00' }, { name: 'architecture', count: 1, percentage: 50, color: '#0000ff' }],
+      repoMetrics: repositories.map(repo => ({ repo, cachedBytes: 1024, hitRate: 95, symbols: 100, activeRules: 1 })),
+    },
+  };
+}
+
+function selectMemoryTab(name: RegExp) {
+  const tab = screen.getByRole('tab', { name });
+  fireEvent.mouseDown(tab, { button: 0, ctrlKey: false });
+  expect(tab).toHaveAttribute('data-state', 'active');
+}
+
+async function renderMemoryPage() {
+  render(<MemoryPage />);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+}
+
+describe('MemoryPage public neutral state and export controls', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(fetchMemoryStats).mockResolvedValue(memoryResponse() as Awaited<ReturnType<typeof fetchMemoryStats>>);
+    vi.mocked(purgeMemoryCache).mockResolvedValue({ success: true, message: 'Sample cache sweep completed', deletedCount: 2 });
+    vi.mocked(exportMemorySnapshot).mockResolvedValue({ success: true, sha256Digest: 'a'.repeat(64) });
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('loads the public memory contract, filters both sample repositories and restores all filters', async () => {
+    await renderMemoryPage();
+    selectMemoryTab(/Workspaces & R2 Cache/);
+    expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
+    expect(screen.getByText('example-outline-1', { exact: false })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-cdr' } });
+    expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
+    expect(screen.queryByText('example-outline-1', { exact: false })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-meta' } });
+    expect(screen.getByText('example-outline-1', { exact: false })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Clear filters'));
+    expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toHaveValue('all');
+  });
+
+  it('searches public ledger fields and category chips without retaining unrelated rules', async () => {
+    await renderMemoryPage();
+    selectMemoryTab(/Knowledge Ledger/);
+    const search = screen.getByPlaceholderText(/Filter by keyword, symbol/);
+    for (const query of ['boundary', 'public filtering', 'src/example-0', 'example/sample-cdr', 'sample convention', 'src/nit-0', 'sample-rule-0', 'interfaces stable', 'src/adr-0', 'no-such-symbol']) {
+      fireEvent.change(search, { target: { value: query } });
+      expect(search).toHaveValue(query);
+      if (query === 'no-such-symbol') expect(screen.queryByText('Sample ADR 0')).not.toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByText('✕'));
+    expect(search).toHaveValue('');
+    for (const label of ['Sec', 'Arch', 'Perf', 'Nits', 'ADRs', 'All']) {
+      fireEvent.click(screen.getByRole('button', { name: label, exact: true }));
+      expect(screen.getByRole('button', { name: label, exact: true }).className).toContain('font-semibold');
+    }
+    expect(screen.getByText('Quoted "boundary" rule')).toBeInTheDocument();
+  });
+
+  it('exports only the chosen sample scope in JSON, Markdown and quote-safe CSV', async () => {
+    await renderMemoryPage();
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-cdr' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(exportMemorySnapshot).toHaveBeenCalledWith('json', 'sample-cdr'));
+    const preview = within(dialog).getByRole('textbox') as HTMLTextAreaElement;
+    await waitFor(() => expect(JSON.parse(preview.value).sha256Digest).toBe('a'.repeat(64)));
+    const data = JSON.parse(preview.value);
+    expect(data.organization).toBe('example');
+    expect(data.workspaces).toHaveLength(1);
+    expect(data.learnings[0].repo).toBe('example/sample-cdr');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Executive Markdown Report' }));
+    expect(preview.value).toContain('Organization: example');
+    expect(preview.value).toContain('example/sample-cdr');
+    expect(preview.value).not.toContain('example/sample-meta');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'CSV Spreadsheet' }));
+    expect(preview.value).toContain('"Quoted ""boundary"" rule"');
+    expect(preview.value).toContain('"Quoted ""sample"" 0"');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'JSON Schema v2.1' }));
+    expect(JSON.parse(preview.value).organization).toBe('example');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('copies and downloads each real export format and resets the copied indication', async () => {
+    const createUrl = vi.fn().mockReturnValue('blob:example-memory');
+    const revokeUrl = vi.fn();
+    vi.stubGlobal('URL', Object.assign(class extends URL {}, { createObjectURL: createUrl, revokeObjectURL: revokeUrl }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    await renderMemoryPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(exportMemorySnapshot).toHaveBeenCalled());
+    for (const label of ['JSON Schema v2.1', 'Executive Markdown Report', 'CSV Spreadsheet']) {
+      fireEvent.click(within(dialog).getByRole('button', { name: label }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Download File' }));
+      expect(createUrl).toHaveBeenLastCalledWith(expect.any(Blob));
+      expect(revokeUrl).toHaveBeenLastCalledWith('blob:example-memory');
+    }
+    expect(click).toHaveBeenCalledTimes(3);
+    vi.useFakeTimers();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Copy', exact: true }));
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value);
+    expect(within(dialog).getByText('Copied to Clipboard')).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(within(dialog).getByRole('button', { name: 'Copy', exact: true })).toBeInTheDocument();
+  });
+
+  it('copies each rule class and clears the copied state through the real timer callback', async () => {
+    await renderMemoryPage();
+    selectMemoryTab(/Knowledge Ledger/);
+    const copies = [...screen.getAllByRole('button', { name: 'Copy Rule', exact: true }), ...screen.getAllByRole('button', { name: 'Copy', exact: true })];
+    vi.useFakeTimers();
+    for (const button of copies) {
+      fireEvent.click(button);
+      expect(navigator.clipboard.writeText).toHaveBeenCalled();
+      expect(JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)![0]).repo).toMatch(/^example\/sample-/);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    }
+    expect(screen.queryByRole('button', { name: 'Copied', exact: true })).not.toBeInTheDocument();
+  });
+
+  it('refreshes and purges successfully, dismissing the actual completion notice', async () => {
+    await renderMemoryPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Purge Expired' }));
+    expect(await screen.findByText('Sample cache sweep completed')).toBeInTheDocument();
+    await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(3));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect(screen.queryByText('Sample cache sweep completed')).not.toBeInTheDocument();
+  });
+
+  it('keeps neutral local export and safe cache notice when public APIs reject', async () => {
+    vi.mocked(exportMemorySnapshot).mockRejectedValue(new Error('Sample export unavailable'));
+    vi.mocked(purgeMemoryCache).mockRejectedValue(new Error('Sample purge unavailable'));
+    await renderMemoryPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Purge Expired' }));
+    expect(await screen.findByText('Workspace cache swept. Ephemeral outlines purged successfully.')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).organization).toBe('example'));
+    expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).workspaces).toHaveLength(2);
+  });
+
+  it('retains empty fallback state when memory loading fails and can refresh afterward', async () => {
+    vi.mocked(fetchMemoryStats).mockRejectedValueOnce(new Error('Sample network unavailable'));
+    await renderMemoryPage();
+    selectMemoryTab(/Knowledge Ledger/);
+    expect(screen.queryByText('Quoted "boundary" rule')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('Quoted "boundary" rule')).toBeInTheDocument();
   });
 });
