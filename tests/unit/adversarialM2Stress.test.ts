@@ -14,11 +14,8 @@ import { Context7Adapter } from '../../src/mcp/context7Adapter';
 import { PRMemoryStore } from '../../src/memory/prMemoryStore';
 import { SQLiteMemoryAdapter } from '../../src/memory/adapters/sqliteAdapter';
 
-// This suite covers the current default publishing policy: P2 findings require
-// resolution unless the worker is explicitly configured to opt out.
-vi.hoisted(() => {
-  process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'true';
-});
+// This suite keeps the default process policy intact: P2 can leave the raw
+// arbiter at SHIP while the publisher's independent strict conclusion fails.
 
 const HEAD = '1'.repeat(40);
 const BASE = '2'.repeat(40);
@@ -238,7 +235,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     );
   });
 
-  it('Scenario 7: P2 advisory findings require resolution under the default publishing policy', async () => {
+  it('Scenario 7: a raw SHIP with a P2 finding still fails the strict published conclusion', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['style'],
@@ -264,7 +261,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
-    expect(result.verdict).toBe('FIX_FIRST');
+    expect(result.verdict).toBe('SHIP');
     expect(result.conclusion).toBe('failure');
     expect(result.blockingFindingCount).toBe(1);
     expect(result.findingCount).toBe(1);
@@ -272,7 +269,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
         conclusion: 'failure',
-        title: 'Review Yeti: FIX_FIRST',
+        title: 'Review Yeti: SHIP',
       }),
     );
   });

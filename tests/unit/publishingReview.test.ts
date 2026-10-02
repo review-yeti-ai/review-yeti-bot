@@ -7,7 +7,7 @@ import * as publishingProgress from '../../src/telemetry/publishingProgress';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
-import { MAX_PERSONAS, MAX_TEXT_CHARACTERS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { MAX_PERSONAS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import {
   classifyFailure,
@@ -1459,10 +1459,11 @@ describe('runPublishingReviewWorker', () => {
     });
   });
 
-  it('reports the findings behind a self-published check as evidence, before the terminal callback, for both conclusions', async () => {
-    for (const [finding, conclusion] of [
-      [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }, 'failure'],
-      [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }, 'success'],
+  it('reports lane evidence before the terminal callback for a blocking failure and a clean success', async () => {
+    for (const { findings, conclusion, expectedDecision } of [
+      { findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }],
+        conclusion: 'failure', expectedDecision: 'FINDINGS' },
+      { findings: [], conclusion: 'success', expectedDecision: 'APPROVE' },
     ] as const) {
       const order: string[] = [];
       const completion = {
@@ -1476,7 +1477,7 @@ describe('runPublishingReviewWorker', () => {
         completion, checkClient: cc,
         panelRunner: vi.fn(async () => ({
           applicablePersonaIds: ['sec-lane'],
-          personas: [{ id: 'sec-lane', findings: [finding] }],
+          personas: [{ id: 'sec-lane', findings }],
           optionalFailures: [],
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict: 'SHIP' },
@@ -1489,8 +1490,8 @@ describe('runPublishingReviewWorker', () => {
       const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as Record<string, any>;
       expect(event).toMatchObject({
         version: 'WorkerReviewEvidence.v1', runId: env().REVIEW_RUN_ID, executionAttempt: 2, checkId: 4242, conclusion,
-        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: 'FINDINGS',
-          findings: [expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })] }] },
+        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: expectedDecision,
+          findings: findings.map((finding) => expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })) }] },
       });
       if (conclusion === 'success') {
         expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
@@ -1557,19 +1558,24 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('success');
-    const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
-    expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
-      ['found', 'FINDINGS'],   // no stated decision, findings present
-      ['clean', 'APPROVE'],    // no stated decision, no findings
-      ['stated', 'APPROVE'],   // a stated decision is preserved even with findings
+    expect(receipt.conclusion).toBe('failure');
+    const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as {
+      result?: { personas: Array<{ id: string; decision: string; findings: Array<{ severity: string }> }> };
+    } | undefined;
+    expect(event?.result?.personas.map((p) => [p.id, p.decision, p.findings.map((finding) => finding.severity)])).toEqual([
+      ['found', 'FINDINGS', ['P2']], // no stated decision: preserve the finding and infer FINDINGS
+      ['clean', 'APPROVE', []], // no stated decision and no findings
+      ['stated', 'APPROVE', ['P2']], // a stated decision is preserved even with findings
     ]);
+    expect(receipt.blockingFindingCount).toBe(2);
+    expect(receipt.findingCount).toBe(2);
   });
 
-  it('still reports the terminal success, and no evidence, when the result fails the contract', async () => {
+  it('still reports a clean terminal success, and no evidence, when the result fails the contract', async () => {
     // The green check is already published by the time evidence is built. A
-    // result the service would refuse (here: a finding body past the contract's
-    // text bound) must be dropped, not allowed to abort the report.
+    // result the service would refuse (here: an invalid lane decision) must be
+    // dropped, not allowed to abort the report. Keep this success fixture clean:
+    // under strict/default policy even one P2 finding makes the check fail.
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
@@ -1579,7 +1585,7 @@ describe('runPublishingReviewWorker', () => {
       completion,
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane'],
-        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'x'.repeat(MAX_TEXT_CHARACTERS + 1) }] }],
+        personas: [{ id: 'sec-lane', decision: 'SHIP', findings: [] }],
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
@@ -1587,6 +1593,7 @@ describe('runPublishingReviewWorker', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
+    expect(receipt.blockingFindingCount).toBe(0);
     expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
     const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(event.version).toBe('WorkerTerminalSuccess.v1');
