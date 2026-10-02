@@ -636,7 +636,7 @@ describe('runPublishingReviewWorker', () => {
     expect(order).toEqual(['check', 'callback']);
     expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       checkId: 4242, conclusion: 'failure',
-      title: 'Review Yeti: INCOMPLETE — infrastructure (lanes arch-lane 502, test-lane 502 failed); retrying as attempt 3 of 3',
+      title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lanes arch-lane 502, test-lane 502 failed)',
       summary: expect.stringContaining('expected lanes=3; completed lanes=1; failed lanes=2'),
     }));
     expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -652,9 +652,18 @@ describe('runPublishingReviewWorker', () => {
     // Pin the publish call first so the negative assertion below cannot pass
     // vacuously against an absent summary.
     expect(cc.completeCheck).toHaveBeenCalledTimes(1);
-    const publishedSummary = ((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary;
+    const publishedCheck = (cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    const publishedSummary = publishedCheck.summary;
     expect(typeof publishedSummary).toBe('string');
+    expect(publishedSummary).toContain('Automatic retry is NOT CONFIRMED for execution attempt 2.');
+    expect(publishedSummary).toContain('The completion API acknowledgement confirms delivery only');
+    expect(publishedSummary).toContain('No next attempt or supersession is promised.');
     expect(publishedSummary as string).not.toContain('no further automatic retry');
+    expect(publishedSummary as string).not.toContain('retrying as attempt');
+    expect(publishedSummary as string).not.toContain('A retry has been scheduled');
+    expect(publishedSummary as string).not.toContain('The next attempt is scheduled');
+    expect(JSON.stringify([publishedCheck, completion.reportTerminalFailure.mock.calls[0]]))
+      .not.toMatch(/"(?:retryScheduled|retryAfterExecutionAttempt|nextAttempt)"\s*:/);
     expect(JSON.stringify([receipt, cc.completeCheck.mock.calls, completion.reportTerminalFailure.mock.calls]))
       .not.toContain('do-not-publish');
   });
@@ -3304,20 +3313,27 @@ describe('telemetry integration with protected composed closeout', () => {
   });
 
   it.each(['missing', 'malformed', 'throwing'] as const)('omits %s optional observations without changing graceful findings or INCOMPLETE', async (kind) => {
-    const f = fixture(); const factory = publishingProgress.createPublishingProgress;
-    const spy = vi.spyOn(publishingProgress, 'createPublishingProgress').mockImplementation((...args) => ({ ...factory(...args),
-      snapshot: () => { if (kind === 'throwing') throw new Error('SECRET optional diagnostics'); return kind === 'malformed' ? { rawPrompt: 'SECRET' } as never : undefined; } }));
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
     try {
-      const result = await runPublishingReviewWorker(f.input, deps({ composedReviewRunner: vi.fn(async () => f.partial),
-        reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
-        sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
-      expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
-      expect(f.reportReviewResult).toHaveBeenCalledOnce();
-      const event = f.reportReviewResult.mock.calls[0][0];
-      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
-        personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
-        failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false } });
-      expect(event.result.failureDiagnostics).not.toHaveProperty('operationalTelemetry');
-    } finally { spy.mockRestore(); }
+      const f = fixture(); const factory = publishingProgress.createPublishingProgress;
+      expect(Date.parse(f.input.REVIEW_TERMINAL_DEADLINE!) - Date.now()).toBe(WORKER_PANEL_RESERVE_MS + 50);
+      const spy = vi.spyOn(publishingProgress, 'createPublishingProgress').mockImplementation((...args) => ({ ...factory(...args),
+        snapshot: () => { if (kind === 'throwing') throw new Error('SECRET optional diagnostics'); return kind === 'malformed' ? { rawPrompt: 'SECRET' } as never : undefined; } }));
+      try {
+        const result = await runPublishingReviewWorker(f.input, deps({ composedReviewRunner: vi.fn(async () => f.partial),
+          reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+          sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+        expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+        expect(f.reportReviewResult).toHaveBeenCalledOnce();
+        const event = f.reportReviewResult.mock.calls[0][0];
+        expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
+          personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+          failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false } });
+        expect(event.result.failureDiagnostics).not.toHaveProperty('operationalTelemetry');
+      } finally { spy.mockRestore(); }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
