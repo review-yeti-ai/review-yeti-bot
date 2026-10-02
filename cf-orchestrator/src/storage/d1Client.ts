@@ -83,11 +83,11 @@ class InMemoryStore {
       },
     ],
     [
-      'reviewyeti-ai/example-api',
+      'example/sample-cdr',
       {
-        id: 'reviewyeti-ai/example-api',
-        owner: 'reviewyeti-ai',
-        repo: 'example-api',
+        id: 'example/sample-cdr',
+        owner: 'example',
+        repo: 'sample-cdr',
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -97,11 +97,11 @@ class InMemoryStore {
       },
     ],
     [
-      'reviewyeti-ai/example-meta',
+      'example/sample-meta',
       {
-        id: 'reviewyeti-ai/example-meta',
-        owner: 'reviewyeti-ai',
-        repo: 'example-meta',
+        id: 'example/sample-meta',
+        owner: 'example',
+        repo: 'sample-meta',
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,

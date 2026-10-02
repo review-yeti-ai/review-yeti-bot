@@ -170,7 +170,7 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
       const body = (await res.json()) as any;
       assert.equal(body.success, true);
       assert.ok(Array.isArray(body.repositories));
-      assert.ok(body.repositories.some((r: any) => r.repo === 'example-api'));
+      assert.ok(body.repositories.some((r: any) => r.repo === 'sample-cdr'));
     }
   });
 
@@ -393,12 +393,12 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
     assert.ok(body.learnings.some((l: any) => l.title.includes('HMAC')));
 
     // 2. Query by repo filter
-    const repoReq = new Request('https://worker.dev/api/memory/query?repo=example-api', { method: 'GET' });
+    const repoReq = new Request('https://worker.dev/api/memory/query?repo=sample-cdr', { method: 'GET' });
     const repoRes = await worker.fetch(repoReq, env);
     assert.equal(repoRes.status, 200);
     const repoBody = (await repoRes.json()) as any;
     assert.equal(repoBody.success, true);
-    assert.ok(repoBody.learnings.every((l: any) => l.repo.includes('example-api')));
+    assert.ok(repoBody.learnings.every((l: any) => l.repo.includes('sample-cdr')));
   });
 
   it('GET /api/memory/export delivers cryptographic JSON and Markdown documents with SHA-256 digest', async () => {
