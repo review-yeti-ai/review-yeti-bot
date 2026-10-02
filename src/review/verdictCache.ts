@@ -488,7 +488,8 @@ export function applyVerdictCacheScope(
 export function resolveCachedReviewApplicability<P extends Parameters<typeof resolveScopedReviewApplicability>[0][number]>(
   enabledPersonas: readonly P[],
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
-  options: { pathFilters?: readonly string[]; diffShrink?: DiffShrinkInput; incremental?: IncrementalReviewScope;
+  options: { pathFilters?: readonly string[]; maxReviewedLockfilePatchChars?: number;
+    diffShrink?: DiffShrinkInput; incremental?: IncrementalReviewScope;
     verdictCache?: VerdictCacheScope } = {},
 ): ReturnType<typeof resolveScopedReviewApplicability<P>> & { verdictCache: VerdictCacheDisclosure | null } {
   const { verdictCache, ...scopedOptions } = options;
