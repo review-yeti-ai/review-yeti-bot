@@ -6,14 +6,14 @@ import {
   getReviewFindingId,
   getReviewFindingIdentityParts,
   newestReviewRowsPerRun,
-} from '../../src/mcp/server/tools/findingIdentity';
+} from '../../src/review/findingIdentity';
 
 const finding = {
   title: 'Inspect normalized caller', file_path: 'src/call.ts',
   startLine: 7, line: 9,
 };
 
-describe('nonactivated canonical finding identity library', () => {
+describe('review-domain canonical finding identity library', () => {
   it('binds the canonical fallback to run, persona, path, both lines and title', () => {
     expect(getReviewFindingIdentityParts(finding)).toEqual({
       filePath: 'src/call.ts', lineStart: 7, lineEnd: 9, title: finding.title,
