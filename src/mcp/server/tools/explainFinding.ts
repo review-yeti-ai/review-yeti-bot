@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -12,6 +11,11 @@ import {
   type ExplainFindingOutput,
 } from './schemas';
 import type { ReviewModelClient } from '../../../gateway/openRouterClient';
+import {
+  extractReviewFindingEntries,
+  findReviewFindingRecord,
+  newestReviewRowsPerRun,
+} from './findingIdentity';
 
 export const explainFindingDefinition: ToolDefinition = {
   name: 'explain_finding',
@@ -187,7 +191,7 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
             // Tenancy scoping: Explicit repository filter
             if (pull_number) {
               const res = await deps.queryableDatabase.query(
-                `SELECT c.payload, r.owner, r.repo, r.run_id
+                `SELECT c.payload, r.owner, r.repo, r.run_id, c.execution_attempt
                    FROM review_runs r
                    JOIN review_worker_completions c ON c.run_id = r.run_id
                   WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
@@ -198,7 +202,7 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
               rows = res.rows;
             } else {
               const res = await deps.queryableDatabase.query(
-                `SELECT c.payload, r.owner, r.repo, r.run_id
+                `SELECT c.payload, r.owner, r.repo, r.run_id, c.execution_attempt
                    FROM review_runs r
                    JOIN review_worker_completions c ON c.run_id = r.run_id
                   WHERE r.owner = $1 AND r.repo = $2
@@ -270,56 +274,37 @@ export function createExplainFindingTool(deps: ExplainFindingDependencies = {}) 
             }
           }
 
-          for (const row of rows) {
+          const findingRecords: Array<{ finding: any; personaId: string; runId: string }> = [];
+          for (const row of newestReviewRowsPerRun(rows)) {
             const runId = String(row.run_id || 'run-1');
             const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
-            const candidateFindings: any[] = [];
+            findingRecords.push(
+              ...extractReviewFindingEntries(payload, { includeLegacyResultFindings: true }).map((entry) => ({
+                ...entry,
+                runId,
+              }))
+            );
+          }
 
-            if (Array.isArray(payload?.findings)) {
-              candidateFindings.push(...payload.findings);
-            }
-            if (Array.isArray(payload?.result?.findings)) {
-              candidateFindings.push(...payload.result.findings);
-            }
-            const personas = payload?.result?.personas || payload?.personas || [];
-            for (const p of personas) {
-              if (Array.isArray(p.findings)) {
-                candidateFindings.push(...p.findings);
-              }
-            }
-
-            for (const f of candidateFindings) {
-              const filePath = String(f.path || f.file_path || f.file || '');
-              const lineEnd = Number(f.line_end || f.line || 1);
-              const lineStart = Number(f.line_start || f.startLine || lineEnd);
-              const title = String(f.title || '');
-
-              const hashId = createHash('sha256')
-                .update(`${runId}:${filePath}:${lineStart}:${title}`)
-                .digest('hex')
-                .slice(0, 16);
-
-              if (f.finding_id === finding_id || f.id === finding_id || hashId === finding_id) {
-                foundRecord = {
-                  finding_id,
-                  title: f.title || 'Finding',
-                  severity: f.severity || 'P1',
-                  category: f.category || 'Architecture',
-                  file_path: f.path || f.file_path || '',
-                  line_start: f.line_start || f.startLine || 1,
-                  line_end: f.line_end || f.line || 1,
-                  violated_adrs: Array.isArray(f.violated_adrs)
-                    ? f.violated_adrs
-                    : Array.isArray(f.adrs)
-                    ? f.adrs
-                    : ['ADR 0564', 'ADR 0242'],
-                  rationale: f.rationale || f.body || '',
-                  suggested_fix: f.suggested_fix || f.suggestion || f.recommendation || '',
-                };
-                break;
-              }
-            }
-            if (foundRecord) break;
+          const matchedRecord = findReviewFindingRecord(findingRecords, finding_id);
+          if (matchedRecord) {
+            const f = matchedRecord.finding;
+            foundRecord = {
+              finding_id,
+              title: f.title || 'Finding',
+              severity: f.severity || 'P1',
+              category: f.category || 'Architecture',
+              file_path: f.path || f.file_path || '',
+              line_start: f.line_start || f.startLine || 1,
+              line_end: f.line_end || f.line || 1,
+              violated_adrs: Array.isArray(f.violated_adrs)
+                ? f.violated_adrs
+                : Array.isArray(f.adrs)
+                ? f.adrs
+                : ['ADR 0564', 'ADR 0242'],
+              rationale: f.rationale || f.body || '',
+              suggested_fix: f.suggested_fix || f.suggestion || f.recommendation || '',
+            };
           }
         } catch {
           // Table may not exist
