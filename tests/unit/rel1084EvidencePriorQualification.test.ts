@@ -270,20 +270,27 @@ describe('a non-authoritative prior built by the real worker', () => {
     });
   });
 
-  it('#1034 shape: only an explicitly imported advisory opt-out permits a calibrated P2 prior', async () => {
+  it('#1034 shape: a configured advisory opt-out held through invocation permits a calibrated P2 prior', async () => {
     expect(advisoryOptOutWorker).toBeTypeOf('function');
-    const evidence = await realPriorEvidence({ 'sec-lane': [
-      { severity: 'P1' as const, path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
-    ] }, { expectedPublishedAnnotation: 'warning' }, advisoryOptOutWorker);
-    expect(evidence.conclusion).toBe('success');
-    // Stored lane evidence remains raw P1; the actual published annotation is calibrated P2.
-    expect(evidence.result.personas.flatMap((lane) => lane.findings ?? []).map((finding) => finding.severity)).toEqual(['P1']);
-    const rows = storedRows(evidence);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(rows)).toMatchObject({
-      mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
-      openFindingPaths: ['src/stable.ts'],
-    });
+    const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    try {
+      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
+      const evidence = await realPriorEvidence({ 'sec-lane': [
+        { severity: 'P1' as const, path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
+      ] }, { expectedPublishedAnnotation: 'warning' }, advisoryOptOutWorker);
+      expect(evidence.conclusion).toBe('success');
+      // Stored lane evidence remains raw P1; the actual published annotation is calibrated P2.
+      expect(evidence.result.personas.flatMap((lane) => lane.findings ?? []).map((finding) => finding.severity)).toEqual(['P1']);
+      const rows = storedRows(evidence);
+      expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
+      expect(decideNext(rows)).toMatchObject({
+        mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
+        openFindingPaths: ['src/stable.ts'],
+      });
+    } finally {
+      if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+    }
   });
 
   it('keeps authoritative-gate runs on the gate record: an authoritative current or prior run refuses evidence', async () => {

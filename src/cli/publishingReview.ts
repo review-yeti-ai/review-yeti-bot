@@ -1027,7 +1027,7 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
       return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
-    `${findings.length} finding(s), ${blockingCount} blocking (${advisoryRequiredByDefault() ? 'P0/P1/P2' : 'P0/P1'}).`,
+    `${findings.length} finding(s), ${blockingCount} blocking (${blockingFindingSeverities(advisoryRequiredByDefault()).join('/')}).`,
     '',
     ...lines,
   ].join('\n');
@@ -2507,7 +2507,7 @@ export async function runPublishingReviewWorker(
             ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
             : (panelResult as any).zeroLaneNonEvidence
               ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-            : `Findings: ${findings.length} (blocking ${advisoryRequiredByDefault() ? 'P0/P1/P2' : 'P0/P1'}: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+            : `Findings: ${findings.length} (blocking ${blockingFindingSeverities(advisoryRequiredByDefault()).join('/')}: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),
