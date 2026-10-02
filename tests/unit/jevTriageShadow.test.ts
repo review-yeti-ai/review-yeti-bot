@@ -142,10 +142,10 @@ describe('jevShadowEnabledFor -- default off, per-repository enable', () => {
   });
 
   it('enables only listed repositories for an allow-list (case-insensitive)', () => {
-    const env = { REVIEW_YETI_JEV_SHADOW: 'review-yeti-ai/review-yeti-bot, calltelemetry/ct-meta' };
+    const env = { REVIEW_YETI_JEV_SHADOW: 'review-yeti-ai/review-yeti-bot, exampleorg/example-meta' };
     expect(jevShadowEnabledFor(env, 'Review-Yeti-AI/review-yeti-bot')).toBe(true);
-    expect(jevShadowEnabledFor(env, 'calltelemetry/ct-meta')).toBe(true);
-    expect(jevShadowEnabledFor(env, 'calltelemetry/other')).toBe(false);
+    expect(jevShadowEnabledFor(env, 'exampleorg/example-meta')).toBe(true);
+    expect(jevShadowEnabledFor(env, 'exampleorg/other')).toBe(false);
     expect(jevShadowEnabledFor(env, '')).toBe(false);
   });
 });

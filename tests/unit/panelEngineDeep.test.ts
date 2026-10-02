@@ -150,7 +150,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const panelResult = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-123',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -184,7 +184,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-request-parity',
       client: mockClient as unknown as OmniRouteClient,
       jobId: 'run_11111111111111111111111111111111',
@@ -285,7 +285,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-turns',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -344,7 +344,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-correction',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -396,7 +396,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-hybrid',
       client: mockClient as unknown as OmniRouteClient,
       repoFileProvider: {
@@ -453,7 +453,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-incomplete',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -490,7 +490,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo', headSha: 'head-sha-optional-incomplete',
+      repository: 'exampleorg/repo', headSha: 'head-sha-optional-incomplete',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
     });
@@ -533,7 +533,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-incomplete-failover',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -589,7 +589,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-empty-completion-same-alias',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -634,7 +634,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-empty-completion-exhausted',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -683,7 +683,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-incomplete-same-alias',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -724,7 +724,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-incomplete-exhausted',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -765,7 +765,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-malformed-payload-not-empty-completion',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -789,7 +789,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const prompt = extractMessageContentText(opts.messages[1]?.content || '');
       const role = opts.metadata?.role || (prompt.includes('Role: ARBITER') ? 'arbiter' : prompt.includes('Role: MODERATOR') ? 'moderator' : 'persona');
       if (opts.model === 'bifrost/pr-reviewer') {
-        throw new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 413: Request Entity Too Large (nginx)', 413);
+        throw new OpenRouterResponseError('bifrost: gateway-internal.example.com HTTP 413: Request Entity Too Large (nginx)', 413);
       }
       const nonce = prompt.match(/CT_REVIEW_NONCE:(.*?)(\n|$)/)?.[1].trim() || 'test-nonce';
       if (role === 'arbiter') {
@@ -801,7 +801,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-gateway-413',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -837,7 +837,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-unparseable-failover',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -876,7 +876,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-invalid-contract-failover',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -923,7 +923,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-clamp-budget-test',
       client: mockClient as unknown as OmniRouteClient,
     })).rejects.toThrow(/turn budget exhausted.*used 15\/15 investigation turns/u);
@@ -960,7 +960,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-incomplete-findings',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -989,7 +989,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-wrong-native-nonce',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: {
@@ -1022,7 +1022,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-json-fence',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1056,7 +1056,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-native-json-fence-with-prose',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1108,7 +1108,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-invalid-severity',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -1164,7 +1164,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const panelResult = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-fallback',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1190,7 +1190,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-bad-fence',
         client: mockClient as unknown as OmniRouteClient,
       })
@@ -1237,7 +1237,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const panelResult = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-fence-recovery',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1270,7 +1270,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-bad-json',
         client: mockClient as unknown as OmniRouteClient,
       })
@@ -1321,7 +1321,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const panelResult = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-invalid-finding-recovery',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1368,7 +1368,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const panelResult = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-block',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1449,7 +1449,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-concurrency-test',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1525,7 +1525,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-queue-wait-test',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1633,7 +1633,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-concurrency-retry-test',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -1663,7 +1663,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const panel = executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-overall-deadline',
         client: mockClient as unknown as OmniRouteClient,
         requestPolicy: { metadata: { qualificationMode: 'deadline-test' } },
@@ -1696,7 +1696,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config: buildDeepConfig(),
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-already-aborted',
       client: mockClient as unknown as OmniRouteClient,
       signal: controller.signal,
@@ -1729,7 +1729,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-deadline-cleanup',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -1782,7 +1782,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       await expect(executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-timeout-cap-test',
         client: mockClient as unknown as OmniRouteClient,
       })).rejects.toThrow(/exceeded total retry\/execution budget of 2700s/);
@@ -1852,7 +1852,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-budget-exhausted-optional',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -1912,7 +1912,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config: configWithoutTimeouts,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const safe = true;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-nan-timeout-test',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -2050,7 +2050,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const panelPromise = executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-queue-stale-test',
       client: mockClient as unknown as OmniRouteClient,
       isCurrentHead: () => headIsCurrent,
@@ -2109,7 +2109,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-transport-backoff',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -2123,7 +2123,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     expect(bifrostAttempts).toBeGreaterThan(2);
   }, 120_000);
 
-  // REL-1113: the ct-meta#3446 lane saw an interrupted stream ("terminated") and then nginx
+  // REL-1113: the example-meta#3446 lane saw an interrupted stream ("terminated") and then nginx
   // HTTP 502 while the optimizer pod behind gateway-internal was replaced. Both are the PATH to
   // the model failing; the lane must ride them out on the transport budget and complete.
   it('rides out a gateway 502 and a terminated stream, then completes on the 200', async () => {
@@ -2132,9 +2132,9 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const changedFiles = [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }];
     const failures = [
       new OpenRouterConnectionError('OpenRouter SDK connection failure for model bifrost/pr-reviewer: terminated'),
-      new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 502: <html>502 Bad Gateway nginx</html>', 502),
-      new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 504: Gateway Time-out', 504),
-      new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 503: Service Unavailable', 503),
+      new OpenRouterResponseError('bifrost: gateway-internal.example.com HTTP 502: <html>502 Bad Gateway nginx</html>', 502),
+      new OpenRouterResponseError('bifrost: gateway-internal.example.com HTTP 504: Gateway Time-out', 504),
+      new OpenRouterResponseError('bifrost: gateway-internal.example.com HTTP 503: Service Unavailable', 503),
     ];
     let bifrostAttempts = 0;
     mockClient.complete.mockImplementation(async (opts: any) => {
@@ -2157,7 +2157,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-gateway-502-then-200',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -2174,7 +2174,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       expect(isTransientLaneTransportError(new OpenRouterResponseError(`HTTP ${status}`, status))).toBe(true);
     }
     for (const message of ['fetch failed', 'read ECONNRESET', 'connect ECONNREFUSED 10.0.0.1:443', 'terminated', 'socket hang up',
-      'bifrost: gateway-internal.calltelemetry.com HTTP 502: nginx']) {
+      'bifrost: gateway-internal.example.com HTTP 502: nginx']) {
       expect(isTransientLaneTransportError(new Error(message))).toBe(true);
     }
     // 4xx other than 429 fail the same way every time.
@@ -2206,7 +2206,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       if (opts.model === 'bifrost/pr-reviewer') {
         bifrostAttempts++;
         clock += 70_000;
-        throw new OpenRouterResponseError('bifrost: gateway-internal.calltelemetry.com HTTP 502: Bad Gateway', 502);
+        throw new OpenRouterResponseError('bifrost: gateway-internal.example.com HTTP 502: Bad Gateway', 502);
       }
       return { model: opts.model, content: JSON.stringify({ nonce, decision: 'APPROVE', verdict: 'SHIP', rationale: 'x', findings: [] }), usage: null, costUSD: null, raw: {} };
     });
@@ -2214,7 +2214,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-transport-window',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -2254,7 +2254,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-fast-failover',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -2278,7 +2278,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       new Error('connect ECONNREFUSED 10.0.0.1:443'),
       new Error('terminated'),
       new Error('socket hang up'),
-      new Error('bifrost: gateway-internal.calltelemetry.com HTTP 502: nginx'),
+      new Error('bifrost: gateway-internal.example.com HTTP 502: nginx'),
     ];
     for (const error of retried) {
       expect(isTransientLaneTransportError(error)).toBe(true);
@@ -2308,7 +2308,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
       await expect(executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-terminal-deadline',
         client: mockClient as unknown as OmniRouteClient,
         requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -2377,7 +2377,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-transport-exhausted',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -2419,7 +2419,7 @@ describe('panelEngine.ts — Deep Edge Case & Nonce-Fence Unit Tests', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-transport-no-budget',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },

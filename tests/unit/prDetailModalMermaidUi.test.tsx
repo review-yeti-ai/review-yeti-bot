@@ -38,7 +38,7 @@ flowchart TD
 
 const mockJobWithDiagram: ReviewJob = {
   id: 'job-mermaid-test-101',
-  repo: 'calltelemetry/cisco-cdr',
+  repo: 'exampleorg/example-api',
   prNumber: 3099,
   title: 'feat(diagrams): add sequence and flowchart generator',
   verdict: 'SHIP',

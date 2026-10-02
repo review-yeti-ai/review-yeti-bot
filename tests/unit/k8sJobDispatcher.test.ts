@@ -8,10 +8,10 @@ describe('K8sJobDispatcher Unit Tests', () => {
 
   it('generates clean K8s compliant names for jobs and PVCs', () => {
     const dispatcher = new K8sJobDispatcher('ct-review-system');
-    const names = dispatcher.getNames('calltelemetry', 'cisco-cdr', 3058, 'a8f192b3c4d5e6f7');
+    const names = dispatcher.getNames('exampleorg', 'example-api', 3058, 'a8f192b3c4d5e6f7');
 
-    expect(names.jobName).toBe('job-ct-review-calltelemetry-cisco-cdr-pr3058-a8f192b');
-    expect(names.pvcName).toBe('pvc-ct-review-calltelemetry-cisco-cdr-pr3058-a8f192b');
+    expect(names.jobName).toBe('job-ct-review-exampleorg-example-api-pr3058-a8f192b');
+    expect(names.pvcName).toBe('pvc-ct-review-exampleorg-example-api-pr3058-a8f192b');
   });
 
   it('builds PVC manifest with 1Gi storage request', () => {
@@ -28,8 +28,8 @@ describe('K8sJobDispatcher Unit Tests', () => {
   it('builds Job manifest with 1800s (30m) TTL and 1Gi memory limits', () => {
     const dispatcher = new K8sJobDispatcher('ct-review-system');
     const job = dispatcher.buildJobManifest('job-test-pr101', 'pvc-test-pr101', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 3058,
       headSha: 'a8f192b3c4d5e6f7',
       jobId: 'job_test_123',
@@ -59,8 +59,8 @@ describe('K8sJobDispatcher worker env forwarding (REL-904)', () => {
     process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT = 'http://otel-collector.observability.svc.cluster.local:4318/v1/metrics';
     const dispatcher = new K8sJobDispatcher('ct-review-system');
     const job = dispatcher.buildJobManifest('job-test-pr102', 'pvc-test-pr102', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 3059,
       headSha: 'b8f192b3c4d5e6f7',
       jobId: 'job_test_124',
@@ -75,8 +75,8 @@ describe('K8sJobDispatcher worker env forwarding (REL-904)', () => {
     delete process.env.REVIEW_YETI_OTEL_METRICS_ENDPOINT;
     const dispatcher = new K8sJobDispatcher('ct-review-system');
     const job = dispatcher.buildJobManifest('job-test-pr103', 'pvc-test-pr103', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 3060,
       headSha: 'c8f192b3c4d5e6f7',
       jobId: 'job_test_125',

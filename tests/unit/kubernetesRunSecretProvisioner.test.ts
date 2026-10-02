@@ -6,8 +6,8 @@ const request = {
   runId: `run_${'1'.repeat(32)}`,
   secretName: `ct-review-run-${'1'.repeat(32)}`,
   namespace: 'ct-review-system',
-  owner: 'calltelemetry',
-  repo: 'ct-meta',
+  owner: 'exampleorg',
+  repo: 'example-meta',
 };
 
 function trustedSecret() {
@@ -156,7 +156,7 @@ describe('KubernetesRunSecretProvisioner', () => {
   it('mints for the run repository and writes only the publish token', async () => {
     const { subject, client, mintToken } = provisioner();
     await subject.provision(request);
-    expect(mintToken).toHaveBeenCalledWith(expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' }));
+    expect(mintToken).toHaveBeenCalledWith(expect.objectContaining({ owner: 'exampleorg', repo: 'example-meta' }));
     const body = (client.createNamespacedSecret.mock.calls[0][0] as any).body;
     // Both keys are required: the operator wires GH_TOKEN from GITHUB_READ_TOKEN
     // non-optionally, so a Secret carrying only the publish token leaves every
@@ -305,7 +305,7 @@ describe('KubernetesRunSecretProvisioner', () => {
     const { subject, client } = provisioner();
     await subject.provision({ ...request, repo: 'a'.repeat(100) });
     const body = (client.createNamespacedSecret.mock.calls[0][0] as any).body;
-    expect(body.metadata.annotations['review-yeti.ai/repository']).toBe(`calltelemetry/${'a'.repeat(100)}`);
+    expect(body.metadata.annotations['review-yeti.ai/repository']).toBe(`exampleorg/${'a'.repeat(100)}`);
     expect(Object.values(body.metadata.labels).every((entry) => String(entry).length <= 63)).toBe(true);
   });
 
@@ -343,7 +343,7 @@ describe('KubernetesRunSecretProvisioner', () => {
   it('mints both tokens for the same repository', async () => {
     const { subject, mintToken, mintReadToken } = provisioner();
     await subject.provision(request);
-    const expected = expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' });
+    const expected = expect.objectContaining({ owner: 'exampleorg', repo: 'example-meta' });
     expect(mintToken).toHaveBeenCalledWith(expected);
     expect(mintReadToken).toHaveBeenCalledWith(expected);
   });

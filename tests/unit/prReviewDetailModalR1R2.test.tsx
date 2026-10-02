@@ -8,7 +8,7 @@ import { ReviewJob } from '../../src/types/dashboard';
 
 const mockJob: ReviewJob = {
   id: 'job-test-3050',
-  repo: 'calltelemetry/cisco-cdr',
+  repo: 'exampleorg/example-api',
   prNumber: 3050,
   title: 'feat(ingestion): refactor CDR payload parsing pipeline',
   verdict: 'SHIP',
@@ -78,7 +78,7 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
     it('renders modal with reviewer persona log headers and model tags', () => {
       render(<PRReviewDetailModal job={mockJob} open={true} onOpenChange={() => {}} />);
 
-      expect(screen.getByText('calltelemetry/cisco-cdr')).toBeInTheDocument();
+      expect(screen.getByText('exampleorg/example-api')).toBeInTheDocument();
       expect(screen.getByText('#3050')).toBeInTheDocument();
       expect(screen.getAllByText('feat(ingestion): refactor CDR payload parsing pipeline').length).toBeGreaterThan(0);
 
@@ -151,7 +151,7 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
       expect(modalLink).toBeInTheDocument();
       expect(modalLink).toHaveAttribute(
         'href',
-        'https://github.com/calltelemetry/cisco-cdr/pull/3050'
+        'https://github.com/exampleorg/example-api/pull/3050'
       );
       expect(modalLink).toHaveAttribute('target', '_blank');
       expect(modalLink.textContent).toContain('View PR on GitHub ↗');
@@ -164,7 +164,7 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
       expect(tableLinks.length).toBeGreaterThan(0);
       expect(tableLinks[0]).toHaveAttribute(
         'href',
-        'https://github.com/calltelemetry/cisco-cdr/pull/3050'
+        'https://github.com/exampleorg/example-api/pull/3050'
       );
       expect(tableLinks[0]).toHaveAttribute('target', '_blank');
       expect(tableLinks[0].textContent).toContain('View PR on GitHub ↗');

@@ -10,7 +10,7 @@ describe('app.ts — Pipeline Resilience & Edge Case Expansion Tests', () => {
     // Replace installationClient with mock
     const payload = {
       installationId: '12345',
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-bot',
       prNumber: 50,
       headSha: 'old-stale-sha',

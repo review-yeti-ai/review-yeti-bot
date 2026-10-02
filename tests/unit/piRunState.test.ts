@@ -3,7 +3,7 @@ import { InMemoryReviewRunRepository } from '../../src/persistence/reviewRunRepo
 import { assertStageTransition, PI_STAGES } from '../../src/review/piWorkflow';
 
 const identity = {
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'ct-review-bot',
   prNumber: 42,
   headSha: 'a'.repeat(40),

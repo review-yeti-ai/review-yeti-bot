@@ -33,8 +33,8 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
             rows: [
               {
                 run_id: 'run_test_1234567890',
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 123,
                 head_sha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
                 run_status: 'complete',
@@ -44,7 +44,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
                 lease_expires_at: null,
                 created_at: new Date('2026-09-22T10:00:00Z'),
                 updated_at: new Date('2026-09-22T10:05:00Z'),
-                attempt_id: 'attempt-cisco-cdr-123-1',
+                attempt_id: 'attempt-example-api-123-1',
                 check_id: '102735106478',
                 desired_state: 'success',
                 decision: JSON.stringify({ verdict: 'SHIP', summary: 'Clean review' }),
@@ -108,7 +108,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
             authType: 'static_token',
             tokenDigest: 'valid-token1',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/review-yeti-bot']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/review-yeti-bot']),
             callerId: 'test-caller',
           } satisfies McpAuthenticatedCaller;
         }
@@ -129,7 +129,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
             authType: 'static_token',
             tokenDigest: 'valid-token1',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+            allowedRepositories: new Set(['exampleorg/example-api']),
             callerId: 'test-caller',
           };
         }
@@ -223,7 +223,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
   describe('Suite 2: Resource Read Operations (resources/read)', () => {
     it('TC-READ-001: Reads review-yeti://runs/... with database run state and gate attempt', async () => {
-      const uri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
+      const uri = 'review-yeti://runs/exampleorg/example-api/123';
       const response = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -245,8 +245,8 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
       const data = JSON.parse(content.text);
       expect(data.uri).toBe(uri);
-      expect(data.owner).toBe('calltelemetry');
-      expect(data.repo).toBe('cisco-cdr');
+      expect(data.owner).toBe('exampleorg');
+      expect(data.repo).toBe('example-api');
       expect(data.pr_number).toBe(123);
       expect(data.found).toBe(true);
       expect(data.phase).toBe('completed');
@@ -255,7 +255,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
       expect(data.head_sha).toBe('01cc3c3070ae025c9a9bb8176c92106c30488151');
       expect(data.check_run).toEqual({
         id: 102735106478,
-        url: 'https://github.com/calltelemetry/cisco-cdr/runs/102735106478',
+        url: 'https://github.com/exampleorg/example-api/runs/102735106478',
         conclusion: 'success',
       });
     });
@@ -263,7 +263,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
     it('TC-READ-002: Reads review-yeti://runs/... fallback when database has no records', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [] });
 
-      const uri = 'review-yeti://runs/calltelemetry/cisco-cdr/999';
+      const uri = 'review-yeti://runs/exampleorg/example-api/999';
       const response = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -285,7 +285,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
     });
 
     it('TC-READ-003: Reads review-yeti://findings/... with structured findings and ADR citations', async () => {
-      const uri = 'review-yeti://findings/calltelemetry/cisco-cdr/123';
+      const uri = 'review-yeti://findings/exampleorg/example-api/123';
       const response = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -303,8 +303,8 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
       const data = JSON.parse(content.text);
       expect(data.uri).toBe(uri);
-      expect(data.owner).toBe('calltelemetry');
-      expect(data.repo).toBe('cisco-cdr');
+      expect(data.owner).toBe('exampleorg');
+      expect(data.repo).toBe('example-api');
       expect(data.pr_number).toBe(123);
       expect(data.total_count).toBe(2);
       expect(data.unresolved_count).toBe(1);
@@ -326,7 +326,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
     it('TC-READ-004: Reads review-yeti://findings/... fallback when no findings exist', async () => {
       mockDb.query.mockResolvedValueOnce({ rows: [] });
 
-      const uri = 'review-yeti://findings/calltelemetry/cisco-cdr/999';
+      const uri = 'review-yeti://findings/exampleorg/example-api/999';
       const response = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -346,7 +346,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
     });
 
     it('TC-READ-005: Reads review-yeti://charters/... with active personas and directives', async () => {
-      const uri = 'review-yeti://charters/calltelemetry/cisco-cdr';
+      const uri = 'review-yeti://charters/exampleorg/example-api';
       const response = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -364,8 +364,8 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
       const data = JSON.parse(content.text);
       expect(data.uri).toBe(uri);
-      expect(data.owner).toBe('calltelemetry');
-      expect(data.repo).toBe('cisco-cdr');
+      expect(data.owner).toBe('exampleorg');
+      expect(data.repo).toBe('example-api');
       expect(Array.isArray(data.active_personas)).toBe(true);
       expect(data.active_personas.length).toBeGreaterThanOrEqual(4);
 
@@ -389,7 +389,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 31,
           method: 'resources/read',
-          params: { uri: 'review-yeti://unknown-type/calltelemetry/cisco-cdr' },
+          params: { uri: 'review-yeti://unknown-type/exampleorg/example-api' },
         });
 
       expect(response.status).toBe(200);
@@ -405,7 +405,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 32,
           method: 'resources/read',
-          params: { uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/example-api/123' },
         });
 
       expect(response.status).toBe(401);
@@ -421,7 +421,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 33,
           method: 'resources/read',
-          params: { uri: 'review-yeti://runs/calltelemetry/unauthorized-vault/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/unauthorized-vault/123' },
         });
 
       expect(response.status).toBe(403);
@@ -438,12 +438,12 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 34,
           method: 'resources/read',
-          params: { uri: 'review-yeti://runs/calltelemetry/unauthorized-vault/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/unauthorized-vault/123' },
         });
 
       expect(response.status).toBe(200);
       expect(response.body.result).toBeDefined();
-      expect(response.body.result.contents[0].uri).toBe('review-yeti://runs/calltelemetry/unauthorized-vault/123');
+      expect(response.body.result.contents[0].uri).toBe('review-yeti://runs/exampleorg/unauthorized-vault/123');
     });
   });
 
@@ -472,7 +472,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 2,
           method: 'resources/subscribe',
-          params: { uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/example-api/123' },
         });
 
       expect(subRes.status).toBe(200);
@@ -481,7 +481,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
       // Verify subscription tracked in session state
       const session = router.sessionManager.getSession(sessionId);
       expect(session).toBeDefined();
-      expect(session?.subscriptions.has('review-yeti://runs/calltelemetry/cisco-cdr/123')).toBe(true);
+      expect(session?.subscriptions.has('review-yeti://runs/exampleorg/example-api/123')).toBe(true);
     });
 
     it('TC-SUB-002: Successfully unsubscribes from resource URI and removes from session', async () => {
@@ -506,11 +506,11 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 2,
           method: 'resources/subscribe',
-          params: { uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/example-api/123' },
         });
 
       const session = router.sessionManager.getSession(sessionId);
-      expect(session?.subscriptions.has('review-yeti://runs/calltelemetry/cisco-cdr/123')).toBe(true);
+      expect(session?.subscriptions.has('review-yeti://runs/exampleorg/example-api/123')).toBe(true);
 
       // Unsubscribe
       const unsubRes = await request(app)
@@ -521,12 +521,12 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 3,
           method: 'resources/unsubscribe',
-          params: { uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/example-api/123' },
         });
 
       expect(unsubRes.status).toBe(200);
       expect(unsubRes.body.result).toEqual({});
-      expect(session?.subscriptions.has('review-yeti://runs/calltelemetry/cisco-cdr/123')).toBe(false);
+      expect(session?.subscriptions.has('review-yeti://runs/exampleorg/example-api/123')).toBe(false);
     });
 
     it('TC-SUB-003: Rejects subscription to unauthorized repository with HTTP 403', async () => {
@@ -537,7 +537,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
           jsonrpc: '2.0',
           id: 4,
           method: 'resources/subscribe',
-          params: { uri: 'review-yeti://runs/calltelemetry/secret-internal-repo/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/secret-internal-repo/123' },
         });
 
       expect(response.status).toBe(403);
@@ -563,7 +563,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
   describe('Suite 4: Real-Time SSE Resource Notifications', () => {
     it('TC-NOTIF-001: Pushes notifications/resources/updated over active SSE stream to subscribed session', async () => {
-      const targetUri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
+      const targetUri = 'review-yeti://runs/exampleorg/example-api/123';
       let activeSessionId = '';
       let receivedEvents = '';
 
@@ -653,7 +653,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
       // Session is NOT subscribed to this URI
       receivedEvents = '';
-      const notifiedCount = router.notifyResourceUpdated('review-yeti://runs/calltelemetry/cisco-cdr/999');
+      const notifiedCount = router.notifyResourceUpdated('review-yeti://runs/exampleorg/example-api/999');
       expect(notifiedCount).toBe(0);
 
       await new Promise((r) => setTimeout(r, 50));
@@ -663,7 +663,7 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
     });
 
     it('TC-NOTIF-003: Does not push notifications after session unsubscribes from URI', async () => {
-      const targetUri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
+      const targetUri = 'review-yeti://runs/exampleorg/example-api/123';
       let activeSessionId = '';
       let receivedEvents = '';
 
@@ -726,27 +726,27 @@ describe('MCP Native Resources & SSE Subscriptions Suite (tests/unit/mcpResource
 
   describe('Suite 5: Resource URI Parser Unit Tests', () => {
     it('TC-URI-001: Parses valid runs, findings, and charters URIs', () => {
-      const run = parseResourceUri('review-yeti://runs/calltelemetry/cisco-cdr/456');
+      const run = parseResourceUri('review-yeti://runs/exampleorg/example-api/456');
       expect(run).toEqual({
         type: 'runs',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         prNumber: 456,
       });
 
-      const finding = parseResourceUri('review-yeti://findings/calltelemetry/review-yeti-bot/789');
+      const finding = parseResourceUri('review-yeti://findings/exampleorg/review-yeti-bot/789');
       expect(finding).toEqual({
         type: 'findings',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti-bot',
         prNumber: 789,
       });
 
-      const charter = parseResourceUri('review-yeti://charters/calltelemetry/cisco-cdr');
+      const charter = parseResourceUri('review-yeti://charters/exampleorg/example-api');
       expect(charter).toEqual({
         type: 'charters',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
       });
     });
 

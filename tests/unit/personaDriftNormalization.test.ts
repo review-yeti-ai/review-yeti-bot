@@ -75,7 +75,7 @@ describe('persona decision contract (REL-888)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const safe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     });
@@ -104,7 +104,7 @@ describe('persona decision contract (REL-888)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const unsafe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     });
@@ -133,7 +133,7 @@ describe('persona decision contract (REL-888)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const safe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     });
@@ -161,7 +161,7 @@ describe('persona decision contract (REL-888)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const unsafe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     });
@@ -188,7 +188,7 @@ describe('persona decision contract (REL-888)', () => {
     await expect(executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const unsafe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     })).rejects.toThrow(/contradictory with findings/);
@@ -211,7 +211,7 @@ describe('persona decision contract (REL-888)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const safe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     });
@@ -242,7 +242,7 @@ describe('persona decision contract (REL-888)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const unsafe = true;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc123',
       client: { complete } as unknown as OmniRouteClient,
     });

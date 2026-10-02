@@ -22,7 +22,7 @@ describe('PRMemoryStore Unit Tests', () => {
   });
 
   it('initializes schema and records reviewer learnings', async () => {
-    const learning = await store.recordLearning('calltelemetry/cisco-cdr', 42, {
+    const learning = await store.recordLearning('exampleorg/example-api', 42, {
       category: 'architecture',
       title: 'Use DatabaseSync WAL mode',
       description: 'SQLite instances must set WAL mode for concurrent performance.',
@@ -31,18 +31,18 @@ describe('PRMemoryStore Unit Tests', () => {
     });
 
     expect(learning.id).toBeDefined();
-    expect(learning.repo).toBe('calltelemetry/cisco-cdr');
+    expect(learning.repo).toBe('exampleorg/example-api');
     expect(learning.prNumber).toBe(42);
     expect(learning.category).toBe('architecture');
 
-    const result = await store.queryLearnings('calltelemetry/cisco-cdr');
+    const result = await store.queryLearnings('exampleorg/example-api');
     expect(result.learnings.length).toBe(1);
     expect(result.learnings[0].title).toBe('Use DatabaseSync WAL mode');
     expect(result.learnings[0].confidence).toBe(0.95);
   });
 
   it('uses the full UUID entropy for generated learning IDs', async () => {
-    const learning = await store.recordLearning('calltelemetry/cisco-cdr', 43, {
+    const learning = await store.recordLearning('exampleorg/example-api', 43, {
       category: 'architecture',
       title: 'Collision-resistant learning ID',
       description: 'Generated learning IDs must remain unique under concurrent inserts.',
@@ -52,7 +52,7 @@ describe('PRMemoryStore Unit Tests', () => {
   });
 
   it('records resolved nit patterns and increments suppression count', async () => {
-    const nit = await store.recordResolvedNit('calltelemetry/cisco-cdr', 10, {
+    const nit = await store.recordResolvedNit('exampleorg/example-api', 10, {
       pattern: 'avoid console\\.log',
       filePath: 'src/app.ts',
       reason: 'Use logger instead of console.log',
@@ -65,13 +65,13 @@ describe('PRMemoryStore Unit Tests', () => {
 
     await store.incrementNitSuppression(nit.id!);
 
-    const result = await store.queryLearnings('calltelemetry/cisco-cdr', { filePath: 'src/app.ts' });
+    const result = await store.queryLearnings('exampleorg/example-api', { filePath: 'src/app.ts' });
     expect(result.resolvedNits.length).toBe(1);
     expect(result.resolvedNits[0].suppressionCount).toBe(1);
   });
 
   it('records and queries accepted ADR constraints', async () => {
-    await store.recordADRConstraint('calltelemetry/cisco-cdr', {
+    await store.recordADRConstraint('exampleorg/example-api', {
       adrNumber: 1,
       title: 'Fail-Closed Architecture',
       status: 'accepted',
@@ -79,7 +79,7 @@ describe('PRMemoryStore Unit Tests', () => {
       targetPaths: ['src/**'],
     });
 
-    await store.recordADRConstraint('calltelemetry/cisco-cdr', {
+    await store.recordADRConstraint('exampleorg/example-api', {
       adrNumber: 2,
       title: 'Draft Proposal',
       status: 'draft',
@@ -87,36 +87,36 @@ describe('PRMemoryStore Unit Tests', () => {
       targetPaths: ['src/**'],
     });
 
-    const result = await store.queryLearnings('calltelemetry/cisco-cdr');
+    const result = await store.queryLearnings('exampleorg/example-api');
     expect(result.adrConstraints.length).toBe(1);
     expect(result.adrConstraints[0].title).toBe('Fail-Closed Architecture');
     expect(result.adrConstraints[0].targetPaths).toEqual(['src/**']);
   });
 
   it('filters learnings by category, filePath, and text query', async () => {
-    await store.recordLearning('calltelemetry/cisco-cdr', 1, {
+    await store.recordLearning('exampleorg/example-api', 1, {
       category: 'security',
       title: 'Validate JWT tokens',
       description: 'Always check token signature and expiration.',
       filePath: 'src/api/auth.ts',
     });
 
-    await store.recordLearning('calltelemetry/cisco-cdr', 2, {
+    await store.recordLearning('exampleorg/example-api', 2, {
       category: 'convention',
       title: 'Use Zod validation',
       description: 'API inputs must be validated with Zod schemas.',
       filePath: 'src/api/memoryApi.ts',
     });
 
-    const secRes = await store.queryLearnings('calltelemetry/cisco-cdr', { category: 'security' });
+    const secRes = await store.queryLearnings('exampleorg/example-api', { category: 'security' });
     expect(secRes.learnings.length).toBe(1);
     expect(secRes.learnings[0].title).toBe('Validate JWT tokens');
 
-    const fileRes = await store.queryLearnings('calltelemetry/cisco-cdr', { filePath: 'src/api/memoryApi.ts' });
+    const fileRes = await store.queryLearnings('exampleorg/example-api', { filePath: 'src/api/memoryApi.ts' });
     expect(fileRes.learnings.length).toBe(1);
     expect(fileRes.learnings[0].title).toBe('Use Zod validation');
 
-    const queryRes = await store.queryLearnings('calltelemetry/cisco-cdr', { query: 'JWT' });
+    const queryRes = await store.queryLearnings('exampleorg/example-api', { query: 'JWT' });
     expect(queryRes.learnings.length).toBe(1);
     expect(queryRes.learnings[0].title).toBe('Validate JWT tokens');
   });

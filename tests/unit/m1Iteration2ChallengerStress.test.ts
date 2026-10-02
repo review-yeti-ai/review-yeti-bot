@@ -120,8 +120,8 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 1,
         finding_id: 'opt-del-01',
       });
@@ -158,8 +158,8 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 1,
         finding_id: 'sugg-del-01',
       });
@@ -208,8 +208,8 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       });
 
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 1,
         finding_id: 'find-reject-01',
       });
@@ -254,8 +254,8 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       });
 
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 1,
         finding_id: 'find-md-01',
       });
@@ -326,12 +326,12 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
       const modelClient = { complete: vi.fn() };
       const tool = createDisputeFindingTool({ queryableDatabase: { query: vi.fn() }, modelClient });
       await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 99, finding_id: 'f-dis-1',
+        owner: 'exampleorg', repo: 'example-api', pr_number: 99, finding_id: 'f-dis-1',
         counter_argument: 'Node.js is single-threaded and the operation is synchronous.',
       }, {
         caller: { authType: 'static_token', isAdmin: true, allowedRepositories: null, callerId: 'admin', tokenDigest: 'd' },
         authenticatedByConfiguredAuthenticator: true,
-        authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+        authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
       })).rejects.toThrow('Fresh finding review is temporarily unavailable');
       expect(modelClient.complete).not.toHaveBeenCalled();
     });
@@ -386,8 +386,8 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
 
       const res: any = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 99,
           finding_id: 'f-exp-1',
           question: 'Does validating request body using Zod schema at controller entrypoint fix this?',
@@ -420,8 +420,8 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
 
       // Unauthenticated call without context.caller
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 99,
         finding_id: 'f-exp-secret',
         question: 'What is this finding?',

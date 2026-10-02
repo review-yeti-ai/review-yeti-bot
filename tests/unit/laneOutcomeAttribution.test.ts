@@ -175,7 +175,7 @@ describe('lane outcome emission inside panelEngine (P1: verified through the eng
     await executePersonaPanel({
       config: panelConfig(),
       changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-rel904',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -197,7 +197,7 @@ describe('lane outcome emission inside panelEngine (P1: verified through the eng
       executePersonaPanel({
         config: panelConfig(),
         changedFiles: [{ path: 'src/security/auth.ts', patch: '+ const token = 123;' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-sha-rel904-fail',
         client: mockClient as unknown as OmniRouteClient,
       }),

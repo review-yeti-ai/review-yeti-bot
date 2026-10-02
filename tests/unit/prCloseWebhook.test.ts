@@ -17,7 +17,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         base: { sha: 'base-sha-456', ref: 'main' },
       },
       repository: {
-        owner: { login: 'calltelemetry' },
+        owner: { login: 'exampleorg' },
         name: 'ct-review-bot',
       },
       sender: { login: 'alice' },
@@ -46,7 +46,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         base: { sha: 'base-sha-456' },
       },
       repository: {
-        owner: { login: 'calltelemetry' },
+        owner: { login: 'exampleorg' },
         name: 'ct-review-bot',
       },
       sender: { login: 'bob' },
@@ -71,7 +71,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         base: { sha: 'commit-base-99', ref: 'production' },
       },
       repository: {
-        owner: { login: 'calltelemetry' },
+        owner: { login: 'exampleorg' },
         name: 'ct-review-bot',
       },
       sender: { login: 'charlie' },
@@ -122,7 +122,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         head: { sha: 'sha-opened-1' },
         base: { sha: 'sha-opened-0' },
       },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       sender: { login: 'dev1' },
     };
 
@@ -135,7 +135,7 @@ describe('PR Close Webhook Handling (pull_request.closed merged events)', () => 
         head: { sha: 'sha-opened-1' },
         base: { sha: 'sha-opened-0' },
       },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       sender: { login: 'dev1' },
     };
 

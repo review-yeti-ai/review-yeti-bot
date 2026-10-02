@@ -11,7 +11,7 @@ describe('K8s Sandbox Job Runner & GitHub App Policy Suite (Release v1.5.0)', ()
     const manifest = runner.generateJobManifest({
       jobName: 'ct-agent-sec-pr1450',
       persona: 'security',
-      repoUrl: 'calltelemetry/ct-meta',
+      repoUrl: 'exampleorg/example-meta',
       prNumber: 1450,
       commitSha: '655a11188990',
     });
@@ -34,7 +34,7 @@ describe('K8s Sandbox Job Runner & GitHub App Policy Suite (Release v1.5.0)', ()
 
     const volumeMount = container.volumeMounts[0];
     expect(volumeMount.mountPath).toBe('/workspace');
-    expect(volumeMount.subPath).toContain('calltelemetry_ct-meta_pr1450');
+    expect(volumeMount.subPath).toContain('exampleorg_example-meta_pr1450');
 
     const volume = manifest.spec.template.spec.volumes[0];
     expect(volume.emptyDir).toBeDefined();
@@ -46,7 +46,7 @@ describe('K8s Sandbox Job Runner & GitHub App Policy Suite (Release v1.5.0)', ()
 
     const result = await runner.dispatchJob({
       persona: 'performance',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 204,
       commitSha: 'a1b2c3d4e5f6',
       envVars: { CUSTOM_RULE: 'strict' },

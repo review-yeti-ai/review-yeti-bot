@@ -48,7 +48,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
             authType: 'static_token',
             tokenDigest: 'digest123',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/pr-manager-mcp']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/example-pr-manager']),
             callerId: callerIdentity,
           } satisfies McpAuthenticatedCaller;
         }
@@ -69,7 +69,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
             authType: 'static_token',
             tokenDigest: 'digest123',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/pr-manager-mcp']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/example-pr-manager']),
             callerId: callerIdentity,
           };
         }
@@ -166,7 +166,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
   // =========================================================================
   describe('Suite 2: Strict Zod Input Validation Tests', () => {
     it('TC-VAL-001 (get_review_status): Rejects missing required parameters', () => {
-      const result = GetReviewStatusInputSchema.safeParse({ owner: 'calltelemetry' });
+      const result = GetReviewStatusInputSchema.safeParse({ owner: 'exampleorg' });
       expect(result.success).toBe(false);
     });
 
@@ -280,12 +280,12 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
     it('TC-VAL-009 (preflight_diff_review): Rejects diff exceeding 512KB and empty diff', () => {
       expect(
-        PreflightDiffReviewInputSchema.safeParse({ diff: '', repo: 'calltelemetry/cisco-cdr' }).success
+        PreflightDiffReviewInputSchema.safeParse({ diff: '', repo: 'exampleorg/example-api' }).success
       ).toBe(false);
       expect(
         PreflightDiffReviewInputSchema.safeParse({
           diff: 'x'.repeat(512 * 1024 + 1),
-          repo: 'calltelemetry/cisco-cdr',
+          repo: 'exampleorg/example-api',
         }).success
       ).toBe(false);
     });
@@ -310,8 +310,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         rows: [
           {
             run_id: 'run_123',
-            owner: 'calltelemetry',
-            repo: 'cisco-cdr',
+            owner: 'exampleorg',
+            repo: 'example-api',
             pr_number: 42,
             head_sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
             run_status: 'running',
@@ -331,8 +331,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createGetReviewStatusTool(mockDb);
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 42,
       });
 
@@ -350,8 +350,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createGetReviewStatusTool(mockDb);
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 9999,
       });
 
@@ -366,8 +366,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         rows: [
           {
             run_id: 'run_clean',
-            owner: 'calltelemetry',
-            repo: 'cisco-cdr',
+            owner: 'exampleorg',
+            repo: 'example-api',
             pr_number: 10,
             head_sha: 'c'.repeat(40),
             run_status: 'succeeded',
@@ -382,8 +382,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createGetReviewStatusTool(mockDb);
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 10,
       });
 
@@ -397,8 +397,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
     it('TC-STAT-004: Fails closed when database collaborator is omitted', async () => {
       const tool = createGetReviewStatusTool();
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 42,
       });
 
@@ -461,8 +461,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createGetReviewFindingsTool(mockDb);
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 43,
       });
 
@@ -501,8 +501,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createGetReviewFindingsTool(mockDb);
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 43,
         severity: 'P0',
       });
@@ -518,8 +518,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createGetReviewFindingsTool(mockDb);
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 9999,
       });
 
@@ -573,8 +573,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         timeout_seconds: 5,
       });
@@ -601,8 +601,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         timeout_seconds: 1, // 1s timeout
       });
@@ -616,8 +616,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const tool = createWatchReviewProgressTool({});
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 44,
           timeout_seconds: 5,
         })
@@ -655,8 +655,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 60,
         head_sha: 'a'.repeat(40),
         priority: 'expedited',
@@ -681,8 +681,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 60,
           head_sha: 'a'.repeat(40),
           force: false,
@@ -700,8 +700,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 60,
         head_sha: 'a'.repeat(40),
         force: true,
@@ -741,8 +741,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 60,
         head_sha: 'a'.repeat(40),
         review_engine: 'composed',
@@ -768,7 +768,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const tool = createCancelReviewTool();
 
       await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
       })).rejects.toThrow(/transactional dispatch repository is required/);
     });
 
@@ -785,8 +785,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         reason: 'Superseded by new commit push',
       });
@@ -797,8 +797,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       expect(data.reaped_pod).toBe('review-worker-pr-44-xyz');
       expect(data.message).toContain('Superseded by new commit push');
       expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         prNumber: 44,
         cancelReason: 'Superseded by new commit push',
         gateReason: 'operator-cancelled',
@@ -826,7 +826,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
       });
       const data = JSON.parse((result.content[0] as any).text);
       expect(data.reaped_pod).toBeUndefined();
@@ -844,7 +844,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       });
 
       await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
       })).rejects.toThrow(/review database unavailable/);
     });
 
@@ -852,7 +852,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const tool = createCancelReviewTool();
 
       await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'x'.repeat(513),
+        owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'x'.repeat(513),
       })).rejects.toThrow(/reason must be at most 512 characters/);
     });
 
@@ -864,8 +864,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 9999,
           reason: 'Cleanup',
         })
@@ -909,8 +909,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
             rows: [
               {
                 payload: JSON.stringify(mockFindingPayload),
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 run_id: 'run_100',
               },
             ],
@@ -924,7 +924,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       authType: 'static',
       tokenDigest: 'abc',
       isAdmin: false,
-      allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+      allowedRepositories: new Set(['exampleorg/example-api']),
       callerId: 'static:test',
     };
     const authorizedContext = { caller: authorizedCaller as any, sessionId: 's1' };
@@ -935,8 +935,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         {
           finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
           question: 'What if I replace the Map with a bounded LRU cache with max capacity 1000?',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
         },
         authorizedContext
       );
@@ -953,8 +953,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         {
           finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
           question: 'Can I just disable and remove the cache check?',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
         },
         authorizedContext
       );
@@ -970,8 +970,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         {
           finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
           question: 'Why was this finding raised and what does it mean?',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
         },
         authorizedContext
       );
@@ -1049,8 +1049,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const resultNoContext = await tool.execute({
         finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
         question: 'What is this finding about?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
       });
       const dataNoContext = JSON.parse((resultNoContext.content[0] as any).text);
       expect(dataNoContext.explanation).toContain('was not found in the review ledger');
@@ -1060,8 +1060,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         {
           finding_id: 'fnd_01ARZ3NDEKTSV4RRFFQ69G5FAV',
           question: 'What is this finding about?',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
         },
         { sessionId: 's1' } as any
       );
@@ -1090,8 +1090,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
                   },
                 ],
               }),
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               run_id: 'run_top_level',
             },
           ],
@@ -1103,8 +1103,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         {
           finding_id: 'fnd_toplevel_123',
           question: 'What if I implement a bounded LRU cache with limit 500?',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
         },
         authorizedContext
       );
@@ -1132,7 +1132,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
       const tool = createPreflightDiffReviewTool();
       const start = Date.now();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: docDiff,
       });
       const duration = Date.now() - start;
@@ -1155,7 +1155,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createPreflightDiffReviewTool();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: workflowDiff,
       });
 
@@ -1177,7 +1177,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createPreflightDiffReviewTool();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: codeDiff,
       });
 
@@ -1196,7 +1196,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
 
       const tool = createPreflightDiffReviewTool();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: secretDiff,
       });
 
@@ -1319,8 +1319,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           params: {
             name: 'trigger_review',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pull_number: 'not-a-number', // type violation
               head_sha: 'a'.repeat(40),
             },
@@ -1425,7 +1425,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           params: {
             name: 'preflight_diff_review',
             arguments: {
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
               diff: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# Hello\n+# World',
             },
           },
@@ -1466,8 +1466,8 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
         rows: [
           {
             run_id: 'run_123',
-            owner: 'calltelemetry',
-            repo: 'cisco-cdr',
+            owner: 'exampleorg',
+            repo: 'example-api',
             pr_number: 5293,
             head_sha: '1ce2836bf3',
             status: 'running',
@@ -1488,7 +1488,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           method: 'tools/call',
           params: {
             name: 'query_active_jobs',
-            arguments: { repo: 'cisco-cdr' },
+            arguments: { repo: 'example-api' },
           },
         });
 
@@ -1509,7 +1509,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           method: 'tools/call',
           params: {
             name: 'get_cloudflare_status',
-            arguments: { repo: 'calltelemetry/cisco-cdr' },
+            arguments: { repo: 'exampleorg/example-api' },
           },
         });
 
@@ -1531,7 +1531,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           method: 'tools/call',
           params: {
             name: 'get_billable_runtime_report',
-            arguments: { repo: 'calltelemetry/cisco-cdr' },
+            arguments: { repo: 'exampleorg/example-api' },
           },
         });
 
@@ -1553,7 +1553,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           method: 'tools/call',
           params: {
             name: 'get_runtime_metrics',
-            arguments: { repo: 'calltelemetry/cisco-cdr' },
+            arguments: { repo: 'exampleorg/example-api' },
           },
         });
 
@@ -1576,7 +1576,7 @@ describe('Review Yeti Remote MCP Tool Catalog Suite (tests/unit/mcpToolsCatalog.
           method: 'tools/call',
           params: {
             name: 'get_analytics_dashboard',
-            arguments: { repo: 'calltelemetry/cisco-cdr' },
+            arguments: { repo: 'exampleorg/example-api' },
           },
         });
 

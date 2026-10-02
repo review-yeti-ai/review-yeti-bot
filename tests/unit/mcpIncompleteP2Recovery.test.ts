@@ -12,7 +12,7 @@ const headSha = 'b'.repeat(40);
 const baseSha = 'c'.repeat(40);
 const repositoryId = 321;
 const identity = {
-  owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42, headSha, baseSha,
+  owner: 'exampleorg', repo: 'example-api', prNumber: 42, headSha, baseSha,
 };
 const prepared = { policy: { effectivePolicyDigest: 'd'.repeat(64), effectiveConfigDigest: 'e'.repeat(64) } };
 const context: McpExecutionContext = {

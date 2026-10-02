@@ -231,7 +231,7 @@ describe('McpFleetManager Unit Tests', () => {
               content: [
                 {
                   type: 'text',
-                  text: JSON.stringify({ blast_radius: 'HIGH', affected_repos: ['cisco-cdr', 'ct-quasar'] }),
+                  text: JSON.stringify({ blast_radius: 'HIGH', affected_repos: ['example-api', 'example-ui'] }),
                 },
               ],
             },
@@ -243,7 +243,7 @@ describe('McpFleetManager Unit Tests', () => {
       try {
         const result = await mcpFleetManager.executeTool('ct_impact', { target: 'routes' });
         expect(result.success).toBe(true);
-        expect(result.output).toEqual({ blast_radius: 'HIGH', affected_repos: ['cisco-cdr', 'ct-quasar'] });
+        expect(result.output).toEqual({ blast_radius: 'HIGH', affected_repos: ['example-api', 'example-ui'] });
         expect(result.durationMs).toBeGreaterThanOrEqual(0);
       } finally {
         fetchSpy.mockRestore();

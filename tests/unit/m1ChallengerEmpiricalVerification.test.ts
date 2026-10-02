@@ -19,20 +19,20 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
     (dashboardStore as any).data.reviewLogs = [];
 
     // Seed tracked active repo
-    dashboardStore.updateRepository('calltelemetry', 'cisco-cdr', {
+    dashboardStore.updateRepository('exampleorg', 'example-api', {
       automationEnabled: true,
       customProfile: 'balanced',
       generateArchitecturalFlowchart: true,
     });
 
     // Seed tracked repo with disabled automation
-    dashboardStore.updateRepository('calltelemetry', 'paused-service', {
+    dashboardStore.updateRepository('exampleorg', 'paused-service', {
       automationEnabled: false,
       customProfile: 'chill',
     });
 
     // Seed tracked repo with NO reviews and NO PRs
-    dashboardStore.updateRepository('calltelemetry', 'empty-repo', {
+    dashboardStore.updateRepository('exampleorg', 'empty-repo', {
       automationEnabled: true,
       customProfile: 'balanced',
     });
@@ -78,7 +78,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('returns 200 with empty array (NO synthetic PR #142) for tracked repo with zero reviews', async () => {
       const res = await request(app)
-        .get('/api/github/repos/calltelemetry/empty-repo/pulls')
+        .get('/api/github/repos/exampleorg/empty-repo/pulls')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
@@ -92,11 +92,11 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
     });
 
     it('correctly returns actual review logs for tracked repo without synthetic PR #142', async () => {
-      // Add a real review log for cisco-cdr
+      // Add a real review log for example-api
       dashboardStore.recordReviewRun({
         id: 'rev_123',
-        prRun: 'calltelemetry/cisco-cdr#55',
-        repo: 'calltelemetry/cisco-cdr',
+        prRun: 'exampleorg/example-api#55',
+        repo: 'exampleorg/example-api',
         prNumber: 55,
         title: 'Real PR 55',
         verdict: 'SHIP',
@@ -113,7 +113,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
       });
 
       const res = await request(app)
-        .get('/api/github/repos/calltelemetry/cisco-cdr/pulls')
+        .get('/api/github/repos/exampleorg/example-api/pulls')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
@@ -185,7 +185,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('returns 400 for GET /pulls when owner is whitespace only', async () => {
       const res = await request(app)
-        .get('/api/github/repos/%20/cisco-cdr/pulls')
+        .get('/api/github/repos/%20/example-api/pulls')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(400);
@@ -195,7 +195,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('returns 400 for GET /pulls when repo is whitespace only', async () => {
       const res = await request(app)
-        .get('/api/github/repos/calltelemetry/%20/pulls')
+        .get('/api/github/repos/exampleorg/%20/pulls')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(400);
@@ -226,7 +226,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('returns 400 for POST /review when owner is whitespace only', async () => {
       const res = await request(app)
-        .post('/api/github/repos/%20/cisco-cdr/pulls/10/review')
+        .post('/api/github/repos/%20/example-api/pulls/10/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -237,7 +237,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('returns 400 for POST /review when repo is whitespace only', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/%20/pulls/10/review')
+        .post('/api/github/repos/exampleorg/%20/pulls/10/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -263,7 +263,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
   describe('Vulnerability 4: Disabled automation returns 400', () => {
     it('returns 400 when dispatching review on repo with automationEnabled: false', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/paused-service/pulls/12/review')
+        .post('/api/github/repos/exampleorg/paused-service/pulls/12/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -274,7 +274,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('returns 400 when dispatching with force: false on disabled repo', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/paused-service/pulls/12/review')
+        .post('/api/github/repos/exampleorg/paused-service/pulls/12/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ force: false });
 
@@ -285,7 +285,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('allows dispatch when explicit force: true is provided on disabled repo', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/paused-service/pulls/12/review')
+        .post('/api/github/repos/exampleorg/paused-service/pulls/12/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ force: true, title: 'Forced review on disabled repo' });
 
@@ -301,7 +301,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
   describe('Vulnerability 5: Decimal and non-integer PR numbers return 400', () => {
     it('rejects 3.14 with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/3.14/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/3.14/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -312,7 +312,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects 0.99 with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/0.99/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/0.99/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -322,7 +322,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects scientific notation 1e5 with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/1e5/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/1e5/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -332,7 +332,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects negative PR numbers like -1 with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/-1/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/-1/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -342,7 +342,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects PR number 0 with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/0/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/0/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -352,7 +352,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects NaN with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/NaN/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/NaN/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -362,7 +362,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects Infinity with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/Infinity/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/Infinity/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -372,7 +372,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('rejects alphanumeric PR string like 42abc with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/42abc/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/42abc/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -382,7 +382,7 @@ describe('Milestone 1 Challenger: Empirical Verification of Closed Vulnerabiliti
 
     it('accepts valid positive integer PR number and returns 202', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/42/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/42/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           headSha: 'c0ffee1234567890abcdef',

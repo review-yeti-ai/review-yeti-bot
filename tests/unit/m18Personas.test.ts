@@ -7,7 +7,7 @@ import { createDefaultV3Config } from '../../src/config/configLoader';
 describe('Milestone 18: Follow-up PR Personas Engine', () => {
   const dummyConfig = createDefaultV3Config();
   const dummyPayload: any = {
-    owner: 'calltelemetry',
+    owner: 'exampleorg',
     repo: 'ct-review-bot',
     prNumber: 77,
     title: 'feat(api): add new webhook endpoint CT-303',
@@ -30,7 +30,7 @@ describe('Milestone 18: Follow-up PR Personas Engine', () => {
     mockGithub.getBranchRef.mockResolvedValue('main-ref-sha');
     mockGithub.createBranch.mockResolvedValue(undefined);
     mockGithub.createOrUpdateFile.mockResolvedValue({ sha: 'file-sha' });
-    mockGithub.createPullRequest.mockResolvedValue({ number: 108, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/108' });
+    mockGithub.createPullRequest.mockResolvedValue({ number: 108, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/108' });
     mockGithub.postIssueComment.mockResolvedValue(undefined);
   });
 
@@ -44,7 +44,7 @@ describe('Milestone 18: Follow-up PR Personas Engine', () => {
 
       expect(result.created).toBe(true);
       expect(result.prNumber).toBe(108);
-      expect(mockGithub.createBranch).toHaveBeenCalledWith('calltelemetry', 'ct-review-bot', 'ct-review/docs-followup-pr-77', 'main-ref-sha');
+      expect(mockGithub.createBranch).toHaveBeenCalledWith('exampleorg', 'ct-review-bot', 'ct-review/docs-followup-pr-77', 'main-ref-sha');
       expect(mockGithub.createOrUpdateFile).toHaveBeenCalledWith(
         expect.objectContaining({
           path: 'docs/updates/pr-77-docs.md',
@@ -71,7 +71,7 @@ describe('Milestone 18: Follow-up PR Personas Engine', () => {
 
       expect(result.created).toBe(true);
       expect(result.prNumber).toBe(108);
-      expect(mockGithub.createBranch).toHaveBeenCalledWith('calltelemetry', 'ct-review-bot', 'ct-review/marketing-followup-pr-77', 'main-ref-sha');
+      expect(mockGithub.createBranch).toHaveBeenCalledWith('exampleorg', 'ct-review-bot', 'ct-review/marketing-followup-pr-77', 'main-ref-sha');
       expect(mockGithub.createOrUpdateFile).toHaveBeenCalledWith(
         expect.objectContaining({
           path: 'notes/release-updates-pr-77.md',

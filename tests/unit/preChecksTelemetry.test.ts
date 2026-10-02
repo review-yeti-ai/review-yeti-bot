@@ -263,7 +263,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
           content: 'export function validateAuthToken() {}',
         },
       ],
-      repository: 'calltelemetry/review-yeti',
+      repository: 'exampleorg/review-yeti',
       headSha: 'abc1234567890',
       client: mockClient as any,
     });
@@ -299,7 +299,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     );
     expect(zoektLogCall).toBeDefined();
     expect(zoektLogCall?.[1]).toMatchObject({
-      repository: 'calltelemetry/review-yeti',
+      repository: 'exampleorg/review-yeti',
       headSha: 'abc1234567890',
       status: 'ok',
       scannedSymbols: 10,
@@ -314,7 +314,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     );
     expect(analyzersLogCall).toBeDefined();
     expect(analyzersLogCall?.[1]).toMatchObject({
-      repository: 'calltelemetry/review-yeti',
+      repository: 'exampleorg/review-yeti',
       headSha: 'abc1234567890',
       status: 'ok',
       executedCount: 2,
@@ -387,7 +387,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/main.ts', patch: '+test', content: 'test' }],
-      repository: 'calltelemetry/review-yeti',
+      repository: 'exampleorg/review-yeti',
       headSha: 'trunc-sha',
       client: mockClient as any,
     });
@@ -397,7 +397,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     expect(panelSpan?.attributes['review_yeti.pre_checks.zoekt.truncated']).toBe(true);
 
     const text = await getPrometheusMetrics();
-    expect(metricSampleValue(text, 'review_yeti_zoekt_truncated_total{repository="calltelemetry/review-yeti"}')).toBeGreaterThanOrEqual(1);
+    expect(metricSampleValue(text, 'review_yeti_zoekt_truncated_total{repository="exampleorg/review-yeti"}')).toBeGreaterThanOrEqual(1);
   });
 
   it('fails soft on Zoekt/Analyzer errors and records unavailable status without aborting panel', async () => {
@@ -446,7 +446,7 @@ describe('Pre-Checks Production Telemetry & Structured Logging (review_yeti name
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/main.ts', patch: '+test', content: 'test' }],
-      repository: 'calltelemetry/review-yeti',
+      repository: 'exampleorg/review-yeti',
       headSha: 'fail-soft-sha',
       client: mockClient as any,
     });

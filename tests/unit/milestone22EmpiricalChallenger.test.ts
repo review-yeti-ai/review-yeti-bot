@@ -16,7 +16,7 @@ describe('Milestone 22 Empirical Challenger Stress Suite', () => {
       const payload: any = {
         action: 'closed',
         pull_request: undefined,
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       };
       const result = handler.evaluateTrigger('pull_request', payload, 'deliv-empty-pr');
       expect(result.shouldTrigger).toBe(false);

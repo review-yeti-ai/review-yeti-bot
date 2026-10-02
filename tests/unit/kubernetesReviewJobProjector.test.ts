@@ -23,7 +23,7 @@ const projection: PRReviewJobProjection = {
     runId: `run_${'1'.repeat(32)}`,
     deliveryId: 'actions:98765:2:123:42:head',
     repositoryId: 123,
-    repo: 'calltelemetry/cisco-cdr',
+    repo: 'exampleorg/example-api',
     prNumber: 42,
     headSha: 'a'.repeat(40),
     baseSha: 'b'.repeat(40),
@@ -32,7 +32,7 @@ const projection: PRReviewJobProjection = {
     policyDigest: 'c'.repeat(64),
     configDigest: 'd'.repeat(64),
     publicationMode: 'disabled',
-    workerImage: `registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:${'e'.repeat(64)}`,
+    workerImage: `registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:${'e'.repeat(64)}`,
     runSecretName: `ct-review-run-${'1'.repeat(32)}`,
   },
 };

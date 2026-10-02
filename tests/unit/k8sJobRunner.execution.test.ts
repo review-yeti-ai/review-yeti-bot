@@ -17,7 +17,7 @@ import {
 describe('K8sJobRunner Execution Lifecycle & Receipt Retrieval (Milestone 2)', () => {
   const baseSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 42,
     commitSha: 'a1b2c3d4e5f6',
     logicalChildId: 'sec-child-42',

@@ -141,7 +141,7 @@ describe('Milestone 14: Backend Auth Portal & Dashboard API Integration Tests', 
       expect(getRes.status).toBe(200);
 
       const patchRes = await request(app)
-        .patch('/api/dashboard/repositories/calltelemetry/cisco-cdr')
+        .patch('/api/dashboard/repositories/exampleorg/example-api')
         .set('Authorization', `Bearer ${token}`)
         .send({ automationEnabled: false, customProfile: 'assertive' });
 
@@ -149,14 +149,14 @@ describe('Milestone 14: Backend Auth Portal & Dashboard API Integration Tests', 
       expect(patchRes.body.repository.automationEnabled).toBe(false);
       expect(patchRes.body.repository.customProfile).toBe('assertive');
 
-      expect(dashboardStore.isAutomationEnabled('calltelemetry', 'cisco-cdr')).toBe(false);
+      expect(dashboardStore.isAutomationEnabled('exampleorg', 'example-api')).toBe(false);
 
       // Restore toggle
       await request(app)
-        .patch('/api/dashboard/repositories/calltelemetry/cisco-cdr')
+        .patch('/api/dashboard/repositories/exampleorg/example-api')
         .set('Authorization', `Bearer ${token}`)
         .send({ automationEnabled: true });
-      expect(dashboardStore.isAutomationEnabled('calltelemetry', 'cisco-cdr')).toBe(true);
+      expect(dashboardStore.isAutomationEnabled('exampleorg', 'example-api')).toBe(true);
     });
 
     it('GET & PUT /api/dashboard/settings updates platform settings', async () => {

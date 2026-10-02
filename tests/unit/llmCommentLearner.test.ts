@@ -27,8 +27,8 @@ describe('LLMCommentLearner — LLM Feedback & Behavioral Judgment Engine', () =
     const learner = new LLMCommentLearner(mockOmniClient, prStore, platformStore);
 
     const result = await learner.processCommentWithJudgment({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 3056,
       commentBody: 'Please ignore console.log warnings in debug logger file',
       sender: 'jasonbarbee',
@@ -43,7 +43,7 @@ describe('LLMCommentLearner — LLM Feedback & Behavioral Judgment Engine', () =
     expect(result.githubReaction).toBe('+1');
     expect(result.learnedRule?.pattern).toBe('avoid console.log');
 
-    const memory = await prStore.queryLearnings('calltelemetry/cisco-cdr');
+    const memory = await prStore.queryLearnings('exampleorg/example-api');
     expect(memory.resolvedNits.length).toBeGreaterThanOrEqual(1);
     expect(memory.resolvedNits[0].pattern).toBe('avoid console.log');
 

@@ -4,7 +4,7 @@ import { evaluateReviewGenerationRecoveryLedger, validateReviewGenerationRecover
 
 const headSha = 'a'.repeat(40);
 const runId = `run_${'b'.repeat(32)}`;
-const request = { owner: 'calltelemetry', repo: 'ct-uat', headSha, runId,
+const request = { owner: 'exampleorg', repo: 'example-uat', headSha, runId,
   expectedGeneration: 2, expectedAppId: 4_385_771 };
 const app = { id: request.expectedAppId, slug: 'ct-review-bot' };
 const panelCoverage = 'Coverage: mode=panel; expected lanes=4; completed lanes=3; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.';

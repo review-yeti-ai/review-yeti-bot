@@ -35,7 +35,7 @@ describe('Evaluation of on_pr_close Rules', () => {
     const dispatcher = new PRCloseDispatcher();
 
     const payload: any = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 55,
       baseSha: 'base-sha-11',
@@ -94,7 +94,7 @@ describe('Evaluation of on_pr_close Rules', () => {
     const dispatcher = new PRCloseDispatcher();
 
     const payload: any = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 12,
       baseSha: 'base-sha',
@@ -131,7 +131,7 @@ describe('Evaluation of on_pr_close Rules', () => {
 
     const dispatcher = new PRCloseDispatcher();
     const payload: any = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 99,
       baseSha: 'sha99',

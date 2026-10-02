@@ -15,8 +15,8 @@ function payload() {
   return {
     action: 'checks_requested', installation: { id: 123 },
     repository: {
-      id: 614653796, name: 'dashboard', full_name: 'calltelemetry/dashboard',
-      owner: { id: 57884877, login: 'calltelemetry' },
+      id: 614653796, name: 'dashboard', full_name: 'exampleorg/dashboard',
+      owner: { id: 57884877, login: 'exampleorg' },
     },
     merge_group: {
       head_sha: GROUP_HEAD, base_sha: BASE,
@@ -31,7 +31,7 @@ function queue(head = PR_HEAD, trailingEntries: any[] = []) {
     position: 1, state: 'AWAITING_CHECKS', baseCommit: { oid: BASE }, headCommit: { oid: GROUP_HEAD },
     pullRequest: {
       number: 42, state: 'OPEN', baseRefName: 'main', headRefOid: head,
-      repository: { nameWithOwner: 'calltelemetry/dashboard' },
+      repository: { nameWithOwner: 'exampleorg/dashboard' },
     },
   }, ...trailingEntries];
   return { data: { repository: { mergeQueue: {
@@ -97,7 +97,7 @@ describe('native merge-group Review Yeti gate', () => {
     const trailing = [{
       position: 2, state: 'AWAITING_CHECKS', baseCommit: { oid: BASE }, headCommit: { oid: 'e'.repeat(40) },
       pullRequest: { number: 43, state: 'OPEN', baseRefName: 'main', headRefOid: behindHead,
-        repository: { nameWithOwner: 'calltelemetry/dashboard' } },
+        repository: { nameWithOwner: 'exampleorg/dashboard' } },
     }];
     const fetchImplementation = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

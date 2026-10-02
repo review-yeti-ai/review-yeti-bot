@@ -56,8 +56,8 @@ describe('Milestone 3 Remediation Re-verification Empirical Stress Harness', () 
 
     it('verifies ReviewRunStore tracks previous head commit SHA correctly across sequential PR events', () => {
       const prNumber = 777;
-      const owner = 'calltelemetry';
-      const repo = 'cisco-cdr';
+      const owner = 'exampleorg';
+      const repo = 'example-api';
 
       // Initially no head recorded
       expect(store.getHead(owner, repo, prNumber)).toBeUndefined();

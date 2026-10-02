@@ -24,8 +24,8 @@ import { createPreflightDiffReviewTool } from '../../src/mcp/server/tools/prefli
 import { OpenRouterClient } from '../../src/gateway/openRouterClient';
 
 describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChallenger.test.ts)', () => {
-  const TEST_OWNER = 'calltelemetry';
-  const TEST_REPO = 'cisco-cdr';
+  const TEST_OWNER = 'exampleorg';
+  const TEST_REPO = 'example-api';
   const TEST_PR = 42;
 
   function createRouterTestApp(routerInstance: RemoteMcpRouter) {
@@ -477,7 +477,7 @@ describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChalleng
             name: 'preflight_diff_review',
             arguments: {
               diff: 'diff --git a/src/main.ts b/src/main.ts\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,1 +1,2 @@\n+export const x = 1;',
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
             },
           },
         });
@@ -700,7 +700,7 @@ describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChalleng
             name: 'preflight_diff_review',
             arguments: {
               diff: 'diff --git a/docs/readme.md b/docs/readme.md\n--- a/docs/readme.md\n+++ b/docs/readme.md\n@@ -1,1 +1,2 @@\n+# Docs update',
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
             },
           },
         });
@@ -825,7 +825,7 @@ describe('Milestone 1 Empirical Challenger Suite (tests/unit/m1EmpiricalChalleng
             name: 'preflight_diff_review',
             arguments: {
               diff: 'diff --git a/src/main.ts b/src/main.ts\n--- a/src/main.ts\n+++ b/src/main.ts\n@@ -1,1 +1,2 @@\n+export const y = 2;',
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
             },
           },
         });

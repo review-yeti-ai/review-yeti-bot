@@ -8,7 +8,7 @@ const root = path.resolve(__dirname, '../..');
 const pipeline = require(path.join(root, '.github/workflows/pipelines/review-pipeline.js'));
 
 const EXACT_HEAD = {
-  repo: 'calltelemetry/example',
+  repo: 'exampleorg/example',
   prNumber: '17',
   baseSha: 'a'.repeat(40),
   headSha: 'b'.repeat(40),

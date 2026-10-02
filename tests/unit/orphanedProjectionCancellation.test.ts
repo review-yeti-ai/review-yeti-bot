@@ -19,7 +19,7 @@ const claim = {
   repositoryId: 123,
   installationId: 456,
   publicationMode: 'disabled' as const,
-  repo: 'calltelemetry/cisco-cdr',
+  repo: 'exampleorg/example-api',
   prNumber: 42,
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),

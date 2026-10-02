@@ -7,7 +7,7 @@ const { privateKey } = generateKeyPairSync('rsa', {
   privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   publicKeyEncoding: { type: 'spki', format: 'pem' },
 });
-const config = { appId: '4385771', privateKey, owner: 'calltelemetry', repo: 'dashboard' };
+const config = { appId: '4385771', privateKey, owner: 'exampleorg', repo: 'dashboard' };
 const future = () => new Date(Date.now() + 3_600_000).toISOString();
 
 function fetchStub(tokenBody: unknown) {
