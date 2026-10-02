@@ -27,6 +27,14 @@ export function createAuthRouter(): Router {
       });
     }
 
+    // Fail closed: without a configured ADMIN_PASSWORD no local login can succeed.
+    if (!authService.isLocalLoginConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Local login is disabled: ADMIN_PASSWORD is not configured',
+      });
+    }
+
     const { username, password } = parseResult.data;
     const session = authService.login(username, password);
     if (!session) {
