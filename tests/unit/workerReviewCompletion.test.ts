@@ -75,6 +75,22 @@ function expectInvalid(result: ReturnType<typeof derive>, message: RegExp): void
 }
 
 describe('WorkerReviewCompletion.v1', () => {
+  it('accepts optional classification accounting without treating it as coverage or verdict authority', () => {
+    const input = completion();
+    input.result.deletionClassification = { version: 'deletion-classification.v1', digest: 'f'.repeat(64),
+      status: 'partial', totalFiles: 64, classifiedFiles: 40, unresolvedFiles: 24, totalGroups: 8 };
+    const parsed = parseWorkerReviewCompletion(input);
+    expect(derive(parsed)).toEqual(derive(completion()));
+    const incomplete = completion({ result: { ...input.result, coverageComplete: false, verdict: undefined } });
+    expect(derive(incomplete)).toMatchObject({ valid: true, evidence: { coverageComplete: false } });
+    expect(() => parseWorkerReviewCompletion({ ...input, result: { ...input.result, deletionClassification: {
+      ...input.result.deletionClassification, unresolvedFiles: 0,
+    } } })).toThrow();
+    expect(() => parseWorkerReviewCompletion({ ...input, result: { ...input.result, deletionClassification: {
+      ...input.result.deletionClassification, totalGroups: 65,
+    } } })).toThrow();
+  });
+
   it('validates composed task coverage and IDs from the trusted diff', () => {
     const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/example.ts'],
       question: 'Could this change regress behavior?', rationale: 'The source changed.' }];
