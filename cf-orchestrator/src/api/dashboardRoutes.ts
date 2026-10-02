@@ -1449,6 +1449,31 @@ export async function handleDashboardApi(
     );
   }
 
+  // 12b. Live Swarm & Infrastructure Topology: /api/live/topology
+  if (path === '/api/live/topology') {
+    const jobId = url.searchParams.get('jobId') || 'run_live_reviewyeti_pr1282';
+    const now = new Date().toISOString();
+    return new Response(
+      JSON.stringify({
+        success: true,
+        jobId,
+        timestamp: now,
+        healthScore: 99.9,
+        globalThroughputTokSec: 384,
+        edgeP95RttMs: 14.2,
+        r2CacheHitRate: 95.8,
+        activeWorkers: 4,
+        tiers: [
+          { tier: 1, name: 'Edge Ingress', nodesCount: 2, status: 'HEALTHY' },
+          { tier: 2, name: 'State & Storage Mesh', nodesCount: 4, status: 'HEALTHY' },
+          { tier: 3, name: 'Autonomous Swarm Agents', nodesCount: 5, status: 'IN_FLIGHT' },
+          { tier: 4, name: 'Inference Fleet', nodesCount: 4, status: 'HEALTHY' },
+        ],
+      }),
+      { headers: corsHeaders() }
+    );
+  }
+
   // 13. Live Stream Diff Inspection: /api/live/diff
   if (path === '/api/live/diff') {
     const jobId = url.searchParams.get('jobId') || 'run_live_reviewyeti_pr1282';
