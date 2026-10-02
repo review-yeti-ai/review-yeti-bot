@@ -8,11 +8,11 @@ const fixture = (name: string) => fs.readFileSync(path.join(
   '..',
   '..',
   'fixtures',
-  'ct-meta',
+  'example-meta',
   name,
 ), 'utf8');
 
-describe('ct-meta canonical fixture conformance', () => {
+describe('example-meta canonical fixture conformance', () => {
   it('accepts the canonical v3 fixture unchanged', () => {
     expect(parseAndValidateConfig(fixture('panel-v3-valid.yaml')).version).toBe(3);
   });
