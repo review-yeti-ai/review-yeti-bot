@@ -19,12 +19,13 @@ export interface PartitionFile {
   originalChars: number;
   compactedChars: number;
   status?: FileStatus;
+  sourceSliceIndex?: number;
 }
 
 export interface DiffPartition {
   partitionIndex: number;
   totalPartitions: number;
-  files: Array<{ path: string; patch: string; originalChars: number; compactedChars: number }>;
+  files: Array<{ path: string; patch: string; originalChars: number; compactedChars: number; sourceSliceIndex?: number }>;
   totalChars: number;
   baseSha: string;
   headSha: string;
@@ -397,32 +398,30 @@ export function createPartitionPlan(
   const totalOriginalChars = processedFiles.reduce((sum, f) => sum + f.originalChars, 0);
   const totalCompactedChars = processedFiles.reduce((sum, f) => sum + f.compactedChars, 0);
 
-  // Deterministic Bin Packing
-  const rawPartitions: PartitionFile[][] = [];
-  let currentPartition: PartitionFile[] = [];
-  let currentPartitionChars = 0;
-
-  for (const file of processedFiles) {
-    // If single file diff with multiple hunks exceeds safe capacity, split by hunks
+  // Pack the unchanged slices largest first, retaining source-order ties.
+  // Next-fit stranded usable capacity in earlier lanes and could exceed the
+  // assignment cap even when the complete diff fit within fewer bounded lanes.
+  const slices = processedFiles.flatMap((file) => {
     const splitFiles = options.splitOversizedHunksAtLines === true
       ? splitOversizedFileHunksForGuardedAdmission(file, safeDiffChars)
       : splitOversizedFileHunks(file, safeDiffChars);
-
-    for (const subFile of splitFiles) {
-      if (currentPartition.length > 0 && currentPartitionChars + subFile.compactedChars > safeDiffChars) {
-        rawPartitions.push(currentPartition);
-        currentPartition = [subFile];
-        currentPartitionChars = subFile.compactedChars;
-      } else {
-        currentPartition.push(subFile);
-        currentPartitionChars += subFile.compactedChars;
-      }
+    return splitFiles.map((slice, index) => splitFiles.length > 1 ? { ...slice, sourceSliceIndex: index } : slice);
+  });
+  const ordered = slices.map((file, order) => ({ file, order }))
+    .sort((a, b) => b.file.compactedChars - a.file.compactedChars || a.order - b.order);
+  const bins: Array<{ files: PartitionFile[]; totalChars: number }> = [];
+  for (const { file } of ordered) {
+    const bin = bins.find((candidate) => candidate.totalChars + file.compactedChars <= safeDiffChars);
+    if (bin) {
+      bin.files.push(file);
+      bin.totalChars += file.compactedChars;
+    } else {
+      // Indivisible oversized slices remain intact for the guarded validator
+      // to refuse; legacy callers retain their dedicated oversized lane.
+      bins.push({ files: [file], totalChars: file.compactedChars });
     }
   }
-
-  if (currentPartition.length > 0) {
-    rawPartitions.push(currentPartition);
-  }
+  const rawPartitions = bins.map((bin) => bin.files);
 
   // If no files were provided, create 1 empty partition
   if (rawPartitions.length === 0) {
@@ -444,6 +443,7 @@ export function createPartitionPlan(
         patch: f.patch,
         originalChars: f.originalChars,
         compactedChars: f.compactedChars,
+        ...(f.sourceSliceIndex === undefined ? {} : { sourceSliceIndex: f.sourceSliceIndex }),
       })),
       totalChars: pTotalChars,
       baseSha,

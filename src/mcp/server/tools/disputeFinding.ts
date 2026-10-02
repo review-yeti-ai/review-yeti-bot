@@ -1,12 +1,11 @@
 /**
  * Tool: dispute_finding
  *
- * Dispute a review finding with developer counter-argument and evaluate multi-model
- * quorum adjudication, updating finding status in the ledger and recalculating gate blockers.
+ * Request a fresh exact-head review of a finding with an untrusted developer counter-argument.
  */
 
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -15,29 +14,46 @@ import {
 } from '../mcpTypes';
 import { canAccessRepository, McpRbacError } from '../mcpRbac';
 import type { ReviewModelClient } from '../../../gateway/openRouterClient';
+import {
+  getReviewFindingId,
+  extractReviewFindingEntries,
+  findReviewFindingRecord,
+} from './findingIdentity';
+import { withLockedReviewPrTransaction, type ReviewPrTransactionPool } from '../../../persistence/reviewPrTransaction';
+import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../../../review/reviewExecutionCheckpoint';
+import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewCompletionDigest } from '../../../review/workerReviewCompletion';
+import { canonicalJson, sha256 } from '../../../review/reviewCore';
+import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
+import { admitCompletedFindingRecheck, completedFindingRecheckCoordinates } from '../../../persistence/completedFindingRecheckAdmission';
+import {
+  disputedFindingRecheckDigest,
+  MAX_DISPUTE_RECHECKS_PER_REVIEW,
+  MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS,
+  loadValidatedDisputedFindingRechecks,
+  type DisputedFindingRecheckUnsigned,
+} from '../../../review/disputedFindingRecheck';
 
 export const DisputeFindingInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
   repo: z.string().trim().min(1, 'repo must not be empty').max(255),
   pr_number: z.number().int().positive('pr_number must be a positive integer').safe(),
-  finding_id: z.string().trim().min(1, 'finding_id must not be empty'),
-  counter_argument: z.string().trim().min(1, 'counter_argument must not be empty').max(10_000),
+  finding_id: z.string().trim().min(1, 'finding_id must not be empty').max(256),
+  counter_argument: z.string().trim().min(1, 'counter_argument must not be empty').max(MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS),
 }).strict();
 
 export type DisputeFindingInput = z.infer<typeof DisputeFindingInputSchema>;
 
 export interface DisputeFindingOutput {
+  version: 'DisputeFindingRecheckReceipt.v1';
   finding_id: string;
-  disputed: boolean;
-  verdict: 'upheld' | 'overruled';
-  reasoning: string;
-  confidence: number;
+  request_id: string;
+  review_status: 'fresh_re_review_requested';
   remaining_blockers: number;
 }
 
 export const disputeFindingDefinition: ToolDefinition = {
   name: 'dispute_finding',
-  description: 'Dispute a review finding with developer counter-argument and evaluate multi-model quorum adjudication.',
+  description: 'Request a fresh exact-head review of a finding with a developer counter-argument. The argument is untrusted review evidence; this tool never changes the finding or gate. Returns a versioned DisputeFindingRecheckReceipt.v1 receipt; legacy adjudication outputs are retired. A task in one source completion accepts one request: repeating the same finding and argument is idempotent, while a different request for that task is rejected.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -53,9 +69,12 @@ export const disputeFindingDefinition: ToolDefinition = {
 };
 
 export interface DisputeFindingDependencies {
+  authoritativePublishing?: AuthoritativeReviewAdmission;
+  now?: () => number;
   queryableDatabase?: {
     query(sql: string, params?: unknown[]): Promise<{ rows: any[] }>;
   };
+  transactionPool?: ReviewPrTransactionPool;
   adjudicateDispute?: (
     finding: any,
     counterArgument: string,
@@ -190,223 +209,286 @@ Respond ONLY with a valid JSON object in this format:
   return defaultAdjudicateFinding(finding, counterArgument);
 }
 
+function jsonValue(value: unknown): any {
+  if (typeof value !== 'string') return value;
+  try { return JSON.parse(value); } catch { return undefined; }
+}
+
+function assertSameCompletionIdentity(row: any, completion: ReturnType<typeof parseWorkerReviewCompletion>): void {
+  const coordinates = jsonValue(row.gate_coordinates);
+  const matches = coordinates && typeof coordinates === 'object'
+    && coordinates.runId === completion.runId
+    && Number(coordinates.repositoryId) === completion.repositoryId
+    && coordinates.owner === completion.owner && coordinates.repo === completion.repo
+    && Number(coordinates.prNumber) === completion.prNumber
+    && coordinates.headSha === completion.headSha && coordinates.baseSha === completion.baseSha
+    && coordinates.policyDigest === completion.policyDigest
+    && Number(coordinates.executionAttempt) === completion.executionAttempt
+    && coordinates.attemptId === row.gate_attempt_id;
+  const admitted = row.admitted_execution_attempt != null;
+  const next = completedFindingRecheckCoordinates(completion.executionAttempt, Number(row.review_generation));
+  const executionMatches = admitted
+    ? Number(row.admitted_execution_attempt) === next.executionAttempt
+      && Number(row.outbox_execution_attempt) + 1 === Number(row.admitted_execution_attempt)
+      && Number(row.admitted_review_generation) === next.generation
+      && Number(row.attempt) === Number(row.admitted_review_generation)
+    : Number(row.review_generation) === Number(row.attempt)
+      && Number(row.outbox_execution_attempt) + 1 === completion.executionAttempt;
+  if (!matches || !executionMatches
+    || Number(row.repository_id) !== completion.repositoryId || Number(row.pr_number) !== completion.prNumber
+    || row.owner !== completion.owner || row.repo !== completion.repo
+    || row.head_sha !== completion.headSha || row.base_sha !== completion.baseSha
+    || row.effective_policy_digest !== completion.policyDigest || row.effective_config_digest !== completion.configDigest) {
+    throw new Error('Finding source does not match its admitted review identity');
+  }
+}
+
 export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) {
   return {
     definition: disputeFindingDefinition,
     schema: DisputeFindingInputSchema,
-    execute: async (
-      rawArgs: Record<string, unknown>,
-      context?: McpExecutionContext
-    ): Promise<ToolResult> => {
+    execute: async (rawArgs: Record<string, unknown>, context?: McpExecutionContext): Promise<ToolResult> => {
       const parsed = DisputeFindingInputSchema.safeParse(rawArgs);
-      if (!parsed.success) {
-        throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
-      }
+      if (!parsed.success) throw new Error(`Invalid arguments: ${parsed.error.issues.map((i) => i.message).join(', ')}`);
       const { owner, repo, pr_number, finding_id, counter_argument } = parsed.data;
-
-      if (context?.caller && !canAccessRepository(context.caller, owner, repo)) {
+      const caller = context?.caller;
+      const authorizedRepository = context?.authorizedRepository;
+      if (context?.authenticatedByConfiguredAuthenticator !== true || !caller || !authorizedRepository
+        || authorizedRepository.owner.toLowerCase() !== owner.toLowerCase()
+        || authorizedRepository.repo.toLowerCase() !== repo.toLowerCase()
+        || !canAccessRepository(caller, owner, repo)) {
         throw new McpRbacError(owner, repo);
       }
+      if (!deps.transactionPool) throw new Error('Fresh finding review is temporarily unavailable');
+      const authoritative = deps.authoritativePublishing;
+      if (authoritative?.acceptNewRequests !== true || !authoritative.resolver) {
+        throw new Error('Fresh finding review requires active authoritative admission');
+      }
 
-      let matchedFinding: any = null;
-      let matchedRow: any = null;
-      let parsedPayload: any = null;
-      let allFindingsOnPr: any[] = [];
-
-      if (deps.queryableDatabase) {
-        let rows: any[] = [];
+      // Resolve immutable coordinates with a short connection lease. The external
+      // authority read happens before BEGIN/PR locking and is checked again against
+      // the locked source row, so a slow resolver cannot pin a mutation connection.
+      const hintClient = await deps.transactionPool.connect();
+      let hint: any;
+      try {
+        hint = (await hintClient.query(`SELECT repository_id, pr_number, head_sha, base_sha,
+            effective_policy_digest, effective_config_digest FROM review_runs
+            WHERE owner = $1 AND repo = $2 AND pr_number = $3
+            ORDER BY created_at DESC, run_id DESC LIMIT 1`, [owner, repo, pr_number])).rows[0];
+      } finally { hintClient.release(); }
+      if (!hint) throw new Error(`No accepted review is available for ${owner}/${repo}#${pr_number}`);
+      const repositoryId = Number(hint.repository_id);
+      const storedPrNumber = Number(hint.pr_number);
+      if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || storedPrNumber !== pr_number) {
+        throw new Error('Finding source coordinates are invalid');
+      }
+      const resolved = await (async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          const sql = `
-            SELECT c.run_id, c.execution_attempt, c.payload, r.head_sha
-              FROM review_runs r
-              JOIN review_worker_completions c ON c.run_id = r.run_id
-             WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
-             ORDER BY r.created_at DESC, c.execution_attempt DESC
-             LIMIT 5
-          `;
-          const res = await deps.queryableDatabase.query(sql, [owner, repo, pr_number]);
-          rows = res.rows;
-        } catch {
-          // Table may not exist
+          return await Promise.race([
+            authoritative.resolver.resolve({ repositoryId, owner, repo, prNumber: pr_number,
+              headSha: hint.head_sha, baseSha: hint.base_sha }),
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error('Authoritative finding review resolution timed out')), 15_000);
+              timer.unref?.();
+            }),
+          ]);
+        } finally { if (timer) clearTimeout(timer); }
+      })();
+      const queued = await withLockedReviewPrTransaction(deps.transactionPool,
+        async () => ({ repositoryId, prNumber: storedPrNumber }), async (client) => {
+        const row = (await client.query(`
+          WITH latest_run AS (
+            SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
+                   effective_policy_digest, effective_config_digest, attempt, status, created_at,
+                   authoritative_gate_app_id, publication_mode, result_digest
+              FROM review_runs
+             WHERE owner = $1 AND repo = $2 AND pr_number = $3
+             ORDER BY created_at DESC, run_id DESC
+             LIMIT 1
+          )
+          SELECT runs.*, outbox.execution_attempt AS outbox_execution_attempt, outbox.status AS outbox_status,
+                 completion.execution_attempt, completion.content_digest, completion.payload,
+                 gate.attempt_id AS gate_attempt_id, gate.review_generation,
+                 gate.worker_result_digest, gate.coordinates AS gate_coordinates,
+                 gate.desired_state, gate.desired_version, gate.published_version,
+                 gate.creation_state, gate.check_id, gate.current_attempt
+                 , admission.execution_attempt AS admitted_execution_attempt,
+                 admission.review_generation AS admitted_review_generation
+            FROM latest_run runs
+            LEFT JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+            LEFT JOIN LATERAL (
+              SELECT * FROM review_worker_completions stored
+               WHERE stored.run_id = runs.run_id
+               ORDER BY stored.execution_attempt DESC LIMIT 1
+            ) completion ON true
+            LEFT JOIN LATERAL (
+              SELECT * FROM review_gate_attempts stored_gate
+               WHERE stored_gate.run_id = runs.run_id
+                 AND stored_gate.execution_attempt = completion.execution_attempt
+                 AND stored_gate.worker_result_digest = completion.content_digest
+               ORDER BY stored_gate.review_generation DESC LIMIT 1
+            ) gate ON true
+            LEFT JOIN review_finding_recheck_admissions admission
+              ON admission.run_id = runs.run_id
+             AND admission.source_execution_attempt = completion.execution_attempt`,
+        [owner, repo, pr_number])).rows[0];
+        if (!row || !row.payload || !row.gate_attempt_id
+          || (row.admitted_execution_attempt == null
+            ? !['succeeded', 'failed'].includes(String(row.status))
+            : !['queued', 'running'].includes(String(row.status)))
+          // Completed reviews can retain a projected outbox row: the worker
+          // result and its Gate publication, not outbox cleanup state, are the
+          // authoritative evidence that this is an accepted source.
+          || (row.admitted_execution_attempt == null
+            ? !['projected', 'terminal'].includes(String(row.outbox_status)) || row.current_attempt !== true
+            : !['pending', 'claimed', 'projected'].includes(String(row.outbox_status)) || row.current_attempt !== false)
+          || row.creation_state !== 'bound' || row.check_id == null
+          || !['success', 'failure'].includes(String(row.desired_state))
+          || Number(row.published_version) < Number(row.desired_version)) {
+          throw new Error('The latest review does not have a published, accepted finding source');
         }
 
-        // Fallback to review_run_artifacts
-        if (rows.length === 0) {
-          try {
-            const sql = `
-              SELECT a.payload, r.run_id, r.head_sha
-                FROM review_runs r
-                JOIN review_run_artifacts a ON a.run_id = r.run_id
-               WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
-               ORDER BY r.created_at DESC
-               LIMIT 5
-            `;
-            const res = await deps.queryableDatabase.query(sql, [owner, repo, pr_number]);
-            rows = res.rows;
-          } catch {
-            // Ignore
+        const completion = parseWorkerReviewCompletion(jsonValue(row.payload));
+        const digest = workerReviewCompletionDigest(completion);
+        if (row.content_digest !== digest || row.worker_result_digest !== digest) {
+          throw new Error('Finding source completion digest is invalid');
+        }
+        assertSameCompletionIdentity(row, completion);
+        if (completion.repositoryId !== repositoryId || completion.prNumber !== storedPrNumber
+          || completion.headSha !== hint.head_sha || completion.baseSha !== hint.base_sha
+          || completion.policyDigest !== hint.effective_policy_digest || completion.configDigest !== hint.effective_config_digest) {
+          throw new Error('Finding source changed while its authoritative candidate was being resolved');
+        }
+        if (!authoritative.repositoryIds.includes(completion.repositoryId)
+          || row.publication_mode !== 'app-gate'
+          || Number(row.authoritative_gate_app_id) !== authoritative.expectedAppId) {
+          throw new Error('Finding source is outside active authoritative admission');
+        }
+        // The preflight resolver supplies current candidate/policy truth. Its exact
+        // coordinates are rebound under this transaction; the worker and final Gate
+        // independently check current truth before authoritative publication.
+
+        if (!resolved.current.open || resolved.current.draft
+          || ['repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha'].some((key) =>
+            resolved.current[key as keyof typeof resolved.current] !== completion[key as keyof typeof completion])
+          || resolved.prepared.policy.effectivePolicyDigest !== completion.policyDigest
+          || resolved.prepared.policy.effectiveConfigDigest !== completion.configDigest) {
+          throw new Error('Finding source no longer matches the current candidate and trusted policy');
+        }
+        const taskPlan = completion.result.taskPlan;
+        if (!taskPlan || completion.result.personas.length === 0
+          || completion.result.coverageComplete !== true || completion.result.quorumSatisfied !== true
+          || completion.result.personas.some((persona) => persona.status !== 'COMPLETE')) {
+          throw new Error('Finding is not from a resumable composed review task');
+        }
+        const findingRecords = extractReviewFindingEntries(completion, { includeAlternateSources: true })
+          .map((entry) => ({ ...entry, runId: completion.runId }));
+        const matched = findReviewFindingRecord(findingRecords, finding_id);
+        if (!matched) throw new Error(`Finding '${finding_id}' was not found in the latest accepted completion`);
+        const canonicalFindingId = getReviewFindingId(completion.runId, matched.personaId, matched.finding);
+        const task = taskPlan.find((candidate) => candidate.id === matched.personaId);
+        if (!task) throw new Error('Finding persona is not bound to a composed review task');
+
+        const existing = (await client.query(
+          `SELECT request_id, finding_id, counter_argument_digest
+             FROM review_finding_rechecks
+            WHERE run_id = $1 AND source_execution_attempt = $2 AND task_id = $3
+            FOR UPDATE`, [completion.runId, completion.executionAttempt, task.id],
+        )).rows[0];
+        const counterArgumentDigest = sha256(counter_argument);
+        if (existing) {
+          if (existing.finding_id !== canonicalFindingId || existing.counter_argument_digest !== counterArgumentDigest) {
+            throw new Error('A different dispute re-review is already queued for this task');
           }
+          if (row.admitted_execution_attempt == null) throw new Error('Finding request has no durable execution admission');
+          const requests = await loadValidatedDisputedFindingRechecks(client, row, Number(row.admitted_execution_attempt));
+          if (!requests.some((request) => request.requestId === String(existing.request_id))) {
+            throw new Error('Finding request source is unavailable');
+          }
+          return { requestId: String(existing.request_id), completion, finding: matched.finding,
+            findingId: canonicalFindingId };
         }
 
-        // Fallback to review_runs.artifacts column
-        if (rows.length === 0) {
-          try {
-            const sql = `
-              SELECT r.artifacts AS payload, r.run_id, r.head_sha
-                FROM review_runs r
-               WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
-               ORDER BY r.created_at DESC
-               LIMIT 5
-            `;
-            const res = await deps.queryableDatabase.query(sql, [owner, repo, pr_number]);
-            rows = res.rows;
-          } catch {
-            // Ignore
-          }
+        const checkpointRow = (await client.query(
+          'SELECT payload FROM review_execution_checkpoints WHERE run_id = $1 FOR UPDATE', [completion.runId],
+        )).rows[0];
+        if (!checkpointRow) throw new Error('The completed task checkpoint is unavailable for a safe re-review');
+        const checkpoint = parseReviewExecutionCheckpoint(jsonValue(checkpointRow.payload));
+        if (!reviewCheckpointMatchesCompletion(checkpoint, completion)) {
+          throw new Error('The task checkpoint does not match the accepted source completion');
+        }
+        const completed = checkpoint.completedTasks.find((candidate) => candidate.id === task.id);
+        const checkpointFinding = completed && findReviewFindingRecord([
+          ...extractReviewFindingEntries({ result: { personas: [{ id: matched.personaId, findings: completed.findings }] } })
+            .map((entry) => ({ ...entry, runId: completion.runId })),
+        ], canonicalFindingId);
+        if (!completed || !checkpointFinding) {
+          throw new Error('The disputed finding is absent from its durable task checkpoint');
         }
 
-        for (const row of rows) {
-          const runId = String(row.run_id || 'run-1');
-          const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
-          const candidateFindings: any[] = [];
-
-          if (Array.isArray(payload?.findings)) {
-            candidateFindings.push(...payload.findings);
-          }
-          const personas = payload?.result?.personas || payload?.personas || [];
-          for (const p of personas) {
-            if (Array.isArray(p.findings)) {
-              candidateFindings.push(...p.findings);
-            }
-          }
-
-          for (const f of candidateFindings) {
-            allFindingsOnPr.push(f);
-            const filePath = String(f.path || f.file_path || f.file || '');
-            const lineEnd = Number(f.line_end || f.line || 1);
-            const lineStart = Number(f.line_start || f.startLine || lineEnd);
-            const title = String(f.title || '');
-
-            const hashId = createHash('sha256')
-              .update(`${runId}:${filePath}:${lineStart}:${title}`)
-              .digest('hex')
-              .slice(0, 16);
-
-            if (
-              !matchedFinding &&
-              (f.finding_id === finding_id || f.id === finding_id || hashId === finding_id)
-            ) {
-              matchedFinding = f;
-              matchedRow = row;
-              parsedPayload = payload;
-            }
-          }
+        const count = Number((await client.query(
+          'SELECT COUNT(*)::int AS count FROM review_finding_rechecks WHERE run_id = $1', [completion.runId],
+        )).rows[0]?.count ?? 0);
+        if (!Number.isSafeInteger(count) || count >= MAX_DISPUTE_RECHECKS_PER_REVIEW) {
+          throw new Error('The accepted review already has the maximum number of task re-reviews');
         }
-      }
 
-      if (!matchedFinding) {
-        throw new Error(
-          `Finding '${finding_id}' was not found in review ledger for ${owner}/${repo}#${pr_number}`
-        );
-      }
-
-      // Adjudication
-      let adjudication: { verdict: 'upheld' | 'overruled'; reasoning: string; confidence: number };
-      if (deps.adjudicateDispute) {
-        const customRes = await deps.adjudicateDispute(matchedFinding, counter_argument, { owner, repo, pr_number });
-        adjudication = {
-          verdict: customRes.verdict,
-          reasoning: customRes.reasoning,
-          confidence:
-            typeof customRes.confidence === 'number'
-              ? customRes.confidence
-              : (customRes.verdict === 'overruled' ? 0.85 : 0.9),
+        const requestId = randomUUID();
+        const unsigned: DisputedFindingRecheckUnsigned = {
+          requestId,
+          runId: completion.runId,
+          sourceExecutionAttempt: completion.executionAttempt,
+          sourceContentDigest: digest,
+          sourcePlanDigest: sha256(canonicalJson(taskPlan)),
+          sourceGateAttemptId: String(row.gate_attempt_id),
+          repositoryId: completion.repositoryId,
+          owner: completion.owner,
+          repo: completion.repo,
+          prNumber: completion.prNumber,
+          headSha: completion.headSha,
+          baseSha: completion.baseSha,
+          policyDigest: completion.policyDigest,
+          configDigest: completion.configDigest,
+          findingId: canonicalFindingId,
+          personaId: matched.personaId,
+          taskId: task.id,
+          finding: {
+            severity: matched.finding.severity,
+            path: String(matched.finding.path || matched.finding.file_path || matched.finding.file || ''),
+            line: Number(matched.finding.line_end || matched.finding.line || 1),
+            title: String(matched.finding.title || ''),
+            body: String(matched.finding.body || matched.finding.rationale || ''),
+          },
+          counterArgument: counter_argument,
+          counterArgumentDigest,
         };
-      } else if (deps.modelClient) {
-        adjudication = await evaluateDisputeWithModel(deps.modelClient, matchedFinding, counter_argument, {
-          model: deps.model,
-          timeoutMs: deps.timeoutMs,
-          owner,
-          repo,
-          pr_number,
+        const requestDigest = disputedFindingRecheckDigest(unsigned);
+        await client.query(
+          `INSERT INTO review_finding_rechecks
+             (request_id, run_id, source_execution_attempt, source_content_digest, source_plan_digest, source_gate_attempt_id,
+              repository_id, owner, repo, pr_number, head_sha, base_sha, policy_digest, config_digest,
+              finding_id, persona_id, task_id, finding, counter_argument, counter_argument_digest,
+              request_digest, requested_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                   $15, $16, $17, $18::jsonb, $19, $20, $21, $22)`,
+          [requestId, completion.runId, completion.executionAttempt, digest, unsigned.sourcePlanDigest, row.gate_attempt_id,
+            completion.repositoryId, completion.owner, completion.repo, completion.prNumber,
+            completion.headSha, completion.baseSha, completion.policyDigest, completion.configDigest,
+            canonicalFindingId, matched.personaId, task.id, JSON.stringify(unsigned.finding), counter_argument,
+            counterArgumentDigest, requestDigest, sha256(caller.callerId)],
+        );
+        await admitCompletedFindingRecheck(client, unsigned, {
+          sourceGeneration: Number(row.review_generation), expectedAppId: authoritative.expectedAppId,
+          actorDigest: sha256(caller.callerId), now: (deps.now ?? Date.now)(),
         });
-      } else {
-        adjudication = defaultAdjudicateFinding(matchedFinding, counter_argument);
-      }
+        return { requestId, completion, finding: matched.finding, findingId: canonicalFindingId };
+      });
 
-      const { verdict, reasoning, confidence } = adjudication;
-
-      // Update finding state in payload and database
-      matchedFinding.status = verdict === 'overruled' ? 'OVERRULED' : 'DISPUTED';
-      matchedFinding.resolved = verdict === 'overruled';
-      matchedFinding.dispute_reasoning = reasoning;
-      matchedFinding.counter_argument = counter_argument;
-      matchedFinding.dispute_confidence = confidence;
-
-      if (deps.queryableDatabase && matchedRow && parsedPayload) {
-        if (matchedRow.execution_attempt !== undefined) {
-          try {
-            await deps.queryableDatabase.query(
-              `UPDATE review_worker_completions
-                  SET payload = $1
-                WHERE run_id = $2 AND execution_attempt = $3`,
-              [JSON.stringify(parsedPayload), matchedRow.run_id, matchedRow.execution_attempt]
-            );
-          } catch {
-            // Fallback or ignore if table is mock
-          }
-        } else {
-          try {
-            await deps.queryableDatabase.query(
-              `UPDATE review_run_artifacts
-                  SET payload = $1
-                WHERE run_id = $2`,
-              [JSON.stringify(parsedPayload), matchedRow.run_id]
-            );
-          } catch {
-            // Ignore
-          }
-        }
-
-        try {
-          await deps.queryableDatabase.query(
-            `INSERT INTO review_finding_disputes (finding_id, owner, repo, pr_number, counter_argument, verdict, reasoning, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-            [finding_id, owner, repo, pr_number, counter_argument, verdict, reasoning]
-          );
-        } catch {
-          // Optional table
-        }
-      }
-
-      // Recalculate remaining P0/P1 blockers
-      let remainingBlockers = 0;
-      for (const f of allFindingsOnPr) {
-        const sev = String(f.severity || '').toUpperCase();
-        const isBlockerSev = sev === 'P0' || sev === 'P1' || sev === 'CRITICAL' || sev === 'HIGH';
-        const isOverruled = f.status === 'OVERRULED' || f.verdict === 'overruled';
-        const isResolved = f.resolved === true || f.status === 'RESOLVED';
-        if (isBlockerSev && !isOverruled && !isResolved && f.unresolved !== false) {
-          remainingBlockers++;
-        }
-      }
-
-      // Emit SSE notifications if finding was overruled
-      if (verdict === 'overruled' && deps.notifyResourceUpdated) {
-        deps.notifyResourceUpdated(`review-yeti://findings/${owner}/${repo}/${pr_number}`);
-        deps.notifyResourceUpdated(`review-yeti://runs/${owner}/${repo}/${pr_number}`);
-      }
-
-      const result: DisputeFindingOutput = {
-        finding_id,
-        disputed: true,
-        verdict,
-        reasoning,
-        confidence,
-        remaining_blockers: remainingBlockers,
-      };
-
-      return buildToolResultJson(result);
+      const blockers = extractReviewFindingEntries(queued.completion, { includeAlternateSources: true })
+        .filter(({ finding }) => ['P0', 'P1'].includes(publishedFindingSeverity(finding))).length;
+      return buildToolResultJson({ version: 'DisputeFindingRecheckReceipt.v1', finding_id: queued.findingId, request_id: queued.requestId,
+        review_status: 'fresh_re_review_requested', remaining_blockers: blockers } satisfies DisputeFindingOutput);
     },
   };
 }

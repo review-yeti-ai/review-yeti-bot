@@ -238,7 +238,9 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
       await pool.query(`UPDATE review_runs
         SET cancel_requested_at = $2, cancel_propagated_at = $3 WHERE run_id = $1`,
       [RUN, '2026-09-30T13:13:08.000Z', '2026-09-30T13:13:09.000Z']);
-      await pool.query('DROP TABLE review_gate_attempts');
+      // This suite owns the entire schema and has no public search-path fallback.
+      // Remove dependent constraints to model a legacy schema without a Gate table.
+      await pool.query('DROP TABLE review_gate_attempts CASCADE');
       try {
         const data = await status(head);
         expect(data.found).toBe(true);
@@ -286,7 +288,9 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
         await marker(CURRENT, 'dispatched', DISPATCHED, true);
         await marker(CURRENT, 'started', STARTED, true);
         await marker(CURRENT, 'terminal', COMPLETED, true);
-        await pool.query('DROP TABLE review_gate_attempts');
+        // This suite owns the entire schema and has no public search-path fallback.
+      // Remove dependent constraints to model a legacy schema without a Gate table.
+      await pool.query('DROP TABLE review_gate_attempts CASCADE');
         try {
           const data = await status(head);
           expect(data.found).toBe(true);

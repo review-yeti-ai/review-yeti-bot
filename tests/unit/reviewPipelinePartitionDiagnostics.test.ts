@@ -315,7 +315,7 @@ function runCanonicalPartitionProbe(sourcePatch: string, safeDiffCapacityChars: 
       result = {
         partitionCount: plan.partitions.length,
         partitionChars: plan.partitions.map((partition) => partition.totalChars),
-        patches: plan.partitions.flatMap((partition) => partition.files.map((file) => file.patch)),
+        patches: plan.partitions.flatMap((partition) => partition.files).sort((a, b) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0)).map((file) => file.patch),
       };
     } catch (error) {
       result = { error: error?.message || String(error) };
@@ -468,6 +468,7 @@ describe('guarded partition producer and validator stay in lossless parity', () 
 
     const plan = createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars);
     const actual = plan.partitions.flatMap((partition: any) => partition.files)
+      .sort((a: any, b: any) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0))
       .flatMap((file: any) => hunksFromPartitionPatch(file.patch, fileHeader));
 
     expect(plan.partitions.length).toBeGreaterThan(1);

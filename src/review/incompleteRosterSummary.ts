@@ -56,8 +56,16 @@ export function parseIncompleteRosterSummary(
   const coverageLines = lines.filter((line) => line.startsWith('Coverage: '));
   if (findingLines.length !== 1 || coverageLines.length !== 1) return null;
 
-  const findings = /^Findings: ([0-9]+) \(blocking P0\/P1: 0; ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u.exec(findingLines[0]);
+  const currentFindings = /^Findings: ([0-9]+) \(blocking P0\/P1: 0; ([0-9]+) raw persona finding\(s\) before clustering\)\.$/u.exec(findingLines[0]);
+  // Historical zero-only wording describes the same absence of findings;
+  // positive historical P2 counts still require the source-bound archive reader.
+  const historicalZero = /^Findings: (0) \(blocking P0\/P1\/P2: 0; (0) raw persona finding\(s\) before clustering\)\.$/u.exec(findingLines[0]);
+  const findings = currentFindings ?? historicalZero;
   if (!findings) return null;
+  const canonicalFindingCount = Number(findings[1]);
+  const rawFindingCount = Number(findings[2]);
+  if (!Number.isSafeInteger(canonicalFindingCount) || !Number.isSafeInteger(rawFindingCount)
+    || rawFindingCount < canonicalFindingCount) return null;
 
   const panel = /^Coverage: mode=panel; expected lanes=([0-9]+); completed lanes=([0-9]+); failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false\.$/u.exec(coverageLines[0]);
   const composed = /^Coverage: engine=composed; planned tasks=([0-9]+); expected tasks=([0-9]+); completed tasks=([0-9]+); failed tasks=0; roster valid=false; quorum satisfied=false; task coverage complete=false\.$/u.exec(coverageLines[0]);
@@ -71,8 +79,8 @@ export function parseIncompleteRosterSummary(
     || (composed && Number(composed[1]) !== expectedLanes)) return null;
 
   return {
-    canonicalFindingCount: Number(findings[1]),
-    rawFindingCount: Number(findings[2]),
+    canonicalFindingCount,
+    rawFindingCount,
     canonicalFindingCountText: findings[1],
     rawFindingCountText: findings[2],
     expectedLanes,

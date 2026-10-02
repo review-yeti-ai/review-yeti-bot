@@ -30,6 +30,28 @@ describe('canonical review contract differential', () => {
     expect(action.status).toBe('SHIP');
   });
 
+  it('keeps P2 advisory by default while preserving the explicit legacy App opt-in', () => {
+    const p2Findings = Array.from({ length: 5 }, (_, index) => ({
+      severity: 'P2' as const,
+      path: `src/advisory-${index}.ts`,
+      line: 10,
+      title: `Advisory ${index}`,
+      body: `Distinct advisory finding ${index}.`,
+    }));
+    const p2Only: ReviewLane[] = [
+      { id: 'security', required: true, decision: 'FINDINGS', findings: p2Findings },
+      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
+    ];
+
+    const current = computeAppVerdict({ lanes: p2Only, expectedLanes: 2 });
+    const explicitlyHardened = computeAppVerdict({ lanes: p2Only, expectedLanes: 2, p2BlocksMerge: true });
+
+    expect(current.verdict).toBe('SHIP');
+    expect(current.metrics.p2Count).toBe(5);
+    expect(explicitlyHardened.verdict).toBe('FIX_FIRST');
+    expect(explicitlyHardened.metrics.p2Count).toBe(5);
+  });
+
   it('keeps findings and verdicts identical while removing out-of-diff paths', () => {
     const results: ReviewLane[] = [
       {

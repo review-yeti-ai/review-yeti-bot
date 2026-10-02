@@ -5,10 +5,17 @@ import {
   parseReviewExecutionCheckpoint,
   type ReviewExecutionCheckpoint,
 } from './reviewExecutionCheckpoint';
+import { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
+import { parseDisputedFindingRecheck, type DisputedFindingRecheck } from './disputedFindingRecheck';
 
 export interface ReviewExecutionCheckpointAdapter {
-  read(signal?: AbortSignal): Promise<ReviewExecutionCheckpoint | null>;
+  read(signal?: AbortSignal): Promise<ReviewExecutionCheckpointReadResult>;
   write(checkpoint: ReviewExecutionCheckpoint, signal?: AbortSignal): Promise<number>;
+}
+
+export interface ReviewExecutionCheckpointReadResult {
+  checkpoint: ReviewExecutionCheckpoint | null;
+  disputedFindingRechecks: DisputedFindingRecheck[];
 }
 export class HttpReviewExecutionCheckpointAdapter implements ReviewExecutionCheckpointAdapter {
   private readonly endpoint: string;
@@ -31,14 +38,23 @@ export class HttpReviewExecutionCheckpointAdapter implements ReviewExecutionChec
     this.endpoint = url.toString();
   }
 
-  async read(signal?: AbortSignal): Promise<ReviewExecutionCheckpoint | null> {
+  async read(signal?: AbortSignal): Promise<ReviewExecutionCheckpointReadResult> {
     const json = await this.post({ version: 'ReviewExecutionCheckpointRead.v1', runId: this.options.runId,
       executionAttempt: this.options.executionAttempt }, signal);
     if (json?.version !== 'ReviewExecutionCheckpointReadResult.v1'
       || json.runId !== this.options.runId || json.executionAttempt !== this.options.executionAttempt) {
       throw new Error('Review checkpoint response identity mismatch');
     }
-    return json.checkpoint === null ? null : parseReviewExecutionCheckpoint(json.checkpoint);
+    const checkpoint = json.checkpoint === null ? null : parseReviewExecutionCheckpoint(json.checkpoint);
+    const disputedFindingRechecks = json.disputedFindingRechecks === undefined
+      ? []
+      : Array.isArray(json.disputedFindingRechecks)
+      ? json.disputedFindingRechecks.map(parseDisputedFindingRecheck)
+      : (() => { throw new Error('Invalid disputed finding re-review response'); })();
+    if (disputedFindingRechecks.length > MAX_DISPUTE_RECHECKS_PER_REVIEW || (disputedFindingRechecks.length > 0 && !checkpoint)) {
+      throw new Error('Invalid disputed finding re-review response');
+    }
+    return { checkpoint, disputedFindingRechecks };
   }
 
   async write(checkpoint: ReviewExecutionCheckpoint, signal?: AbortSignal): Promise<number> {
@@ -81,7 +97,9 @@ export class HttpReviewExecutionCheckpointAdapter implements ReviewExecutionChec
       });
       if (response.status !== 200 || response.redirected || !response.body) throw new Error('Review checkpoint unavailable');
       const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > MAX_REVIEW_CHECKPOINT_BYTES + 16_384) throw new Error('Review checkpoint response exceeds its bound');
+      if (bytes.byteLength > MAX_REVIEW_CHECKPOINT_BYTES + MAX_DISPUTE_RECHECK_RESPONSE_BYTES + 16_384) {
+        throw new Error('Review checkpoint response exceeds its bound');
+      }
       return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
     } finally {
       clearTimeout(timer);

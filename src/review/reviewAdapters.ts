@@ -20,5 +20,6 @@ export function computeAppVerdict(options: AppVerdictOptions): CanonicalArbitrat
     candidateVerdict: options.candidateVerdict,
     rationale: options.rationale,
     panelSize: options.panelSize,
+    p2BlocksMerge: options.p2BlocksMerge,
   });
 }
