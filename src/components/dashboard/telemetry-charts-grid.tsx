@@ -1,10 +1,8 @@
 'use client';
 
 import * as React from 'react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { OverviewStats } from '@/types/dashboard';
-import { Cpu, DollarSign, Zap, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { Cpu, DollarSign, Zap, CheckCircle2, ShieldCheck, Layers } from 'lucide-react';
 
 interface TelemetryChartsGridProps {
   stats?: OverviewStats | null;
@@ -31,39 +29,39 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
   const completionPct = 100 - promptPct;
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
       {/* Chart Card 1: Token Processing Throughput */}
       <div
         id="chart-tokens-timeseries"
-        className="glass-panel border border-border/80 rounded-lg p-4 space-y-3 relative overflow-hidden"
+        className="linear-card p-3.5 space-y-2.5 relative overflow-hidden"
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <Cpu className="h-3.5 w-3.5 text-indigo-400" />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-1.5">
+            <Cpu className="h-3 w-3 text-indigo-400" />
             Token Compaction
           </span>
-          <Badge variant="outline" className="text-[10px] border-indigo-500/30 text-indigo-300 font-mono">
-            {totalTokens.toLocaleString()} Total
-          </Badge>
+          <span className="linear-kbd text-[9px] font-mono text-indigo-300">
+            {totalTokens.toLocaleString()}
+          </span>
         </div>
 
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-muted-foreground">Prompt ({promptPct}%)</span>
-            <span className="font-bold text-foreground">{promptTokens.toLocaleString()}</span>
+            <span className="text-zinc-500 text-[11px]">Prompt ({promptPct}%)</span>
+            <span className="font-semibold text-zinc-200 tabular-nums">{promptTokens.toLocaleString()}</span>
           </div>
-          <div className="h-1.5 w-full rounded-full bg-muted/40 overflow-hidden flex">
+          <div className="h-1 w-full rounded-full bg-white/[0.04] overflow-hidden flex">
             <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${promptPct}%` }} />
             <div className="h-full bg-purple-500" style={{ width: `${completionPct}%` }} />
           </div>
           <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-muted-foreground">Completion ({completionPct}%)</span>
-            <span className="font-bold text-foreground">{completionTokens.toLocaleString()}</span>
+            <span className="text-zinc-500 text-[11px]">Completion ({completionPct}%)</span>
+            <span className="font-semibold text-zinc-200 tabular-nums">{completionTokens.toLocaleString()}</span>
           </div>
         </div>
 
-        <p className="text-[11px] text-muted-foreground font-mono flex items-center justify-between pt-1 border-t border-border/40">
-          <span>R2 Diff Compaction: 3.8x</span>
+        <p className="text-[10px] text-zinc-500 font-mono flex items-center justify-between pt-2 border-t border-white/[0.06]">
+          <span>Compaction Ratio: 3.8x</span>
           <span className="text-emerald-400 font-medium">SLA: {p95Latency} p95</span>
         </p>
       </div>
@@ -71,115 +69,113 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
       {/* Chart Card 2: Model Cost Distribution */}
       <div
         id="chart-model-costs"
-        className="glass-panel border border-border/80 rounded-lg p-4 space-y-3 relative overflow-hidden"
+        className="linear-card p-3.5 space-y-2.5 relative overflow-hidden"
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <DollarSign className="h-3.5 w-3.5 text-amber-400" />
-            Swarm Model Split
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-1.5">
+            <DollarSign className="h-3 w-3 text-amber-400" />
+            Model Cost Split
           </span>
-          <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-300 font-mono">
+          <span className="linear-kbd text-[9px] font-mono text-amber-300">
             ${totalSpend.toFixed(3)}
-          </Badge>
+          </span>
         </div>
 
-        <div className="space-y-1.5">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-indigo-400 inline-block" /> Claude 3.7 Sonnet
+        <div className="space-y-1 font-mono text-[11px]">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-indigo-400" /> Claude 3.7 Sonnet
             </span>
-            <span className="font-mono text-xs font-semibold text-foreground">
-              ${(totalSpend * 0.48).toFixed(3)} (48%)
-            </span>
+            <span className="text-zinc-200 tabular-nums">48%</span>
           </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> GPT-4o
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> GPT-4o
             </span>
-            <span className="font-mono text-xs font-semibold text-foreground">
-              ${(totalSpend * 0.28).toFixed(3)} (28%)
-            </span>
+            <span className="text-zinc-200 tabular-nums">28%</span>
           </div>
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-muted-foreground flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-purple-400 inline-block" /> DeepSeek R1 / V3
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> DeepSeek R1
             </span>
-            <span className="font-mono text-xs font-semibold text-foreground">
-              ${(totalSpend * 0.14).toFixed(3)} (14%)
+            <span className="text-zinc-200 tabular-nums">14%</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400 flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-purple-400" /> Edge Swarm
             </span>
+            <span className="text-zinc-200 tabular-nums">10%</span>
           </div>
         </div>
 
-        <p className="text-[11px] text-muted-foreground font-mono flex items-center justify-between pt-1 border-t border-border/40">
-          <span>Cap: ${(stats?.monthlyCostCapUSD || 100).toFixed(0)} USD</span>
-          <span className="text-emerald-400">FinOps Enforced</span>
+        <p className="text-[10px] text-zinc-500 font-mono flex items-center justify-between pt-2 border-t border-white/[0.06]">
+          <span>Budget: $100.00</span>
+          <span className="text-indigo-400 font-medium">97.8% Remaining</span>
         </p>
       </div>
 
-      {/* Chart Card 3: Persona Verdict Pass Rate */}
+      {/* Chart Card 3: Quality Gate Consensus */}
       <div
-        id="chart-persona-verdicts"
-        className="glass-panel border border-border/80 rounded-lg p-4 space-y-3 relative overflow-hidden"
+        id="chart-arbitration-consensus"
+        className="linear-card p-3.5 space-y-2.5 relative overflow-hidden"
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-            Quality Gate Consensus
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-1.5">
+            <ShieldCheck className="h-3 w-3 text-emerald-400" />
+            Quality Gate
           </span>
-          <Badge variant="outline" className="text-[10px] border-emerald-500/30 text-emerald-300 font-mono">
-            {passRate}% Pass Rate
-          </Badge>
+          <span className="linear-kbd text-[9px] font-mono text-emerald-400">
+            {passRate}% Pass
+          </span>
         </div>
 
-        <div className="flex items-center justify-between py-1">
+        <div className="flex items-center justify-between py-0.5">
           <div className="space-y-0.5">
-            <div className="text-2xl font-bold font-mono text-emerald-400">{passRate}%</div>
-            <div className="text-[11px] text-muted-foreground">Path-scoped multi-agent review</div>
+            <div className="text-2xl font-bold font-mono text-emerald-400 tabular-nums">{passRate}%</div>
+            <div className="text-[10px] font-mono text-zinc-500">Multi-agent consensus</div>
           </div>
-          <div className="p-3 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-            <CheckCircle2 className="h-6 w-6" />
+          <div className="p-2.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+            <CheckCircle2 className="h-5 w-5" />
           </div>
         </div>
 
-        <p className="text-[11px] text-muted-foreground font-mono flex items-center justify-between pt-1 border-t border-border/40">
+        <p className="text-[10px] text-zinc-500 font-mono flex items-center justify-between pt-2 border-t border-white/[0.06]">
           <span>Zero P0 Regressions</span>
-          <span className="text-emerald-400">P0 Blocker Enforced</span>
+          <span className="text-emerald-400 font-medium">P0 Blocker Enforced</span>
         </p>
       </div>
 
-      {/* Chart Card 4: AST Memory & Indexer Performance */}
+      {/* Chart Card 4: R2 Workspace & Zoekt Cache */}
       <div
         id="chart-indexer-performance"
-        className="glass-panel border border-border/80 rounded-lg p-4 space-y-3 relative overflow-hidden"
+        className="linear-card p-3.5 space-y-2.5 relative overflow-hidden"
       >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <Zap className="h-3.5 w-3.5 text-purple-400" />
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-1.5">
+            <Zap className="h-3 w-3 text-purple-400" />
             R2 Workspace Cache
           </span>
-          <Badge variant="outline" className="text-[10px] border-purple-500/30 text-purple-300 font-mono">
+          <span className="linear-kbd text-[9px] font-mono text-purple-300">
             Ready
-          </Badge>
+          </span>
         </div>
 
-        <div className="space-y-2">
-          <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-muted-foreground">Cache Hit Rate</span>
-            <span className="font-bold text-purple-300">{r2HitRate}% Hit Rate</span>
+        <div className="space-y-1.5 font-mono text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500 text-[11px]">Hit Rate</span>
+            <span className="font-semibold text-purple-300 tabular-nums">{r2HitRate}%</span>
           </div>
-          <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-muted-foreground">Symbol Vector Nodes</span>
-            <span className="font-bold text-foreground">
-              {(stats?.memoryGraph?.symbolNodesCount || 1420).toLocaleString()}
-            </span>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500 text-[11px]">Symbol Nodes</span>
+            <span className="font-semibold text-zinc-200 tabular-nums">1,420</span>
           </div>
-          <div className="flex items-center justify-between text-xs font-mono">
-            <span className="text-muted-foreground">Unpack Latency</span>
-            <span className="font-bold text-emerald-400">&lt; 1.2s avg</span>
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-500 text-[11px]">Unpack Time</span>
+            <span className="font-semibold text-emerald-400 tabular-nums">&lt; 1.2s avg</span>
           </div>
         </div>
 
-        <p className="text-[11px] text-muted-foreground font-mono flex items-center justify-between pt-1 border-t border-border/40">
+        <p className="text-[10px] text-zinc-500 font-mono flex items-center justify-between pt-2 border-t border-white/[0.06]">
           <span>R2 Bucket Cache</span>
           <span className="text-purple-300 font-medium">Sub-Day TTL</span>
         </p>

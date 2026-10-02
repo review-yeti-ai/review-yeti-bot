@@ -4,14 +4,12 @@ import * as React from 'react';
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { OverviewStats } from '@/types/dashboard';
-import { LayoutDashboard, FolderGit2, DollarSign, Network, ArrowUpRight, Calendar, Clock, Activity, Cpu, Coins } from 'lucide-react';
+import { LayoutDashboard, FolderGit2, DollarSign, Network, ArrowUpRight, Calendar, Clock, Activity, Cpu, Coins, ShieldCheck, Database } from 'lucide-react';
 import { SpendingCapModal } from './spending-cap-modal';
 import { MemoryGraphModal } from './memory-graph-modal';
 import { FindingsDeltaBadge } from './FindingsDeltaBadge';
 
 interface OverviewMetricsProps {
-  // Every field is read defensively (optional chaining + `?? 0`/`|| ...` fallbacks), so the
-  // component genuinely tolerates a partial/empty stats object, not just a fully-populated one.
   stats?: Partial<OverviewStats> | null;
   onUpdateStats?: () => void;
 }
@@ -35,136 +33,145 @@ export function OverviewMetrics({ stats, onUpdateStats }: OverviewMetricsProps) 
 
   return (
     <>
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
         {/* KPI Card 0: Today's Reviews */}
         <Link href="/live" className="block group">
-          <Card className="glass-panel glass-hover border-border/80 cursor-pointer transition-all duration-200 group-hover:border-blue-500/50 group-hover:shadow-blue-500/10 group-hover:shadow-md overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-                <span className="group-hover:text-blue-400 transition-colors truncate">Today's Reviews</span>
-                <div className="flex items-center gap-1 shrink-0">
-                  <span className="text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-1.5 py-0.5 rounded font-mono truncate">
-                    {todayDateBadge}
-                  </span>
-                  <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground truncate">{todaysReviews.toLocaleString()}</div>
-              <p className="text-xs text-blue-400 mt-1 flex items-center gap-1 font-medium truncate">
-                <Calendar className="h-3 w-3 text-blue-400 shrink-0" /> <span className="truncate">UTC & Local Synced</span>
-              </p>
-            </CardContent>
-          </Card>
-        </Link>
-        {/* KPI Card 1: Total PR Reviews -> Navigates to /live */}
-        <Link href="/live" className="block group">
-          <Card className="glass-panel glass-hover border-border/80 cursor-pointer transition-all duration-200 group-hover:border-indigo-500/50 group-hover:shadow-indigo-500/10 group-hover:shadow-md overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-                <span className="group-hover:text-indigo-400 transition-colors truncate">Total PR Reviews</span>
-                <div className="flex items-center gap-1 shrink-0">
-                  <LayoutDashboard className="h-4 w-4 text-indigo-400" />
-                  <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground truncate">{totalReviews.toLocaleString()}</div>
-              <p className="text-xs text-emerald-400 mt-1 flex items-center gap-1 font-medium truncate">
-                100% automated enforcement
-              </p>
-            </CardContent>
-          </Card>
-        </Link>
-
-        {/* KPI Card 2: Active Repositories -> Navigates to /repos */}
-        <Link href="/repos" className="block group">
-          <Card className="glass-panel glass-hover border-border/80 cursor-pointer transition-all duration-200 group-hover:border-emerald-500/50 group-hover:shadow-emerald-500/10 group-hover:shadow-md overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-                <span className="group-hover:text-emerald-400 transition-colors truncate">Active Repositories</span>
-                <div className="flex items-center gap-1 shrink-0">
-                  <FolderGit2 className="h-4 w-4 text-emerald-400" />
-                  <ArrowUpRight className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
-                </div>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground truncate">{activeRepos}</div>
-              <p className="text-xs text-muted-foreground mt-1 truncate">Webhook Delivery Active</p>
-            </CardContent>
-          </Card>
-        </Link>
-
-        {/* KPI Card 3: Monthly Spend / Cap -> Opens SpendingCapModal */}
-        <Card
-          role="button"
-          tabIndex={0}
-          onClick={() => setSpendingCapModalOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setSpendingCapModalOpen(true);
-            }
-          }}
-          className="glass-panel glass-hover border-border/80 cursor-pointer transition-all duration-200 hover:border-amber-500/50 hover:shadow-amber-500/10 hover:shadow-md group focus:outline-none focus:ring-2 focus:ring-ring overflow-hidden"
-        >
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-              <span className="group-hover:text-amber-400 transition-colors truncate">Monthly Spend / Cap</span>
-              <DollarSign className="h-4 w-4 text-amber-400 shrink-0" />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-xl sm:text-2xl font-bold tracking-tight text-foreground truncate font-mono">
-              ${totalCost.toFixed(2)}{' '}
-              <span className="text-xs font-normal text-muted-foreground">/ ${capUSD.toFixed(0)}</span>
+          <div className="linear-card p-3.5 space-y-2 cursor-pointer group-hover:border-white/[0.14] transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 group-hover:text-zinc-200 transition-colors">
+                Today's Reviews
+              </span>
+              <div className="flex items-center gap-1">
+                <span className="linear-kbd text-[9px] font-mono text-zinc-400">
+                  {todayDateBadge}
+                </span>
+                <ArrowUpRight className="h-3 w-3 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
             </div>
-            <p className="text-xs text-emerald-400 mt-1 font-medium flex items-center justify-between gap-1 truncate">
-              <span className="truncate">{isCapBreached ? '⚠️ Cap Breached' : 'Within Budget'}</span>
-              <span className="text-[10px] text-amber-400 underline font-mono shrink-0">Edit Cap ➔</span>
-            </p>
-          </CardContent>
-        </Card>
+            <div>
+              <div className="text-2xl font-bold font-mono tabular-nums text-zinc-100">
+                {todaysReviews.toLocaleString()}
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-zinc-400 mt-1 font-mono">
+                <span className="status-dot-green" />
+                <span>UTC & Local Synced</span>
+              </div>
+            </div>
+          </div>
+        </Link>
 
-        {/* KPI Card 4: Memory Graph Nodes -> Opens MemoryGraphModal */}
-        <Card
-          role="button"
-          tabIndex={0}
-          onClick={() => setMemoryGraphModalOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              setMemoryGraphModalOpen(true);
-            }
-          }}
-          className="glass-panel glass-hover border-border/80 cursor-pointer transition-all duration-200 hover:border-purple-500/50 hover:shadow-purple-500/10 hover:shadow-md group focus:outline-none focus:ring-2 focus:ring-ring overflow-hidden"
+        {/* KPI Card 1: Total PR Reviews */}
+        <Link href="/live" className="block group">
+          <div className="linear-card p-3.5 space-y-2 cursor-pointer group-hover:border-white/[0.14] transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 group-hover:text-zinc-200 transition-colors">
+                Total PR Reviews
+              </span>
+              <div className="flex items-center gap-1">
+                <LayoutDashboard className="h-3.5 w-3.5 text-indigo-400" />
+                <ArrowUpRight className="h-3 w-3 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </div>
+            <div>
+              <div className="text-2xl font-bold font-mono tabular-nums text-zinc-100">
+                {totalReviews.toLocaleString()}
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-emerald-400 mt-1 font-mono">
+                <span className="status-dot-green" />
+                <span>100% automated enforcement</span>
+              </div>
+            </div>
+          </div>
+        </Link>
+
+        {/* KPI Card 2: Active Repositories */}
+        <Link href="/repos" className="block group">
+          <div className="linear-card p-3.5 space-y-2 cursor-pointer group-hover:border-white/[0.14] transition-all">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 group-hover:text-zinc-200 transition-colors">
+                Active Repositories
+              </span>
+              <div className="flex items-center gap-1">
+                <FolderGit2 className="h-3.5 w-3.5 text-emerald-400" />
+                <ArrowUpRight className="h-3 w-3 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+            </div>
+            <div>
+              <div className="text-2xl font-bold font-mono tabular-nums text-zinc-100">
+                {activeRepos}
+              </div>
+              <div className="flex items-center gap-1.5 text-[11px] text-zinc-400 mt-1 font-mono">
+                <span className="status-dot-green" />
+                <span>Webhook Delivery Active</span>
+              </div>
+            </div>
+          </div>
+        </Link>
+
+        {/* KPI Card 3: Total Review Spend */}
+        <div
+          onClick={() => setSpendingCapModalOpen(true)}
+          className="linear-card p-3.5 space-y-2 cursor-pointer hover:border-white/[0.14] transition-all group"
         >
-          <CardHeader className="pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-              <span className="group-hover:text-purple-400 transition-colors truncate">Memory Graph Nodes</span>
-              <Network className="h-4 w-4 text-purple-400 shrink-0" />
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground truncate">{symbolNodes.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground mt-1 flex items-center justify-between gap-1 truncate">
-              <span className="truncate">AST Symbol Graph</span>
-              <span className="text-[10px] text-purple-400 underline font-mono shrink-0">Inspect ➔</span>
-            </p>
-          </CardContent>
-        </Card>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 group-hover:text-zinc-200 transition-colors">
+              Total Review Spend
+            </span>
+            <div className="flex items-center gap-1">
+              <DollarSign className="h-3.5 w-3.5 text-amber-400" />
+              <ArrowUpRight className="h-3 w-3 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold font-mono tabular-nums text-zinc-100">
+              ${totalCost.toFixed(3)}
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-zinc-400 mt-1 font-mono">
+              <span className={isCapBreached ? 'text-rose-400 font-semibold' : 'text-emerald-400'}>
+                {isCapBreached ? '⚠️ Cap Breached' : 'Within Budget'}
+              </span>
+              <span className="text-zinc-500">
+                Cap: ${capUSD.toFixed(0)}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* KPI Card 4: Memory Graph Nodes */}
+        <div
+          onClick={() => setMemoryGraphModalOpen(true)}
+          className="linear-card p-3.5 space-y-2 cursor-pointer hover:border-white/[0.14] transition-all group"
+        >
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-zinc-400 group-hover:text-zinc-200 transition-colors">
+              Memory Graph Nodes
+            </span>
+            <div className="flex items-center gap-1">
+              <Database className="h-3.5 w-3.5 text-purple-400" />
+              <ArrowUpRight className="h-3 w-3 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold font-mono tabular-nums text-zinc-100">
+              {symbolNodes.toLocaleString()}
+            </div>
+            <div className="flex items-center gap-1.5 text-[11px] text-purple-400 mt-1 font-mono">
+              <span className="status-dot-indigo" />
+              <span>AST Hunk Cache</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Trailing 24-Hour KPI Summary Section */}
-      <div className="mt-4 pt-4 border-t border-border/40">
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <Clock className="h-3.5 w-3.5 text-indigo-400" />
-            Trailing 24-Hour KPI Summary
-          </h3>
+      <div className="pt-2">
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+          <div className="flex items-center gap-1.5">
+            <Clock className="h-3 w-3 text-indigo-400" />
+            <h3 className="text-[10px] font-semibold uppercase tracking-wider text-zinc-400 font-mono">
+              Trailing 24-Hour KPI Summary
+            </h3>
+          </div>
           <div className="flex items-center gap-2">
             <FindingsDeltaBadge
               findingsDelta={
@@ -178,63 +185,47 @@ export function OverviewMetrics({ stats, onUpdateStats }: OverviewMetricsProps) 
                 }
               }
             />
-            <span className="text-[10px] bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 px-2 py-0.5 rounded font-mono">
+            <span className="linear-kbd text-[9px] font-mono text-indigo-300">
               Moving 24h Window
             </span>
           </div>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          {/* Card 1: Trailing 24h Total Reviews Executed */}
-          <Card className="glass-panel border-border/80 overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-                <span className="truncate">24h Reviews Executed</span>
-                <Activity className="h-4 w-4 text-cyan-400 shrink-0" />
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold tracking-tight text-foreground truncate">
-                {trailing24hReviews.toLocaleString()}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1 truncate">Total reviews in last 24h</p>
-            </CardContent>
-          </Card>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="linear-card p-3 space-y-1">
+            <div className="flex items-center justify-between text-[10px] font-mono uppercase text-zinc-400">
+              <span>24h Reviews Executed</span>
+              <Activity className="h-3 w-3 text-cyan-400" />
+            </div>
+            <div className="text-xl font-bold font-mono tabular-nums text-zinc-100">
+              {trailing24hReviews.toLocaleString()}
+            </div>
+            <p className="text-[10px] text-zinc-500 font-mono">Total reviews in last 24h</p>
+          </div>
 
-          {/* Card 2: Trailing 24h Average Tokens per PR */}
-          <Card className="glass-panel border-border/80 overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-                <span className="truncate">24h Avg Tokens / PR</span>
-                <Cpu className="h-4 w-4 text-blue-400 shrink-0" />
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold tracking-tight text-foreground truncate font-mono">
-                {trailing24hAvgTokens.toLocaleString()}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1 truncate">Average prompt + completion tokens</p>
-            </CardContent>
-          </Card>
+          <div className="linear-card p-3 space-y-1">
+            <div className="flex items-center justify-between text-[10px] font-mono uppercase text-zinc-400">
+              <span>24h Avg Tokens / PR</span>
+              <Cpu className="h-3 w-3 text-blue-400" />
+            </div>
+            <div className="text-xl font-bold font-mono tabular-nums text-zinc-100">
+              {trailing24hAvgTokens.toLocaleString()}
+            </div>
+            <p className="text-[10px] text-zinc-500 font-mono">Average prompt + completion tokens</p>
+          </div>
 
-          {/* Card 3: Trailing 24h Average Cost per PR */}
-          <Card className="glass-panel border-border/80 overflow-hidden">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between gap-1">
-                <span className="truncate">24h Avg Cost / PR</span>
-                <Coins className="h-4 w-4 text-emerald-400 shrink-0" />
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold tracking-tight text-foreground truncate font-mono">
-                ${trailing24hAvgCost.toFixed(4)}
-              </div>
-              <p className="text-xs text-muted-foreground mt-1 truncate">Average USD spend per PR</p>
-            </CardContent>
-          </Card>
+          <div className="linear-card p-3 space-y-1">
+            <div className="flex items-center justify-between text-[10px] font-mono uppercase text-zinc-400">
+              <span>24h Avg Cost / PR</span>
+              <Coins className="h-3 w-3 text-emerald-400" />
+            </div>
+            <div className="text-xl font-bold font-mono tabular-nums text-zinc-100">
+              ${trailing24hAvgCost.toFixed(4)}
+            </div>
+            <p className="text-[10px] text-zinc-500 font-mono">Average USD spend per PR</p>
+          </div>
         </div>
       </div>
 
-      {/* Spending Cap & Budget Editor Modal */}
       <SpendingCapModal
         open={spendingCapModalOpen}
         onOpenChange={setSpendingCapModalOpen}
@@ -242,7 +233,6 @@ export function OverviewMetrics({ stats, onUpdateStats }: OverviewMetricsProps) 
         onSuccess={onUpdateStats}
       />
 
-      {/* AST Codebase Memory Graph Inspector Modal */}
       <MemoryGraphModal
         open={memoryGraphModalOpen}
         onOpenChange={setMemoryGraphModalOpen}

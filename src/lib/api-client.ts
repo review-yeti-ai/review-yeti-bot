@@ -81,13 +81,15 @@ export async function updatePersona(personaId: string, patch: Partial<PersonaSet
 }
 
 // Overview & Logs API
-export async function fetchOverviewStats(): Promise<OverviewStats> {
-  const res = await request<{ success: boolean; overview: OverviewStats }>('/api/dashboard/overview');
+export async function fetchOverviewStats(options?: { mode?: string }): Promise<OverviewStats> {
+  const mode = options?.mode || (typeof window !== 'undefined' ? localStorage.getItem('ry_mode') || 'live' : 'live');
+  const res = await request<{ success: boolean; overview: OverviewStats }>(`/api/dashboard/overview?mode=${encodeURIComponent(mode)}`);
   return res.overview;
 }
 
-export async function fetchReviewLogs(): Promise<ReviewJob[]> {
-  const res = await request<{ success: boolean; logs: ReviewJob[] }>('/api/dashboard/logs');
+export async function fetchReviewLogs(options?: { mode?: string }): Promise<ReviewJob[]> {
+  const mode = options?.mode || (typeof window !== 'undefined' ? localStorage.getItem('ry_mode') || 'live' : 'live');
+  const res = await request<{ success: boolean; logs: ReviewJob[] }>(`/api/dashboard/logs?mode=${encodeURIComponent(mode)}`);
   return res.logs || [];
 }
 

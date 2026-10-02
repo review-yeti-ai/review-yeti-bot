@@ -11,13 +11,14 @@ import {
   Cpu,
   Blocks,
   GitBranch,
-  Bot,
   Sparkles,
-  ChevronRight,
-  Menu,
-  X,
   Database,
   BarChart3,
+  Layers,
+  ChevronDown,
+  Menu,
+  X,
+  Search,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { VersionBadge } from './version-badge';
@@ -27,43 +28,39 @@ export interface NavItem {
   href: string;
   icon: React.ComponentType<{ className?: string }>;
   badge?: string;
+  shortcut?: string;
 }
 
-const navItems: NavItem[] = [
+const coreNavItems: NavItem[] = [
   {
     title: 'Overview',
     href: '/',
     icon: LayoutDashboard,
+    shortcut: 'G O',
   },
   {
     title: 'Analytics',
     href: '/analytics',
     icon: BarChart3,
     badge: 'R3',
-  },
-  {
-    title: 'Onboarding Wizard',
-    href: '/onboarding',
-    icon: Sparkles,
-    badge: 'NEW',
+    shortcut: 'G A',
   },
   {
     title: 'Live Stream',
     href: '/live',
     icon: Radio,
     badge: 'LIVE',
-  },
-  {
-    title: 'Memory Engine',
-    href: '/memory',
-    icon: Database,
-    badge: 'AST',
+    shortcut: 'G L',
   },
   {
     title: 'Repositories',
     href: '/repos',
     icon: FolderGit2,
+    shortcut: 'G R',
   },
+];
+
+const configNavItems: NavItem[] = [
   {
     title: 'Persona Editor',
     href: '/settings?tab=personas',
@@ -75,6 +72,12 @@ const navItems: NavItem[] = [
     icon: Cpu,
   },
   {
+    title: 'Memory Engine',
+    href: '/memory',
+    icon: Database,
+    badge: 'AST',
+  },
+  {
     title: 'Integrations',
     href: '/integrations',
     icon: Blocks,
@@ -84,7 +87,15 @@ const navItems: NavItem[] = [
     href: '/github-app',
     icon: GitBranch,
   },
+  {
+    title: 'Onboarding Wizard',
+    href: '/onboarding',
+    icon: Sparkles,
+    badge: 'NEW',
+  },
 ];
+
+const allNavItems = [...coreNavItems, ...configNavItems];
 
 function getSearchParamsSafely(): URLSearchParams | null {
   try {
@@ -112,199 +123,191 @@ function getPathnameSafely(): string {
   return '/';
 }
 
-function SidebarNavLinks({ setIsOpen }: { setIsOpen: (open: boolean) => void }) {
+function NavLink({
+  item,
+  setIsOpen,
+}: {
+  item: NavItem;
+  setIsOpen: (open: boolean) => void;
+}) {
   const pathname = getPathnameSafely();
   const searchParams = getSearchParamsSafely();
   const currentTab = searchParams ? searchParams.get('tab') : null;
+  const Icon = item.icon;
+
+  let isActive = false;
+  if (item.href.startsWith('/settings')) {
+    const targetTab = item.href.includes('tab=models') ? 'models' : 'personas';
+    if (pathname.startsWith('/settings')) {
+      if (targetTab === 'models') {
+        isActive = currentTab === 'models';
+      } else {
+        isActive = currentTab === 'personas' || !currentTab;
+      }
+    }
+  } else if (item.href === '/') {
+    isActive = pathname === '/' || pathname === '';
+  } else {
+    isActive = pathname.startsWith(item.href);
+  }
 
   return (
-    <nav className="mt-8 space-y-1">
-      {navItems.map((item) => {
-        const Icon = item.icon;
-        let isActive = false;
-        if (item.href.startsWith('/settings')) {
-          const targetTab = item.href.includes('tab=models') ? 'models' : 'personas';
-          if (pathname.startsWith('/settings')) {
-            if (targetTab === 'models') {
-              isActive = currentTab === 'models';
-            } else {
-              isActive = currentTab === 'personas' || !currentTab;
-            }
-          }
-        } else if (item.href === '/') {
-          isActive = pathname === '/' || pathname === '';
-        } else {
-          isActive = pathname.startsWith(item.href);
-        }
-
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            prefetch={false}
-            onClick={() => setIsOpen(false)}
-            className={cn(
-              'group flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-150',
-              isActive
-                ? 'bg-primary/15 text-primary border border-primary/30 shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50 hover:border hover:border-border/40'
-            )}
-          >
-            <div className="flex items-center gap-3">
-              <Icon
-                className={cn(
-                  'h-4 w-4 transition-colors',
-                  isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
-                )}
-              />
-              <span>{item.title}</span>
-            </div>
-            {item.badge ? (
-              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
-                {item.badge}
-              </span>
-            ) : (
-              <ChevronRight
-                className={cn(
-                  'h-3.5 w-3.5 opacity-0 group-hover:opacity-100 transition-opacity',
-                  isActive && 'opacity-100 text-primary'
-                )}
-              />
-            )}
-          </Link>
-        );
-      })}
-    </nav>
-  );
-}
-
-function SidebarNavLinksFallback({ setIsOpen }: { setIsOpen: (open: boolean) => void }) {
-  const pathname = getPathnameSafely();
-  return (
-    <nav className="mt-8 space-y-1">
-      {navItems.map((item) => {
-        const Icon = item.icon;
-        const isActive =
-          item.href === '/'
-            ? pathname === '/' || pathname === ''
-            : pathname.startsWith('/settings') && item.href.startsWith('/settings')
-            ? item.href.includes('tab=personas')
-            : pathname.startsWith(item.href);
-
-        return (
-          <Link
-            key={item.href}
-            href={item.href}
-            prefetch={false}
-            onClick={() => setIsOpen(false)}
-            className={cn(
-              'group flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-medium transition-all duration-150',
-              isActive
-                ? 'bg-primary/15 text-primary border border-primary/30 shadow-sm'
-                : 'text-muted-foreground hover:text-foreground hover:bg-accent/50 hover:border hover:border-border/40'
-            )}
-          >
-            <div className="flex items-center gap-3">
-              <Icon
-                className={cn(
-                  'h-4 w-4 transition-colors',
-                  isActive ? 'text-primary' : 'text-muted-foreground group-hover:text-foreground'
-                )}
-              />
-              <span>{item.title}</span>
-            </div>
-            {item.badge ? (
-              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
-                {item.badge}
-              </span>
-            ) : (
-              <ChevronRight
-                className={cn(
-                  'h-3.5 w-3.5 opacity-0 group-hover:opacity-100 transition-opacity',
-                  isActive && 'opacity-100 text-primary'
-                )}
-              />
-            )}
-          </Link>
-        );
-      })}
-    </nav>
+    <Link
+      href={item.href}
+      prefetch={false}
+      onClick={() => setIsOpen(false)}
+      className={cn(
+        'group flex items-center justify-between h-8 px-2.5 rounded-md text-xs font-medium transition-all duration-120',
+        isActive
+          ? 'bg-white/[0.08] text-white shadow-sm font-semibold'
+          : 'text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]'
+      )}
+    >
+      <div className="flex items-center gap-2.5 truncate">
+        <Icon
+          className={cn(
+            'h-3.5 w-3.5 shrink-0 transition-colors',
+            isActive ? 'text-indigo-400' : 'text-zinc-500 group-hover:text-zinc-300'
+          )}
+        />
+        <span className="truncate">{item.title}</span>
+      </div>
+      <div className="flex items-center gap-1.5 shrink-0">
+        {item.badge && (
+          <span className="px-1.5 py-0.2 text-[9px] font-mono font-semibold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+            {item.badge}
+          </span>
+        )}
+        {item.shortcut && !item.badge && (
+          <span className="hidden group-hover:inline-block font-mono text-[9px] text-zinc-500 uppercase">
+            {item.shortcut}
+          </span>
+        )}
+      </div>
+    </Link>
   );
 }
 
 export function Sidebar() {
   const [isOpen, setIsOpen] = React.useState(false);
-  const toggleSidebar = () => setIsOpen(!isOpen);
 
   return (
     <>
-      {/* Mobile Menu Toggle Button */}
-      <button
-        id="mobile-toggle"
-        onClick={toggleSidebar}
-        className="lg:hidden fixed top-3 left-4 z-50 p-2 rounded-md bg-card/80 border border-border text-foreground backdrop-blur-md"
-        aria-label="Toggle Navigation Menu"
-      >
-        {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-      </button>
+      {/* Mobile Drawer Trigger */}
+      <div className="lg:hidden fixed top-3 left-3 z-50 flex items-center gap-2">
+        <button
+          id="mobile-toggle"
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex h-9 w-9 items-center justify-center rounded-md border border-white/[0.08] bg-[#0d0e12]/90 backdrop-blur text-zinc-300 hover:text-white"
+          aria-label="Toggle navigation menu"
+        >
+          {isOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+        </button>
+      </div>
 
       {/* Mobile Backdrop */}
       {isOpen && (
         <div
           id="sidebar-backdrop"
           onClick={() => setIsOpen(false)}
-          className="lg:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-xs"
+          className="lg:hidden fixed inset-0 z-40 bg-black/70 backdrop-blur-sm transition-opacity"
         />
       )}
 
-      {/* Sidebar Container */}
+      {/* Main Linear Sidebar Shell */}
       <aside
         className={cn(
-          'sidebar fixed top-0 bottom-0 left-0 z-40 w-64 border-r border-border/60 bg-card/90 backdrop-blur-xl flex flex-col justify-between transition-transform duration-300 ease-in-out lg:translate-x-0',
+          'fixed inset-y-0 left-0 z-40 flex w-60 flex-col border-r border-white/[0.06] bg-[#0a0b0e] transition-transform duration-200 ease-in-out lg:translate-x-0',
           isOpen ? 'translate-x-0' : '-translate-x-full'
         )}
       >
-        {/* Top Branding Section */}
-        <div className="p-6">
+        {/* Workspace Brand Switcher */}
+        <div className="flex h-14 items-center justify-between border-b border-white/[0.06] px-3.5">
           <Link
             href="/"
-            className="flex items-center gap-3 group"
+            className="flex items-center gap-2.5 group overflow-hidden"
             onClick={() => setIsOpen(false)}
           >
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 via-purple-600 to-pink-500 shadow-md shadow-indigo-500/20 group-hover:scale-105 transition-transform">
-              <Bot className="h-5 w-5 text-white" />
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded bg-gradient-to-br from-indigo-500 to-purple-600 font-mono text-[11px] font-bold text-white shadow-sm shadow-indigo-500/20">
+              RY
             </div>
-            <div className="flex flex-col">
-              <span className="font-semibold tracking-wide text-foreground text-sm flex items-center gap-1.5">
-                Review Yeti
-                <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-                <span className="sr-only">ct-review-bot</span>
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-zinc-100 tracking-tight truncate">
+                  Call Telemetry
+                </span>
+                <ChevronDown className="h-3 w-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
+              </div>
+              <span className="text-[10px] font-mono text-zinc-500 tracking-tight truncate">
+                Review Yeti Swarm
               </span>
-              <span className="text-[11px] text-muted-foreground">Call Telemetry • Swarm Engine</span>
             </div>
           </Link>
-
-          {/* Navigation Links */}
-          <React.Suspense fallback={<SidebarNavLinksFallback setIsOpen={setIsOpen} />}>
-            <SidebarNavLinks setIsOpen={setIsOpen} />
-          </React.Suspense>
+          <span className="sr-only">ct-review-bot</span>
         </div>
 
-        {/* Bottom System Status Panel */}
-        <div className="p-4 m-4 rounded-xl border border-border/40 bg-background/50 backdrop-blur-sm">
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="text-muted-foreground font-medium">Review Yeti Swarm</span>
-            <span className="text-emerald-400 font-mono text-[11px]">Online</span>
+        {/* Navigation Scroll Container */}
+        <div className="flex-1 overflow-y-auto px-2.5 py-3 space-y-4">
+          {/* Quick Search Shortcut */}
+          <div className="px-1">
+            <button
+              onClick={() => {
+                const event = new KeyboardEvent('keydown', { key: 'k', metaKey: true });
+                window.dispatchEvent(event);
+              }}
+              className="flex w-full items-center justify-between h-7 px-2 rounded-md bg-white/[0.03] border border-white/[0.06] text-zinc-400 hover:text-zinc-200 hover:border-white/[0.1] text-xs transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Search className="h-3 w-3 text-zinc-500" />
+                <span className="text-[11px]">Search...</span>
+              </div>
+              <span className="linear-kbd">⌘K</span>
+            </button>
           </div>
-          <div className="h-1.5 w-full bg-secondary/80 rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-emerald-500 to-indigo-500 rounded-full w-full animate-pulse" />
+
+          {/* Core Operations Section */}
+          <div className="space-y-1">
+            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 font-mono">
+              Operations
+            </div>
+            {coreNavItems.map((item) => (
+              <NavLink key={item.href} item={item} setIsOpen={setIsOpen} />
+            ))}
           </div>
-          <div className="mt-2 text-[10px] text-muted-foreground flex items-center justify-between">
-            <span>Cloudflare Edge Active</span>
-            <span>R2 Cache Ready</span>
+
+          {/* Configuration & Engine Section */}
+          <div className="space-y-1">
+            <div className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500 font-mono">
+              Configuration
+            </div>
+            {configNavItems.map((item) => (
+              <NavLink key={item.href} item={item} setIsOpen={setIsOpen} />
+            ))}
           </div>
-          <div className="mt-3 pt-2.5 border-t border-border/40 flex items-center justify-between">
-            <span className="text-[10px] text-muted-foreground">Control Plane</span>
+        </div>
+
+        {/* Pinned Bottom System Telemetry Footer */}
+        <div className="border-t border-white/[0.06] p-3 space-y-2.5 bg-[#08090a]">
+          {/* Edge Health Micro-Status */}
+          <div className="flex items-center justify-between text-[11px] font-mono">
+            <div className="flex items-center gap-2">
+              <span className="status-dot-green" />
+              <span className="text-zinc-300 font-medium">Edge Swarm</span>
+            </div>
+            <span className="text-emerald-400 text-[10px]">Ready</span>
+          </div>
+
+          {/* R2 Cache Telemetry */}
+          <div className="flex items-center justify-between text-[11px] font-mono">
+            <div className="flex items-center gap-2">
+              <span className="status-dot-indigo" />
+              <span className="text-zinc-400">R2 Context</span>
+            </div>
+            <span className="text-zinc-300 text-[10px]">Sub-Day TTL</span>
+          </div>
+
+          {/* Version Pill */}
+          <div className="pt-1">
             <VersionBadge />
           </div>
         </div>

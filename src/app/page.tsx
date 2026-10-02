@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
-import { Radio, RefreshCw } from 'lucide-react';
+import { Radio, RefreshCw, Zap } from 'lucide-react';
 import Link from 'next/link';
 import { OverviewMetrics } from '@/components/dashboard/overview-metrics';
 import { RecentReviewsTable } from '@/components/dashboard/recent-reviews-table';
@@ -34,36 +34,59 @@ export default function OverviewPage() {
 
   React.useEffect(() => {
     loadData();
+
+    const handleModeChange = () => {
+      loadData();
+    };
+    window.addEventListener('ry_mode_change', handleModeChange);
+    return () => window.removeEventListener('ry_mode_change', handleModeChange);
   }, [loadData]);
 
+  const isDemo = (stats as any)?.isDemo;
+
   return (
-    <div className="space-y-6">
-      {/* 1. Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="space-y-4">
+      {/* Linear Header Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-2 border-b border-white/[0.06]">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-foreground">
-            Review Yeti Swarm Control Plane
-          </h2>
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
+            <h2 className="text-sm font-semibold tracking-tight text-zinc-100 font-mono uppercase">
+              Review Yeti Swarm Control Plane
+            </h2>
+            {isDemo && (
+              <span className="linear-kbd text-[9px] font-mono text-amber-300 border-amber-500/30 bg-amber-500/10">
+                Sample Baseline
+              </span>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-2 mt-1">
-            <p className="text-sm text-muted-foreground">
+            <p className="text-xs text-zinc-400">
               Autonomous multi-agent review orchestration, path-scoped diff analysis, and P0 blocker enforcement
             </p>
-            <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs font-mono text-blue-400 border border-blue-500/20">
+            <span className="linear-kbd text-[10px] font-mono text-zinc-400">
               Today: {stats?.todayDateBadge || new Date().toISOString().slice(0, 10)}
             </span>
-            <span className="inline-flex items-center gap-1 rounded-md bg-indigo-500/10 px-2 py-0.5 text-xs font-mono text-indigo-400 border border-indigo-500/20">
+            <span className="linear-kbd text-[10px] font-mono text-indigo-300">
               Trailing 24h: {stats?.trailing24hReviewsExecuted ?? 0} Reviews | {stats?.trailing24hAvgTokensPerPR ?? 0} tok/PR | ${(stats?.trailing24hAvgCostPerPR ?? 0).toFixed(4)}/PR
             </span>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={loadData} disabled={loading} className="gap-1.5 text-xs">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadData}
+            disabled={loading}
+            className="h-7 text-xs gap-1.5 border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:bg-white/[0.05]"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
-          <Button asChild size="sm" className="gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs">
+          <Button asChild size="sm" className="h-7 text-xs gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white">
             <Link href="/live">
-              <Radio className="h-4 w-4 text-emerald-400 animate-pulse" />
+              <Radio className="h-3 w-3 text-emerald-300 animate-pulse" />
               Live Stream
             </Link>
           </Button>
@@ -73,7 +96,7 @@ export default function OverviewPage() {
       {/* 2. Executive KPI Summary */}
       <OverviewMetrics stats={stats} onUpdateStats={loadData} />
 
-      {/* 3. Primary Operational Table */}
+      {/* 3. Primary Operational Table (Linear Issue-Style List) */}
       <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
 
       {/* 4. System Telemetry */}
