@@ -244,7 +244,7 @@ type PublishingConfig struct {
 	// REL-677: optional zoekt grounding passthrough. Empty means "leave the
 	// worker's default (off)"; the operator only forwards what deployment
 	// configuration explicitly set, so review runs without grounding stay
-	// byte-identical until ct-infrastructure opts in.
+	// byte-identical until example-infra opts in.
 	ZoektGroundingEnabled  string
 	ZoektGroundingDisabled string
 	// REL-1086: optional Jev (TypeSafe AI) transport. JevSecretName names a
@@ -414,7 +414,7 @@ var JevTransportEnvKeys = []string{"TYPESAFE_BASE_URL", "TYPESAFE_MODEL", "TYPES
 // the worker falls back to today's review, instead of the pod failing
 // admission and taking every review down with it. A Secret carrying only some
 // of the keys is prevented upstream by the DopplerSecret contract in
-// ct-infrastructure, which pins the exact four-key mapping.
+// example-infra, which pins the exact four-key mapping.
 func jevTransportEnv(secretName string) []corev1.EnvVar {
 	if secretName == "" {
 		return nil

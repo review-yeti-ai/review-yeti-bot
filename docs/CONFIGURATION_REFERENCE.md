@@ -649,7 +649,7 @@ Review Yeti supports transparent passthrough of extended enterprise configuratio
 
 ### Extended Configuration Keys
 
-The following top-level configuration keys can be declared in `.ct-review.yaml`, injected via central organization policies (such as `policy/review-yeti.json` in `calltelemetry/ct-review-actions`), or passed as Action inputs:
+The following top-level configuration keys can be declared in `.ct-review.yaml`, injected via central organization policies (such as `policy/review-yeti.json` in `exampleorg/example-review-actions`), or passed as Action inputs:
 
 | Key | Action Input Equivalent | Type | Description |
 |---|---|---|---|
@@ -668,7 +668,7 @@ Configuration values are resolved hierarchically from most-specific to broadest 
 1. **GitHub Action Inputs / Workflow Dispatch**: Explicit inputs provided in caller workflow files (`with: skills: ...`, `with: metrics: ...`).
 2. **Repository-Level Config**: `.ct-review.yaml` (or `.coderabbit.yaml`) at the immutable PR base SHA.
 3. **Organization Default Repository**: `.github/.ct-review.yaml` in the organization's `.github` repository.
-4. **Central Organization Policy**: Central policy definitions (`policy/review-yeti.json` hosted in `calltelemetry/ct-review-actions`).
+4. **Central Organization Policy**: Central policy definitions (`policy/review-yeti.json` hosted in `exampleorg/example-review-actions`).
 5. **System Defaults**: Built-in V4 defaults (`createDefaultV4Config()`).
 
 ### Example: Passthrough Configuration

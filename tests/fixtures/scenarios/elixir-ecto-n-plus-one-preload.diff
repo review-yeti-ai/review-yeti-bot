@@ -1,5 +1,5 @@
---- FILE: lib/calltelemetry_web/controllers/organization_controller.ex ---
-diff --git a/lib/calltelemetry_web/controllers/organization_controller.ex b/lib/calltelemetry_web/controllers/organization_controller.ex
+--- FILE: lib/exampleorg_web/controllers/organization_controller.ex ---
+diff --git a/lib/exampleorg_web/controllers/organization_controller.ex b/lib/exampleorg_web/controllers/organization_controller.ex
 @@ -10,5 +10,14 @@
    def index(conn, _params) do
      orgs = Repo.all(Organization)

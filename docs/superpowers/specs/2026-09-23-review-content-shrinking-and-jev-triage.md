@@ -3,7 +3,7 @@
 Date: 2026-09-23
 Status: plan, accepted by the operator for implementation behind flags.
 Builds on: `docs/superpowers/specs/2026-09-18-review-lifecycle-and-token-design.md` (token telemetry) and `docs/features/context_management.md` (context-window and compaction design).
-Execution substrate: plain Kubernetes Jobs on DOKS (ct-meta ADR 0668). Nothing here changes that.
+Execution substrate: plain Kubernetes Jobs on DOKS (example-meta ADR 0668). Nothing here changes that.
 
 ## 1. Why
 
@@ -128,11 +128,11 @@ Cache per-file lane results keyed by blob SHA, persona, persona prompt digest, p
 ## 5. Rollout order and gates
 
 1. W1 measurement, W3 git-based large-diff path, W4 shadow mode. Land now.
-2. W2 deterministic shrinking. Enable on review-yeti-bot and ct-meta first; compare verdicts and tokens for a week.
+2. W2 deterministic shrinking. Enable on review-yeti-bot and example-meta first; compare verdicts and tokens for a week.
 3. W7 incremental re-review. Enable after W2 is stable.
 4. W5 budget and W6 map-reduce, using W1 and W4 data to set budgets and thresholds.
 5. W8 cache last.
-6. Jev-driven lane skipping or depth reduction only if the W4 shadow data shows the miss rate below an agreed threshold, and never for security-sensitive files. That decision gets its own ADR in ct-meta.
+6. Jev-driven lane skipping or depth reduction only if the W4 shadow data shows the miss rate below an agreed threshold, and never for security-sensitive files. That decision gets its own ADR in example-meta.
 
 Each enable is a per-repository flag change with a revert path, recorded in the PR.
 
