@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+  HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+} from '../pipeline/hunkFilter';
 
 export const MAX_FILE_SIZE_DEFAULT = 1_048_576;
 
@@ -630,6 +634,11 @@ const ctReviewConfigV3ObjectSchema = z.object({
   turn_window_compaction: z.boolean().optional(),
   max_file_size: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
   max_file_bytes: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
+  /** Full raw lockfile patch bound; larger lockfiles use the verified summary path or fail closed. */
+  max_reviewed_lockfile_patch_chars: z.number().int()
+    .min(DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
+    .max(HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
+    .optional(),
 
   // CodeRabbit-mirrored top-level sections
   reviews: reviewsSchema,

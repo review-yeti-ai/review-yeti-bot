@@ -11,6 +11,21 @@ export interface ChangedFile {
  */
 export const MAX_FILE_PATCH_CHARS = 20_000;
 
+/** Default/hard bounds for full raw lockfile review, separate from the generic file cut. */
+export const DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS = MAX_FILE_PATCH_CHARS;
+export const HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS = 65_536;
+
+/** Resolve a raw-lockfile review cap without allowing callers to bypass its hard bound. */
+export function resolveMaxReviewedLockfilePatchChars(value?: unknown): number {
+  if (value === undefined) return DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS;
+  if (!Number.isSafeInteger(value)
+    || (value as number) < DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS
+    || (value as number) > HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS) {
+    throw new Error('max reviewed lockfile patch size is outside the supported bound');
+  }
+  return value as number;
+}
+
 /** A patch cut at `MAX_FILE_PATCH_CHARS`: its size before and after the cut. */
 export interface PatchTruncation {
   originalChars: number;
