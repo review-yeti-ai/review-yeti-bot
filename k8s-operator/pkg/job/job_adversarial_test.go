@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/job"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/job"
 )
 
 func TestWorkerJobSandboxingInvariants(t *testing.T) {

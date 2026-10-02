@@ -174,7 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const hashEl = document.getElementById('about-commit-hash');
             if (hashEl) {
               hashEl.textContent = a.commitHash;
-              hashEl.href = `https://github.com/calltelemetry/ct-review-bot/commit/${a.fullCommitHash || a.commitHash}`;
+              hashEl.href = `https://github.com/review-yeti-ai/review-yeti-bot/commit/${a.fullCommitHash || a.commitHash}`;
             }
 
             const envEl = document.getElementById('about-env');

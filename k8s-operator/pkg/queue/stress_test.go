@@ -25,7 +25,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/types"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/queue"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/queue"
 )
 
 // TestEmpirical_100Goroutines_HighLoad_Contention stress-tests QueueManager with 100 goroutines

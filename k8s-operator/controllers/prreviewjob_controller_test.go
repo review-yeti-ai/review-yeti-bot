@@ -43,9 +43,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/controllers"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/queue"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/controllers"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/queue"
 )
 
 func setupTestScheme(t *testing.T) *runtime.Scheme {

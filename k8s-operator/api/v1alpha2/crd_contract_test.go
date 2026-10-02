@@ -1,7 +1,7 @@
 package v1alpha2_test
 
 import (
-	v1alpha2 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
+	v1alpha2 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
 	"os"
 	"path/filepath"
 	"reflect"

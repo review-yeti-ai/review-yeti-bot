@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	celconfig "k8s.io/apiserver/pkg/apis/cel"
 
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha2"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha2"
 )
 
 // REL-1073: these tests run the committed CRD through the same apiextensions

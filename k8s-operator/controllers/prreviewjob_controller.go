@@ -39,10 +39,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
-	reviewv1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/cleanup"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/metrics"
-	"github.com/calltelemetry/ct-review-bot/k8s-operator/pkg/queue"
+	reviewv1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/cleanup"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/metrics"
+	"github.com/review-yeti-ai/review-yeti-bot/k8s-operator/pkg/queue"
 )
 
 // PRReviewJobReconciler reconciles a PRReviewJob object

@@ -724,7 +724,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
       const mockReplyFn = vi.fn().mockResolvedValue({
         id: 987654321,
         in_reply_to_id: 123456,
-        html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/123#discussion_r987654321',
+        html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/123#discussion_r987654321',
         created_at: '2026-09-22T12:00:00Z',
       });
 
@@ -761,7 +761,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
         request: vi.fn().mockResolvedValue({
           id: 555666777,
           in_reply_to_id: 111222,
-          html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/123#discussion_r555666777',
+          html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/123#discussion_r555666777',
           created_at: '2026-09-22T13:00:00Z',
         }),
       };
@@ -889,7 +889,7 @@ describe('Advanced MCP Review Tools Unit Suite (tests/unit/mcpAdvancedTools.test
           replyToReviewComment: vi.fn().mockResolvedValue({
             id: 888999,
             in_reply_to_id: 777,
-            html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/123#discussion_r888999',
+            html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/123#discussion_r888999',
             created_at: '2026-09-22T14:00:00Z',
           }),
         },

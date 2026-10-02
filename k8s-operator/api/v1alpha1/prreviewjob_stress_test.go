@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
-	v1alpha1 "github.com/calltelemetry/ct-review-bot/k8s-operator/api/v1alpha1"
+	v1alpha1 "github.com/review-yeti-ai/review-yeti-bot/k8s-operator/api/v1alpha1"
 )
 
 // TestPRReviewJob_DeepCopy_MutatedNestedObjects stress-tests deepcopy cloning under
