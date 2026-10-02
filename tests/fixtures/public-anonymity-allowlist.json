@@ -215,173 +215,37 @@
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
- "public/404.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/404.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/analytics.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/analytics.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/github-app": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/github-app.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/github-app.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/index": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/index.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/index.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/live": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/live.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/live.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/memory": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/memory.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/memory.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
  "public/dashboard/onboarding": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "public/dashboard/onboarding.html": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "public/dashboard/onboarding.txt": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
- },
- "public/dashboard/organization": {
   "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/organization.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/organization.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/settings": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/settings.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/settings.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/github-app.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/github-app.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/index.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/index.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/integrations.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/integrations.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "digest": "98755f4be2680d90"
  },
  "public/js/app.js": {
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
  "public/live.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 1,
+  "digest": "91571b54e233f2f3"
  },
  "public/live.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/memory.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/memory.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 1,
+  "digest": "91571b54e233f2f3"
  },
  "public/onboarding.html": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "public/onboarding.txt": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
- },
- "public/repos.html": {
   "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/repos.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/settings.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/settings.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "digest": "98755f4be2680d90"
  },
  "scripts/advance-review-runtime.sh": {
   "count": 2,
@@ -452,16 +316,12 @@
   "digest": "dc4e8e512ddf8689"
  },
  "src/app/analytics/page.tsx": {
-  "count": 5,
-  "digest": "6e49cff010fced4c"
- },
- "src/app/memory/page.tsx": {
-  "count": 6,
-  "digest": "6f0a68c81caf9a88"
+  "count": 2,
+  "digest": "fc3d7fff225795ff"
  },
  "src/app/repos/page.tsx": {
-  "count": 3,
-  "digest": "b43e51df5c821e4e"
+  "count": 1,
+  "digest": "4dbee9d9fbbfafb5"
  },
  "src/cli/runLiveReview.ts": {
   "count": 3,
@@ -476,8 +336,8 @@
   "digest": "76e4bba4025be680"
  },
  "src/components/layout/topbar.tsx": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 1,
+  "digest": "91571b54e233f2f3"
  },
  "src/components/live/active-jobs-sidebar.tsx": {
   "count": 2,
@@ -592,8 +452,8 @@
   "digest": "98755f4be2680d90"
  },
  "src/review/diffService.ts": {
-  "count": 6,
-  "digest": "6f0a68c81caf9a88"
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
  },
  "src/review/emptyModeration.ts": {
   "count": 1,
@@ -616,8 +476,8 @@
   "digest": "54f70c21dba7cbb3"
  },
  "tests/adversarial/m5ChallengerHitlAnalyticsStress.test.ts": {
-  "count": 22,
-  "digest": "a2d358471d25b9bb"
+  "count": 15,
+  "digest": "ce00885e58c952a2"
  },
  "tests/benchmark/memoryPerformance.test.ts": {
   "count": 3,
@@ -1296,8 +1156,8 @@
   "digest": "3b4392fdab702959"
  },
  "tests/unit/components/onboardingWizardSteps.test.tsx": {
-  "count": 16,
-  "digest": "10ea334a01b74eb5"
+  "count": 15,
+  "digest": "a30554a8844797d7"
  },
  "tests/unit/configPassthrough.test.ts": {
   "count": 14,
