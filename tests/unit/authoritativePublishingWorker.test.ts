@@ -21,6 +21,7 @@ import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity'
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import { unreportedLaneFailure } from '../../src/panel/composedEngine';
 import type { OpenRouterRequest } from '../../src/gateway/openRouterClient';
+import { JevClient, type JevOutcome } from '../../src/gateway/jevClient';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
@@ -134,6 +135,36 @@ function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string
 }
 
 describe('REL-1198 publishing panel respects the admitted lifecycle window', () => {
+  it.each(['panel', 'composed'] as const)('prepares optional core classification before the %s engine and publishes its receipt', async (reviewEngine) => {
+    const f = fixture({ reviewEngine });
+    const removed = (name: string) => `diff --git a/${name} b/${name}\ndeleted file mode 100644\n--- a/${name}\n+++ /dev/null\n@@ -1 +0,0 @@\n-export function old() {}\n`;
+    f.source.diff = removed('src/old.ts') + removed('dist/old.js');
+    const readFileAt = vi.fn(async (_path: string, side: string) => ({ sha: side === 'head' ? HEAD : BASE,
+      content: side === 'head' ? null : 'export function old() {}' }));
+    f.deps.repoFileProviderFactory = () => ({ findFiles: async () => [], readFile: async () => null, readFileAt });
+    Object.assign(f.env, { REVIEW_YETI_JEV_EVIDENCE: 'example/project', TYPESAFE_BASE_URL: 'https://jev.example.invalid',
+      TYPESAFE_MODEL: 'jev-latest', TYPESAFE_MODEL_PIN: 'jev-test', TYPESAFE_API_KEY: 'test-key' });
+    const choices = { risk: 'unknown', subsystem: 'individual', category: 'source', visible_consumer: 'unknown', contract_change: 'unknown' };
+    const ask = vi.spyOn(JevClient.prototype, 'ask').mockResolvedValue({ status: 'ok', model: 'jev-test', durationMs: 1,
+      answers: Object.fromEntries(Object.entries(choices).map(([id, choice]) => [id,
+        { type: 'choice', choice, confidence: 1, probabilities: { [choice]: 1 } }])),
+    } as JevOutcome<string>);
+    const runner = vi.fn(async (options: any) => {
+      expect(ask).toHaveBeenCalledOnce();
+      expect(options.repoFileProvider.deletionPlan()).toMatchObject({ status: 'complete', totalFiles: 1, classifiedFiles: 1 });
+      expect(options.repoFileProvider.deletionPlan().groups.flatMap((group: any) => group.paths)).toEqual(['src/old.ts']);
+      return f.panel;
+    });
+    f.deps.panelRunner = runner;
+    f.deps.composedReviewRunner = runner;
+    await runPublishingReviewWorker(f.env, f.deps);
+    expect(runner).toHaveBeenCalledOnce();
+    expect(readFileAt.mock.calls.every(([path]) => path === 'src/old.ts')).toBe(true);
+    expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]).result.deletionClassification)
+      .toMatchObject({ status: 'complete', totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, totalGroups: 1 });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it('synthesizes and publishes the latest checkpoint when a composed runner ignores cancellation', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(START);
@@ -979,7 +1010,7 @@ describe('authoritative prepared publishing worker', () => {
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
         readFileAt: expect.any(Function), readDiff: expect.any(Function),
-        deletionManifest: expect.any(Function), deletionEvidence: expect.any(Function),
+        deletionManifest: expect.any(Function), deletionEvidence: expect.any(Function), deletionPlan: expect.any(Function),
       },
       isCurrentHead: undefined,
       deterministicRoster: true,
@@ -1649,10 +1680,10 @@ describe('authoritative prepared publishing worker', () => {
     expect(completed).toMatchObject({ status: 'completed', output: {
       text: expect.stringContaining(finding.title),
       annotations: [{ path: finding.path, start_line: 1, end_line: 1,
-        annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
+        annotation_level: 'failure', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
-    expect(completed.conclusion).toBe('success');
+    expect(completed.conclusion).toBe('failure');
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');

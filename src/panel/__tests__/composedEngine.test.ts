@@ -24,6 +24,7 @@ import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 import { TokenLedger, meterModelClient } from '../../telemetry/tokenLedger';
 import { initTelemetry, clearSpans, getRecentSpans } from '../../telemetry';
+import type { DeletionClassificationPlan } from '../../review/deletionClassification';
 
 const mockYaml = `
 version: 3
@@ -82,6 +83,42 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it('raises classified contract risk without lowering security floors or losing tasks', () => {
+    const tasks = [
+      { id: 'source', dimension: 'performance' as const, paths: ['src/a.ts'], question: 'Fast?', rationale: 'Changed.' },
+      { id: 'deleted-contract', dimension: 'contract' as const, paths: ['docs/contract.md'], question: 'Contract?', rationale: 'Removed.' },
+      { id: 'auth', dimension: 'security' as const, paths: ['src/auth/token.ts'], question: 'Secure?', rationale: 'Auth.' },
+    ];
+    const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), digest: 'b'.repeat(64), status: 'complete', totalFiles: 2, classifiedFiles: 2, unresolvedFiles: 0,
+      groups: [{ id: 'contract', label: 'Public contract', proof: 'individual_path', risk: 'high', paths: ['docs/contract.md'], categories: ['docs'], obligationCount: 5 },
+        { id: 'auth', label: 'Auth', proof: 'individual_path', risk: 'low', paths: ['src/auth/token.ts'], categories: ['source'], obligationCount: 5 }] };
+    expect(orderReviewTasksByRisk(tasks).map((task) => task.id)).toEqual(['auth', 'source', 'deleted-contract']);
+    expect(orderReviewTasksByRisk(tasks, plan).map((task) => task.id)).toEqual(['auth', 'deleted-contract', 'source']);
+    expect(orderReviewTasksByRisk(tasks, plan)).toHaveLength(tasks.length);
+  });
+
+  it.each([true, false])('uses classification in real planner and worker prompts only at the admitted head: %s', async (current) => {
+    const repository = 'acme/reviewer-fixture', headSha = 'a'.repeat(40);
+    const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository,
+      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status: 'complete',
+      totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, groups: [{ id: 'guard', label: 'Guard retirement',
+        proof: 'individual_path', risk: 'high', paths: ['src/auth/guard.ts'], categories: ['source'], obligationCount: 5 }] };
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages), nonce = nonceFrom(text);
+      const prompt = JSON.stringify(payload.messages);
+      expect(prompt.includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current);
+      expect(prompt.includes('Guard retirement')).toBe(current);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'guard', dimension: 'security',
+        paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' }] }));
+      return fakeResponse(JSON.stringify({ nonce, task: 'guard', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES, repository, headSha,
+      client: { complete }, repoFileProvider: { findFiles: async () => [], readFile: async () => null, deletionPlan: () => plan } });
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(result.personas).toMatchObject([{ id: 'guard', decision: 'APPROVE' }]);
+  });
+
   it('orders security and CI/IaC review work before lower-risk tasks deterministically', () => {
     const ordered = orderReviewTasksByRisk([
       { id: 'tests', dimension: 'testing', paths: ['tests/a.test.ts'], question: 'Tests?', rationale: 'Changed.' },
