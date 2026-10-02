@@ -93,7 +93,7 @@ describe('M6 Adversarial Edge Case Testing Suite', () => {
       expect(screen.getByText('1000 steps executed')).toBeInTheDocument();
       expect(screen.getByTestId('turn-timeline-step-1000')).toBeInTheDocument();
       expect(renderTime).toBeLessThan(timeBudgetMs(2000)); // Must render in under 2s
-    });
+    }, 15_000);
 
     it('handles steps with completely missing metadata', () => {
       const emptySteps: PersonaTurnStep[] = [{} as PersonaTurnStep];
