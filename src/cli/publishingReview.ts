@@ -390,9 +390,7 @@ export {
 };
 export type { OpenAITransportConfig };
 
-export const BLOCKING_SEVERITIES = new Set(
-  process.env.REVIEW_YETI_REQUIRE_ADVISORY === 'false' ? ['P0', 'P1'] : ['P0', 'P1', 'P2']
-);
+const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller

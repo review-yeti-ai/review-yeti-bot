@@ -74,9 +74,6 @@ export interface ArbitrationOptions {
    * reusing the clean-panel "Quorum satisfied" sentence (REL-491).
    */
   p2BlocksMerge?: boolean;
-  /** When true, any P2 advisory finding blocks merge and requests changes. */
-  requireAdvisory?: boolean;
-  advisoryRequired?: boolean;
   /**
    * Overrides the panel-size the blocking/nit thresholds scale from (see `resolvePanelSize` in
    * `reviewCore.js`). Required from any caller whose `personaResults.length` is not a count of
