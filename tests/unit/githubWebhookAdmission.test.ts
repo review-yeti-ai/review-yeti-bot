@@ -156,6 +156,61 @@ describe('native GitHub App webhook admission', () => {
     }));
   });
 
+  it('marks only an authoritative composed ready_for_review webhook as continuation provenance', async () => {
+    const identity = buildReviewRunIdentity({ owner: 'calltelemetry', repo: 'dashboard',
+      prNumber: 42, headSha: HEAD, baseSha: BASE });
+    const prepared = { policy: { effectivePolicyDigest: identity.configDigest }, config: { review_engine: 'composed' } };
+    const resolve = vi.fn(async () => ({ identity, prepared } as any));
+    const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: deriveReviewRunId(identity) } }));
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796], resolver: { resolve } } as any,
+      now: () => NOW,
+    });
+    const deliver = async (action: string) => {
+      const body = payload({ action });
+      await handler({ eventName: 'pull_request', deliveryId: `delivery-${action}`,
+        rawBody: Buffer.from(JSON.stringify(body)), body });
+    };
+
+    await deliver('ready_for_review');
+    await deliver('opened');
+
+    const calls = admit.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    expect(calls[0][0]).toMatchObject({ eventName: 'pull_request', centralActionDispatch: false,
+      gracefulComposedContinuationOrigin: { kind: 'github_pull_request_ready_for_review' } });
+    expect(calls[1][0]).toMatchObject({ eventName: 'pull_request', centralActionDispatch: false });
+    expect(calls[1][0]).not.toHaveProperty('gracefulComposedContinuationOrigin');
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not mark a ready_for_review webhook for the panel engine as continuation provenance', async () => {
+    const identity = buildReviewRunIdentity({ owner: 'calltelemetry', repo: 'dashboard',
+      prNumber: 42, headSha: HEAD, baseSha: BASE });
+    const prepared = { policy: { effectivePolicyDigest: identity.configDigest }, config: { review_engine: 'panel' } };
+    const resolve = vi.fn(async () => ({ identity, prepared } as any));
+    const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: deriveReviewRunId(identity) } }));
+    const handler = createGitHubWebhookAdmissionHandler({
+      config: { secret: SECRET, admissionEnabled: true,
+        repositoryIds: new Set(['614653796']), ownerIds: new Set(['57884877']) },
+      admission: { admit } as any,
+      authoritativePublishing: { expectedAppId: 4385771, repositoryIds: [614653796], resolver: { resolve } } as any,
+      now: () => NOW,
+    });
+    const body = payload({ action: 'ready_for_review' });
+
+    await handler({ eventName: 'pull_request', deliveryId: 'delivery-ready-panel',
+      rawBody: Buffer.from(JSON.stringify(body)), body });
+
+    const calls = admit.mock.calls as unknown as Array<[Record<string, unknown>]>;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toMatchObject({ eventName: 'pull_request', centralActionDispatch: false });
+    expect(calls[0][0]).not.toHaveProperty('gracefulComposedContinuationOrigin');
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard' }));
+  });
+
   it('admits the official failed check requested_action as a persisted same-head refresh', async () => {
     const f = fixture();
     const body = refreshPayload();
