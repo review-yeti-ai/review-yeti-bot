@@ -881,7 +881,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
           id: task.id, decision: 'APPROVE' as const, status: 'COMPLETE' as const, findings: [],
         }))],
         taskPlan: seeded.checkpoint.plan,
-        coverageComplete: true, quorumSatisfied: true, findingCount: 4, blockingFindingCount: 0,
+        coverageComplete: true, quorumSatisfied: true, findingCount: 4, blockingFindingCount: 4,
         incompleteP2Recovery: incompleteP2RecoveryClaimFor(retained.context!),
       },
     };
@@ -899,8 +899,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     };
     await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
       async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
-    // Authenticated continuation preserves the P2 evidence; its legacy
-    // zero-blocker summary cannot waive the accepted required-P2 policy.
+    // Authenticated continuation preserves the P2 evidence under the accepted
+    // required-P2 policy rather than turning retained findings into a SHIP.
     expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
       .toBe('failed');
     expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
