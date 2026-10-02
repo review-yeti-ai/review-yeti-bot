@@ -205,19 +205,19 @@ func TestIsContinuationsEnabled(t *testing.T) {
 		repo     string
 		expected bool
 	}{
-		{"empty config", "", "calltelemetry/cisco-cdr", false},
-		{"false config", "false", "calltelemetry/cisco-cdr", false},
-		{"zero config", "0", "calltelemetry/cisco-cdr", false},
-		{"off config", "off", "calltelemetry/cisco-cdr", false},
-		{"true config", "true", "calltelemetry/cisco-cdr", true},
-		{"1 config", "1", "calltelemetry/cisco-cdr", true},
-		{"on config", "on", "calltelemetry/cisco-cdr", true},
-		{"all config", "all", "calltelemetry/cisco-cdr", true},
-		{"allowlist match first", "calltelemetry/cisco-cdr, calltelemetry/ct-infrastructure", "calltelemetry/cisco-cdr", true},
-		{"allowlist match second", "calltelemetry/cisco-cdr, calltelemetry/ct-infrastructure", "calltelemetry/ct-infrastructure", true},
-		{"allowlist case insensitive", "CallTelemetry/Cisco-CDR", "calltelemetry/cisco-cdr", true},
-		{"allowlist no match", "calltelemetry/cisco-cdr", "calltelemetry/other-repo", false},
-		{"empty repo", "calltelemetry/cisco-cdr", "", false},
+		{"empty config", "", "exampleorg/example-api", false},
+		{"false config", "false", "exampleorg/example-api", false},
+		{"zero config", "0", "exampleorg/example-api", false},
+		{"off config", "off", "exampleorg/example-api", false},
+		{"true config", "true", "exampleorg/example-api", true},
+		{"1 config", "1", "exampleorg/example-api", true},
+		{"on config", "on", "exampleorg/example-api", true},
+		{"all config", "all", "exampleorg/example-api", true},
+		{"allowlist match first", "exampleorg/example-api, exampleorg/example-infra", "exampleorg/example-api", true},
+		{"allowlist match second", "exampleorg/example-api, exampleorg/example-infra", "exampleorg/example-infra", true},
+		{"allowlist case insensitive", "Exampleorg/Example-Api", "exampleorg/example-api", true},
+		{"allowlist no match", "exampleorg/example-api", "exampleorg/other-repo", false},
+		{"empty repo", "exampleorg/example-api", "", false},
 	}
 
 	for _, tc := range cases {
@@ -285,13 +285,13 @@ func TestBuildWorkerJob_AutomaticContinuationsDefaulting(t *testing.T) {
 
 	t.Run("defaults to prep on repo allowlist match", func(t *testing.T) {
 		review := reviewFixture(now)
-		review.Spec.Repo = "calltelemetry/cisco-cdr"
+		review.Spec.Repo = "exampleorg/example-api"
 		review.Spec.PublicationMode = job.PublicationModeAppGate
 		review.Spec.QualificationProfile = ""
 		input := buildInput(review, now)
 		input.Phase = ""
 		input.Publishing = publishingFixture()
-		input.Publishing.EnableContinuations = "calltelemetry/cisco-cdr, calltelemetry/ct-infrastructure"
+		input.Publishing.EnableContinuations = "exampleorg/example-api, exampleorg/example-infra"
 
 		built, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -307,13 +307,13 @@ func TestBuildWorkerJob_AutomaticContinuationsDefaulting(t *testing.T) {
 
 	t.Run("leaves monolithic on repo allowlist non-match", func(t *testing.T) {
 		review := reviewFixture(now)
-		review.Spec.Repo = "calltelemetry/other-repo"
+		review.Spec.Repo = "exampleorg/other-repo"
 		review.Spec.PublicationMode = job.PublicationModeAppGate
 		review.Spec.QualificationProfile = ""
 		input := buildInput(review, now)
 		input.Phase = ""
 		input.Publishing = publishingFixture()
-		input.Publishing.EnableContinuations = "calltelemetry/cisco-cdr"
+		input.Publishing.EnableContinuations = "exampleorg/example-api"
 
 		built, err := job.BuildWorkerJob(input)
 		if err != nil {

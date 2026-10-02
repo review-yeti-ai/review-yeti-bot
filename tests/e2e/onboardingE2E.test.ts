@@ -24,7 +24,7 @@ describe('Milestone 32: Onboarding & Session Learning E2E Suite', () => {
     // Step 1: Onboard repository
     const onboardRes = await request(app)
       .post('/api/onboarding/wizard')
-      .send({ repo: 'calltelemetry/cisco-cdr' });
+      .send({ repo: 'exampleorg/example-api' });
     expect(onboardRes.status).toBe(200);
 
     // Step 2: Simulate PR comment @ct-review learn
@@ -32,7 +32,7 @@ describe('Milestone 32: Onboarding & Session Learning E2E Suite', () => {
       .post('/api/memory/record')
       .set('Authorization', `Bearer ${token}`)
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 1,
         type: 'learning',
         data: { rule: 'Prefer async/await over raw Promises', category: 'convention' },
@@ -42,7 +42,7 @@ describe('Milestone 32: Onboarding & Session Learning E2E Suite', () => {
 
     // Step 3: Verify persistent memory retrieval
     const memoryRes = await request(app)
-      .get('/api/memory/query?repo=calltelemetry/cisco-cdr')
+      .get('/api/memory/query?repo=exampleorg/example-api')
       .set('Authorization', `Bearer ${token}`);
     expect(memoryRes.status).toBe(200);
     expect(memoryRes.body.success).toBe(true);

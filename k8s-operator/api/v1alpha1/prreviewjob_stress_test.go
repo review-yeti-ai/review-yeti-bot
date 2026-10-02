@@ -40,7 +40,7 @@ func TestPRReviewJob_DeepCopy_MutatedNestedObjects(t *testing.T) {
 			Finalizers: []string{"finalizer.review.calltelemetry.com"},
 		},
 		Spec: v1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                99,
 			HeadSHA:                 "1234567890abcdef",
 			BaseSHA:                 "fedcba0987654321",
@@ -428,7 +428,7 @@ func TestCRD_YAML_ParsingAndSchemaValidation(t *testing.T) {
 
 	// Test repo regex against edge case test vectors
 	validRepos := []string{
-		"calltelemetry/cisco-cdr",
+		"exampleorg/example-api",
 		"kubernetes/kubernetes",
 		"owner-name_12/repo.name-99",
 	}
@@ -527,7 +527,7 @@ func TestPRReviewJob_Stress_LargePayload(t *testing.T) {
 			Namespace: "stress-test",
 		},
 		Spec: v1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                5000,
 			HeadSHA:                 "abcdef1234567890",
 			BaseSHA:                 "0987654321fedcba",

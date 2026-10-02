@@ -18,7 +18,7 @@ describe('Milestone 32: Onboarding & Reflection Integration', () => {
     // 1. Trigger Onboarding Wizard API
     const wizardRes = await request(app)
       .post('/api/onboarding/wizard')
-      .send({ repo: 'calltelemetry/cisco-cdr', autoCommit: false });
+      .send({ repo: 'exampleorg/example-api', autoCommit: false });
 
     expect(wizardRes.status).toBe(200);
     expect(wizardRes.body.success).toBe(true);

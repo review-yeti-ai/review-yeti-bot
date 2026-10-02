@@ -35,7 +35,7 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
 
     it('F2: Pilot Repository Filtering allows configured pilot repositories', async () => {
       const harness = createE2EEnvironment({
-        pilotRepositories: 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta',
+        pilotRepositories: 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
       });
 
       const payload = createWebhookPayload('opened', {
@@ -173,7 +173,7 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
       });
 
       // Poll status via worker route
-      const req = new Request(`https://operator.calltelemetry.internal/api/dispatch/runs/${runId}/status`);
+      const req = new Request(`https://operator.example.internal/api/dispatch/runs/${runId}/status`);
       const res = await harness.env.REVIEW_RUN.get(runDOId).fetch(req);
       assert.equal(res.status, 200);
       const statusJson = (await res.json()) as any;
@@ -192,7 +192,7 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
       const worker = (await import('../../src/worker.js')).default;
 
       // Health probe
-      const healthReq = new Request('https://operator.calltelemetry.internal/health');
+      const healthReq = new Request('https://operator.example.internal/health');
       const healthRes = await worker.fetch(healthReq, harness.env);
       assert.equal(healthRes.status, 200);
       const healthJson = (await healthRes.json()) as any;
@@ -201,7 +201,7 @@ describe('Tier 1: Comprehensive Feature Coverage (Features 1-30)', () => {
       assert.equal(healthJson.parallelMode, 'true');
 
       // Ready probe
-      const readyReq = new Request('https://operator.calltelemetry.internal/ready');
+      const readyReq = new Request('https://operator.example.internal/ready');
       const readyRes = await worker.fetch(readyReq, harness.env);
       assert.equal(readyRes.status, 200);
       const readyJson = (await readyRes.json()) as any;
@@ -389,7 +389,7 @@ version: 1
 tools:
   - name: test-mcp
     type: mcp
-    url: https://api.calltelemetry.com/mcp
+    url: https://api.example.com/mcp
     tunnel:
       mode: direct
 `;
@@ -439,7 +439,7 @@ tools:
       const tool: any = {
         name: 'bifrost-private',
         type: 'http',
-        url: 'https://bifrost.calltelemetry.internal',
+        url: 'https://bifrost.example.internal',
         tunnel: {
           mode: 'cloudflare',
           cloudflare: {

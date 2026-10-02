@@ -185,7 +185,7 @@ export interface PanelResult {
   /** Optional so pre-existing fixtures that construct a `PanelResult` literal do not need updating; a real run always sets it. */
   repositoryVisibility?: RepositoryVisibility;
   /**
-   * REL-1139 (ct-meta ADR 0687): set when `REVIEW_YETI_SKIP_EMPTY_MODERATION` skipped the
+   * REL-1139 (example-meta ADR 0687): set when `REVIEW_YETI_SKIP_EMPTY_MODERATION` skipped the
    * moderator call because every lane completed with an empty APPROVE and coverage was full.
    * `moderator` then holds the deterministic empty ledger (model `skipped-empty-moderation`);
    * the arbiter still ran on it.

@@ -103,8 +103,8 @@ function createHarnessEnv(overrides: Partial<Record<string, any>> = {}): Harness
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
     PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
-    PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta',
-    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.calltelemetry.com/api/webhooks/github',
+    PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
+    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'harness-secret-key-42',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
   };

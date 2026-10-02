@@ -15,7 +15,7 @@ describe('M3 Challenger Adversarial Stress Suite', () => {
     prNumber: 99,
     headSha: '1111222233334444555566667777888899990000',
     baseSha: 'aaaabbbbccccddddeeeeffff0000111122223333',
-    workerImage: 'registry.calltelemetry.com/review-yeti/worker:staging',
+    workerImage: 'registry.example.com/review-yeti/worker:staging',
     env: {
       GITHUB_TOKEN: 'ghs_adv_secret_token',
       RUN_ID: 'run_adv_001',

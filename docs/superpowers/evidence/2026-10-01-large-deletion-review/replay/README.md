@@ -1,6 +1,6 @@
 # Initial retrieval and advisory-question replay
 
-Observed 2026-10-01 against ct-meta #3715's original failed head `45b2df19d13420a9dc0aea5154295c3e7852c8ce`. The local old side is its parent `2c53cb32eb9e28a1a87aebb7f3384ab0778e62eb`; this is **not proof of the historical admitted base/merge-base**. The reproduced diff has 64 files and 852,061 characters, differing from the historical check's reported extent. These records evaluate the frozen head/parent pair only.
+Observed 2026-10-01 against example-meta #3715's original failed head `45b2df19d13420a9dc0aea5154295c3e7852c8ce`. The local old side is its parent `2c53cb32eb9e28a1a87aebb7f3384ab0778e62eb`; this is **not proof of the historical admitted base/merge-base**. The reproduced diff has 64 files and 852,061 characters, differing from the historical check's reported extent. These records evaluate the frozen head/parent pair only.
 
 Both variants inventory 62 paths containing removals, verify 44 old-source content/mode groups and retain 310 separate path obligations. Seven paths have supported AST extraction; 43 are sensitive. The largest model packet is 11,127 characters, while deterministic extraction inspected 1,611,382 source bytes. Original contents and provider credentials remained in local process memory and are absent from these records.
 

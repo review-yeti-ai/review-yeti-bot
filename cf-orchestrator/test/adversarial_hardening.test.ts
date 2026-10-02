@@ -243,7 +243,7 @@ describe('Adversarial Hardening: Tier 5 Fixes Verification', () => {
       const validReceipt = {
         orchestrator: 'doks',
         runId: 'doks_1',
-        repo: 'calltelemetry/core',
+        repo: 'exampleorg/core',
         prNumber: 1,
         headSha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
         verdict: 'success',

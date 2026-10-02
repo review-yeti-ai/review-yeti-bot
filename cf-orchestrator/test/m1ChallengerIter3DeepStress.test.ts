@@ -46,7 +46,7 @@ function createDeepHarness(): TestHarness {
   const env: any = {
     ENVIRONMENT: 'test',
     PARALLEL_MODE: 'shadow',
-    PILOT_REPOSITORIES: 'calltelemetry/review-yeti,calltelemetry/test-repo',
+    PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-deep-12345',
     DOKS_FALLBACK_URL: undefined,
 
@@ -132,7 +132,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
   describe('Vulnerability 1: >1,000 Evictions Integrity & Non-Resurrection', () => {
     it('prevents stale commit resurrection after 2,500 evictions and DO persistence reboot', async () => {
       const harness = createDeepHarness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.repoGateInstances.get(repoKey) ||
         (harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey)), harness.repoGateInstances.get(repoKey)!);
 
@@ -198,7 +198,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
 
     it('handles multi-commit churn (5 commits on same PR) across 1,500 evictions with interleaved re-polls', async () => {
       const harness = createDeepHarness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.repoGateInstances.get(repoKey) ||
         (harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey)), harness.repoGateInstances.get(repoKey)!);
 
@@ -238,7 +238,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
 
     it('enforces permanent rejection after PR eviction (__EVICTED__) even after 1,200 external evictions', async () => {
       const harness = createDeepHarness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.repoGateInstances.get(repoKey) ||
         (harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey)), harness.repoGateInstances.get(repoKey)!);
 
@@ -276,7 +276,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
 
     it('probes whether evictQueue({ prNumber }) persists __EVICTED__ to storage when queue is currently empty', async () => {
       const harness = createDeepHarness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.repoGateInstances.get(repoKey) ||
         (harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey)), harness.repoGateInstances.get(repoKey)!);
 
@@ -319,7 +319,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-deep-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 601;
 
       // Slot is occupied by active run
@@ -331,7 +331,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
 
       const specV1: ReviewRunSpec = {
         runId: 'run_601_v1',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha_601_v1',
@@ -353,12 +353,12 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
             // Webhook synchronize arrives for PR 601 while v1 is waiting
             const body = JSON.stringify({
               action: 'synchronize',
-              repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+              repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
               pull_request: { number: prNumber, head: { sha: 'sha_601_v2' }, base: { sha: 'main' } },
             });
             const sig = await signPayload(secret, body);
             const res = await worker.fetch(
-              new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+              new Request('https://operator.example.com/api/webhooks/github', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -416,7 +416,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
       const harness = createDeepHarness();
       const runner = new MockContainerRunner();
       const secret = 'test-secret-deep-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 602;
 
       // Occupy slot
@@ -438,7 +438,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
         method: 'POST',
         body: JSON.stringify({
           runId: 'run_602_v1',
-          owner: 'calltelemetry',
+          owner: 'exampleorg',
           repo: 'review-yeti',
           prNumber,
           headSha: 'sha_602_v1',
@@ -450,12 +450,12 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
       const burst = [2, 3, 4, 5, 6].map(async (v) => {
         const body = JSON.stringify({
           action: 'synchronize',
-          repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+          repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
           pull_request: { number: prNumber, head: { sha: `sha_602_v${v}` }, base: { sha: 'main' } },
         });
         const sig = await signPayload(secret, body);
         return worker.fetch(
-          new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+          new Request('https://operator.example.com/api/webhooks/github', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -491,7 +491,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-deep-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 701;
 
       // Occupy slot
@@ -503,7 +503,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
 
       const spec: ReviewRunSpec = {
         runId: 'run_701_queued',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha_701',
@@ -520,12 +520,12 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
               // Fire PR closed webhook during first poll
               const body = JSON.stringify({
                 action: 'closed',
-                repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+                repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
                 pull_request: { number: prNumber, head: { sha: 'sha_701' }, base: { sha: 'main' } },
               });
               const sig = await signPayload(secret, body);
               const res = await worker.fetch(
-                new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+                new Request('https://operator.example.com/api/webhooks/github', {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
@@ -570,7 +570,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-deep-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 702;
 
       // Occupy slot
@@ -582,7 +582,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
 
       const spec: ReviewRunSpec = {
         runId: 'run_702_queued',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha_702',
@@ -599,12 +599,12 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
               // Fire PR converted_to_draft webhook during first poll
               const body = JSON.stringify({
                 action: 'converted_to_draft',
-                repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+                repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
                 pull_request: { number: prNumber, head: { sha: 'sha_702' }, base: { sha: 'main' } },
               });
               const sig = await signPayload(secret, body);
               const res = await worker.fetch(
-                new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+                new Request('https://operator.example.com/api/webhooks/github', {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
@@ -647,7 +647,7 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
     it('properly promotes subsequent queued PR when a prior queued PR is closed', async () => {
       const harness = createDeepHarness();
       const secret = 'test-secret-deep-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
 
       const repoGate = harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey));
 
@@ -676,12 +676,12 @@ describe('M1 Iteration 3 Deep Empirical Challenger Verification', () => {
       // PR 200 is closed via webhook!
       const body = JSON.stringify({
         action: 'closed',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: 200, head: { sha: 'sha200' }, base: { sha: 'main' } },
       });
       const sig = await signPayload(secret, body);
       const res = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

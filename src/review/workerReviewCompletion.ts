@@ -87,7 +87,7 @@ const laneTurnUsageSchema = z.object({
 }).strict();
 
 /**
- * OPTIONAL, additive per-persona telemetry (Stage 0 / ct-meta review-yeti telemetry work): the
+ * OPTIONAL, additive per-persona telemetry (Stage 0 / example-meta review-yeti telemetry work): the
  * lane's accumulated usage across every turn its `invoke()` loop made, not just the terminal turn
  * the rest of this schema has always reported. Every field is optional and the object itself is
  * optional on `personaSchema` below, so an older worker that never populates it -- or a panel
@@ -290,7 +290,7 @@ const resultSchema = z.object({
   findingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
   blockingFindingCount: boundedInteger.max(MAX_TOTAL_FINDINGS).optional(),
   /**
-   * OPTIONAL, additive (Stage 0 / ct-meta review-yeti telemetry work): the panel engine's own
+   * OPTIONAL, additive (Stage 0 / example-meta review-yeti telemetry work): the panel engine's own
    * wall-clock measurement of the whole run (`panelResult.panelWallClockMs` in `panelEngine.ts`),
    * distinct from summing every persona's `telemetry.durationMs`. Under the panel's concurrent
    * fan-out (`MAX_CONCURRENT_PERSONAS`) a summed-lane figure overstates wall time, so it cannot
@@ -330,7 +330,7 @@ const resultSchema = z.object({
   roster: z.array(z.string().regex(TASK_ID_PATTERN)).min(1).max(MAX_PERSONAS)
     .refine((ids) => new Set(ids).size === ids.length, 'roster lane ids must be unique').optional(),
   /**
-   * OPTIONAL, additive (REL-1139, `REVIEW_YETI_SKIP_EMPTY_MODERATION`, ct-meta ADR 0687): the
+   * OPTIONAL, additive (REL-1139, `REVIEW_YETI_SKIP_EMPTY_MODERATION`, example-meta ADR 0687): the
    * worker skipped the moderator call because every lane completed with an empty APPROVE and
    * coverage was full. Never evidence on its own: `deriveCanonicalWorkerReviewEvidence` re-runs
    * the shared decision (`decideEmptyModeration`) on the trusted diff and refuses a claim it does

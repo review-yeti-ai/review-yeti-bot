@@ -29,7 +29,7 @@ describe('PR Close Pipeline Integration Suite', () => {
         base: { sha: 'base-sha-505', ref: 'main' },
       },
       repository: {
-        owner: { login: 'calltelemetry' },
+        owner: { login: 'exampleorg' },
         name: 'ct-review-bot',
       },
       sender: { login: 'octocat' },
@@ -43,7 +43,7 @@ describe('PR Close Pipeline Integration Suite', () => {
       getBranchRef: async () => 'base-sha-505',
       createBranch: async () => {},
       createOrUpdateFile: async () => ({ sha: 'sha-created-505' }),
-      createPullRequest: async () => ({ number: 905, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/905' }),
+      createPullRequest: async () => ({ number: 905, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/905' }),
       postIssueComment: async () => {},
       getFileContent: async () =>
         JSON.stringify({
@@ -71,7 +71,7 @@ describe('PR Close Pipeline Integration Suite', () => {
         head: { sha: 'head-sha-506' },
         base: { sha: 'base-sha-506', ref: 'main' },
       },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       sender: { login: 'developer1' },
     };
 
@@ -125,7 +125,7 @@ describe('PR Close Pipeline Integration Suite', () => {
         merged: false,
         title: 'wip: closed without merge',
       },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       sender: { login: 'developer2' },
     };
 

@@ -99,8 +99,8 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
           params: {
             name: 'preflight_diff_review',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               diff: DIFF_FIXTURES.safeMarkdown,
             },
           },
@@ -228,7 +228,7 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
   describe('Suite 2: Advanced RBAC & Repository Resolution Normalization', () => {
     it('TC-T5-RBAC-01: auto-normalizes single-string owner/repo format in repo parameter when owner is missing', async () => {
       const res = await env.callTool('preflight_diff_review', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: DIFF_FIXTURES.cleanCode,
       });
 
@@ -238,9 +238,9 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
     });
 
     it('TC-T5-RBAC-02: auto-resolves owner for unqualified repo if caller holds permission in allowedRepositories', async () => {
-      // Caller has 'calltelemetry/cisco-cdr' in allowedRepositories
+      // Caller has 'exampleorg/example-api' in allowedRepositories
       const res = await env.callTool('preflight_diff_review', {
-        repo: 'cisco-cdr',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.cleanCode,
       });
 
@@ -260,7 +260,7 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
           params: {
             name: 'get_review_status',
             arguments: {
-              owner: 'calltelemetry',
+              owner: 'exampleorg',
               // repo omitted
               pull_number: 10,
             },
@@ -356,29 +356,29 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
 
     it('TC-T5-RES-03: resources/read fetches structured JSON for valid authorized resource URI', async () => {
       env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 105,
         head_sha: 'a'.repeat(40),
         status: 'succeeded',
       });
 
       const res = await env.rpcCall('resources/read', {
-        uri: 'review-yeti://runs/calltelemetry/cisco-cdr/105',
+        uri: 'review-yeti://runs/exampleorg/example-api/105',
       });
 
       expect(res.status).toBe(200);
       expect(res.body.result).toBeDefined();
       expect(res.body.result.contents).toBeDefined();
       const content = JSON.parse(res.body.result.contents[0].text);
-      expect(content.owner).toBe('calltelemetry');
-      expect(content.repo).toBe('cisco-cdr');
+      expect(content.owner).toBe('exampleorg');
+      expect(content.repo).toBe('example-api');
       expect(content.pr_number).toBe(105);
     });
 
     it('TC-T5-RES-04: resources/subscribe and unsubscribe manage session subscription set', async () => {
       const session = env.router.sessionManager.createSession();
-      const uri = 'review-yeti://runs/calltelemetry/cisco-cdr/105';
+      const uri = 'review-yeti://runs/exampleorg/example-api/105';
 
       // 1. Subscribe
       const subRes = await request(env.app)
@@ -419,10 +419,10 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
       };
 
       const session = env.router.sessionManager.createSession(mockRes);
-      session.subscriptions.add('review-yeti://findings/calltelemetry/cisco-cdr/105');
+      session.subscriptions.add('review-yeti://findings/exampleorg/example-api/105');
 
       const notified = env.router.notifyResourceUpdated(
-        'review-yeti://findings/calltelemetry/cisco-cdr/105',
+        'review-yeti://findings/exampleorg/example-api/105',
         { status: 'OVERRULED' }
       );
 
@@ -430,7 +430,7 @@ describe('Tier 5: Adversarial Coverage Hardening (tests/e2e/mcp/tier5InboundAdve
       expect(mockWrite).toHaveBeenCalled();
       const writtenText = mockWrite.mock.calls[0][0];
       expect(writtenText).toContain('notifications/resources/updated');
-      expect(writtenText).toContain('review-yeti://findings/calltelemetry/cisco-cdr/105');
+      expect(writtenText).toContain('review-yeti://findings/exampleorg/example-api/105');
       expect(writtenText).toContain('OVERRULED');
     });
   });
@@ -465,8 +465,8 @@ index 1111111..2222222 100644
 +Tokens expire after 15 minutes.
 `;
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: authDocDiff,
       });
 
@@ -514,7 +514,7 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        repo: 'cisco-cdr',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.cleanCode,
       });
 
@@ -547,7 +547,7 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        repo: 'cisco-cdr',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.sqlInjection,
       });
 
@@ -626,8 +626,8 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 55,
         finding_id: 'find-bad-patch',
       });
@@ -681,8 +681,8 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 12,
         finding_id: 'find-fallback-chain',
       });
@@ -720,8 +720,8 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 14,
         finding_id: 'find-fetch-err',
       });
@@ -763,8 +763,8 @@ index 1111111..2222222 100644
 
       // Seed database with a run and 1 finding
       env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 99,
         head_sha: '1'.repeat(40),
       });
@@ -789,7 +789,7 @@ index 1111111..2222222 100644
       });
 
       await expect(tool.execute({
-        owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 99,
+        owner: 'exampleorg', repo: 'example-api', pr_number: 99,
         finding_id: 'f-overrule-test', counter_argument: 'valid technical justification',
       })).rejects.toThrow(/forbidden/i);
       expect(notifySpy).not.toHaveBeenCalled();
@@ -798,8 +798,8 @@ index 1111111..2222222 100644
 
     it('TC-T5-DIS-03: an authenticated caller still cannot adjudicate without a transaction pool', async () => {
       env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 77,
         head_sha: '2'.repeat(40),
       });
@@ -823,11 +823,11 @@ index 1111111..2222222 100644
 
       const context = {
         caller: { callerId: 'e2e-admin', authType: 'static_token', isAdmin: true, allowedRepositories: null },
-        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
       } as any;
       await expect(tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 77,
         finding_id: 'f-p1-target',
         counter_argument: 'Acceptable mitigation proof per ADR 0564',
@@ -879,11 +879,11 @@ index 1111111..2222222 100644
 
       const context = {
         caller: { callerId: 'e2e-admin', authType: 'static_token', isAdmin: true, allowedRepositories: null },
-        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+        authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: 'exampleorg', repo: 'example-api' },
       } as any;
       await expect(tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 88,
         finding_id: 'find-to-overrule',
         counter_argument: 'Detailed technical mitigation description here',
@@ -1045,8 +1045,8 @@ index 1111111..2222222 100644
 
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'f-legacy',
           question: 'How to fix with bounded buffer?',
         },
@@ -1074,16 +1074,16 @@ index 1111111..2222222 100644
     it('TC-T5-ENG-01: TriggerReviewInputSchema validates review_engine enum and rejects invalid values', () => {
       // 1. Valid values
       expect(TriggerReviewInputSchema.safeParse({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 1,
         head_sha: 'a'.repeat(40),
         review_engine: 'composed',
       }).success).toBe(true);
 
       expect(TriggerReviewInputSchema.safeParse({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 1,
         head_sha: 'a'.repeat(40),
         review_engine: 'panel',
@@ -1091,8 +1091,8 @@ index 1111111..2222222 100644
 
       // 2. Invalid enum values
       const invalidEnum = TriggerReviewInputSchema.safeParse({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 1,
         head_sha: 'a'.repeat(40),
         review_engine: 'invalid_engine',
@@ -1101,8 +1101,8 @@ index 1111111..2222222 100644
 
       // 3. Non-string types
       const invalidType = TriggerReviewInputSchema.safeParse({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 1,
         head_sha: 'a'.repeat(40),
         review_engine: 123,
@@ -1122,7 +1122,7 @@ index 1111111..2222222 100644
             sources: [
               {
                 repositoryId: 1001,
-                repository: 'calltelemetry/cisco-cdr',
+                repository: 'exampleorg/example-api',
                 sha: 'b'.repeat(40),
                 path: 'policy/review.json',
                 contentDigest: 'c'.repeat(64),
@@ -1149,8 +1149,8 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 12,
         head_sha: 'b'.repeat(40),
         review_engine: 'composed',
@@ -1175,8 +1175,8 @@ index 1111111..2222222 100644
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 15,
           head_sha: 'd'.repeat(40), // Mismatch
         })
@@ -1195,8 +1195,8 @@ index 1111111..2222222 100644
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 15,
           head_sha: 'e'.repeat(40),
         })
@@ -1214,8 +1214,8 @@ index 1111111..2222222 100644
 
       try {
         await tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 20,
           head_sha: 'f'.repeat(40),
           force: false,
@@ -1263,7 +1263,7 @@ index 1111111..2222222 100644
           },
         }),
         REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-        REVIEW_REPO: 'calltelemetry/cisco-cdr',
+        REVIEW_REPO: 'exampleorg/example-api',
         REVIEW_REPOSITORY_ID: '1001',
         REVIEW_POLICY_DIGEST: 'c'.repeat(64),
         REVIEW_CONFIG_DIGEST: 'd'.repeat(64),

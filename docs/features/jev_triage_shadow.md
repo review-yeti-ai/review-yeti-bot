@@ -125,7 +125,7 @@ These are the calibration questions from plan W4, to run after about 7 days of t
 
 ### Security-sensitive files are never skip candidates
 
-A file is security-sensitive when the path rule says so (`security_sensitive:true`, which also covers dependency manifests and lockfiles) **or** Jev classes it as `category:"security_sensitive"`. No skipping or depth-reduction rule may ever apply to such a file, whatever its risk level or noul. Every query that sizes a skip or depth candidate must therefore exclude these files, or, for a whole-run rule, exclude every run that contains one. Check this on its own terms: do not rely on the category precedence (a test file or lockfile on a sensitive path is still sensitive). Any rule these queries support still needs its own ct-meta ADR before an enforcement flag ships.
+A file is security-sensitive when the path rule says so (`security_sensitive:true`, which also covers dependency manifests and lockfiles) **or** Jev classes it as `category:"security_sensitive"`. No skipping or depth-reduction rule may ever apply to such a file, whatever its risk level or noul. Every query that sizes a skip or depth candidate must therefore exclude these files, or, for a whole-run rule, exclude every run that contains one. Check this on its own terms: do not rely on the category precedence (a test file or lockfile on a sensitive path is still sensitive). Any rule these queries support still needs its own example-meta ADR before an enforcement flag ships.
 
 How often do files that Jev scored risk 1 or 2 get P0 or P1 findings? The answer bounds how much depth reduction is safe. Security-sensitive files are excluded because they never get reduced depth:
 

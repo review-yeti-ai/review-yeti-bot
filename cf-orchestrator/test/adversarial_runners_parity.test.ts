@@ -47,12 +47,12 @@ describe('Tier 5 Adversarial Hardening: Runners, Caching & Parity Engine', () =>
   const sampleSpec: ContainerJobSpec = {
     jobId: 'adv_job_101',
     runId: 'adv_run_101',
-    owner: 'calltelemetry',
+    owner: 'exampleorg',
     repo: 'reviewyeti-core',
     prNumber: 505,
     headSha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
     baseSha: '0123456789abcdef0123456789abcdef01234567',
-    workerImage: 'ghcr.io/calltelemetry/worker:adv-tier5',
+    workerImage: 'ghcr.io/exampleorg/worker:adv-tier5',
     env: {
       RUN_ID: 'adv_run_101',
       NODE_ENV: 'test',
@@ -65,7 +65,7 @@ describe('Tier 5 Adversarial Hardening: Runners, Caching & Parity Engine', () =>
   const sampleDoksReceipt: ReviewRunReceipt = {
     orchestrator: 'doks',
     runId: 'doks_run_505',
-    repo: 'calltelemetry/reviewyeti-core',
+    repo: 'exampleorg/reviewyeti-core',
     prNumber: 505,
     headSha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
     verdict: 'success',
@@ -588,7 +588,7 @@ exit 0
 
         const env = {
           PATH: `${mockBin}:${process.env.PATH}`,
-          OWNER: 'calltelemetry',
+          OWNER: 'exampleorg',
           REPO: 'reviewyeti-core',
           PR_NUMBER: '999',
           HEAD_SHA: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
@@ -1039,7 +1039,7 @@ kill -s SIGTERM $$
         JSON.stringify({
           ...sampleDoksReceipt,
           orchestrator: 'cloudflare',
-          repo: 'calltelemetry/different-repo',
+          repo: 'exampleorg/different-repo',
         })
       );
 

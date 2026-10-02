@@ -21,7 +21,7 @@ func TestPRReviewJob_SetDefaults(t *testing.T) {
 		{
 			name: "All optional fields unset - should populate defaults",
 			inputSpec: v1alpha1.PRReviewJobSpec{
-				Repo:          "calltelemetry/cisco-cdr",
+				Repo:          "exampleorg/example-api",
 				PRNumber:      42,
 				HeadSHA:       "abc1234",
 				BaseSHA:       "def5678",
@@ -33,7 +33,7 @@ func TestPRReviewJob_SetDefaults(t *testing.T) {
 		{
 			name: "Custom storage size and custom TTL - should preserve values",
 			inputSpec: v1alpha1.PRReviewJobSpec{
-				Repo:                    "calltelemetry/cisco-cdr",
+				Repo:                    "exampleorg/example-api",
 				PRNumber:                42,
 				HeadSHA:                 "abc1234",
 				BaseSHA:                 "def5678",
@@ -47,7 +47,7 @@ func TestPRReviewJob_SetDefaults(t *testing.T) {
 		{
 			name: "Partial defaults - custom storage size only",
 			inputSpec: v1alpha1.PRReviewJobSpec{
-				Repo:           "calltelemetry/cisco-cdr",
+				Repo:           "exampleorg/example-api",
 				PRNumber:       10,
 				HeadSHA:        "1111111",
 				BaseSHA:        "2222222",
@@ -124,7 +124,7 @@ func TestPRReviewJob_DeepCopy(t *testing.T) {
 				},
 			},
 			Spec: v1alpha1.PRReviewJobSpec{
-				Repo:                    "calltelemetry/cisco-cdr",
+				Repo:                    "exampleorg/example-api",
 				PRNumber:                101,
 				HeadSHA:                 "sha-head-123",
 				BaseSHA:                 "sha-base-456",
@@ -288,7 +288,7 @@ metadata:
   labels:
     tier: worker
 spec:
-  repo: "calltelemetry/cisco-cdr"
+  repo: "exampleorg/example-api"
   prNumber: 42
   headSha: "9f8e7d6c5b4a"
   baseSha: "1a2b3c4d5e6f"
@@ -319,7 +319,7 @@ status:
 	}
 
 	// Validate spec fields
-	if job.Spec.Repo != "calltelemetry/cisco-cdr" {
+	if job.Spec.Repo != "exampleorg/example-api" {
 		t.Errorf("Spec.Repo mismatch: got %s", job.Spec.Repo)
 	}
 	if job.Spec.PRNumber != 42 {

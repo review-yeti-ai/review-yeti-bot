@@ -1,5 +1,5 @@
 /**
- * REL-1139 (ct-meta ADR 0687, proposed): skip the MODERATOR call on a panel run where every lane
+ * REL-1139 (example-meta ADR 0687, proposed): skip the MODERATOR call on a panel run where every lane
  * completed with an empty APPROVE and the run had full coverage. The arbiter still runs, on the
  * deterministic empty ledger. Behind `REVIEW_YETI_SKIP_EMPTY_MODERATION`, default off.
  *

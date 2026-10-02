@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Exampleorg.
 
 Adversarial empirical tests for operator emptyDir storage volume builder and input validation.
 */

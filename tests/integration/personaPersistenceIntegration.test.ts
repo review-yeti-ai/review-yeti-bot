@@ -129,7 +129,7 @@ describe('Persona Persistence & System Prompt Override Integration Suite', () =>
     await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/auth.ts', patch: '+const auth = true;' }],
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       headSha: '123456',
       client: { complete } as unknown as OmniRouteClient,
     });

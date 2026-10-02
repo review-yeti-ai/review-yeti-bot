@@ -210,9 +210,9 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
 
     describe('3. Monitored Repo 1-Click Toggling API State Persistence (automationEnabled)', () => {
       it('should toggle automationEnabled via PATCH and persist state across queries', async () => {
-        // Toggle automationEnabled to false for calltelemetry/cisco-cdr
+        // Toggle automationEnabled to false for exampleorg/example-api
         const patchRes1 = await request(app)
-          .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+          .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
           .set('Authorization', `Bearer ${authToken}`)
           .send({ automationEnabled: false });
 
@@ -226,7 +226,7 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
           .set('Authorization', `Bearer ${authToken}`);
         expect(getReposRes1.status).toBe(200);
         const repo1 = getReposRes1.body.repositories.find(
-          (r: any) => r.owner === 'calltelemetry' && r.repo === 'cisco-cdr'
+          (r: any) => r.owner === 'exampleorg' && r.repo === 'example-api'
         );
         expect(repo1).toBeDefined();
         expect(repo1.automationEnabled).toBe(false);
@@ -235,7 +235,7 @@ describe('Empirical Stress & Verification Test Suite for Milestone 41 & Mileston
         const patchRes2 = await request(app)
           .patch('/api/github/app-config/monitored-repos')
           .set('Authorization', `Bearer ${authToken}`)
-          .send({ owner: 'calltelemetry', repo: 'cisco-cdr', automationEnabled: true });
+          .send({ owner: 'exampleorg', repo: 'example-api', automationEnabled: true });
 
         expect(patchRes2.status).toBe(200);
         expect(patchRes2.body.repository.automationEnabled).toBe(true);

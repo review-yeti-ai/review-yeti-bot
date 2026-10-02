@@ -59,7 +59,7 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
             authType: 'static_token',
             tokenDigest: 'digest-chal-2',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/pr-manager-mcp']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/example-pr-manager']),
             callerId: callerIdentity,
           } satisfies McpAuthenticatedCaller;
         }
@@ -71,7 +71,7 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
             authType: 'static_token',
             tokenDigest: 'digest-chal-2',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/pr-manager-mcp']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/example-pr-manager']),
             callerId: callerIdentity,
           };
         }
@@ -150,16 +150,16 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       // Concurrent invocation without force flag
       const promise1 = tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 101,
         head_sha: '1111111111111111111111111111111111111111',
         force: false,
       });
 
       const promise2 = tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 101,
         head_sha: '1111111111111111111111111111111111111111',
         force: false,
@@ -197,8 +197,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
           params: {
             name: 'trigger_review',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pull_number: 102,
               head_sha: '2222222222222222222222222222222222222222',
               force: false,
@@ -265,8 +265,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 102,
         head_sha: '3333333333333333333333333333333333333333',
         force: true,
@@ -291,8 +291,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 103,
           head_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         })
@@ -309,8 +309,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       for (const badSha of invalidShas) {
         const parsed = TriggerReviewInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 104,
           head_sha: badSha,
         });
@@ -334,8 +334,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
           params: {
             name: 'cancel_review',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pull_number: 55,
               // reason omitted
             },
@@ -353,8 +353,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       for (const blankReason of emptyReasons) {
         const parsed = CancelReviewInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 55,
           reason: blankReason,
         });
@@ -365,8 +365,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       const tool = createCancelReviewTool();
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 55,
           reason: '   ',
         })
@@ -381,12 +381,12 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 55,
           reason: 'Attempting to cancel already-finished review',
         })
-      ).rejects.toThrow(/Not Found: No active review run found for calltelemetry\/cisco-cdr PR #55 to cancel/);
+      ).rejects.toThrow(/Not Found: No active review run found for exampleorg\/example-api PR #55 to cancel/);
     });
 
     it('ADV-CANC-004: Over-the-wire cancel of already-finished attempt returns error envelope', async () => {
@@ -402,8 +402,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
           params: {
             name: 'cancel_review',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pull_number: 55,
               reason: 'Canceling finished job',
             },
@@ -428,8 +428,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       });
 
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 55,
         reason: 'Security incident: malicious code detected in PR',
       });
@@ -439,8 +439,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       expect(data.attempt_id).toBe('review-attempt-55-3');
       expect(data.reaped_pod).toBe('review-worker-pod-999');
       expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         prNumber: 55,
         cancelReason: 'Security incident: malicious code detected in PR',
         gateReason: 'operator-cancelled',
@@ -463,8 +463,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       for (const t of invalidTimeouts) {
         const parsed = WatchReviewProgressInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 44,
           timeout_seconds: t,
         });
@@ -482,8 +482,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
           params: {
             name: 'watch_review_progress',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pull_number: 44,
               timeout_seconds: 0,
             },
@@ -505,8 +505,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
           params: {
             name: 'watch_review_progress',
             arguments: {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pull_number: 44,
               timeout_seconds: 1000,
             },
@@ -520,16 +520,16 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
     it('ADV-WATCH-002: Boundary timeout values (1s and 900s) are accepted by schema', () => {
       const parsed1 = WatchReviewProgressInputSchema.safeParse({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         timeout_seconds: 1,
       });
       expect(parsed1.success).toBe(true);
 
       const parsed900 = WatchReviewProgressInputSchema.safeParse({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         timeout_seconds: 900,
       });
@@ -562,8 +562,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
       });
 
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         timeout_seconds: 5,
       });
@@ -592,8 +592,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       const start = Date.now();
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 44,
         timeout_seconds: 1, // 1s deadline
       });
@@ -627,8 +627,8 @@ describe('Adversarial Lifecycle, Streaming & Preflight Verification (Challenger 
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 44,
           timeout_seconds: 5,
         })
@@ -732,7 +732,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
       const tool = createPreflightDiffReviewTool();
 
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: complexTsDiff,
       });
 
@@ -755,7 +755,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
 `;
       const tool = createPreflightDiffReviewTool();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: exportOnlyDiff,
       });
 
@@ -780,7 +780,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
 
       const tool = createPreflightDiffReviewTool();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: multiVulnDiff,
       });
 
@@ -821,7 +821,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
 
       const tasks = Array.from({ length: CONCURRENCY }).map(() =>
         tool.execute({
-          repo: 'calltelemetry/cisco-cdr',
+          repo: 'exampleorg/example-api',
           diff: multiFileDiff,
         })
       );
@@ -867,7 +867,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
 
       const start = Date.now();
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: `diff --git a/src/simple.ts b/src/simple.ts\n--- a/src/simple.ts\n+++ b/src/simple.ts\n@@ -1,1 +1,2 @@\n+const x = 1;\n`,
       });
       const duration = Date.now() - start;
@@ -883,7 +883,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
       const oversizedDiff = 'diff --git a/big.txt b/big.txt\n+' + 'X'.repeat(513 * 1024);
 
       const parsed = PreflightDiffReviewInputSchema.safeParse({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: oversizedDiff,
       });
 
@@ -895,7 +895,7 @@ diff --git a/.github/workflows/deploy.yml b/.github/workflows/deploy.yml
 
     it('ADV-PREF-007: Empty diff is rejected', () => {
       const parsed = PreflightDiffReviewInputSchema.safeParse({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: '',
       });
 

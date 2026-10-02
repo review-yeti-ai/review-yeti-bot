@@ -21,7 +21,7 @@ import type { EffectiveReviewFile, ReviewApplicabilityInputFile } from './review
  * bump that the registry check (REL-972 / REL-1118) verifies takes the
  * lockfile-only exemption; one it refuses used to fail closed. That left a
  * Dependabot bump whose new version pulls in one new transitive entry
- * (calltelemetry/ct-quasar#847: qs 6.15.2 -> 6.15.3 adds
+ * (exampleorg/example-ui#847: qs 6.15.2 -> 6.15.3 adds
  * `side-channel@npm:^1.1.1`) permanently unreviewable.
  *
  * A new package is a supply-chain change, so it must be REVIEWED. A lockfile
@@ -195,7 +195,7 @@ function isOversizedNewPackageLockfileChange(file: ReviewApplicabilityInputFile)
 /**
  * REL-1141: once any lane reviews the diff, no changed lockfile may ride along
  * unread. The shared filter hides every lockfile from every lane; before this,
- * a lockfile beside a reviewed manifest (calltelemetry/openclaw-linear-plugin#30:
+ * a lockfile beside a reviewed manifest (exampleorg/openclaw-linear-plugin#30:
  * package.json + a 41,140-character package-lock.json adding four packages)
  * was dropped silently and the run could SHIP.
  *

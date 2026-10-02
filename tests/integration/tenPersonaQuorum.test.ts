@@ -93,7 +93,7 @@ describe('10-Persona Fan-Out Quorum Integration Suite (Milestone 40)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/ct-review-bot',
+      repository: 'exampleorg/ct-review-bot',
       headSha: '10persona-fanout-head-sha',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -147,7 +147,7 @@ describe('10-Persona Fan-Out Quorum Integration Suite (Milestone 40)', () => {
       executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'required-fail-head-sha',
         client: mockClient as unknown as OmniRouteClient,
       })
@@ -194,7 +194,7 @@ describe('10-Persona Fan-Out Quorum Integration Suite (Milestone 40)', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/ct-review-bot',
+      repository: 'exampleorg/ct-review-bot',
       headSha: 'optional-fail-head-sha',
       client: mockClient as unknown as OmniRouteClient,
     });

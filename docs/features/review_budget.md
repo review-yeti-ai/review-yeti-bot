@@ -36,7 +36,7 @@ A file sent at full depth is sent whole, so the 20,000-character per-file cut in
 | --- | --- | --- |
 | `PERSONA_BUDGET_CHARS` | 56,000 characters | The inline-diff knee W1 measured (`MAX_INLINE_DIFF_CHARS_CEILING`). Past it, turns go from 5 to 19 and median worker time from 201 s to 470 s. |
 | `MAX_PACKED_DIFF_CHARS` | 160,000 characters | Hard cap on one lane's packed inline diff. It holds for any lane the budget packs, because a minimal note is reserved for every file before any content is placed. |
-| `BIFROST_PROXY_BODY_LIMIT_BYTES` | 1 MiB | Workers reach Bifrost through the `gateway-internal-https` nginx front (ct-infrastructure `clusters/doks-nyc1/apps/llm-gateway/deploy-gateway-internal-https.yaml`). It sets no `client_max_body_size`, so nginx's 1 MiB default applies. Bifrost's own limit is 10 MB. An oversized sec-lane request hit HTTP 413 there. |
+| `BIFROST_PROXY_BODY_LIMIT_BYTES` | 1 MiB | Workers reach Bifrost through the `gateway-internal-https` nginx front (example-infra `clusters/doks-nyc1/apps/llm-gateway/deploy-gateway-internal-https.yaml`). It sets no `client_max_body_size`, so nginx's 1 MiB default applies. Bifrost's own limit is 10 MB. An oversized sec-lane request hit HTTP 413 there. |
 | `MAX_BUDGETED_REQUEST_BYTES` | 640 KiB | Whole-request cap for a budgeted lane. Each tool result is clipped so that the serialized conversation plus the result stays under it, with a note telling the lane what happened. |
 
 ## Safety (plan section 3)

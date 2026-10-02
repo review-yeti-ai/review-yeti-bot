@@ -333,8 +333,8 @@ describe('M14 Integration: Dashboard REST API & Auth Portal', () => {
 
   describe('3. Repository Automation Toggles & PR Review Pipeline', () => {
     it('disabling repository automation skips PR review execution', async () => {
-      const owner = 'calltelemetry';
-      const repo = 'cisco-cdr';
+      const owner = 'exampleorg';
+      const repo = 'example-api';
 
       const loginRes = await request(app)
         .post('/api/auth/login')

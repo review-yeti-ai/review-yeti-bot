@@ -13,12 +13,12 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'analytics-stress-test-'));
     sessionsDir = path.join(tempDir, 'sessions');
 
-    const s1Dir = path.join(sessionsDir, 'cisco-cdr', 'ct-review-bot', 'pr-42');
+    const s1Dir = path.join(sessionsDir, 'example-api', 'ct-review-bot', 'pr-42');
     fs.mkdirSync(s1Dir, { recursive: true });
     fs.writeFileSync(
       path.join(s1Dir, 'metadata.json'),
       JSON.stringify({
-        owner: 'cisco-cdr',
+        owner: 'example-api',
         repo: 'ct-review-bot',
         prNumber: 42,
         title: 'Refactor Session Ledger',
@@ -69,7 +69,7 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
       const res = await runCLI(['--invalid-flag', '--unknown-option', 'foo', '--dir', sessionsDir]);
       // Expectation: res.exitCode is 0, no error message displayed
       expect(res.exitCode).toBe(0);
-      expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('example-api/ct-review-bot#42');
     });
 
     it('handles flag without value at the end of arguments', async () => {
@@ -81,7 +81,7 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
     it('silently ignores invalid format option and falls back to table', async () => {
       const res = await runCLI(['list', '--dir', sessionsDir, '--format', 'invalid_fmt_xyz']);
       expect(res.exitCode).toBe(0);
-      expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('example-api/ct-review-bot#42');
     });
   });
 
@@ -95,9 +95,9 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
 
     it('returns error exitCode 1 when inspecting non-existent dir/session', async () => {
       const nonExistent = path.join(tempDir, 'does_not_exist_123');
-      const res = await runCLI(['inspect', 'cisco-cdr/ct-review-bot#42', '--dir', nonExistent]);
+      const res = await runCLI(['inspect', 'example-api/ct-review-bot#42', '--dir', nonExistent]);
       expect(res.exitCode).toBe(1);
-      expect(res.output).toContain('Error: Session not found for ID: cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('Error: Session not found for ID: example-api/ct-review-bot#42');
     });
   });
 
@@ -106,19 +106,19 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
       const res = await runCLI(['search', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
       // Returns all sessions when query is missing
-      expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('example-api/ct-review-bot#42');
     });
 
     it('handles empty query string search ""', async () => {
       const res = await runCLI(['search', '', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
-      expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('example-api/ct-review-bot#42');
     });
 
     it('handles -q "" flag', async () => {
       const res = await runCLI(['search', '-q', '', '--dir', sessionsDir]);
       expect(res.exitCode).toBe(0);
-      expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('example-api/ct-review-bot#42');
     });
 
     it('returns No sessions found for non-matching search query', async () => {
@@ -151,7 +151,7 @@ describe('Adversarial Stress Test Suite for Session Analytics CLI', () => {
       const res = await runCLI(['list', '--dir', sessionsDir, '--min-turns', 'abc']);
       // parseInt('abc', 10) is NaN; session.totalTurns < NaN evaluates to false
       expect(res.exitCode).toBe(0);
-      expect(res.output).toContain('cisco-cdr/ct-review-bot#42');
+      expect(res.output).toContain('example-api/ct-review-bot#42');
     });
   });
 

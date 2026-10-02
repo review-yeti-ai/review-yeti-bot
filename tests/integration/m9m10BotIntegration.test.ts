@@ -23,7 +23,7 @@ describe('Milestone 9 & 10 Bot Integration Tests', () => {
     const memoryStore = new PRMemoryStore(':memory:');
     const learningEngine = new GraphLearningEngine(memoryStore);
 
-    const repo = 'calltelemetry/cisco-cdr';
+    const repo = 'exampleorg/example-api';
 
     // Record resolved nit pattern
     await memoryStore.recordResolvedNit(repo, 77, {

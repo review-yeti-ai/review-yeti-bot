@@ -21,7 +21,7 @@ type CompletionHandler = NonNullable<ActionDispatchRouterOptions['authoritativeW
 function event(): WorkerReviewCompletion {
   return {
     version: 'WorkerReviewCompletion.v1', runId: `run_${'a'.repeat(32)}`,
-    repositoryId: 123, owner: 'calltelemetry', repo: 'example', prNumber: 42,
+    repositoryId: 123, owner: 'exampleorg', repo: 'example', prNumber: 42,
     headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40),
     policyDigest: 'd'.repeat(64), configDigest: 'e'.repeat(64), executionAttempt: 2,
     result: {

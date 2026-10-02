@@ -159,7 +159,7 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		ZoektGroundingDisabled: strings.TrimSpace(os.Getenv("REVIEW_YETI_ZOEKT_GROUNDING_DISABLED")),
 		// REL-1086: Jev (TypeSafe AI) is optional. No default Secret name: an
 		// unset value projects nothing, so Jev stays off until
-		// ct-infrastructure provisions it.
+		// example-infra provisions it.
 		JevSecretName: strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_SECRET_NAME")),
 		JevShadow:     strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_SHADOW")),
 		JevEvidence:   strings.TrimSpace(os.Getenv("REVIEW_YETI_JEV_EVIDENCE")),
@@ -184,7 +184,7 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// REL-1139: skip the moderator call (never the arbiter) on empty
 		// full-coverage runs, off unless the deployment sets it (a
 		// comma-separated owner/repo allowlist for pilots). Enabling it is
-		// gated on ct-meta ADR 0687.
+		// gated on example-meta ADR 0687.
 		SkipEmptyModeration: strings.TrimSpace(os.Getenv(job.SkipEmptyModerationEnv)),
 		// REL-1104: worker metrics push target (VictoriaMetrics OTLP). An
 		// invalid value is dropped at projection time, never refusing a Job.

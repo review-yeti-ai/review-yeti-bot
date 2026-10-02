@@ -29,7 +29,7 @@ describe('Tier 2: Boundary & Corner Cases', () => {
       const rawBody = JSON.stringify(payload);
 
       // Do NOT provide X-Hub-Signature-256 header
-      const req = new Request('https://operator.calltelemetry.internal/api/webhooks/github', {
+      const req = new Request('https://operator.example.internal/api/webhooks/github', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -76,7 +76,7 @@ describe('Tier 2: Boundary & Corner Cases', () => {
 
     it('B4: Non-pilot repository returns HTTP 200 ignored payload', async () => {
       const harness = createE2EEnvironment({
-        pilotRepositories: 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta',
+        pilotRepositories: 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
       });
 
       const payload = createWebhookPayload('opened', {
@@ -127,7 +127,7 @@ describe('Tier 2: Boundary & Corner Cases', () => {
       const harness = createE2EEnvironment();
       const worker = (await import('../../src/worker.js')).default;
 
-      const req = new Request('https://operator.calltelemetry.internal/api/unknown-endpoint');
+      const req = new Request('https://operator.example.internal/api/unknown-endpoint');
       const res = await worker.fetch(req, harness.env);
       assert.equal(res.status, 404);
       assert.equal(await res.text(), 'Not Found');

@@ -89,7 +89,7 @@ paths are unchanged.
 Use this zero-downtime order:
 
 1. Deploy the service with `ACTION_DISPATCH_REQUIRE_EXPECTED_GENERATION=false`.
-2. Promote the central `ct-review-actions` workflow and pinned Action producer
+2. Promote the central `example-review-actions` workflow and pinned Action producer
    that send `expectedGeneration`.
 3. Prove a live central app-gate dispatch supplied the admitted generation and
    was accepted only at the exact durable next generation.

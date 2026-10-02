@@ -142,8 +142,8 @@ function createWorkerTestEnv(overrides: Partial<Record<string, any>> = {}): Mock
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
     PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
-    PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta',
-    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.calltelemetry.com/api/webhooks/github',
+    PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
+    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'webhook-secret-xyz123',
     REVIEW_YETI_MCP_AUTH_TOKEN: overrides.REVIEW_YETI_MCP_AUTH_TOKEN ?? 'mock-mcp-token-xyz',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
@@ -198,11 +198,11 @@ function createWebhookPayload(action: string, options: {
 describe('Webhook Ingress Worker (src/worker.ts)', () => {
   describe('Helper: isPilotRepository', () => {
     it('returns true when repository matches exactly', () => {
-      assert.equal(isPilotRepository('review-yeti-ai/review-yeti-bot', 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta'), true);
+      assert.equal(isPilotRepository('review-yeti-ai/review-yeti-bot', 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta'), true);
     });
 
     it('returns true case-insensitively with leading/trailing whitespace in list', () => {
-      assert.equal(isPilotRepository('Review-Yeti-AI/Review-Yeti-Bot', ' review-yeti-ai/review-yeti-bot , calltelemetry/ct-meta '), true);
+      assert.equal(isPilotRepository('Review-Yeti-AI/Review-Yeti-Bot', ' review-yeti-ai/review-yeti-bot , exampleorg/example-meta '), true);
     });
 
     it('returns true when pilot list is "all" or "ALL"', () => {
@@ -211,7 +211,7 @@ describe('Webhook Ingress Worker (src/worker.ts)', () => {
     });
 
     it('returns false when repository is not in list', () => {
-      assert.equal(isPilotRepository('unknown-org/unknown-repo', 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta'), false);
+      assert.equal(isPilotRepository('unknown-org/unknown-repo', 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta'), false);
     });
 
     it('returns false when pilot list is empty or undefined', () => {
@@ -287,8 +287,8 @@ describe('Webhook Ingress Worker (src/worker.ts)', () => {
         async list() {
           return {
             objects: [
-              { key: 'calltelemetry/cisco-cdr/pr-1.tar.zst', uploaded: new Date(Date.now() - 7200000) }, // 2h old
-              { key: 'calltelemetry/cisco-cdr/pr-2.tar.zst', uploaded: new Date(Date.now() - 1800000) }, // 30m old
+              { key: 'exampleorg/example-api/pr-1.tar.zst', uploaded: new Date(Date.now() - 7200000) }, // 2h old
+              { key: 'exampleorg/example-api/pr-2.tar.zst', uploaded: new Date(Date.now() - 1800000) }, // 30m old
             ],
             truncated: false,
           };
@@ -311,8 +311,8 @@ describe('Webhook Ingress Worker (src/worker.ts)', () => {
       const data = (await res.json()) as any;
       assert.equal(data.status, 'ok');
       assert.equal(data.deletedCount, 1);
-      assert.deepEqual(data.deletedKeys, ['calltelemetry/cisco-cdr/pr-1.tar.zst']);
-      assert.deepEqual(deleted, ['calltelemetry/cisco-cdr/pr-1.tar.zst']);
+      assert.deepEqual(data.deletedKeys, ['exampleorg/example-api/pr-1.tar.zst']);
+      assert.deepEqual(deleted, ['exampleorg/example-api/pr-1.tar.zst']);
     });
 
     it('GET /api/cache/purge-expired is rejected with 405 Method Not Allowed', async () => {

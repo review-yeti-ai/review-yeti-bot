@@ -48,7 +48,7 @@ function createHarness(): TestHarness {
   const env: any = {
     ENVIRONMENT: 'test',
     PARALLEL_MODE: 'shadow',
-    PILOT_REPOSITORIES: 'calltelemetry/review-yeti,calltelemetry/test-repo',
+    PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-iter4',
     DOKS_FALLBACK_URL: undefined,
 
@@ -125,7 +125,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
     it('executes a 100-request concurrent webhook burst across 5 PRs with mixed synchronize, closed, reopened, and opened', async () => {
       const harness = createHarness();
       const secret = 'test-secret-iter4';
-      const repoFullName = 'calltelemetry/review-yeti';
+      const repoFullName = 'exampleorg/review-yeti';
       const repoKey = repoFullName.toLowerCase();
       const prs = [301, 302, 303, 304, 305];
       const actions = ['opened', 'synchronize', 'closed', 'reopened', 'synchronize'] as const;
@@ -145,7 +145,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
               repository: {
                 full_name: repoFullName,
                 name: 'review-yeti',
-                owner: { login: 'calltelemetry' },
+                owner: { login: 'exampleorg' },
               },
               pull_request: {
                 number: prNumber,
@@ -155,7 +155,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
               },
             });
             const sig = await signPayload(secret, body);
-            const req = new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+            const req = new Request('https://operator.example.com/api/webhooks/github', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -205,7 +205,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
     it('handles 20 simultaneous synchronize pushes for the exact same PR racing in parallel', async () => {
       const harness = createHarness();
       const secret = 'test-secret-iter4';
-      const repoFullName = 'calltelemetry/review-yeti';
+      const repoFullName = 'exampleorg/review-yeti';
       const repoKey = repoFullName.toLowerCase();
       const prNumber = 401;
 
@@ -221,12 +221,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
         Array.from({ length: 20 }, async (_, i) => {
           const body = JSON.stringify({
             action: 'synchronize',
-            repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+            repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
             pull_request: { number: prNumber, head: { sha: `sha_401_commit_${i}` }, base: { sha: 'main' } },
           });
           const sig = await signPayload(secret, body);
           const res = await worker.fetch(
-            new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+            new Request('https://operator.example.com/api/webhooks/github', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -388,7 +388,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
     it('executes complete lifecycle: open -> run -> close -> evict -> hibernate -> repoll-rejected -> reopen -> clear-tombstone -> hibernate -> push-commit -> slot-granted', async () => {
       const sharedStorage = new MockDurableObjectState();
       const sharedRunStorage = new MockDurableObjectState();
-      const repoFullName = 'calltelemetry/review-yeti';
+      const repoFullName = 'exampleorg/review-yeti';
       const repoKey = repoFullName.toLowerCase();
       const prNumber = 701;
       const secret = 'test-secret-iter4';
@@ -435,7 +435,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       // Initialize run DO and acquire lease
       await currentRunInstance.initialize({
         runId: run1,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha_c1',
@@ -464,12 +464,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       // -------------------------------------------------------------
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_c1' }, base: { sha: 'main' } },
       });
       const sigClose = await signPayload(secret, bodyClose);
       const resClose = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -527,12 +527,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       // -------------------------------------------------------------
       const bodyReopen = JSON.stringify({
         action: 'reopened',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_c1' }, base: { sha: 'main' } },
       });
       const sigReopen = await signPayload(secret, bodyReopen);
       const resReopen = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -590,12 +590,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
 
       const bodySync = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_c2_fresh' }, base: { sha: 'main' } },
       });
       const sigSync = await signPayload(secret, bodySync);
       const resSync = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -634,7 +634,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       const run2DO = new ReviewRunDO(run2DOStorage as any, {} as any);
       await run2DO.initialize({
         runId: run2,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha_c2_fresh',
@@ -661,7 +661,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
 
     it('handles multiple close -> reopen -> close -> reopen churn cycles cleanly', async () => {
       const sharedStorage = new MockDurableObjectState();
-      const repoFullName = 'calltelemetry/review-yeti';
+      const repoFullName = 'exampleorg/review-yeti';
       const repoKey = repoFullName.toLowerCase();
       const prNumber = 801;
       const secret = 'test-secret-iter4';
@@ -697,12 +697,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
         // Close PR
         const bodyClose = JSON.stringify({
           action: 'closed',
-          repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+          repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
           pull_request: { number: prNumber, head: { sha: `sha_c${cycle}` }, base: { sha: 'main' } },
         });
         const sigClose = await signPayload(secret, bodyClose);
         const resClose = await worker.fetch(
-          new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+          new Request('https://operator.example.com/api/webhooks/github', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request', 'X-Hub-Signature-256': sigClose },
             body: bodyClose,
@@ -721,12 +721,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
         // Reopen PR
         const bodyReopen = JSON.stringify({
           action: 'reopened',
-          repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+          repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
           pull_request: { number: prNumber, head: { sha: `sha_c${cycle}` }, base: { sha: 'main' } },
         });
         const sigReopen = await signPayload(secret, bodyReopen);
         const resReopen = await worker.fetch(
-          new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+          new Request('https://operator.example.com/api/webhooks/github', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request', 'X-Hub-Signature-256': sigReopen },
             body: bodyReopen,
@@ -752,7 +752,7 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
 
     it('correctly handles debounced commit arriving after close-and-reopen: rejects stale pre-closure commit', async () => {
       const sharedStorage = new MockDurableObjectState();
-      const repoFullName = 'calltelemetry/review-yeti';
+      const repoFullName = 'exampleorg/review-yeti';
       const repoKey = repoFullName.toLowerCase();
       const prNumber = 901;
       const secret = 'test-secret-iter4';
@@ -791,12 +791,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       // 1. Commit A arrives via synchronize (debounced)
       const bodySync = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_pre_close' }, base: { sha: 'main' } },
       });
       const sigSync = await signPayload(secret, bodySync);
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request', 'X-Hub-Signature-256': sigSync },
           body: bodySync,
@@ -809,12 +809,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       // 2. PR is closed
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_pre_close' }, base: { sha: 'main' } },
       });
       const sigClose = await signPayload(secret, bodyClose);
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request', 'X-Hub-Signature-256': sigClose },
           body: bodyClose,
@@ -825,12 +825,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
       // 3. PR is reopened
       const bodyReopen = JSON.stringify({
         action: 'reopened',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_pre_close' }, base: { sha: 'main' } },
       });
       const sigReopen = await signPayload(secret, bodyReopen);
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request', 'X-Hub-Signature-256': sigReopen },
           body: bodyReopen,
@@ -860,12 +860,12 @@ describe('M1 Challenger 2 Iteration 4: Empirical Concurrency Stress & Reopen Lif
 
       const bodySyncB = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: repoFullName, name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_post_reopen_commit' }, base: { sha: 'main' } },
       });
       const sigSyncB = await signPayload(secret, bodySyncB);
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request', 'X-Hub-Signature-256': sigSyncB },
           body: bodySyncB,

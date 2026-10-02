@@ -36,8 +36,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
   describe('Feature 1: Model-Backed preflight_diff_review', () => {
     it('TC-T1-PRE-01: safe non-code modification bypasses heavy review for fast-ship', async () => {
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.safeMarkdown,
         target_branch: 'main',
       });
@@ -51,8 +51,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-PRE-02: calculates AST blast radius for code additions and exported symbols', async () => {
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.cleanCode,
         target_branch: 'main',
       });
@@ -65,8 +65,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-PRE-03: detects hardcoded secret token and marks PR ineligible to ship', async () => {
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.hardcodedSecret,
         target_branch: 'main',
       });
@@ -85,8 +85,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-PRE-04: detects SQL injection and command injection static vulnerabilities', async () => {
       const sqlRes = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.sqlInjection,
         target_branch: 'main',
       });
@@ -98,8 +98,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       expect(sqliFinding.suggested_fix).toMatch(/parameterized SQL query/i);
 
       const cmdRes = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.commandInjection,
         target_branch: 'main',
       });
@@ -112,15 +112,15 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-PRE-05: incorporates DeepSeek model review findings when diff passes static checks', async () => {
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.cleanCode,
         target_branch: 'main',
       });
 
       expect(res.status).toBe(200);
       expect(env.deepSeek.evaluateDiffCalls.length).toBe(1);
-      expect(env.deepSeek.evaluateDiffCalls[0].prompt).toMatch(/Review diff for repo cisco-cdr/i);
+      expect(env.deepSeek.evaluateDiffCalls[0].prompt).toMatch(/Review diff for repo example-api/i);
       expect(res.result.findings.length).toBeGreaterThanOrEqual(1);
       expect(res.result.findings[0].finding_id).toBe('deepseek-p1-001');
       expect(res.result.findings[0].severity).toBe('P1');
@@ -137,8 +137,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     beforeEach(() => {
       const run = env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         head_sha: 'a'.repeat(40),
       });
@@ -161,8 +161,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-FIX-01: synthesizes exact unified diff patch with valid hunk headers', async () => {
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: findingId,
       });
@@ -190,8 +190,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       });
 
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: f.finding_id,
       });
@@ -215,8 +215,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       });
 
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: f.finding_id,
       });
@@ -239,8 +239,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       });
 
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: f.finding_id,
       });
@@ -252,8 +252,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-FIX-05: throws informative error when finding ID does not exist in ledger', async () => {
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: 'nonexistent-finding-999',
       });
@@ -271,8 +271,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     beforeEach(() => {
       const run = env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 202,
         head_sha: 'b'.repeat(40),
       });
@@ -290,8 +290,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-DIS-01: fails closed without accepted completion evidence and leaves the finding unchanged', async () => {
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 202,
         finding_id: findingId,
         counter_argument: 'The buffer is bounded by an LRU cache limited to 500 items configured in CacheManager, preventing memory leaks.',
@@ -304,8 +304,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-DIS-02: does not adjudicate a dismissive argument in the request tool', async () => {
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 202,
         finding_id: findingId,
         counter_argument: 'Whatever not a bug ignore this',
@@ -323,8 +323,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       };
 
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 202,
         finding_id: findingId,
         counter_argument: 'Surrounding module uses bounded worker channels with backpressure per ADR 0564.',
@@ -337,8 +337,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-DIS-04: does not change the ledger blocker when a review source is unavailable', async () => {
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 202,
         finding_id: findingId,
         counter_argument: 'Verified LRU bounds are present in cache.ts:32 with 100 max entries.',
@@ -350,8 +350,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-DIS-05: does not reveal whether a finding exists when source evidence is unavailable', async () => {
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 202,
         finding_id: 'unknown-finding-xyz',
         counter_argument: 'Technical justification for nonexistent finding.',
@@ -370,8 +370,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     beforeEach(() => {
       const run = env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 303,
         head_sha: 'c'.repeat(40),
       });
@@ -395,8 +395,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       const res = await env.callTool('explain_finding', {
         finding_id: findingId,
         question: 'Why was this finding raised and what ADR governs it?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 303,
       });
 
@@ -411,8 +411,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       const res = await env.callTool('explain_finding', {
         finding_id: findingId,
         question: 'Can I just disable or turn off the queue check to fix this?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 303,
       });
 
@@ -426,8 +426,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       const res = await env.callTool('explain_finding', {
         finding_id: findingId,
         question: 'What if I implement a bounded ring buffer with an LRU capacity limit of 1000 items?',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 303,
       });
 
@@ -440,8 +440,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       const res = await env.callTool('explain_finding', {
         finding_id: findingId,
         question: 'Explain the finding context',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 303,
       });
 
@@ -453,8 +453,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       const res = await env.callTool('explain_finding', {
         finding_id: 'unknown-id-888',
         question: 'Explain this finding',
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 303,
       });
 
@@ -470,8 +470,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
   describe('Feature 5: trigger_review Engine Selection Routing', () => {
     it('TC-T1-ENG-01: admits review with standard exact-head parameters', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 404,
         head_sha: 'd'.repeat(40),
       });
@@ -484,8 +484,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-ENG-02: verifies review priority specification (normal vs expedited)', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 405,
         head_sha: 'e'.repeat(40),
         priority: 'expedited',
@@ -498,8 +498,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-ENG-03: rejects invalid head commit SHA format (<40 hex characters)', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 406,
         head_sha: 'short-sha',
       });
@@ -510,8 +510,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
     it('TC-T1-ENG-04: rejects negative or invalid pull request numbers', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: -5,
         head_sha: 'f'.repeat(40),
       });
@@ -523,16 +523,16 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
     it('TC-T1-ENG-05: detects active review conflict and rejects concurrent trigger without force', async () => {
       // Seed an active running review
       env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 407,
         head_sha: '1'.repeat(40),
         status: 'running',
       });
 
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 407,
         head_sha: '1'.repeat(40),
         force: false,
@@ -566,7 +566,7 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
       expect(res.output).toBeDefined();
       expect(res.output.blast_radius).toBe('MEDIUM');
       expect(res.output.transitive_callers).toBe(8);
-      expect(res.output.affected_repos).toContain('calltelemetry/cisco-cdr');
+      expect(res.output.affected_repos).toContain('exampleorg/example-api');
     });
 
     it('TC-T1-FLT-03: executes knowledge_search ADR query and retrieves architectural policies', async () => {
@@ -582,7 +582,7 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
     });
 
     it('TC-T1-FLT-04: executes advise_blocker active policy check via blocker-quorum', async () => {
-      const res = await env.bifrost.executeTool('advise_blocker', { repository: 'calltelemetry/cisco-cdr' });
+      const res = await env.bifrost.executeTool('advise_blocker', { repository: 'exampleorg/example-api' });
 
       expect(res.success).toBe(true);
       expect(res.output.active_blockers).toBe(0);
@@ -609,8 +609,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
       try {
         const res = await timeoutEnv.callTool('preflight_diff_review', {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           diff: DIFF_FIXTURES.cleanCode,
           target_branch: 'main',
         });
@@ -632,8 +632,8 @@ describe('Tier 1: Feature Coverage (tests/e2e/mcp/tier1FeatureCoverage.test.ts)'
 
       try {
         const res = await errorEnv.callTool('preflight_diff_review', {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           diff: DIFF_FIXTURES.cleanCode,
           target_branch: 'main',
         });

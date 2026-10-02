@@ -35,8 +35,8 @@ describe('Tier 2: Boundary & Corner Cases (tests/e2e/mcp/tier2BoundaryCorner.tes
   describe('Category 1: Boundary Diffs', () => {
     it('TC-T2-DIF-01: empty diff string is rejected by schema with diff cannot be empty error', async () => {
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: '',
         target_branch: 'main',
       });
@@ -60,8 +60,8 @@ ${hunkLines.join('\n')}
 `;
 
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: largeDiff,
         target_branch: 'main',
       });
@@ -76,8 +76,8 @@ ${hunkLines.join('\n')}
       const malformed = 'Not a git diff\nJust random text\n@@ invalid @@\n+++ missing b';
 
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: malformed,
         target_branch: 'main',
       });
@@ -91,8 +91,8 @@ ${hunkLines.join('\n')}
       const whitespaceDiff = '   \n\t\n   \n';
 
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: whitespaceDiff,
         target_branch: 'main',
       });
@@ -112,8 +112,8 @@ index 1111111..2222222 100644
 `;
 
       const res = await env.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: workflowDiff,
         target_branch: 'main',
       });
@@ -132,8 +132,8 @@ index 1111111..2222222 100644
 
     beforeEach(() => {
       const run = env.db.seedRun({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 555,
         head_sha: 'a'.repeat(40),
       });
@@ -151,8 +151,8 @@ index 1111111..2222222 100644
       const longArg = 'Technical justification: '.padEnd(10000, 'x');
 
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 555,
         finding_id: findingId,
         counter_argument: longArg,
@@ -166,8 +166,8 @@ index 1111111..2222222 100644
       const overLimitArg = 'Too long: '.padEnd(10001, 'x');
 
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 555,
         finding_id: findingId,
         counter_argument: overLimitArg,
@@ -183,8 +183,8 @@ index 1111111..2222222 100644
       const res = await env.callTool('explain_finding', {
         finding_id: findingId,
         question: exoticQuestion,
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 555,
       });
 
@@ -195,8 +195,8 @@ index 1111111..2222222 100644
 
     it('TC-T2-PAY-04: rejects empty or whitespace-only inputs for required string fields', async () => {
       const res = await env.callTool('dispute_finding', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 555,
         finding_id: findingId,
         counter_argument: '     ',
@@ -223,8 +223,8 @@ index 1111111..2222222 100644
   describe('Category 3: Schema Boundaries & Validation', () => {
     it('TC-T2-SCH-01: rejects invalid commit SHA of 39 hex characters', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 100,
         head_sha: 'a'.repeat(39),
       });
@@ -235,8 +235,8 @@ index 1111111..2222222 100644
 
     it('TC-T2-SCH-02: rejects non-hex characters in commit SHA', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 100,
         head_sha: 'z'.repeat(40),
       });
@@ -247,8 +247,8 @@ index 1111111..2222222 100644
 
     it('TC-T2-SCH-03: rejects non-integer PR numbers with schema error', async () => {
       const res = await env.callTool('trigger_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 12.34 as any,
         head_sha: 'a'.repeat(40),
       });
@@ -259,8 +259,8 @@ index 1111111..2222222 100644
 
     it('TC-T2-SCH-04: rejects unknown properties in strictly validated tool schemas', async () => {
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 100,
         finding_id: 'f1',
         unexpected_extra_property: 'not_allowed',
@@ -272,8 +272,8 @@ index 1111111..2222222 100644
 
     it('TC-T2-SCH-05: rejects missing mandatory fields in JSON-RPC tools/call', async () => {
       const res = await env.callTool('generate_fix_diff', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         // missing pr_number and finding_id
       });
 
@@ -361,9 +361,9 @@ index 1111111..2222222 100644
 
     it('TC-T2-CON-02: parallel tool calls execute concurrently without cross-contamination', async () => {
       const calls = [
-        env.callTool('preflight_diff_review', { owner: 'calltelemetry', repo: 'cisco-cdr', diff: DIFF_FIXTURES.safeMarkdown }),
-        env.callTool('preflight_diff_review', { owner: 'calltelemetry', repo: 'cisco-cdr', diff: DIFF_FIXTURES.cleanCode }),
-        env.callTool('preflight_diff_review', { owner: 'calltelemetry', repo: 'cisco-cdr', diff: DIFF_FIXTURES.hardcodedSecret }),
+        env.callTool('preflight_diff_review', { owner: 'exampleorg', repo: 'example-api', diff: DIFF_FIXTURES.safeMarkdown }),
+        env.callTool('preflight_diff_review', { owner: 'exampleorg', repo: 'example-api', diff: DIFF_FIXTURES.cleanCode }),
+        env.callTool('preflight_diff_review', { owner: 'exampleorg', repo: 'example-api', diff: DIFF_FIXTURES.hardcodedSecret }),
       ];
 
       const results = await Promise.all(calls);
@@ -374,19 +374,19 @@ index 1111111..2222222 100644
     });
 
     it('TC-T2-CON-03: concurrent requests without accepted sources fail independently without model calls', async () => {
-      const run1 = env.db.seedRun({ owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 701, head_sha: '1'.repeat(40) });
-      const run2 = env.db.seedRun({ owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 702, head_sha: '2'.repeat(40) });
+      const run1 = env.db.seedRun({ owner: 'exampleorg', repo: 'example-api', pr_number: 701, head_sha: '1'.repeat(40) });
+      const run2 = env.db.seedRun({ owner: 'exampleorg', repo: 'example-api', pr_number: 702, head_sha: '2'.repeat(40) });
 
       const f1 = env.db.seedFinding({ run_id: run1.run_id, file_path: 'src/cache/store.ts', finding_id: 'find-pr-701', title: 'Issue 701' });
       const f2 = env.db.seedFinding({ run_id: run2.run_id, file_path: 'src/cache/store.ts', finding_id: 'find-pr-702', title: 'Issue 702' });
 
       const [res1, res2] = await Promise.all([
         env.callTool('dispute_finding', {
-          owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 701,
+          owner: 'exampleorg', repo: 'example-api', pr_number: 701,
           finding_id: f1.finding_id, counter_argument: 'Detailed technical mitigation for PR 701 with LRU bounds.',
         }),
         env.callTool('dispute_finding', {
-          owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 702,
+          owner: 'exampleorg', repo: 'example-api', pr_number: 702,
           finding_id: f2.finding_id, counter_argument: 'Short ignore',
         }),
       ]);
@@ -402,8 +402,8 @@ index 1111111..2222222 100644
       env.db.reset(); // clear all database state
 
       const res = await env.callTool('get_review_status', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 999,
       });
 
@@ -416,8 +416,8 @@ index 1111111..2222222 100644
       const start = Date.now();
       for (let i = 0; i < 10; i++) {
         const res = await env.callTool('preflight_diff_review', {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           diff: DIFF_FIXTURES.safeMarkdown,
         });
         expect(res.status).toBe(200);

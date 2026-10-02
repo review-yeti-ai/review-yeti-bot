@@ -5,7 +5,7 @@ import { ReviewWorker } from '../../src/persistence/reviewWorker';
 import { PI_STAGE_CONTRACTS } from '../../src/review/piWorkflow';
 
 const baseIdentity = {
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'ct-review-bot',
   prNumber: 42,
   headSha: 'a'.repeat(40),

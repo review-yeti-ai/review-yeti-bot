@@ -1,5 +1,5 @@
 /**
- * REL-1139 (ct-meta ADR 0687): the panel side of the empty-moderation skip. The decision itself
+ * REL-1139 (example-meta ADR 0687): the panel side of the empty-moderation skip. The decision itself
  * lives in `src/review/emptyModeration.ts`, shared with the trusted completion side; this module
  * only reduces the panel engine's plans and disclosures to that decision's facts, and builds the
  * deterministic moderator result a skipped run uses.

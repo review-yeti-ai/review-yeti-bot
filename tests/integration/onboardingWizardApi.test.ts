@@ -251,8 +251,8 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
         .patch('/api/github/app-config/monitored-repos')
         .set('x-api-key', validApiKey)
         .send({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           automationEnabled: false,
           customProfile: 'assertive',
         });
@@ -265,7 +265,7 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
 
     it('PATCH /api/github/app-config/monitored-repos/:owner/:repo - updates status via URL params', async () => {
       const res = await request(app)
-        .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+        .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
         .set('x-api-key', validApiKey)
         .send({
           automationEnabled: true,
@@ -274,8 +274,8 @@ describe('Tier 1 & Tier 2 Onboarding & GitHub App API Integration Suite', () => 
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.repository.owner).toBe('calltelemetry');
-      expect(res.body.repository.repo).toBe('cisco-cdr');
+      expect(res.body.repository.owner).toBe('exampleorg');
+      expect(res.body.repository.repo).toBe('example-api');
       expect(res.body.repository.automationEnabled).toBe(true);
       expect(res.body.repository.customProfile).toBe('balanced');
     });
