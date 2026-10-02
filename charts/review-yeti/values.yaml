@@ -361,7 +361,7 @@ publishing:
   # one call, packed by the W5 budget. Empty by default: nothing is forwarded and the worker uses
   # its default, the W5 hard cap (160000). Forwarded only when mapReduce is set.
   mapReduceMinChars: ""
-  # REL-1139 (example-meta ADR 0687, proposed): skip the MODERATOR call on a run where every lane
+  # REL-1139 (ct-meta ADR 0687, proposed): skip the MODERATOR call on a run where every lane
   # completed with an empty APPROVE, coverage was full and no security-sensitive file changed
   # (worker flag REVIEW_YETI_SKIP_EMPTY_MODERATION). The arbiter always runs; lanes are never
   # skipped. Empty by default, so nothing is forwarded and the moderator always runs; workers log
