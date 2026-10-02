@@ -1014,3 +1014,137 @@ func TestEmpirical_V1Alpha2_MultiReplica_SameReviewRace_SingleWorkerJobCreated(t
 		t.Fatalf("review phase = %s, want Running", updated.Status.Phase)
 	}
 }
+
+// Fixture-driver regressions call the original void helpers as statements.
+// Their OLD oracle is stored state or a real keyed outcome, never a new API.
+func TestM2FixtureSettleRetriesTransientAdmissionErrors(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "transient", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) && calls.Add(1) <= 16 {
+						return apierrors.NewTimeoutError("fixture admission timeout", 0)
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
+
+func TestM2FixtureSettleRetriesQuietConflictRequeues(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "conflict", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) && calls.Add(1) <= 16 {
+						return apierrors.NewConflict(batchv1.SchemeGroupVersion.WithResource("jobs").GroupResource(), "fixture-admission", fmt.Errorf("fixture conflict"))
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
+
+func TestM2FixtureSettleContinuesBelowCapacityPlateau(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var reads atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "plateau", func(f interceptor.Funcs, reviews []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				target := client.ObjectKeyFromObject(reviews[3])
+				f.Get = func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*reviewv1alpha2.PRReviewJob); ok && key == target && reads.Add(1) <= 4 {
+						return apierrors.NewTimeoutError("fixture target observation timeout", 0)
+					}
+					return c.Get(ctx, key, obj, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
+
+func TestM2FixtureSettleStopsOnPermanentError(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			sentinel := apierrors.NewForbidden(batchv1.SchemeGroupVersion.WithResource("jobs").GroupResource(), "fixture-admission", fmt.Errorf("fixture admission denied"))
+			ctx, r, reviews, _, sink := newConvergenceFixture(t, threads, 8, "forbidden", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) {
+						calls.Add(1)
+						return sentinel
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			if got := calls.Load(); got != 8 {
+				t.Errorf("permanent error must stop after one closed batch: got %d admission calls, want 8", got)
+			}
+			assertFixtureKeyedErrors(t, sink, reviews, sentinel)
+		})
+	}
+}
+
+func TestM2FixtureSettleReportsBoundedExhaustion(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, _, sink := newConvergenceFixture(t, threads, 8, "exhaust", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.List = func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if fixtureAdmissionList(list, opts) {
+						calls.Add(1)
+						return apierrors.NewConflict(batchv1.SchemeGroupVersion.WithResource("jobs").GroupResource(), "fixture-admission", fmt.Errorf("fixture conflict"))
+					}
+					return c.List(ctx, list, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			if got := calls.Load(); got != 64 {
+				t.Errorf("exhaustion must consume exactly the existing eight-round bound: got %d admission calls, want 64", got)
+			}
+			observed := false
+			for _, entry := range sink.snapshot() {
+				observed = observed || entry.err != nil
+			}
+			if !observed {
+				t.Error("exhausted convergence returned without a failure diagnostic")
+			}
+			var jobs batchv1.JobList
+			if err := r.Client.List(ctx, &jobs); err != nil {
+				t.Fatal(err)
+			}
+			if len(jobs.Items) != 0 {
+				t.Fatalf("exhausted admission created %d workers", len(jobs.Items))
+			}
+		})
+	}
+}
+
+func TestM2FixtureSettleHealthyControlPreservesFIFOAndMatrix(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 8, "healthy", nil)
+			reversed := append([]*reviewv1alpha2.PRReviewJob(nil), reviews...)
+			for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+				reversed[left], reversed[right] = reversed[right], reversed[left]
+			}
+			reconcileUntilSettled(ctx, r, reversed, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+		})
+	}
+}
