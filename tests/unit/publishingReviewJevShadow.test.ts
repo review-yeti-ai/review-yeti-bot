@@ -218,7 +218,7 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
         return persuasiveAsker().asker.ask(request);
       }) as never,
     };
-    const h = harness('advisory', {
+    const h = harness('clean', {
       jevTriageShadow: { asker: slow },
       checkClient: {
         createCheck: vi.fn(async () => 4242),
