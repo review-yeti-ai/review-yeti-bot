@@ -1,11 +1,29 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ReviewStageStepper } from '../../../src/components/live/review-stage-stepper';
 import { LiveTurnTimeline } from '../../../src/components/live/live-turn-timeline';
 import { SwarmTaskMatrix } from '../../../src/components/live/SwarmTaskMatrix';
+import { LiveDashboardView } from '../../../src/components/live/LiveDashboardView';
 import { StageState, TurnStepRecord } from '../../../src/types/live';
+
+const live = vi.hoisted(() => ({ setJobId: vi.fn(), clearEvents: vi.fn(), fetchActiveJobs: vi.fn() }));
+vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('jobId=fixture-job') }));
+vi.mock('../../../src/lib/api-client', () => ({
+  fetchPromptGuidance: async () => [], submitPromptGuidance: vi.fn(), dismissFinding: vi.fn(), adjustFindingSeverity: vi.fn(),
+}));
+vi.mock('../../../src/lib/useSSE', () => ({ useSSE: () => ({
+  connectionStatus: 'connected', jobId: 'fixture-job', setJobId: live.setJobId,
+  events: [], selectedPersona: 'all', setSelectedPersona: vi.fn(), filteredEvents: [], personaProgress: {},
+  tokenMetrics: { promptTokens: 12, completionTokens: 3, totalTokens: 15, estimatedCostUSD: 0.001, astLookups: 0, suppressedNits: 0 },
+  tokenHistory: [], clearEvents: live.clearEvents, reconnect: vi.fn(),
+  activeJobs: [{ jobId: 'untrusted-job', repo: '<script>bad()</script>', title: '<img src=x onerror=bad()>', status: 'running' }],
+  fetchActiveJobs: live.fetchActiveJobs, reasoning: [], toolExecutions: [], anchoredFindings: [],
+  swarmTasks: [{ id: 'task-fixture', dimension: 'security', description: 'Inspect authentication boundaries', priority: 1,
+    status: 'RUNNING', progress: 50, findingsCount: 0 }],
+  contextCompaction: null, currentStage: 'execution', stageHistory: [], overallProgress: 50, turns: [], activeTurnByTask: {},
+}) }));
 
 describe('Live Streaming Reviews - UI Component Suite', () => {
   const mockStages: StageState[] = [
@@ -173,5 +191,35 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
       expect(turnBadge).toBeInTheDocument();
       expect(turnBadge).toHaveTextContent('T3/20');
     });
+  });
+});
+
+
+describe('Hydrated live swarm user flows', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.history.replaceState({}, '', '/live?jobId=fixture-job');
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => ({ success: true, files: [], findings: [] }) })));
+  });
+
+  it('submits a custom job, clears prior events, and preserves its encoded deep link', async () => {
+    render(<LiveDashboardView />);
+    const input = screen.getByPlaceholderText(/Enter Job ID/);
+    fireEvent.change(input, { target: { value: '  task with <literal>&payload  ' } });
+    fireEvent.submit(input.closest('form')!);
+    expect(live.setJobId).toHaveBeenCalledWith('task with <literal>&payload');
+    expect(live.clearEvents).toHaveBeenCalledOnce();
+    expect(new URL(window.location.href).searchParams.get('jobId')).toBe('task with <literal>&payload');
+    expect(screen.getByText('task-fixture')).toBeInTheDocument();
+  });
+
+  it('selects an active job by keyboard while rendering untrusted labels as text', () => {
+    const { container } = render(<LiveDashboardView />);
+    const label = screen.getByText('<img src=x onerror=bad()>');
+    expect(container.querySelector('img[src="x"], script')).toBeNull();
+    fireEvent.keyDown(label.closest('[role="button"]')!, { key: 'Enter' });
+    expect(live.setJobId).toHaveBeenCalledWith('untrusted-job');
+    expect(new URL(window.location.href).searchParams.get('jobId')).toBe('untrusted-job');
   });
 });
