@@ -330,13 +330,9 @@ function validateAdmission(
     throw new Error('retry-after execution attempt must be a positive integer');
   }
   if (input.gracefulComposedContinuationOrigin !== undefined
-    && (input.gracefulComposedContinuationOrigin.kind !== 'github_pull_request_ready_for_review'
-      || input.eventName !== 'pull_request' || input.centralActionDispatch !== false
-      || input.publicationMode !== 'app-gate' || !input.authoritativeGate
-      || !usesComposedReviewEngine(input)
+    && (!isGracefulComposedContinuationSource(input)
       || input.retryRequested !== undefined || input.retryAfterExecutionAttempt !== undefined
-      || input.expectedGeneration !== undefined || input.incompleteP2Recovery !== undefined
-      || input.incompleteP2RecoveryOrigin !== undefined || input.gracefulComposedContinuation !== undefined)) {
+      || input.expectedGeneration !== undefined || input.gracefulComposedContinuation !== undefined)) {
     throw new Error('Ready-for-review continuation provenance is invalid');
   }
   if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined
