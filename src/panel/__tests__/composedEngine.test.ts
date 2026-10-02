@@ -2753,5 +2753,100 @@ describe('executeComposedReview', () => {
       for (const text of transcripts.values()) expect(text).toContain('Bind every tenant read to the authenticated tenant.');
       if (shape === 'structured') for (const text of transcripts.values()) expect(text).toContain('tenant-boundary');
     });
+    it.each(['same-turn', 'adjacent-microtask'] as const)(
+      'retains the final checkpoint when concurrent model completions race a %s persistence acknowledgement', async (delivery) => {
+        const tasks = orderReviewTasksByRisk(manyTasks(3));
+        let releaseStarted!: () => void;
+        const allStarted = new Promise<void>((resolve) => { releaseStarted = resolve; });
+        let releaseFinalWrite!: () => void;
+        const finalWrite = new Promise<void>((resolve) => { releaseFinalWrite = resolve; });
+        const started: string[] = [];
+        const captures: any[] = [];
+        const writes: any[] = [];
+        let activeWrites = 0;
+        let peakWrites = 0;
+        const complete = vi.fn(async (payload: any) => {
+          if (lastText(payload.messages).includes('PLAN TURN'))
+            return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks }));
+          const id = currentTaskId(payload);
+          started.push(id);
+          if (started.length === tasks.length) releaseStarted();
+          await allStarted;
+          if (delivery === 'adjacent-microtask' && id !== tasks[0].id) await Promise.resolve();
+          if (delivery === 'adjacent-microtask' && id === tasks[2].id)
+            await new Promise<void>((resolve) => queueMicrotask(resolve));
+          return responseForTask(payload, id);
+        });
+        const save = vi.fn(async (snapshot: any) => {
+          writes.push(structuredClone(snapshot));
+          activeWrites += 1;
+          peakWrites = Math.max(peakWrites, activeWrites);
+          try {
+            await Promise.resolve();
+            if (snapshot.completedTasks.length === tasks.length) releaseFinalWrite();
+          } finally {
+            activeWrites -= 1;
+          }
+        });
+        const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+          repository: 'example/rel1211', headSha: `current-checkpoint-ack-${delivery}`, client: { complete },
+          checkpoint: { resumed: null, capture: (snapshot) => captures.push(structuredClone(snapshot)), save } }));
+        await finalWrite;
+        expect(started).toEqual(tasks.map((task) => task.id));
+        expect(complete).toHaveBeenCalledTimes(4);
+        expect(result.personas.map((lane) => lane.id)).toEqual(tasks.map((task) => task.id));
+        expect(captures.map((snapshot) => snapshot.revision)).toEqual([1, 2, 3, 4]);
+        expect(peakWrites).toBe(1);
+        expect(activeWrites).toBe(0);
+        const revisions = writes.map((snapshot) => snapshot.revision);
+        expect(revisions).toEqual([...new Set(revisions)].sort((a, b) => a - b));
+        expect(writes.at(-1)).toMatchObject({ revision: 4, completedTasks: expect.any(Array) });
+        expect(writes.at(-1).completedTasks.map((task: any) => task.id).sort()).toEqual(tasks.map((task) => task.id).sort());
+      },
+    );
+
+    it('settles two funded siblings in plan order when a P0 finding stops the remaining review', async () => {
+      const tasks = orderReviewTasksByRisk(manyTasks(4));
+      let releaseStarted!: () => void;
+      const allStarted = new Promise<void>((resolve) => { releaseStarted = resolve; });
+      const started: string[] = [];
+      const cancelled: Array<{ id: string; reason: unknown }> = [];
+      const captures: any[] = [];
+      const complete = vi.fn(async (payload: any) => {
+        if (lastText(payload.messages).includes('PLAN TURN'))
+          return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks }));
+        const id = currentTaskId(payload);
+        started.push(id);
+        if (started.length === 3) releaseStarted();
+        if (id === tasks[0].id) {
+          await allStarted;
+          return fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), task: id, status: 'COMPLETE', findings: [{
+            severity: 'P0', path: 'src/auth/guard.ts', line: 1, startLine: null,
+            title: 'The changed guard accepts an unauthenticated caller', body: 'The guard must reject unauthenticated access.',
+            suggestion: null, replacementCode: null,
+          }] }));
+        }
+        return new Promise<OpenRouterResponse>((_resolve, reject) => {
+          const abort = () => { cancelled.push({ id, reason: payload.signal.reason }); reject(payload.signal.reason); };
+          if (payload.signal.aborted) abort();
+          else payload.signal.addEventListener('abort', abort, { once: true });
+        });
+      });
+      const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+        repository: 'example/rel1211', headSha: 'current-two-sibling-finding-stop', client: { complete },
+        checkpoint: { resumed: null, capture: (snapshot) => captures.push(structuredClone(snapshot)), save: async () => {} } }));
+      expect(started).toEqual(tasks.slice(0, 3).map((task) => task.id));
+      expect(cancelled.map((task) => task.id)).toEqual(tasks.slice(1, 3).map((task) => task.id));
+      expect(cancelled[0].reason).toBeInstanceOf(panelEngine.PanelCancellationError);
+      expect(cancelled[1].reason).toBe(cancelled[0].reason);
+      expect(complete).toHaveBeenCalledTimes(4);
+      expect(result.personas.map((lane) => lane.id)).toEqual([tasks[0].id]);
+      expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual(tasks.slice(1).map((task) => task.id));
+      expect(result.unreportedLanes?.every((lane) => lane.failureClass === 'contract')).toBe(true);
+      expect(result.quorum.satisfied).toBe(false);
+      expect(result.arbiter.verdict).toBe('BLOCK');
+      expect(captures.at(-1).completedTasks.map((task: any) => task.id)).toEqual([tasks[0].id]);
+    });
+
   });
 });
