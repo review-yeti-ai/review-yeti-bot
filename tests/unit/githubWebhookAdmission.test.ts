@@ -157,7 +157,8 @@ describe('native GitHub App webhook admission', () => {
   });
 
   it('marks only an authoritative composed ready_for_review webhook as continuation provenance', async () => {
-    const identity = buildReviewRunIdentity({ owner: 'calltelemetry', repo: 'dashboard',
+    const repository = payload().repository;
+    const identity = buildReviewRunIdentity({ owner: repository.owner.login, repo: repository.name,
       prNumber: 42, headSha: HEAD, baseSha: BASE });
     const prepared = { policy: { effectivePolicyDigest: identity.configDigest }, config: { review_engine: 'composed' } };
     const resolve = vi.fn(async () => ({ identity, prepared } as any));
@@ -187,7 +188,8 @@ describe('native GitHub App webhook admission', () => {
   });
 
   it('does not mark a ready_for_review webhook for the panel engine as continuation provenance', async () => {
-    const identity = buildReviewRunIdentity({ owner: 'calltelemetry', repo: 'dashboard',
+    const repository = payload().repository;
+    const identity = buildReviewRunIdentity({ owner: repository.owner.login, repo: repository.name,
       prNumber: 42, headSha: HEAD, baseSha: BASE });
     const prepared = { policy: { effectivePolicyDigest: identity.configDigest }, config: { review_engine: 'panel' } };
     const resolve = vi.fn(async () => ({ identity, prepared } as any));
@@ -208,7 +210,7 @@ describe('native GitHub App webhook admission', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toMatchObject({ eventName: 'pull_request', centralActionDispatch: false });
     expect(calls[0][0]).not.toHaveProperty('gracefulComposedContinuationOrigin');
-    expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard' }));
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ owner: repository.owner.login, repo: repository.name }));
   });
 
   it('admits the official failed check requested_action as a persisted same-head refresh', async () => {
