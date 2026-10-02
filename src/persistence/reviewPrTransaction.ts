@@ -92,3 +92,19 @@ export async function withReviewPrTransaction<T>(
   client.release();
   return result;
 }
+
+/** One mutation protocol: resolve coordinates, bound lock acquisition, then operate under the PR lock. */
+export function withLockedReviewPrTransaction<T>(
+  pool: ReviewPrTransactionPool,
+  resolveCoordinates: (client: ReviewPrTransactionClient) => Promise<ReviewPrCoordinates>,
+  operation: (client: ReviewPrTransactionClient, coordinates: ReviewPrCoordinates) => Promise<T>,
+): Promise<T> {
+  if (typeof pool?.connect !== 'function') throw new Error('A review transaction pool is required');
+  return withReviewPrTransaction(pool, async (client) => {
+    const hint = await resolveCoordinates(client);
+    const coordinates = assertReviewPrCoordinates(hint.repositoryId, hint.prNumber);
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    await lockReviewPr(client, coordinates.repositoryId, coordinates.prNumber);
+    return operation(client, coordinates);
+  });
+}

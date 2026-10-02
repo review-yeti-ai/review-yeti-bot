@@ -134,7 +134,7 @@ import type {
   PersonaLaneResult,
 } from './types';
 import type { ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
-import type { DisputedFindingRecheck } from '../review/disputedFindingRecheck';
+import { disputedFindingTaskPlanMatches, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { canonicalJson, sha256 } from '../review/reviewCore';
 
 export interface ComposedCheckpointSnapshot {
@@ -1763,11 +1763,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       ? validateTaskPlan({ tasks: options.checkpoint.resumed.plan }, { changedFiles: effectiveFilePaths, maxTasks })
       : null;
     if ((options.disputedFindingRechecks?.length ?? 0) > 0) {
-      const sourcePlanDigest = options.disputedFindingRechecks![0]!.sourcePlanDigest;
       if (!resumedPlan?.valid || !options.checkpoint?.resumed
-        || sha256(canonicalJson(resumedPlan.tasks)) !== sourcePlanDigest
-        || options.disputedFindingRechecks!.some((recheck) => recheck.sourcePlanDigest !== sourcePlanDigest
-          || !resumedPlan.tasks.some((task) => task.id === recheck.taskId))) {
+        || options.disputedFindingRechecks!.some((recheck) => !disputedFindingTaskPlanMatches(recheck, resumedPlan.tasks))) {
         throw new Error('Disputed finding re-review does not match a validated resumed task plan');
       }
     }

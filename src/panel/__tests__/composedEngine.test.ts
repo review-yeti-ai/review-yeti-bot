@@ -152,6 +152,25 @@ describe('executeComposedReview', () => {
       if (status === 'COMPLETE') {
         expect(result.personas.find((lane) => lane.id === authTask.id)?.findings).toEqual([]);
         expect(saved.at(-1)?.completedTasks).toHaveLength(2);
+        // The service read returns no pending requests for acknowledged receipts.
+        // Resume that actual response without paying for or recording the task twice.
+        const resumeComplete = vi.fn(async () => { throw new Error('A satisfied task must not invoke the provider again'); });
+        const latest = saved.at(-1)!;
+        const resumed = await executeComposedReview({
+          config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40),
+          client: { complete: resumeComplete }, disputedFindingRechecks: [],
+          checkpoint: { resumed: {
+            version: 'ReviewExecutionCheckpoint.v1', runId: unsigned.runId, repositoryId: 123,
+            owner: 'acme', repo: 'reviewer-fixture', prNumber: 42, headSha: unsigned.headSha,
+            baseSha: unsigned.baseSha, policyDigest: unsigned.policyDigest, configDigest: unsigned.configDigest,
+            executionAttempt: 2, revision: latest.revision, plan,
+            completedTasks: latest.completedTasks, satisfiedFindingRecheckIds: latest.satisfiedFindingRecheckIds,
+          }, save: async () => undefined },
+        });
+        expect(resumeComplete).not.toHaveBeenCalled();
+        expect(resumed.personas.find((lane) => lane.id === authTask.id)?.findings).toEqual([]);
+        expect(resumed.personas.find((lane) => lane.id === testsTask.id)?.findings).toEqual([priorTestsFinding]);
+
         expect(result.personas.find((lane) => lane.id === testsTask.id)?.findings).toEqual([priorTestsFinding]);
         expect(saved.at(-1)).toMatchObject({
           satisfiedFindingRecheckIds: [unsigned.requestId],

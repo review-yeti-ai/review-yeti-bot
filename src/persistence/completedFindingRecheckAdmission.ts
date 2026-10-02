@@ -3,6 +3,19 @@ import type { DisputedFindingRecheckUnsigned } from '../review/disputedFindingRe
 import type { ReviewPrQueryable } from './reviewPrTransaction';
 import { PostgresReviewGateRepository } from './reviewGateRepository';
 
+/** Canonical transition shared by source validation and the locked admission update. */
+export function completedFindingRecheckCoordinates(sourceExecutionAttempt: number, sourceGeneration: number): {
+  executionAttempt: number; generation: number;
+} {
+  const executionAttempt = sourceExecutionAttempt + 1;
+  const generation = sourceGeneration + 1;
+  if (!Number.isSafeInteger(sourceExecutionAttempt) || sourceExecutionAttempt < 1
+    || !Number.isSafeInteger(executionAttempt) || !Number.isSafeInteger(generation) || generation < 1) {
+    throw new Error('Invalid completed finding re-review admission');
+  }
+  return { executionAttempt, generation };
+}
+
 /** The caller holds the shared PR lock and has validated the immutable source,
  * current GitHub candidate, trusted policy and authenticated request. A request
  * and its execution admission commit together; neither is a verdict. */
@@ -11,10 +24,8 @@ export async function admitCompletedFindingRecheck(
   request: DisputedFindingRecheckUnsigned,
   input: { sourceGeneration: number; expectedAppId: number; actorDigest: string; now: number },
 ): Promise<void> {
-  const executionAttempt = request.sourceExecutionAttempt + 1;
-  const generation = input.sourceGeneration + 1;
-  if (!Number.isSafeInteger(executionAttempt) || !Number.isSafeInteger(generation)
-    || generation < 1 || !Number.isSafeInteger(input.now) || !/^[a-f0-9]{64}$/u.test(input.actorDigest)) {
+  const { executionAttempt, generation } = completedFindingRecheckCoordinates(request.sourceExecutionAttempt, input.sourceGeneration);
+  if (!Number.isSafeInteger(input.now) || !/^[a-f0-9]{64}$/u.test(input.actorDigest)) {
     throw new Error('Invalid completed finding re-review admission');
   }
   const active = (await client.query(`SELECT runs.status, runs.attempt, outbox.status AS outbox_status,

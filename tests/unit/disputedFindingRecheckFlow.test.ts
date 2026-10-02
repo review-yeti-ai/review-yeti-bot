@@ -78,8 +78,9 @@ function setup() {
       if (/^(BEGIN|COMMIT|ROLLBACK)$/u.test(sql.trim())) return { rows: [] };
       if (sql.includes('SET LOCAL lock_timeout') || sql.includes('pg_advisory_xact_lock')) return { rows: [] };
       if (sql.includes('pg_advisory_xact_lock')) return { rows: [] };
-      if (sql.includes('SELECT repository_id, pr_number FROM review_runs')) {
-        return { rows: [{ repository_id: identity.repositoryId, pr_number: identity.prNumber }] };
+      if (sql.includes('SELECT repository_id, pr_number')) {
+        return { rows: [{ repository_id: identity.repositoryId, pr_number: identity.prNumber, head_sha: identity.headSha,
+          base_sha: identity.baseSha, effective_policy_digest: identity.policyDigest, effective_config_digest: identity.configDigest }] };
       }
       if (sql.includes('SELECT runs.status, runs.attempt, outbox.status AS outbox_status')) {
         return { rows: [{ status: 'failed', attempt: 1, outbox_status: 'terminal', execution_attempt: 0 }] };
@@ -239,7 +240,30 @@ const caller = {
 };
 
 describe('REL-1265 dispute re-review flow', () => {
-  it.each(['completion_execution_attempt', 'bound_gate_attempt_id'])('rejects a request after its %s source binding is lost', async (missing) => {
+  it('releases preflight connections and performs no mutation when the authority lookup times out', async () => {
+    vi.useFakeTimers();
+    try {
+      const f = setup();
+      const admission = findingRecheckAdmission(identity);
+      admission.resolver.resolve = vi.fn(async () => new Promise<never>(() => undefined));
+      const tool = createDisputeFindingTool({ transactionPool: f.pool as never, authoritativePublishing: admission });
+      const pending = expect(tool.execute({ owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber,
+        finding_id: getReviewFindingId(identity.runId, task.id, finding),
+        counter_argument: 'The router binds the authenticated tenant before evaluating this guard.' },
+      { caller, authenticatedByConfiguredAuthenticator: true, authorizedRepository: { owner: identity.owner, repo: identity.repo } }))
+        .rejects.toThrow('Authoritative finding review resolution timed out');
+      await vi.advanceTimersByTimeAsync(15_001);
+      await pending;
+      expect(f.transactionClient.release).toHaveBeenCalledOnce();
+      expect(f.calls.some(({ sql }) => sql === 'BEGIN' || sql.includes('INSERT INTO review_finding_rechecks'))).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each([
+    ['completion_execution_attempt', null], ['bound_gate_attempt_id', null],
+    ['completion_content_digest', '0'.repeat(64)], ['gate_worker_result_digest', '0'.repeat(64)],
+    ['gate_creation_state', 'reserved'], ['gate_check_id', null], ['gate_published_version', 1],
+  ])('rejects a request after its %s source binding is lost', async (missing, value) => {
     const f = setup();
     const tool = createDisputeFindingTool({ transactionPool: f.pool as never, authoritativePublishing: findingRecheckAdmission(identity) });
     await tool.execute({ owner: identity.owner, repo: identity.repo, pr_number: identity.prNumber,
@@ -250,7 +274,7 @@ describe('REL-1265 dispute re-review flow', () => {
       repo: identity.repo, pr_number: identity.prNumber, head_sha: identity.headSha, base_sha: identity.baseSha,
       effective_policy_digest: identity.policyDigest, effective_config_digest: identity.configDigest };
     await expect(loadValidatedDisputedFindingRechecks(f.transactionClient, run, 2)).resolves.toHaveLength(1);
-    const query = vi.fn(async () => ({ rows: [{ ...f.recheck, [missing]: null }] }));
+    const query = vi.fn(async () => ({ rows: [{ ...f.recheck, [String(missing)]: value }] }));
     await expect(loadValidatedDisputedFindingRechecks({ query }, run, 2)).rejects.toThrow('Disputed finding source binding is invalid');
     expect(query).toHaveBeenCalledOnce();
   });
@@ -273,6 +297,7 @@ describe('REL-1265 dispute re-review flow', () => {
 
     expect(requested).toMatchObject({ finding_id: findingId, review_status: 'fresh_re_review_requested',
       remaining_blockers: 1 });
+    expect(requested.version).toBe('DisputeFindingRecheckReceipt.v1');
     expect(requested.request_id).toMatch(/^[0-9a-f-]{36}$/u);
     expect(adjudicateDispute).not.toHaveBeenCalled();
     expect(f.calls.some(({ sql }) => /UPDATE\s+review_worker_completions/iu.test(sql))).toBe(false);
@@ -304,6 +329,13 @@ describe('REL-1265 dispute re-review flow', () => {
     expect(write.status).toBe(200);
     expect(f.checkpoint).toMatchObject({ executionAttempt: 2, satisfiedFindingRecheckIds: [requested.request_id],
       completedTasks: [{ id: task.id, findings: [] }] });
+    const resumed = await request(f.app).post('/checkpoint').set('Authorization', `Bearer ${workerToken}`).send({
+      version: 'ReviewExecutionCheckpointRead.v1', runId: identity.runId, executionAttempt: 2,
+    });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body.disputedFindingRechecks).toEqual([]);
+    expect(resumed.body.checkpoint.satisfiedFindingRecheckIds).toEqual([requested.request_id]);
+
     expect(f.sourceBytes).toBe(sourceBytesBefore);
     expect(workerReviewCompletionDigest(f.sourcePayload)).toBe(digestBefore);
   });

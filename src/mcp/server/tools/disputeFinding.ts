@@ -19,15 +19,16 @@ import {
   extractReviewFindingEntries,
   findReviewFindingRecord,
 } from './findingIdentity';
-import { withReviewPrTransaction, lockReviewPr, type ReviewPrTransactionPool } from '../../../persistence/reviewPrTransaction';
+import { withLockedReviewPrTransaction, type ReviewPrTransactionPool } from '../../../persistence/reviewPrTransaction';
 import { parseReviewExecutionCheckpoint, reviewCheckpointMatchesCompletion } from '../../../review/reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, publishedFindingSeverity, workerReviewCompletionDigest } from '../../../review/workerReviewCompletion';
 import { canonicalJson, sha256 } from '../../../review/reviewCore';
 import type { AuthoritativeReviewAdmission } from '../../../review/authoritativeServiceContracts';
-import { admitCompletedFindingRecheck } from '../../../persistence/completedFindingRecheckAdmission';
+import { admitCompletedFindingRecheck, completedFindingRecheckCoordinates } from '../../../persistence/completedFindingRecheckAdmission';
 import {
   disputedFindingRecheckDigest,
   MAX_DISPUTE_RECHECKS_PER_REVIEW,
+  MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS,
   loadValidatedDisputedFindingRechecks,
   type DisputedFindingRecheckUnsigned,
 } from '../../../review/disputedFindingRecheck';
@@ -37,12 +38,13 @@ export const DisputeFindingInputSchema = z.object({
   repo: z.string().trim().min(1, 'repo must not be empty').max(255),
   pr_number: z.number().int().positive('pr_number must be a positive integer').safe(),
   finding_id: z.string().trim().min(1, 'finding_id must not be empty').max(256),
-  counter_argument: z.string().trim().min(1, 'counter_argument must not be empty').max(10_000),
+  counter_argument: z.string().trim().min(1, 'counter_argument must not be empty').max(MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS),
 }).strict();
 
 export type DisputeFindingInput = z.infer<typeof DisputeFindingInputSchema>;
 
 export interface DisputeFindingOutput {
+  version: 'DisputeFindingRecheckReceipt.v1';
   finding_id: string;
   request_id: string;
   review_status: 'fresh_re_review_requested';
@@ -51,7 +53,7 @@ export interface DisputeFindingOutput {
 
 export const disputeFindingDefinition: ToolDefinition = {
   name: 'dispute_finding',
-  description: 'Request a fresh exact-head review of a finding with a developer counter-argument. The argument is untrusted review evidence; this tool never changes the finding or gate. A task in one source completion accepts one request: repeating the same finding and argument is idempotent, while a different request for that task is rejected.',
+  description: 'Request a fresh exact-head review of a finding with a developer counter-argument. The argument is untrusted review evidence; this tool never changes the finding or gate. Returns a versioned DisputeFindingRecheckReceipt.v1 receipt; legacy adjudication outputs are retired. A task in one source completion accepts one request: repeating the same finding and argument is idempotent, while a different request for that task is rejected.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -224,10 +226,11 @@ function assertSameCompletionIdentity(row: any, completion: ReturnType<typeof pa
     && Number(coordinates.executionAttempt) === completion.executionAttempt
     && coordinates.attemptId === row.gate_attempt_id;
   const admitted = row.admitted_execution_attempt != null;
+  const next = completedFindingRecheckCoordinates(completion.executionAttempt, Number(row.review_generation));
   const executionMatches = admitted
-    ? Number(row.admitted_execution_attempt) === completion.executionAttempt + 1
+    ? Number(row.admitted_execution_attempt) === next.executionAttempt
       && Number(row.outbox_execution_attempt) + 1 === Number(row.admitted_execution_attempt)
-      && Number(row.admitted_review_generation) === Number(row.review_generation) + 1
+      && Number(row.admitted_review_generation) === next.generation
       && Number(row.attempt) === Number(row.admitted_review_generation)
     : Number(row.review_generation) === Number(row.attempt)
       && Number(row.outbox_execution_attempt) + 1 === completion.executionAttempt;
@@ -262,21 +265,38 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
         throw new Error('Fresh finding review requires active authoritative admission');
       }
 
-      const queued = await withReviewPrTransaction(deps.transactionPool, async (client) => {
-        const hint = (await client.query(
-          `SELECT repository_id, pr_number FROM review_runs
+      // Resolve immutable coordinates with a short connection lease. The external
+      // authority read happens before BEGIN/PR locking and is checked again against
+      // the locked source row, so a slow resolver cannot pin a mutation connection.
+      const hintClient = await deps.transactionPool.connect();
+      let hint: any;
+      try {
+        hint = (await hintClient.query(`SELECT repository_id, pr_number, head_sha, base_sha,
+            effective_policy_digest, effective_config_digest FROM review_runs
             WHERE owner = $1 AND repo = $2 AND pr_number = $3
-            ORDER BY created_at DESC, run_id DESC LIMIT 1`,
-          [owner, repo, pr_number],
-        )).rows[0];
-        if (!hint) throw new Error(`No accepted review is available for ${owner}/${repo}#${pr_number}`);
-        const repositoryId = Number(hint.repository_id);
-        const storedPrNumber = Number(hint.pr_number);
-        if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || storedPrNumber !== pr_number) {
-          throw new Error('Finding source coordinates are invalid');
-        }
-        await client.query("SET LOCAL lock_timeout = '5s'");
-        await lockReviewPr(client, repositoryId, storedPrNumber);
+            ORDER BY created_at DESC, run_id DESC LIMIT 1`, [owner, repo, pr_number])).rows[0];
+      } finally { hintClient.release(); }
+      if (!hint) throw new Error(`No accepted review is available for ${owner}/${repo}#${pr_number}`);
+      const repositoryId = Number(hint.repository_id);
+      const storedPrNumber = Number(hint.pr_number);
+      if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || storedPrNumber !== pr_number) {
+        throw new Error('Finding source coordinates are invalid');
+      }
+      const resolved = await (async () => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            authoritative.resolver.resolve({ repositoryId, owner, repo, prNumber: pr_number,
+              headSha: hint.head_sha, baseSha: hint.base_sha }),
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error('Authoritative finding review resolution timed out')), 15_000);
+              timer.unref?.();
+            }),
+          ]);
+        } finally { if (timer) clearTimeout(timer); }
+      })();
+      const queued = await withLockedReviewPrTransaction(deps.transactionPool,
+        async () => ({ repositoryId, prNumber: storedPrNumber }), async (client) => {
         const row = (await client.query(`
           WITH latest_run AS (
             SELECT run_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
@@ -335,17 +355,20 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
           throw new Error('Finding source completion digest is invalid');
         }
         assertSameCompletionIdentity(row, completion);
+        if (completion.repositoryId !== repositoryId || completion.prNumber !== storedPrNumber
+          || completion.headSha !== hint.head_sha || completion.baseSha !== hint.base_sha
+          || completion.policyDigest !== hint.effective_policy_digest || completion.configDigest !== hint.effective_config_digest) {
+          throw new Error('Finding source changed while its authoritative candidate was being resolved');
+        }
         if (!authoritative.repositoryIds.includes(completion.repositoryId)
           || row.publication_mode !== 'app-gate'
           || Number(row.authoritative_gate_app_id) !== authoritative.expectedAppId) {
           throw new Error('Finding source is outside active authoritative admission');
         }
-        // The service resolver re-reads the candidate and central policy at this
-        // boundary. Neither the developer argument nor persisted status can
-        // supply current GitHub truth or a provider/policy override.
-        const resolved = await authoritative.resolver.resolve({ repositoryId: completion.repositoryId,
-          owner: completion.owner, repo: completion.repo, prNumber: completion.prNumber,
-          headSha: completion.headSha, baseSha: completion.baseSha });
+        // The preflight resolver supplies current candidate/policy truth. Its exact
+        // coordinates are rebound under this transaction; the worker and final Gate
+        // independently check current truth before authoritative publication.
+
         if (!resolved.current.open || resolved.current.draft
           || ['repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha'].some((key) =>
             resolved.current[key as keyof typeof resolved.current] !== completion[key as keyof typeof completion])
@@ -464,7 +487,7 @@ export function createDisputeFindingTool(deps: DisputeFindingDependencies = {}) 
 
       const blockers = extractReviewFindingEntries(queued.completion, { includeAlternateSources: true })
         .filter(({ finding }) => ['P0', 'P1'].includes(publishedFindingSeverity(finding))).length;
-      return buildToolResultJson({ finding_id: queued.findingId, request_id: queued.requestId,
+      return buildToolResultJson({ version: 'DisputeFindingRecheckReceipt.v1', finding_id: queued.findingId, request_id: queued.requestId,
         review_status: 'fresh_re_review_requested', remaining_blockers: blockers } satisfies DisputeFindingOutput);
     },
   };

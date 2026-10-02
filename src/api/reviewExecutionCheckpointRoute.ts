@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express';
 import { sha256 } from '../review/reviewCore';
 import { workerExecutionAuthorized, type Queryable } from '../persistence/incrementalPriorReview';
-import { lockReviewPr, withReviewPrTransaction, type ReviewPrTransactionPool } from '../persistence/reviewPrTransaction';
+import { withLockedReviewPrTransaction, type ReviewPrTransactionPool } from '../persistence/reviewPrTransaction';
 import { loadValidatedDisputedFindingRechecks, pendingDisputedFindingRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import {
   parseReviewExecutionCheckpoint,
@@ -71,7 +71,7 @@ export function createReviewExecutionCheckpointHandler(queryable: CheckpointData
     const read = reviewCheckpointReadRequestSchema.safeParse(request.body);
     if (read.success) {
       try {
-        const result = await withReviewPrTransactionIfAvailable(queryable, read.data.runId, async (client, run) => {
+        const result = await withLockedCheckpointTransaction(queryable, read.data.runId, async (client, run) => {
           if (!await workerExecutionAuthorized(client, { ...read.data, workerTokenDigest: sha256(bearer) })) {
             return { status: 403 as const };
           }
@@ -94,7 +94,7 @@ export function createReviewExecutionCheckpointHandler(queryable: CheckpointData
     try { checkpoint = parseReviewExecutionCheckpoint(request.body); }
     catch { return response.status(400).json({ error: 'Invalid review checkpoint' }); }
     try {
-      const result = await withReviewPrTransactionIfAvailable(queryable, checkpoint.runId, async (client, run) => {
+      const result = await withLockedCheckpointTransaction(queryable, checkpoint.runId, async (client, run) => {
         if (!await workerExecutionAuthorized(client, { runId: checkpoint.runId,
           executionAttempt: checkpoint.executionAttempt, workerTokenDigest: sha256(bearer) })) {
           return { status: 403 as const };
@@ -139,24 +139,14 @@ export function createReviewExecutionCheckpointHandler(queryable: CheckpointData
   };
 }
 
-async function withReviewPrTransactionIfAvailable<T>(queryable: CheckpointDatabase, runId: string,
+async function withLockedCheckpointTransaction<T>(queryable: CheckpointDatabase, runId: string,
   operation: (client: Queryable, run: any) => Promise<T>): Promise<T> {
-  const runWithoutLock = async (client: Queryable): Promise<T> => {
-    const run = (await client.query(RUN_IDENTITY_SELECT, [runId])).rows[0];
-    if (!run) throw new Error('Review run does not exist');
-    return operation(client, run);
-  };
-  if (typeof queryable.connect !== 'function') return runWithoutLock(queryable);
-  return withReviewPrTransaction(queryable as ReviewPrTransactionPool, async (client) => {
+  if (typeof queryable.connect !== 'function') throw new Error('Review checkpoint requires a transaction pool');
+  return withLockedReviewPrTransaction(queryable as ReviewPrTransactionPool, async (client) => {
     const hint = (await client.query('SELECT repository_id, pr_number FROM review_runs WHERE run_id = $1', [runId])).rows[0];
     if (!hint) throw new Error('Review run does not exist');
-    const repositoryId = Number(hint.repository_id);
-    const prNumber = Number(hint.pr_number);
-    if (!Number.isSafeInteger(repositoryId) || repositoryId <= 0 || !Number.isSafeInteger(prNumber) || prNumber <= 0) {
-      throw new Error('Review run coordinates are invalid');
-    }
-    await client.query("SET LOCAL lock_timeout = '5s'");
-    await lockReviewPr(client, repositoryId, prNumber);
+    return { repositoryId: Number(hint.repository_id), prNumber: Number(hint.pr_number) };
+  }, async (client, { repositoryId, prNumber }) => {
     const run = (await client.query(RUN_IDENTITY_SELECT, [runId])).rows[0];
     if (!run || Number(run.repository_id) !== repositoryId || Number(run.pr_number) !== prNumber) {
       throw new Error('Review run coordinates changed');

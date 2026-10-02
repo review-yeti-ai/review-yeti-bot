@@ -4,9 +4,8 @@ import { getReviewFindingId } from './findingIdentity';
 import type { ReviewExecutionCheckpoint } from './reviewExecutionCheckpoint';
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest } from './workerReviewCompletion';
 
-export const MAX_DISPUTE_RECHECKS_PER_REVIEW = 8;
-export const MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS = 10_000;
-export const MAX_DISPUTE_RECHECK_RESPONSE_BYTES = 600_000;
+import { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS } from './disputedFindingRecheckLimits';
+export { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_ARGUMENT_CHARACTERS, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
 
 const digest = z.string().regex(/^[a-f0-9]{64}$/u);
 const sha = z.string().regex(/^[a-f0-9]{40}$/u);
@@ -205,6 +204,14 @@ export async function loadValidatedDisputedFindingRechecks(
   return rows.map((row) => validateDisputedFindingRecheckRow(row, run, currentAttempt));
 }
 
+/** A task receipt always refers to its immutable source plan and persona. */
+export function disputedFindingTaskPlanMatches(
+  recheck: DisputedFindingRecheck, plan: ReviewExecutionCheckpoint['plan'],
+): boolean {
+  return recheck.sourcePlanDigest === sha256(canonicalJson(plan))
+    && plan.some((task) => task.id === recheck.taskId && task.id === recheck.personaId);
+}
+
 /** Shared plan/identity binding used before work, checkpoint acknowledgement and final Gate acceptance. */
 export function disputedFindingTaskMatchesCheckpoint(
   recheck: DisputedFindingRecheck, checkpoint: ReviewExecutionCheckpoint, currentAttempt: number,
@@ -214,8 +221,7 @@ export function disputedFindingTaskMatchesCheckpoint(
     && recheck.headSha === checkpoint.headSha && recheck.baseSha === checkpoint.baseSha
     && recheck.policyDigest === checkpoint.policyDigest && recheck.configDigest === checkpoint.configDigest
     && recheck.sourceExecutionAttempt < currentAttempt && checkpoint.executionAttempt <= currentAttempt
-    && recheck.sourcePlanDigest === sha256(canonicalJson(checkpoint.plan))
-    && checkpoint.plan.some((task) => task.id === recheck.taskId && task.id === recheck.personaId);
+    && disputedFindingTaskPlanMatches(recheck, checkpoint.plan);
 }
 
 /** Acknowledgement is a task receipt. Gate acceptance additionally verifies fresh worker evidence. */

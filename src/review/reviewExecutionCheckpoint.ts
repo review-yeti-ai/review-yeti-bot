@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MAX_DISPUTE_RECHECKS_PER_REVIEW } from './disputedFindingRecheck';
+import { MAX_DISPUTE_RECHECKS_PER_REVIEW } from './disputedFindingRecheckLimits';
 import {
   MAX_CHANGED_FILES,
   MAX_PATH_CHARACTERS,

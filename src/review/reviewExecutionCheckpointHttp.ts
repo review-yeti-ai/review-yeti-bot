@@ -5,7 +5,8 @@ import {
   parseReviewExecutionCheckpoint,
   type ReviewExecutionCheckpoint,
 } from './reviewExecutionCheckpoint';
-import { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_RESPONSE_BYTES, parseDisputedFindingRecheck, type DisputedFindingRecheck } from './disputedFindingRecheck';
+import { MAX_DISPUTE_RECHECKS_PER_REVIEW, MAX_DISPUTE_RECHECK_RESPONSE_BYTES } from './disputedFindingRecheckLimits';
+import { parseDisputedFindingRecheck, type DisputedFindingRecheck } from './disputedFindingRecheck';
 
 export interface ReviewExecutionCheckpointAdapter {
   read(signal?: AbortSignal): Promise<ReviewExecutionCheckpointReadResult>;

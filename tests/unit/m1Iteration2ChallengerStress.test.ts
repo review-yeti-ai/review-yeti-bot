@@ -1,3 +1,6 @@
+// This suite isolates authentication and unavailable dependencies. Positive append-only admission,
+// returned receipts and immutable source evidence are covered by disputedFindingRecheckFlow.test.ts
+// and completedFindingRecheckAdmission.postgres.test.ts, which fail if enqueue is never reached.
 import { describe, expect, it, vi } from 'vitest';
 import {
   createGenerateFixDiffTool,
