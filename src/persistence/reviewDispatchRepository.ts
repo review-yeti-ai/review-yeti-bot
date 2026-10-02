@@ -287,6 +287,20 @@ function isTrustedMcpRecoveryInput(input: ReviewAdmissionInput): boolean {
     && input.eventName === 'mcp.trigger_review';
 }
 
+function isGracefulComposedContinuationSource(input: ReviewAdmissionInput): boolean {
+  const trustedMcpTrigger = input.eventName === 'mcp.trigger_review'
+    && input.gracefulComposedContinuationOrigin === undefined;
+  const trustedReadyWebhook = input.eventName === 'pull_request'
+    && input.gracefulComposedContinuationOrigin?.kind === 'github_pull_request_ready_for_review';
+  return (trustedMcpTrigger || trustedReadyWebhook)
+    && input.centralActionDispatch === false
+    && input.publicationMode === 'app-gate'
+    && input.authoritativeGate !== undefined
+    && input.incompleteP2Recovery === undefined
+    && input.incompleteP2RecoveryOrigin === undefined
+    && usesComposedReviewEngine(input);
+}
+
 function validateAdmission(
   input: ReviewAdmissionInput,
   requireExpectedGeneration: boolean,
@@ -314,6 +328,12 @@ function validateAdmission(
   if (input.retryAfterExecutionAttempt !== undefined
     && (!Number.isSafeInteger(input.retryAfterExecutionAttempt) || input.retryAfterExecutionAttempt <= 0)) {
     throw new Error('retry-after execution attempt must be a positive integer');
+  }
+  if (input.gracefulComposedContinuationOrigin !== undefined
+    && (!isGracefulComposedContinuationSource(input)
+      || input.retryRequested !== undefined || input.retryAfterExecutionAttempt !== undefined
+      || input.expectedGeneration !== undefined || input.gracefulComposedContinuation !== undefined)) {
+    throw new Error('Ready-for-review continuation provenance is invalid');
   }
   if (input.retryRequested === true && input.retryAfterExecutionAttempt === undefined
     && input.incompleteP2RecoveryOrigin === undefined) {
@@ -383,11 +403,7 @@ function generationRecoveryRequest(
   const expected = input.expectedGeneration;
   const trustedMcpRecovery = isTrustedMcpRecoveryInput(input);
   const trustedGracefulContinuation = input.gracefulComposedContinuation === true
-    && input.centralActionDispatch === false
-    && input.eventName === 'mcp.trigger_review'
-    && input.incompleteP2Recovery === undefined
-    && input.incompleteP2RecoveryOrigin === undefined
-    && usesComposedReviewEngine(input);
+    && isGracefulComposedContinuationSource(input);
   if ((!input.centralActionDispatch && !trustedMcpRecovery && !trustedGracefulContinuation)
     || input.publicationMode !== 'app-gate'
     || !input.authoritativeGate || input.retryRequested !== true
@@ -868,11 +884,12 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     input: ReviewAdmissionInput,
     runId: string,
   ): Promise<boolean> {
-    if (input.eventName !== 'mcp.trigger_review' || input.centralActionDispatch !== false
-      || input.publicationMode !== 'app-gate' || !input.authoritativeGate
+    if (!isGracefulComposedContinuationSource(input)
       || input.retryRequested !== undefined || input.retryAfterExecutionAttempt !== undefined
       || input.expectedGeneration !== undefined || input.incompleteP2Recovery !== undefined
-      || input.incompleteP2RecoveryOrigin !== undefined || !usesComposedReviewEngine(input)) return false;
+      || input.incompleteP2RecoveryOrigin !== undefined || input.gracefulComposedContinuation !== undefined) return false;
+    const expectedAppId = input.authoritativeGate?.expectedAppId;
+    if (expectedAppId === undefined) return false;
     const result = await this.queryable.query(`
       SELECT runs.status, runs.publication_mode, runs.authoritative_gate_app_id,
              runs.attempt, runs.artifacts->>'review_engine' AS review_engine,
@@ -909,17 +926,17 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     const row = result.rows[0];
     return (row?.status === 'failed' || row?.status === 'terminal')
       && row.publication_mode === 'app-gate'
-      && Number(row.authoritative_gate_app_id) === input.authoritativeGate.expectedAppId
+      && Number(row.authoritative_gate_app_id) === expectedAppId
       && row.review_engine === 'composed'
       && row.has_graceful_composed_partial === true;
   }
 
-  private async refuseUnretainedOrdinaryMcpRetry(
+  private async refuseUnretainedOrdinaryRetry(
     client: Queryable,
     input: ReviewAdmissionInput,
     runId: string,
   ): Promise<void> {
-    if (input.eventName !== 'mcp.trigger_review' || input.centralActionDispatch !== false
+    if (!['mcp.trigger_review', 'pull_request'].includes(input.eventName) || input.centralActionDispatch !== false
       || input.publicationMode !== 'app-gate' || !input.authoritativeGate
       || input.retryRequested !== undefined || input.retryAfterExecutionAttempt !== undefined
       || input.expectedGeneration !== undefined || input.incompleteP2Recovery !== undefined
@@ -960,7 +977,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       client, runId, nextExecutionAttempt, row.artifacts,
     );
     if (retainedDigest !== null) {
-      throw new Error('MCP retry requires an explicitly admitted retained-findings context');
+      throw new Error('Ordinary retry requires an explicitly admitted retained-findings context');
     }
   }
 
@@ -1043,7 +1060,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     return { input: derivedInput, snapshot };
   }
 
-  private async deriveMcpGracefulComposedContinuation(
+  private async deriveGracefulComposedContinuation(
     input: ReviewAdmissionInput,
     runId: string,
   ): Promise<{ input: ReviewAdmissionInput; snapshot: McpIncompleteP2RecoverySnapshot }> {
@@ -1153,12 +1170,12 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     let preparedGenerationRecovery: ReviewGenerationRecoveryEvidence[] = [];
     let mcpRecoverySnapshot: McpIncompleteP2RecoverySnapshot | undefined;
     if (await this.hasGracefulComposedContinuationCandidate(input, runId)) {
-      // Ordinary MCP retries do not carry a caller-selected generation or P2
-      // recovery flag. Derive the single graceful continuation from the exact
-      // failed run/outbox snapshot, then bind fresh App evidence to that same
-      // snapshot under the PR lock before any retry state is written.
+      // Ordinary MCP retries and the exact signed ready_for_review action do
+      // not carry a caller-selected generation or P2 recovery flag. Derive the
+      // single continuation from the exact failed run/outbox snapshot, then
+      // bind fresh App evidence to it under the PR lock before any write.
       await this.validateAuthoritativeAdmission(input);
-      const derived = await this.deriveMcpGracefulComposedContinuation(input, runId);
+      const derived = await this.deriveGracefulComposedContinuation(input, runId);
       input = derived.input;
       mcpRecoverySnapshot = derived.snapshot;
       if (!this.options.resolveGenerationRecovery) {
@@ -1205,7 +1222,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       if (input.authoritativeGate) {
         await this.validateAuthoritativeAdmission(input);
-        await this.refuseUnretainedOrdinaryMcpRetry(client, input, runId);
+        await this.refuseUnretainedOrdinaryRetry(client, input, runId);
         await savePreparedPublishingPolicy(client, input.authoritativeGate.prepared);
       }
       let generationRecovery: ReviewGenerationRecoveryEvidence[] = [];
