@@ -2,11 +2,19 @@
 
 import * as React from 'react';
 import { Button } from '@/components/ui/button';
-import { Radio, RefreshCw } from 'lucide-react';
+import { Radio, RefreshCw, BarChart3, Clock, Zap } from 'lucide-react';
 import Link from 'next/link';
 import { OverviewMetrics } from '@/components/dashboard/overview-metrics';
 import { RecentReviewsTable } from '@/components/dashboard/recent-reviews-table';
 import { TelemetryChartsGrid } from '@/components/dashboard/telemetry-charts-grid';
+import { LiveDashboardView } from '@/components/live/LiveDashboardView';
+import {
+  TabGroup,
+  TabList,
+  Tab,
+  TabPanels,
+  TabPanel,
+} from '@/components/dashboard/tremor';
 import { fetchOverviewStats, fetchReviewLogs } from '@/lib/api-client';
 import { OverviewStats, ReviewJob } from '@/types/dashboard';
 
@@ -14,6 +22,7 @@ export default function OverviewPage() {
   const [stats, setStats] = React.useState<OverviewStats | null>(null);
   const [reviewJobs, setReviewJobs] = React.useState<ReviewJob[]>([]);
   const [loading, setLoading] = React.useState(true);
+  const [selectedTab, setSelectedTab] = React.useState('live');
 
   const loadData = React.useCallback(async () => {
     setLoading(true);
@@ -37,47 +46,75 @@ export default function OverviewPage() {
   }, [loadData]);
 
   return (
-    <div className="space-y-6">
-      {/* 1. Header Bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-foreground">
-            CT-Review-Bot Overview Dashboard
-          </h2>
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-sm text-muted-foreground">
-              Repository-configurable persona panel with binding arbitration
-            </p>
-            <span className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs font-mono text-blue-400 border border-blue-500/20">
-              Today: {stats?.todayDateBadge || new Date().toISOString().slice(0, 10)}
-            </span>
-            <span className="inline-flex items-center gap-1 rounded-md bg-indigo-500/10 px-2 py-0.5 text-xs font-mono text-indigo-400 border border-indigo-500/20">
-              Trailing 24h: {stats?.trailing24hReviewsExecuted ?? 0} Reviews | {stats?.trailing24hAvgTokensPerPR ?? 0} tok/PR | ${(stats?.trailing24hAvgCostPerPR ?? 0).toFixed(4)}/PR
-            </span>
-          </div>
+    <div className="space-y-4">
+      {/* 1. Streamlined Swarm Status Bar (De-duplicated against Topbar) */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 pb-1 border-b border-white/[0.06]">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-sm shadow-emerald-400/50" />
+          <span className="text-xs font-mono font-medium text-zinc-200">
+            Active Edge Swarm
+          </span>
+          <span className="linear-kbd text-[10px] font-mono text-zinc-400">
+            Today: {stats?.todayDateBadge || new Date().toISOString().slice(0, 10)}
+          </span>
+          <span className="linear-kbd text-[10px] font-mono text-indigo-300">
+            Trailing 24h: {stats?.trailing24hReviewsExecuted ?? 0} Reviews | {stats?.trailing24hAvgTokensPerPR ?? 0} tok/PR | ${(stats?.trailing24hAvgCostPerPR ?? 0).toFixed(4)}/PR
+          </span>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={loadData} disabled={loading} className="gap-1.5 text-xs">
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={loadData}
+            disabled={loading}
+            className="h-7 text-xs gap-1.5 border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:bg-white/[0.05]"
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
             Refresh
-          </Button>
-          <Button asChild size="sm" className="gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs">
-            <Link href="/live">
-              <Radio className="h-4 w-4 text-emerald-400 animate-pulse" />
-              Live Stream
-            </Link>
           </Button>
         </div>
       </div>
 
-      {/* 2. Executive KPI Summary */}
+      {/* 2. Executive KPI Summary (Tremor Card Strip) */}
       <OverviewMetrics stats={stats} onUpdateStats={loadData} />
 
-      {/* 3. Primary Operational Table */}
-      <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
+      {/* 3. Primary Command Center & Operational Workspace with Tremor Tabs */}
+      <TabGroup value={selectedTab} onValueChange={setSelectedTab} className="mt-2">
+        <TabList variant="line" className="border-b border-white/[0.08]">
+          <Tab value="live" icon={Radio}>
+            Live Swarm Command Center
+            <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 animate-pulse">
+              LIVE
+            </span>
+          </Tab>
+          <Tab value="reviews" icon={Clock}>
+            Recent Reviews & Audit Log ({reviewJobs.length})
+          </Tab>
+          <Tab value="telemetry" icon={BarChart3}>
+            Fleet Telemetry & Compaction ROI
+          </Tab>
+        </TabList>
 
-      {/* 4. System Telemetry */}
-      <TelemetryChartsGrid stats={stats} />
+        <TabPanels className="pt-2">
+          {/* Panel 1: Live Swarm Command Center (Hero Active by default!) */}
+          <TabPanel value="live">
+            <div className="rounded-lg border border-white/[0.08] bg-[#0c0d12]/90 backdrop-blur-md p-2 sm:p-4 shadow-xl">
+              <LiveDashboardView />
+            </div>
+          </TabPanel>
+
+          {/* Panel 2: Operational Reviews & Audit Trail */}
+          <TabPanel value="reviews">
+            <RecentReviewsTable jobs={reviewJobs} loading={loading} onRefresh={loadData} />
+          </TabPanel>
+
+          {/* Panel 3: System Telemetry & Compaction ROI */}
+          <TabPanel value="telemetry">
+            <TelemetryChartsGrid stats={stats} />
+          </TabPanel>
+        </TabPanels>
+      </TabGroup>
 
       <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js" async />
       <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js" async />

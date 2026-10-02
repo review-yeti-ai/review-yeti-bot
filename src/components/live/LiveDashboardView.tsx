@@ -3,9 +3,11 @@
 import React, { useState, useEffect, useMemo, Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useSSE } from '@/lib/useSSE';
+import { ReviewStageStepper } from '@/components/live/review-stage-stepper';
+import { LiveTurnTimeline } from '@/components/live/live-turn-timeline';
 import { TerminalFeed } from '@/components/live/terminal-feed';
-import { PersonaTabs } from '@/components/live/persona-tabs';
-import { PersonaProgressGrid } from '@/components/live/persona-progress-grid';
+import { SwarmTaskMatrix, SwarmTaskItem, ContextCompactionMetrics } from '@/components/live/SwarmTaskMatrix';
+import { SwarmTaskTabs } from '@/components/live/SwarmTaskTabs';
 import { StreamingMetricsCharts } from '@/components/live/streaming-metrics-charts';
 import { ActiveJobsSidebar } from '@/components/live/active-jobs-sidebar';
 import { DiffViewer } from '@/components/live/diff-viewer';
@@ -16,7 +18,7 @@ import { StatusBadge, StatusType } from '@/components/layout/status-badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Radio, RefreshCw, Play, FileCode, Brain, Terminal } from 'lucide-react';
+import { Radio, RefreshCw, Play, FileCode, Brain, Terminal, Layers, RotateCcw, Loader2, Scissors, ShieldCheck, Activity, Cpu, CheckCircle2 } from 'lucide-react';
 import { ChangedFileDiff, AnchoredFinding } from '@/types/diff';
 import { VerdictOverrideControls } from '@/components/dashboard/verdict-override-controls';
 import { PromptGuidanceCard } from '@/components/live/prompt-guidance-card';
@@ -30,7 +32,7 @@ import type { PromptGuidanceItem, VerdictOverrideRecord } from '@/types/hitl';
 
 function LiveStreamContent() {
   const searchParams = useSearchParams();
-  const initialJobId = searchParams?.get('jobId') || 'default-job';
+  const initialJobId = searchParams?.get('jobId') || 'run_live_reviewyeti_pr1282';
   const initialToken = searchParams?.get('token') || searchParams?.get('access_token') || undefined;
 
   const {
@@ -51,6 +53,13 @@ function LiveStreamContent() {
     reasoning,
     toolExecutions,
     anchoredFindings,
+    swarmTasks: liveSwarmTasks,
+    contextCompaction: liveCompaction,
+    currentStage,
+    stageHistory,
+    overallProgress,
+    turns,
+    activeTurnByTask,
   } = useSSE({
     jobId: initialJobId,
     token: initialToken,
@@ -65,6 +74,130 @@ function LiveStreamContent() {
   const [severityOverrideMap, setSeverityOverrideMap] = useState<Record<string, 'P0' | 'P1' | 'P2'>>({});
   const [guidanceList, setGuidanceList] = useState<PromptGuidanceItem[]>([]);
   const [overrideRecord, setOverrideRecord] = useState<VerdictOverrideRecord | null>(null);
+  const [isTriggering, setIsTriggering] = useState<boolean>(false);
+  const [selectedPr, setSelectedPr] = useState<number>(1282);
+  const [showTelemetryCharts, setShowTelemetryCharts] = useState<boolean>(false);
+
+  const handleTriggerLiveReview = async (prNumberToRun?: number) => {
+    const targetPr = typeof prNumberToRun === 'number' ? prNumberToRun : selectedPr;
+    try {
+      setIsTriggering(true);
+      const newJobId = `run_live_pr${targetPr}_${Date.now()}`;
+      setInputJobId(newJobId);
+      setJobId(newJobId);
+      clearEvents();
+
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        url.searchParams.set('jobId', newJobId);
+        window.history.pushState({}, '', url.toString());
+      }
+
+      const res = await fetch('/api/live/trigger', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: newJobId,
+          repo: 'reviewyeti-ai/yeti-pr-reviewer',
+          prNumber: targetPr,
+        }),
+      });
+
+      if (!res.ok) {
+        await fetch('/api/dashboard/trigger-review', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jobId: newJobId,
+            repo: 'reviewyeti-ai/yeti-pr-reviewer',
+            prNumber: targetPr,
+          }),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to trigger live review:', err);
+    } finally {
+      setIsTriggering(false);
+    }
+  };
+
+  const currentActiveJob = activeJobs.find((j) => j.jobId === jobId);
+
+  const swarmTasks: SwarmTaskItem[] = useMemo(() => {
+    if (liveSwarmTasks && liveSwarmTasks.length > 0) {
+      return liveSwarmTasks;
+    }
+    if ((currentActiveJob as any)?.tasks && Array.isArray((currentActiveJob as any).tasks)) {
+      return (currentActiveJob as any).tasks;
+    }
+    return [
+      {
+        id: 'task_sec_boundary',
+        dimension: 'security',
+        description: 'Enforce security floor: secret redaction, credential scanning, and edge boundary fences',
+        paths: ['src/gateway/edgeCompactionEngine.ts'],
+        priority: 1,
+        status: 'IN_FLIGHT',
+        progress: 60,
+        findingsCount: 0,
+        lastMessage: 'Validating secret scanning, token redaction, and boundary fences...',
+        durationMs: 1400,
+      },
+      {
+        id: 'task_arch_compaction',
+        dimension: 'architecture',
+        description: 'Context compaction audit: verify AST outline depth and eliminate diff leakage across turns',
+        paths: ['src/gateway/edgeCompactionEngine.ts', 'cf-orchestrator/src/worker.ts'],
+        priority: 2,
+        status: 'IN_FLIGHT',
+        progress: 80,
+        findingsCount: 1,
+        lastMessage: 'Context compaction: 4.2x ratio achieved on unified diff',
+        durationMs: 2800,
+      },
+      {
+        id: 'task_perf_worker_budget',
+        dimension: 'performance',
+        description: 'Cloudflare Worker budget: CPU execution time and memory limits validation',
+        paths: ['cf-orchestrator/src/worker.ts'],
+        priority: 3,
+        status: 'PENDING',
+        progress: 0,
+        findingsCount: 0,
+        lastMessage: 'Queued for Worker CPU/memory budget verification',
+        durationMs: 0,
+      },
+      {
+        id: 'task_test_coverage',
+        dimension: 'testing',
+        description: 'Test coverage & invariant verification across Edge orchestrator routes',
+        paths: ['cf-orchestrator/test/dashboardRoutes.test.ts'],
+        priority: 4,
+        status: 'PENDING',
+        progress: 0,
+        findingsCount: 0,
+        lastMessage: 'Queued for route invariant verification',
+        durationMs: 0,
+      },
+    ];
+  }, [liveSwarmTasks, currentActiveJob]);
+
+  const compactionMetrics: ContextCompactionMetrics = useMemo(() => {
+    if (liveCompaction && (liveCompaction.rawDiffTokens > 0 || liveCompaction.compactedTokens > 0)) {
+      return liveCompaction;
+    }
+    if ((currentActiveJob as any)?.contextCompaction) {
+      return (currentActiveJob as any).contextCompaction;
+    }
+    return {
+      rawDiffTokens: 24800,
+      compactedTokens: 5900,
+      compactionRatio: 4.2,
+      boundsReductionLines: 1420,
+      lockfilesBypassed: 1,
+      astOutlineNodes: 18,
+    };
+  }, [liveCompaction, currentActiveJob]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -214,84 +347,225 @@ function LiveStreamContent() {
   };
 
   return (
-    <div className="space-y-6 pb-12">
-      {/* Top Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-white/10">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center gap-2">
-            <Radio className="h-6 w-6 text-emerald-400 animate-pulse" />
-            ct-review-bot — Live Agent Review Terminal
+    <div className="space-y-4 pb-12">
+      {/* Top Live Control Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-white/[0.06]">
+        <div className="flex items-center gap-2">
+          <span className="status-dot-green" />
+          <h2 className="text-xs sm:text-sm font-semibold tracking-tight text-zinc-100 font-mono flex items-center gap-2 uppercase">
+            <Radio className="h-3.5 w-3.5 text-emerald-400 animate-pulse" />
+            Live Swarm Command Center
           </h2>
-          <p className="text-sm text-slate-400">
-            Real-time SSE stdout/stderr review stream, persona pipeline execution, and token metrics
-          </p>
+          <span className="linear-kbd text-[10px] text-zinc-400 font-mono">
+            reviewyeti-ai
+          </span>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <div id="connection-status">
-            <StatusBadge
-              status={getStatusBadgeType()}
-              label={
-                connectionStatus === 'connected'
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.08] text-xs font-mono">
+              <span
+                className={
+                  connectionStatus === 'connected'
+                    ? 'h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]'
+                    : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+                    ? 'h-2 w-2 rounded-full bg-indigo-400 animate-pulse'
+                    : 'h-2 w-2 rounded-full bg-rose-500'
+                }
+              />
+              <span className="text-zinc-200 text-xs">
+                {connectionStatus === 'connected'
                   ? 'Streaming Live'
                   : connectionStatus === 'reconnecting'
                   ? 'Reconnecting...'
                   : connectionStatus === 'connecting'
                   ? 'Connecting...'
-                  : 'Disconnected'
-              }
-            />
+                  : 'Disconnected'}
+              </span>
+            </div>
           </div>
+
+          <Button
+            size="sm"
+            onClick={() => handleTriggerLiveReview()}
+            disabled={isTriggering}
+            className="h-7 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-medium gap-1.5 shadow-sm shadow-indigo-500/20"
+            data-testid="trigger-live-review-btn"
+          >
+            <Play className={`h-3 w-3 ${isTriggering ? 'animate-spin' : ''}`} />
+            <span>{isTriggering ? 'Triggering...' : 'Trigger Live Review'}</span>
+          </Button>
 
           <Button
             size="sm"
             variant="outline"
             onClick={reconnect}
-            className="h-8 text-xs border-slate-700 text-slate-300 hover:text-white"
+            className="h-7 text-xs border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:text-white hover:bg-white/[0.06]"
           >
-            <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            <RefreshCw className="h-3 w-3 mr-1" />
             Reconnect
           </Button>
         </div>
       </div>
 
-      {/* Stream Target Job Selector */}
-      <form onSubmit={handleConnectJob} className="flex flex-wrap items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm">
-        <span className="text-xs font-semibold text-slate-300 shrink-0">Active Job Stream:</span>
-        <Input
-          type="text"
-          placeholder="Enter Job ID (e.g. job_123 or default-job)"
-          value={inputJobId}
-          onChange={(e) => setInputJobId(e.target.value)}
-          className="h-8 w-full sm:w-64 text-xs font-mono bg-slate-950/80 border-slate-700/60 focus:border-indigo-500 text-slate-200"
-        />
-        <Button size="sm" type="submit" className="h-8 text-xs bg-indigo-600 hover:bg-indigo-500 text-white gap-1.5">
-          <Play className="h-3.5 w-3.5" />
-          <span>Switch Stream</span>
-        </Button>
-        <span className="text-xs text-slate-500 font-mono ml-auto hidden md:inline">
-          URL: /api/live/stream?jobId={jobId}
-        </span>
-      </form>
-
-      {/* Streaming Token Metrics Cards & Recharts */}
-      <StreamingMetricsCharts metrics={tokenMetrics} history={tokenHistory} />
-
-      {/* Human-in-the-Loop Verdict Override Controls */}
-      {jobId && (
-        <VerdictOverrideControls
-          reviewId={jobId}
-          currentVerdict="SHIP"
-          existingOverride={overrideRecord}
-          onOverrideSuccess={(record: any) => setOverrideRecord(record)}
-        />
-      )}
-
-      {/* Persona Parallel Execution Progress Grid */}
-      <PersonaProgressGrid
-        personaProgress={personaProgress}
-        onPersonaClick={(p) => setSelectedPersona(p)}
+      {/* Real-time 6-Stage Autonomous Review Lifecycle Stepper */}
+      <ReviewStageStepper
+        currentStage={currentStage}
+        stages={stageHistory}
+        overallProgress={overallProgress}
       />
+
+      {/* Vibe Coder Action & Quick PR Selector Bar */}
+      <div className="linear-card p-3.5 border border-white/[0.08] bg-[#08090c] rounded-xl space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          {/* Quick Preset PR Pills */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-mono text-zinc-400 font-semibold uppercase tracking-wider mr-1">
+              Select Target PR:
+            </span>
+            {[
+              { num: 1282, label: 'PR #1282: Edge Compaction' },
+              { num: 1283, label: 'PR #1283: Security Fences' },
+              { num: 1284, label: 'PR #1284: Worker Budget' },
+            ].map((pr) => {
+              const isSelected = selectedPr === pr.num;
+              return (
+                <button
+                  key={pr.num}
+                  type="button"
+                  onClick={() => {
+                    setSelectedPr(pr.num);
+                    handleTriggerLiveReview(pr.num);
+                  }}
+                  className={`text-xs px-3 py-1.5 rounded-lg border font-mono transition-all ${
+                    isSelected
+                      ? 'bg-indigo-600/20 border-indigo-500/60 text-indigo-300 font-medium shadow-[0_0_12px_rgba(99,102,241,0.25)]'
+                      : 'bg-white/[0.03] border-white/[0.08] text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.06]'
+                  }`}
+                  data-testid={`pr-preset-pill-${pr.num}`}
+                >
+                  {pr.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Primary Action Button */}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() => handleTriggerLiveReview(selectedPr)}
+              disabled={isTriggering}
+              className={`h-8 px-4 text-xs font-semibold gap-2 shadow-lg transition-all ${
+                overallProgress > 0 && overallProgress < 100
+                  ? 'bg-indigo-600/90 hover:bg-indigo-600 text-white shadow-indigo-500/25 ring-1 ring-indigo-400/40 animate-pulse'
+                  : overallProgress >= 100 || currentStage === 'complete'
+                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20'
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-500/30'
+              }`}
+              data-testid="trigger-live-review-btn-actionbar"
+            >
+              {isTriggering || (overallProgress > 0 && overallProgress < 100) ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>
+                    Review Rolling: {currentStage.toUpperCase()} ({Math.round(overallProgress)}%)
+                  </span>
+                </>
+              ) : overallProgress >= 100 || currentStage === 'complete' ? (
+                <>
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  <span>Re-run Live Review (PR #{selectedPr})</span>
+                </>
+              ) : (
+                <>
+                  <Play className="h-3.5 w-3.5 fill-current" />
+                  <span>Run Live Review (PR #{selectedPr})</span>
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+
+        {/* Stream Target Job Selector (Preserved for Custom Job IDs and Automated Test Harnesses) */}
+        <form onSubmit={handleConnectJob} className="flex flex-wrap items-center gap-2 pt-2.5 border-t border-white/[0.05] text-xs">
+          <span className="font-semibold text-zinc-300 shrink-0 font-mono text-[11px]">Active Job Stream:</span>
+          <Input
+            type="text"
+            placeholder="Enter Job ID (e.g. run_live_reviewyeti_pr1282)"
+            value={inputJobId}
+            onChange={(e) => setInputJobId(e.target.value)}
+            className="h-7 w-full sm:w-72 text-xs font-mono bg-[#050608] border-white/[0.08] focus:border-indigo-500 text-zinc-200"
+          />
+          <Button size="sm" type="submit" className="h-7 text-xs bg-white/[0.05] hover:bg-white/[0.1] text-zinc-200 border border-white/[0.08] gap-1.5 px-3">
+            <Play className="h-3 w-3" />
+            <span>Switch Stream</span>
+          </Button>
+        </form>
+      </div>
+
+      {/* Sleek Live Review HUD Strip (Review-First, Clutter-Free) */}
+      <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2 bg-[#08090d]/90 border border-white/[0.08] rounded-xl text-xs font-mono shadow-sm">
+        <div className="flex flex-wrap items-center gap-3 text-zinc-300">
+          <div className="flex items-center gap-1.5 text-zinc-200 font-semibold">
+            <Activity className="h-3.5 w-3.5 text-amber-400" />
+            <span>Tokens:</span>
+            <span className="text-zinc-100 font-mono">{tokenMetrics.totalTokens.toLocaleString()}</span>
+            <span className="text-[11px] text-zinc-500">(${tokenMetrics.estimatedCostUSD.toFixed(4)})</span>
+          </div>
+
+          <span className="text-zinc-700 hidden sm:inline">•</span>
+
+          <div className="flex items-center gap-1.5 text-zinc-200">
+            <Scissors className="h-3.5 w-3.5 text-cyan-400" />
+            <span>Compaction:</span>
+            <span className="text-cyan-300 font-semibold font-mono">{compactionMetrics.compactionRatio}x</span>
+            <span className="text-[11px] text-zinc-500 hidden md:inline">({compactionMetrics.boundsReductionLines} lines saved)</span>
+          </div>
+
+          <span className="text-zinc-700 hidden sm:inline">•</span>
+
+          <div className="flex items-center gap-1.5 text-zinc-200">
+            <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
+            <span>Findings:</span>
+            <span className={`font-semibold font-mono ${effectiveFindings.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+              {effectiveFindings.length}
+            </span>
+          </div>
+
+          <span className="text-zinc-700 hidden sm:inline">•</span>
+
+          <div className="flex items-center gap-1.5 text-zinc-300">
+            <Cpu className="h-3.5 w-3.5 text-indigo-400" />
+            <span>Swarm:</span>
+            <span className="text-zinc-200 font-mono font-medium">{swarmTasks.length} Subagents</span>
+          </div>
+        </div>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          type="button"
+          onClick={() => setShowTelemetryCharts(!showTelemetryCharts)}
+          className="h-7 text-xs font-mono text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-white/[0.06] px-2.5 gap-1.5 ml-auto"
+        >
+          <Activity className="h-3 w-3 text-indigo-400" />
+          <span>{showTelemetryCharts ? 'Hide Telemetry Charts ▴' : 'Show Telemetry Charts ▾'}</span>
+        </Button>
+      </div>
+
+      {/* Expandable Deep-Dive Telemetry Curves */}
+      {showTelemetryCharts && (
+        <div className="p-4 bg-[#08090d]/60 border border-white/[0.08] rounded-xl space-y-3 animate-in fade-in duration-200">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-mono text-zinc-400 uppercase tracking-wider font-semibold">
+              Real-time Token Burn & LLM Latency Curves
+            </span>
+            <span className="text-[11px] font-mono text-zinc-500">Live SSE Feed</span>
+          </div>
+          <StreamingMetricsCharts metrics={tokenMetrics} history={tokenHistory} />
+        </div>
+      )}
 
       {/* Main Stream Explorer Workspace: Active Jobs Sidebar + Inspector Tabs */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
@@ -304,67 +578,100 @@ function LiveStreamContent() {
         />
 
         <div className="lg:col-span-3 space-y-4">
-          {/* Persona Tabs Navigation */}
+          {/* Swarm Task Branch Filter Tabs */}
           <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              Tabbed Persona Explorer
-            </h3>
-            <PersonaTabs
-              selectedPersona={selectedPersona}
-              onSelectPersona={setSelectedPersona}
-              events={events}
-              personaProgress={personaProgress}
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider font-mono">
+                Swarm Task Branch Filter
+              </h3>
+              <span className="text-[11px] font-mono text-zinc-500">
+                Filter reasoning traces and tool activity by subagent task
+              </span>
+            </div>
+            <SwarmTaskTabs
+              selectedTaskId={selectedPersona}
+              onSelectTask={setSelectedPersona}
+              tasks={swarmTasks}
             />
           </div>
 
-          <div id="inspector-prompt" className="space-y-2">
-            <PromptGuidanceCard
-              reviewId={jobId || ''}
-              guidanceList={guidanceList}
-              onAddGuidance={handleAddGuidance}
-            />
-          </div>
-
-          {/* Primary View Switcher Tabs: Diff & Findings | Reasoning & Tools | Raw Terminal */}
+          {/* Primary View Switcher Tabs: Diff & Findings | Swarm Tasks | Reasoning & Tools | Raw Terminal | Turns */}
           <Tabs defaultValue="diff" className="w-full">
             <div className="flex items-center justify-between pb-1">
-              <TabsList className="bg-slate-900/80 border border-white/10">
+              <TabsList className="bg-[#050608] border border-white/[0.08] p-1 h-9 rounded-lg">
                 <TabsTrigger
                   value="diff"
-                  className="gap-1.5 text-xs data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
                 >
-                  <FileCode className="h-3.5 w-3.5" />
+                  <FileCode className="h-3.5 w-3.5 text-emerald-400" />
                   <span>Diff & Findings</span>
                   {effectiveFindings.length > 0 && (
-                    <Badge variant="outline" className="ml-1 text-[10px] bg-red-500/20 text-red-300 border-red-500/30">
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
                       {effectiveFindings.length}
-                    </Badge>
+                    </span>
                   )}
                 </TabsTrigger>
                 <TabsTrigger
-                  value="reasoning"
-                  className="gap-1.5 text-xs data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+                  value="tasks"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
+                  data-testid="swarm-tasks-tab-trigger"
                 >
-                  <Brain className="h-3.5 w-3.5" />
+                  <Cpu className="h-3.5 w-3.5 text-violet-400" />
+                  <span>Swarm Tasks</span>
+                  <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30">
+                    {swarmTasks.length}
+                  </span>
+                </TabsTrigger>
+                <TabsTrigger
+                  value="reasoning"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
+                >
+                  <Brain className="h-3.5 w-3.5 text-cyan-400" />
                   <span>Reasoning & Tools</span>
                   {toolExecutions.length > 0 && (
-                    <Badge variant="outline" className="ml-1 text-[10px] bg-cyan-500/20 text-cyan-300 border-cyan-500/30">
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                       {toolExecutions.length}
-                    </Badge>
+                    </span>
                   )}
                 </TabsTrigger>
                 <TabsTrigger
                   value="terminal"
-                  className="gap-1.5 text-xs data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
                 >
-                  <Terminal className="h-3.5 w-3.5" />
+                  <Terminal className="h-3.5 w-3.5 text-indigo-400" />
                   <span>Raw Terminal</span>
+                  {events.length > 0 && (
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {events.length}
+                    </span>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="turns"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
+                  data-testid="turns-tab-trigger"
+                >
+                  <Layers className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Turns & Execution</span>
+                  {turns.length > 0 && (
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {turns.length}
+                    </span>
+                  )}
                 </TabsTrigger>
               </TabsList>
             </div>
 
-            {/* Tab 1: Diff & Line-Anchored Findings */}
-            <TabsContent value="diff" className="mt-3">
+            {/* Tab 1: Diff & Line-Anchored Findings + HITL Controls */}
+            <TabsContent value="diff" className="mt-3 space-y-4">
+              {jobId && (
+                <VerdictOverrideControls
+                  reviewId={jobId}
+                  currentVerdict="SHIP"
+                  existingOverride={overrideRecord}
+                  onOverrideSuccess={(record: any) => setOverrideRecord(record)}
+                />
+              )}
               <DiffViewer
                 jobId={jobId}
                 files={diffFiles}
@@ -376,8 +683,26 @@ function LiveStreamContent() {
               />
             </TabsContent>
 
-            {/* Tab 2: Streaming Reasoning Traces & Subagent Tools */}
+            {/* Tab 2: Composed Swarm Review Task Execution Matrix */}
+            <TabsContent value="tasks" className="mt-3 space-y-4">
+              <SwarmTaskMatrix
+                tasks={swarmTasks}
+                compaction={compactionMetrics}
+                selectedTaskId={selectedPersona}
+                onSelectTask={(p) => setSelectedPersona(p)}
+                activeTurnByTask={activeTurnByTask}
+              />
+            </TabsContent>
+
+            {/* Tab 3: Streaming Reasoning Traces, Subagent Tools & Prompt Steering */}
             <TabsContent value="reasoning" className="mt-3 space-y-4">
+              <div id="inspector-prompt" className="space-y-2">
+                <PromptGuidanceCard
+                  reviewId={jobId || ''}
+                  guidanceList={guidanceList}
+                  onAddGuidance={handleAddGuidance}
+                />
+              </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <ReasoningFeed
                   events={filteredEvents}
@@ -392,12 +717,22 @@ function LiveStreamContent() {
               </div>
             </TabsContent>
 
-            {/* Tab 3: Monospace Glass Terminal Feed */}
+            {/* Tab 4: Monospace Glass Terminal Feed */}
             <TabsContent value="terminal" className="mt-3">
               <TerminalFeed
                 events={filteredEvents}
                 selectedPersona={selectedPersona}
                 onClear={clearEvents}
+              />
+            </TabsContent>
+
+            {/* Tab 5: Granular Subagent Turn Execution Timeline */}
+            <TabsContent value="turns" className="mt-3">
+              <LiveTurnTimeline
+                turns={turns}
+                selectedTaskId={selectedPersona}
+                onSelectTask={setSelectedPersona}
+                activeTurnByTask={activeTurnByTask}
               />
             </TabsContent>
           </Tabs>
@@ -411,11 +746,18 @@ export function LiveDashboardView() {
   return (
     <Suspense
       fallback={
-        <div className="p-8 text-center text-slate-400 font-mono text-xs space-y-4">
-          <h2 className="text-xl font-bold tracking-tight text-slate-100 flex items-center justify-center gap-2">
-            ct-review-bot — Live Agent Review Terminal
-          </h2>
-          <PersonaProgressGrid personaProgress={{}} />
+        <div className="p-8 text-center text-zinc-400 font-mono text-xs space-y-4">
+          <div className="flex items-center justify-center gap-2 text-zinc-100 font-semibold text-sm">
+            <Radio className="h-4 w-4 text-emerald-400 animate-pulse" />
+            Review Yeti AI Swarm — Live Command Center
+          </div>
+          <p className="text-[11px] text-zinc-500 font-mono">
+            Connecting to Cloudflare Edge Swarm SSE Stream...
+          </p>
+          <div className="animate-pulse space-y-3 max-w-4xl mx-auto pt-4">
+            <div className="h-28 bg-[#0d0e12]/80 border border-white/[0.06] rounded-xl" />
+            <div className="h-64 bg-[#0d0e12]/80 border border-white/[0.06] rounded-xl" />
+          </div>
         </div>
       }
     >
