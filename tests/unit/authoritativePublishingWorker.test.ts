@@ -138,6 +138,13 @@ function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string
 describe('REL-1198 publishing panel respects the admitted lifecycle window', () => {
   it.each(['panel', 'composed'] as const)('prepares optional core classification before the %s engine and publishes its receipt', async (reviewEngine) => {
     const f = fixture({ reviewEngine });
+    const budgets: number[] = [];
+    const createRuntime = deletionEvidenceModule.createDeletionEvidenceRuntime;
+    vi.spyOn(deletionEvidenceModule, 'createDeletionEvidenceRuntime').mockImplementation((input) => {
+      const runtime = createRuntime(input), prepare = runtime.prepare;
+      runtime.prepare = (options) => { budgets.push(options!.budgetMs!); return prepare(options); };
+      return runtime;
+    });
     const removed = (name: string) => `diff --git a/${name} b/${name}\ndeleted file mode 100644\n--- a/${name}\n+++ /dev/null\n@@ -1 +0,0 @@\n-export function old() {}\n`;
     f.source.diff = removed('src/old.ts') + removed('dist/old.js');
     const readFileAt = vi.fn(async (_path: string, side: string) => ({ sha: side === 'head' ? HEAD : BASE,
@@ -160,6 +167,7 @@ describe('REL-1198 publishing panel respects the admitted lifecycle window', () 
     f.deps.composedReviewRunner = runner;
     await runPublishingReviewWorker(f.env, f.deps);
     expect(runner).toHaveBeenCalledOnce();
+    expect(budgets).toEqual([15_000]);
     expect(readFileAt.mock.calls.every(([path]) => path === 'src/old.ts')).toBe(true);
     expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]).result.deletionClassification)
       .toMatchObject({ status: 'complete', totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, totalGroups: 1 });
