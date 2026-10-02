@@ -18,6 +18,7 @@ describe('Layout and Navigation Components Unit Tests', () => {
 
       expect(screen.getByText('ct-review-bot')).toBeInTheDocument();
       expect(screen.getByText('Overview')).toBeInTheDocument();
+      expect(screen.getByText('Analytics')).toBeInTheDocument();
       expect(screen.getByText('Live Stream')).toBeInTheDocument();
       expect(screen.getByText('Repositories')).toBeInTheDocument();
       expect(screen.getByText('Persona Editor')).toBeInTheDocument();

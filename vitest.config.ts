@@ -11,7 +11,7 @@ delete process.env.ALL_PROXY;
 process.env.NO_PROXY = '*';
 process.env.no_proxy = '*';
 
-export default defineConfig({
+export default (defineConfig as any)({
   // REL-582: `cacheDir` is a Vite root option, not a `test.*` one. It sat under `test:` and was
   // silently accepted only because vite's types were unresolvable under `moduleResolution: node`.
   cacheDir: 'node_modules/.vitest',
@@ -66,9 +66,14 @@ export default defineConfig({
       'tests/integration/**/*.test.ts',
       'tests/integration/**/*.test.tsx',
       'tests/e2e/**/*.test.ts',
-      'tests/benchmark/**/*.test.ts'
+      'tests/benchmark/**/*.test.ts',
+      'tests/adversarial/**/*.test.ts'
     ],
     pool: 'forks',
+    forks: {
+      maxForks: process.env.VITEST_MAX_WORKERS ? Number(process.env.VITEST_MAX_WORKERS) : 4,
+      minForks: 1,
+    },
     // REL-560: run test files in parallel. Serial execution left the runner idle -- measured 117%
     // CPU across a full run on a 16-core machine, versus 443% and a ~4x wall-clock win at four
     // workers. After #456 gave every worker its own disposable state root, files no longer share

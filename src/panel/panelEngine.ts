@@ -2220,7 +2220,7 @@ async function invoke(
     // structural no-op: `compactMessageWindow` returns `messages` unchanged, with `[0]`/`[1]`
     // reference-identical, in every path below (see `./messageWindow.ts`).
     const activeMessages = options?.compaction?.enabled
-      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls })
+      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls, retainSmallToolResults: true })
       : messages;
     const requestMessages = nativeJsonMode
       ? withNativeTurnDirective(activeMessages, nativeAdjudication
@@ -2265,6 +2265,22 @@ async function invoke(
           },
           ...(options?.effort ? { reasoningEffort: options.effort } : {}),
           ...(options?.signal ? { signal: options.signal } : {}),
+          onReasoningChunk: (chunk: string) => {
+            if (options?.jobId) {
+              LiveStreamBus.getInstance().publishEvent({
+                jobId: options.jobId,
+                timestamp: new Date().toISOString(),
+                type: 'reasoning:chunk',
+                persona: (options.persona || role) as any,
+                data: {
+                  personaId: options.persona || role,
+                  reasoning: chunk,
+                  turn: iter + 1,
+                  message: chunk,
+                },
+              });
+            }
+          },
         })),
         options?.signal,
       );
@@ -2366,12 +2382,84 @@ async function invoke(
         throwIfPanelAborted(options?.signal);
         toolTurns++;
         turnUsage.kind = 'tool';
-        const { toolOutput: rawToolOutput, toolScope, isExhaustive } = await runReadOnlyTool(toolCall.tool, toolCall.args, {
-          changedFiles,
-          repoFileProvider: options?.repoFileProvider,
-          zoektConfig: (options as any)?.zoektConfig,
-          signal: options?.signal,
-        });
+        const toolName = toolCall.tool;
+        const toolArgs = toolCall.args || {};
+        const toolStartedAt = Date.now();
+
+        if (options?.jobId) {
+          LiveStreamBus.getInstance().publishEvent({
+            jobId: options.jobId,
+            timestamp: new Date().toISOString(),
+            type: 'tool:start',
+            persona: (options.persona || role) as any,
+            data: {
+              personaId: options.persona || role,
+              tool: toolName,
+              args: toolArgs,
+              turn: iter + 1,
+              message: `Executing tool ${toolName}...`,
+            },
+          });
+        }
+
+        let rawToolOutput: string;
+        let toolScope: string = 'unknown';
+        let isExhaustive: boolean = true;
+        try {
+          const result = await runReadOnlyTool(toolName, toolArgs, {
+            changedFiles,
+            repoFileProvider: options?.repoFileProvider,
+            zoektConfig: (options as any)?.zoektConfig,
+            signal: options?.signal,
+          });
+          rawToolOutput = result.toolOutput;
+          toolScope = result.toolScope;
+          isExhaustive = result.isExhaustive;
+
+          const durationMs = Date.now() - toolStartedAt;
+          if (options?.jobId) {
+            LiveStreamBus.getInstance().publishEvent({
+              jobId: options.jobId,
+              timestamp: new Date().toISOString(),
+              type: 'tool:result',
+              persona: (options.persona || role) as any,
+              data: {
+                personaId: options.persona || role,
+                tool: toolName,
+                args: toolArgs,
+                output: rawToolOutput.length > 500 ? rawToolOutput.slice(0, 500) + '...' : rawToolOutput,
+                outputLength: rawToolOutput.length,
+                scope: toolScope,
+                isExhaustive,
+                durationMs,
+                turn: iter + 1,
+                message: `Tool ${toolName} completed in ${durationMs}ms`,
+              },
+            });
+          }
+        } catch (toolErr: any) {
+          const durationMs = Date.now() - toolStartedAt;
+          const errorMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+          if (options?.jobId) {
+            LiveStreamBus.getInstance().publishEvent({
+              jobId: options.jobId,
+              timestamp: new Date().toISOString(),
+              type: 'tool:error',
+              persona: (options.persona || role) as any,
+              data: {
+                personaId: options.persona || role,
+                tool: toolName,
+                args: toolArgs,
+                error: errorMsg,
+                durationMs,
+                turn: iter + 1,
+                message: `Tool ${toolName} failed: ${errorMsg}`,
+              },
+            });
+          }
+          throw toolErr;
+        }
+
         // REL-1082: a budgeted lane keeps its whole request under the gateway proxy's body limit.
         const toolOutput = laneBudget
           ? clipToolOutputToRequestCap(rawToolOutput, [...messages, { role: 'assistant', content: response.content }], laneBudget.requestCapBytes)
@@ -2635,6 +2723,16 @@ async function runPersona(
     const bus = LiveStreamBus.getInstance();
     const effectiveJobId = jobId || `job_${repository.replace(/\//g, '_')}_${headSha.slice(0, 7)}`;
 
+    const promptGuidanceItems = allowDashboardOverrides
+      ? (dashboardStore.getPromptGuidance(jobId || effectiveJobId) || [])
+      : [];
+    const applicableGuidance = promptGuidanceItems.filter((g) =>
+      !g.targetPersonas || g.targetPersonas.length === 0 || g.targetPersonas.includes(persona.id)
+    );
+    const steeringRules = applicableGuidance.map((g) =>
+      `[HUMAN REVIEWER GUIDANCE${g.createdBy ? ` (${g.createdBy})` : ''}]: ${g.guidanceText}`
+    );
+
     bus.publishEvent({
       jobId: effectiveJobId,
       timestamp: new Date().toISOString(),
@@ -2853,7 +2951,7 @@ async function runPersona(
             changedFiles: scopedFiles,
             domainLanes,
             pathInstructions: config.path_instructions,
-            rules: [...(config.rules || []), ...memoryRules],
+            rules: [...(config.rules || []), ...memoryRules, ...steeringRules],
             preCheckEvidence: preCheckEvidence,
             outputSchema: {
               decision: ['json_object', 'json_schema'].includes(
@@ -2953,6 +3051,48 @@ async function runPersona(
           }
           const decision: 'APPROVE' | 'FINDINGS' = result.parsed.decision as 'APPROVE' | 'FINDINGS';
           throwIfPanelAborted(signal);
+
+          if (findings.length > 0 && effectiveJobId) {
+            for (const finding of findings) {
+              const findingId = crypto.createHash('sha256')
+                .update(`${repository}:${finding.path}:${finding.line}:${finding.title}`)
+                .digest('hex');
+
+              bus.publishEvent({
+                jobId: effectiveJobId,
+                timestamp: new Date().toISOString(),
+                type: 'persona:finding',
+                persona: persona.id as any,
+                data: {
+                  personaId: persona.id,
+                  findingId,
+                  severity: finding.severity,
+                  filePath: finding.path,
+                  path: finding.path,
+                  line: finding.line,
+                  startLine: finding.startLine,
+                  findingTitle: finding.title,
+                  title: finding.title,
+                  description: finding.body || finding.title,
+                  suggestion: finding.suggestion,
+                  replacementCode: finding.replacementCode,
+                  finding: {
+                    id: findingId,
+                    severity: finding.severity,
+                    path: finding.path,
+                    file: finding.path,
+                    line: finding.line,
+                    startLine: finding.startLine,
+                    title: finding.title,
+                    description: finding.body || finding.title,
+                    suggestion: finding.suggestion,
+                    replacementCode: finding.replacementCode,
+                  },
+                  message: `[${finding.severity}] ${finding.path}:${finding.line} - ${finding.title}`,
+                },
+              });
+            }
+          }
 
           const promptTokens = result.response.usage?.prompt || 0;
           const completionTokens = result.response.usage?.completion || 0;

@@ -251,10 +251,60 @@ export function validatePersistedLegacyIncompleteP2RecoveryEvidence(
   return validateReviewGenerationRecoveryEvidenceInternal(request, evidence, true);
 }
 
+/** Fetch-stage candidate validation only. Summary counts are deliberately left
+ * uninterpreted until the locked archive reader binds the original completion
+ * digest and failed Gate. This never authorizes generation allocation. */
+export function validateIncompleteP2RecoveryLedgerCandidate(
+  request: ReviewGenerationRecoveryRequest,
+  evidence: ReviewGenerationRecoveryEvidence[],
+): ReviewGenerationRecoveryEvidence[] {
+  validateReviewGenerationRecoveryRequest(request);
+  if ((request.incompleteP2Recovery !== true && request.gracefulComposedContinuation !== true) || !Array.isArray(evidence)
+    || evidence.length !== request.expectedGeneration - 1) refuse();
+  let previousCompleted = -Infinity;
+  for (let index = 0; index < evidence.length; index += 1) {
+    const proof = evidence[index];
+    const roster = proof?.legacyIncompleteRoster;
+    const start = completedAt(roster?.workerStartedAt);
+    const end = completedAt(roster?.workerCompletedAt);
+    if (proof?.generation !== index + 1 || !Number.isSafeInteger(proof.checkId) || proof.checkId <= 0
+      || proof.externalId !== `${request.runId}:a${index + 1}`
+      || proof.conclusion !== 'failure'
+      || proof.title !== (request.gracefulComposedContinuation === true
+        ? 'Review Yeti: INCOMPLETE (partial evidence published)' : 'Review Yeti: BLOCK')
+      || (request.gracefulComposedContinuation === true && roster?.gracefulComposedPartial !== true)
+      || typeof roster?.workerSummary !== 'string'
+      || !Number.isFinite(start) || !Number.isFinite(end) || start > end || previousCompleted >= start) refuse();
+    const gate = selectIncompleteRecoveryGate(request, roster);
+    if (gate?.conclusion !== 'failure'
+      || record(gate.output)?.title !== 'Review Yeti Gate: Failed (incomplete panel)') refuse();
+    previousCompleted = end;
+  }
+  return evidence;
+}
+
+export function evaluateIncompleteP2RecoveryLedgerCandidate(
+  request: ReviewGenerationRecoveryRequest,
+  rows: unknown[],
+  gateChecks: unknown[] = [],
+): ReviewGenerationRecoveryEvidence[] {
+  if (request.incompleteP2Recovery !== true && request.gracefulComposedContinuation !== true) refuse();
+  return evaluateRecoveryLedger(request, rows, gateChecks, true);
+}
+
 export function evaluateReviewGenerationRecoveryLedger(
   request: ReviewGenerationRecoveryRequest,
   rows: unknown[],
   gateChecks: unknown[] = [],
+): ReviewGenerationRecoveryEvidence[] {
+  return evaluateRecoveryLedger(request, rows, gateChecks, false);
+}
+
+function evaluateRecoveryLedger(
+  request: ReviewGenerationRecoveryRequest,
+  rows: unknown[],
+  gateChecks: unknown[],
+  archiveCandidate: boolean,
 ): ReviewGenerationRecoveryEvidence[] {
   validateReviewGenerationRecoveryRequest(request);
   if (!Array.isArray(rows)) refuse();
@@ -332,5 +382,7 @@ export function evaluateReviewGenerationRecoveryLedger(
   }
 
   evidence.sort((left, right) => left.generation - right.generation);
-  return validateReviewGenerationRecoveryEvidence(request, evidence);
+  return archiveCandidate
+    ? validateIncompleteP2RecoveryLedgerCandidate(request, evidence)
+    : validateReviewGenerationRecoveryEvidence(request, evidence);
 }

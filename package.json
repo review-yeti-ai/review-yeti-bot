@@ -25,7 +25,7 @@
     "build:frontend": "node scripts/clean-frontend.js && next build && node scripts/postbuild.js",
     "build:backend": "tsc -p tsconfig.server.json",
     "build:cf-orchestrator": "cd cf-orchestrator && npm run build",
-    "build": "npm run build:frontend && npm run build:backend",
+    "build": "npm run build:frontend && npm run build:backend && node scripts/postbuild.js",
     "start": "node dist/index.js",
     "start:dispatch": "node dist/dispatchIndex.js",
     "start:review-job-dispatcher": "node dist/reviewJobDispatcherIndex.js",

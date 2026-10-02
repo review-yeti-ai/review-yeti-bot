@@ -263,24 +263,25 @@ describe('a prior built by the real completion builder and the real gate', () =>
       .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-clean' });
   });
 
-  it('#1034 shape: a raw P1 calibrated to P2 blocks a clean prior and cannot seed carry-forward', async () => {
+  it('#1034 shape: a raw P1 calibrated to P2 stays an open path in incremental and cache decisions', async () => {
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
     ] } });
-    // The worker reports the raw P1; the gate publishes it as P2 and applies the current default
-    // requirement that gating P2 findings be addressed before the review can pass.
+    // The worker reports raw P1; current policy publishes calibrated P2 as
+    // advisory, while preserving the open path for the next review.
     expect(completion.result.personas.flatMap((lane) => lane.findings.map((finding) => finding.severity))).toEqual(['P1']);
     const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
-    expect(recorded.decision).toMatchObject({ status: 'failure', reason: 'blocking-findings' });
+    expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
     const rows = storedRows(completion, recorded);
-    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, findingPaths: ['src/stable.ts'] });
-    expect(decideNext(completion, rows)).toMatchObject({ mode: 'full', reason: 'prior-not-ship-complete' });
-    // A completion that failed on its published P2 cannot be a verdict-cache source.
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
+    expect(decideNext(completion, rows)).toMatchObject({ mode: 'incremental', openFindingPaths: ['src/stable.ts'], reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'] });
+    // The cache may reuse only paths without an open finding.
     const source = verdictCacheSourceFromRows(rows);
-    expect(source?.prior.shipComplete).toBe(false);
+    expect(source?.prior.shipComplete).toBe(true);
     const current = nextIdentity(completion);
     const content = await gatherVerdictCacheContent(contentReader(), REPO_ID, source!.prior, current);
     const decision = decideVerdictCache({ source, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS, current, ...content });
-    expect(decision.mode).toBe('full');
+    expect(decision.mode).toBe('cache');
+    expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts']);
   });
 });

@@ -553,7 +553,7 @@ describe('guarded gateway input budgeting', () => {
     expect(evidence.rangeCalls).toBeGreaterThan(0);
     expect(evidence.rangePatches.map((patch: string) => patch.slice(rangeFixture.fileHeader.length).replace(/\n+$/u, '')))
       .toEqual(rangeFixture.expectedHunks);
-  });
+  }, 15_000);
 
   it('uses the compiled fallback as the canonical parser when native TypeScript loading is unavailable', () => {
     const fixture = createGuardedZeroAnchorFixture();

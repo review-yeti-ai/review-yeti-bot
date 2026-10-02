@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
-import { advisoryRequiredByDefault, blockingFindingCount, canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
+import { canonicalJson, publishFinding, sha256, validateReviewFindings } from './reviewCore';
 import type { ReviewGateDecision, ReviewGateEvidence } from './reviewGatePolicy';
 import { workerFailureClasses, workerFailureDiagnosticsSchema } from './workerCompletion';
 import { isNoReviewableContentFile } from './reviewableContent';
@@ -351,8 +351,7 @@ export const workerReviewCompletionSchema = completionSchema;
  * Evidence behind a check the worker published itself (app-gate publication
  * without the authoritative gate). Sent once, right after the check is
  * completed and before any terminal lifecycle callback, for BOTH conclusions:
- * a failing check carries the blocking findings that made it fail (P0/P1/P2
- * under the default policy). It never
+ * a failing check carries the P0/P1 findings that made it fail. It never
  * transitions the run and never selects or completes a check.
  */
 export const WORKER_REVIEW_EVIDENCE_VERSION = 'WorkerReviewEvidence.v1' as const;
@@ -605,18 +604,14 @@ function noReviewableContentAuditDigest(
   }));
 }
 
-function rawFieldsMatchCanonical(
-  result: WorkerReviewResult,
-  canonical: CanonicalArbitration,
-  requireAdvisory: boolean,
-): string | null {
+function rawFieldsMatchCanonical(result: WorkerReviewResult, canonical: CanonicalArbitration): string | null {
   if (result.verdict !== undefined && result.verdict !== canonical.verdict) {
     return `worker verdict ${result.verdict} disagrees with canonical verdict ${canonical.verdict}`;
   }
   if (result.findingCount !== undefined && result.findingCount !== canonical.metrics.totalFindings) {
     return `worker finding count ${result.findingCount} disagrees with canonical count ${canonical.metrics.totalFindings}`;
   }
-  const blockingCount = blockingFindingCount(canonical.metrics, requireAdvisory);
+  const blockingCount = canonical.metrics.p0Count + canonical.metrics.p1Count;
   if (result.blockingFindingCount !== undefined && result.blockingFindingCount !== blockingCount) {
     return `worker blocking finding count ${result.blockingFindingCount} disagrees with canonical count ${blockingCount}`;
   }
@@ -635,7 +630,6 @@ function arbitrateLanes(
   coverageComplete: boolean,
   changedFiles: ReviewChangedFile[] | undefined,
   composed = false,
-  requireAdvisory = advisoryRequiredByDefault(),
 ): { valid: true; canonical: CanonicalArbitration } | { valid: false; message: string } {
   const lanes: ReviewLane[] = [];
   for (const persona of personas) {
@@ -652,7 +646,7 @@ function arbitrateLanes(
     });
   }
   return { valid: true, canonical: computeAppVerdict({ lanes, expectedLanes, changedFiles, coverageComplete,
-    ...(composed ? { panelSize: 1 } : {}), requireAdvisory }) };
+    ...(composed ? { panelSize: 1 } : {}) }) };
 }
 
 /**
@@ -669,7 +663,7 @@ function arbitrateLanes(
  */
 export function deriveStoredCompletionVerdict(
   result: WorkerReviewResult,
-  trusted: { expectedLanes: number; coverageComplete: boolean; reviewEngine?: 'composed'; requireAdvisory?: boolean },
+  trusted: { expectedLanes: number; coverageComplete: boolean; reviewEngine?: 'composed' },
 ): CanonicalArbitration | null {
   if (!Number.isSafeInteger(trusted.expectedLanes) || trusted.expectedLanes <= 0) return null;
   const composed = trusted.reviewEngine === 'composed';
@@ -682,8 +676,7 @@ export function deriveStoredCompletionVerdict(
   const gating = result.personas.filter((persona) => persona.evidenceSource !== 'shadow');
   if (new Set(gating.map((persona) => persona.id)).size !== gating.length) return null;
   const arbitration = arbitrateLanes(gating, trusted.expectedLanes,
-    trusted.coverageComplete === true && result.coverageComplete, undefined, composed,
-    trusted.requireAdvisory ?? advisoryRequiredByDefault());
+    trusted.coverageComplete === true && result.coverageComplete, undefined, composed);
   return arbitration.valid ? arbitration.canonical : null;
 }
 
@@ -782,17 +775,16 @@ export function publishedFindingSeverity(finding: { severity: string; title?: st
  * - the gate's own record of THIS completion (the attempt whose `worker_result_digest` is the
  *   stored content digest): a `clean-review` success whose evidence, computed by
  *   `deriveCanonicalWorkerReviewEvidence` from the service's trusted lane set, is SHIP with every
- *   required lane completed, coverage and quorum met and no blocking findings under the
- *   current canonical policy. A `human-accepted-risk`
+ *   required lane completed, coverage and quorum met and no P0/P1. A `human-accepted-risk`
  *   success is a FIX_FIRST review and never qualifies;
  * - the canonical verdict re-derived from the stored lanes with the gate's required lane count
  *   (`deriveStoredCompletionVerdict`, the same arbitration the gate ran).
  *
- * P0/P1 findings are refused at their PUBLISHED severity (`publishedFindingSeverity`) on every
- * lane, including shadow lanes. P2 findings prevent a clean SHIP under the default policy when
- * they appear on gating lanes used by canonical arbitration; shadow-only findings remain outside
- * that verdict. A file with any finding, of any severity, is always re-reviewed in full
- * (`findingPaths`), so its prior result is never carried forward.
+ * Blocking findings are judged at their PUBLISHED severity (`publishedFindingSeverity`), on every
+ * lane including shadow lanes: a P0/P1 that survived calibration disqualifies; a raw P1 that
+ * calibration re-filed as P2 does not (review-yeti-bot#1034, 82381c85). That is safe because every
+ * file with any finding, of any severity, is always re-reviewed in full (`findingPaths`), so
+ * the downgraded finding's file is never carried forward.
  *
  * Also refused: an error lane, and an audited no-reviewable-content exemption (it reviewed nothing
  * to carry forward; the gate records it with zero required lanes and an `exemption`).
@@ -823,7 +815,7 @@ export function storedCompletionShipCompleteReason(
 /**
  * The lane half of both prior predicates: the stored lanes, re-derived with `expectedLanes`
  * required lanes through the same arbitration as the published verdict, must be a complete SHIP
- * with no P0/P1 finding on any lane and no P2 finding on a gating lane.
+ * with no P0/P1 at published severity on any lane.
  */
 function storedLanesRefusal(result: WorkerReviewResult, expectedLanes: number, reviewEngine?: 'composed'): StoredPriorRefusal | null {
   if (result.quorumSatisfied !== true) return 'worker-quorum-unmet';
@@ -854,8 +846,7 @@ function storedLanesRefusal(result: WorkerReviewResult, expectedLanes: number, r
  * - every gating lane is a roster lane, once, and every roster lane is present
  *   (`evidence-roster-mismatch` / `lane-missing`);
  * - the verdict re-derived from the stored lanes with the roster size as the required lane
- *   count is SHIP, with no P0/P1 finding on any lane, no P2 finding on a gating lane, and no failed
- *   lane (`storedLanesRefusal`).
+ *   count is SHIP, with no P0/P1 at published severity and no failed lane (`storedLanesRefusal`).
  *
  * Head, base and digests are bound to the run row and the policy/config digests are compared by
  * the shared decision, as for authoritative priors.
@@ -967,7 +958,7 @@ export function deriveCanonicalWorkerReviewEvidence(
       expectedLanes: 0,
       completedLanes: 0,
     };
-    const mismatch = rawFieldsMatchCanonical(completion.result, canonical, advisoryRequiredByDefault());
+    const mismatch = rawFieldsMatchCanonical(completion.result, canonical);
     if (mismatch) return invalidEvidence(mismatch, canonical, evidence);
     return { valid: true, canonical, evidence };
   }
@@ -1002,7 +993,7 @@ export function deriveCanonicalWorkerReviewEvidence(
 
   const coverageComplete = contract.coverageComplete && completion.result.coverageComplete;
   const arbitration = arbitrateLanes(completion.result.personas, requiredIds.length, coverageComplete, changedFiles,
-    contract.reviewEngine === 'composed', advisoryRequiredByDefault());
+    contract.reviewEngine === 'composed');
   if (!arbitration.valid) return invalidEvidence(arbitration.message);
   const { canonical } = arbitration;
   const quorumSatisfied = contract.quorumSatisfied && completion.result.quorumSatisfied && canonical.quorumSatisfied;
@@ -1019,7 +1010,7 @@ export function deriveCanonicalWorkerReviewEvidence(
     completedLanes: canonical.completedPersonas,
   };
 
-  const mismatch = rawFieldsMatchCanonical(completion.result, canonical, advisoryRequiredByDefault());
+  const mismatch = rawFieldsMatchCanonical(completion.result, canonical);
   if (mismatch) return invalidEvidence(mismatch, canonical, evidence);
   const moderationRefusal = emptyModerationClaimRefusal(
     completion.result, contract, requiredIds, changedFiles, coverageComplete, canonical);

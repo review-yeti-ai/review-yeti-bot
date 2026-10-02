@@ -36,6 +36,7 @@ import { logger } from '../utils/logger';
 import {
   ReviewGenerationRecoveryLedgerError,
   validateReviewGenerationRecoveryEvidence,
+  validateIncompleteP2RecoveryLedgerCandidate,
   type ReviewGenerationRecoveryEvidence,
   type ReviewGenerationRecoveryRequest,
 } from '../review/reviewGenerationRecovery';
@@ -414,7 +415,14 @@ function validateGenerationRecovery(
 ): void {
   const request = generationRecoveryRequest(input, runId);
   try {
-    validateReviewGenerationRecoveryEvidence(request, evidence);
+    if (input.incompleteP2Recovery === true || input.gracefulComposedContinuation === true) {
+      // Candidate shape and App chronology only. Original historical counts
+      // are authenticated by loadIncompleteP2RecoveryContext under the PR lock
+      // before allocation or persisted admission evidence.
+      validateIncompleteP2RecoveryLedgerCandidate(request, evidence);
+    } else {
+      validateReviewGenerationRecoveryEvidence(request, evidence);
+    }
   } catch (error) {
     if (error instanceof ReviewGenerationRecoveryLedgerError) {
       throw new ReviewGenerationConflictError(request.expectedGeneration, 1);

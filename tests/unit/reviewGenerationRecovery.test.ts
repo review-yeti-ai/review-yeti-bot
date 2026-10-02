@@ -3,6 +3,7 @@ import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { renderIncompleteInfrastructureTitle } from '../../src/review/publicationFailurePolicy';
 import {
   evaluateReviewGenerationRecoveryLedger,
+  evaluateIncompleteP2RecoveryLedgerCandidate,
   selectIncompleteRecoveryGate,
   validateReviewGenerationRecoveryEvidence,
 } from '../../src/review/reviewGenerationRecovery';
@@ -415,5 +416,35 @@ describe('Review Yeti worker-generation recovery ledger', () => {
     await expect(client.readReviewGenerationRecovery(request({ headSha: '../check-runs?app_id=1' }) as any))
       .rejects.toThrow(/generation recovery ledger/u);
     expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+});
+
+describe('historical archive fetch candidates', () => {
+  it('preserves historical wording for locked verification while ordinary admission stays strict', async () => {
+    const candidate = request({ incompleteP2Recovery: true });
+    const worker = incompleteWorkerCheck(1, 7, 3, { canonical: 3, raw: 3 },
+      '2026-09-29T11:59:58Z', '2026-09-29T12:00:00Z');
+    const original = worker.output.summary.replace('P0/P1: 0', 'P0/P1/P2: 3');
+    worker.output.summary = original;
+    const gate = incompleteGateCheck(2001, 7, 3, '2026-09-29T12:00:02Z');
+    expect(() => evaluateReviewGenerationRecoveryLedger(candidate, [worker], [gate])).toThrow();
+    const proof = evaluateIncompleteP2RecoveryLedgerCandidate(candidate, [worker], [gate]);
+    expect(proof[0].legacyIncompleteRoster?.workerSummary).toBe(original);
+    expect(() => validateReviewGenerationRecoveryEvidence(candidate, proof)).toThrow();
+    const { client } = clientForPages([
+      { total_count: 1, check_runs: [worker] }, { total_count: 1, check_runs: [gate] },
+    ]);
+    await expect(client.readReviewGenerationRecovery(candidate)).resolves.toEqual(proof);
+  });
+
+  it('rejects foreign App and successful Gate candidates before reading any archive', () => {
+    const candidate = request({ incompleteP2Recovery: true });
+    const worker = incompleteWorkerCheck(1, 7, 3, { canonical: 3, raw: 3 },
+      '2026-09-29T11:59:58Z', '2026-09-29T12:00:00Z');
+    const gate = incompleteGateCheck(2001, 7, 3, '2026-09-29T12:00:02Z');
+    expect(() => evaluateIncompleteP2RecoveryLedgerCandidate(candidate,
+      [{ ...worker, app: { ...worker.app, id: 1 } }], [gate])).toThrow();
+    expect(() => evaluateIncompleteP2RecoveryLedgerCandidate(candidate,
+      [worker], [{ ...gate, conclusion: 'success' }])).toThrow();
   });
 });

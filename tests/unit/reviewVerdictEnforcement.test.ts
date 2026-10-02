@@ -20,8 +20,9 @@ const raw = fs.readFileSync(workflowPath, 'utf8');
  *
  * REL-585 hardens the SHIP branch to also require the pipeline's own coverage/gate signals
  * (gate-decision, merge-eligible, files-omitted -- see review-pipeline.js's writeStepOutputs)
- * rather than trusting the verdict string alone. Advisory P2 policy is applied by the shared
- * arbitration wrapper; this workflow step consumes its verdict and does not re-count severities.
+ * rather than trusting the verdict string alone, and removes the P2-blocking branch: that policy
+ * belongs to arbitration (src/review/reviewCore.js's fixP2 threshold), not this workflow layer,
+ * and this layer had no suppression path for a P2 false positive.
  */
 describe('review verdict enforcement (REL-580, REL-585)', () => {
   const workflow = yaml.load(raw) as any;
@@ -44,9 +45,10 @@ describe('review verdict enforcement (REL-580, REL-585)', () => {
     expect(enforce!.env?.FILES_OMITTED).toContain('steps.review.outputs.files-omitted');
   });
 
-  it('does not duplicate severity policy with a separate p2-count gate', () => {
-    // The shared arbitration wrapper decides whether P2 is required. This workflow step only
-    // consumes that canonical verdict and keeps the coverage signals independent.
+  it('no longer reads or blocks on p2-count', () => {
+    // REL-585: P2 is advisory everywhere else (central gate, App path, arbitration's own
+    // threshold) and this workflow layer had no suppression path for a false positive. The
+    // env binding and the blocking branch must both be gone.
     expect(enforce!.env?.P2_COUNT).toBeUndefined();
     expect(enforce!.run).not.toContain('P2_COUNT');
     expect(enforce!.run).not.toContain('p2-count');

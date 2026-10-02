@@ -40,35 +40,27 @@ describe('Arbitration scales with the size of the panel', () => {
     expect(computeArbitrationQuorum(results(1, { P0: 1 }), 1).verdict).toBe('BLOCK');
   });
 
-  it('requires gating P2 findings at the publishing boundary regardless of panel size or volume', () => {
-    expect(computeArbitrationQuorum(results(12, { P2: 1 }), 12).verdict).toBe('FIX_FIRST');
-    expect(computeArbitrationQuorum(results(12, { P2: 99 }), 12).verdict).toBe('FIX_FIRST');
-    expect(computeArbitrationQuorum(results(2, { P2: 1 }), 2).verdict).toBe('FIX_FIRST');
+  it('does not block a merge on P2 findings at any volume', () => {
+    // P2s no longer decide the verdict. A two-file change previously took five
+    // review cycles because each round raised fresh nits against the code the
+    // previous round had just added -- the threshold measured review volume, not
+    // review quality, and no evidence was ever recorded for the number itself.
+    expect(computeArbitrationQuorum(results(12, { P2: 12 }), 12).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(12, { P2: 99 }), 12).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(2, { P2: 5 }), 2).verdict).toBe('SHIP');
   });
 
-  it('requires P2 below the legacy volume threshold even when that threshold is enabled', () => {
+  it('restores the old nit contract when explicitly opted in', () => {
+    // Rollback is a flag, not a revert.
     const opts = { p2BlocksMerge: true };
-    // Legacy thresholds are 12 for a 12-persona panel and 5 for a 2-persona panel.
-    // Counts below both thresholds prove the publication policy, not just the volume rule.
-    expect(computeArbitrationQuorum(results(12, { P2: 11 }), 12, opts).verdict).toBe('FIX_FIRST');
-    expect(computeArbitrationQuorum(results(2, { P2: 4 }), 2, opts).verdict).toBe('FIX_FIRST');
+    expect(computeArbitrationQuorum(results(12, { P2: 11 }), 12, opts).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(12, { P2: 12 }), 12, opts).verdict).toBe('FIX_FIRST');
+    expect(computeArbitrationQuorum(results(2, { P2: 4 }), 2, opts).verdict).toBe('SHIP');
+    expect(computeArbitrationQuorum(results(2, { P2: 5 }), 2, opts).verdict).toBe('FIX_FIRST');
   });
 
-  it('does not let caller false flags override the trusted default P2 requirement', () => {
-    const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    try {
-      delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      expect(computeArbitrationQuorum(results(1, { P2: 1 }), 1, {
-        requireAdvisory: false,
-        advisoryRequired: false,
-      }).verdict).toBe('FIX_FIRST');
-    } finally {
-      if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
-    }
-  });
-
-  it('still gates on P0 and P1 alongside required P2 findings', () => {
+  it('still gates on P0 and P1 with P2 disarmed', () => {
+    // Removing the nit gate must not weaken the gates that carry evidence.
     expect(computeArbitrationQuorum(results(6, { P0: 1, P2: 99 }), 6).verdict).toBe('BLOCK');
     expect(computeArbitrationQuorum(results(6, { P1: 1, P2: 99 }), 6).verdict).toBe('FIX_FIRST');
     expect(computeArbitrationQuorum(results(6, { P1: 3, P2: 99 }), 6).verdict).toBe('BLOCK');

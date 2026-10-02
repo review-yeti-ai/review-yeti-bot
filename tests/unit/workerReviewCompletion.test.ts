@@ -75,33 +75,6 @@ function expectInvalid(result: ReturnType<typeof derive>, message: RegExp): void
 }
 
 describe('WorkerReviewCompletion.v1', () => {
-  it('derives P2 as required and checks the worker blocking count against trusted policy', () => {
-    const p2 = completion({ result: {
-      ...completion().result,
-      personas: [
-        lane('security', { decision: 'FINDINGS', findings: [{
-          severity: 'P2', path: 'src/example.ts', line: 1,
-          title: 'Required advisory', body: 'This must be addressed before merge.',
-        }] }),
-        lane('architecture'),
-      ],
-      verdict: 'FIX_FIRST',
-      findingCount: 1,
-      blockingFindingCount: 1,
-    } });
-    const result = derive(p2);
-
-    expect(result.valid).toBe(true);
-    if (result.valid) {
-      expect(result.canonical.verdict).toBe('FIX_FIRST');
-      expect(result.canonical.metrics).toMatchObject({ p0Count: 0, p1Count: 0, p2Count: 1 });
-      expect(result.evidence.verdict).toBe('FIX_FIRST');
-    }
-
-    expectInvalid(derive({ ...p2, result: { ...p2.result, verdict: 'SHIP' } }), /worker verdict SHIP disagrees with canonical verdict FIX_FIRST/u);
-    expectInvalid(derive({ ...p2, result: { ...p2.result, blockingFindingCount: 0 } }), /blocking finding count 0 disagrees with canonical count 1/u);
-  });
-
   it('accepts optional classification accounting without treating it as coverage or verdict authority', () => {
     const input = completion();
     input.result.deletionClassification = { version: 'deletion-classification.v1', digest: 'f'.repeat(64),

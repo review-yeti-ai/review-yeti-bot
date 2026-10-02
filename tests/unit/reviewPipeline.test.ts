@@ -1029,7 +1029,7 @@ index 123456..789abc 100644
   describe('Edge Cases & Quorum Thresholds: computeArbitrationQuorum', () => {
     const { computeArbitrationQuorum } = pipeline;
 
-    it('22. Computes FIX_FIRST for P1 and P2 findings at the publishing boundary', () => {
+    it('22. Computes FIX_FIRST for 1 P1 finding; P2 volume alone does not gate', () => {
       const resultsP1 = [{ findings: [{ severity: 'P1' }] }];
       const quorumP1 = computeArbitrationQuorum(resultsP1 as any);
       expect(quorumP1.verdict).toBe('FIX_FIRST');
@@ -1040,31 +1040,15 @@ index 123456..789abc 100644
           { severity: 'P2' },
           { severity: 'P2' },
           { severity: 'P2' },
+          { severity: 'P2' },
         ],
       }];
-      const quorumP2 = computeArbitrationQuorum([{ findings: [{ severity: 'P2' }] }] as any);
-      expect(quorumP2.verdict).toBe('FIX_FIRST');
+      const quorumP2 = computeArbitrationQuorum(resultsP2 as any);
+      expect(quorumP2.verdict).toBe('SHIP');
 
-      // Even when the legacy volume threshold is enabled, this count is below its floor of five.
-      const belowLegacyThreshold = computeArbitrationQuorum(resultsP2 as any, undefined, { p2BlocksMerge: true });
-      expect(belowLegacyThreshold.verdict).toBe('FIX_FIRST');
-    });
-
-    it('retains the legacy volume threshold only under the explicit advisory opt-out', () => {
-      const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      try {
-        process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
-        const resultsWithP2 = (count: number) => [{
-          findings: Array.from({ length: count }, () => ({ severity: 'P2' })),
-        }, { findings: [] }];
-        const below = computeArbitrationQuorum(resultsWithP2(4), 2, { p2BlocksMerge: true });
-        const at = computeArbitrationQuorum(resultsWithP2(5), 2, { p2BlocksMerge: true });
-        expect(below.verdict).toBe('SHIP');
-        expect(at.verdict).toBe('FIX_FIRST');
-      } finally {
-        if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
-      }
+      // The old contract remains reachable behind an explicit opt-in.
+      const opted = computeArbitrationQuorum(resultsP2 as any, undefined, { p2BlocksMerge: true });
+      expect(opted.verdict).toBe('FIX_FIRST');
     });
 
     it('23. Computes BLOCK for 3+ P1 findings or 1 P0 finding', () => {

@@ -207,7 +207,7 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(on.observed).toBe(off.observed);
   });
 
-  it.each(['clean', 'advisory'] as const)('publishes the %s check and callback before waiting on slow Jev', async (kind) => {
+  it('publishes the check before waiting on a slow Jev (the join is the last await)', async () => {
     const order: string[] = [];
     let release: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -218,21 +218,17 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
         return persuasiveAsker().asker.ask(request);
       }) as never,
     };
-    const h = harness(kind, {
+    const h = harness('advisory', {
       jevTriageShadow: { asker: slow },
       checkClient: {
         createCheck: vi.fn(async () => 4242),
         completeCheck: vi.fn(async () => { order.push('check'); }),
       },
     });
-    if (kind === 'clean') h.completion.reportTerminalSuccess.mockImplementation(async () => { order.push('terminal-success'); release(); });
-    else h.completion.reportReviewEvidence.mockImplementation(async () => { order.push('evidence'); release(); });
+    h.completion.reportTerminalSuccess.mockImplementation(async () => { order.push('terminal-success'); release(); });
     const receipt = await runPublishingReviewWorker(env(SHADOW_ON), h as never);
-    expect(receipt.conclusion).toBe(kind === 'clean' ? 'success' : 'failure');
-    expect(receipt.findingCount).toBe(kind === 'clean' ? 0 : 1);
-    expect(order.slice(0, 2)).toEqual(['check', kind === 'clean' ? 'terminal-success' : 'evidence']);
-    expect(order[0]).toBe('check');
-    expect(order.indexOf('check')).toBeLessThan(order.indexOf('jev'));
+    expect(receipt.conclusion).toBe('success');
+    expect(order.slice(0, 2)).toEqual(['check', 'terminal-success']);
     expect(order).toContain('jev');
   });
 
@@ -262,7 +258,7 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(joins[0]).toMatchObject({
       repository: 'review-yeti-ai/review-yeti-bot', prNumber: 2795, headSha: HEAD,
       category: 'generated', risk_level: 1, security_sensitive: true,
-      findings_total: 1, findings_p2: 1, finding_class: 'advisory', panel_mode: 'panel', verdict: 'FIX_FIRST',
+      findings_total: 1, findings_p2: 1, finding_class: 'advisory', panel_mode: 'panel', verdict: 'SHIP',
       lanes: { 'sec-lane': { said_yes: false, ran: true, findings: 1 }, 'perf-lane': { said_yes: false, findings: 0 } },
     });
     expect(joins[1]).toMatchObject({ findings_total: 0, finding_class: 'none' });

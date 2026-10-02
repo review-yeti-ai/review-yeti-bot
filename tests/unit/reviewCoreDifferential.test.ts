@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeAppVerdict } from '../../src/review/reviewAdapters';
-import {
-  advisoryRequiredByDefault,
-  blockingFindingCount,
-  blockingFindingSeverities,
-  computeArbitration,
-  ReviewLane,
-} from '../../src/review/reviewCore';
+import { ReviewLane } from '../../src/review/reviewCore';
 
 const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js');
 
@@ -36,196 +30,26 @@ describe('canonical review contract differential', () => {
     expect(action.status).toBe('SHIP');
   });
 
-  it('requires P2 at both publishing boundaries while keeping low-level arbitration opt-in', () => {
+  it('keeps P2 advisory by default while preserving the explicit legacy App opt-in', () => {
+    const p2Findings = Array.from({ length: 5 }, (_, index) => ({
+      severity: 'P2' as const,
+      path: `src/advisory-${index}.ts`,
+      line: 10,
+      title: `Advisory ${index}`,
+      body: `Distinct advisory finding ${index}.`,
+    }));
     const p2Only: ReviewLane[] = [
-      { id: 'security', required: true, decision: 'FINDINGS', findings: [
-        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Required advisory', body: 'Address this before merge.' },
-      ] },
+      { id: 'security', required: true, decision: 'FINDINGS', findings: p2Findings },
       { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
     ];
-    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    try {
-      const app = computeAppVerdict({
-        lanes: p2Only,
-        expectedLanes: 2,
-        changedFiles,
-        candidateVerdict: 'SHIP',
-      });
-      const action = actionVerdict(p2Only);
-      const pure = computeArbitration(p2Only, 2, { changedFiles });
 
-      expect(advisoryRequiredByDefault()).toBe(true);
-      expect(blockingFindingSeverities(advisoryRequiredByDefault())).toEqual(['P0', 'P1', 'P2']);
-      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 }, advisoryRequiredByDefault())).toBe(1);
-      expect(app.verdict).toBe('FIX_FIRST');
-      expect(app.metrics.p2Count).toBe(1);
-      expect(action.verdict).toBe('FIX_FIRST');
-      expect(pure.verdict).toBe('SHIP');
-    } finally {
-      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
-    }
-  });
+    const current = computeAppVerdict({ lanes: p2Only, expectedLanes: 2 });
+    const explicitlyHardened = computeAppVerdict({ lanes: p2Only, expectedLanes: 2, p2BlocksMerge: true });
 
-  it('honors the configured P0/P1-only rollback through both publishing boundaries', () => {
-    const p2Only: ReviewLane[] = [
-      { id: 'security', required: true, decision: 'FINDINGS', findings: [
-        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Advisory', body: 'A P2-only finding.' },
-      ] },
-      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
-    ];
-    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
-    try {
-      expect(advisoryRequiredByDefault()).toBe(false);
-      expect(blockingFindingSeverities(advisoryRequiredByDefault())).toEqual(['P0', 'P1']);
-      expect(blockingFindingCount({ p0Count: 0, p1Count: 0, p2Count: 1 }, advisoryRequiredByDefault())).toBe(0);
-      expect(computeAppVerdict({ lanes: p2Only, expectedLanes: 2, changedFiles }).verdict).toBe('SHIP');
-      expect(actionVerdict(p2Only).verdict).toBe('SHIP');
-      // The pure kernel remains opt-in independently of the publishing-boundary default.
-      expect(computeArbitration(p2Only, 2, { changedFiles }).verdict).toBe('SHIP');
-    } finally {
-      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
-    }
-  });
-
-  it.each(['requireAdvisory', 'advisoryRequired'] as const)(
-    'lets the %s opt-in harden configured rollback with identical App and Action receipts', (option) => {
-      const p2Only: ReviewLane[] = [
-        { id: 'security', required: true, decision: 'FINDINGS', findings: [
-          { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Required advisory', body: 'Address this before merge.' },
-        ] },
-        { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
-      ];
-      const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
-      try {
-        const baseline = computeAppVerdict({ lanes: p2Only, expectedLanes: 2, changedFiles });
-        expect(baseline.verdict).toBe('SHIP');
-        expect(JSON.stringify(actionVerdict(p2Only))).toBe(JSON.stringify(baseline));
-
-        const options = { [option]: true };
-        const app = computeAppVerdict({ lanes: p2Only, expectedLanes: 2, changedFiles, ...options });
-        const action = actionVerdict(p2Only, 2, options);
-        expect(app.verdict).toBe('FIX_FIRST');
-        expect(app.metrics.p2Count).toBe(1);
-        expect(app.quorumSatisfied).toBe(true);
-        expect(JSON.stringify(action)).toBe(JSON.stringify(app));
-      } finally {
-        if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
-      }
-    },
-  );
-
-  it.each([{ count: 11, verdict: 'SHIP' }, { count: 12, verdict: 'FIX_FIRST' }])(
-    'preserves twelve-persona legacy scaling at $count P2 findings through App and Action', ({ count, verdict }) => {
-      const legacyChangedFiles = Array.from({ length: 12 }, (_, index) => ({
-        ...changedFiles[0], path: `src/legacy-${index}.ts`,
-      }));
-      const findings = legacyChangedFiles.slice(0, count).map(({ path }) => ({
-        severity: 'P2' as const, path, line: 10, title: 'Required advisory', body: 'Address this before merge.',
-      }));
-      const p2Only: ReviewLane[] = Array.from({ length: 12 }, (_, index) => ({
-        id: `persona-${index}`,
-        required: true,
-        decision: index === 0 ? 'FINDINGS' : 'APPROVE',
-        findings: index === 0 ? findings : [],
-      }));
-      const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
-      try {
-        const options = { changedFiles: legacyChangedFiles, p2BlocksMerge: true };
-        const app = computeAppVerdict({ lanes: p2Only, expectedLanes: 12, ...options });
-        const action = actionVerdict(p2Only, 12, options);
-        const pure = computeArbitration(p2Only, 12, options);
-        expect(app.metrics.p2Count).toBe(count);
-        expect(app.thresholds.fixP2).toBe(12);
-        expect(app.verdict).toBe(verdict);
-        expect(app.quorumSatisfied).toBe(true);
-        expect(JSON.stringify(action)).toBe(JSON.stringify(app));
-        expect(JSON.stringify(pure)).toBe(JSON.stringify(app));
-      } finally {
-        if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
-      }
-    },
-  );
-
-  it('keeps pure default helpers and raw P2 arbitration independent of runtime policy', () => {
-    const p2Only: ReviewLane[] = [
-      { id: 'security', required: true, decision: 'FINDINGS', findings: [
-        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Advisory', body: 'A P2-only finding.' },
-      ] },
-      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
-    ];
-    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    try {
-      const defaultReceipts: string[] = [];
-      const explicitReceipts: string[] = [];
-      const p2Metrics = { p0Count: 0, p1Count: 0, p2Count: 1 };
-      for (const policy of [undefined, 'false', 'true'] as const) {
-        if (policy === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = policy;
-
-        expect(advisoryRequiredByDefault()).toBe(policy !== 'false');
-        expect(blockingFindingSeverities()).toEqual(['P0', 'P1']);
-        expect(blockingFindingCount(p2Metrics)).toBe(0);
-        expect(blockingFindingSeverities(true)).toEqual(['P0', 'P1', 'P2']);
-        expect(blockingFindingCount(p2Metrics, true)).toBe(1);
-
-        const rawDefault = computeArbitration(p2Only, 2, { changedFiles });
-        expect(rawDefault.verdict).toBe('SHIP');
-        expect(rawDefault.metrics).toMatchObject({ p0Count: 0, p1Count: 0, p2Count: 1 });
-        defaultReceipts.push(JSON.stringify({
-          severities: blockingFindingSeverities(),
-          blockingCount: blockingFindingCount(p2Metrics),
-          rawArbitration: rawDefault,
-        }));
-
-        const rawExplicit = computeArbitration(p2Only, 2, { changedFiles, requireAdvisory: true });
-        expect(rawExplicit.verdict).toBe('FIX_FIRST');
-        expect(rawExplicit.metrics).toMatchObject({ p0Count: 0, p1Count: 0, p2Count: 1 });
-        explicitReceipts.push(JSON.stringify({
-          severities: blockingFindingSeverities(true),
-          blockingCount: blockingFindingCount(p2Metrics, true),
-          rawArbitration: rawExplicit,
-        }));
-      }
-      expect(new Set(defaultReceipts).size).toBe(1);
-      expect(new Set(explicitReceipts).size).toBe(1);
-    } finally {
-      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
-    }
-  });
-
-  it('keeps pure arbitration byte-identical across runtime policy changes for each explicit advisory option', () => {
-    const p2Only: ReviewLane[] = [
-      { id: 'security', required: true, decision: 'FINDINGS', findings: [
-        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Advisory', body: 'A P2-only finding.' },
-      ] },
-      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
-    ];
-    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-    try {
-      for (const requireAdvisory of [undefined, false, true]) {
-        const options = { changedFiles, ...(requireAdvisory === undefined ? {} : { requireAdvisory }) };
-        const receipts = [undefined, 'false', 'true'].map((policy) => {
-          if (policy === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-          else process.env.REVIEW_YETI_REQUIRE_ADVISORY = policy;
-          const result = computeArbitration(p2Only, 2, options);
-          expect(result.verdict).toBe(requireAdvisory === true ? 'FIX_FIRST' : 'SHIP');
-          return JSON.stringify(result);
-        });
-        expect(new Set(receipts).size).toBe(1);
-      }
-    } finally {
-      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
-    }
+    expect(current.verdict).toBe('SHIP');
+    expect(current.metrics.p2Count).toBe(5);
+    expect(explicitlyHardened.verdict).toBe('FIX_FIRST');
+    expect(explicitlyHardened.metrics.p2Count).toBe(5);
   });
 
   it('keeps findings and verdicts identical while removing out-of-diff paths', () => {

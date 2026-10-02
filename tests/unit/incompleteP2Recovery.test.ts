@@ -93,28 +93,12 @@ function completionFixture() {
   };
 }
 
-function workerSummary(options: {
-  canonical?: number;
-  raw?: number;
-  completed?: number;
-  expected?: number;
-  sha?: string;
-  blockingFormat?: 'legacy' | 'p2-inclusive';
-  blocking?: number;
-} = {}) {
-  const canonical = options.canonical ?? 3;
-  const raw = options.raw ?? 3;
-  const completed = options.completed ?? 3;
-  const expected = options.expected ?? 7;
-  const sha = options.sha ?? headSha;
-  const blockingFormat = options.blockingFormat ?? 'legacy';
-  const blocking = options.blocking ?? (blockingFormat === 'p2-inclusive' ? canonical : 0);
+function workerSummary({ canonical = 3, raw = 3, completed = 3, expected = 7, sha = headSha } = {}) {
   const tick = String.fromCharCode(96);
   return [
     'Verdict ' + tick + 'BLOCK' + tick + ' at ' + tick + sha + tick + '.',
     '',
-    'Findings: ' + canonical + ' (blocking ' + (blockingFormat === 'p2-inclusive' ? 'P0/P1/P2' : 'P0/P1')
-      + ': ' + blocking + '; ' + raw + ' raw persona finding(s) before clustering).',
+    'Findings: ' + canonical + ' (blocking P0/P1: 0; ' + raw + ' raw persona finding(s) before clustering).',
     '',
     'Coverage: mode=panel; expected lanes=' + expected + '; completed lanes=' + completed + '; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.',
   ].join('\n');
@@ -453,40 +437,45 @@ describe('incomplete P2 recovery context', () => {
     }]);
   });
 
-  it.each([['legacy zero count', 0], ['current P2-only blocking count', 3]] as const)(
-    'loads an immutable P2-only archive with a %s', async (_label, blockingFindingCount) => {
+  it('reads historical P2-inclusive counts without rewriting original evidence', async () => {
+    const fixture = queryableForIncompletePrior();
+    fixture.sourceRows[0].payload.result.blockingFindingCount = 3;
+    const originalDigest = resealCompletion(fixture);
+    const proof = recoveryEvidence(fixture.externalId, {
+      workerSummary: workerSummary().replace('blocking P0/P1: 0', 'blocking P0/P1/P2: 3'),
+    });
+    const originalRows = JSON.stringify(fixture.sourceRows);
+    const originalProof = JSON.stringify(proof);
+    const context = await loadFixture(fixture, { recoveryEvidence: proof });
+    expect(context?.findings).toHaveLength(3);
+    expect(context?.sources[0].workerResultDigest).toBe(originalDigest);
+    expect(JSON.stringify(fixture.sourceRows)).toBe(originalRows);
+    expect(JSON.stringify(proof)).toBe(originalProof);
+  });
+
+  it.each(['summary count', 'stored count', 'payload digest', 'Gate digest', 'Gate evidence'])
+    ('rejects historical P2-inclusive evidence with a mismatched %s', async (mismatch) => {
       const fixture = queryableForIncompletePrior();
-      (fixture.sourceRows[0] as any).payload.result.blockingFindingCount = blockingFindingCount;
+      fixture.sourceRows[0].payload.result.blockingFindingCount = 3;
       resealCompletion(fixture);
-
-      const currentSummary = workerSummary({ blockingFormat: 'p2-inclusive' });
-      const context = await loadFixture(fixture, blockingFindingCount === 0 ? {} : {
-        recoveryEvidence: recoveryEvidence(fixture.externalId, { workerSummary: currentSummary }),
+      const proof = recoveryEvidence(fixture.externalId, {
+        workerSummary: workerSummary().replace('blocking P0/P1: 0', 'blocking P0/P1/P2: 3'),
       });
-
-      expect(context?.findings).toHaveLength(3);
-      expect(context?.sources[0]?.rawFindingCount).toBe(3);
-    },
-  );
-
-  it('refuses an archived positive blocking count that is neither legacy zero nor canonical P2-only', async () => {
-    const fixture = queryableForIncompletePrior();
-    (fixture.sourceRows[0] as any).payload.result.blockingFindingCount = 2;
-    resealCompletion(fixture);
-
-    await expect(loadFixture(fixture)).rejects.toThrow();
-  });
-
-  it('refuses a current P2-inclusive summary paired with a contradictory archived zero count', async () => {
-    const fixture = queryableForIncompletePrior();
-    (fixture.sourceRows[0] as any).payload.result.blockingFindingCount = 0;
-    resealCompletion(fixture);
-    const currentSummary = workerSummary({ blockingFormat: 'p2-inclusive' });
-
-    await expect(loadFixture(fixture, {
-      recoveryEvidence: recoveryEvidence(fixture.externalId, { workerSummary: currentSummary }),
-    })).rejects.toThrow();
-  });
+      if (mismatch === 'summary count') {
+        proof[0].legacyIncompleteRoster!.workerSummary =
+          proof[0].legacyIncompleteRoster!.workerSummary.replace('P0/P1/P2: 3', 'P0/P1/P2: 2');
+      } else if (mismatch === 'stored count') {
+        fixture.sourceRows[0].payload.result.blockingFindingCount = 0;
+        resealCompletion(fixture);
+      } else if (mismatch === 'payload digest') {
+        fixture.sourceRows[0].payload.result.personas[0].findings[0].body = 'Tampered archive';
+      } else if (mismatch === 'Gate digest') {
+        fixture.sourceRows[0].gate_worker_result_digest = 'f'.repeat(64);
+      } else {
+        fixture.sourceRows[0].gate_evidence.p1Count = 1;
+      }
+      await expect(loadFixture(fixture, { recoveryEvidence: proof })).rejects.toThrow();
+    });
 
   it('refuses a completion whose payload no longer matches its immutable digest', async () => {
     const fixture = queryableForIncompletePrior();

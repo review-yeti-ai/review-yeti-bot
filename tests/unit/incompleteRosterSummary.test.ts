@@ -6,9 +6,8 @@ const HEAD = 'a'.repeat(40);
 const RUN = `run_${'b'.repeat(32)}`;
 const EXPECTED_GATE_SUMMARY = 'Review Yeti Gate failed: the panel expected 3 review lane(s) but 2 completed. This is an incomplete review, not a findings verdict; re-dispatch the review for this head.';
 const WORKER_SUMMARY = `Verdict \`BLOCK\` at \`${HEAD}\`.\n\nFindings: 1 (blocking P0/P1: 0; 1 raw persona finding(s) before clustering).\n\nCoverage: mode=panel; expected lanes=3; completed lanes=2; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
-const CURRENT_P2_WORKER_SUMMARY = `Verdict \`BLOCK\` at \`${HEAD}\`.\n\nFindings: 3 (blocking P0/P1/P2: 3; 4 raw persona finding(s) before clustering).\n\nCoverage: mode=panel; expected lanes=3; completed lanes=2; failed lanes=0; roster valid=false; quorum satisfied=false; full panel complete=false.`;
 
-function evidence(gateSummary = EXPECTED_GATE_SUMMARY, workerSummary = WORKER_SUMMARY) {
+function evidence(gateSummary = EXPECTED_GATE_SUMMARY) {
   return [{
     generation: 1,
     checkId: 101,
@@ -16,7 +15,7 @@ function evidence(gateSummary = EXPECTED_GATE_SUMMARY, workerSummary = WORKER_SU
     conclusion: 'failure' as const,
     title: 'Review Yeti: BLOCK',
     legacyIncompleteRoster: {
-      workerSummary,
+      workerSummary: WORKER_SUMMARY,
       workerStartedAt: '2026-09-29T11:59:58Z',
       workerCompletedAt: '2026-09-29T12:00:00Z',
       gateChecks: [{
@@ -50,38 +49,27 @@ describe('incomplete roster Gate summary', () => {
       expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
     }, evidence(EXPECTED_GATE_SUMMARY.replace('2 completed', '1 completed')))).toThrow(/generation recovery ledger/u);
   });
+});
 
-  it('accepts the current publisher P2-inclusive summary only when blocking and canonical counts agree', () => {
-    expect(validateReviewGenerationRecoveryEvidence({
-      owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
-      expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
-    }, evidence(EXPECTED_GATE_SUMMARY, CURRENT_P2_WORKER_SUMMARY))).toHaveLength(1);
-
-    const mismatched = CURRENT_P2_WORKER_SUMMARY.replace('blocking P0/P1/P2: 3', 'blocking P0/P1/P2: 2');
-    expect(() => validateReviewGenerationRecoveryEvidence({
-      owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
-      expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
-    }, evidence(EXPECTED_GATE_SUMMARY, mismatched))).toThrow(/generation recovery ledger/u);
+describe('current incomplete summary counts', () => {
+  it('rejects raw counts below the canonical total and accepts equality', () => {
+    const summary = WORKER_SUMMARY.replace('Findings: 1', 'Findings: 3');
+    expect(parseIncompleteRosterSummary(summary.replace('1 raw', '2 raw'), HEAD)).toBeNull();
+    expect(parseIncompleteRosterSummary(summary.replace('1 raw', '3 raw'), HEAD)?.canonicalFindingCount).toBe(3);
   });
 
-  it('rejects raw persona counts below the canonical finding count', () => {
-    const validate = (workerSummary: string) => validateReviewGenerationRecoveryEvidence({
-      owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
-      expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
-    }, evidence(EXPECTED_GATE_SUMMARY, workerSummary));
-
-    const matchingCounts = CURRENT_P2_WORKER_SUMMARY.replace(
-      '4 raw persona finding(s)',
-      '3 raw persona finding(s)',
-    );
-    expect(parseIncompleteRosterSummary(matchingCounts, HEAD)?.rawFindingCount).toBe(3);
-    expect(validate(matchingCounts)).toHaveLength(1);
-
-    const rawBelowCanonical = CURRENT_P2_WORKER_SUMMARY.replace(
-      '4 raw persona finding(s)',
-      '2 raw persona finding(s)',
-    );
-    expect(parseIncompleteRosterSummary(rawBelowCanonical, HEAD)).toBeNull();
-    expect(() => validate(rawBelowCanonical)).toThrow(/generation recovery ledger/u);
+  it('keeps historical P2-inclusive wording outside current generation admission', () => {
+    expect(parseIncompleteRosterSummary(WORKER_SUMMARY.replace('P0/P1: 0', 'P0/P1/P2: 1'), HEAD)).toBeNull();
   });
+});
+
+it('retains exact historical zero-finding recovery without admitting positive historical counts', () => {
+  const historicalZero = WORKER_SUMMARY.replace('Findings: 1', 'Findings: 0').replace('1 raw', '0 raw').replace('P0/P1: 0', 'P0/P1/P2: 0');
+  expect(parseIncompleteRosterSummary(historicalZero, HEAD)?.canonicalFindingCount).toBe(0);
+  const proof = evidence();
+  proof[0].legacyIncompleteRoster.workerSummary = historicalZero;
+  expect(validateReviewGenerationRecoveryEvidence({
+    owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
+    expectedGeneration: 2, expectedAppId: 77,
+  }, proof)).toHaveLength(1);
 });

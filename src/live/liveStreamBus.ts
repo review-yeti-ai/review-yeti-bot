@@ -64,6 +64,7 @@ export class LiveStreamBus extends EventEmitter {
   private eventHistory: Map<string, LiveStreamEvent[]> = new Map();
   private pingIntervals: Map<Response, NodeJS.Timeout> = new Map();
   private jobs: Map<string, LiveJobSummary> = new Map();
+  private snapshots: Map<string, any> = new Map();
   private readonly progressForwarder: ProgressEventForwarder;
   private onProgressSinkError?: LiveStreamProgressErrorHandler;
   private readonly progressObserverContext = new AsyncLocalStorage<boolean>();
@@ -364,13 +365,27 @@ export class LiveStreamBus extends EventEmitter {
     return this.jobs.get(jobId);
   }
 
+  public setJobSnapshot(jobId: string, snapshot: any): void {
+    this.snapshots.set(jobId, snapshot);
+    if (this.snapshots.size > 100) {
+      const firstKey = this.snapshots.keys().next().value;
+      if (firstKey) this.snapshots.delete(firstKey);
+    }
+  }
+
+  public getJobSnapshot(jobId: string): any | undefined {
+    return this.snapshots.get(jobId);
+  }
+
   public clearHistory(jobId?: string): void {
     if (jobId) {
       this.eventHistory.delete(jobId);
       this.jobs.delete(jobId);
+      this.snapshots.delete(jobId);
     } else {
       this.eventHistory.clear();
       this.jobs.clear();
+      this.snapshots.clear();
     }
   }
 
@@ -429,6 +444,12 @@ export class LiveStreamBus extends EventEmitter {
     } else if (
       event.type === 'persona:start' ||
       event.type === 'persona:chunk' ||
+      event.type === 'persona:reasoning' ||
+      event.type === 'reasoning:chunk' ||
+      event.type === 'tool:start' ||
+      event.type === 'tool:result' ||
+      event.type === 'tool:error' ||
+      event.type === 'persona:finding' ||
       event.type === 'llm:prompt' ||
       event.type === 'llm:token' ||
       event.type === 'agent_start' ||
@@ -453,11 +474,26 @@ export class LiveStreamBus extends EventEmitter {
       if (event.type === 'persona:start' || event.type === 'agent_start') {
         progress.status = 'in_progress';
         if (!progress.startedAt) progress.startedAt = event.timestamp;
-      } else if (event.type === 'persona:chunk' || event.type === 'llm_chunk' || event.type === 'llm:token') {
+      } else if (
+        event.type === 'persona:chunk' ||
+        event.type === 'persona:reasoning' ||
+        event.type === 'reasoning:chunk' ||
+        event.type === 'tool:start' ||
+        event.type === 'tool:result' ||
+        event.type === 'tool:error' ||
+        event.type === 'llm_chunk' ||
+        event.type === 'llm:token'
+      ) {
         if (progress.status === 'pending') {
           progress.status = 'in_progress';
           if (!progress.startedAt) progress.startedAt = event.timestamp;
         }
+      } else if (event.type === 'persona:finding') {
+        if (progress.status === 'pending') {
+          progress.status = 'in_progress';
+          if (!progress.startedAt) progress.startedAt = event.timestamp;
+        }
+        progress.findingsCount = (progress.findingsCount || 0) + 1;
       } else if (event.type === 'persona:complete' || event.type === 'agent_done' || event.type === 'quorum_verdict') {
         progress.status = 'completed';
         progress.completedAt = event.timestamp;

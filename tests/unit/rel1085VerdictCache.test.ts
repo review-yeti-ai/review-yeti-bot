@@ -354,7 +354,7 @@ describe('verdict cache source record', () => {
     expect(verdictCacheSourceFromRows(rows(sourceCompletion(), { gate: null, status: 'succeeded' }))?.prior.shipComplete).toBe(false);
   });
 
-  it('does not treat a gating P2 finding as a clean verdict-cache source', () => {
+  it('retains P2 finding paths when current policy permits a SHIP verdict', () => {
     const completion = sourceCompletion({ personas: [
       { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
         { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
@@ -362,9 +362,9 @@ describe('verdict cache source record', () => {
       { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
     ] });
     const recorded = rows(completion);
-    expect(recorded.run.status).toBe('failed');
+    expect(recorded.run.status).toBe('succeeded');
     expect(verdictCacheSourceFromRows(recorded)?.prior).toMatchObject({
-      shipComplete: false, shipIncompleteReason: 'run-not-succeeded',
+      shipComplete: true, findingPaths: ['src/open.ts'],
     });
   });
 });

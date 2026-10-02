@@ -20,6 +20,10 @@ const pageTitles: Record<string, { title: string; description: string }> = {
     title: 'Overview Dashboard',
     description: 'Real-time review metrics, pass rates, and active persona status',
   },
+  '/analytics': {
+    title: 'Executive & Engineering Analytics',
+    description: 'p95 turnaround latency, spend per repository, token burn curves, and finding quality metrics',
+  },
   '/onboarding': {
     title: 'Onboarding Wizard',
     description: '5-step GitHub Organization registration, AI model provider routing, and diagnostic probes',

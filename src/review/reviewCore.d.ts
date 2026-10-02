@@ -75,12 +75,6 @@ export interface ArbitrationOptions {
    */
   p2BlocksMerge?: boolean;
   /**
-   * When true, any P2 advisory finding blocks merge and requests changes. Pure arbitration defaults
-   * to false; publication boundaries must pass their trusted, resolved policy explicitly.
-   */
-  requireAdvisory?: boolean;
-  advisoryRequired?: boolean;
-  /**
    * Overrides the panel-size the blocking/nit thresholds scale from (see `resolvePanelSize` in
    * `reviewCore.js`). Required from any caller whose `personaResults.length` is not a count of
    * independent reviewers -- the composed engine's lanes are planned TASKS, not reviewers, and
@@ -97,19 +91,6 @@ export interface ArbitrationOptions {
   candidateVerdict?: CanonicalVerdict;
   rationale?: string;
 }
-
-/** Trusted runtime default for publishing boundaries; pure arbitration stays opt-in. */
-export function advisoryRequiredByDefault(): boolean;
-/**
- * Pure blocking-severity projection. Defaults to P0/P1; pass a trusted policy decision explicitly
- * when projecting a publication boundary.
- */
-export function blockingFindingSeverities(requireAdvisory?: boolean): Array<'P0' | 'P1' | 'P2'>;
-/** Counts canonical findings using an explicit policy; omission defaults to P0/P1 only. */
-export function blockingFindingCount(
-  metrics: { p0Count: number; p1Count: number; p2Count: number },
-  requireAdvisory?: boolean,
-): number;
 
 export function canonicalize(value: unknown): unknown;
 export function canonicalJson(value: unknown): string;
