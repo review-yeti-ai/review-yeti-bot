@@ -95,6 +95,9 @@ export interface ArbitrationOptions {
   rationale?: string;
 }
 
+/** Trusted runtime default for publishing boundaries; pure arbitration stays opt-in. */
+export function advisoryRequiredByDefault(): boolean;
+
 export function canonicalize(value: unknown): unknown;
 export function canonicalJson(value: unknown): string;
 export function sha256(value: unknown): string;

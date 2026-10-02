@@ -262,7 +262,7 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     expect(joins[0]).toMatchObject({
       repository: 'review-yeti-ai/review-yeti-bot', prNumber: 2795, headSha: HEAD,
       category: 'generated', risk_level: 1, security_sensitive: true,
-      findings_total: 1, findings_p2: 1, finding_class: 'advisory', panel_mode: 'panel', verdict: 'SHIP',
+      findings_total: 1, findings_p2: 1, finding_class: 'advisory', panel_mode: 'panel', verdict: 'FIX_FIRST',
       lanes: { 'sec-lane': { said_yes: false, ran: true, findings: 1 }, 'perf-lane': { said_yes: false, findings: 0 } },
     });
     expect(joins[1]).toMatchObject({ findings_total: 0, finding_class: 'none' });

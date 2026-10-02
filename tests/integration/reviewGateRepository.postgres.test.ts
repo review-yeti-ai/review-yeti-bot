@@ -1504,6 +1504,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       ['worker-coverage', 'incomplete-review'], ['worker-quorum', 'incomplete-review'],
       ['trusted-coverage', 'incomplete-review'], ['trusted-quorum', 'incomplete-review'],
       ['blocking-finding', 'blocking-findings'], ['invalid-finding', 'invalid-evidence'],
+      ['p2-finding', 'blocking-findings'],
       ['false-worker-verdict', 'invalid-evidence'], ['false-worker-count', 'invalid-evidence'],
       ['duplicate-lane', 'invalid-evidence'], ['unknown-lane', 'invalid-evidence'],
     ] as const)('fails closed for %s with atomic non-success intent', async (scenario, reason) => {
@@ -1528,9 +1529,14 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         default:
           lane.decision = 'FINDINGS';
           lane.findings = [{
-            severity: 'P1', path: scenario === 'invalid-finding' ? 'src/unreviewed.ts' : 'src/example.ts',
+            severity: scenario === 'p2-finding' ? 'P2' : 'P1',
+            path: scenario === 'invalid-finding' ? 'src/unreviewed.ts' : 'src/example.ts',
             line: 1, title: 'Unsafe change', body: 'The changed code exposes private data.',
           }];
+          if (scenario === 'p2-finding') {
+            event.result.verdict = 'FIX_FIRST';
+            event.result.blockingFindingCount = 1;
+          }
           if (scenario === 'false-worker-verdict') event.result.verdict = 'SHIP';
       }
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
@@ -1543,7 +1549,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         expect(JSON.stringify(state.run.failure_diagnostics)).not.toContain('do-not-store');
       }
       if (reason === 'invalid-evidence') expect(state.gates[0].evidence).toBeNull();
-      else expect(state.gates[0].evidence).not.toBeNull();
+      else {
+        expect(state.gates[0].evidence).not.toBeNull();
+        if (scenario === 'p2-finding') {
+          expect(state.gates[0].evidence).toMatchObject({ verdict: 'FIX_FIRST', p0Count: 0, p1Count: 0 });
+        }
+      }
     });
 
     it('uses the service receipt time for evidence and stores eligibility independently of draft readiness', async () => {

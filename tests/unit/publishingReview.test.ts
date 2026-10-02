@@ -149,7 +149,17 @@ async function withAdvisoryPolicy(
 ): Promise<void> {
   const worker = advisoryPolicyWorkers.get(advisory);
   expect(worker).toBeTypeOf('function');
-  await check(worker!);
+  // Arbitration and completion use the same live process policy as the
+  // publisher captured during preparation. Keep it set through execution.
+  const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+  try {
+    if (advisory === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = advisory;
+    await check(worker!);
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+  }
 }
 
 describe('qualification source arguments', () => {
@@ -1366,21 +1376,21 @@ describe('runPublishingReviewWorker', () => {
     }
   });
 
-  it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
+  it('requires P2-only findings even when the model arbiter says SHIP', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane'],
-        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Advisory', body: 'Advisory' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
-        arbiter: { verdict: 'FIX_FIRST' },
+        arbiter: { verdict: 'SHIP' },
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.verdict).toBe('SHIP');
-    expect(receipt.conclusion).toBe('success');
-    expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.verdict).toBe('FIX_FIRST');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.blockingFindingCount).toBe(1);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
-      expect.objectContaining({ conclusion: 'success', title: 'Review Yeti: SHIP' }),
+      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: FIX_FIRST' }),
     );
   });
 

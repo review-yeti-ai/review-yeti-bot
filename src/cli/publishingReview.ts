@@ -65,7 +65,7 @@ import {
   loadSameHeadReviewSource, readPullRequestIdentity, verifyReviewablePullRequest,
 } from '../github/qualificationReader';
 import { isReviewSuperseded, ReviewSupersededError } from '../review/reviewSupersession';
-import { computeArbitration, sanitizeFinding } from '../review/reviewCore';
+import { advisoryRequiredByDefault, computeArbitration, sanitizeFinding } from '../review/reviewCore';
 import {
   INCOMPLETE_INFRASTRUCTURE_REASON,
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
@@ -391,7 +391,7 @@ export {
 export type { OpenAITransportConfig };
 
 export const BLOCKING_SEVERITIES = new Set(
-  process.env.REVIEW_YETI_REQUIRE_ADVISORY === 'false' ? ['P0', 'P1'] : ['P0', 'P1', 'P2']
+  advisoryRequiredByDefault() ? ['P0', 'P1', 'P2'] : ['P0', 'P1']
 );
 
 /**
@@ -410,7 +410,7 @@ export interface PublishingConclusionCoverage {
 /**
  * Fail closed. `SHIP` with no blocking finding is the only success. Everything
  * else -- BLOCK, FIX_FIRST, an unrecognised verdict, or a SHIP that still carries
- * a P0/P1 -- concludes `failure`.
+ * a blocking finding (P0/P1/P2 under the default policy) -- concludes `failure`.
  *
  * The run's own coverage projection is a required argument: the worker's single
  * production call site must always pass it, so dropping the argument is a
@@ -1027,7 +1027,7 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
       return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
-    `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
+    `${findings.length} finding(s), ${blockingCount} blocking (${advisoryRequiredByDefault() ? 'P0/P1/P2' : 'P0/P1'}).`,
     '',
     ...lines,
   ].join('\n');
@@ -2253,14 +2253,13 @@ export async function runPublishingReviewWorker(
         ...(unreviewableLockfilePaths.size > 0
           ? [`${unreviewableLockfilePaths.size} changed lockfile(s) could not be sent in full or summarized and were not reviewed`] : []),
       ];
-      // The model arbiter is evidence, not the policy boundary. The canonical
-      // review policy treats P2 findings as advisory; trusting a raw FIX_FIRST
-      // from the model made the DOKS app gate reject a clean (P0/P1-free) review.
-      // Recompute from the exact persona findings and quorum so this lane shares
-      // the same fail-closed severity contract as the hosted review path.
+      // The trusted runtime policy requires P2 findings by default. The model
+      // arbiter is evidence, not policy; recompute from the exact persona findings
+      // and quorum so this lane shares the service Gate's severity contract.
       const canonical = computeArbitration(rawRoster.lanes, rawRoster.arbitrationExpectedCount, {
         changedFiles,
         coverageComplete: rawRoster.rosterValid && panelQuorumSatisfied && coverageGaps.length === 0,
+        requireAdvisory: advisoryRequiredByDefault(),
         ...(coverageGaps.length > 0 ? { coverageGaps } : {}),
         // One composed context is one reviewer: `rawRoster.lanes` there is the planned TASK list,
         // not a count of independent reviewers, so the default `panelSize` derivation (lane count)
@@ -2282,7 +2281,7 @@ export async function runPublishingReviewWorker(
       // Count blocking findings from the canonical set, not the raw persona
       // output. The two disagreed: the check reported a blocking count derived
       // from unsanitized findings next to a verdict derived from the sanitized
-      // ones, so a run could read `SHIP` and `blocking P0/P1: 13` at once. The
+      // ones, so a run could read `SHIP` and a nonzero blocking count at once. The
       // canonical set is the one the verdict is computed from, so it is the only
       // set the conclusion may be computed from.
       const findings = (canonical.findings || []) as ReviewFinding[];
@@ -2504,7 +2503,7 @@ export async function runPublishingReviewWorker(
             ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
             : (panelResult as any).zeroLaneNonEvidence
               ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-            : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+            : `Findings: ${findings.length} (blocking ${advisoryRequiredByDefault() ? 'P0/P1/P2' : 'P0/P1'}: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),
@@ -2848,7 +2847,7 @@ export async function runPublishingReviewWorker(
       // below is the backstop for every path that does NOT reach this line.
       if (isShadow) shadowOutcome = await shadowOutcomePromise;
       // The findings behind the check just published, for either conclusion: a
-      // failing check carries the P0/P1 findings that made it fail. Evidence is
+      // failing check carries the blocking findings that made it fail. Evidence is
       // never allowed to be the reason a published check goes unreported: a
       // result that fails the contract, or a callback that fails, is logged
       // and the lifecycle callbacks below proceed unchanged.
