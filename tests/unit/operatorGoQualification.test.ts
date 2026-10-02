@@ -107,8 +107,16 @@ describe('embedded operator Go qualification workflow', () => {
     // `runs-on` is now the bench-aware expression: it honours the
     // workflow_dispatch `bench_runner` override when set (for same-SHA A/B) and
     // otherwise resolves to this job's own SKU.
-    expect(vitest['runs-on']).toContain('blacksmith-4vcpu-ubuntu-2404');
-    expect(vitest['runs-on']).toContain('inputs.bench_runner');
+    // Pin the EXPRESSION'S SEMANTICS, not substrings. Substring checks pass for
+    // an inverted guard (`!=` -> `==`, which silently disables the override on
+    // every job) and for a flipped default SKU (`...-arm`), so they would not
+    // catch the exact regressions this assertion exists for.
+    expect(vitest['runs-on']).toMatch(
+      /\$\{\{ env\.BENCH_RUNNER != '' && env\.BENCH_RUNNER \|\| 'blacksmith-4vcpu-ubuntu-2404' \}\}/,
+    );
+    // The override must be a single workflow-level value, so there is exactly one
+    // place to change it and no job can silently keep its own runner.
+    expect(workflow.env.BENCH_RUNNER).toBe('${{ inputs.bench_runner }}');
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
@@ -129,7 +137,15 @@ describe('embedded operator Go qualification workflow', () => {
     const buildStep = buildSteps.find((s) =>
       typeof s.run === 'string' && s.run.includes('npm run build'));
     expect(buildStep).toBeDefined();
-    expect(buildStep!.env?.NODE_OPTIONS).toMatch(/--max-old-space-size=\d+/);
+    // Presence alone is not the invariant. The stated purpose is that the build
+    // does not OOM on a smaller runner, and the measured working set is ~1.4 GB
+    // RSS, so a cap BELOW that (e.g. --max-old-space-size=1024, a plausible
+    // "fit the small box" value) must fail this test rather than pass it.
+    const heapCapMb = Number(
+      /--max-old-space-size=(\d+)/.exec(buildStep!.env?.NODE_OPTIONS ?? '')?.[1],
+    );
+    expect(Number.isFinite(heapCapMb)).toBe(true);
+    expect(heapCapMb).toBeGreaterThanOrEqual(2048);
     expect(build['timeout-minutes']).toBe(15);
   });
 

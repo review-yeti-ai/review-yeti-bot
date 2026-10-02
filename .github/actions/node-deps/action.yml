@@ -58,7 +58,9 @@ runs:
         commit: ${{ steps.key.outputs.commit }}
 
     # ── GitHub-hosted path (native Actions cache) ──────────────────────────
-    # Same key shape, so the two families stay semantically identical. Public
+    # Parity rules: the npm-cache keys are identical across both families, and the
+    # node_modules keys are identical across both families. Neither is "same shape
+    # in general" -- those two specific keys are shared by construction. Public
     # repositories get 10 GB per repository for free; node_modules here is
     # ~0.9 GB, so it fits comfortably.
     - name: Restore npm cache (Actions cache)
@@ -66,9 +68,14 @@ runs:
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: ~/.npm
-        key: ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-${{ steps.key.outputs.deps }}
+        # Deliberately the SAME key as the Blacksmith npm disk above: a package
+        # download cache needs no node/deps granularity (npm itself validates the
+        # tarballs), so both families share one coarse key. node_modules, by
+        # contrast, IS keyed by node+deps on both families because it is an
+        # installed tree. Those are the only two parity rules; keep them true.
+        key: ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}
         restore-keys: |
-          ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.node }}-
+          ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}
 
     - name: Restore node_modules (Actions cache)
       if: runner.environment == 'github-hosted'
