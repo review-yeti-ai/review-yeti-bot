@@ -22,7 +22,7 @@
  * builds and `--check`-validates it as part of `npm test`'s `test:artifacts` pretest chain).
  *
  * Glob semantics are ported exactly from the reference Python implementation at
- * ct-meta/plugins/ct-workflow/skills/ct-review/scripts/ct_review/glob.py (git/CodeRabbit-style, NOT
+ * example-meta/plugins/ct-workflow/skills/ct-review/scripts/ct_review/glob.py (git/CodeRabbit-style, NOT
  * Node minimatch/picomatch defaults):
  *   **      matches any number of path segments INCLUDING zero
  *   *       matches within one segment (does NOT cross `/`)

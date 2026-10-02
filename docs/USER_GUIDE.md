@@ -88,7 +88,7 @@ The platform implements a multi-tier authentication system supporting session to
 ### Logging In & Managing Session Tokens
 
 #### 1. Authentication Login (`POST /api/auth/login`)
-Users log in to the Web Dashboard using the administrative credentials configured via the `ADMIN_PASSWORD` environment variable (defaults to `admin123`).
+Users log in to the Web Dashboard using the administrative credentials configured via the `ADMIN_PASSWORD` environment variable. There is no default: when `ADMIN_PASSWORD` is unset or empty, every local login is rejected with `503`.
 
 **Request**:
 ```bash

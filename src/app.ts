@@ -358,7 +358,7 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           // REL-586: this used to be a warn-and-continue. That is dangerously quiet —
           // without a checkId, none of the completeCheck() calls below ever run, so this
           // review publishes comments/a review with NO Check Run at all, and the central
-          // lane's `Review Yeti` check (created before dispatch, see ct-review-actions
+          // lane's `Review Yeti` check (created before dispatch, see example-review-actions
           // review-yeti.yml) is left stuck `in_progress` forever with nothing to complete
           // it. Escalate to error so this is alertable, not just discoverable in logs.
           logger.error('Check Run creation failed; this review will publish with no completing check run and the central "Review Yeti" check will stay in_progress', {

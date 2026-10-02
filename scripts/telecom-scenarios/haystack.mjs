@@ -18,7 +18,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2101,
       "title": "refactor(sip): optimize dialog state machine and session lookup indices",
       "headSha": "a1b2c3d4e5f67890123456789012345678902101",
@@ -61,7 +61,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2102,
       "title": "refactor(rtp): modernize audio transcoding pipeline and codec negotiator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902102",
@@ -104,7 +104,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2103,
       "title": "refactor(cdr): upgrade tariff rating engine with vector pulse calculations",
       "headSha": "a1b2c3d4e5f67890123456789012345678902103",
@@ -147,7 +147,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2104,
       "title": "refactor(pbx): async webhook delivery engine with exponential retry",
       "headSha": "a1b2c3d4e5f67890123456789012345678902104",
@@ -191,7 +191,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2105,
       "title": "refactor(sdp): dynamic payload mapping for Opus and telephone-event",
       "headSha": "a1b2c3d4e5f67890123456789012345678902105",
@@ -234,7 +234,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2106,
       "title": "feat(cdr): monthly table partition automation for 2026",
       "headSha": "a1b2c3d4e5f67890123456789012345678902106",
@@ -277,7 +277,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2107,
       "title": "refactor(auth): RFC 2617 digest authentication nonce generator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902107",
@@ -320,7 +320,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2108,
       "title": "perf(rtp): adaptive clock drift compensation in jitter buffer",
       "headSha": "a1b2c3d4e5f67890123456789012345678902108",
@@ -363,7 +363,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2109,
       "title": "refactor(sip): RFC 3261 transaction state machine timer cleanup",
       "headSha": "a1b2c3d4e5f67890123456789012345678902109",
@@ -407,7 +407,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2110,
       "title": "perf(cdr): batch SQL logger connection pooling and transaction manager",
       "headSha": "a1b2c3d4e5f67890123456789012345678902110",
@@ -451,7 +451,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2111,
       "title": "feat(pbx): custom customer webhook endpoint registration",
       "headSha": "a1b2c3d4e5f67890123456789012345678902111",
@@ -495,7 +495,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2112,
       "title": "refactor(codecs): bitwise ITU-T G.711 companding optimization",
       "headSha": "a1b2c3d4e5f67890123456789012345678902112",
@@ -538,7 +538,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2113,
       "title": "feat(sip): RFC 3515 blind and attended call transfer state machine",
       "headSha": "a1b2c3d4e5f67890123456789012345678902113",
@@ -581,7 +581,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2114,
       "title": "refactor(quota): asynchronous minute balance tracking and reservation",
       "headSha": "a1b2c3d4e5f67890123456789012345678902114",
@@ -624,7 +624,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2115,
       "title": "refactor(trunk): carrier circuit breaker and failover state machine",
       "headSha": "a1b2c3d4e5f67890123456789012345678902115",
@@ -668,7 +668,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2116,
       "title": "refactor(rtcp): RFC 3550 sender and receiver report telemetry",
       "headSha": "a1b2c3d4e5f67890123456789012345678902116",
@@ -711,7 +711,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2117,
       "title": "refactor(router): SIP loose routing and Record-Route set handling",
       "headSha": "a1b2c3d4e5f67890123456789012345678902117",
@@ -754,7 +754,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2118,
       "title": "refactor(cdr): simplified rate card prefix lookup for small rate sheets",
       "headSha": "a1b2c3d4e5f67890123456789012345678902118",
@@ -797,7 +797,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2119,
       "title": "refactor(auth): MD5 digest challenge response validator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902119",
@@ -840,7 +840,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2120,
       "title": "perf(rtp): ITU-T G.711 Appendix I packet loss concealment",
       "headSha": "a1b2c3d4e5f67890123456789012345678902120",
@@ -884,7 +884,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2121,
       "title": "refactor(sip): mid-dialog re-INVITE glare and session renegotiation",
       "headSha": "a1b2c3d4e5f67890123456789012345678902121",
@@ -927,7 +927,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2122,
       "title": "feat(cdr): automated partition pruning and retention cleaner",
       "headSha": "a1b2c3d4e5f67890123456789012345678902122",
@@ -971,7 +971,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2123,
       "title": "refactor(webhook): HMAC-SHA256 signature header formatting",
       "headSha": "a1b2c3d4e5f67890123456789012345678902123",
@@ -1015,7 +1015,7 @@ export const HAYSTACK_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2124,
       "title": "feat(rtp): variable bitrate Opus frame packetization",
       "headSha": "a1b2c3d4e5f67890123456789012345678902124",

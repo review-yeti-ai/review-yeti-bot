@@ -11,7 +11,7 @@ export const MAX_CONCURRENT_LANES_ENV = 'REVIEW_YETI_MAX_CONCURRENT_LANES';
  * whether a run's own lanes run side by side or queue behind each other. It does not change
  * org-wide provider concurrency.
  *
- * The old cap of 4 made every 5+ lane run (review-yeti-bot, some ct-meta runs) wait a whole
+ * The old cap of 4 made every 5+ lane run (review-yeti-bot, some example-meta runs) wait a whole
  * extra lane duration. An operator override is honoured when it is a whole number from 1 to
  * `MAX_CONCURRENT_LANES_CEILING`. Anything else falls back to the default, never to an
  * unbounded value.

@@ -73,4 +73,4 @@ Each list is capped at 15 entries plus a "+N more" count. The worker also logs t
 
 - Formatter-only detection (plan W2, fourth bullet) is not implemented. It needs the repository's formatter to run on both sides of the change, and formatter config and plugins are repository code. It stays open until the worker can run a formatter without running repository code (plan section 7, open question 2).
 - Non-exact move pairing. A delete/add pair with less than 100% similarity is not paired, because the worker has no clone to run `git diff -M -C` on. The W3 git-based diff source should run `git diff -M -C` so its rename and copy headers reach this module.
-- Replay corpus. The plan accepts W2 only once a replay corpus of recent PRs shows the same verdicts and findings with fewer tokens. Run that before enabling the flag beyond review-yeti-bot and ct-meta.
+- Replay corpus. The plan accepts W2 only once a replay corpus of recent PRs shows the same verdicts and findings with fewer tokens. Run that before enabling the flag beyond review-yeti-bot and example-meta.

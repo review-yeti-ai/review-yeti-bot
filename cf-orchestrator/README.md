@@ -3,7 +3,7 @@
 A serverless, Kubernetes-free orchestration engine for **Review Yeti**, built on **Cloudflare Workers**, **SQLite Durable Objects**, **Cloudflare Workflows**, **Cloudflare Queues**, and **Cloudflare Containers / Firecracker MicroVMs**.
 
 > **Current Production Status**: **Live in Production Shadow Mode**  
-> **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev)  
+> **Live Edge Endpoint**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)  
 > **Production Parity Mode**: Active (`PARALLEL_MODE = "true"`). Legacy DOKS operator remains 100% active and authoritative (posting `"Review Yeti"`). Cloudflare operates concurrently in shadow validation mode (posting `"Review Yeti (Cloudflare Canary)"` and PR reviews with 1-click inline suggestions).
 
 ---
@@ -19,7 +19,7 @@ flowchart TD
 
     subgraph PROXY["Cloudflare Edge Ingress & Dual-Dispatch"]
         WORKER["Ingress Worker (src/worker.ts)<br/>HMAC SHA-256 Verification"]
-        DOKS_DISPATCH["Async Fanout to DOKS<br/>review-bot.calltelemetry.com"]
+        DOKS_DISPATCH["Async Fanout to DOKS<br/>review-bot.example.com"]
         DEBOUNCE_QUEUE["Cloudflare Queue<br/>10s Debounce Window"]
     end
 
@@ -267,10 +267,10 @@ The orchestrator is fully integrated into GitHub Actions via `.github/workflows/
 ENVIRONMENT = "production"
 PARALLEL_MODE = "true"
 PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
-DOKS_FALLBACK_URL = "https://review-bot.calltelemetry.com/api/webhooks/github"
+DOKS_FALLBACK_URL = "https://review-bot.example.com/api/webhooks/github"
 MAX_CONCURRENT_JOBS = "5"
 DEBOUNCE_WINDOW_SECONDS = "10"
-PILOT_REPOSITORIES = "calltelemetry/ai-workspace,all"
+PILOT_REPOSITORIES = "exampleorg/example-workspace,all"
 ```
 
 ### Future Production Cutover Runbook (Post-Parity Validation)

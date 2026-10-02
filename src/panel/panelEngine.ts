@@ -522,7 +522,7 @@ function configuredProviderTimeoutMs(value: unknown, fallbackMs: number): number
 /**
  * Shared severity rubric. The builtin charters describe *what* to look for and never said what a
  * P1 is, so lanes filed DRY violations and missing changelog notes as merge-blocking P1s
- * (cisco-cdr#4860 head 430d8058: 2 of 3 P1s). Arbitration re-files advisory-titled P1s as P2
+ * (example-api#4860 head 430d8058: 2 of 3 P1s). Arbitration re-files advisory-titled P1s as P2
  * defensively (reviewCore.calibrateSeverity); this is the rule the model is asked to apply first.
  */
 export const SEVERITY_CALIBRATION_LINES: readonly string[] = [
@@ -1308,7 +1308,7 @@ export const EMPTY_COMPLETION_RETRY_DELAY_MS = 1000;
 // the gateway-status signatures are owned by `../review/laneInfrastructure` so the GitHub Action
 // pipeline re-attempts its lanes on the same schedule. Re-exported here under their existing names.
 // Base 5s, factor 2, 60s ceiling (5s, 10s, 20s, 40s, 60s); window 180s; terminal margin 60s. The
-// gateway outage that failed ct-meta#3446's arch lane lasted about a minute; the previous
+// gateway outage that failed example-meta#3446's arch lane lasted about a minute; the previous
 // 1s/4s/16s schedule with three retries gave up in ~25s.
 export {
   TRANSPORT_MAX_RETRIES,
@@ -3286,7 +3286,7 @@ async function runPersona(
           // 429/502/503/504), not an answer about the diff. It is checked BEFORE
           // the large-prompt 5xx circuit breaker and the generic branch below so
           // neither can retire the lane while a short gateway outage is still
-          // clearing -- ct-meta#3446 lost its arch lane to exactly that ("terminated",
+          // clearing -- example-meta#3446 lost its arch lane to exactly that ("terminated",
           // then nginx HTTP 502 during an optimizer pod replacement). Retrying the
           // SAME provider with full-jitter backoff is not the fallback fan-out the
           // circuit breaker guards against; once this budget is spent the breaker
@@ -3768,7 +3768,7 @@ export async function executePersonaPanel(options: {
   /** REL-1083: map-reduce review of a lane larger than one budget (`REVIEW_YETI_MAP_REDUCE`); absent reviews every lane in one call. */
   mapReduce?: MapReduceInput;
   /**
-   * REL-1139 (ct-meta ADR 0687): skip the MODERATOR call when every lane completed with an empty
+   * REL-1139 (example-meta ADR 0687): skip the MODERATOR call when every lane completed with an empty
    * APPROVE and coverage was full (`REVIEW_YETI_SKIP_EMPTY_MODERATION`). The arbiter always runs.
    * Absent or false calls the moderator, as before; eligibility is logged either way.
    */
