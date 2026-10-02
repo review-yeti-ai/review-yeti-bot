@@ -224,6 +224,57 @@ describe('pinned source context', () => {
     expect(result.fullText).toContain('symlink_mode');
   });
 
+  it('does not request source for files deleted at the reviewed head', () => {
+    const calls: string[] = [];
+    const path = 'src/removed-at-head.ts';
+    const deletedDiff = [
+      `diff --git a/${path} b/${path}`,
+      'deleted file mode 100644',
+      'index 1111111..0000000',
+      `--- a/${path}`,
+      '+++ /dev/null',
+      '@@ -1,1 +0,0 @@',
+      '-const removed = true;',
+    ].join('\n');
+    const parsedFile = pipeline.parseDiff(deletedDiff)[0];
+    expect(parsedFile.patch).toContain('deleted file mode 100644');
+    expect(parsedFile.patch).toContain('+++ /dev/null');
+
+    const result = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 2_000,
+      files: [parsedFile],
+      commandRunner: (_command: string, args: string[]) => { calls.push(args.join(' ')); return { status: 0, stdout: '' }; },
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.entries[0]).toMatchObject({ status: 'unavailable', reason: 'deleted_at_head' });
+  });
+
+  it('does not request source for submodule gitlink changes', () => {
+    const calls: string[] = [];
+    const path = 'vendor/dependency';
+    const submoduleDiff = [
+      `diff --git a/${path} b/${path}`,
+      'index 1111111..2222222 160000',
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      '@@ -1 +1 @@',
+      '-Subproject commit 1111111111111111111111111111111111111111',
+      '+Subproject commit 2222222222222222222222222222222222222222',
+    ].join('\n');
+    const parsedFile = pipeline.parseDiff(submoduleDiff)[0];
+    expect(parsedFile.patch).toContain('index 1111111..2222222 160000');
+
+    const result = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 2_000,
+      files: [parsedFile],
+      commandRunner: (_command: string, args: string[]) => { calls.push(args.join(' ')); return { status: 0, stdout: '' }; },
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.entries[0]).toMatchObject({ status: 'unavailable', reason: 'submodule_mode' });
+  });
+
   it('withholds source when the diff does not prove a regular-file mode', () => {
     const path = 'src/unknown-mode.ts';
     const result = sourceContext.readPinnedSourceContext({
@@ -245,9 +296,10 @@ describe('pinned source context', () => {
   it('makes transport, response-identity and secret-scan failures explicit without including raw diagnostics', () => {
     const path = 'src/auth.ts';
     const patch = patchFor(path);
+    const transportDiagnostic = 'synthetic transport detail omitted from context';
     const failingTransport = sourceContext.readPinnedSourceContext({
       repo: 'owner/repo', headSha, maxChars: 2_000, files: [{ path, patch }],
-      commandRunner: () => ({ status: 1, stdout: '', stderr: 'synthetic transport detail omitted from context' }),
+      commandRunner: () => ({ status: 1, stdout: '', stderr: transportDiagnostic }),
     });
     const wrongPath = sourceContext.readPinnedSourceContext({
       repo: 'owner/repo', headSha, maxChars: 2_000, files: [{ path, patch }],
@@ -301,7 +353,7 @@ describe('pinned source context', () => {
     expect(quotedTokenKey.entries[0]).toMatchObject({ status: 'unavailable', reason: 'sensitive_content' });
     expect(dockerAuth.entries[0]).toMatchObject({ status: 'unavailable', reason: 'sensitive_content' });
     for (const result of [failingTransport, wrongPath, wrongDigest, secretContent, tokenAssignment, awsAccessKey, awsSecretKey, quotedTokenKey, dockerAuth, pathSecret]) {
-      expect(result.fullText).not.toContain('private-detail-must-not-appear');
+      expect(result.fullText).not.toContain(transportDiagnostic);
       expect(result.fullText).not.toContain(syntheticToken);
       expect(result.fullText).not.toContain('0123456789abcdef0123456789abcdef');
       expect(result.fullText).not.toContain('AKIA');
