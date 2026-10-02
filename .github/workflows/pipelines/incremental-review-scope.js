@@ -112,7 +112,7 @@ function isCompleteTrustedReport(report, expected) {
     // actually reviewed the omitted files. Trusting this report as a carry-forward parent would
     // let planIncrementalLanes carry that lane's evidence -- clean or dirty -- as if it covered
     // every file it owns, silently exempting the omitted files from ever being reviewed by
-    // anyone. Mirrors the central backstop's contract (example-review-actions'
+    // anyone. Mirrors the central backstop's contract (ct-review-actions'
     // check-review-verdict.sh: a reused lane may never assert coverage it does not have) by
     // refusing trust of the whole report up front, before any carry split is computed.
     if (Number(lane.diffOmittedFilesCount) > 0) return false;
@@ -369,7 +369,7 @@ async function githubRequest(fetchImplementation, token, url, accept = 'applicat
  * could smuggle in a report for an arbitrary headSha.
  *
  * Cross-repo (central `repository_dispatch`) mode: the artifact instead lives in the *executing*
- * repository (for example the private `exampleorg/example-review-actions`), which holds run reports
+ * repository (for example the private `calltelemetry/ct-review-actions`), which holds run reports
  * for every consumer repository it reviews on their behalf. A PR author on the reviewed repo has
  * no write access to that executing repo, so they cannot forge, replace, or redirect its artifacts
  * or its runs. `run.head_sha` there is the *executing* repo's own commit (the dispatch workflow's

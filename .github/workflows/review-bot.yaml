@@ -187,7 +187,7 @@ jobs:
       # writeStepOutputs) are the load-bearing signals that the diff budget did not omit files and
       # that arbitration considered the review merge-eligible; this step used to read none of
       # them, so a SHIP where the diff budget dropped files still passed. Mirror the central
-      # gate's established contract (example-review-actions' check-review-verdict.sh) instead of
+      # gate's established contract (ct-review-actions' check-review-verdict.sh) instead of
       # re-deriving a weaker one here.
       #
       # REL-585 also removes the P2-blocking branch that used to live here. That policy belonged

@@ -86,7 +86,7 @@ function normalizeProfile(profile) {
   }
   // Independent runaway-reasoning cutoff (distinct from stall_ms -- see review-pipeline.js
   // readChatCompletionResponse). Optional: unset means "bounded only by request_ms", so
-  // example-review-actions' current policy (which does not declare this key) is unaffected.
+  // ct-review-actions' current policy (which does not declare this key) is unaffected.
   if (Object.prototype.hasOwnProperty.call(profile.timeouts, 'reasoning_budget_ms')) {
     const value = profile.timeouts.reasoning_budget_ms;
     if (!Number.isSafeInteger(value) || value < 500 || value > 600000) {
