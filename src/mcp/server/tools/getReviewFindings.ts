@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   type ToolDefinition,
   type ToolResult,
@@ -12,6 +11,11 @@ import {
   type FindingSeverity,
   type FindingCategory,
 } from './schemas';
+import {
+  extractReviewFindingEntries,
+  getReviewFindingId,
+  getReviewFindingIdentityParts,
+} from './findingIdentity';
 
 export interface ReviewFindingsDbClient {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
@@ -121,29 +125,7 @@ export function createGetReviewFindingsTool(db?: ReviewFindingsDbClient) {
       const runId = String(row.run_id || 'run-1');
 
       // Extract findings list from possible payload structures
-      const rawFindingsList: Array<{ finding: any; personaId: string }> = [];
-
-      if (Array.isArray(payload.findings)) {
-        for (const f of payload.findings) {
-          rawFindingsList.push({ finding: f, personaId: f.personaId || f.persona || 'reviewer' });
-        }
-      } else if (payload?.result?.personas && Array.isArray(payload.result.personas)) {
-        for (const persona of payload.result.personas) {
-          const personaId = String(persona.id || 'reviewer');
-          const pFindings = Array.isArray(persona.findings) ? persona.findings : [];
-          for (const f of pFindings) {
-            rawFindingsList.push({ finding: f, personaId });
-          }
-        }
-      } else if (payload?.personas && Array.isArray(payload.personas)) {
-        for (const persona of payload.personas) {
-          const personaId = String(persona.id || 'reviewer');
-          const pFindings = Array.isArray(persona.findings) ? persona.findings : [];
-          for (const f of pFindings) {
-            rawFindingsList.push({ finding: f, personaId });
-          }
-        }
-      }
+      const rawFindingsList = extractReviewFindingEntries(payload);
 
       const adrPattern = /\bADR[-_\s]?#?(\d{3,4})\b/gi;
       const extractedFindings: ReviewFindingItem[] = [];
@@ -151,9 +133,7 @@ export function createGetReviewFindingsTool(db?: ReviewFindingsDbClient) {
       for (const { finding: f, personaId } of rawFindingsList) {
         const title = String(f.title || '');
         const body = String(f.body || f.rationale || '');
-        const filePath = String(f.path || f.file_path || f.file || '');
-        const lineEnd = Number(f.line_end || f.line || 1);
-        const lineStart = Number(f.line_start || f.startLine || lineEnd);
+        const { filePath, lineEnd, lineStart } = getReviewFindingIdentityParts(f);
 
         // Severity normalization
         let sev: FindingSeverity = 'P2';
@@ -191,13 +171,7 @@ export function createGetReviewFindingsTool(db?: ReviewFindingsDbClient) {
           category = 'Contract';
         }
 
-        const findingId =
-          f.finding_id ||
-          f.id ||
-          createHash('sha256')
-            .update(`${runId}:${personaId}:${filePath}:${lineStart}:${lineEnd}:${title}`)
-            .digest('hex')
-            .slice(0, 16);
+        const findingId = getReviewFindingId(runId, personaId, f);
 
         const isUnresolved = f.resolved !== true;
 

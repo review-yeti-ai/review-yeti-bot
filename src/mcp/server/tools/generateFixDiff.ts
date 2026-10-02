@@ -6,7 +6,6 @@
  */
 
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
@@ -22,6 +21,11 @@ import {
 } from '../mcpTypes';
 import { canAccessRepository, McpRbacError } from '../mcpRbac';
 import type { ReviewModelClient } from '../../../gateway/openRouterClient';
+import {
+  extractReviewFindingEntries,
+  findReviewFindingRecord,
+  newestReviewRowsPerRun,
+} from './findingIdentity';
 
 export const GenerateFixDiffInputSchema = z.object({
   owner: z.string().trim().min(1, 'owner must not be empty').max(255),
@@ -186,13 +190,12 @@ export function createGenerateFixDiffTool(deps: GenerateFixDiffDependencies = {}
       }
 
       let matchedFinding: any = null;
-      let runId = 'run-1';
 
       if (deps.queryableDatabase) {
         let rows: any[] = [];
         try {
           const sql = `
-            SELECT c.payload, r.run_id, r.head_sha
+            SELECT c.payload, r.run_id, r.head_sha, c.execution_attempt
               FROM review_runs r
               JOIN review_worker_completions c ON c.run_id = r.run_id
              WHERE r.owner = $1 AND r.repo = $2 AND r.pr_number = $3
@@ -223,43 +226,18 @@ export function createGenerateFixDiffTool(deps: GenerateFixDiffDependencies = {}
           }
         }
 
-        for (const row of rows) {
-          runId = String(row.run_id || runId);
+        const findingRecords: Array<{ finding: any; personaId: string; runId: string }> = [];
+        for (const row of newestReviewRowsPerRun(rows)) {
+          const runId = String(row.run_id || 'run-1');
           const payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
-          const candidateFindings: any[] = [];
-
-          if (Array.isArray(payload?.findings)) {
-            candidateFindings.push(...payload.findings);
-          }
-          const personas = payload?.result?.personas || payload?.personas || [];
-          for (const p of personas) {
-            if (Array.isArray(p.findings)) {
-              candidateFindings.push(...p.findings);
-            }
-          }
-
-          for (const f of candidateFindings) {
-            const filePath = String(f.path || f.file_path || f.file || '');
-            const lineEnd = Number(f.line_end || f.line || 1);
-            const lineStart = Number(f.line_start || f.startLine || lineEnd);
-            const title = String(f.title || '');
-
-            const hashId = createHash('sha256')
-              .update(`${runId}:${filePath}:${lineStart}:${title}`)
-              .digest('hex')
-              .slice(0, 16);
-
-            if (
-              f.finding_id === finding_id ||
-              f.id === finding_id ||
-              hashId === finding_id
-            ) {
-              matchedFinding = f;
-              break;
-            }
-          }
-          if (matchedFinding) break;
+          findingRecords.push(
+            ...extractReviewFindingEntries(payload, { includeAlternateSources: true }).map((entry) => ({
+              ...entry,
+              runId,
+            }))
+          );
         }
+        matchedFinding = findReviewFindingRecord(findingRecords, finding_id)?.finding || null;
       }
 
       if (!matchedFinding) {
