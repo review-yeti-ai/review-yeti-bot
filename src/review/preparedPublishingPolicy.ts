@@ -19,7 +19,9 @@ const transportSchema = z.object({
   model: z.string().min(1).max(256).refine((value) => !/[\u0000-\u001f\u007f]/u.test(value)),
 }).strict();
 const centralPolicySchema = z.object({
-  schema: z.literal('exampleorg.review-policy.v1'),
+  // The schema id is a version marker, not an authority: accept `<producer>.review-policy.v1` from any
+  // trusted producer. Authority comes from the policy digest and central provenance, not from this prefix.
+  schema: z.string().regex(/^[a-z0-9][a-z0-9-]*\.review-policy\.v1$/u),
   review_yeti: z.object({
     personas: z.string().min(1).max(2_000),
     budget: z.object({ max_investigation_turns: z.number().int().positive().max(100) }),

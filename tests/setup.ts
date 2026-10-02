@@ -119,6 +119,8 @@ process.env.GITHUB_APP_ID = process.env.GITHUB_APP_ID || '123456';
 process.env.GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3\n-----END RSA PRIVATE KEY-----';
 process.env.OMNIROUTE_BASE_URL = process.env.OMNIROUTE_BASE_URL || 'http://localhost:8080';
 process.env.ADMIN_PASSWORD = 'admin123';
+// Central review identity is deployment configuration with no default (see reviewCheckIdentity.ts).
+process.env.REVIEW_YETI_CENTRAL_REPOSITORY = process.env.REVIEW_YETI_CENTRAL_REPOSITORY || 'exampleorg/example-review-actions';
 
 // Disable proxy environment variables during unit/e2e testing
 delete process.env.http_proxy;

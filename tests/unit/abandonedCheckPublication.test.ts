@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
 import type {
@@ -61,7 +61,23 @@ function fixture(checks: unknown[] = [exactCheck], reread: unknown = exactCheck)
 const signal = () => AbortSignal.timeout(20_000);
 const persistedWindows = [900_000, 1_800_000, 2_700_000, 3_600_000];
 
+beforeEach(() => {
+  vi.stubEnv('REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY', 'exampleorg/example-api');
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe('abandoned check exact App/attempt failure publication', () => {
+  it('fails closed on the historical check when the receipt repository is not configured', async () => {
+    vi.stubEnv('REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY', '');
+    const { client, fetchImplementation } = fixture([historicalEmptyIdentityCheck], historicalEmptyIdentityCheck);
+
+    await expect(client.failAbandonedCheck(historicalEmptyIdentityRun, 4385771, signal())).rejects.toThrow();
+    expect(fetchImplementation.mock.calls.every(([, init]) => !['POST', 'PATCH'].includes(init?.method || '')))
+      .toBe(true);
+  });
+
   it('recognizes only an exact App/run/attempt completed success as authoritative', async () => {
     const succeeded = { ...exactCheck, status: 'completed', conclusion: 'success' };
     const { client, fetchImplementation } = fixture([succeeded], succeeded);
