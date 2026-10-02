@@ -24,7 +24,7 @@
  *    - Adversarial strings in `repo` (path traversal, SQL injection fragments)
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import { createApp } from '../../src/app';
 import {
@@ -50,6 +50,8 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
 
     authToken = loginRes.body.token;
   });
+
+  afterEach(() => vi.restoreAllMocks());
 
   // ==========================================================================
   // SECTION 1: Nearest-Rank Percentile Boundary Distributions
@@ -171,6 +173,7 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
 
     it('24h Window: excludes (now - 24h - 1ms) and includes (now - 24h + 1ms) & (now - 24h)', () => {
       const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now);
       const window24hMs = 24 * 3600 * 1000;
 
       const boundaryLogs: ReviewLogEntry[] = [
@@ -226,6 +229,7 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
 
     it('7d Window: excludes (now - 7d - 1ms) and includes (now - 7d + 1ms) & (now - 7d)', () => {
       const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now);
       const window7dMs = 7 * 86400 * 1000;
 
       const boundaryLogs: ReviewLogEntry[] = [
@@ -281,6 +285,7 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
 
     it('30d Window: excludes (now - 30d - 1ms) and includes (now - 30d + 1ms) & (now - 30d)', () => {
       const now = Date.now();
+      vi.spyOn(Date, 'now').mockReturnValue(now);
       const window30dMs = 30 * 86400 * 1000;
 
       const boundaryLogs: ReviewLogEntry[] = [

@@ -140,7 +140,25 @@ describe('sessionRepository Unit Tests', () => {
     expect(repo.getSessions({ query: 'nonexistent' }).length).toBe(0);
   });
 
-  it('falls back to dashboardStore when disk sessions directory is empty', () => {
+  it.each(['empty', 'missing'])('does not consult the global store for an explicit %s directory', (kind) => {
+    const globalRead = vi.spyOn(dashboardStore, 'getReviewLogs').mockImplementation(() => {
+      throw new Error('Unrelated global review data must not be read');
+    });
+    const directory = kind === 'empty' ? tempDir : path.join(tempDir, 'missing');
+    expect(new SessionRepository(directory).getSessions()).toEqual([]);
+    expect(globalRead).not.toHaveBeenCalled();
+  });
+
+  it('keeps global fallback for the default sessions directory', () => {
+    vi.spyOn(process, 'cwd').mockReturnValue(tempDir);
+    const globalRead = vi.spyOn(dashboardStore, 'getReviewLogs').mockReturnValue([
+      { id: 'default-fallback', repo: 'example/service', prNumber: 1, timestamp: '2026-10-02T12:00:00Z' } as any,
+    ]);
+    expect(new SessionRepository().getSessions().map((session) => session.id)).toEqual(['default-fallback']);
+    expect(globalRead).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to an explicitly supplied store when the disk directory is empty', () => {
     const mockStore = {
       getReviewLogs: () => [
         {

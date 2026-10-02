@@ -82,14 +82,14 @@ graph TD
 
 ## 🖥️ Interactive Management Portal & Dashboard
 
-Review Yeti includes an interactive web portal for engineering teams, security leads, and executives:
+Review Yeti includes an interactive web portal for engineering teams, security leads, and executives. The hosted URLs below are deployment examples; replace them with your own origin:
 
 | View | Production URL | Cloudflare Edge Worker URL | Local URL | Capabilities |
 | :--- | :--- | :--- | :--- | :--- |
-| 📊 **Executive & Engineering Analytics** | [`https://review-bot.example.com/analytics`](https://review-bot.example.com/analytics) | [`https://review-yeti-cf-orchestrator.example.workers.dev/analytics`](https://review-yeti-cf-orchestrator.example.workers.dev/analytics) | `http://localhost:3000/analytics` | Nearest-rank p95 review turnaround latency, token burn curves, model cost per PR/repo, and finding severity ratios (24h/7d/30d). |
-| 📡 **Live Review Inspector** | [`https://review-bot.example.com/live`](https://review-bot.example.com/live) | [`https://review-yeti-cf-orchestrator.example.workers.dev/live`](https://review-yeti-cf-orchestrator.example.workers.dev/live) | `http://localhost:3000/live` | Real-time SSE persona reasoning stream (`reasoning:chunk`), tool call traces, and interactive diff viewer with line-anchored finding cards. |
-| 🏢 **Repository & Review Rules** | [`https://review-bot.example.com/repos`](https://review-bot.example.com/repos) | [`https://review-yeti-cf-orchestrator.example.workers.dev/repos`](https://review-yeti-cf-orchestrator.example.workers.dev/repos) | `http://localhost:3000/repos` | GitHub organization discovery, active PR inspection, on-demand review dispatch, and per-repo automated review rule toggles. |
-| ⚙️ **Settings & Onboarding** | [`https://review-bot.example.com/settings`](https://review-bot.example.com/settings) | [`https://review-yeti-cf-orchestrator.example.workers.dev/settings`](https://review-yeti-cf-orchestrator.example.workers.dev/settings) | `http://localhost:3000/settings` | GitHub App integration, model registry overrides, and platform configuration. |
+| 📊 **Executive & Engineering Analytics** | [`https://review-yeti.example.com/analytics`](https://review-yeti.example.com/analytics) | [`https://review-yeti.example.workers.dev/analytics`](https://review-yeti.example.workers.dev/analytics) | `http://localhost:3000/analytics` | Nearest-rank p95 review turnaround latency, token burn curves, model cost per PR/repo, and finding severity ratios (24h/7d/30d). |
+| 📡 **Live Review Inspector** | [`https://review-yeti.example.com/live`](https://review-yeti.example.com/live) | [`https://review-yeti.example.workers.dev/live`](https://review-yeti.example.workers.dev/live) | `http://localhost:3000/live` | Real-time SSE persona reasoning stream (`reasoning:chunk`), tool call traces, and interactive diff viewer with line-anchored finding cards. |
+| 🏢 **Repository & Review Rules** | [`https://review-yeti.example.com/repos`](https://review-yeti.example.com/repos) | [`https://review-yeti.example.workers.dev/repos`](https://review-yeti.example.workers.dev/repos) | `http://localhost:3000/repos` | GitHub organization discovery, active PR inspection, on-demand review dispatch, and per-repo automated review rule toggles. |
+| ⚙️ **Settings & Onboarding** | [`https://review-yeti.example.com/settings`](https://review-yeti.example.com/settings) | [`https://review-yeti.example.workers.dev/settings`](https://review-yeti.example.workers.dev/settings) | `http://localhost:3000/settings` | GitHub App integration, model registry overrides, and platform configuration. |
 
 ### ☁️ Serverless Cloudflare Deployment
 
