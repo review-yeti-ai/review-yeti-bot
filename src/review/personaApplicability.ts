@@ -1,6 +1,11 @@
 import type { CtReviewConfigV3 } from '../config/schema';
 import { matchOne } from '../pipeline/domainIndex';
-import { classifyLockfileOrGeneratedPath, filterDiffHunks, type HunkFilterResult } from '../pipeline/hunkFilter';
+import {
+  classifyLockfileOrGeneratedPath,
+  filterDiffHunks,
+  resolveMaxReviewedLockfilePatchChars,
+  type HunkFilterResult,
+} from '../pipeline/hunkFilter';
 import { isDataOrConfigPath, isDocumentationOrAssetPath, isNoReviewableContentFile } from './reviewableContent';
 import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
 import { isSubmodulePatch } from './submodulePatch';
@@ -174,8 +179,8 @@ export interface RoutedReviewFile {
    * registry package, routed to the dependency and required lanes (REL-1136).
    * `changed-lockfile`: any other changed lockfile beside a reviewed diff, sent
    * in full to the same lanes (REL-1141).
-   * `summarized-lockfile`: a lockfile whose patch is over the per-file cap,
-   * sent to the same lanes as its complete package-change summary (REL-1141).
+   * `summarized-lockfile`: a lockfile whose patch exceeds the admitted raw-review cap,
+   * sent to the same lanes as its complete package-change summary.
    */
   reason: RoutedReviewReason;
 }
@@ -353,7 +358,7 @@ export interface ReviewApplicability<P> {
    */
   omittedSourcePaths: string[];
   /**
-   * REL-1141: lockfiles whose patch was over the per-file cap; the lanes
+   * Lockfiles whose patch was over the admitted raw-review cap; the lanes
    * received a complete, deterministic package-change summary instead.
    * Disclosed in the check summary as "summarized: oversized lockfile".
    */
@@ -432,9 +437,12 @@ type ReviewDepthDisclosureKeys = 'truncatedFiles' | 'unavailablePatches' | 'omit
 export function resolveReviewApplicability<P extends ReviewPersona>(
   enabledPersonas: readonly P[],
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
-  options: { pathFilters?: readonly string[] } = {},
+  options: { pathFilters?: readonly string[]; maxReviewedLockfilePatchChars?: number } = {},
 ): ReviewApplicability<P> {
-  const decision = decideReviewApplicability(enabledPersonas, changedFiles, options);
+  const decision = decideReviewApplicability(enabledPersonas, changedFiles, {
+    ...options,
+    maxReviewedLockfilePatchChars: resolveMaxReviewedLockfilePatchChars(options.maxReviewedLockfilePatchChars),
+  });
   const effectivePaths = new Set(decision.effectiveFiles.map((file) => file.path));
   const truncatedFiles = decision.hunkResult.files.flatMap((file) => (
     file.truncation && effectivePaths.has(file.path)
@@ -451,13 +459,15 @@ export function resolveReviewApplicability<P extends ReviewPersona>(
 function decideReviewApplicability<P extends ReviewPersona>(
   enabledPersonas: readonly P[],
   changedFiles: ReadonlyArray<ReviewApplicabilityInputFile>,
-  options: { pathFilters?: readonly string[] },
+  options: { pathFilters?: readonly string[]; maxReviewedLockfilePatchChars: number },
 ): Omit<ReviewApplicability<P>, 'truncatedFiles' | 'unavailablePatches' | 'omittedSourcePaths'> {
-  const filtered = buildEffectiveReviewFiles(changedFiles, options);
+  const filtered = buildEffectiveReviewFiles(changedFiles, { pathFilters: options.pathFilters });
   const hunkResult = filtered.hunkResult;
   // REL-1136: a lockfile whose only unverified change is a new registry package
   // is put back for the lanes and routed to the dependency + required lanes.
-  const newPackageLockfiles = withNewPackageLockfiles(changedFiles, filtered.files, hunkResult);
+  const newPackageLockfiles = withNewPackageLockfiles(
+    changedFiles, filtered.files, hunkResult, options.maxReviewedLockfilePatchChars,
+  );
   const effectiveFiles = newPackageLockfiles.files;
   const roster = routeNewPackageLockfiles(
     routeOrphanedReviewFiles(enabledPersonas, effectiveFiles),
@@ -479,7 +489,9 @@ function decideReviewApplicability<P extends ReviewPersona>(
    * (coverage incomplete). Never dropped silently.
    */
   const withLockfilesReviewed = (laneRoster: readonly P[], uncoveredSource: readonly string[]) => {
-    const lockfiles = withChangedLockfilesReviewed(changedFiles, effectiveFiles, hunkResult);
+    const lockfiles = withChangedLockfilesReviewed(
+      changedFiles, effectiveFiles, hunkResult, options.maxReviewedLockfilePatchChars,
+    );
     const reviewedRoster = routeNewPackageLockfiles(laneRoster,
       [...lockfiles.fullPaths, ...lockfiles.summarized.map((file) => file.path)]);
     const reasons = new Map<string, RoutedReviewReason>();
