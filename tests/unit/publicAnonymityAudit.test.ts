@@ -28,7 +28,7 @@ const BINARY = /\.(png|db|ico|jpe?g|gif|woff2?)$/iu;
 function trackedFiles(): string[] {
   return execFileSync('git', ['ls-files', '-z'], { cwd: root, maxBuffer: 64 * 1024 * 1024 })
     .toString('utf8').split('\0').filter(Boolean)
-    .filter((file) => !BINARY.test(file) && fs.existsSync(path.join(root, file)));
+    .filter((file) => fs.existsSync(path.join(root, file)));
 }
 
 interface Finding { count: number; digest: string }
@@ -42,9 +42,11 @@ function digestOf(matches: string[]): string {
 function findingsByFile(): Map<string, Finding> {
   const findings = new Map<string, Finding>();
   for (const file of trackedFiles()) {
-    let text: string;
-    try { text = fs.readFileSync(path.join(root, file), 'utf8'); } catch { continue; }
-    // A tracked file NAME that carries a reference counts too.
+    // Every tracked file NAME is checked; binary assets are not read as text.
+    let text = '';
+    if (!BINARY.test(file)) {
+      try { text = fs.readFileSync(path.join(root, file), 'utf8'); } catch { text = ''; }
+    }
     const matches = [...(text.match(FORBIDDEN) ?? []), ...(file.match(FORBIDDEN) ?? [])];
     if (matches.length > 0) findings.set(file, { count: matches.length, digest: digestOf(matches) });
   }
