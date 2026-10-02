@@ -31,9 +31,17 @@
   "count": 2,
   "digest": "98755f4be2680d90"
  },
+ "cf-orchestrator/migrations/0001_initial_schema.sql": {
+  "count": 4,
+  "digest": "404d3e6f8e57defa"
+ },
  "cf-orchestrator/package.json": {
   "count": 1,
   "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/src/api/dashboardRoutes.ts": {
+  "count": 31,
+  "digest": "30f7b7a288b80eaf"
  },
  "cf-orchestrator/src/mcp/mcpRouter.ts": {
   "count": 3,
@@ -79,6 +87,10 @@
   "count": 1,
   "digest": "eede0415576da9c5"
  },
+ "cf-orchestrator/src/storage/d1Client.ts": {
+  "count": 6,
+  "digest": "90bca28e03b9905a"
+ },
  "cf-orchestrator/test/adversarial_control_plane.test.ts": {
   "count": 2,
   "digest": "8211595a71a1d1b9"
@@ -90,6 +102,10 @@
  "cf-orchestrator/test/adversarial_runners_parity.test.ts": {
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
+ },
+ "cf-orchestrator/test/dashboardRoutes.test.ts": {
+  "count": 3,
+  "digest": "5143430ed1f59acb"
  },
  "cf-orchestrator/test/digitalOceanAgentRunner.test.ts": {
   "count": 1,
@@ -184,8 +200,8 @@
   "digest": "8cb25a0f6bb335c6"
  },
  "cf-orchestrator/wrangler.toml": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "k8s/action-dispatch.yaml.tpl": {
   "count": 4,
@@ -215,173 +231,57 @@
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
- "public/404.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/404.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/analytics.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/analytics.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/github-app": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/github-app.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/github-app.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/index": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/index.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/index.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/live": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/live.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/live.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
  "public/dashboard/memory": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 15,
+  "digest": "ba193915113af9f8"
  },
  "public/dashboard/memory.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 15,
+  "digest": "ba193915113af9f8"
  },
  "public/dashboard/memory.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 15,
+  "digest": "ba193915113af9f8"
  },
  "public/dashboard/onboarding": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "public/dashboard/onboarding.html": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "public/dashboard/onboarding.txt": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
- },
- "public/dashboard/organization": {
   "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/organization.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/organization.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/settings": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/settings.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/dashboard/settings.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/github-app.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/github-app.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/index.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/index.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/integrations.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/integrations.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "digest": "98755f4be2680d90"
  },
  "public/js/app.js": {
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
  "public/live.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 1,
+  "digest": "91571b54e233f2f3"
  },
  "public/live.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 1,
+  "digest": "91571b54e233f2f3"
  },
  "public/memory.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 15,
+  "digest": "ba193915113af9f8"
  },
  "public/memory.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 15,
+  "digest": "ba193915113af9f8"
  },
  "public/onboarding.html": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
+  "count": 2,
+  "digest": "98755f4be2680d90"
  },
  "public/onboarding.txt": {
-  "count": 4,
-  "digest": "d96c56f1cceed67f"
- },
- "public/repos.html": {
   "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/repos.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/settings.html": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
- },
- "public/settings.txt": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "digest": "98755f4be2680d90"
  },
  "scripts/advance-review-runtime.sh": {
   "count": 2,
@@ -452,20 +352,24 @@
   "digest": "dc4e8e512ddf8689"
  },
  "src/app/analytics/page.tsx": {
-  "count": 5,
-  "digest": "6e49cff010fced4c"
+  "count": 2,
+  "digest": "fc3d7fff225795ff"
  },
  "src/app/memory/page.tsx": {
-  "count": 6,
-  "digest": "6f0a68c81caf9a88"
+  "count": 8,
+  "digest": "f0f84f9eea65e40d"
  },
  "src/app/repos/page.tsx": {
-  "count": 3,
-  "digest": "b43e51df5c821e4e"
+  "count": 1,
+  "digest": "4dbee9d9fbbfafb5"
  },
  "src/cli/runLiveReview.ts": {
   "count": 3,
   "digest": "86b79c3b9a6946e3"
+ },
+ "src/components/analytics/RepoMemoryPivotPlatform.tsx": {
+  "count": 25,
+  "digest": "4742a91b59504c34"
  },
  "src/components/dashboard/memory-graph-modal.tsx": {
   "count": 4,
@@ -476,8 +380,8 @@
   "digest": "76e4bba4025be680"
  },
  "src/components/layout/topbar.tsx": {
-  "count": 2,
-  "digest": "bd71aa54e6a916f1"
+  "count": 1,
+  "digest": "91571b54e233f2f3"
  },
  "src/components/live/active-jobs-sidebar.tsx": {
   "count": 2,
@@ -592,8 +496,8 @@
   "digest": "98755f4be2680d90"
  },
  "src/review/diffService.ts": {
-  "count": 6,
-  "digest": "6f0a68c81caf9a88"
+  "count": 4,
+  "digest": "dc4e8e512ddf8689"
  },
  "src/review/emptyModeration.ts": {
   "count": 1,
@@ -1287,6 +1191,14 @@
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
  },
+ "tests/unit/components/RepoMemoryPivotPlatform.test.tsx": {
+  "count": 16,
+  "digest": "b4913d53e37af4f6"
+ },
+ "tests/unit/components/analyticsSuite.test.tsx": {
+  "count": 2,
+  "digest": "bd71aa54e6a916f1"
+ },
  "tests/unit/components/apiClient.test.ts": {
   "count": 8,
   "digest": "5e8fb65698545ff5"
@@ -1296,8 +1208,12 @@
   "digest": "3b4392fdab702959"
  },
  "tests/unit/components/onboardingWizardSteps.test.tsx": {
-  "count": 16,
-  "digest": "10ea334a01b74eb5"
+  "count": 15,
+  "digest": "a30554a8844797d7"
+ },
+ "tests/unit/components/tremorDashboardSuite.test.tsx": {
+  "count": 5,
+  "digest": "2f0900dc6dfb1c25"
  },
  "tests/unit/configPassthrough.test.ts": {
   "count": 14,

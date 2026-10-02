@@ -141,7 +141,7 @@ describe('Milestone 4 Empirical Challenger: Express Static Serving & Middleware 
       const res = await request(app).get('/live');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toMatch(/html/);
-      expect(res.text).toContain('Live Agent Stream');
+      expect(res.text).toContain('Live Review Inspector');
     });
 
     it('GET /settings delivers public/settings.html static export', async () => {

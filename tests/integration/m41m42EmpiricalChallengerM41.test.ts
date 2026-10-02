@@ -36,7 +36,7 @@ describe('Empirical Challenger M4_1: UI Routes, SSE Stream, Terminal Logs, Setti
       const res = await request(app).get('/dashboard/live');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('text/html');
-      expect(res.text).toContain('Live Agent');
+      expect(res.text).toContain('Live Review Inspector');
       expect(res.text).toContain('id="terminal-feed"');
       expect(res.text).toContain('id="inspector-prompt"');
       expect(res.text).toContain('id="connection-status"');
