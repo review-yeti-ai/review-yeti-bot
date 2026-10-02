@@ -2,8 +2,7 @@
 
 import React from 'react';
 import { AnalyticsSummaryData } from '@/types/analytics';
-import { Clock, Coins, Cpu, ShieldCheck, GitPullRequest } from 'lucide-react';
-import { Card, BadgeDelta } from '@/components/dashboard/tremor';
+import { Clock, Coins, Cpu, ShieldCheck, GitPullRequest, ArrowDownRight, ArrowUpRight } from 'lucide-react';
 
 export interface ExecutiveKpiCardsProps {
   summary: AnalyticsSummaryData | null;
@@ -32,11 +31,14 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {[...Array(5)].map((_, i) => (
-          <Card key={i} className="p-4 bg-[#08090d]/80 border-white/[0.08] animate-pulse space-y-3">
-            <div className="h-4 w-24 bg-white/[0.05] rounded" />
-            <div className="h-8 w-28 bg-white/[0.08] rounded" />
-            <div className="h-3 w-36 bg-white/[0.04] rounded" />
-          </Card>
+          <div
+            key={i}
+            className="p-4 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm animate-pulse space-y-3"
+          >
+            <div className="h-4 w-24 bg-slate-800 rounded" />
+            <div className="h-8 w-28 bg-slate-800 rounded" />
+            <div className="h-3 w-36 bg-slate-800/60 rounded" />
+          </div>
         ))}
       </div>
     );
@@ -62,17 +64,13 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
       {/* 1. Turnaround Latency (p95) */}
-      <Card
-        decoration="top"
-        decorationColor="cyan"
-        className="p-4 bg-[#08090d]/80 border-white/[0.08] relative overflow-hidden group hover:border-cyan-500/30 transition-colors"
-      >
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold uppercase tracking-wider text-zinc-400 font-mono text-[11px]">
+      <div className="p-4 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm relative overflow-hidden group hover:border-cyan-500/30 transition-colors">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             p95 Turnaround
           </span>
-          <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-            <Clock className="h-3.5 w-3.5" />
+          <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400">
+            <Clock className="h-4 w-4" />
           </div>
         </div>
         <div className="mt-2 flex items-baseline gap-2">
@@ -80,32 +78,29 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
             {formatDuration(p95)}
           </span>
           {p95Delta !== null && (
-            <BadgeDelta
-              deltaType={p95Delta <= 0 ? 'decrease' : 'increase'}
-              isIncreasePositive={false}
-              className="text-[11px] font-mono"
+            <span
+              className={`inline-flex items-center text-xs font-semibold ${
+                p95Delta <= 0 ? 'text-emerald-400' : 'text-amber-400'
+              }`}
             >
+              {p95Delta <= 0 ? <ArrowDownRight className="h-3.5 w-3.5" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
               {Math.abs(p95Delta)}%
-            </BadgeDelta>
+            </span>
           )}
         </div>
-        <div className="mt-1 text-xs text-zinc-400 font-mono">
-          Average: <span className="text-zinc-300">{formatDuration(avg)}</span>
+        <div className="mt-1 text-xs text-slate-400">
+          Average: <span className="font-mono text-slate-300">{formatDuration(avg)}</span>
         </div>
-      </Card>
+      </div>
 
       {/* 2. Total Spend (USD) */}
-      <Card
-        decoration="top"
-        decorationColor="emerald"
-        className="p-4 bg-[#08090d]/80 border-white/[0.08] relative overflow-hidden group hover:border-emerald-500/30 transition-colors"
-      >
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold uppercase tracking-wider text-zinc-400 font-mono text-[11px]">
+      <div className="p-4 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm relative overflow-hidden group hover:border-emerald-500/30 transition-colors">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Total Spend
           </span>
-          <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <Coins className="h-3.5 w-3.5" />
+          <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400">
+            <Coins className="h-4 w-4" />
           </div>
         </div>
         <div className="mt-2 flex items-baseline gap-2">
@@ -113,32 +108,29 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
             ${spend.toFixed(2)}
           </span>
           {spendDelta !== null && (
-            <BadgeDelta
-              deltaType={spendDelta <= 0 ? 'decrease' : 'increase'}
-              isIncreasePositive={false}
-              className="text-[11px] font-mono"
+            <span
+              className={`inline-flex items-center text-xs font-semibold ${
+                spendDelta <= 0 ? 'text-emerald-400' : 'text-amber-400'
+              }`}
             >
+              {spendDelta <= 0 ? <ArrowDownRight className="h-3.5 w-3.5" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
               {Math.abs(spendDelta)}%
-            </BadgeDelta>
+            </span>
           )}
         </div>
-        <div className="mt-1 text-xs text-zinc-400 font-mono">
-          Efficiency: <span className="text-zinc-300">{reviews > 0 ? `$${(spend / reviews).toFixed(3)}/PR` : '$0'}</span>
+        <div className="mt-1 text-xs text-slate-400">
+          Budget efficiency: <span className="font-mono text-slate-300">{reviews > 0 ? `$${(spend / reviews).toFixed(3)}/PR` : '$0'}</span>
         </div>
-      </Card>
+      </div>
 
       {/* 3. Token Consumption */}
-      <Card
-        decoration="top"
-        decorationColor="indigo"
-        className="p-4 bg-[#08090d]/80 border-white/[0.08] relative overflow-hidden group hover:border-indigo-500/30 transition-colors"
-      >
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold uppercase tracking-wider text-zinc-400 font-mono text-[11px]">
+      <div className="p-4 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm relative overflow-hidden group hover:border-indigo-500/30 transition-colors">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Token Volume
           </span>
-          <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-            <Cpu className="h-3.5 w-3.5" />
+          <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400">
+            <Cpu className="h-4 w-4" />
           </div>
         </div>
         <div className="mt-2 flex items-baseline gap-2">
@@ -146,73 +138,66 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
             {formatTokens(tokens)}
           </span>
           {tokenDelta !== null && (
-            <BadgeDelta
-              deltaType={tokenDelta <= 0 ? 'decrease' : 'increase'}
-              isIncreasePositive={false}
-              className="text-[11px] font-mono"
+            <span
+              className={`inline-flex items-center text-xs font-semibold ${
+                tokenDelta <= 0 ? 'text-emerald-400' : 'text-indigo-400'
+              }`}
             >
+              {tokenDelta <= 0 ? <ArrowDownRight className="h-3.5 w-3.5" /> : <ArrowUpRight className="h-3.5 w-3.5" />}
               {Math.abs(tokenDelta)}%
-            </BadgeDelta>
+            </span>
           )}
         </div>
-        <div className="mt-1 text-xs text-zinc-400 font-mono">
-          Avg density: <span className="text-zinc-300">{reviews > 0 ? formatTokens(Math.round(tokens / reviews)) : '0'}/PR</span>
+        <div className="mt-1 text-xs text-slate-400">
+          Avg density: <span className="font-mono text-slate-300">{reviews > 0 ? formatTokens(Math.round(tokens / reviews)) : '0'}/PR</span>
         </div>
-      </Card>
+      </div>
 
       {/* 4. Review Quality & Acceptance Rate */}
-      <Card
-        decoration="top"
-        decorationColor="purple"
-        className="p-4 bg-[#08090d]/80 border-white/[0.08] relative overflow-hidden group hover:border-purple-500/30 transition-colors"
-      >
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold uppercase tracking-wider text-zinc-400 font-mono text-[11px]">
+      <div className="p-4 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm relative overflow-hidden group hover:border-purple-500/30 transition-colors">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Finding Acceptance
           </span>
-          <div className="p-1.5 rounded-lg bg-purple-500/10 text-purple-400 border border-purple-500/20">
-            <ShieldCheck className="h-3.5 w-3.5" />
+          <div className="p-1.5 rounded-lg bg-purple-500/10 text-purple-400">
+            <ShieldCheck className="h-4 w-4" />
           </div>
         </div>
         <div className="mt-2 flex items-baseline gap-2">
           <span id="kpi-acceptance-rate" className="text-2xl font-bold font-mono tracking-tight text-purple-300">
             {acceptance.toFixed(1)}%
           </span>
-          <span className="text-xs text-zinc-400 font-mono">
-            ({dismissal.toFixed(1)}% dism)
+          <span className="text-xs text-slate-400">
+            ({dismissal.toFixed(1)}% dismissed)
           </span>
         </div>
-        <div className="mt-1 text-xs text-zinc-400 font-mono">
-          Findings triaged: <span className="text-zinc-300">{totalFindings}</span>
+        <div className="mt-1 text-xs text-slate-400">
+          Findings triaged: <span className="font-mono text-slate-300">{totalFindings}</span>
         </div>
-      </Card>
+      </div>
 
       {/* 5. PR Reviews Velocity & Consensus */}
-      <Card
-        decoration="top"
-        decorationColor="cyan"
-        className="p-4 bg-[#08090d]/80 border-white/[0.08] relative overflow-hidden group hover:border-cyan-500/30 transition-colors"
-      >
-        <div className="flex items-center justify-between text-xs">
-          <span className="font-semibold uppercase tracking-wider text-zinc-400 font-mono text-[11px]">
+      <div className="p-4 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm relative overflow-hidden group hover:border-cyan-500/30 transition-colors">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Review Velocity
           </span>
-          <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
-            <GitPullRequest className="h-3.5 w-3.5" />
+          <div className="p-1.5 rounded-lg bg-cyan-500/10 text-cyan-400">
+            <GitPullRequest className="h-4 w-4" />
           </div>
         </div>
         <div className="mt-2 flex items-baseline gap-2">
           <span id="kpi-total-reviews" className="text-2xl font-bold font-mono tracking-tight text-white">
             {reviews}
           </span>
-          <span className="text-xs text-zinc-400 font-mono">
+          <span className="text-xs text-slate-400">
             ({prs} {prs === 1 ? 'PR' : 'PRs'})
           </span>
         </div>
-        <div className="mt-1 text-xs text-zinc-400 font-mono">
-          Consensus: <span className="text-emerald-400 font-bold">{successRate.toFixed(1)}% SHIP</span>
+        <div className="mt-1 text-xs text-slate-400">
+          Consensus: <span className="font-mono text-emerald-400">{successRate.toFixed(1)}% SHIP</span>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }

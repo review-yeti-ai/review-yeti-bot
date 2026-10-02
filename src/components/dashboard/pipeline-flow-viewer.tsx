@@ -42,13 +42,13 @@ function EngineNode({ data }: { data: Record<string, unknown> }) {
     <div className="px-5 py-3 rounded-xl border-2 border-violet-500/50 bg-gradient-to-br from-violet-950 to-slate-900 shadow-lg shadow-violet-500/10 min-w-[200px] text-center relative">
       <Handle type="target" position={Position.Top} style={{ background: '#8b5cf6', width: 8, height: 8, border: '2px solid #2e1065' }} />
       <div className="text-[10px] font-mono uppercase tracking-widest text-violet-400/80 mb-1">
-        Swarm Engine
+        Review Engine
       </div>
       <div className="text-sm font-semibold text-white">
-        ❄️ Review Yeti AI Swarm
+        🧠 Pi.dev Panel Engine
       </div>
       <div className="text-[11px] text-slate-400 mt-1">
-        {String(data.personaCount || 0)} subagent task{Number(data.personaCount) !== 1 ? 's' : ''} planned
+        {String(data.personaCount || 0)} persona{Number(data.personaCount) !== 1 ? 's' : ''} dispatched
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#8b5cf6', width: 8, height: 8, border: '2px solid #2e1065' }} />
     </div>

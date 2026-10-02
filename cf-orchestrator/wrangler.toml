@@ -41,18 +41,6 @@ max_batch_timeout = 5
 binding = "WORKSPACE_CACHE_BUCKET"
 bucket_name = "review-yeti-workspace-cache"
 
-# Cloudflare D1 Relational SQL Database
-[[d1_databases]]
-binding = "DB"
-database_name = "review-yeti-production-d1"
-database_id = "c90d8ca4-d063-4f5f-89b4-7908b1888810"
-migrations_dir = "migrations"
-
-# KV Namespace for GitHub App installation token caching
-[[kv_namespaces]]
-binding = "AUTH_CACHE"
-id = "dbd1e6d53ed2470cb11cec13a7949cff"
-
 # Hyperdrive binding for PostgreSQL connection pooling (uncomment once created via wrangler hyperdrive create)
 # [[hyperdrive]]
 # binding = "HYPERDRIVE"

@@ -191,7 +191,7 @@ export async function resolveReviewDiff(jobId: string): Promise<ReviewDiffRespon
 
   // Tier 4: Synthetic generation if jobId indicates a test or demo job
   if (cleanJobId.startsWith('job-test-') || cleanJobId.startsWith('synthetic-') || cleanJobId === 'default-job') {
-    return generateSyntheticDiff(cleanJobId, 'reviewyeti-ai/yeti-pr-reviewer', 108, 'Synthetic PR Review Diff');
+    return generateSyntheticDiff(cleanJobId, 'calltelemetry/cisco-cdr', 108, 'Synthetic PR Review Diff');
   }
 
   return null;

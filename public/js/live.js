@@ -1,11 +1,6 @@
 (function () {
   'use strict';
 
-  // If running inside Next.js modern React application, defer to React useSSE hook
-  if (typeof window !== 'undefined' && (window.__next_f || window.__NEXT_DATA__ || document.getElementById('__next') || document.querySelector('template[data-dgst]') || document.querySelector('body[class*="selection:bg-indigo"]'))) {
-    return;
-  }
-
   let currentJobId = 'default-job';
   let activeFilter = 'all';
   let searchQuery = '';

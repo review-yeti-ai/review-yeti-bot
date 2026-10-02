@@ -14,7 +14,6 @@ import {
 } from 'recharts';
 import { Cpu, Layers } from 'lucide-react';
 import { TokenBurnPoint } from '@/types/analytics';
-import { Card } from '@/components/dashboard/tremor';
 
 export interface TokenBurnChartProps {
   data?: TokenBurnPoint[];
@@ -63,13 +62,13 @@ export function TokenBurnChart({
 
   if (!isMounted || isLoading) {
     return (
-      <Card decoration="top" decorationColor="indigo" className={`p-5 rounded-xl border border-white/[0.08] bg-[#08090d] ${className} animate-pulse`}>
+      <div className={`p-5 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm ${className}`}>
         <div className="flex items-center justify-between mb-4">
-          <div className="h-5 w-44 bg-white/[0.05] rounded" />
-          <div className="h-5 w-20 bg-white/[0.05] rounded" />
+          <div className="h-5 w-44 bg-slate-800 rounded animate-pulse" />
+          <div className="h-5 w-20 bg-slate-800 rounded animate-pulse" />
         </div>
-        <div className="h-64 w-full bg-white/[0.02] rounded-lg" />
-      </Card>
+        <div className="h-64 w-full bg-slate-800/40 rounded-lg animate-pulse" />
+      </div>
     );
   }
 
@@ -94,32 +93,32 @@ export function TokenBurnChart({
   const effectiveBudget = budgetLimit || Math.round(maxTokens * 1.25);
 
   return (
-    <Card decoration="top" decorationColor="indigo" className={`p-5 rounded-xl border border-white/[0.08] bg-[#08090d] ${className}`}>
+    <div className={`p-5 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm ${className}`}>
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
         <div>
           <div className="flex items-center gap-2">
             <Cpu className="h-4 w-4 text-indigo-400" />
-            <h3 className="text-sm font-semibold text-zinc-100 font-mono tracking-tight">
+            <h3 className="text-sm font-semibold text-white tracking-tight">
               Token Burn Curves &amp; Accumulation
             </h3>
-            <span className="px-2 py-0.5 text-[10px] font-mono font-medium rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400">
+            <span className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
               Cumulative Series
             </span>
           </div>
-          <p className="text-xs text-zinc-400 mt-0.5">
+          <p className="text-xs text-slate-400 mt-0.5">
             Running prompt and completion token consumption across review iterations
           </p>
         </div>
 
         <div className="flex items-center gap-2 text-xs font-mono">
-          <div className="px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-zinc-300">
+          <div className="px-2 py-1 rounded bg-slate-800 border border-white/5 text-slate-300">
             Prompt: <span className="text-indigo-400 font-bold">{formatTokensCompact(promptTokens)}</span>
           </div>
-          <div className="px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-zinc-300">
+          <div className="px-2 py-1 rounded bg-slate-800 border border-white/5 text-slate-300">
             Completion: <span className="text-purple-400 font-bold">{formatTokensCompact(completionTokens)}</span>
           </div>
-          <div className="px-2 py-1 rounded bg-white/[0.03] border border-white/[0.06] text-zinc-300">
+          <div className="px-2 py-1 rounded bg-slate-800 border border-white/5 text-slate-300">
             Total: <span className="text-cyan-400 font-bold">{formatTokensCompact(totalTokens)}</span>
           </div>
         </div>
@@ -135,44 +134,52 @@ export function TokenBurnChart({
                 <stop offset="95%" stopColor="#6366f1" stopOpacity={0.02} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#27272a" opacity={0.4} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.3} />
             <XAxis
               dataKey="label"
-              stroke="#71717a"
+              stroke="#64748b"
               tick={{ fontSize: 11 }}
               tickLine={false}
             />
             <YAxis
-              stroke="#71717a"
+              stroke="#64748b"
               tick={{ fontSize: 11 }}
               tickLine={false}
               tickFormatter={(v) => formatTokensCompact(v)}
             />
             <Tooltip
+              contentStyle={{
+                backgroundColor: '#0f172a',
+                borderColor: '#334155',
+                borderRadius: '8px',
+                fontSize: '12px',
+                boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)',
+              }}
+              labelStyle={{ color: '#cbd5e1', fontWeight: 600 }}
               content={({ active, payload }) => {
                 if (active && payload && payload.length) {
                   const item = payload[0].payload;
                   return (
-                    <div className="p-3 bg-[#08090d] border border-white/10 rounded-lg space-y-1.5 shadow-2xl text-xs backdrop-blur-md">
-                      <div className="font-bold text-white flex items-center gap-1.5 font-mono">
+                    <div className="p-3 bg-slate-900 border border-slate-700 rounded-lg space-y-1.5 shadow-xl text-xs">
+                      <div className="font-bold text-white flex items-center gap-1.5">
                         <Layers className="h-3.5 w-3.5 text-indigo-400" />
                         <span>Date: {item.timestamp || item.label}</span>
                       </div>
-                      <div className="text-zinc-300 flex justify-between gap-4 font-mono">
+                      <div className="text-slate-300 flex justify-between gap-4">
                         <span>Cumulative Tokens:</span>
-                        <span className="text-cyan-400 font-bold">{(item.cumulativeTokens || 0).toLocaleString()}</span>
+                        <span className="font-mono text-cyan-400 font-bold">{(item.cumulativeTokens || 0).toLocaleString()}</span>
                       </div>
-                      <div className="text-zinc-400 flex justify-between gap-4 font-mono">
+                      <div className="text-slate-400 flex justify-between gap-4">
                         <span>Day Total:</span>
-                        <span className="text-zinc-200">{(item.totalTokens || 0).toLocaleString()}</span>
+                        <span className="font-mono text-slate-200">{(item.totalTokens || 0).toLocaleString()}</span>
                       </div>
-                      <div className="text-zinc-400 flex justify-between gap-4 font-mono">
+                      <div className="text-slate-400 flex justify-between gap-4">
                         <span>Prompt:</span>
-                        <span className="text-indigo-300">{(item.promptTokens || 0).toLocaleString()}</span>
+                        <span className="font-mono text-indigo-300">{(item.promptTokens || 0).toLocaleString()}</span>
                       </div>
-                      <div className="text-zinc-400 flex justify-between gap-4 font-mono">
+                      <div className="text-slate-400 flex justify-between gap-4">
                         <span>Completion:</span>
-                        <span className="text-purple-300">{(item.completionTokens || 0).toLocaleString()}</span>
+                        <span className="font-mono text-purple-300">{(item.completionTokens || 0).toLocaleString()}</span>
                       </div>
                     </div>
                   );
@@ -214,6 +221,6 @@ export function TokenBurnChart({
           </AreaChart>
         </ResponsiveContainer>
       </div>
-    </Card>
+    </div>
   );
 }

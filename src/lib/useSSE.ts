@@ -8,9 +8,6 @@ import {
   TokenMetricHistoryPoint,
   LiveJobSummary,
   PersonaStatus,
-  ReviewStage,
-  StageState,
-  TurnStepRecord,
 } from '@/types/live';
 import { AnchoredFinding } from '@/types/diff';
 
@@ -27,28 +24,6 @@ export interface ToolExecutionRecord {
   durationMs?: number;
   turn?: number;
   timestamp: string;
-}
-
-export interface SwarmTaskItem {
-  id: string;
-  dimension: 'security' | 'architecture' | 'performance' | 'testing' | 'dependencies' | 'contract' | 'licensing' | string;
-  description: string;
-  paths?: string[];
-  priority: number;
-  status: 'PENDING' | 'PLANNING' | 'IN_FLIGHT' | 'RUNNING' | 'COMPACTING' | 'VERIFYING' | 'COMPLETED' | 'FAILED';
-  progress: number;
-  findingsCount: number;
-  lastMessage?: string;
-  durationMs?: number;
-}
-
-export interface ContextCompactionMetrics {
-  rawDiffTokens: number;
-  compactedTokens: number;
-  compactionRatio: number;
-  boundsReductionLines: number;
-  lockfilesBypassed: number;
-  astOutlineNodes: number;
 }
 
 export const DEFAULT_PERSONAS = [
@@ -89,15 +64,6 @@ export function createInitialPersonaProgress(): Record<string, PersonaProgressSt
   return initial;
 }
 
-export const DEFAULT_REVIEW_STAGES: StageState[] = [
-  { stage: 'admission', label: '1. Ingress Gate', description: 'Validate payload, acquire RepoGate concurrency slot & epoch fence', status: 'pending', progress: 0 },
-  { stage: 'compaction', label: '2. Context Compaction', description: 'Fetch diff, extract AST outlines, evict raw hunks & bypass lockfiles', status: 'pending', progress: 0 },
-  { stage: 'planning', label: '3. Swarm Planning', description: 'Decompose changes into bounded subagent ReviewTask[] roster', status: 'pending', progress: 0 },
-  { stage: 'execution', label: '4. Subagent Turns', description: 'Subagents execute isolated turns, tool calls, and finding drafts', status: 'pending', progress: 0 },
-  { stage: 'arbitration', label: '5. Arbitration', description: 'Deduplicate findings, enforce P0 blocker rules & auto-approval gate', status: 'pending', progress: 0 },
-  { stage: 'publication', label: '6. Publish & Attest', description: 'Persist review to Cloudflare D1 SQL, emit check-run & release slot', status: 'pending', progress: 0 },
-];
-
 export function useSSE(options: UseSSEOptions = {}) {
   const {
     jobId: initialJobId = null,
@@ -115,11 +81,6 @@ export function useSSE(options: UseSSEOptions = {}) {
   const [personaProgress, setPersonaProgress] = useState<Record<string, PersonaProgressState>>(
     createInitialPersonaProgress
   );
-  const [currentStage, setCurrentStage] = useState<ReviewStage>('admission');
-  const [stageHistory, setStageHistory] = useState<StageState[]>(DEFAULT_REVIEW_STAGES);
-  const [overallProgress, setOverallProgress] = useState<number>(0);
-  const [turns, setTurns] = useState<TurnStepRecord[]>([]);
-  const [activeTurnByTask, setActiveTurnByTask] = useState<Record<string, { current: number; max: number }>>({});
   const [tokenMetrics, setTokenMetrics] = useState<StreamingTokenMetrics>({
     promptTokens: 0,
     completionTokens: 0,
@@ -135,15 +96,6 @@ export function useSSE(options: UseSSEOptions = {}) {
   const [reasoning, setReasoning] = useState<Record<string, string>>({});
   const [toolExecutions, setToolExecutions] = useState<ToolExecutionRecord[]>([]);
   const [anchoredFindings, setAnchoredFindings] = useState<AnchoredFinding[]>([]);
-  const [swarmTasks, setSwarmTasks] = useState<SwarmTaskItem[]>([]);
-  const [contextCompaction, setContextCompaction] = useState<ContextCompactionMetrics>({
-    rawDiffTokens: 0,
-    compactedTokens: 0,
-    compactionRatio: 1.0,
-    boundsReductionLines: 0,
-    lockfilesBypassed: 0,
-    astOutlineNodes: 0,
-  });
 
   // Refs for double-buffered batching queue
   const incomingQueueRef = useRef<LiveStreamEvent[]>([]);
@@ -177,13 +129,6 @@ export function useSSE(options: UseSSEOptions = {}) {
         const data = await res.json();
         if (data.jobs && Array.isArray(data.jobs)) {
           setActiveJobs(data.jobs);
-          const currentJob = data.jobs.find((j: any) => j.jobId === (jobId || data.jobs[0]?.jobId)) || data.jobs[0];
-          if (currentJob?.tasks && Array.isArray(currentJob.tasks)) {
-            setSwarmTasks(currentJob.tasks);
-          }
-          if (currentJob?.contextCompaction) {
-            setContextCompaction(currentJob.contextCompaction);
-          }
           if (data.jobs.length > 0) {
             setJobId((prevJobId) => {
               if (!prevJobId || prevJobId === 'default-job') {
@@ -203,28 +148,14 @@ export function useSSE(options: UseSSEOptions = {}) {
     } catch {
       // Ignore network errors in polling/fetching active jobs
     }
-  }, [jobId]);
+  }, []);
 
   const clearEvents = useCallback(() => {
     setEvents([]);
     setReasoning({});
     setToolExecutions([]);
     setAnchoredFindings([]);
-    setSwarmTasks([]);
-    setContextCompaction({
-      rawDiffTokens: 0,
-      compactedTokens: 0,
-      compactionRatio: 1.0,
-      boundsReductionLines: 0,
-      lockfilesBypassed: 0,
-      astOutlineNodes: 0,
-    });
     setPersonaProgress(createInitialPersonaProgress());
-    setCurrentStage('admission');
-    setStageHistory(DEFAULT_REVIEW_STAGES);
-    setOverallProgress(0);
-    setTurns([]);
-    setActiveTurnByTask({});
     setTokenMetrics({
       promptTokens: 0,
       completionTokens: 0,
@@ -267,95 +198,6 @@ export function useSSE(options: UseSSEOptions = {}) {
       }
 
       const currentPersona = nextPersonaProgress[canonicalPersona];
-
-      // Handle modern swarm events
-      if (type === 'task:plan') {
-        const taskList = data?.tasks || (Array.isArray(data) ? data : []);
-        if (Array.isArray(taskList) && taskList.length > 0) {
-          setSwarmTasks(
-            taskList.map((t: any) => ({
-              id: t.id || `task_${t.dimension}`,
-              dimension: t.dimension || 'general',
-              description: t.description || `${t.dimension} analysis`,
-              paths: t.paths || [],
-              priority: t.priority ?? 1,
-              status: t.status || 'PENDING',
-              progress: t.progress ?? 0,
-              findingsCount: t.findingsCount ?? 0,
-              lastMessage: t.lastMessage || 'Queued for subagent execution',
-              durationMs: t.durationMs ?? 0,
-            }))
-          );
-        }
-      } else if (type === 'task:progress') {
-        const taskId = data?.taskId || (data?.dimension ? `task_${data.dimension}` : null) || data?.id;
-        if (taskId) {
-          setSwarmTasks((prev) =>
-            prev.map((t) => {
-              if (t.id === taskId || t.dimension === data?.dimension) {
-                return {
-                  ...t,
-                  status: data.status || t.status,
-                  progress: data.progress !== undefined ? data.progress : t.progress,
-                  findingsCount: data.findingsCount !== undefined ? data.findingsCount : t.findingsCount,
-                  lastMessage: data.lastMessage || t.lastMessage,
-                  durationMs: data.durationMs !== undefined ? data.durationMs : t.durationMs,
-                };
-              }
-              return t;
-            })
-          );
-        }
-      } else if (type === 'task:complete') {
-        const taskId = data?.taskId || (data?.dimension ? `task_${data.dimension}` : null) || data?.id;
-        if (taskId) {
-          setSwarmTasks((prev) =>
-            prev.map((t) => {
-              if (t.id === taskId || t.dimension === data?.dimension) {
-                return {
-                  ...t,
-                  status: 'COMPLETED',
-                  progress: 100,
-                  findingsCount: data.findingsCount !== undefined ? data.findingsCount : t.findingsCount,
-                  lastMessage: data.lastMessage || 'Task completed successfully',
-                  durationMs: data.durationMs !== undefined ? data.durationMs : t.durationMs,
-                };
-              }
-              return t;
-            })
-          );
-        }
-      } else if (type === 'context:compaction') {
-        setContextCompaction({
-          rawDiffTokens: data?.rawDiffTokens ?? 0,
-          compactedTokens: data?.compactedTokens ?? 0,
-          compactionRatio: data?.compactionRatio ?? 1.0,
-          boundsReductionLines: data?.boundsReductionLines ?? 0,
-          lockfilesBypassed: data?.lockfilesBypassed ?? 0,
-          astOutlineNodes: data?.astOutlineNodes ?? 0,
-        });
-      } else if (type === 'finding:anchored') {
-        const findingData = data?.finding || data || {};
-        const fId = data?.id || findingData.id || `f_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-        const anchoredFinding: AnchoredFinding = {
-          id: fId,
-          severity: (findingData.severity || data?.severity || 'P1') as 'P0' | 'P1' | 'P2',
-          file: findingData.path || findingData.file || data?.file || data?.path || '',
-          line: findingData.line ?? data?.line ?? 1,
-          startLine: findingData.startLine ?? data?.startLine,
-          title: findingData.title || data?.title || 'Review Finding',
-          description: findingData.description || findingData.body || data?.description || '',
-          suggestion: findingData.suggestion || data?.suggestion || findingData.replacementCode || data?.replacementCode,
-          suggestedPatch: findingData.suggestedPatch || data?.suggestedPatch,
-          status: 'active',
-          persona: findingData.persona || data?.persona || canonicalPersona,
-        };
-
-        setAnchoredFindings((prev) => {
-          if (prev.some((f) => f.id === anchoredFinding.id)) return prev;
-          return [...prev, anchoredFinding];
-        });
-      }
 
       // Update persona progress based on event type
       if (type === 'persona:start' || type === 'agent_start') {
@@ -571,107 +413,10 @@ export function useSSE(options: UseSSEOptions = {}) {
             };
           }
         }
-      } else if (type === 'stage:transition') {
-        const nextStage = (data?.stage || data?.to || 'admission') as ReviewStage;
-        const stageStatus = data?.status || 'running';
-        const stageProgress = typeof data?.progress === 'number' ? data.progress : 100;
-        const msg = data?.message || data?.description;
-        const duration = data?.durationMs;
-
-        setCurrentStage(nextStage);
-
-        setStageHistory((prevStages) => {
-          const STAGE_ORDER: ReviewStage[] = [
-            'admission',
-            'compaction',
-            'planning',
-            'execution',
-            'arbitration',
-            'publication',
-            'complete',
-          ];
-          const targetIdx = STAGE_ORDER.indexOf(nextStage);
-
-          return prevStages.map((s) => {
-            const sIdx = STAGE_ORDER.indexOf(s.stage);
-            if (s.stage === nextStage) {
-              return {
-                ...s,
-                status: stageStatus,
-                progress: stageProgress,
-                description: msg || s.description,
-                startedAt: s.startedAt || evt.timestamp,
-                completedAt: stageStatus === 'completed' ? evt.timestamp : s.completedAt,
-                durationMs: duration ?? s.durationMs,
-              };
-            }
-            if (targetIdx !== -1 && sIdx < targetIdx) {
-              return {
-                ...s,
-                status: 'completed',
-                progress: 100,
-                completedAt: s.completedAt || evt.timestamp,
-              };
-            }
-            return s;
-          });
-        });
-
-        if (typeof data?.overallProgress === 'number') {
-          setOverallProgress(data.overallProgress);
-        } else {
-          const STAGE_WEIGHTS: Record<ReviewStage, number> = {
-            admission: 10,
-            compaction: 25,
-            planning: 40,
-            execution: 75,
-            arbitration: 90,
-            publication: 98,
-            complete: 100,
-          };
-          setOverallProgress(STAGE_WEIGHTS[nextStage] ?? 50);
-        }
-      } else if (type === 'turn:step') {
-        const turnNum = typeof data?.turn === 'number' ? data.turn : 1;
-        const maxTurnsVal = typeof data?.maxTurns === 'number' ? data.maxTurns : 20;
-        const pId = data?.personaId || data?.persona || canonicalPersona;
-        const tId = data?.taskId || pId;
-
-        const turnRecord: TurnStepRecord = {
-          id: data?.id || `turn_${tId}_${turnNum}_${evt.timestamp}`,
-          jobId: evt.jobId,
-          personaId: pId,
-          taskId: tId,
-          turn: turnNum,
-          maxTurns: maxTurnsVal,
-          action: data?.action || 'reasoning',
-          tool: data?.tool || data?.toolName,
-          input: data?.input || data?.args,
-          output: data?.output || data?.result,
-          tokensBurned: data?.tokensBurned || data?.tokensUsed,
-          latencyMs: data?.latencyMs || data?.durationMs,
-          timestamp: data?.timestamp || evt.timestamp,
-        };
-
-        setTurns((prev) => [...prev, turnRecord]);
-
-        setActiveTurnByTask((prev) => ({
-          ...prev,
-          [tId]: { current: turnNum, max: maxTurnsVal },
-          [pId]: { current: turnNum, max: maxTurnsVal },
-        }));
       }
 
       // Token and cost extraction
       if (data) {
-        if (type === 'token:update') {
-          if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
-          if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
-          if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
-          if (typeof data.costUSD === 'number') costDelta += data.costUSD;
-          else if (typeof data.estimatedCostUSD === 'number') costDelta += data.estimatedCostUSD;
-        }
-
         if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
         if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
         if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
@@ -831,73 +576,24 @@ export function useSSE(options: UseSSEOptions = {}) {
         lastActivityRef.current = Date.now();
       };
 
-      const handleRawData = (eventType: string, rawData: string) => {
+      es.onmessage = (event: MessageEvent) => {
         lastActivityRef.current = Date.now();
         if (connectionStatus !== 'connected') {
           setConnectionStatus('connected');
         }
 
-        if (!rawData) return;
+        if (!event.data) return;
         try {
-          const parsed = JSON.parse(rawData);
-          const evtType = parsed.type || eventType;
-          if (evtType === 'ping') return;
-
-          const eventObj: LiveStreamEvent = {
-            type: evtType as any,
-            jobId: parsed.jobId || jobId || 'default-job',
-            timestamp: parsed.timestamp || new Date().toISOString(),
-            persona: parsed.persona || parsed.dimension,
-            data: parsed.data !== undefined ? parsed.data : parsed,
-          };
-          incomingQueueRef.current.push(eventObj);
+          const parsed: LiveStreamEvent = JSON.parse(event.data);
+          incomingQueueRef.current.push(parsed);
           scheduleFlush();
         } catch {
           // Ignore invalid JSON payloads or comment pings
         }
       };
 
-      es.onmessage = (event: MessageEvent) => {
-        handleRawData('message', event.data);
-      };
-
-      if (typeof es.addEventListener === 'function') {
-        const knownEvents = [
-          'connection:open',
-          'stage:transition',
-          'turn:step',
-          'token:update',
-          'task:plan',
-          'task:progress',
-          'task:complete',
-          'context:compaction',
-          'finding:anchored',
-          'persona:start',
-          'persona:progress',
-          'persona:chunk',
-          'persona:reasoning',
-          'reasoning:chunk',
-          'persona:finding',
-          'persona:complete',
-          'tool:start',
-          'tool:result',
-          'tool:error',
-          'log:chunk',
-          'token:metrics',
-          'llm:token',
-          'llm:chunk',
-          'job:complete',
-          'ping',
-        ];
-        for (const evtName of knownEvents) {
-          es.addEventListener(evtName, (event: any) => {
-            handleRawData(evtName, event.data);
-          });
-        }
-      }
-
       es.onerror = () => {
-        if (es.readyState === EventSource.CLOSED) {
+        if (es.readyState === EventSource.CLOSED || es.readyState === EventSource.CONNECTING) {
           es.close();
           eventSourceRef.current = null;
           handleReconnect();
@@ -997,24 +693,11 @@ export function useSSE(options: UseSSEOptions = {}) {
     tokenMetrics,
     tokenHistory,
     clearEvents,
-    connect,
-    disconnect,
     reconnect,
     activeJobs,
     fetchActiveJobs,
     reasoning,
     toolExecutions,
     anchoredFindings,
-    // Modern Composed Swarm Task State
-    swarmTasks,
-    setSwarmTasks,
-    contextCompaction,
-    setContextCompaction,
-    // Live Review Stages & Turns State
-    currentStage,
-    stageHistory,
-    overallProgress,
-    turns,
-    activeTurnByTask,
   };
 }

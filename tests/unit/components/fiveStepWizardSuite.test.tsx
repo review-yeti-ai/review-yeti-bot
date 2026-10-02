@@ -92,8 +92,8 @@ describe('FiveStepWizard Component Suite', () => {
 
     render(<Step4PersonaEnsemble personas={{}} onUpdatePersona={onUpdate} />);
 
-    expect(screen.getByText(/Step 4: (Persona Ensemble Assignment|Composed Swarm Review Task Policies)/i)).toBeInTheDocument();
-    expect(screen.getByText(/🛡️ Security & Tenancy (Guardian|Floor)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Step 4: Persona Ensemble Assignment/i)).toBeInTheDocument();
+    expect(screen.getByText(/🛡️ Security & Tenancy Guardian/i)).toBeInTheDocument();
   });
 
   it('filters out models belonging to disabled providers in Step4PersonaEnsemble', () => {
@@ -134,7 +134,7 @@ describe('FiveStepWizard Component Suite', () => {
       />
     );
 
-    expect(screen.getByText(/Step 4: (Persona Ensemble Assignment|Composed Swarm Review Task Policies)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Step 4: Persona Ensemble Assignment/i)).toBeInTheDocument();
     expect(screen.getAllByText(/Provider \(openai\) disabled/i).length).toBeGreaterThan(0);
   });
 

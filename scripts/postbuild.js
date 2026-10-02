@@ -117,7 +117,6 @@ const routes = [
   { name: 'repos', candidates: ['repos.html', 'repos/index.html', 'repos/page.html'] },
   { name: 'integrations', candidates: ['integrations.html', 'integrations/index.html', 'integrations/page.html'] },
   { name: 'github-app', candidates: ['github-app.html', 'github-app/index.html', 'github-app/page.html'] },
-  { name: 'l', candidates: ['index.html', 'live.html'] },
   { name: '404', candidates: ['404.html', '_not-found.html', '_not-found/page.html'] },
 ];
 
@@ -157,7 +156,6 @@ ensureDirSync(dashboardDir);
 
 const dashboardRoutes = [
   { name: 'live', srcCandidates: ['dashboard/live.html', 'dashboard/live/index.html', 'dashboard/live/page.html', 'live.html'] },
-  { name: 'l', srcCandidates: ['index.html', 'dashboard/index.html', 'live.html'] },
   { name: 'memory', srcCandidates: ['dashboard/memory.html', 'memory.html', 'memory/index.html', 'memory/page.html'] },
   { name: 'settings', srcCandidates: ['dashboard/settings.html', 'dashboard/settings/index.html', 'dashboard/settings/page.html', 'settings.html'] },
   { name: 'github-app', srcCandidates: ['dashboard/github-app.html', 'github-app.html'] },
@@ -256,7 +254,7 @@ const DEFAULT_PERSONAS_META = [
   { id: 'red_team', name: 'Red Team' },
 ];
 
-const AVAILABLE_MODELS = ['reviewyeti-ai/yeti-pr-reviewer'];
+const AVAILABLE_MODELS = ['claude-3-5-sonnet', 'gpt-4o', 'gemini-1.5-pro'];
 const EFFORT_LEVELS = ['low', 'medium', 'high', 'max'];
 
 const UI_CONTROLS = {

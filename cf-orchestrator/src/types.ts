@@ -54,8 +54,6 @@ export interface Env {
   HYPERDRIVE?: {
     connectionString: string;
   };
-  DB?: any; // D1 Database binding
-  AUTH_CACHE?: any; // KV Namespace for GitHub App auth tokens
 
   // Variables
   ENVIRONMENT: string;
@@ -76,39 +74,5 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
   GITHUB_TOKEN?: string;
-}
-
-export type ReviewStage =
-  | 'admission'
-  | 'compaction'
-  | 'planning'
-  | 'execution'
-  | 'arbitration'
-  | 'publication'
-  | 'complete';
-
-export interface StageTransitionPayload {
-  stage: ReviewStage;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  progress?: number;
-  overallProgress?: number;
-  message?: string;
-  durationMs?: number;
-}
-
-export interface TurnStepPayload {
-  id?: string;
-  jobId: string;
-  personaId: string;
-  taskId?: string;
-  turn: number;
-  maxTurns: number;
-  action: string;
-  tool?: string;
-  input?: any;
-  output?: any;
-  tokensBurned?: number;
-  latencyMs?: number;
-  timestamp?: string;
 }
 

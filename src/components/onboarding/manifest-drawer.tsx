@@ -169,8 +169,8 @@ spending_cap:
   alert_threshold_percent: 80
   overflow_action: "throttle_non_critical"
 
-# Swarm Review Tasks Configuration
-tasks:
+# Reviewer Personas Ensemble Configuration (11 Personas)
+personas:
 ${personasYamlLines}
 
 # OmniRoute Failover Chain Order
@@ -349,7 +349,7 @@ ${providerPriorityYamlLines}
         <DialogFooter className="p-4 border-t border-border/60 bg-muted/20 flex flex-row items-center justify-between sm:justify-between">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <ShieldCheck className="h-4 w-4 text-emerald-400" />
-            <span>Includes Swarm review task policies &amp; AST compaction rules.</span>
+            <span>Includes 11 reviewer personas &amp; OmniRoute failover rules.</span>
           </div>
           <Button variant="outline" size="sm" onClick={() => setIsOpen(false)} className="text-xs">
             Close Drawer

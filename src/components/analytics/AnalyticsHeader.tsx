@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { AnalyticsTimeRange } from '@/types/analytics';
-import { BarChart3, RefreshCw, Calendar, GitFork, ShieldCheck, Activity } from 'lucide-react';
+import { BarChart3, RefreshCw, Calendar, GitFork } from 'lucide-react';
 
 export interface AnalyticsHeaderProps {
   selectedWindow: AnalyticsTimeRange;
@@ -32,37 +32,37 @@ export function AnalyticsHeader({
   lastUpdated,
 }: AnalyticsHeaderProps) {
   return (
-    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4 border-b border-white/[0.08]">
+    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-6 border-b border-white/10">
       <div>
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-            <BarChart3 className="h-5 w-5" />
+          <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+            <BarChart3 className="h-6 w-6" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold tracking-tight text-white font-mono">
-                Analytics &amp; Intelligence
+              <h1 className="text-2xl font-bold tracking-tight text-white">
+                Executive &amp; Engineering Analytics
               </h1>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-                Edge Active
+              <span className="px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider rounded-md bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                R3 Intelligence
               </span>
             </div>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Turnaround velocity, spend trends, token burn curves, and finding acceptance
+            <p className="text-sm text-slate-400 mt-0.5">
+              Multi-horizon review turnaround latency, spend intelligence, token burn curves, and finding acceptance.
             </p>
           </div>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2.5">
+      <div className="flex flex-wrap items-center gap-3">
         {/* Repository Filter Dropdown */}
         <div className="relative flex items-center">
-          <GitFork className="absolute left-3 h-3.5 w-3.5 text-zinc-400 pointer-events-none" />
+          <GitFork className="absolute left-3 h-4 w-4 text-slate-400 pointer-events-none" />
           <select
             id="analytics-repo-filter"
             value={selectedRepo || ''}
             onChange={(e) => onSelectRepo(e.target.value ? e.target.value : undefined)}
-            className="pl-8 pr-7 py-1.5 text-xs font-mono rounded-lg bg-[#0c0d14] border border-white/[0.08] text-zinc-200 focus:outline-none focus:border-indigo-500 hover:bg-white/[0.02] transition-colors cursor-pointer"
+            className="pl-9 pr-8 py-1.5 text-xs font-medium rounded-lg bg-slate-900 border border-white/10 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 hover:bg-slate-800 transition-colors cursor-pointer"
           >
             <option value="">All Repositories</option>
             {availableRepos.map((repo) => (
@@ -74,7 +74,7 @@ export function AnalyticsHeader({
         </div>
 
         {/* Time Horizon Pills */}
-        <div className="inline-flex rounded-lg p-0.5 bg-[#0c0d14] border border-white/[0.08]" role="group">
+        <div className="inline-flex rounded-lg p-1 bg-slate-900 border border-white/10" role="group">
           {WINDOW_OPTIONS.map((opt) => {
             const isActive = selectedWindow === opt.id;
             return (
@@ -84,10 +84,10 @@ export function AnalyticsHeader({
                 type="button"
                 onClick={() => onSelectWindow(opt.id)}
                 title={opt.description}
-                className={`px-3 py-1 text-xs font-mono rounded-md transition-all ${
+                className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
                   isActive
-                    ? 'bg-indigo-600 text-white shadow-sm font-semibold'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/5'
+                    ? 'bg-cyan-500 text-slate-950 shadow-sm font-bold'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
                 }`}
               >
                 {opt.label}
@@ -103,14 +103,14 @@ export function AnalyticsHeader({
           onClick={onRefresh}
           disabled={isLoading}
           title="Refresh analytics data"
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono rounded-lg bg-[#0c0d14] border border-white/[0.08] text-zinc-300 hover:bg-white/[0.04] hover:text-white transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-900 border border-white/10 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors disabled:opacity-50"
         >
-          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin text-indigo-400' : ''}`} />
+          <RefreshCw className={`h-3.5 w-3.5 ${isLoading ? 'animate-spin text-cyan-400' : ''}`} />
           <span className="hidden sm:inline">Refresh</span>
         </button>
 
         {lastUpdated && (
-          <div className="hidden lg:flex items-center gap-1 text-[11px] font-mono text-zinc-500">
+          <div className="hidden lg:flex items-center gap-1 text-[11px] text-slate-500">
             <Calendar className="h-3 w-3" />
             <span>Updated {new Date(lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
           </div>
