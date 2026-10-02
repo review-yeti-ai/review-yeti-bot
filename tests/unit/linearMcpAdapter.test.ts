@@ -52,7 +52,7 @@ describe('Linear MCP Adapter & Tool Integration Tests', () => {
           description: 'Implement pure Rustler NIF for G.729 ITU codec transcoding in Elixir.',
           priority: 1,
           state: { name: 'Todo', type: 'unstarted' },
-          assignee: { name: 'Jason Barbee', email: 'jason@calltelemetry.com' },
+          assignee: { name: 'Jason Barbee', email: 'jason@example.com' },
           project: { name: 'Audio Engine' },
           labels: { nodes: [{ name: 'audio' }, { name: 'roadmap' }] },
         },

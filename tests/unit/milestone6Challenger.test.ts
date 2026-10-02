@@ -120,7 +120,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'head-sha-4persona-1',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -186,7 +186,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'low-conf-sha',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -238,7 +238,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'fix-first-sha',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -293,7 +293,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'arbiter-fallback-sha',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -337,7 +337,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'arbiter-fail-closed-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -456,7 +456,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'no-matching-persona-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -513,7 +513,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'optional-fail-sha',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -548,7 +548,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'req-fail-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -583,7 +583,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'insufficient-providers-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -616,7 +616,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'missing-nonce-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -641,7 +641,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'mismatched-nonce-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -669,7 +669,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/ct-review-bot',
+          repository: 'exampleorg/ct-review-bot',
           headSha: 'invalid-json-nonce-sha',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -695,7 +695,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
           base: { sha: 'base-sha-123' },
           title: 'Draft PR Title',
         },
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       };
 
       const result = eventHandler.evaluateTrigger('pull_request', payload, 'delivery-1');
@@ -741,7 +741,7 @@ describe('Milestone 6 Empirical Stress Tests — 4-Persona Quorum, Arbiter, Nit 
     it('cancels review pipeline when webhook head SHA is stale relative to current PR head', async () => {
       const stalePayload = {
         installationId: '12345',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         prNumber: 50,
         headSha: 'old-commit-sha-111',

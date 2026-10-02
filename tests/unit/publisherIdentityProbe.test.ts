@@ -54,9 +54,9 @@ describe('publishing identity probes (REL-1107)', () => {
   describe('resolution', () => {
     it('uses GET /user when the token is a user token', () => {
       const calls: string[] = [];
-      const runner: CommandRunner = (_cmd, args) => { calls.push(args.join(' ')); return ok('calltelemetry-jason\n'); };
+      const runner: CommandRunner = (_cmd, args) => { calls.push(args.join(' ')); return ok('exampleorg-jason\n'); };
       expect(pipeline.resolveAuthenticatedPublisher(runner))
-        .toMatchObject({ login: 'calltelemetry-jason', verified: true });
+        .toMatchObject({ login: 'exampleorg-jason', verified: true });
       // Resolved on the first probe: the others must not be attempted.
       expect(calls).toHaveLength(1);
     });
@@ -72,11 +72,11 @@ describe('publishing identity probes (REL-1107)', () => {
 
     it('falls back to the GraphQL viewer', () => {
       const runner: CommandRunner = (_cmd, args) => {
-        if (args.includes('graphql')) return ok('{"data":{"viewer":{"login":"calltelemetry-jason"}}}');
+        if (args.includes('graphql')) return ok('{"data":{"viewer":{"login":"exampleorg-jason"}}}');
         return fail('gh: Bad credentials (HTTP 401)');
       };
       expect(pipeline.resolveAuthenticatedPublisher(runner))
-        .toMatchObject({ login: 'calltelemetry-jason', verified: true });
+        .toMatchObject({ login: 'exampleorg-jason', verified: true });
     });
 
     it('retries a transient failure and then succeeds', () => {
@@ -85,10 +85,10 @@ describe('publishing identity probes (REL-1107)', () => {
       const runner: CommandRunner = (_cmd, args) => {
         if (!args.includes('user')) return fail('gh: Bad credentials (HTTP 401)');
         userCalls += 1;
-        return userCalls === 1 ? fail('gh: Server Error (HTTP 502)') : ok('calltelemetry-jason\n');
+        return userCalls === 1 ? fail('gh: Server Error (HTTP 502)') : ok('exampleorg-jason\n');
       };
       expect(pipeline.resolveAuthenticatedPublisher(runner))
-        .toMatchObject({ login: 'calltelemetry-jason', verified: true });
+        .toMatchObject({ login: 'exampleorg-jason', verified: true });
       expect(userCalls).toBe(2);
     });
 
@@ -121,10 +121,10 @@ describe('publishing identity probes (REL-1107)', () => {
         if (cmd === 'sleep') throw new Error('spawn sleep ENOENT');
         if (!args.includes('user')) return fail('gh: Bad credentials (HTTP 401)');
         userCalls += 1;
-        return userCalls === 1 ? fail('gh: Server Error (HTTP 502)') : ok('calltelemetry-jason\n');
+        return userCalls === 1 ? fail('gh: Server Error (HTTP 502)') : ok('exampleorg-jason\n');
       }) as unknown as CommandRunner;
       expect(pipeline.resolveAuthenticatedPublisher(runner))
-        .toMatchObject({ login: 'calltelemetry-jason', verified: true });
+        .toMatchObject({ login: 'exampleorg-jason', verified: true });
       // It still retried through the failed sleep rather than abandoning the probe.
       expect(userCalls).toBe(2);
     });
@@ -210,8 +210,8 @@ describe('publishing identity probes (REL-1107)', () => {
     it('requirePublisherIdentity returns the login when verified', () => {
       // Behaviour, not source text: an earlier revision pinned exact substrings, which went red
       // on a prettier re-wrap with zero behaviour change (REL-1107 review).
-      expect(pipeline.requirePublisherIdentity({ login: 'calltelemetry-jason', verified: true }))
-        .toBe('calltelemetry-jason');
+      expect(pipeline.requirePublisherIdentity({ login: 'exampleorg-jason', verified: true }))
+        .toBe('exampleorg-jason');
     });
 
     it('requirePublisherIdentity THROWS carrying the reason when unverified', () => {

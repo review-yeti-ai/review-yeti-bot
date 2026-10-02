@@ -82,7 +82,7 @@ describePg('Review CI durable admission — real scoped PostgreSQL', () => {
 
   async function fixture(sequence = 1, prNumber = 42): Promise<ReviewCiCoordinates> {
     const runId = `run_${sequence.toString(16).padStart(32, '0')}`;
-    const review: ReviewCiCoordinates = { repositoryId: 1232078607, owner: 'calltelemetry', repo: 'ct-meta', prNumber,
+    const review: ReviewCiCoordinates = { repositoryId: 1232078607, owner: 'exampleorg', repo: 'example-meta', prNumber,
       headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
       runId, reviewGeneration: 0, executionAttempt: 1, attemptId: `${runId}-g0-e1` };
     await pool.query(`INSERT INTO review_runs VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',0,$9)`,

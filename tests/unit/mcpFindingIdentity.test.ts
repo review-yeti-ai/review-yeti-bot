@@ -18,11 +18,11 @@ function toolJson(result: any): any {
 describe('native review finding identity', () => {
   it.each([{ path: 'src/line-only.ts', line: 18 }, { file: 'src/file-alias.ts', line: 20 }])('shares fallback coordinates with explain for %j', async (finding) => {
     const db = { query: vi.fn().mockResolvedValue({ rows: [{ run_id: 'run-coordinates', payload: { findings: [{ ...finding, title: 'Coordinates', severity: 'P2' }] } }] }) };
-    const args = { owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583 };
+    const args = { owner: 'exampleorg', repo: 'example-uat', pull_number: 1583 };
     const listed = toolJson(await createGetReviewFindingsTool(db).execute(args)).findings[0];
     const resource = await fetchFindingsResource(args.owner, args.repo, args.pull_number, db);
     const modelClient = { complete: vi.fn().mockResolvedValue({ content: '{"explanation":"Coordinates","satisfies_requirement":null}' }) };
-    const caller = { authType: 'static_token' as const, tokenDigest: 'test-digest', isAdmin: false, allowedRepositories: new Set(['calltelemetry/ct-uat']), callerId: 'coordinate-test' };
+    const caller = { authType: 'static_token' as const, tokenDigest: 'test-digest', isAdmin: false, allowedRepositories: new Set(['exampleorg/example-uat']), callerId: 'coordinate-test' };
     await createExplainFindingTool({ queryableDatabase: db, modelClient }).execute({ ...args, finding_id: listed.finding_id, question: 'What does this finding refer to?' }, { caller });
     expect(resource.findings[0]).toMatchObject({ file_path: listed.file_path, line_start: finding.line, line_end: finding.line });
     expect(modelClient.complete).toHaveBeenCalledOnce();
@@ -67,7 +67,7 @@ describe('native review finding identity', () => {
     }) };
 
     const listed = toolJson(await createGetReviewFindingsTool(db).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583,
+      owner: 'exampleorg', repo: 'example-uat', pull_number: 1583,
     }));
     expect(listed.findings).toHaveLength(2);
     const selected = listed.findings.find((finding: any) => finding.line_end === 47);
@@ -75,7 +75,7 @@ describe('native review finding identity', () => {
     expect(selected.finding_id).toBe(getReviewFindingId(runId, 'architecture-reviewer', sameStartDifferentPersona));
     expect(selected.finding_id).not.toBe(untouched.finding_id);
 
-    const resource = await fetchFindingsResource('calltelemetry', 'ct-uat', 1583, db);
+    const resource = await fetchFindingsResource('exampleorg', 'example-uat', 1583, db);
     expect(resource.findings.find((finding) => finding.line_end === 47)?.finding_id).toBe(selected.finding_id);
 
     const modelClient = { complete: vi.fn().mockResolvedValue({
@@ -85,18 +85,18 @@ describe('native review finding identity', () => {
       authType: 'static_token' as const,
       tokenDigest: 'test-digest',
       isAdmin: false,
-      allowedRepositories: new Set(['calltelemetry/ct-uat']),
+      allowedRepositories: new Set(['exampleorg/example-uat']),
       callerId: 'finding-identity-test',
     };
     const explanation = toolJson(await createExplainFindingTool({ queryableDatabase: db, modelClient }).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583,
+      owner: 'exampleorg', repo: 'example-uat', pull_number: 1583,
       finding_id: selected.finding_id, question: 'What does this finding refer to?',
     }, { caller }));
     expect(modelClient.complete).toHaveBeenCalledOnce();
     expect(explanation.explanation).toContain('line-47');
 
     const fix = toolJson(await createGenerateFixDiffTool({ queryableDatabase: db }).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pr_number: 1583, finding_id: selected.finding_id,
+      owner: 'exampleorg', repo: 'example-uat', pr_number: 1583, finding_id: selected.finding_id,
     }));
     expect(fix.replacement_lines).toBe('const attribution = "explicit-args";');
   });
@@ -114,7 +114,7 @@ describe('native review finding identity', () => {
     ];
     const listed = toolJson(await createGetReviewFindingsTool({
       query: vi.fn().mockResolvedValue({ rows }),
-    }).execute({ owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583 }));
+    }).execute({ owner: 'exampleorg', repo: 'example-uat', pull_number: 1583 }));
 
     expect(listed.findings).toHaveLength(1);
     expect(listed.findings[0]).toMatchObject({ finding_id: 'stable-finding-id', title: newestFinding.title });
@@ -128,14 +128,14 @@ describe('native review finding identity', () => {
     ] };
     const db = { query: vi.fn().mockResolvedValue({ rows: [{ run_id: 'run-embedded-id', execution_attempt: 1, payload }] }) };
     const listed = toolJson(await createGetReviewFindingsTool(db).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583,
+      owner: 'exampleorg', repo: 'example-uat', pull_number: 1583,
     }));
 
     expect(listed.findings[0].finding_id).toBe('canonical-embedded-id');
     expect(listed.findings[1].finding_id).toBe(getReviewFindingId('run-embedded-id', 'reviewer', payload.findings[1]));
     expect(listed.findings[1].finding_id).not.toBe('0');
     expect(listed.findings[1].finding_id).not.toBe('false');
-    const resource = await fetchFindingsResource('calltelemetry', 'ct-uat', 1583, db);
+    const resource = await fetchFindingsResource('exampleorg', 'example-uat', 1583, db);
     expect(resource.findings[0].finding_id).toBe('canonical-embedded-id');
   });
 
@@ -165,7 +165,7 @@ describe('native review finding identity', () => {
     }) };
 
     const fix = toolJson(await createGenerateFixDiffTool({ queryableDatabase: db }).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pr_number: 1583, finding_id: legacyResourceId,
+      owner: 'exampleorg', repo: 'example-uat', pr_number: 1583, finding_id: legacyResourceId,
     }));
     expect(fix.file_path).toBe(finding.path);
     expect(fix.replacement_lines).toBe('newValue();');
@@ -208,18 +208,18 @@ describe('native review finding identity', () => {
       severity: 'P2', path: 'src/review/legacy-result.ts', line: 17,
     };
     const db = { query: vi.fn().mockResolvedValue({ rows: [{
-      run_id: 'run-legacy-result', owner: 'calltelemetry', repo: 'ct-uat', payload: { result: { findings: [finding] } },
+      run_id: 'run-legacy-result', owner: 'exampleorg', repo: 'example-uat', payload: { result: { findings: [finding] } },
     }] }) };
     const modelClient = { complete: vi.fn().mockResolvedValue({
       content: '{"explanation":"The legacy result shape was found.","satisfies_requirement":true}',
     }) };
     const caller = {
       authType: 'static_token' as const, tokenDigest: 'legacy-result-test-digest', isAdmin: false,
-      allowedRepositories: new Set(['calltelemetry/ct-uat']), callerId: 'legacy-result-test',
+      allowedRepositories: new Set(['exampleorg/example-uat']), callerId: 'legacy-result-test',
     };
 
     const explanation = toolJson(await createExplainFindingTool({ queryableDatabase: db, modelClient }).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583,
+      owner: 'exampleorg', repo: 'example-uat', pull_number: 1583,
       finding_id: finding.id, question: 'Explain this older persisted finding.',
     }, { caller }));
 
@@ -240,7 +240,7 @@ describe('native review finding identity', () => {
     const payload = { findings: [finding] };
     const db = { query: vi.fn().mockResolvedValue({ rows: [{ run_id: runId, execution_attempt: 2, payload }] }) };
     const listed = toolJson(await createGetReviewFindingsTool(db).execute({
-      owner: 'calltelemetry', repo: 'ct-uat', pull_number: 1583,
+      owner: 'exampleorg', repo: 'example-uat', pull_number: 1583,
     }));
 
     expect(listed.findings[0].finding_id).toBe(getReviewFindingId(runId, expectedPersona, finding));

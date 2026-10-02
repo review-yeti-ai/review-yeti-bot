@@ -1,6 +1,6 @@
 /**
- * Call Telemetry Agentic Harness Contracts (API-3330 & API-3333)
- * Provides 100% wire parity with ct-meta/knowledge/contracts/agent-harness.v1.schema.json
+ * Example org Agentic Harness Contracts (API-3330 & API-3333)
+ * Provides 100% wire parity with example-meta/knowledge/contracts/agent-harness.v1.schema.json
  */
 
 import * as crypto from 'crypto';

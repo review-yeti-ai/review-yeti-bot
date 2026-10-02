@@ -25,8 +25,8 @@ describe('GitHub App installation-token-only publisher', () => {
     });
 
     const result = await publisher.publishReview({
-      owner: 'calltelemetry',
-      repo: 'ct-meta',
+      owner: 'exampleorg',
+      repo: 'example-meta',
       prNumber: 99,
       commitSha: 'head123',
       event: 'COMMENT',

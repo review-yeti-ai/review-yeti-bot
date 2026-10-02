@@ -4,7 +4,7 @@ import { classifyLockfileOrGeneratedPath } from '../pipeline/hunkFilter';
  * REL-1141: a deterministic, complete summary of the package changes in a
  * dependency lockfile patch, for a lockfile too large for a lane to read whole.
  *
- * calltelemetry/openclaw-linear-plugin#30 (Dependabot) changed package.json by
+ * exampleorg/openclaw-linear-plugin#30 (Dependabot) changed package.json by
  * one line and package-lock.json by 41,140 characters, adding four new
  * packages. The patch was over the per-file cap, so the new-package routing
  * (REL-1136) did not apply, the shared filter hid the lockfile from every

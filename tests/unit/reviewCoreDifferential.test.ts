@@ -104,7 +104,7 @@ describe('canonical review contract differential', () => {
     expect(action.quorumSatisfied).toBe(false);
   });
 
-  // REL-491: calltelemetry/ct-release#1360 (runs 33469453744, 33469858871) — all 3 personas
+  // REL-491: exampleorg/example-release#1360 (runs 33469453744, 33469858871) — all 3 personas
   // APPROVE, zero findings, zero failed lanes, yet the verdict was BLOCK with a rationale that
   // asserted BOTH "Quorum satisfied for release." and "must remain blocked" in the same sentence,
   // because a coverage-only signal (unrelated to persona execution) forced `incomplete=true` and

@@ -347,7 +347,7 @@ describe('executeComposedReview', () => {
     await executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'b'.repeat(40),
       client: { complete },
     });
@@ -384,7 +384,7 @@ describe('executeComposedReview', () => {
     await executeComposedReview({
       config: config(),
       changedFiles: [{ path: 'src/util/sum.ts', patch: '@@ -1 +1,2 @@\n+export const sum = (a: number, b: number) => a + b;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'c'.repeat(40),
       client: { complete },
     });
@@ -404,7 +404,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: narrow,
       changedFiles: [{ path: 'docs/readme.md', patch: '@@ -1 +1 @@\n-old\n+new' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -444,7 +444,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: progress.instrument({ complete }),
       progress,
@@ -766,7 +766,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -804,7 +804,7 @@ describe('executeComposedReview', () => {
     await expect(executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     })).rejects.toThrow(/empty_plan/);
@@ -835,7 +835,7 @@ describe('executeComposedReview', () => {
     await expect(executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     })).rejects.toMatchObject({ failureClass: 'provider_error' });
@@ -854,7 +854,7 @@ describe('executeComposedReview', () => {
     await expect(executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     })).rejects.toMatchObject({ failureClass: 'contract' });
@@ -874,7 +874,7 @@ describe('executeComposedReview', () => {
     await expect(executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     })).rejects.toMatchObject({ failureClass: 'provider_error' });
@@ -902,7 +902,7 @@ describe('executeComposedReview', () => {
     await expect(executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     })).rejects.toThrow(/nonce/i);
@@ -929,7 +929,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     }).catch((e) => e);
@@ -1273,7 +1273,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: config(),
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1306,7 +1306,7 @@ describe('executeComposedReview', () => {
         return fakeResponse(JSON.stringify({ nonce: issued, task: 'task-sec', status: 'COMPLETE', findings: [] }));
       });
       const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
-        repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete } });
+        repository: 'exampleorg/example-meta', headSha: 'a'.repeat(40), client: { complete } });
       expect(planCalls).toBe(3);
       expect(result.personas.map((persona) => persona.id)).toEqual(['task-sec']);
     } finally {
@@ -1326,7 +1326,7 @@ describe('executeComposedReview', () => {
         return fakeResponse('{}');
       });
       await expect(executeComposedReview({ config: config(), changedFiles: CODE_FILES,
-        repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete } })).rejects.toThrow();
+        repository: 'exampleorg/example-meta', headSha: 'a'.repeat(40), client: { complete } })).rejects.toThrow();
       expect(planCalls).toBe(1);
     } finally {
       vi.restoreAllMocks();
@@ -1352,7 +1352,7 @@ describe('executeComposedReview', () => {
     const settled = executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     }).catch(() => undefined);
@@ -1385,7 +1385,7 @@ describe('executeComposedReview', () => {
       throw new OpenRouterResponseError('provider returned empty completion content', 200);
     });
     const settled = executeComposedReview({ config: config(), changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta', headSha: 'a'.repeat(40), client: { complete },
+      repository: 'exampleorg/example-meta', headSha: 'a'.repeat(40), client: { complete },
       signal: admitted.signal, deadlineBudget: admitted.budget, deadlineNow: admitted.now }).catch((error) => error);
 
     try {
@@ -1654,7 +1654,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1691,7 +1691,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1711,7 +1711,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1756,7 +1756,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1780,7 +1780,7 @@ describe('executeComposedReview', () => {
     const result = await executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1812,7 +1812,7 @@ describe('executeComposedReview', () => {
     await executeComposedReview({
       config: cfg,
       changedFiles: CODE_FILES,
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'a'.repeat(40),
       client: { complete },
     });
@@ -1856,7 +1856,7 @@ describe('executeComposedReview', () => {
       const result = await executeComposedReview({
         config: cfg,
         changedFiles: CODE_FILES,
-        repository: 'calltelemetry/ct-meta',
+        repository: 'exampleorg/example-meta',
         headSha: 'a'.repeat(40),
         client: { complete },
       });

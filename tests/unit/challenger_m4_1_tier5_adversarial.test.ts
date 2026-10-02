@@ -59,7 +59,7 @@ describe('Tier 5 White-Box Adversarial Challenge: TypeScript Runner & Contracts'
 
   const baselineSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 42,
     commitSha: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     logicalChildId: 'child-sec-42',

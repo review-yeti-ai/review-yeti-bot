@@ -243,7 +243,7 @@ describe('native panel role evidence contract', () => {
       const result = await executePersonaPanel({
         config: buildConfig(),
         changedFiles: CHANGED_FILES,
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         headSha: `native-role-evidence-${responseFormatType}`,
         client: mockClient as unknown as OmniRouteClient,
         requestPolicy: { responseFormat: { type: responseFormatType } },
@@ -306,7 +306,7 @@ describe('native panel role evidence contract', () => {
     const failure = await executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-invalid-moderator-role-evidence',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },

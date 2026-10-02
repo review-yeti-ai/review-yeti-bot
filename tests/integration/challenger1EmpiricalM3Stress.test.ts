@@ -14,7 +14,7 @@ describe('Milestone 3 Empirical Adversarial Challenge: HITL Controls, Security B
   const reviewerToken = 'sess_challenger_reviewer_token_01';
   const viewerToken = 'sess_challenger_viewer_token_01';
   const expiredToken = 'sess_challenger_expired_token_01';
-  const testRepo = 'calltelemetry/cisco-cdr';
+  const testRepo = 'exampleorg/example-api';
 
   beforeEach(() => {
     app = createApp();
@@ -609,7 +609,7 @@ describe('Milestone 3 Empirical Adversarial Challenge: HITL Controls, Security B
       const generatedIds = new Set<string>();
       const totalSamples = 10_000;
 
-      const repos = ['calltelemetry/cisco-cdr', 'calltelemetry/yeti-bot', 'calltelemetry/auth-svc', 'calltelemetry/k8s-mesh'];
+      const repos = ['exampleorg/example-api', 'exampleorg/yeti-bot', 'exampleorg/auth-svc', 'exampleorg/k8s-mesh'];
       const filePaths = [
         'src/auth/jwt.ts',
         'src/services/billing.ts',
@@ -885,8 +885,8 @@ describe('Milestone 3 Empirical Adversarial Challenge: HITL Controls, Security B
    * ============================================================================ */
   describe('5. Downstream Gate Synchronization & Terminal Metadata Verification', () => {
     const baseCoords = {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       repositoryId: 123,
       prNumber: 42,
       runId: 'run_gate_test_01',

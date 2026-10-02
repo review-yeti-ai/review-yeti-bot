@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Exampleorg.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -72,7 +72,7 @@ func TestPRReviewJobReconciler_QueuedToRunning(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      42,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",
@@ -174,7 +174,7 @@ func TestPRReviewJobReconciler_MaxConcurrencyHolding(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      44,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",
@@ -244,7 +244,7 @@ func TestPRReviewJobReconciler_JobCompletionToSucceeded(t *testing.T) {
 			Namespace: jobKey.Namespace,
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      50,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",
@@ -332,7 +332,7 @@ func TestPRReviewJobReconciler_JobFailureToFailed(t *testing.T) {
 			Namespace: jobKey.Namespace,
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      51,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",
@@ -678,7 +678,7 @@ func TestPRReviewJobReconciler_TTLCleanupScheduled(t *testing.T) {
 			Namespace: jobKey.Namespace,
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                60,
 			TTLSecondsAfterFinished: &ttlVal,
 		},
@@ -725,7 +725,7 @@ func TestPRReviewJobReconciler_TTLExpiredGarbageCollected(t *testing.T) {
 			Namespace: jobKey.Namespace,
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                61,
 			TTLSecondsAfterFinished: &ttlVal,
 		},
@@ -807,7 +807,7 @@ func TestPRReviewJobReconciler_TTLZeroImmediateCleanup(t *testing.T) {
 			Namespace: jobKey.Namespace,
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                62,
 			TTLSecondsAfterFinished: &ttlVal,
 		},
@@ -938,7 +938,7 @@ func TestPRReviewJobReconciler_PersonaProgressMap_FailureInitialization(t *testi
 			Namespace: jobKey.Namespace,
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:          "calltelemetry/cisco-cdr",
+			Repo:          "exampleorg/example-api",
 			PRNumber:      70,
 			HeadSHA:       "1234567890",
 			BaseSHA:       "0987654321",

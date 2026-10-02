@@ -20,7 +20,7 @@ function claimRow(overrides: Record<string, unknown> = {}) {
     attempt_id: ATTEMPT_ID,
     run_id: RUN_ID,
     coordinates: JSON.stringify({
-      runId: RUN_ID, repositoryId: 1, owner: 'calltelemetry', repo: 'example', prNumber: 42,
+      runId: RUN_ID, repositoryId: 1, owner: 'exampleorg', repo: 'example', prNumber: 42,
       headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40), policyDigest: 'd'.repeat(64),
       configDigest: 'e'.repeat(64), executionAttempt: 1, attemptId: ATTEMPT_ID,
     }),

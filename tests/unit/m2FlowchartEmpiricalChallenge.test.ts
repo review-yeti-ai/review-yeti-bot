@@ -53,7 +53,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
           { path: 'src/api/auth.ts', patch: '@@ -1,2 +1,5 @@\n+export function login() {}\n+export function logout() {}' },
           { path: 'src/api/user.ts', patch: '@@ -1,2 +1,5 @@\n+export function getUser() {}' },
         ],
-        repository: 'calltelemetry/test-repo-toggle-on',
+        repository: 'exampleorg/test-repo-toggle-on',
         headSha: '11111111',
         client: mockClient,
         generateArchitecturalFlowchart: true,
@@ -104,7 +104,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
         changedFiles: [
           { path: 'src/api/auth.ts', patch: '@@ -1,2 +1,5 @@\n+export function login() {}' },
         ],
-        repository: 'calltelemetry/test-repo-toggle-off',
+        repository: 'exampleorg/test-repo-toggle-off',
         headSha: '22222222',
         client: mockClient,
         generateArchitecturalFlowchart: false,
@@ -114,7 +114,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
     });
 
     it('returns mermaidDiagram when generateArchitecturalFlowchart option is undefined but dashboardStore repository setting is true', async () => {
-      dashboardStore.updateRepository('calltelemetry', 'store-toggle-repo', {
+      dashboardStore.updateRepository('exampleorg', 'store-toggle-repo', {
         generateArchitecturalFlowchart: true,
       });
 
@@ -159,7 +159,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
           { path: 'src/api/service.ts', patch: '@@ -1,2 +1,5 @@\n+export function service() {}' },
           { path: 'src/api/client.ts', patch: '@@ -1,2 +1,5 @@\n+export function client() {}' },
         ],
-        repository: 'calltelemetry/store-toggle-repo',
+        repository: 'exampleorg/store-toggle-repo',
         headSha: '33333333',
         client: mockClient,
       });
@@ -221,7 +221,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
         changedFiles: [
           { path: 'src/api/auth.ts', patch: '@@ -1,2 +1,5 @@\n+export function login() {}' },
         ],
-        repository: 'calltelemetry/override-test-repo',
+        repository: 'exampleorg/override-test-repo',
         headSha: '44444444',
         client: mockClient,
         generateArchitecturalFlowchart: false,
@@ -286,7 +286,7 @@ describe('Milestone 2 Empirical Stress & Corner Case Verification', () => {
           { path: 'src/api/auth.ts', patch: '@@ -1,2 +1,5 @@\n+export function login() {}' },
           { path: 'src/api/user.ts', patch: '@@ -1,2 +1,5 @@\n+export function getUser() {}' },
         ],
-        repository: 'calltelemetry/persona-fail-fallback-repo',
+        repository: 'exampleorg/persona-fail-fallback-repo',
         headSha: '55555555',
         client: mockClient,
       });

@@ -454,10 +454,10 @@ describe('ActionDispatch incomplete P2 candidate boundary', () => {
 
   it('rejects the candidate flag when a central dispatch is not an explicit refresh', async () => {
     const claims = {
-      repository: 'calltelemetry/ct-review-actions', repository_id: '900', repository_owner_id: '456',
+      repository: 'exampleorg/example-review-actions', repository_id: '900', repository_owner_id: '456',
       run_id: '888', run_attempt: '1', event_name: 'repository_dispatch',
-      workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
-      job_workflow_ref: 'calltelemetry/ct-review-actions/.github/workflows/review-yeti.yml@refs/heads/v1',
+      workflow_ref: 'exampleorg/example-review-actions/.github/workflows/repository-dispatch.yml@refs/heads/main',
+      job_workflow_ref: 'exampleorg/example-review-actions/.github/workflows/review-yeti.yml@refs/heads/v1',
     };
     const body = withDeliveryId({ ...common, refreshRequested: false, caller: { runId: '888', runAttempt: 1,
       eventName: 'repository_dispatch', workflowRef: claims.workflow_ref } });

@@ -327,7 +327,7 @@ function createMockDb() {
 function sampleInput(overrides: Record<string, any> = {}) {
   const headSha = overrides.headSha || HEAD_SHA_1;
   const prNumber = overrides.prNumber ?? 42;
-  const owner = overrides.owner || 'calltelemetry';
+  const owner = overrides.owner || 'exampleorg';
   const repo = overrides.repo || 'dashboard';
   const identity = buildReviewRunIdentity({
     owner,
@@ -361,15 +361,15 @@ function makeWebhookEvent(eventName: string, action: string, overrides: Record<s
     repository: {
       id: overrides.repositoryId ?? 614653796,
       name: 'dashboard',
-      full_name: 'calltelemetry/dashboard',
-      owner: { id: 57884877, login: 'calltelemetry' },
+      full_name: 'exampleorg/dashboard',
+      owner: { id: 57884877, login: 'exampleorg' },
     },
     pull_request: {
       number: overrides.prNumber || 42,
       state: overrides.prState || 'open',
       draft: overrides.draft ?? false,
       head: { sha: overrides.headSha || HEAD_SHA_1 },
-      base: { sha: BASE_SHA, repo: { full_name: 'calltelemetry/dashboard' } },
+      base: { sha: BASE_SHA, repo: { full_name: 'exampleorg/dashboard' } },
       labels: (overrides.labels || []).map((name: string) => ({ name })),
     },
     ...overrides.extraPayload,
@@ -805,15 +805,15 @@ describe('Challenger M1-1: Empirical Stress & Adversarial Verification', () => {
         repository: {
           id: 614653796,
           name: 'dashboard',
-          full_name: 'calltelemetry/dashboard',
-          owner: { id: 57884877, login: 'calltelemetry' },
+          full_name: 'exampleorg/dashboard',
+          owner: { id: 57884877, login: 'exampleorg' },
         },
         issue: {
           number: 42,
           state: 'open',
           pull_request: {
             head: { sha: HEAD_SHA_1 },
-            base: { sha: BASE_SHA, repo: { full_name: 'calltelemetry/dashboard' } },
+            base: { sha: BASE_SHA, repo: { full_name: 'exampleorg/dashboard' } },
           },
         },
         comment: { body: commentText },

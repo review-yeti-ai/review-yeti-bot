@@ -169,7 +169,7 @@ describe('PostgresStore Adapter & Dual-Store Architecture (R1, R2, R3)', () => {
 
     // Record review run from today
     dashboardStore.recordReviewRun({
-      repo: 'calltelemetry/cisco-cdr',
+      repo: 'exampleorg/example-api',
       prNumber: 42,
       headSha: 'abc1234',
       personas: ['security', 'architecture'],

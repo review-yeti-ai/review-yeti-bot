@@ -1689,7 +1689,7 @@ export const GATEWAY_MCP_INCLUDE_TOOLS_NONE = '';
  * A hit needs an exact hash match on provider, model, cache key, the full
  * request (system prompt included) and its params. It is not a similarity
  * match, so a hit only replays a completion for a byte-identical request. The
- * gateway side is calltelemetry/ct-infrastructure#868.
+ * gateway side is exampleorg/example-infra#868.
  */
 export const GATEWAY_POLICY_HEADERS: Readonly<Record<string, string>> = Object.freeze({
   [GATEWAY_MCP_INCLUDE_TOOLS_HEADER]: GATEWAY_MCP_INCLUDE_TOOLS_NONE,

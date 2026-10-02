@@ -30,7 +30,7 @@ func TestBuildWorkerJobForwardsSkipEmptyModerationOnlyWhenSet(t *testing.T) {
 		t.Fatalf("unset operator config must not reach the worker as %s", job.SkipEmptyModerationEnv)
 	}
 
-	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	pilots := "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
 	input.Publishing.SkipEmptyModeration = pilots
 	forwarded, err := job.BuildWorkerJob(input)
 	if err != nil {
@@ -57,7 +57,7 @@ func TestBuildWorkerJobForwardsSkipEmptyModerationOnlyWhenSet(t *testing.T) {
 		t.Fatalf("setting the flag must add exactly one env entry: got %d, want %d", got, want)
 	}
 
-	for _, value := range []string{"off", "all", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+	for _, value := range []string{"off", "all", "exampleorg/example-meta review-yeti-ai/review-yeti-bot"} {
 		input.Publishing.SkipEmptyModeration = value
 		verbatim, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -85,7 +85,7 @@ func TestBuildWorkerJobRefusesSkipEmptyModerationWithLineBreak(t *testing.T) {
 	review.Spec.PublicationMode = "app-gate"
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+	for _, value := range []string{"exampleorg/example-meta\n", "a/b\r\nc/d"} {
 		input.Publishing.SkipEmptyModeration = value
 		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "skip empty moderation flag") {
 			t.Fatalf("a line break in the skip empty moderation flag must refuse the Job, got %v", err)

@@ -37,7 +37,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
     it('verifies shallow fetch stub contract in test mode (< 1500ms)', async () => {
       const result = await shallowFetchHead({
         workspacePath: '/tmp/test-continuation-workspace',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: '0123456789abcdef0123456789abcdef01234567',
       });
       expect(result.sha).toBe('0123456789abcdef0123456789abcdef01234567');
@@ -55,7 +55,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
               rows: [
                 {
                   run_id: 'run-cont-001',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 10,
                   head_sha: 'head-sha-1',
                   base_sha: 'base-sha-1',
@@ -97,7 +97,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
               rows: [
                 {
                   run_id: 'run-cont-002',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 11,
                   head_sha: 'head-sha-2',
                   status: 'resumption_ready',
@@ -185,7 +185,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
               rows: [
                 {
                   run_id: 'run-completed-already',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 44,
                   head_sha: 'head-sha-comp',
                   status: 'completed',
@@ -202,7 +202,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
 
       const result = await runContinuationPhase({
         runId: 'run-completed-already',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'head-sha-comp',
         db: mockDb,
         commentPublisher: commentPublisherMock,
@@ -289,7 +289,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
   describe('6. PR Summary Formatting & Inline Comments', () => {
     it('formats Markdown summary with banner, repo metadata, and findings table', () => {
       const markdown = formatContinuationSummary({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 99,
         headSha: '0123456789abcdef0123456789abcdef01234567',
         verdict: 'BLOCK',
@@ -306,7 +306,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
       });
 
       expect(markdown).toContain('Review Yeti Gate: BLOCK');
-      expect(markdown).toContain('calltelemetry/review-yeti-bot');
+      expect(markdown).toContain('exampleorg/review-yeti-bot');
       expect(markdown).toContain('#99');
       expect(markdown).toContain('Critical Vulnerability');
       expect(markdown).toContain('src/server.ts:42');
@@ -338,7 +338,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
               rows: [
                 {
                   run_id: 'run-post-test',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 101,
                   head_sha: 'sha-post-test',
                   status: 'inference_completed',
@@ -366,7 +366,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
 
       const result = await runContinuationPhase({
         runId: 'run-post-test',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'sha-post-test',
         db: mockDb,
         commentPublisher: commentPublisherMock,
@@ -382,7 +382,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
       expect(checkAttempts).toBe(2); // Retried once after 429 and succeeded
       expect(commentPublisherMock.publishReview).toHaveBeenCalledWith(
         expect.objectContaining({
-          owner: 'calltelemetry',
+          owner: 'exampleorg',
           repo: 'review-yeti-bot',
           prNumber: 101,
           event: 'REQUEST_CHANGES',
@@ -404,7 +404,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
       await expect(
         runContinuationPhase({
           runId: 'run-timeout-test',
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           headSha: 'sha-timeout',
           db: mockDb,
           timeoutMs: 50, // 50ms timeout
@@ -426,7 +426,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
               rows: [
                 {
                   run_id: 'run-db-persist',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 12,
                   head_sha: 'sha-persist',
                   status: 'inference_completed',
@@ -446,7 +446,7 @@ describe('Milestone 4: Ephemeral Continuation Pod Execution & Gate Evaluation (R
 
       const result = await runContinuationPhase({
         runId: 'run-db-persist',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: 'sha-persist',
         db: mockDb,
         suppressExit: true,

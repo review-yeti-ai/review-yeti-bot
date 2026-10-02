@@ -23,7 +23,7 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
           head: { sha: 'head-sha-123' },
           base: { sha: 'base-sha-456', ref: 'main' },
         },
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
         installation: { id: 999 },
       };
 
@@ -44,7 +44,7 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
           head: { sha: 'head-sha-123' },
           base: { sha: 'base-sha-456' },
         },
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       };
 
       const result = eventHandler.evaluateTrigger('pull_request', payload, 'delivery-124');
@@ -77,7 +77,7 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
         if (url.includes('/pulls')) {
           return {
             ok: true,
-            text: async () => JSON.stringify({ number: 505, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/505' }),
+            text: async () => JSON.stringify({ number: 505, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/505' }),
           };
         }
         return { ok: true, text: async () => '{}' };
@@ -87,13 +87,13 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
 
       const client = new GitHubInstallationClient({ token: 'ghs_test1234567890' });
 
-      const sha = await client.getBranchRef('calltelemetry', 'ct-review-bot', 'main');
+      const sha = await client.getBranchRef('exampleorg', 'ct-review-bot', 'main');
       expect(sha).toBe('main-base-sha-789');
 
-      await expect(client.createBranch('calltelemetry', 'ct-review-bot', 'feature-branch', 'sha-123')).resolves.not.toThrow();
+      await expect(client.createBranch('exampleorg', 'ct-review-bot', 'feature-branch', 'sha-123')).resolves.not.toThrow();
 
       const fileRes = await client.createOrUpdateFile({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         path: 'docs/test.md',
         message: 'add test doc',
@@ -103,7 +103,7 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
       expect(fileRes.sha).toBe('new-file-sha-456');
 
       const prRes = await client.createPullRequest({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         title: 'docs: test pr',
         body: 'test body',
@@ -124,7 +124,7 @@ describe('Milestone 18: Event Handler & PR Close Dispatcher', () => {
 
       const dispatcher = new PRCloseDispatcher();
       const payload: any = {
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         prNumber: 42,
         baseSha: 'base-123',
@@ -173,13 +173,13 @@ on_pr_close:
         getBranchRef: vi.fn().mockResolvedValue('main-sha'),
         createBranch: vi.fn().mockResolvedValue(undefined),
         createOrUpdateFile: vi.fn().mockResolvedValue({ sha: 'doc-file-sha' }),
-        createPullRequest: vi.fn().mockResolvedValue({ number: 99, html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/99' }),
+        createPullRequest: vi.fn().mockResolvedValue({ number: 99, html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/99' }),
         postIssueComment: vi.fn().mockResolvedValue(undefined),
       };
 
       const dispatcher = new PRCloseDispatcher();
       const payload: any = {
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         prNumber: 42,
         baseSha: 'base-123',

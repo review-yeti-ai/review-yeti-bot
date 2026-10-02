@@ -101,7 +101,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
         executePersonaPanel({
           config,
           changedFiles,
-          repository: `calltelemetry/repo-${i}`,
+          repository: `exampleorg/repo-${i}`,
           headSha: `headsha-concurrent-${i}`,
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -147,7 +147,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'src/app.ts', patch: '+ const x = 1;' }],
-          repository: 'calltelemetry/single-provider-test',
+          repository: 'exampleorg/single-provider-test',
           headSha: 'sha-single-provider',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -180,7 +180,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'src/app.ts', patch: '+ const x = 1;' }],
-          repository: 'calltelemetry/three-provider-test',
+          repository: 'exampleorg/three-provider-test',
           headSha: 'sha-three-provider',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -216,7 +216,7 @@ describe('Milestone 37 & Milestone 39 Empirical Challenger Verification Suite', 
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'src/app.ts', patch: '+ const x = 1;' }],
-          repository: 'calltelemetry/quorum-drop-test',
+          repository: 'exampleorg/quorum-drop-test',
           headSha: 'sha-quorum-drop',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -492,7 +492,7 @@ path_filters:
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'src/security/auth.ts', patch: '+ token = "insecure";' }],
-          repository: 'calltelemetry/sec-fail-test',
+          repository: 'exampleorg/sec-fail-test',
           headSha: 'sha-sec-fail',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -527,7 +527,7 @@ path_filters:
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'src/app.ts', patch: '+ const a = 1;' }],
-          repository: 'calltelemetry/multi-required-fail',
+          repository: 'exampleorg/multi-required-fail',
           headSha: 'sha-multi-req',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -580,7 +580,7 @@ path_filters:
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/app.ts', patch: '+ const x = 1;' }],
-        repository: 'calltelemetry/optional-fail-test',
+        repository: 'exampleorg/optional-fail-test',
         headSha: 'sha-optional-fail',
         client: mockClient as unknown as OmniRouteClient,
       });

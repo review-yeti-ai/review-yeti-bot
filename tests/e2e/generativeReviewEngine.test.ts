@@ -8,7 +8,7 @@ describe('generational review engine end-to-end workflow', () => {
     const repository = new InMemoryReviewRunRepository();
     const artifacts = new InMemoryReviewArtifactStore();
     const identity = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'a'.repeat(40),

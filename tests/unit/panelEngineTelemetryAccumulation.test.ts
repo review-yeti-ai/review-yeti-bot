@@ -107,7 +107,7 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-telemetry-accumulation',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -201,7 +201,7 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-correction-only-turns',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -275,7 +275,7 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-contract-correction-turns',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -364,7 +364,7 @@ describe('panelEngine.ts — per-turn telemetry accumulation', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/service.ts', patch: '+ const x = 1;' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-wall-clock',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -444,7 +444,7 @@ describe('panelWallClockMs on early-return paths', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'docs/guide.md', patch: '+ a docs line' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-gated',
       client: silentClient as unknown as OmniRouteClient,
     });
@@ -470,7 +470,7 @@ describe('panelWallClockMs on early-return paths', () => {
       config,
       // Matches no persona path, and is documentation -- the documentation-only approval contract.
       changedFiles: [{ path: 'docs/readme.md', patch: '+ a docs line' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-zero-lane',
       client: silentClient as unknown as OmniRouteClient,
     });

@@ -26,7 +26,7 @@ const READ_ERROR = 'Prepared review policy is invalid or unavailable';
 
 function preparedPolicy(turns = 20): PreparedPublishingPolicy {
   const content = JSON.stringify({
-    schema: 'calltelemetry.review-policy.v1',
+    schema: 'exampleorg.review-policy.v1',
     review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: turns }, api_key: RAW_SECRET },
   });
   return preparePublishingPolicy({

@@ -4,7 +4,7 @@ import { normalizeRepositoryVisibility, REPOSITORY_VISIBILITY_INSTRUCTION } from
 import { CtReviewConfigV3 } from '../../src/config/schema';
 import { createDefaultV3Config } from '../../src/config/configLoader';
 
-// ct-meta#2884 (2026-09-08): the reviewer blocked a PR archiving internal planning
+// example-meta#2884 (2026-09-08): the reviewer blocked a PR archiving internal planning
 // docs (cluster IPs, registry digest pins, secret variable NAMES, no secret values)
 // into a PRIVATE repository with four P1s of the shape "if this repo is public,
 // this is reconnaissance-grade disclosure". Repository visibility was never part
@@ -111,7 +111,7 @@ describe('panelEngine.ts — repository visibility prompt fact', () => {
     const result = await executePersonaPanel({
       config: buildSinglePersonaConfig(),
       changedFiles: [{ path: 'src/main.ts', patch: '+ nothing sensitive' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'sha-private',
       repositoryVisibility: 'PRIVATE',
       client: { complete } as any,
@@ -130,7 +130,7 @@ describe('panelEngine.ts — repository visibility prompt fact', () => {
     await executePersonaPanel({
       config: buildSinglePersonaConfig(),
       changedFiles: [{ path: 'src/main.ts', patch: '+ nothing sensitive' }],
-      repository: 'calltelemetry/calltelemetry',
+      repository: 'exampleorg/exampleorg',
       headSha: 'sha-public',
       repositoryVisibility: 'PUBLIC',
       client: { complete } as any,

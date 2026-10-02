@@ -172,7 +172,7 @@ describe('Empirical Challenger Suite — Live Terminal & 9-Event SSE Streaming',
           data: {
             provider: 'anthropic-v1',
             model: 'claude-3-5-sonnet-20241022',
-            promptSnippet: 'CT_REVIEW_NONCE: persona=security repo=calltelemetry/cisco-cdr headSha=a1b2c3d',
+            promptSnippet: 'CT_REVIEW_NONCE: persona=security repo=exampleorg/example-api headSha=a1b2c3d',
           },
         },
         {

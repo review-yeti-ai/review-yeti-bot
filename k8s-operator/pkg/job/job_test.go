@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Exampleorg.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -200,7 +200,7 @@ func reviewFixture(now time.Time) *v1alpha2.PRReviewJob {
 			RunID:            "run_11111111111111111111111111111111",
 			DeliveryID:       "actions:98765:2:123:42:head",
 			RepositoryID:     123,
-			Repo:             "calltelemetry/cisco-cdr",
+			Repo:             "exampleorg/example-api",
 			PRNumber:         42,
 			HeadSHA:          strings.Repeat("a", 40),
 			BaseSHA:          strings.Repeat("b", 40),
@@ -209,7 +209,7 @@ func reviewFixture(now time.Time) *v1alpha2.PRReviewJob {
 			PolicyDigest:     strings.Repeat("c", 64),
 			ConfigDigest:     strings.Repeat("d", 64),
 			PublicationMode:  "disabled",
-			WorkerImage:      "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:" + strings.Repeat("e", 64),
+			WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:" + strings.Repeat("e", 64),
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
 	}
@@ -577,7 +577,7 @@ func TestBuildWorkerJobCreatesExplicitFullPanelQualificationPod(t *testing.T) {
 		t.Fatalf("full-panel worker must not be receipt-only: %#v", container.Env)
 	}
 	if envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "true" ||
-		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:") ||
+		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:") ||
 		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" ||
 		envValue(container, "REVIEW_RECEIPT_PATH") != job.ReceiptPath {
@@ -653,7 +653,7 @@ func TestBuildWorkerJobCreatesExplicitSameHeadQualificationPod(t *testing.T) {
 	if envValue(container, "REVIEW_SAME_HEAD_QUALIFICATION_ONLY") != "true" ||
 		envValue(container, "REVIEW_FULL_PANEL_QUALIFICATION_ONLY") != "" ||
 		envValue(container, "REVIEW_RECEIPT_ONLY") != "" ||
-		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:") ||
+		envValue(container, "REVIEW_ENGINE_REVISION") != strings.TrimPrefix(review.Spec.WorkerImage, "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:") ||
 		envValue(container, "REVIEW_QUALIFICATION_MODEL") != review.Spec.QualificationModel ||
 		envValue(container, "REVIEW_QUALIFICATION_TIMEOUT_MS") != "780000" ||
 		envValue(container, "REVIEW_PUBLICATION_MODE") != "disabled" {
@@ -788,7 +788,7 @@ func TestBuildWorkerJobRejectsUnsafeProjection(t *testing.T) {
 		{name: "wrong namespace", mutate: func(review *v1alpha2.PRReviewJob) { review.Namespace = "default" }},
 		{name: "publication enabled", mutate: func(review *v1alpha2.PRReviewJob) { review.Spec.PublicationMode = "enabled" }},
 		{name: "latest image", mutate: func(review *v1alpha2.PRReviewJob) {
-			review.Spec.WorkerImage = "registry.digitalocean.com/calltelemetry/review-yeti-worker:latest"
+			review.Spec.WorkerImage = "registry.digitalocean.com/exampleorg/review-yeti-worker:latest"
 		}},
 		// A non-vendor registry is no longer inherently untrusted: the contract
 		// pins DIGEST, not registry, so a self-hoster can pull from their own
@@ -1475,7 +1475,7 @@ func TestBuildWorkerJobForwardsDiffShrinkOnlyWhenSet(t *testing.T) {
 		t.Fatalf("unset operator config must not reach the worker as %s", job.DiffShrinkEnv)
 	}
 
-	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	pilots := "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
 	input.Publishing.DiffShrink = pilots
 	forwarded, err := job.BuildWorkerJob(input)
 	if err != nil {
@@ -1500,7 +1500,7 @@ func TestBuildWorkerJobForwardsDiffShrinkOnlyWhenSet(t *testing.T) {
 
 	// The worker owns interpretation: an off value and a space-separated
 	// allowlist are both forwarded untouched, never coerced or dropped.
-	for _, value := range []string{"off", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+	for _, value := range []string{"off", "exampleorg/example-meta review-yeti-ai/review-yeti-bot"} {
 		input.Publishing.DiffShrink = value
 		verbatim, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -1530,7 +1530,7 @@ func TestBuildWorkerJobRefusesDiffShrinkWithLineBreak(t *testing.T) {
 	review.Spec.PublicationMode = "app-gate"
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+	for _, value := range []string{"exampleorg/example-meta\n", "a/b\r\nc/d"} {
 		input.Publishing.DiffShrink = value
 		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "diff shrink flag") {
 			t.Fatalf("a line break in the diff shrink flag must refuse the Job, got %v", err)
@@ -1559,7 +1559,7 @@ func TestBuildWorkerJobForwardsIncrementalOnlyWhenSet(t *testing.T) {
 		t.Fatalf("unset operator config must not reach the worker as %s", job.IncrementalEnv)
 	}
 
-	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	pilots := "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
 	input.Publishing.Incremental = pilots
 	forwarded, err := job.BuildWorkerJob(input)
 	if err != nil {
@@ -1582,7 +1582,7 @@ func TestBuildWorkerJobForwardsIncrementalOnlyWhenSet(t *testing.T) {
 		t.Fatalf("%s projected %d times, want exactly once", job.IncrementalEnv, count)
 	}
 
-	for _, value := range []string{"off", "all", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+	for _, value := range []string{"off", "all", "exampleorg/example-meta review-yeti-ai/review-yeti-bot"} {
 		input.Publishing.Incremental = value
 		verbatim, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -1610,7 +1610,7 @@ func TestBuildWorkerJobRefusesIncrementalWithLineBreak(t *testing.T) {
 	review.Spec.PublicationMode = "app-gate"
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+	for _, value := range []string{"exampleorg/example-meta\n", "a/b\r\nc/d"} {
 		input.Publishing.Incremental = value
 		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "incremental flag") {
 			t.Fatalf("a line break in the incremental flag must refuse the Job, got %v", err)
@@ -1639,7 +1639,7 @@ func TestBuildWorkerJobForwardsReviewBudgetOnlyWhenSet(t *testing.T) {
 		t.Fatalf("unset operator config must not reach the worker as %s", job.BudgetEnv)
 	}
 
-	for _, value := range []string{"review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta", "all", "off", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+	for _, value := range []string{"review-yeti-ai/review-yeti-bot,exampleorg/example-meta", "all", "off", "exampleorg/example-meta review-yeti-ai/review-yeti-bot"} {
 		input.Publishing.Budget = value
 		forwarded, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -1680,7 +1680,7 @@ func TestBuildWorkerJobRefusesReviewBudgetWithLineBreak(t *testing.T) {
 	review.Spec.PublicationMode = "app-gate"
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+	for _, value := range []string{"exampleorg/example-meta\n", "a/b\r\nc/d"} {
 		input.Publishing.Budget = value
 		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "review budget flag") {
 			t.Fatalf("a line break in the review budget flag must refuse the Job, got %v", err)
@@ -1709,7 +1709,7 @@ func TestBuildWorkerJobForwardsVerdictCacheOnlyWhenSet(t *testing.T) {
 		t.Fatalf("unset operator config must not reach the worker as %s", job.VerdictCacheEnv)
 	}
 
-	pilots := "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+	pilots := "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
 	input.Publishing.VerdictCache = pilots
 	forwarded, err := job.BuildWorkerJob(input)
 	if err != nil {
@@ -1736,7 +1736,7 @@ func TestBuildWorkerJobForwardsVerdictCacheOnlyWhenSet(t *testing.T) {
 		t.Fatalf("verdict cache config must not project %s", job.IncrementalEnv)
 	}
 
-	for _, value := range []string{"off", "all", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+	for _, value := range []string{"off", "all", "exampleorg/example-meta review-yeti-ai/review-yeti-bot"} {
 		input.Publishing.VerdictCache = value
 		verbatim, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -1764,7 +1764,7 @@ func TestBuildWorkerJobRefusesVerdictCacheWithLineBreak(t *testing.T) {
 	review.Spec.PublicationMode = "app-gate"
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+	for _, value := range []string{"exampleorg/example-meta\n", "a/b\r\nc/d"} {
 		input.Publishing.VerdictCache = value
 		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "verdict cache flag") {
 			t.Fatalf("a line break in the verdict cache flag must refuse the Job, got %v", err)
@@ -1801,7 +1801,7 @@ func TestBuildWorkerJobAlwaysForwardsPublishingDeadlineAndOptionalMapReduce(t *t
 	}
 
 	want := review.Spec.TerminalDeadline.UTC().Format(time.RFC3339Nano)
-	for _, value := range []string{"review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta", "all", "off", "calltelemetry/ct-meta review-yeti-ai/review-yeti-bot"} {
+	for _, value := range []string{"review-yeti-ai/review-yeti-bot,exampleorg/example-meta", "all", "off", "exampleorg/example-meta review-yeti-ai/review-yeti-bot"} {
 		input.Publishing.MapReduce = value
 		forwarded, err := job.BuildWorkerJob(input)
 		if err != nil {
@@ -1853,7 +1853,7 @@ func TestBuildWorkerJobRefusesMapReduceWithLineBreak(t *testing.T) {
 	review.Spec.PublicationMode = "app-gate"
 	input := buildInput(review, now)
 	input.Publishing = publishingFixture()
-	for _, value := range []string{"calltelemetry/ct-meta\n", "a/b\r\nc/d"} {
+	for _, value := range []string{"exampleorg/example-meta\n", "a/b\r\nc/d"} {
 		input.Publishing.MapReduce = value
 		if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "map-reduce flag") {
 			t.Fatalf("a line break in the map-reduce flag must refuse the Job, got %v", err)
@@ -1883,7 +1883,7 @@ func TestBuildWorkerJobForwardsMapReduceMinCharsOnlyWithMapReduce(t *testing.T) 
 		{"", "200000", false},
 		{"all", "", false},
 		{"all", "200000", true},
-		{"review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta", "160000", true},
+		{"review-yeti-ai/review-yeti-bot,exampleorg/example-meta", "160000", true},
 	}
 	for _, c := range cases {
 		input.Publishing.MapReduce = c.mapReduce

@@ -261,7 +261,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head1234',
       });
 
@@ -313,7 +313,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-zoekt-fail',
       });
 
@@ -351,7 +351,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-analyzer-fail',
       });
 
@@ -381,7 +381,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-dual-fail',
       });
 
@@ -640,7 +640,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-role-isolation',
       });
 
@@ -694,7 +694,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-prechecks-disabled',
       });
 
@@ -736,7 +736,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-analyzers-disabled',
       });
 
@@ -789,7 +789,7 @@ describe('Challenger M4-2 Empirical Challenge Test Suite', () => {
         config,
         client: mockClient as any,
         changedFiles: [{ path: 'src/sec/auth.ts', patch: '@@ -1,5 +1,5 @@' }],
-        repository: 'calltelemetry/repo',
+        repository: 'exampleorg/repo',
         headSha: 'head-zoekt-disabled',
       });
 

@@ -6,8 +6,8 @@ import { getBoundedRepositoryInstallationId, MAX_APP_TOKEN_RESPONSE_BYTES, valid
 const { privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' },
 });
-const config = { appId: '4385771', privateKey, owner: 'calltelemetry', repo: 'ct-meta', baseUrl: 'https://api.example.invalid/api/v3' };
-const lookupUrl = `${config.baseUrl}/repos/calltelemetry/ct-meta/installation`;
+const config = { appId: '4385771', privateKey, owner: 'exampleorg', repo: 'example-meta', baseUrl: 'https://api.example.invalid/api/v3' };
+const lookupUrl = `${config.baseUrl}/repos/exampleorg/example-meta/installation`;
 const marker = 'SYNTHETIC_PRIVATE_LOOKUP_DIAGNOSTIC';
 
 async function redacted(pending: Promise<unknown>) {
@@ -30,7 +30,7 @@ describe('bounded repository installation lookup', () => {
     await expect(getBoundedRepositoryInstallationId(Object.freeze({ ...config, baseUrl }), { fetchImplementation: fetcher })).resolves.toBe(987);
     expect(fetcher).toHaveBeenCalledOnce();
     const [url, init] = fetcher.mock.calls[0];
-    expect(url).toBe(`${baseUrl ? config.baseUrl : 'https://api.github.com'}/repos/calltelemetry/ct-meta/installation`);
+    expect(url).toBe(`${baseUrl ? config.baseUrl : 'https://api.github.com'}/repos/exampleorg/example-meta/installation`);
     expect(init).toMatchObject({ method: 'GET', redirect: 'error' });
     expect(init?.body).toBeUndefined();
     expect(init?.signal?.aborted).toBe(true);
@@ -63,8 +63,8 @@ describe('bounded repository installation lookup', () => {
   });
 
   it.each([
-    ['https://other.example.invalid/repos/calltelemetry/ct-meta/installation', 'GET'],
-    [`${config.baseUrl}/repos/another/ct-meta/installation`, 'GET'],
+    ['https://other.example.invalid/repos/exampleorg/example-meta/installation', 'GET'],
+    [`${config.baseUrl}/repos/another/example-meta/installation`, 'GET'],
     [`${lookupUrl}?token=${marker}`, 'GET'], [lookupUrl, 'POST'],
     [`${config.baseUrl}/app/installations/987/access_tokens`, 'POST'],
   ])('refuses a legacy helper escaping its lookup-only scope: %s %s', async (url, method) => {

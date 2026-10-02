@@ -101,8 +101,8 @@ describe('public native self-review admission', () => {
       for (const job of Object.values(candidate.jobs ?? {})) {
         for (const step of job.steps ?? []) {
           if (step.uses === './') nativePaths++;
-          expect(step.run ?? '').not.toContain('repos/calltelemetry/ct-review-actions/dispatches');
-          expect(step.with?.repositories).not.toBe('ct-review-actions');
+          expect(step.run ?? '').not.toContain('repos/exampleorg/example-review-actions/dispatches');
+          expect(step.with?.repositories).not.toBe('example-review-actions');
         }
       }
     }

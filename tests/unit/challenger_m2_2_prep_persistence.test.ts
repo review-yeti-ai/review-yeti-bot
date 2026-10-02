@@ -33,7 +33,7 @@ describe('Challenger 2 Empirical Stress Suite: Prep Phase Decoupling, AST Triage
       expect(triage.triageSummary.truncated).toBe(false);
 
       const prompt = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 1,
         headSha: 'abc',
         astSymbols: triage.astSymbols,
@@ -81,7 +81,7 @@ Binary files /dev/null and b/assets/logo.png differ`;
       expect(triage.astSymbols).toEqual([]);
 
       const prompt = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 1,
         headSha: 'abc',
         astSymbols: triage.astSymbols,
@@ -130,7 +130,7 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
     it('EMP-M2-BND-01: truncates huge ASCII diff and appends truncation marker', () => {
       const hugePatch = '+\n'.repeat(150_000); // 300,000 characters
       const { messages, truncated } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 42,
         headSha: 'deadbeef',
         astSymbols: ['testSymbol'],
@@ -151,7 +151,7 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
       // but byte length is 300,000 bytes (> 256KB = 262,144 bytes)
       const multiBytePatch = '+\n' + '审'.repeat(100_000);
       const { messages, truncated } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 42,
         headSha: 'deadbeef',
         astSymbols: ['testSymbol'],
@@ -277,7 +277,7 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
         runId: 'run-fidelity-001',
         headSha: '1234567890abcdef1234567890abcdef12345678',
         baseSha: 'abcdef1234567890abcdef1234567890abcdef12',
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         prNumber: 142,
         triageSummary: {
           filesCount: 4,
@@ -296,7 +296,7 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
           { role: 'system', content: 'You are Review Yeti.\nPersonas:\n- [sec] Security' },
           {
             role: 'user',
-            content: 'Repository: calltelemetry/review-yeti-bot\nDiff:\n+const a = {"key": "val"};\n',
+            content: 'Repository: exampleorg/review-yeti-bot\nDiff:\n+const a = {"key": "val"};\n',
           },
         ],
         metadata: {
@@ -417,8 +417,8 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
         const candidateClient = new Client({
           host: process.env.PGHOST || 'localhost',
           port: Number(process.env.PGPORT) || 5432,
-          user: process.env.PGUSER || 'calltelemetry',
-          password: process.env.PGPASSWORD || 'calltelemetry_dev_password',
+          user: process.env.PGUSER || 'exampleorg',
+          password: process.env.PGPASSWORD || 'exampleorg_dev_password',
           database: process.env.PGDATABASE || 'postgres',
         });
         await candidateClient.connect();
@@ -455,7 +455,7 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
           runId: 'run-live-test',
           headSha: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
           baseSha: '0000000000000000000000000000000000000000',
-          repository: 'calltelemetry/review-yeti-bot',
+          repository: 'exampleorg/review-yeti-bot',
           prNumber: 88,
           triageSummary: {
             filesCount: 2,
@@ -544,7 +544,7 @@ zcmeAS@N?(olHy` + '`' + `Uvi4e4!3}kO1~8Vq92j?4^<`;
 
       const result = await runPrepPhase({
         runId: 'run-e2e-ok',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 1,
         headSha: '1111222233334444555566667777888899990000',
         baseSha: '0000999988887777666655554444333322221111',

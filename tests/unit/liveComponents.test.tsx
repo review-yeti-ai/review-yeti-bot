@@ -185,7 +185,7 @@ describe('Live Terminal UI Components Unit Suite', () => {
     const mockJobs: LiveJobSummary[] = [
       {
         jobId: 'job_cisco_pr42',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 42,
         title: 'Add OAuth2 Token Support',
         status: 'active',
@@ -217,7 +217,7 @@ describe('Live Terminal UI Components Unit Suite', () => {
       );
 
       expect(screen.getByText('Add OAuth2 Token Support')).toBeDefined();
-      expect(screen.getByText('calltelemetry/cisco-cdr')).toBeDefined();
+      expect(screen.getByText('exampleorg/example-api')).toBeDefined();
       expect(screen.getByText('ACTIVE')).toBeDefined();
       expect(screen.getByText('48 events')).toBeDefined();
     });

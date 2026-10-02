@@ -1,10 +1,10 @@
---- FILE: lib/calltelemetry/accounts/user_context.ex ---
-diff --git a/lib/calltelemetry/accounts/user_context.ex b/lib/calltelemetry/accounts/user_context.ex
+--- FILE: lib/exampleorg/accounts/user_context.ex ---
+diff --git a/lib/exampleorg/accounts/user_context.ex b/lib/exampleorg/accounts/user_context.ex
 @@ -1,6 +1,17 @@
- defmodule Calltelemetry.Accounts.UserContext do
+ defmodule Exampleorg.Accounts.UserContext do
    import Ecto.Query, warn: false
-   alias Calltelemetry.Repo
-   alias Calltelemetry.Accounts.User
+   alias Exampleorg.Repo
+   alias Exampleorg.Accounts.User
  
 +  @doc """
 +  Fetches a user by ID without scoping to the current organization.

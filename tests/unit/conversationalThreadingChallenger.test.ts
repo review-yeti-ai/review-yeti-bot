@@ -104,7 +104,7 @@ describe('Conversational Threading & Inline Reply Empirical Stress Tests', () =>
       const handler = new GitHubEventHandler();
       const payload = {
         action: 'created',
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-bot' },
         pull_request: { number: 10, head: { sha: 'h' }, base: { sha: 'b' } },
         comment: {
           id: 501,

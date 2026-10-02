@@ -102,7 +102,7 @@ describe('Milestone 41: GitHub App & OAuth Onboarding API Suite', () => {
 
   it('PATCH /api/github/app-config/monitored-repos/:owner/:repo updates 1-click review toggle', async () => {
     const patchRes = await request(app)
-      .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
       .send({ automationEnabled: false, customProfile: 'assertive' });
 
     expect(patchRes.status).toBe(200);
@@ -112,7 +112,7 @@ describe('Milestone 41: GitHub App & OAuth Onboarding API Suite', () => {
 
     // Re-enable for clean state
     await request(app)
-      .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
       .send({ automationEnabled: true, customProfile: 'balanced' });
   });
 });

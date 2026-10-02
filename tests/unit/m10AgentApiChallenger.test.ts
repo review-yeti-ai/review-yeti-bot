@@ -193,7 +193,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
 
     it('POST /api/memory/query returns 400 when invalid category enum value is provided', async () => {
       const res = await makeRequest(app, 'POST', '/api/memory/query', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         category: 'invalid_category_enum',
       });
 
@@ -253,7 +253,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
 
     it('POST /api/memory/record returns 400 when required "type" parameter is missing', async () => {
       const res = await makeRequest(app, 'POST', '/api/memory/record', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         data: { title: 'test' },
       });
 
@@ -263,7 +263,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
 
     it('POST /api/memory/record returns 400 when invalid type enum is provided', async () => {
       const res = await makeRequest(app, 'POST', '/api/memory/record', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         type: 'unsupported_type',
         data: {},
       });
@@ -274,7 +274,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
 
     it('POST /api/memory/record returns 400 when "data" is not an object', async () => {
       const res = await makeRequest(app, 'POST', '/api/memory/record', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         type: 'learning',
         data: 'string_data',
       });
@@ -403,7 +403,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
     it('handles 50 concurrent requests across all endpoints without crashing or race conditions', async () => {
       // Pre-seed memory record
       await makeRequest(app, 'POST', '/api/memory/record', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 42,
         type: 'learning',
         data: {
@@ -419,7 +419,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
         promises.push(makeRequest(app, 'GET', '/health'));
         promises.push(
           makeRequest(app, 'POST', '/api/memory/query', {
-            repo: 'calltelemetry/cisco-cdr',
+            repo: 'exampleorg/example-api',
             category: 'architecture',
           })
         );
@@ -436,7 +436,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
         );
         promises.push(
           makeRequest(app, 'POST', '/api/memory/record', {
-            repo: 'calltelemetry/cisco-cdr',
+            repo: 'exampleorg/example-api',
             prNumber: i,
             type: 'learning',
             data: {
@@ -470,7 +470,7 @@ describe('Milestone 10 Agent API Stress & Edge Case Challenger Tests', () => {
     it('createApp handles POST /api/memory/query with body parsing check', async () => {
       const fullApp = createApp();
       const res = await makeRequest(fullApp, 'POST', '/api/memory/query', {
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
       });
 
       expect([200, 400]).toContain(res.status);

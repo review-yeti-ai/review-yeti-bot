@@ -77,7 +77,7 @@ describe('OpenRouter qualification contract', () => {
       return streamResponse([{ choices: [{ delta: { content: '{"findings":[]}' } }] }]);
     };
     const prContext = {
-      repo: 'calltelemetry/example',
+      repo: 'exampleorg/example',
       prNumber: 17,
       baseSha: 'a'.repeat(40),
       headSha: 'b'.repeat(40),
@@ -132,7 +132,7 @@ describe('OpenRouter qualification contract', () => {
     };
 
     await reviewWithModel(persona, diffFiles, {
-      repo: 'calltelemetry/example',
+      repo: 'exampleorg/example',
       prNumber: 17,
       baseSha: 'a'.repeat(40),
       headSha: 'b'.repeat(40),
@@ -141,7 +141,7 @@ describe('OpenRouter qualification contract', () => {
       ...diffFiles[0],
       patch: `${diffFiles[0].patch}+const changed = true;\n`,
     }], {
-      repo: 'calltelemetry/example',
+      repo: 'exampleorg/example',
       prNumber: 17,
       baseSha: 'a'.repeat(40),
       headSha: 'c'.repeat(40),

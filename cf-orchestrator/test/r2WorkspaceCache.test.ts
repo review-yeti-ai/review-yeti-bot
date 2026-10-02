@@ -65,9 +65,9 @@ describe('R2 Workspace Caching & Zoekt Hydration (M3 / R3)', () => {
     });
 
     it('parses canonical R2 cache keys back into components', () => {
-      const parsed = parseR2CacheKey('calltelemetry/review-yeti/pr-99.tar.zst');
+      const parsed = parseR2CacheKey('exampleorg/review-yeti/pr-99.tar.zst');
       assert.ok(parsed);
-      assert.equal(parsed.owner, 'calltelemetry');
+      assert.equal(parsed.owner, 'exampleorg');
       assert.equal(parsed.repo, 'review-yeti');
       assert.equal(parsed.prNumber, 99);
 
@@ -94,7 +94,7 @@ describe('R2 Workspace Caching & Zoekt Hydration (M3 / R3)', () => {
 
     it('builds complete environment dictionary for container execution', () => {
       const env = buildR2CacheEnv({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'reviewyeti',
         prNumber: 101,
         headSha: 'abc1234',
@@ -103,7 +103,7 @@ describe('R2 Workspace Caching & Zoekt Hydration (M3 / R3)', () => {
         r2SecretAccessKey: 'r2_secret',
       });
 
-      assert.equal(env.OWNER, 'calltelemetry');
+      assert.equal(env.OWNER, 'exampleorg');
       assert.equal(env.REPO, 'reviewyeti');
       assert.equal(env.PR_NUMBER, '101');
       assert.equal(env.HEAD_SHA, 'abc1234');
@@ -438,7 +438,7 @@ exit 0
   describe('8. Credential & Token Redaction in Runner Streams', () => {
     it('redacts tokens embedded in git URLs, auth headers, and raw token formats', () => {
       const sensitiveToken = 'ghp_secretTokenVal1234567890abcdef';
-      const sampleStderr = `fatal: unable to access 'https://x-access-token:${sensitiveToken}@github.com/calltelemetry/cisco-cdr.git': The requested URL returned error: 403`;
+      const sampleStderr = `fatal: unable to access 'https://x-access-token:${sensitiveToken}@github.com/exampleorg/example-api.git': The requested URL returned error: 403`;
       const sanitized = redactTokens(sampleStderr);
 
       assert.ok(!sanitized.includes(sensitiveToken), 'Must not contain raw token');

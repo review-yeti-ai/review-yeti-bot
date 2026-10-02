@@ -96,7 +96,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     });
 
     const res = await publisher.publishReview({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'bot',
       prNumber: 1,
       commitSha: 'sha',
@@ -134,7 +134,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     });
 
     const result = await publisher.publishReview({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'bot',
       prNumber: 44,
       commitSha: 'head-sha-injected',
@@ -176,7 +176,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     });
 
     const res = await publisher.publishReview({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'bot',
       prNumber: 2,
       commitSha: 'sha2',
@@ -206,7 +206,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     });
 
     const res = await publisher.publishReview({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'bot',
       prNumber: 3,
       commitSha: 'sha3',
@@ -225,7 +225,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     const fetchImplementation = vi.fn().mockImplementation(async (input: string, init?: RequestInit) => {
       if (init?.method === 'GET' && input.includes('/pulls/9/reviews')) {
         return new Response(JSON.stringify(posted
-          ? [{ id: 919, body: '<!-- ct-review-bot:v1:calltelemetry/bot#9:head-9:persona:security -->' }]
+          ? [{ id: 919, body: '<!-- ct-review-bot:v1:exampleorg/bot#9:head-9:persona:security -->' }]
           : []), { status: 200 });
       }
       if (init?.method === 'GET') return new Response('[]', { status: 200 });
@@ -238,7 +238,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
       sleep: vi.fn().mockResolvedValue(undefined),
     });
     const input = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'bot',
       prNumber: 9,
       commitSha: 'head-9',
@@ -266,7 +266,7 @@ describe('commentPublisher.ts — Deep Edge Case Unit Tests', () => {
     const publisher = new CommentPublisher({ githubToken: 'ghs_marker_lookup_token', fetchImplementation });
 
     await expect(publisher.publishReview({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'bot',
       prNumber: 10,
       commitSha: 'head-10',

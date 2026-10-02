@@ -21,7 +21,7 @@ describe('GraphLearningEngine Unit Tests', () => {
   });
 
   it('suppresses nit findings matching recorded resolved nit regex patterns', async () => {
-    const repo = 'calltelemetry/cisco-cdr';
+    const repo = 'exampleorg/example-api';
 
     // Record a resolved nit pattern
     await memoryStore.recordResolvedNit(repo, 12, {
@@ -60,7 +60,7 @@ describe('GraphLearningEngine Unit Tests', () => {
   });
 
   it('matches ADR constraints based on changed file target path globs', async () => {
-    const repo = 'calltelemetry/cisco-cdr';
+    const repo = 'exampleorg/example-api';
 
     await memoryStore.recordADRConstraint(repo, {
       adrNumber: 5,
@@ -88,7 +88,7 @@ describe('GraphLearningEngine Unit Tests', () => {
   });
 
   it('calculates symbol risk score based on symbol callers and past learnings', async () => {
-    const repo = 'calltelemetry/cisco-cdr';
+    const repo = 'exampleorg/example-api';
     const symbolName = 'PRMemoryStore';
 
     // Record past learnings referencing symbol

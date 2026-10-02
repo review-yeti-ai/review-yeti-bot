@@ -63,7 +63,7 @@ describe('panelWallClockMs on the fast-ship return', () => {
     const result = await executePersonaPanel({
       config: config(),
       changedFiles: [{ path: 'content/guide.md', patch: '+ a docs line' }],
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-fast-ship',
       client: client as unknown as OmniRouteClient,
     });

@@ -15,7 +15,7 @@ describe('R4: Repository Review Rules REST API Test Suite', () => {
 
     // Clear any pre-existing default repositories and seed clean repo
     (dashboardStore as any).data.repositories = [];
-    dashboardStore.updateRepository('calltelemetry', 'cisco-cdr', {
+    dashboardStore.updateRepository('exampleorg', 'example-api', {
       automationEnabled: true,
       customProfile: 'balanced',
       generateArchitecturalFlowchart: true,
@@ -39,13 +39,13 @@ describe('R4: Repository Review Rules REST API Test Suite', () => {
   describe('1. GET /api/dashboard/repositories/:owner/:repo/rules', () => {
     it('returns 200 with complete combined review rules structure', async () => {
       const res = await request(app)
-        .get('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .get('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.owner).toBe('calltelemetry');
-      expect(res.body.repo).toBe('cisco-cdr');
+      expect(res.body.owner).toBe('exampleorg');
+      expect(res.body.repo).toBe('example-api');
       expect(res.body.rules).toBeDefined();
 
       const rules = res.body.rules;
@@ -95,7 +95,7 @@ describe('R4: Repository Review Rules REST API Test Suite', () => {
       };
 
       const res = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send(payload);
 
@@ -110,7 +110,7 @@ describe('R4: Repository Review Rules REST API Test Suite', () => {
       expect(res.body.rules.enforcement_policy.require_ticket_link).toBe(true);
 
       // Verify bidirectional synchronization to top-level repository fields
-      const repoSetting = dashboardStore.getRepository('calltelemetry', 'cisco-cdr');
+      const repoSetting = dashboardStore.getRepository('exampleorg', 'example-api');
       expect(repoSetting?.customProfile).toBe('assertive');
       expect(repoSetting?.strictnessProfile).toBe('assertive');
       expect(repoSetting?.generateArchitecturalFlowchart).toBe(false);
@@ -118,7 +118,7 @@ describe('R4: Repository Review Rules REST API Test Suite', () => {
 
       // Subsequent GET returns updated rules
       const getRes = await request(app)
-        .get('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .get('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(getRes.status).toBe(200);
@@ -135,7 +135,7 @@ describe('R4: Repository Review Rules REST API Test Suite', () => {
       };
 
       const res = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send(invalidPayload);
 

@@ -1349,7 +1349,7 @@ const DIRECT_GENERATION_BUDGET_MULTIPLIER = 3;
 // reasoning itself) can spend its entire output ceiling on reasoning before emitting a single
 // content token, once the prompt is large enough, regardless of `reasoning_effort` /
 // `reasoning_budget_ms` (REL-534/#427-428) or the reasoning-effort-floored recovery retry
-// (REL-547). Evidence: `calltelemetry/cisco-cdr` PR #4861 via central run 33798590063 -- a
+// (REL-547). Evidence: `exampleorg/example-api` PR #4861 via central run 33798590063 -- a
 // ~212k-prompt-token / 729,269-char diff exhausted the Ollama `deepseek-v4-flash:cloud` model's
 // 65,536-token ceiling on reasoning alone, on both the first pass and the floored-effort retry
 // (3 of 6 lanes: security, architecture, licensing -- the full-diff/cross-cutting personas). The
@@ -4368,7 +4368,7 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       if (streamEnabled) requestBody.stream = true;
 
       const configuredReasoningEffort = persona.reasoningEffort || persona.reasoning_effort || options.reasoningEffort || options.reasoning_effort || transport.reasoningEffort || transport.reasoning_effort;
-      // Live policy first-pass is `none` (ct-review-actions). Honor an explicit transport
+      // Live policy first-pass is `none` (example-review-actions). Honor an explicit transport
       // or persona effort so qualification profiles and cassette replay stay exact.
       const reasoningEffort = downgradeReasoningEffort(configuredReasoningEffort, fallbackAttempt);
       if (reasoningEffort) {
@@ -8243,7 +8243,7 @@ async function main() {
   const trustedWorkflow = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW || '').trim();
   const trustedWorkflowSha = String(process.env.REVIEW_YETI_INCREMENTAL_TRUSTED_WORKFLOW_SHA || '').trim().toLowerCase();
   // REL-553: central (repository_dispatch) execution runs the reusable workflow inside the
-  // private executing repository (e.g. calltelemetry/ct-review-actions), not inside the reviewed
+  // private executing repository (e.g. exampleorg/example-review-actions), not inside the reviewed
   // repository. Prior run reports therefore live in that executing repo's artifact store, and the
   // parent run's trigger event is repository_dispatch rather than pull_request(_target). Both are
   // explicit opt-in overrides so a same-repo consumer's behavior is unchanged by default.

@@ -9,7 +9,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       const runner = new K8sJobRunner();
       const spec: K8sJobSpec = {
         persona: 'security-auditor',
-        repoUrl: 'calltelemetry/cisco-cdr',
+        repoUrl: 'exampleorg/example-api',
         prNumber: 42,
         commitSha: 'd3b07384d113edec49eaa6238ad5ff00',
       };
@@ -36,7 +36,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       const runner = new K8sJobRunner();
       const spec: K8sJobSpec = {
         persona: 'performance-expert',
-        repoUrl: 'calltelemetry/ct-review-bot',
+        repoUrl: 'exampleorg/ct-review-bot',
         prNumber: 108,
         commitSha: '9f8e7d6c5b4a',
         pvcClaimName: 'ct-review-bot-workspace-pvc',
@@ -55,12 +55,12 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       expect(container.volumeMounts).toHaveLength(1);
       expect(container.volumeMounts[0].name).toBe('workspace-volume');
       expect(container.volumeMounts[0].mountPath).toBe('/workspace');
-      expect(container.volumeMounts[0].subPath).toBe('repos/calltelemetry_ct-review-bot_pr108');
+      expect(container.volumeMounts[0].subPath).toBe('repos/exampleorg_ct-review-bot_pr108');
 
       // Verify WORKSPACE_PATH env var matching subPath
       const envWorkspace = container.env.find((e) => e.name === 'WORKSPACE_PATH');
       expect(envWorkspace).toBeDefined();
-      expect(envWorkspace?.value).toBe('/workspace/repos/calltelemetry_ct-review-bot_pr108');
+      expect(envWorkspace?.value).toBe('/workspace/repos/exampleorg_ct-review-bot_pr108');
     });
 
     it('verifies simulation mode dispatch execution when forceSimulation: true or NODE_ENV === "test"', async () => {
@@ -68,7 +68,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       const forcedRunner = new K8sJobRunner({ forceSimulation: true });
       const resForced = await forcedRunner.dispatchJob({
         persona: 'qa-tester',
-        repoUrl: 'calltelemetry/test-repo',
+        repoUrl: 'exampleorg/test-repo',
         prNumber: 1,
         commitSha: 'abc123456789',
       });
@@ -81,7 +81,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       const testEnvRunner = new K8sJobRunner();
       const resTestEnv = await testEnvRunner.dispatchJob({
         persona: 'sec-tester',
-        repoUrl: 'calltelemetry/sec-repo',
+        repoUrl: 'exampleorg/sec-repo',
         prNumber: 999,
         commitSha: 'fed987654321',
       });
@@ -96,7 +96,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
       const dispatches = Array.from({ length: 50 }).map((_, i) =>
         runner.dispatchJob({
           persona: `stress-agent-${i}`,
-          repoUrl: `calltelemetry/repo-${i}`,
+          repoUrl: `exampleorg/repo-${i}`,
           prNumber: i + 1,
           commitSha: `sha-${i}-${Date.now()}`,
         })
@@ -112,7 +112,7 @@ describe('Milestone 43 & 44 Empirical Challenger Suite', () => {
         expect(res.manifest.spec.template.spec.containers[0].resources.limits.cpu).toBeUndefined();
         expect(res.manifest.spec.template.spec.containers[0].resources.limits.memory).toBe('256Mi');
         expect(res.manifest.spec.template.spec.volumes[0].emptyDir).toBeDefined();
-        expect(res.manifest.spec.template.spec.containers[0].volumeMounts[0].subPath).toBe(`repos/calltelemetry_repo-${i}_pr${i + 1}`);
+        expect(res.manifest.spec.template.spec.containers[0].volumeMounts[0].subPath).toBe(`repos/exampleorg_repo-${i}_pr${i + 1}`);
       });
     });
   });

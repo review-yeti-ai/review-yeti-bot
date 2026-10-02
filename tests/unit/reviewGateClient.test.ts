@@ -19,7 +19,7 @@ const baseSha = 'b'.repeat(40);
 const policyDigest = 'c'.repeat(64);
 
 const coordinates: ReviewGateCoordinates = {
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'review-yeti-bot',
   repositoryId: 3210,
   prNumber: 42,
@@ -241,7 +241,7 @@ describe('GitHubReviewGateClient', () => {
     })).resolves.toMatchObject({ id: 9876, status: 'completed', conclusion: 'timed_out' });
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
     expect(fetchImplementation.mock.calls[0][1]).toEqual(expect.objectContaining({ method: 'GET', redirect: 'error' }));
-    expect(fetchImplementation.mock.calls[1][0]).toBe('https://github.test/api/v3/repos/calltelemetry/review-yeti-bot/check-runs/9876');
+    expect(fetchImplementation.mock.calls[1][0]).toBe('https://github.test/api/v3/repos/exampleorg/review-yeti-bot/check-runs/9876');
     expect(fetchImplementation.mock.calls[1][1]).toEqual(expect.objectContaining({ method: 'PATCH', redirect: 'error' }));
     const body = JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body));
     expect(body).toMatchObject({ status: 'completed', conclusion: 'timed_out' });

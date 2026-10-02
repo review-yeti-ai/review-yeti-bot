@@ -32,7 +32,7 @@ function receipt(overrides: Record<string, unknown> = {}) {
     version: 'ReviewYetiPanelQualification.v1',
     profile: 'same-head',
     status: 'succeeded',
-    repo: 'calltelemetry/ct-pr-operator-sandbox',
+    repo: 'exampleorg/ct-pr-operator-sandbox',
     prNumber: 5,
     baseSha: 'a'.repeat(40),
     headSha: 'b'.repeat(40),

@@ -233,7 +233,7 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
           base: { sha: 'base0' },
           title: 'feat: new feature',
         },
-        repository: { name: 'ct-bot', owner: { login: 'calltelemetry' } },
+        repository: { name: 'ct-bot', owner: { login: 'exampleorg' } },
         sender: { login: 'octocat' },
       };
 
@@ -253,7 +253,7 @@ describe('Milestone 4: Webhook Signature & Webhook Server Unit Tests', () => {
           number: 43,
           labels: [{ name: 'ct-review' }],
         },
-        repository: { name: 'ct-bot', owner: { login: 'calltelemetry' } },
+        repository: { name: 'ct-bot', owner: { login: 'exampleorg' } },
         sender: { login: 'octocat' },
       };
 

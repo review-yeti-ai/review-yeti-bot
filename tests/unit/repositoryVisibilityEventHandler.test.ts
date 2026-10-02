@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
 
-// ct-meta#2884: the webhook `repository` object already carries `private`
+// example-meta#2884: the webhook `repository` object already carries `private`
 // (boolean, always present) and sometimes `visibility` ('public' | 'private' |
 // 'internal'). These tests prove GitHubEventHandler.evaluateTrigger extracts that
 // fact onto `parsedPayload.repositoryVisibility` for every trigger source this
@@ -14,7 +14,7 @@ describe('eventHandler.ts — repository visibility extraction', () => {
     const payload = {
       action: 'opened',
       pull_request: { number: 1, head: { sha: 'h' }, base: { sha: 'b' }, title: 't', body: '', draft: false },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-meta', private: true },
+      repository: { owner: { login: 'exampleorg' }, name: 'example-meta', private: true },
       sender: { login: 'user' },
     };
     const result = handler.evaluateTrigger('pull_request', payload);
@@ -27,7 +27,7 @@ describe('eventHandler.ts — repository visibility extraction', () => {
     const payload = {
       action: 'opened',
       pull_request: { number: 1, head: { sha: 'h' }, base: { sha: 'b' }, title: 't', body: '', draft: false },
-      repository: { owner: { login: 'calltelemetry' }, name: 'calltelemetry', private: false },
+      repository: { owner: { login: 'exampleorg' }, name: 'exampleorg', private: false },
       sender: { login: 'user' },
     };
     const result = handler.evaluateTrigger('pull_request', payload);
@@ -39,7 +39,7 @@ describe('eventHandler.ts — repository visibility extraction', () => {
     const payload = {
       action: 'opened',
       pull_request: { number: 1, head: { sha: 'h' }, base: { sha: 'b' }, title: 't', body: '', draft: false },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-meta', private: false, visibility: 'internal' },
+      repository: { owner: { login: 'exampleorg' }, name: 'example-meta', private: false, visibility: 'internal' },
       sender: { login: 'user' },
     };
     const result = handler.evaluateTrigger('pull_request', payload);
@@ -51,7 +51,7 @@ describe('eventHandler.ts — repository visibility extraction', () => {
     const payload = {
       action: 'opened',
       pull_request: { number: 1, head: { sha: 'h' }, base: { sha: 'b' }, title: 't', body: '', draft: false },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-meta' },
+      repository: { owner: { login: 'exampleorg' }, name: 'example-meta' },
       sender: { login: 'user' },
     };
     const result = handler.evaluateTrigger('pull_request', payload);
@@ -66,8 +66,8 @@ describe('eventHandler.ts — repository visibility extraction', () => {
       // An explicit owner/repo keeps this test isolated from ambient
       // GITHUB_REPOSITORY* env vars; the only thing under test is that a missing
       // `repository` object degrades visibility to UNKNOWN without throwing.
-      owner: 'calltelemetry',
-      repo: 'ct-meta',
+      owner: 'exampleorg',
+      repo: 'example-meta',
       sender: { login: 'user' },
     };
     expect(() => handler.evaluateTrigger('pull_request', payload)).not.toThrow();
@@ -81,7 +81,7 @@ describe('eventHandler.ts — repository visibility extraction', () => {
     const payload = {
       action: 'closed',
       pull_request: { number: 1, merged: true, head: { sha: 'h' }, base: { sha: 'b', ref: 'main' }, title: 't', body: '' },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-meta', private: true },
+      repository: { owner: { login: 'exampleorg' }, name: 'example-meta', private: true },
       sender: { login: 'user' },
     };
     const result = handler.evaluateTrigger('pull_request', payload);
@@ -95,7 +95,7 @@ describe('eventHandler.ts — repository visibility extraction', () => {
       action: 'created',
       issue: { number: 1, head: { sha: 'h' }, base: { sha: 'b' }, title: 't', body: '' },
       comment: { id: 5, body: '@review-yeti please look again' },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-meta', private: true },
+      repository: { owner: { login: 'exampleorg' }, name: 'example-meta', private: true },
       sender: { login: 'user' },
     };
     const result = handler.evaluateTrigger('issue_comment', payload);

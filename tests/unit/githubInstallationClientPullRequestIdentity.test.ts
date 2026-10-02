@@ -19,7 +19,7 @@ describe('GitHubInstallationClient pull request repository identity', () => {
       base: { sha: 'b'.repeat(40), repo: { id: 190468701 } },
       title: 'Governed MCP trigger',
       body: 'Exact-head admission',
-    }).getPullRequest('calltelemetry', 'cisco-cdr', 5135);
+    }).getPullRequest('exampleorg', 'example-api', 5135);
 
     expect(snapshot).toEqual({
       headSha: 'a'.repeat(40),
@@ -36,7 +36,7 @@ describe('GitHubInstallationClient pull request repository identity', () => {
       base: { sha: 'b'.repeat(40) },
       title: 'Missing repository identity',
       body: '',
-    }).getPullRequest('calltelemetry', 'cisco-cdr', 5135);
+    }).getPullRequest('exampleorg', 'example-api', 5135);
 
     expect(snapshot).not.toHaveProperty('repositoryId');
     expect(snapshot).toMatchObject({

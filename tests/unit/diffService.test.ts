@@ -142,8 +142,8 @@ describe('DiffService Unit Tests', () => {
   describe('parseSnapshotDiff', () => {
     it('constructs a full ReviewDiffResponse from PRSnapshot', () => {
       const snapshot: PRSnapshot = {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         prNumber: 99,
         headSha: 'abc1234',
         baseSha: 'def5678',
@@ -165,7 +165,7 @@ describe('DiffService Unit Tests', () => {
       const diff = parseSnapshotDiff('job_test_1', snapshot);
       expect(diff.success).toBe(true);
       expect(diff.jobId).toBe('job_test_1');
-      expect(diff.repo).toBe('calltelemetry/cisco-cdr');
+      expect(diff.repo).toBe('exampleorg/example-api');
       expect(diff.prNumber).toBe(99);
       expect(diff.totalFiles).toBe(1);
       expect(diff.totalAdditions).toBe(2);
@@ -177,7 +177,7 @@ describe('DiffService Unit Tests', () => {
 
   describe('generateSyntheticDiff', () => {
     it('generates a synthetic diff with structured hunks', () => {
-      const diff = generateSyntheticDiff('synthetic-job-1', 'calltelemetry/review-yeti-bot', 123);
+      const diff = generateSyntheticDiff('synthetic-job-1', 'exampleorg/review-yeti-bot', 123);
       expect(diff.success).toBe(true);
       expect(diff.jobId).toBe('synthetic-job-1');
       expect(diff.totalFiles).toBe(2);

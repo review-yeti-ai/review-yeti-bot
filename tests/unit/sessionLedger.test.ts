@@ -23,8 +23,8 @@ describe('SessionLedger Unit Tests', () => {
 
   it('records a review turn and creates session-keyed files and index.json', () => {
     const res = ledger.recordTurn({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 42,
       headSha: '8ea184c',
       currentTurn: 1,
@@ -52,8 +52,8 @@ describe('SessionLedger Unit Tests', () => {
 
   it('retrieves previous turn context and generates augmented reviewer header', () => {
     ledger.recordTurn({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 42,
       headSha: '8ea184c',
       currentTurn: 1,
@@ -73,7 +73,7 @@ describe('SessionLedger Unit Tests', () => {
       ],
     });
 
-    const ctx = ledger.getPreviousTurnContext('calltelemetry', 'cisco-cdr', 42);
+    const ctx = ledger.getPreviousTurnContext('exampleorg', 'example-api', 42);
     expect(ctx.hasHistory).toBe(true);
     expect(ctx.previousTurn).toBe(1);
     expect(ctx.remainingTurns).toBe(19);

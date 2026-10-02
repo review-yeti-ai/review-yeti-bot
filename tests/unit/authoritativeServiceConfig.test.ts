@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { authoritativeServiceConfigFromEnv, AUTHORITATIVE_REVIEW_APP_ID } from '../../src/auth/authoritativeServiceConfig';
 
 const marker = 'SYNTHETIC_PRIVATE_CONFIG';
-const source = { repositoryId: 987, owner: 'calltelemetry', repo: 'ct-review-actions', ref: 'refs/heads/main', path: 'policy/review.json' };
+const source = { repositoryId: 987, owner: 'exampleorg', repo: 'example-review-actions', ref: 'refs/heads/main', path: 'policy/review.json' };
 const policy = { allowAppGate: true, repositoryIds: new Set(['123', '456']) };
 const error = 'Authoritative review service configuration is invalid';
 
@@ -38,7 +38,7 @@ describe('authoritativeServiceConfigFromEnv', () => {
     const resolved = authoritativeServiceConfigFromEnv(input, policy);
     expect(resolved).toEqual({
       expectedAppId: AUTHORITATIVE_REVIEW_APP_ID, admissionEnabled: false, repositoryIds: [123, 456],
-      policyRepository: { repositoryId: 987, owner: 'calltelemetry', repo: 'ct-review-actions' },
+      policyRepository: { repositoryId: 987, owner: 'exampleorg', repo: 'example-review-actions' },
       policyRef: source.ref, policyPath: source.path,
       transport: { baseUrl: input.OPENAI_BASE_URL, model: input.REVIEW_MODEL }, tickMs: 5_000,
     });

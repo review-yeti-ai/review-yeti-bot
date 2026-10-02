@@ -33,7 +33,7 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     REVIEW_PUBLICATION_MODE: 'app-gate',
     REVIEW_YETI_POLICY_JSON: COMPOSED_POLICY_JSON,
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-    REVIEW_REPO: 'calltelemetry/ct-meta',
+    REVIEW_REPO: 'exampleorg/example-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),

@@ -7,7 +7,7 @@ import { createReviewCiLanePlan, reviewCiIdentityDigest, REVIEW_CI_CHECK_NAME, t
 
 const identity: ReviewCiValidationIdentity = {
   requestId: '07b3c7a1-12a4-4e42-bc18-71df2e0cae1d', expectedAppId: 4385771,
-  review: { repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 42, baseSha: 'b'.repeat(40), headSha: 'a'.repeat(40),
+  review: { repositoryId: 123, owner: 'exampleorg', repo: 'example-meta', prNumber: 42, baseSha: 'b'.repeat(40), headSha: 'a'.repeat(40),
     policyDigest: 'c'.repeat(64), runId: `run_${'1'.repeat(32)}`, attemptId: `run_${'1'.repeat(32)}-g0-e1`, reviewGeneration: 0, executionAttempt: 1 },
   binding: { candidateSha: 'd'.repeat(40), workflowId: 3211, workflowPath: '.github/workflows/review-yeti-candidate.yml', workflowRef: 'refs/tags/review-ci-v1',
     workflowSha: 'e'.repeat(40), lanePlan: createReviewCiLanePlan(['core'], ['validate']) },

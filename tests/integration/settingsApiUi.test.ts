@@ -74,7 +74,7 @@ describe('Settings API & DashboardStore Persistence Suite (Milestone 40)', () =>
 
   it('PATCH /api/dashboard/repositories/:owner/:repo updates per-repo overrides', async () => {
     const res = await request(app)
-      .patch('/api/dashboard/repositories/calltelemetry/cisco-cdr')
+      .patch('/api/dashboard/repositories/exampleorg/example-api')
       .set('x-api-key', validApiKey)
       .send({
         automationEnabled: true,
@@ -87,13 +87,13 @@ describe('Settings API & DashboardStore Persistence Suite (Milestone 40)', () =>
 
     expect(res.status).toBe(200);
     const updated = res.body.repository || res.body;
-    expect(updated.owner).toBe('calltelemetry');
-    expect(updated.repo).toBe('cisco-cdr');
+    expect(updated.owner).toBe('exampleorg');
+    expect(updated.repo).toBe('example-api');
     expect(updated.customProfile).toBe('assertive');
     expect(updated.modelOverrides['sec-lane']).toBe('claude-5-sonnet');
 
     // Verify persistence via direct store call
-    const stored = dashboardStore.getRepository('calltelemetry', 'cisco-cdr');
+    const stored = dashboardStore.getRepository('exampleorg', 'example-api');
     expect(stored).toBeDefined();
     expect(stored?.customProfile).toBe('assertive');
     expect(stored?.modelOverrides?.['perf-lane']).toBe('gpt-5.6-sol');
@@ -103,7 +103,7 @@ describe('Settings API & DashboardStore Persistence Suite (Milestone 40)', () =>
     const store = new DashboardStore('/tmp/ct-review-bot/test_settings_store.json');
     store.recordReviewRun({
       id: 'test_run_1',
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       prNumber: 42,
       headSha: 'head-sha-123',
       arbiterVerdict: 'SHIP',

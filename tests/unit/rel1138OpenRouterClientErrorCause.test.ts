@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // REL-1138: a lane/arbiter/moderator call that dies on transport used to log only
 // "fetch failed" / "terminated". The undici cause (connect timeout, socket closed) was
-// dropped, so ct-infrastructure#834 could not be diagnosed. These drive the real
+// dropped, so example-infra#834 could not be diagnosed. These drive the real
 // OpenRouterClient.complete() path and assert on the captured logger calls.
 const mocks = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() }));
 vi.mock('../../src/utils/logger', () => ({ logger: mocks }));

@@ -12,8 +12,8 @@ const { privateKey } = generateKeyPairSync('rsa', {
 const config = {
   appId: '123456',
   privateKey: privateKey as string,
-  owner: 'calltelemetry',
-  repo: 'ct-meta',
+  owner: 'exampleorg',
+  repo: 'example-meta',
 };
 
 function fetchStub(tokenBody: unknown, { installationOk = true } = {}) {
@@ -43,7 +43,7 @@ describe('App-minted publish token', () => {
       .find(([url]) => String(url).includes('/access_tokens'));
     const body = JSON.parse(String((call?.[1] as { body?: unknown })?.body));
     // Least privilege is the point: the lane creates and completes one check run.
-    expect(body.repositories).toEqual(['ct-meta']);
+    expect(body.repositories).toEqual(['example-meta']);
     expect(body.permissions).toEqual({ checks: 'write' });
   });
 

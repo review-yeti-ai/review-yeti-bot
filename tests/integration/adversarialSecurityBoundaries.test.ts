@@ -49,7 +49,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         if (token === 'valid-oidc-token-tenant-a') {
           return (
             opts.oidcClaims || {
-              repository: 'calltelemetry/cisco-cdr',
+              repository: 'exampleorg/example-api',
               repository_id: '101',
               repository_owner_id: '42',
               run_id: '5001',
@@ -276,19 +276,19 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         authType: 'oidc',
         tokenDigest: 'caller123456',
         isAdmin: false,
-        allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
-        callerId: 'oidc:calltelemetry/cisco-cdr:1',
+        allowedRepositories: new Set(['exampleorg/example-api']),
+        callerId: 'oidc:exampleorg/example-api:1',
       };
 
       const traversalAttempts = [
-        { owner: 'calltelemetry', repo: '../../cisco-cdr' },
-        { owner: 'calltelemetry', repo: '../cisco-cdr' },
-        { owner: '../../root', repo: 'cisco-cdr' },
-        { owner: 'calltelemetry', repo: 'cisco-cdr/submodule' },
-        { owner: 'calltelemetry/nested', repo: 'cisco-cdr' },
-        { owner: 'calltelemetry', repo: 'cisco-cdr\0nullbyte' },
-        { owner: 'calltelemetry\\backslash', repo: 'cisco-cdr' },
-        { owner: 'calltelemetry%2e%2e', repo: 'cisco-cdr' },
+        { owner: 'exampleorg', repo: '../../example-api' },
+        { owner: 'exampleorg', repo: '../example-api' },
+        { owner: '../../root', repo: 'example-api' },
+        { owner: 'exampleorg', repo: 'example-api/submodule' },
+        { owner: 'exampleorg/nested', repo: 'example-api' },
+        { owner: 'exampleorg', repo: 'example-api\0nullbyte' },
+        { owner: 'exampleorg\\backslash', repo: 'example-api' },
+        { owner: 'exampleorg%2e%2e', repo: 'example-api' },
       ];
 
       for (const { owner, repo } of traversalAttempts) {
@@ -308,25 +308,25 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
           method: 'tools/call',
           params: {
             name: 'get_review_status',
-            arguments: { owner: 'calltelemetry', repo: '../../other-repo', pull_number: 1 },
+            arguments: { owner: 'exampleorg', repo: '../../other-repo', pull_number: 1 },
           },
         });
 
       expect(res.status).toBe(403);
       expect(res.body.error.code).toBe(MCP_ERRORS.FORBIDDEN);
-      expect(res.body.error.message).toMatch(/Forbidden: Access to repository calltelemetry\/\.\.\/\.\.\/other-repo denied/i);
+      expect(res.body.error.message).toMatch(/Forbidden: Access to repository exampleorg\/\.\.\/\.\.\/other-repo denied/i);
       expect(JSON.stringify(res.body)).not.toContain('stack');
     });
 
     it('2.3 Cross-tenant query attempt: Tenant A cannot access Tenant B or internal repositories', async () => {
       const { app } = buildHarness();
 
-      // Tenant A is scoped to 'calltelemetry/cisco-cdr'
+      // Tenant A is scoped to 'exampleorg/example-api'
       const crossTenantQueries = [
         { owner: 'external-org', repo: 'payment-service' },
-        { owner: 'calltelemetry', repo: 'ct-infrastructure' },
-        { owner: 'calltelemetry', repo: 'secret-ops' },
-        { owner: 'cisco-cdr', repo: 'calltelemetry' }, // Inverted coordinates
+        { owner: 'exampleorg', repo: 'example-infra' },
+        { owner: 'exampleorg', repo: 'secret-ops' },
+        { owner: 'example-api', repo: 'exampleorg' }, // Inverted coordinates
       ];
 
       for (const { owner, repo } of crossTenantQueries) {
@@ -354,14 +354,14 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         authType: 'oidc',
         tokenDigest: 'caller123456',
         isAdmin: false,
-        allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+        allowedRepositories: new Set(['exampleorg/example-api']),
         callerId: 'oidc:test:1',
       };
 
-      expect(() => verifyRepositoryAccess(caller, '', 'cisco-cdr')).toThrowError(McpRbacError);
-      expect(() => verifyRepositoryAccess(caller, 'calltelemetry', '')).toThrowError(McpRbacError);
+      expect(() => verifyRepositoryAccess(caller, '', 'example-api')).toThrowError(McpRbacError);
+      expect(() => verifyRepositoryAccess(caller, 'exampleorg', '')).toThrowError(McpRbacError);
       expect(() => verifyRepositoryAccess(caller, '', '')).toThrowError(McpRbacError);
-      expect(() => verifyRepositoryAccess(caller, '   ', 'cisco-cdr')).toThrowError(McpRbacError);
+      expect(() => verifyRepositoryAccess(caller, '   ', 'example-api')).toThrowError(McpRbacError);
     });
 
     it('2.5 Dot-dot alone fails allowed repositories check if regex permits it', () => {
@@ -369,7 +369,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         authType: 'oidc',
         tokenDigest: 'caller123456',
         isAdmin: false,
-        allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+        allowedRepositories: new Set(['exampleorg/example-api']),
         callerId: 'oidc:test:1',
       };
 
@@ -380,7 +380,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
     it('2.6 Empty owner parameter behavior: router level vs direct RBAC check', async () => {
       const { app } = buildHarness();
 
-      // Tenant A is only authorized for 'calltelemetry/cisco-cdr'
+      // Tenant A is only authorized for 'exampleorg/example-api'
       // If valid owner and unauthorized repo is given, RBAC blocks with 403:
       const blockedRes = await request(app)
         .post('/api/mcp')
@@ -391,7 +391,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
           method: 'tools/call',
           params: {
             name: 'get_review_status',
-            arguments: { owner: 'unauthorized-org', repo: 'cisco-cdr', pull_number: 1 },
+            arguments: { owner: 'unauthorized-org', repo: 'example-api', pull_number: 1 },
           },
         });
       expect(blockedRes.status).toBe(403);
@@ -406,7 +406,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
           method: 'tools/call',
           params: {
             name: 'get_review_status',
-            arguments: { owner: '', repo: 'cisco-cdr', pull_number: 1 },
+            arguments: { owner: '', repo: 'example-api', pull_number: 1 },
           },
         });
 
@@ -429,8 +429,8 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         params: {
           name: 'get_review_status',
           arguments: {
-            owner: 'calltelemetry',
-            repo: 'cisco-cdr',
+            owner: 'exampleorg',
+            repo: 'example-api',
             pull_number: 1,
             extra: 'X'.repeat(66 * 1024), // 66KB of padding
           },
@@ -475,7 +475,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         params: {
           name: 'preflight_diff_review',
           arguments: {
-            repo: 'calltelemetry/cisco-cdr',
+            repo: 'exampleorg/example-api',
             diff: 'diff --git a/app.ts b/app.ts\n' + '+'.repeat(250 * 1024),
           },
         },
@@ -500,7 +500,7 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         params: {
           name: 'preflight_diff_review',
           arguments: {
-            repo: 'calltelemetry/cisco-cdr',
+            repo: 'exampleorg/example-api',
             diff: '+'.repeat(540 * 1024), // > 512KB
           },
         },
@@ -526,8 +526,8 @@ describe('Adversarial Security & Boundaries Verification (Challenger 2 Suite)', 
         params: {
           name: 'get_review_status', // NOT preflight_diff_review
           arguments: {
-            owner: 'calltelemetry',
-            repo: 'cisco-cdr',
+            owner: 'exampleorg',
+            repo: 'example-api',
             pull_number: 1,
             diff: 'fake diff ' + 'F'.repeat(70 * 1024),
           },

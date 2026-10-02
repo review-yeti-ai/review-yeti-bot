@@ -86,7 +86,7 @@ describe('Milestone 4 Challenger 2: Multi-Window Cost, Token & Severity Stress H
     });
 
     it('handles single-repository filter: byRepo has exactly 1 entry matching totalSpendUsd', async () => {
-      const targetRepo = 'calltelemetry/cisco-cdr';
+      const targetRepo = 'exampleorg/example-api';
       for (const window of windows) {
         const resCosts = await request(app)
           .get(`/api/analytics/costs?range=${window}&repo=${targetRepo}`)
@@ -242,14 +242,14 @@ describe('Milestone 4 Challenger 2: Multi-Window Cost, Token & Severity Stress H
         const burstLogs = [
           {
             id: 'burst-1',
-            repo: 'calltelemetry/cisco-cdr',
+            repo: 'exampleorg/example-api',
             timestamp: new Date(now - 5 * DAY).toISOString(),
             latencyMs: 2000,
             tokens: { prompt: 50000, completion: 5000, total: 55000 },
           },
           {
             id: 'burst-2',
-            repo: 'calltelemetry/cisco-cdr',
+            repo: 'exampleorg/example-api',
             timestamp: new Date(now - 2 * DAY).toISOString(),
             tokens: { prompt: 100000, completion: 15000, total: 115000 },
           },
@@ -479,8 +479,8 @@ describe('Milestone 4 Challenger 2: Multi-Window Cost, Token & Severity Stress H
         rawStore.data.reviewLogs = [
           {
             id: testReviewId,
-            repo: 'calltelemetry/test-repo',
-            prRun: 'calltelemetry/test-repo #1',
+            repo: 'exampleorg/test-repo',
+            prRun: 'exampleorg/test-repo #1',
             timestamp: new Date(now - 3600 * 1000).toISOString(),
             status: 'completed',
           },

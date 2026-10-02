@@ -78,8 +78,8 @@ function assertCallerContract(workflow) {
     'id: dispatch_token',
     'app-id: ${{ secrets.REVIEW_YETI_DISPATCH_APP_ID }}',
     'private-key: ${{ secrets.REVIEW_YETI_DISPATCH_APP_PRIVATE_KEY }}',
-    'owner: calltelemetry',
-    'repositories: ct-review-actions',
+    'owner: exampleorg',
+    'repositories: example-review-actions',
     'permission-contents: write',
   ]) {
     assert.match(workflow, new RegExp(`^\\s+${marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\s*$`, 'mu'));
@@ -98,7 +98,7 @@ function assertCallerContract(workflow) {
       '--arg head_sha "${{ github.event.pull_request.head.sha }}"',
       '--arg request_id "${{ github.event.repository.name }}:${{ github.event.pull_request.number }}:${{ github.event.pull_request.head.sha }}:${{ github.run_id }}:${{ github.run_attempt }}"',
       "'{event_type:\"review-yeti-request\",client_payload:{repository:$repository,pr_number:$pr_number,base_sha:$base_sha,head_sha:$head_sha,request_id:$request_id}}'",
-      '| gh api --method POST repos/calltelemetry/ct-review-actions/dispatches --input -',
+      '| gh api --method POST repos/exampleorg/example-review-actions/dispatches --input -',
     ].join(' '),
   );
 }

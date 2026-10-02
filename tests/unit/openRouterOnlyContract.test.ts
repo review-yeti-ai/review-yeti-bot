@@ -8,7 +8,7 @@ describe('OpenRouter-only model boundary', () => {
     const deprecated = { complete: vi.fn() };
     const dispatcher = new CommandDispatcher('openrouter/auto');
     const result = await dispatcher.dispatchCommand('@ct-review ask Is this safe?', {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'a'.repeat(40),

@@ -93,7 +93,7 @@ describe('panelEngine.ts -- worker token counters count every provider call (REL
     const result = await executePersonaPanel({
       config: buildTelemetryConfig(3),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/repo',
+      repository: 'exampleorg/repo',
       headSha: 'head-sha-token-metrics',
       client: meterModelClient(mockClient as never, ledger) as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },

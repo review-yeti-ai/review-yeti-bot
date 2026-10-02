@@ -245,7 +245,7 @@ describeWithPostgres('schema migration gate — real scoped PostgreSQL (REL-1127
          effective_config_digest, identity, publication_mode, status, stage,
          repository_id, installation_id, delivery_id, result_digest,
          authoritative_gate_app_id)
-        VALUES ($1, $2, 'calltelemetry', 'cisco-cdr', 42, $3, $4, $5, $6,
+        VALUES ($1, $2, 'exampleorg', 'example-api', 42, $3, $4, $5, $6,
           $7, $8, '{}'::jsonb, $9, $10, 'complete', 123, 456,
           $11, $12, $13)`, [
         runId,

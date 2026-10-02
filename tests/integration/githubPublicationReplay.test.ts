@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CommentPublisher } from '../../src/github/commentPublisher';
 
-const request = { owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 7, commitSha: 'a'.repeat(40), event: 'COMMENT' as const, body: 'review', idempotencyKey: 'run-7' };
+const request = { owner: 'exampleorg', repo: 'ct-review-bot', prNumber: 7, commitSha: 'a'.repeat(40), event: 'COMMENT' as const, body: 'review', idempotencyKey: 'run-7' };
 
 describe('GitHub publication replay', () => {
   it('does not duplicate a review after an ambiguous first POST', async () => {
@@ -15,7 +15,7 @@ describe('GitHub publication replay', () => {
     const first = await publisher.publishReview(request);
     expect(first.success).toBe(false);
     const replayPublisher = new CommentPublisher({ githubToken: 'ghs_test', fetchImplementation: async (_url, init) => {
-      if (init?.method === 'GET') return new Response(JSON.stringify([{ id: 17, body: '<!-- ct-review-bot:v1:calltelemetry/ct-review-bot#7:' + request.commitSha + ':run-7 -->' }]), { status: 200 });
+      if (init?.method === 'GET') return new Response(JSON.stringify([{ id: 17, body: '<!-- ct-review-bot:v1:exampleorg/ct-review-bot#7:' + request.commitSha + ':run-7 -->' }]), { status: 200 });
       throw new Error('write should be deduplicated');
     } });
     const replay = await replayPublisher.publishReview(request);

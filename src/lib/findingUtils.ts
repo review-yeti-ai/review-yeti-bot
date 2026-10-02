@@ -152,7 +152,7 @@ export function sha256(input: string): string {
  * - line: floored integer >= 1 (0, negative, NaN fallback to 1)
  * - title: trimmed and Unicode NFC normalized
  *
- * @param repo - Repository in "owner/name" format (e.g. "calltelemetry/cisco-cdr")
+ * @param repo - Repository in "owner/name" format (e.g. "exampleorg/example-api")
  * @param file - File path relative to repository root (e.g. "src/auth/jwtSigner.ts")
  * @param line - 1-indexed line number
  * @param title - Clean title or description string of the finding

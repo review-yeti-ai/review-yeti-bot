@@ -119,10 +119,10 @@ describe('REVIEW_YETI_BUDGET flag', () => {
   });
 
   it('can be enabled per repository first (comma or space list)', () => {
-    const env = { REVIEW_YETI_BUDGET: 'review-yeti-ai/review-yeti-bot calltelemetry/ct-meta' };
+    const env = { REVIEW_YETI_BUDGET: 'review-yeti-ai/review-yeti-bot exampleorg/example-meta' };
     expect(reviewBudgetEnabledFor(env, 'review-yeti-ai/review-yeti-bot')).toBe(true);
-    expect(reviewBudgetEnabledFor(env, 'CallTelemetry/CT-Meta')).toBe(true);
-    expect(reviewBudgetEnabledFor(env, 'calltelemetry/ct-quasar')).toBe(false);
+    expect(reviewBudgetEnabledFor(env, 'Exampleorg/Example-Meta')).toBe(true);
+    expect(reviewBudgetEnabledFor(env, 'exampleorg/example-ui')).toBe(false);
     expect(reviewBudgetEnabledFor(env, '')).toBe(false);
   });
 });
@@ -452,7 +452,7 @@ describe('one applicability decision', () => {
       + addedFile('tests/core.test.ts', 900, 't') + addedFile('docs/guide.md', 50, 'd'),
     'documentation only': addedFile('docs/guide.md', 10, 'd'),
     'lockfile and source': addedFile('package-lock.json', 10, 'l') + addedFile('src/app.ts', 10, 'x'),
-    'gitlink': 'diff --git a/ct-dashboard b/ct-dashboard\nindex 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n'
+    'gitlink': 'diff --git a/example-dashboard b/example-dashboard\nindex 6c3f36d89d..f84610fbbf 160000\n--- a/example-dashboard\n+++ b/example-dashboard\n'
       + '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n',
   };
 
@@ -1239,7 +1239,7 @@ describe('publishing worker wiring', () => {
       NODE_ENV: 'test',
       REVIEW_PUBLICATION_MODE: 'app-gate',
       REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-      REVIEW_REPO: 'calltelemetry/ct-meta',
+      REVIEW_REPO: 'exampleorg/example-meta',
       REVIEW_REPOSITORY_ID: '1339040553',
       REVIEW_POLICY_DIGEST: 'c'.repeat(64),
       REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
@@ -1290,7 +1290,7 @@ describe('publishing worker wiring', () => {
   });
 
   it('passes the budget input to the engine and publishes the engine\'s disclosure', async () => {
-    const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_YETI_BUDGET: 'calltelemetry/ct-meta' }));
+    const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_YETI_BUDGET: 'exampleorg/example-meta' }));
     expect(panelOptions.reviewBudget).toEqual({ enabled: true });
     expect(summary).toContain('Review budget');
     expect(summary).toContain('Signatures only: `src/lib.ts`');
@@ -1319,7 +1319,7 @@ describe('publishing worker wiring', () => {
       arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'stub', usage: null, costUSD: null, durationMs: 0 },
     }));
     await runPublishingReviewWorker(workerEnv({
-      REVIEW_YETI_BUDGET: 'calltelemetry/ct-meta',
+      REVIEW_YETI_BUDGET: 'exampleorg/example-meta',
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }),
     }), {
       checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },

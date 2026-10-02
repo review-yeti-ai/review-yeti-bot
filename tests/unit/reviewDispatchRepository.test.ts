@@ -26,8 +26,8 @@ class PostgresReviewDispatchRepository extends DurablePostgresReviewDispatchRepo
 }
 
 const identity = {
-  owner: 'calltelemetry',
-  repo: 'cisco-cdr',
+  owner: 'exampleorg',
+  repo: 'example-api',
   prNumber: 42,
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),
@@ -287,7 +287,7 @@ describe('PostgresReviewDispatchRepository', () => {
       reviewPolicy: {
         version: 'ReviewPolicyIdentity.v1', repositoryId: 123,
         effectivePolicyDigest: '1'.repeat(64), sources: [{
-          repositoryId: 789, repository: 'calltelemetry/ct-review-actions',
+          repositoryId: 789, repository: 'exampleorg/example-review-actions',
           sha: 'c'.repeat(40), path: 'review-policy.json', contentDigest: 'f'.repeat(64),
         }],
       },
@@ -624,7 +624,7 @@ describe('PostgresReviewDispatchRepository', () => {
     expect(claim?.runId).toBe(row.run_id);
     expect(claim?.publicationMode).toBe('disabled');
     expect(claim).toEqual(expect.objectContaining({
-      repo: 'calltelemetry/cisco-cdr',
+      repo: 'exampleorg/example-api',
       prNumber: 42,
       headSha: identity.headSha,
       baseSha: identity.baseSha,
@@ -1210,8 +1210,8 @@ describe('PostgresReviewDispatchRepository', () => {
 describe('claimAbandonedPublishingRuns (REL-586)', () => {
   const swept = {
     run_id: `run_${'1'.repeat(32)}`,
-    owner: 'calltelemetry',
-    repo: 'ct-meta',
+    owner: 'exampleorg',
+    repo: 'example-meta',
     pr_number: 2795,
     head_sha: 'a'.repeat(40),
     delivery_id: 'delivery-1', execution_attempt: 2,
@@ -1310,8 +1310,8 @@ describe('claimAbandonedPublishingRuns (REL-586)', () => {
     const { repository } = repositoryWith([swept]);
     await expect(repository.claimAbandonedPublishingRuns('reaper-a', 1, 20)).resolves.toEqual([{
       runId: swept.run_id,
-      owner: 'calltelemetry',
-      repo: 'ct-meta',
+      owner: 'exampleorg',
+      repo: 'example-meta',
       prNumber: 2795,
       headSha: swept.head_sha,
       deliveryId: 'delivery-1', executionAttempt: 2, receivedAt: 1_000, terminalDeadline: 901_000,

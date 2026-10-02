@@ -11,7 +11,7 @@ const validBaseSpec = {
   runId: `run_${'1'.repeat(32)}`,
   deliveryId: 'actions:98765:2:123:42:head',
   repositoryId: 123,
-  repo: 'calltelemetry/cisco-cdr',
+  repo: 'exampleorg/example-api',
   prNumber: 42,
   headSha: 'a'.repeat(40),
   baseSha: 'b'.repeat(40),

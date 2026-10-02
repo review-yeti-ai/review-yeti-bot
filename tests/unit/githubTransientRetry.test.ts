@@ -12,7 +12,7 @@ import { loadSameHeadReviewSource } from '../../src/github/qualificationReader';
 import { logger } from '../../src/utils/logger';
 import { createPublishingCheckClient, githubRetryOptionsFromEnv } from '../../src/cli/publishingReview';
 
-// REL-1103: PRReviewJob ct-review-c3924d5e (ct-infrastructure#778) failed on a
+// REL-1103: PRReviewJob ct-review-c3924d5e (example-infra#778) failed on a
 // single `GitHub API 503 .../check-runs` ("No server is currently available to
 // service your request") and nothing retried it.
 
@@ -250,12 +250,12 @@ describe('GitHubInstallationClient transient retry', () => {
       .mockResolvedValueOnce(json({ id: 7 }));
     const { instance, sleep } = client(fetchImplementation);
 
-    await instance.updateCheck({ owner: 'calltelemetry', repo: 'ct-infrastructure', checkId: 7, title: 'Running' });
+    await instance.updateCheck({ owner: 'exampleorg', repo: 'example-infra', checkId: 7, title: 'Running' });
 
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
     expect(sleep).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith('GitHub transient response; retrying', expect.objectContaining({
-      operation: 'PATCH /repos/calltelemetry/ct-infrastructure/check-runs/7', status: 503, attempt: 1,
+      operation: 'PATCH /repos/exampleorg/example-infra/check-runs/7', status: 503, attempt: 1,
     }));
     expect(JSON.stringify(warn.mock.calls)).not.toContain(SECRET_BODY);
   });

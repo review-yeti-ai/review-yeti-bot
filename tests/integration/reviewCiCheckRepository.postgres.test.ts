@@ -36,7 +36,7 @@ function admittedRequest(overrides: Partial<StoredReviewCiRequest> = {}): Stored
   const sequence = ++fixtureCounter;
   const runSuffix = sequence.toString(16).padStart(32, '0');
   const review = overrides.review ?? {
-    repositoryId: 1_500_000_000 + sequence, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 400 + sequence,
+    repositoryId: 1_500_000_000 + sequence, owner: 'exampleorg', repo: 'example-meta', prNumber: 400 + sequence,
     headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
     runId: `run_${runSuffix}`, reviewGeneration: 0, executionAttempt: 1,
     attemptId: `run_${runSuffix}-g0-e1`,

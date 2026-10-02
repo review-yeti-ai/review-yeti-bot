@@ -120,7 +120,7 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
 
       const comment = formatPRComment(arbitration, allLanes, {
         prNumber: '999',
-        repo: 'calltelemetry/ct-review-bot',
+        repo: 'exampleorg/ct-review-bot',
         headSha: 'abc123456789',
       });
 
@@ -196,7 +196,7 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
 
       const comment = formatPRComment(arbitration, lanes, {
         prNumber: '1000',
-        repo: 'calltelemetry/ct-review-bot',
+        repo: 'exampleorg/ct-review-bot',
         headSha: 'suball123456',
       });
 
@@ -251,7 +251,7 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
 
       const comment = formatPRComment(arbitration, lanes, {
         prNumber: '1001',
-        repo: 'calltelemetry/ct-review-bot',
+        repo: 'exampleorg/ct-review-bot',
         headSha: 'unk12345678',
       });
 
@@ -280,7 +280,7 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
         metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
       };
 
-      const comment = formatPRComment(arbitration, lanes, { prNumber: '1002', repo: 'calltelemetry/ct-review-bot', headSha: 'unkmixed1' });
+      const comment = formatPRComment(arbitration, lanes, { prNumber: '1002', repo: 'exampleorg/ct-review-bot', headSha: 'unkmixed1' });
       expect(comment).toContain('| Metered 1 | `openrouter` | `m` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.005 |');
       expect(comment).toContain('| Sub 1 | `fireworks` | `m` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
       expect(comment).toContain('| Unknown 1 | `openrouter` | `m` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
@@ -349,7 +349,7 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
         metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
       };
 
-      const comment = formatPRComment(arbitration, hostileLanes, { prNumber: '1003', repo: 'calltelemetry/ct-review-bot', headSha: 'hostile1' });
+      const comment = formatPRComment(arbitration, hostileLanes, { prNumber: '1003', repo: 'exampleorg/ct-review-bot', headSha: 'hostile1' });
 
       // Verify each row gets safe '—' in cost column
       hostileLanes.forEach((lane) => {
@@ -413,7 +413,7 @@ describe('Adversarial Verification: Cost Telemetry & Model Normalization', () =>
         metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
       };
 
-      const comment = formatPRComment(arbitration, injectionLanes, { prNumber: '1004', repo: 'calltelemetry/ct-review-bot', headSha: 'inject1' });
+      const comment = formatPRComment(arbitration, injectionLanes, { prNumber: '1004', repo: 'exampleorg/ct-review-bot', headSha: 'inject1' });
 
       // Verify pipes are escaped in table cells
       expect(comment).toContain('Specialist \\| Admin \\| Exploit');

@@ -193,11 +193,11 @@ describe('Telecom Call Engine Workspace E2E Test Suite (Tiers 1-4)', () => {
     it('TEST_E2E_WORKSPACE_T1_02 — Strict IP Protection Audit (0 Proprietary Reference Invariant)', () => {
       const PROHIBITED_PATTERNS = [
         { id: 'IP-001 (Vendor Names)', regex: /\b(cisco|cucm|callmanager|jtapi|axl|broadsoft|broadworks|genesys|avaya|mitel|nortel|yealink|polycom|webex)\b/i },
-        { id: 'IP-002 (Internal Namespaces)', regex: /\b(calltelemetry|cdrcisco|cisco_cdr|ct-jtapi|ct_user|ct_admin|call_telemetry)\b/i },
+        { id: 'IP-002 (Internal Namespaces)', regex: /\b(exampleorg|cdrcisco|cisco_cdr|ct-jtapi|ct_user|ct_admin|example_org)\b/i },
         { id: 'IP-003 (Vendor SIP Headers)', regex: /X-(Cisco|BroadWorks|Genesys|Avaya|Mitel|Nortel)-/i },
-        { id: 'IP-004 (Proprietary Email Domains)', regex: /@(cisco|avaya|calltelemetry|genesys|broadsoft|mitel)\.com/i },
+        { id: 'IP-004 (Proprietary Email Domains)', regex: /@(cisco|avaya|exampleorg|genesys|broadsoft|mitel)\.com/i },
         { id: 'IP-005 (Proprietary Classes)', regex: /(Cisco|CUCM|JTAPI|AXL|BroadSoft|Avaya)[A-Z][a-zA-Z0-9]+/ },
-        { id: 'IP-006 (Proprietary URLs)', regex: /https?:\/\/[a-zA-Z0-9.-]*(cisco|calltelemetry|broadsoft|genesys)\.com/i },
+        { id: 'IP-006 (Proprietary URLs)', regex: /https?:\/\/[a-zA-Z0-9.-]*(cisco|exampleorg|broadsoft|genesys)\.com/i },
       ];
 
       const scanDir = (dir: string, fileList: string[] = []): string[] => {

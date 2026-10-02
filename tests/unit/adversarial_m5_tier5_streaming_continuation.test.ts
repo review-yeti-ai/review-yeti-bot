@@ -41,7 +41,7 @@ function createMockPrepPayload(overrides: Partial<PrepPayload> = {}): PrepPayloa
     runId: 'run_' + 'a'.repeat(32),
     headSha: '1111222233334444555566667777888899990000',
     baseSha: '0000111122223333444455556666777788889999',
-    repository: 'calltelemetry/review-yeti-bot',
+    repository: 'exampleorg/review-yeti-bot',
     prNumber: 42,
     triageSummary: {
       filesCount: 1,
@@ -224,7 +224,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
       const { messages, truncated } = assemblePrepPrompt({
         changedFiles,
         astSymbols: ['handleRocket'],
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 99,
         headSha: 'a'.repeat(40),
         maxBytes: MAX_PREPARED_REVIEW_BYTES,
@@ -253,7 +253,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
       const { messages, truncated } = assemblePrepPrompt({
         changedFiles,
         astSymbols: ['current'],
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 100,
         headSha: 'b'.repeat(40),
         maxBytes: MAX_PREPARED_REVIEW_BYTES,
@@ -362,7 +362,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
       ];
 
       const markdown = formatContinuationSummary({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 77,
         headSha: '0123456789abcdef0123456789abcdef01234567',
         verdict: 'BLOCK',
@@ -450,7 +450,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
               rows: [
                 {
                   run_id: 'run-already-completed',
-                  repo: 'calltelemetry/review-yeti-bot',
+                  repo: 'exampleorg/review-yeti-bot',
                   pr_number: 10,
                   head_sha: 'sha-already-completed',
                   status: 'completed', // Already completed
@@ -513,7 +513,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
 
       const response = await withGitHubRetry(
         {
-          operation: 'PATCH /repos/calltelemetry/review-yeti-bot/check-runs/1',
+          operation: 'PATCH /repos/exampleorg/review-yeti-bot/check-runs/1',
           method: 'PATCH',
           attempt: async (att) => {
             attempts = att;
@@ -541,7 +541,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
 
       const response = await withGitHubRetry(
         {
-          operation: 'GET /repos/calltelemetry/review-yeti-bot/check-runs',
+          operation: 'GET /repos/exampleorg/review-yeti-bot/check-runs',
           method: 'GET',
           attempt: async (att) => {
             attempts = att;
@@ -569,7 +569,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
 
       const response = await withGitHubRetry(
         {
-          operation: 'GET /repos/calltelemetry/review-yeti-bot/pulls/1',
+          operation: 'GET /repos/exampleorg/review-yeti-bot/pulls/1',
           method: 'GET',
           attempt: async (att) => {
             attempts = att;
@@ -598,7 +598,7 @@ describe('Milestone 5 Phase 2: White-Box Adversarial Coverage Hardening (Tier 5)
       await expect(
         withGitHubRetry(
           {
-            operation: 'POST /repos/calltelemetry/review-yeti-bot/check-runs',
+            operation: 'POST /repos/exampleorg/review-yeti-bot/check-runs',
             method: 'POST',
             // No reconcile callback supplied
             attempt: async (att) => {

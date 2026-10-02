@@ -7,14 +7,14 @@ import {
 } from '../../src/review/workerReviewCompletion';
 
 /**
- * REL-1139 (ct-meta ADR 0687): the trusted completion side re-runs the shared empty-moderation
+ * REL-1139 (example-meta ADR 0687): the trusted completion side re-runs the shared empty-moderation
  * decision on its own exact-head facts. A completion that claims a skipped moderator is accepted
  * only when that decision allows it; every disqualifier refuses the claim (fail closed).
  */
 
 const changedFiles = [{ path: 'src/example.ts', patch: '@@ -1,0 +1,2 @@\n+const first = 1;\n+const second = 2;\n' }];
 const coordinates = {
-  runId: `run_${'a'.repeat(32)}`, repositoryId: 3210, owner: 'calltelemetry', repo: 'review-yeti-bot', prNumber: 42,
+  runId: `run_${'a'.repeat(32)}`, repositoryId: 3210, owner: 'exampleorg', repo: 'review-yeti-bot', prNumber: 42,
   headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40), policyDigest: 'd'.repeat(64), configDigest: 'e'.repeat(64), executionAttempt: 2,
 } as const;
 const disclosures = { truncatedFiles: 0, unavailablePatches: 0, omittedSourcePaths: 0, routedFiles: 0, uncoveredPaths: 0 };

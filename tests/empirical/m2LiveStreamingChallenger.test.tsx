@@ -349,7 +349,7 @@ describe('Challenger Stress 2: diffService Malformed & Boundary Patches', () => 
 
     // Tier 1: Set snapshot on LiveStreamBus
     bus.setJobSnapshot(testJobId, {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'waterfall-repo',
       prNumber: 99,
       headSha: 'head123',
@@ -366,7 +366,7 @@ describe('Challenger Stress 2: diffService Malformed & Boundary Patches', () => 
 
     const tier1Res = await resolveReviewDiff(testJobId);
     expect(tier1Res).not.toBeNull();
-    expect(tier1Res?.repo).toBe('calltelemetry/waterfall-repo');
+    expect(tier1Res?.repo).toBe('exampleorg/waterfall-repo');
     expect(tier1Res?.prNumber).toBe(99);
     expect(tier1Res?.totalFiles).toBe(1);
     expect(tier1Res?.totalAdditions).toBe(2);

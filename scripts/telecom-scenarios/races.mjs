@@ -18,7 +18,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2149,
       "title": "fix(sip): asynchronous transfer handshake and early BYE teardown",
       "headSha": "a1b2c3d4e5f67890123456789012345678902149",
@@ -61,7 +61,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2150,
       "title": "perf(trunk): lock-free channel lease reservation",
       "headSha": "a1b2c3d4e5f67890123456789012345678902150",
@@ -104,7 +104,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2151,
       "title": "fix(rtp): parallel port release on teardown timeouts",
       "headSha": "a1b2c3d4e5f67890123456789012345678902151",
@@ -147,7 +147,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2152,
       "title": "perf(quota): lock-free balance checks for call admission",
       "headSha": "a1b2c3d4e5f67890123456789012345678902152",
@@ -190,7 +190,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2153,
       "title": "refactor(sip): asynchronous mid-call re-INVITE state coordinator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902153",
@@ -233,7 +233,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2154,
       "title": "perf(cdr): parallel timer and threshold buffer flush trigger",
       "headSha": "a1b2c3d4e5f67890123456789012345678902154",
@@ -276,7 +276,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2155,
       "title": "refactor(pbx): in-memory contact binding registry for multi-device SIP",
       "headSha": "a1b2c3d4e5f67890123456789012345678902155",
@@ -319,7 +319,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2156,
       "title": "perf(rtp): fine-grained locking in jitter buffer reorder engine",
       "headSha": "a1b2c3d4e5f67890123456789012345678902156",
@@ -362,7 +362,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2157,
       "title": "feat(trunk): distributed Redis lock for multi-node trunk allocation",
       "headSha": "a1b2c3d4e5f67890123456789012345678902157",
@@ -405,7 +405,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2158,
       "title": "refactor(sip): transaction cleanup on final response arrival",
       "headSha": "a1b2c3d4e5f67890123456789012345678902158",
@@ -448,7 +448,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2159,
       "title": "perf(rtp): object pooling for audio transcoding contexts",
       "headSha": "a1b2c3d4e5f67890123456789012345678902159",
@@ -491,7 +491,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2160,
       "title": "fix(webhook): asynchronous retry backoff for failed CTI events",
       "headSha": "a1b2c3d4e5f67890123456789012345678902160",
@@ -534,7 +534,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2161,
       "title": "feat(cdr): real-time dynamic rate deck updates without restart",
       "headSha": "a1b2c3d4e5f67890123456789012345678902161",
@@ -577,7 +577,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2162,
       "title": "feat(sip): supervisor whisper coaching and barge-in audio bridge",
       "headSha": "a1b2c3d4e5f67890123456789012345678902162",
@@ -619,7 +619,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2163,
       "title": "refactor(rtp): fast bitmap search for UDP port pool allocation",
       "headSha": "a1b2c3d4e5f67890123456789012345678902163",
@@ -661,7 +661,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2164,
       "title": "refactor(trunk): high-concurrency circuit breaker failure counters",
       "headSha": "a1b2c3d4e5f67890123456789012345678902164",
@@ -704,7 +704,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2165,
       "title": "refactor(auth): defer nonce invalidation until authentication passes",
       "headSha": "a1b2c3d4e5f67890123456789012345678902165",
@@ -746,7 +746,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2166,
       "title": "feat(cdr): dynamic table partition creation on ingestion worker",
       "headSha": "a1b2c3d4e5f67890123456789012345678902166",
@@ -789,7 +789,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2167,
       "title": "refactor(rtcp): instant session teardown on RTCP BYE receipt",
       "headSha": "a1b2c3d4e5f67890123456789012345678902167",
@@ -831,7 +831,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2168,
       "title": "feat(pbx): directed call pickup for department hunt groups",
       "headSha": "a1b2c3d4e5f67890123456789012345678902168",
@@ -873,7 +873,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2169,
       "title": "feat(sip): RFC 4028 session timers keepalive refresh in dialogs",
       "headSha": "a1b2c3d4e5f67890123456789012345678902169",
@@ -916,7 +916,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2170,
       "title": "perf(cdr): asynchronous hourly tenant quota rollup accumulator",
       "headSha": "a1b2c3d4e5f67890123456789012345678902170",
@@ -958,7 +958,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2171,
       "title": "refactor(pbx): instantaneous bulk endpoint cleanup on network loss",
       "headSha": "a1b2c3d4e5f67890123456789012345678902171",
@@ -1001,7 +1001,7 @@ export const RACE_SCENARIOS = [
     ],
     "workspaceRoot": "tests/fixtures/workspaces/telecom-call-engine",
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2172,
       "title": "refactor(media): RFC 4733 DTMF event packet duration tracker",
       "headSha": "a1b2c3d4e5f67890123456789012345678902172",

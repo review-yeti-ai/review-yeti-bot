@@ -177,7 +177,7 @@ describe('useSSE Custom Hook Unit Tests', () => {
       timestamp: new Date().toISOString(),
       type: 'job:queued',
       persona: 'all',
-      data: { message: 'Review job queued for calltelemetry/cisco-cdr #99', status: 'queued' },
+      data: { message: 'Review job queued for exampleorg/example-api #99', status: 'queued' },
     };
 
     await act(async () => {
@@ -191,7 +191,7 @@ describe('useSSE Custom Hook Unit Tests', () => {
     for (const personaKey of DEFAULT_PERSONAS) {
       expect(result.current.personaProgress[personaKey].status).toBe('PENDING');
       expect(result.current.personaProgress[personaKey].lastMessage).toBe(
-        'Review job queued for calltelemetry/cisco-cdr #99'
+        'Review job queued for exampleorg/example-api #99'
       );
     }
 
@@ -200,7 +200,7 @@ describe('useSSE Custom Hook Unit Tests', () => {
       timestamp: new Date().toISOString(),
       type: 'job:dispatched',
       persona: 'all',
-      data: { message: 'Review job dispatched for calltelemetry/cisco-cdr #99', status: 'dispatched' },
+      data: { message: 'Review job dispatched for exampleorg/example-api #99', status: 'dispatched' },
     };
 
     await act(async () => {
@@ -212,7 +212,7 @@ describe('useSSE Custom Hook Unit Tests', () => {
     for (const personaKey of DEFAULT_PERSONAS) {
       expect(result.current.personaProgress[personaKey].status).toBe('PENDING');
       expect(result.current.personaProgress[personaKey].lastMessage).toBe(
-        'Review job dispatched for calltelemetry/cisco-cdr #99'
+        'Review job dispatched for exampleorg/example-api #99'
       );
     }
 

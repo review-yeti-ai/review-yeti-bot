@@ -50,7 +50,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
         if (token === 'valid-oidc-token') {
           return (
             opts.oidcClaims || {
-              repository: 'calltelemetry/cisco-cdr',
+              repository: 'exampleorg/example-api',
               repository_id: '123',
               repository_owner_id: '99',
               run_id: '98765',
@@ -84,8 +84,8 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
             rows: [
               {
                 run_id: 'run_integration_test',
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 42,
                 head_sha: 'a'.repeat(40),
                 run_status: 'succeeded',
@@ -240,7 +240,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
     it('Test 3.1: OIDC caller targeting own repository succeeds', async () => {
       const { app } = buildApp({
         oidcClaims: {
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           repository_id: '123',
           repository_owner_id: '99',
           run_id: '1',
@@ -258,7 +258,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
           method: 'tools/call',
           params: {
             name: 'get_review_status',
-            arguments: { owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 42 },
+            arguments: { owner: 'exampleorg', repo: 'example-api', pull_number: 42 },
           },
         });
 
@@ -269,7 +269,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
     it('Test 3.2: OIDC caller targeting foreign repository returns HTTP 403 sanitized error', async () => {
       const { app } = buildApp({
         oidcClaims: {
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           repository_id: '123',
           repository_owner_id: '99',
           run_id: '1',
@@ -287,7 +287,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
           method: 'tools/call',
           params: {
             name: 'get_review_status',
-            arguments: { owner: 'calltelemetry', repo: 'secret-service', pull_number: 1 },
+            arguments: { owner: 'exampleorg', repo: 'secret-service', pull_number: 1 },
           },
         });
 
@@ -296,7 +296,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
         jsonrpc: '2.0',
         error: {
           code: MCP_ERRORS.FORBIDDEN,
-          message: 'Forbidden: Access to repository calltelemetry/secret-service denied',
+          message: 'Forbidden: Access to repository exampleorg/secret-service denied',
         },
         id: null,
       });
@@ -370,7 +370,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
         params: {
           name: 'preflight_diff_review',
           arguments: {
-            repo: 'cisco-cdr',
+            repo: 'example-api',
             diff: 'diff --git a/file.ts b/file.ts\n' + 'c'.repeat(200_000), // ~200KB
           },
         },
@@ -393,7 +393,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
         params: {
           name: 'preflight_diff_review',
           arguments: {
-            repo: 'cisco-cdr',
+            repo: 'example-api',
             diff: 'd'.repeat(530_000), // > 512KB
           },
         },
@@ -431,7 +431,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
         params: {
           name: 'preflight_diff_review',
           arguments: {
-            owner: 'calltelemetry', repo: 'ct-uat', target_branch: 'main',
+            owner: 'exampleorg', repo: 'example-uat', target_branch: 'main',
             diff: diffHeader + 'x'.repeat(diffBytes - Buffer.byteLength(diffHeader)),
           },
         },
@@ -476,7 +476,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
       expect(res.body.result.isError).not.toBe(true);
       expect(execute).toHaveBeenCalledExactlyOnceWith(payload.params.arguments, expect.objectContaining({
         authenticatedByConfiguredAuthenticator: true,
-        authorizedRepository: { owner: 'calltelemetry', repo: 'ct-uat' },
+        authorizedRepository: { owner: 'exampleorg', repo: 'example-uat' },
       }));
       expect(f.webhookOnEvent).not.toHaveBeenCalled();
     });
@@ -494,7 +494,7 @@ describe('Action Dispatch Server MCP Integration (tests/integration/dispatchServ
         expect(res.body.error).toBeUndefined();
         expect(execute).toHaveBeenCalledExactlyOnceWith(JSON.parse(raw).params.arguments, expect.objectContaining({
           authenticatedByConfiguredAuthenticator: true,
-          authorizedRepository: { owner: 'calltelemetry', repo: 'ct-uat' },
+          authorizedRepository: { owner: 'exampleorg', repo: 'example-uat' },
         }));
       } else {
         expect(res.body).toEqual({ error: 'Request body exceeds its permitted size' });

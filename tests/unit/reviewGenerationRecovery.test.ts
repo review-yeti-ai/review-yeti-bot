@@ -41,7 +41,7 @@ function clientFor(checks: unknown[]) {
 
 function request(overrides: Record<string, unknown> = {}) {
   return {
-    owner: 'calltelemetry', repo: 'cisco-cdr', headSha, runId,
+    owner: 'exampleorg', repo: 'example-api', headSha, runId,
     expectedGeneration: 2, expectedAppId: 4_385_771,
     ...overrides,
   };

@@ -76,7 +76,7 @@ function run(mockClient: ReturnType<typeof client>) {
   return executePersonaPanel({
     config: config(),
     changedFiles: [{ path: 'src/index.ts', patch: '+ const a = 1;' }],
-    repository: 'calltelemetry/repo',
+    repository: 'exampleorg/repo',
     headSha: 'head-sha-rel-1138',
     client: mockClient as unknown as OmniRouteClient,
   });

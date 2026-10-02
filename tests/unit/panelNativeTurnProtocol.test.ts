@@ -120,7 +120,7 @@ describe('native panel turn protocol', () => {
     const result = await executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-tool-roundtrip',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -165,7 +165,7 @@ describe('native panel turn protocol', () => {
     const result = await executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-final-reservation',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_schema' } },
@@ -201,7 +201,7 @@ describe('native panel turn protocol', () => {
     await expect(executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-final-tool-request',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -230,7 +230,7 @@ describe('native panel turn protocol', () => {
     await expect(executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-hybrid-envelope',
       client: mockClient as unknown as OmniRouteClient,
       repoFileProvider: {
@@ -270,7 +270,7 @@ describe('native panel turn protocol', () => {
     await expect(executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: `native-invalid-final-${failure}`,
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -303,7 +303,7 @@ describe('native panel turn protocol', () => {
     const result = await executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-fresh-request-retry',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -365,7 +365,7 @@ describe('native panel turn protocol', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-structured-output-failover',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -402,7 +402,7 @@ describe('native panel turn protocol', () => {
     const result = await executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'fenced-structured-output-retry',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'text' } },
@@ -434,7 +434,7 @@ describe('native panel turn protocol', () => {
     const panel = executePersonaPanel({
       config: buildConfig(),
       changedFiles: CHANGED_FILES,
-      repository: 'calltelemetry/review-yeti-bot',
+      repository: 'exampleorg/review-yeti-bot',
       headSha: 'native-caller-abort',
       client: mockClient as unknown as OmniRouteClient,
       requestPolicy: { responseFormat: { type: 'json_object' } },

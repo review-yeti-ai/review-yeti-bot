@@ -20,7 +20,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const spec = {
       persona: 'security',
-      repoUrl: 'https://github.com/calltelemetry/cisco-cdr.git',
+      repoUrl: 'https://github.com/exampleorg/example-api.git',
       prNumber: 3012,
       commitSha: 'e4d3c2b1a098',
       logicalChildId: 'security-audit-01',
@@ -40,7 +40,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
       tenant_id: 'ct-prod',
       environment_id: 'staging-k8s',
       workspace_id: 'ws-main',
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       mission_id: 'mission-omega-9',
       generation: 3,
       execution_id: 'exec-sec-3012-g3',
@@ -60,7 +60,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const spec = {
       persona: 'performance',
-      repoUrl: 'calltelemetry/ct-meta',
+      repoUrl: 'exampleorg/example-meta',
       prNumber: 104,
       commitSha: '112233445566',
     };
@@ -70,7 +70,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     expect(workRequest.scope.tenant_id).toBe('ct');
     expect(workRequest.scope.environment_id).toBe('qualification');
     expect(workRequest.scope.workspace_id).toBe('factory');
-    expect(workRequest.scope.repository).toBe('calltelemetry/ct-meta');
+    expect(workRequest.scope.repository).toBe('exampleorg/example-meta');
     expect(workRequest.scope.generation).toBe(1);
     expect(workRequest.scope.fencing_epoch).toBe(1);
     expect(workRequest.scope.logical_child_id).toBe('child-performance');
@@ -157,7 +157,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const manifest = runner.generateJobManifest({
       persona: 'architecture',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 501,
       commitSha: 'a1b2c3d4e5f6',
       logicalChildId: 'arch-child-01',
@@ -170,7 +170,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     expect(envMap.get('CT_LOGICAL_CHILD_ID')).toBe('arch-child-01');
     expect(envMap.get('CT_FENCING_EPOCH')).toBe('4');
-    expect(envMap.get('CT_REPOSITORY')).toBe('calltelemetry/cisco-cdr');
+    expect(envMap.get('CT_REPOSITORY')).toBe('exampleorg/example-api');
     expect(envMap.get('CT_WORK_REQUEST_PATH')).toBe('/workspace/.ct-harness/arch-child-01/1/work-request.json');
     expect(envMap.get('CT_EXECUTION_RECEIPT_PATH')).toBe('/workspace/.ct-harness/arch-child-01/1/execution-receipt.json');
     expect(envMap.get('CT_POD_NAME')).toEqual({ fieldRef: { fieldPath: 'metadata.name' } });
@@ -185,7 +185,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const manifest = runner.generateJobManifest({
       persona: 'compliance',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 602,
       commitSha: 'deadbeef1234',
     });
@@ -210,7 +210,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const manifest = runner.generateJobManifest({
       persona: 'sec',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 10,
       commitSha: '1234567890',
     });
@@ -232,7 +232,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     expect(() =>
       runner.generateJobManifest({
         persona: 'sec',
-        repoUrl: 'calltelemetry/cisco-cdr',
+        repoUrl: 'exampleorg/example-api',
         prNumber: 10,
         commitSha: '1234567890',
         namespace: 'kube-public',
@@ -242,7 +242,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     expect(() =>
       runner.generateJobManifest({
         persona: 'sec',
-        repoUrl: 'calltelemetry/cisco-cdr',
+        repoUrl: 'exampleorg/example-api',
         prNumber: 10,
         commitSha: '1234567890',
         namespace: '',
@@ -256,7 +256,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const result = await runner.dispatchJob({
       persona: 'quality',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 88,
       commitSha: 'aabbccddeeff',
       logicalChildId: 'qa-child-88',
@@ -281,7 +281,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
 
     const manifest = runner.generateJobManifest({
       persona: 'qa',
-      repoUrl: 'https://github.com/calltelemetry/ct-meta.git',
+      repoUrl: 'https://github.com/exampleorg/example-meta.git',
       prNumber: 777,
       commitSha: 'c0ffee123456',
       cpuRequest: '100m',
@@ -311,7 +311,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const validSpec = {
       persona: 'security',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 10,
       commitSha: '1234567890',
     };
@@ -343,7 +343,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'security',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 99,
       commitSha: '998877665544',
       logicalChildId: 'sec-child-99',
@@ -368,7 +368,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -384,7 +384,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -404,7 +404,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -424,7 +424,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -444,7 +444,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -464,7 +464,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -485,7 +485,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
     });
@@ -507,7 +507,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
       activeDeadlineSeconds: 300,
@@ -530,7 +530,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const workRequest = runner.buildWorkRequest({
       persona: 'qa',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 123,
       commitSha: 'fedcba987654',
       budget: { maxCostMicrousd: 500, maxTokens: 1000 },
@@ -551,7 +551,7 @@ describe('K8sJobRunner ct-agent-work-request.v1 & Fencing Lifecycle (Milestone 1
     const runner = new K8sJobRunner({ forceSimulation: true });
     const result = await runner.executeJob({
       persona: 'architecture',
-      repoUrl: 'calltelemetry/cisco-cdr',
+      repoUrl: 'exampleorg/example-api',
       prNumber: 555,
       commitSha: '123456789abc',
       logicalChildId: 'arch-child-555',

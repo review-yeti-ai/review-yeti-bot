@@ -11,7 +11,7 @@ import {
 describe('Empirical Adversarial Challenge Suite: Parameter Defaulting & Falsy Coercion (challenger_m1_r2_2)', () => {
   const baseSpec: K8sJobSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 42,
     commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
   };

@@ -2,7 +2,7 @@
  * REL-1136: toolchain pin files and dependency manifests whose names carry no
  * data/config extension.
  *
- * `.tool-versions` (calltelemetry/cisco-cdr#4625), `.nvmrc`, `go.mod` and the
+ * `.tool-versions` (exampleorg/example-api#4625), `.nvmrc`, `go.mod` and the
  * like pick the compiler, runtime or dependency set a build uses. They are not
  * source, not documentation and not data/config by extension, so a diff that
  * changed only one of them matched no persona and failed "no enabled persona

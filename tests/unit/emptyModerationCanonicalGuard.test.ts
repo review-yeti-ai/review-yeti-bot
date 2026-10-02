@@ -20,7 +20,7 @@ vi.resetModules();
 const { deriveCanonicalWorkerReviewEvidence } = await import('../../src/review/workerReviewCompletion');
 
 const coordinates = {
-  runId: `run_${'a'.repeat(32)}`, repositoryId: 3210, owner: 'calltelemetry', repo: 'review-yeti-bot', prNumber: 42,
+  runId: `run_${'a'.repeat(32)}`, repositoryId: 3210, owner: 'exampleorg', repo: 'review-yeti-bot', prNumber: 42,
   headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40), policyDigest: 'd'.repeat(64), configDigest: 'e'.repeat(64), executionAttempt: 2,
 } as const;
 

@@ -9,8 +9,8 @@ import { isDataOrConfigPath, isNoReviewableContentFile } from '../../src/review/
 /**
  * REL-972, the two cases #993 left open.
  *
- * (1) calltelemetry/ct-meta: a PR whose only change was one line in
- *     plugins/ct-lab/skills/lab-inventory/inventory/lab-assets.json failed
+ * (1) exampleorg/example-meta: a PR whose only change was one line in
+ *     plugins/example-lab/skills/lab-inventory/inventory/lab-assets.json failed
  *     every review with "no enabled persona applies to the changed paths",
  *     because no enabled persona's paths named that data file. Data and config
  *     change behaviour, so an uncovered data/config file is now routed to the
@@ -31,10 +31,10 @@ const enabled = (personas: string) => roster(personas).personas.filter((persona)
 const patch = '@@ -1 +1 @@\n-a\n+b\n';
 const files = (...paths: string[]) => paths.map((path) => ({ path, patch }));
 
-const LAB_ASSETS = 'plugins/ct-lab/skills/lab-inventory/inventory/lab-assets.json';
+const LAB_ASSETS = 'plugins/example-lab/skills/lab-inventory/inventory/lab-assets.json';
 
 /**
- * A roster shaped like ct-meta's: security (required) and architecture lanes
+ * A roster shaped like example-meta's: security (required) and architecture lanes
  * whose paths name source only, so no persona covers the inventory JSON.
  */
 function sourceOnlyRoster() {
@@ -78,7 +78,7 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
     expect(result.unmatchedPaths).toEqual([]);
   });
 
-  it('keeps the exact ct-meta roster case covered natively and routes formats the index lacks', () => {
+  it('keeps the exact example-meta roster case covered natively and routes formats the index lacks', () => {
     // Since REL-967 (#863) the builtin architecture + security paths name
     // **/*.json, so the reported file is covered without routing. TOML and CSV
     // are in no builtin path list: before this change they failed closed.
@@ -154,7 +154,7 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
     const run = executePersonaPanel({
       config,
       changedFiles: files(LAB_ASSETS),
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'aba144b4aaae7fabfd0600d862f95bce35e08808',
       client: unreachableClient,
       deterministicRoster: true,
@@ -168,7 +168,7 @@ describe('REL-972 (1): uncovered data/config files are routed to a lane', () => 
     await expect(executeComposedReview({
       config,
       changedFiles: files(LAB_ASSETS),
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'aba144b4aaae7fabfd0600d862f95bce35e08808',
       client: unreachableClient,
       // Past the zero-lane decision, a stale head aborts before any provider call.

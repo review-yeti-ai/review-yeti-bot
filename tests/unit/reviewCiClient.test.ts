@@ -4,13 +4,13 @@ import { MAX_CI_RESPONSE_BYTES } from '../../src/github/boundedCiTransport';
 import { createReviewCiLanePlan, reviewCiRunName, type ReviewCiRequestEvent } from '../../src/review/reviewCi';
 
 const token = 'ghs_ci_test';
-const repository = { repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta' };
+const repository = { repositoryId: 123, owner: 'exampleorg', repo: 'example-meta' };
 const binding = { candidateSha: 'c'.repeat(40), workflowId: 88, workflowPath: '.github/workflows/ci.yml',
   workflowRef: 'refs/heads/main', workflowSha: 'd'.repeat(40), lanePlan: createReviewCiLanePlan(['unit'], ['required tests']) };
 const correlation = { requestId: '07b3c7a1-12a4-4e42-bc18-71df2e0cae1d', epoch: 2 };
 const coordinates = { prNumber: 42, baseSha: 'b'.repeat(40), headSha: 'a'.repeat(40), candidateSha: binding.candidateSha };
 const event: ReviewCiRequestEvent = { schema_version: 'review-yeti-ci-request.v1', repository_id: repository.repositoryId,
-  repository: 'calltelemetry/ct-meta', pr_number: 42, base_sha: coordinates.baseSha, head_sha: coordinates.headSha,
+  repository: 'exampleorg/example-meta', pr_number: 42, base_sha: coordinates.baseSha, head_sha: coordinates.headSha,
   attempt_id: `run_${'a'.repeat(32)}-g0-e1`, policy_digest: 'f'.repeat(64), validation_request_id: correlation.requestId };
 const run = (overrides: Record<string, unknown> = {}) => ({ id: 99, run_attempt: 1, workflow_id: binding.workflowId,
   head_sha: binding.workflowSha, head_branch: 'main', event: 'workflow_dispatch', path: binding.workflowPath,
@@ -45,7 +45,7 @@ describe('GitHubReviewCiClient dispatch contracts', () => {
     await expect(ci.dispatchRepository(event)).resolves.toEqual({ status: 'accepted' });
     expect(fetcher).toHaveBeenCalledOnce();
     const [url, init] = fetcher.mock.calls[0];
-    expect(url).toBe('https://api.example.invalid/api/v3/repos/calltelemetry/ct-meta/dispatches');
+    expect(url).toBe('https://api.example.invalid/api/v3/repos/exampleorg/example-meta/dispatches');
     expect(JSON.parse(String(init?.body))).toEqual({ event_type: 'review-yeti-ci-request', client_payload: event });
     expect(init).toMatchObject({ method: 'POST', redirect: 'error' });
     expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${token}`);
@@ -60,7 +60,7 @@ describe('GitHubReviewCiClient dispatch contracts', () => {
   });
 
   it.each([{ policy_digest: `sha256:${event.policy_digest}` }, { attempt_id: 'review-attempt-1' },
-    { validation_request_id: 'not-uuid' }, { repository_id: 456 }, { repository: 'calltelemetry/other' }])
+    { validation_request_id: 'not-uuid' }, { repository_id: 456 }, { repository: 'exampleorg/other' }])
   ('rejects malformed or wrong shared coordinates %j', async (change) => {
     const fetcher = vi.fn<typeof fetch>();
     await expect(client(fetcher).dispatchRepository({ ...event, ...change })).rejects.toThrow('GitHub CI operation unavailable');
@@ -112,7 +112,7 @@ describe('trusted run and job readback', () => {
     expect(fetcher.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
   });
   it.each([{ workflow_id: 999 }, { event: 'push' }, { head_sha: coordinates.candidateSha }, { head_branch: 'feature' },
-    { repository: { id: 456, full_name: event.repository } }, { repository: { id: 123, full_name: 'calltelemetry/other' } },
+    { repository: { id: 456, full_name: event.repository } }, { repository: { id: 123, full_name: 'exampleorg/other' } },
     { path: '.github/workflows/untrusted.yml' }])('rejects an exact-name run with wrong provenance %j', async (change) => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(json({ total_count: 1, workflow_runs: [run(change)] }));
     await expect(client(fetcher).correlateRun(correlation)).rejects.toThrow('GitHub CI operation unavailable');

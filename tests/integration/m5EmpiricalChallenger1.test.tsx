@@ -109,9 +109,9 @@ describe('Milestone 5 Empirical Challenger 1: Build Cleanliness, Process Isolati
       const input = screen.getByPlaceholderText('Search repositories...') as HTMLInputElement;
       expect(input).toBeInTheDocument();
 
-      fireEvent.change(input, { target: { value: 'cisco-cdr' } });
+      fireEvent.change(input, { target: { value: 'example-api' } });
       expect(handleChange).toHaveBeenCalledTimes(1);
-      expect(input.value).toBe('cisco-cdr');
+      expect(input.value).toBe('example-api');
     });
 
     it('renders Badge component with secondary styling', () => {

@@ -51,7 +51,7 @@ describe('reviewRunStore.ts — Comprehensive Unit Expansion Tests', () => {
   });
 
   it('setHead and markHead track current and previous head SHAs', () => {
-    const owner = 'calltelemetry';
+    const owner = 'exampleorg';
     const repo = 'ct-bot';
     const prNumber = 77;
 

@@ -525,7 +525,7 @@ diff --git a/src/config.ts b/src/config.ts
         if (fs.existsSync(fullPath)) {
           const content = fs.readFileSync(fullPath, 'utf-8');
           // Check for forbidden keyword (case-insensitive)
-          const match = content.match(/calltelemetry/i);
+          const match = content.match(/exampleorg/i);
           expect(match, `Forbidden proprietary keyword found in ${relPath}`).toBeNull();
         }
       }

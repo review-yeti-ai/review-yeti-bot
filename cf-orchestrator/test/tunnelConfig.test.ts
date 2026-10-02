@@ -103,7 +103,7 @@ describe('Multi-Transport Tooling & Tunneling Resolution (Milestone 2)', () => {
       };
       const res = resolveEndpointTunnel(
         'bifrost-gateway',
-        'https://gateway-internal.calltelemetry.com/v1',
+        'https://gateway-internal.example.com/v1',
         creds,
         'auto'
       );
@@ -230,7 +230,7 @@ describe('Multi-Transport Tooling & Tunneling Resolution (Milestone 2)', () => {
       const tool: ToolDefinition = {
         name: 'bifrost-gateway',
         type: 'http',
-        url: 'https://gateway-internal.calltelemetry.com/v1',
+        url: 'https://gateway-internal.example.com/v1',
         tunnel: {
           mode: 'cloudflare',
           cloudflare: {
@@ -253,7 +253,7 @@ describe('Multi-Transport Tooling & Tunneling Resolution (Milestone 2)', () => {
       const tool: ToolDefinition = {
         name: 'private-axl',
         type: 'mcp',
-        url: 'https://axl-daemon.internal.calltelemetry.com',
+        url: 'https://axl-daemon.internal.example.com',
         tunnel: {
           mode: 'cloudflare',
           cloudflare: {
@@ -273,7 +273,7 @@ describe('Multi-Transport Tooling & Tunneling Resolution (Milestone 2)', () => {
       const tool: ToolDefinition = {
         name: 'bifrost-default-creds',
         type: 'http',
-        url: 'https://gateway.internal.calltelemetry.com',
+        url: 'https://gateway.internal.example.com',
         tunnel: { mode: 'cloudflare' },
       };
 

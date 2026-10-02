@@ -660,22 +660,22 @@ enabled: true
       expect(nonK8sBroken, `All examples/ README links must resolve: ${nonK8sBroken.join(', ')}`).toEqual([]);
     });
 
-    it('Feature 25: zero "calltelemetry" occurrences in examples/', () => {
+    it('Feature 25: zero "exampleorg" occurrences in examples/', () => {
       const examplesDir = repoPath('examples');
       let result = '';
       try {
-        result = execSync('grep -rn "calltelemetry" examples/', { cwd: REPO_ROOT, encoding: 'utf-8' });
+        result = execSync('grep -rn "exampleorg" examples/', { cwd: REPO_ROOT, encoding: 'utf-8' });
       } catch (err: any) {
         // grep returns code 1 if no matches found, which is what we want!
         result = '';
       }
-      expect(result.trim(), 'examples/ must have 0 calltelemetry mentions').toBe('');
+      expect(result.trim(), 'examples/ must have 0 exampleorg mentions').toBe('');
     });
 
-    it.skipIf(!hasHelmChart)('Feature 25: zero "calltelemetry" occurrences in charts/', () => {
+    it.skipIf(!hasHelmChart)('Feature 25: zero "exampleorg" occurrences in charts/', () => {
       let result = '';
       try {
-        result = execSync('grep -rn "calltelemetry" charts/', { cwd: REPO_ROOT, encoding: 'utf-8' });
+        result = execSync('grep -rn "exampleorg" charts/', { cwd: REPO_ROOT, encoding: 'utf-8' });
       } catch (err: any) {
         result = '';
       }
@@ -683,23 +683,23 @@ enabled: true
       // output (pinned by tests/unit/chartCrdGenerated.test.ts), whose
       // workerImage pattern admits the production worker registry. That one
       // generated line is the only permitted mention; anything else still fails.
-      const permitted = /^charts\/review-yeti\/files\/review-yeti\.ai_prreviewjobs\.yaml:\d+:\s*pattern: .*registry\\\.digitalocean\\\.com\/calltelemetry\/review-yeti-worker\)@sha256/u;
+      const permitted = /^charts\/review-yeti\/files\/review-yeti\.ai_prreviewjobs\.yaml:\d+:\s*pattern: .*registry\\\.digitalocean\\\.com\/exampleorg\/review-yeti-worker\)@sha256/u;
       const leaks = result.trim().split('\n').filter((line) => line && !permitted.test(line));
-      expect(leaks, 'charts/ must have 0 calltelemetry mentions').toEqual([]);
+      expect(leaks, 'charts/ must have 0 exampleorg mentions').toEqual([]);
     });
 
-    it.skipIf(!hasHelmGuide || !hasTroubleshooting)('Feature 25: zero "calltelemetry" occurrences in newly authored docs', () => {
+    it.skipIf(!hasHelmGuide || !hasTroubleshooting)('Feature 25: zero "exampleorg" occurrences in newly authored docs', () => {
       const newDocs = ['docs/HELM_GUIDE.md', 'docs/TROUBLESHOOTING.md'];
       for (const doc of newDocs) {
         const docPath = repoPath(doc);
         if (fs.existsSync(docPath)) {
           const content = fs.readFileSync(docPath, 'utf-8');
-          expect(content.toLowerCase()).not.toContain('calltelemetry');
+          expect(content.toLowerCase()).not.toContain('exampleorg');
         }
       }
     });
 
-    it('Feature 25: zero "calltelemetry" occurrences across all files delivered in Milestone 1', () => {
+    it('Feature 25: zero "exampleorg" occurrences across all files delivered in Milestone 1', () => {
       const m1Files = [
         'examples/workflows/standalone-action.yml',
         'examples/workflows/github-app-action.yml',
@@ -722,7 +722,7 @@ enabled: true
         const fullPath = repoPath(file);
         expect(fs.existsSync(fullPath), `${file} must exist`).toBe(true);
         const text = fs.readFileSync(fullPath, 'utf-8');
-        expect(text.toLowerCase(), `${file} contains proprietary name`).not.toContain('calltelemetry');
+        expect(text.toLowerCase(), `${file} contains proprietary name`).not.toContain('exampleorg');
       }
     });
   });

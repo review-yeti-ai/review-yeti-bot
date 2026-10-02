@@ -12,12 +12,12 @@ import { isNoReviewableContentFile } from '../../src/review/reviewableContent';
  * "no enabled persona applies to the changed paths", on the roster
  * [arch-lane, sec-lane, documentation]:
  *
- * - calltelemetry/ct-uat#1512 and #1515 each change one HTML benchmark report
+ * - exampleorg/example-uat#1512 and #1515 each change one HTML benchmark report
  *   under docs/. HTML was not documentation (it can carry script), not
  *   data/config and not fallback-routed, and no persona's paths named it.
  *   An uncovered HTML page is now routed to the roster's required lane, as an
  *   .mdx page is -- reviewed, never exempted.
- * - calltelemetry/ct-ai-mcp#76 is a Dependabot yarn.lock-only bump. Every added
+ * - exampleorg/ct-ai-mcp#76 is a Dependabot yarn.lock-only bump. Every added
  *   source stays on the npm registry, but vite-plugin-dts pins unplugin-dts
  *   exactly, so the entry header is re-keyed ("unplugin-dts@npm:1.1.0" ->
  *   "unplugin-dts@npm:1.1.1") and verbatim header matching refused it as "adds
@@ -40,7 +40,7 @@ const HTML_PATCH = '@@ -0,0 +1,3 @@\n+<!doctype html>\n+<html><body><h1>Capacity
 const CT_UAT_1512 = 'docs/uat/benchmarks/2026-09-23-curri-sizing-0.8.6.25/capacity-and-knee-analysis.html';
 const CT_UAT_1515 = 'docs/uat/benchmarks/2026-09-23-curri-sizing-0.8.6.25/uc-admin-sizing-guide.html';
 
-/** The exact yarn.lock patch of calltelemetry/ct-ai-mcp#76 (head e1dfeb92). */
+/** The exact yarn.lock patch of exampleorg/ct-ai-mcp#76 (head e1dfeb92). */
 const CT_AI_MCP_76_YARN_LOCK = [
   '@@ -2593,8 +2593,8 @@ __metadata:',
   '   linkType: hard',
@@ -114,7 +114,7 @@ describe('REL-1118: the exact roster and paths of the three failing PRs', () => 
     expect(enabled().map((persona) => persona.id)).toEqual(['arch-lane', 'sec-lane', 'documentation']);
   });
 
-  it.each([['ct-uat#1512', CT_UAT_1512], ['ct-uat#1515', CT_UAT_1515]])(
+  it.each([['example-uat#1512', CT_UAT_1512], ['example-uat#1515', CT_UAT_1515]])(
     '%s: routes the uncovered HTML report to the required lane instead of failing',
     (_label, path) => {
       const result = resolveReviewApplicability(enabled(), [{ path, patch: HTML_PATCH }]);
@@ -145,16 +145,16 @@ describe('REL-1118: the exact roster and paths of the three failing PRs', () => 
   it('both engines take the same outcome for all three PRs without a model call for the lockfile', async () => {
     const headSha = 'e'.repeat(40);
     for (const run of [
-      () => executePersonaPanel({ config: roster(), changedFiles: [{ path: 'yarn.lock', patch: CT_AI_MCP_76_YARN_LOCK }], repository: 'calltelemetry/ct-ai-mcp', headSha, client: unreachableClient, deterministicRoster: true }),
-      () => executeComposedReview({ config: roster(), changedFiles: [{ path: 'yarn.lock', patch: CT_AI_MCP_76_YARN_LOCK }], repository: 'calltelemetry/ct-ai-mcp', headSha, client: unreachableClient }),
+      () => executePersonaPanel({ config: roster(), changedFiles: [{ path: 'yarn.lock', patch: CT_AI_MCP_76_YARN_LOCK }], repository: 'exampleorg/ct-ai-mcp', headSha, client: unreachableClient, deterministicRoster: true }),
+      () => executeComposedReview({ config: roster(), changedFiles: [{ path: 'yarn.lock', patch: CT_AI_MCP_76_YARN_LOCK }], repository: 'exampleorg/ct-ai-mcp', headSha, client: unreachableClient }),
     ]) {
       await expect(run()).resolves.toBeTruthy();
     }
     for (const path of [CT_UAT_1512, CT_UAT_1515]) {
       // The HTML diffs reach a lane (the unreachable client), never the coverage failure.
       for (const run of [
-        () => executePersonaPanel({ config: roster(), changedFiles: [{ path, patch: HTML_PATCH }], repository: 'calltelemetry/ct-uat', headSha, client: unreachableClient, deterministicRoster: true }),
-        () => executeComposedReview({ config: roster(), changedFiles: [{ path, patch: HTML_PATCH }], repository: 'calltelemetry/ct-uat', headSha, client: unreachableClient }),
+        () => executePersonaPanel({ config: roster(), changedFiles: [{ path, patch: HTML_PATCH }], repository: 'exampleorg/example-uat', headSha, client: unreachableClient, deterministicRoster: true }),
+        () => executeComposedReview({ config: roster(), changedFiles: [{ path, patch: HTML_PATCH }], repository: 'exampleorg/example-uat', headSha, client: unreachableClient }),
       ]) {
         const outcome = await run().then(() => null, (error: unknown) => error);
         if (outcome) expect((outcome as Error).message).not.toMatch(/no enabled persona applies/);

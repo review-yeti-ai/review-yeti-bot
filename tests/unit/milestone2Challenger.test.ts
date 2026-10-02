@@ -55,7 +55,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
     mockOnRunReviewPipeline = vi.fn().mockResolvedValue({ status: 'processed' });
 
     context = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'head-sha-123',
@@ -63,7 +63,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       github: mockGithub as unknown as GitHubInstallationClient,
       modelClient: mockModelClient,
       onRunReviewPipeline: mockOnRunReviewPipeline,
-      payload: { prNumber: 42, owner: 'calltelemetry', repo: 'ct-review-bot' },
+      payload: { prNumber: 42, owner: 'exampleorg', repo: 'ct-review-bot' },
     };
   });
 
@@ -83,7 +83,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
           expect(res.success).toBe(false);
           expect(res.output).toContain('Please provide a question after `@ct-review ask`');
           expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-            'calltelemetry',
+            'exampleorg',
             'ct-review-bot',
             42,
             expect.stringContaining('Please provide a question')
@@ -110,7 +110,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         expect(res.command).toBe('ask');
         expect(res.success).toBe(true);
         expect(res.output).toContain('Answer to question "Is this safe?"');
-        expect(res.output).toContain('Based on PR #42 changes in calltelemetry/ct-review-bot.');
+        expect(res.output).toContain('Based on PR #42 changes in exampleorg/ct-review-bot.');
       });
     });
 
@@ -305,7 +305,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       const payloadA = {
         action: 'created',
         comment: { id: 1, body: '@ct-review-bot-extra ask how this works' },
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
         sender: { login: 'user1' },
       };
       const triggerA = eventHandler.evaluateTrigger('issue_comment', payloadA);
@@ -320,7 +320,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       const payloadB = {
         action: 'created',
         comment: { id: 2, body: 'user@ct-review.com explain' },
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
         sender: { login: 'user2' },
       };
       const triggerB = eventHandler.evaluateTrigger('issue_comment', payloadB);
@@ -333,7 +333,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       const payloadC = {
         action: 'created',
         comment: { id: 3, body: '@ct-review invalidCommand' },
-        repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+        repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
         sender: { login: 'user3' },
       };
       const triggerC = eventHandler.evaluateTrigger('issue_comment', payloadC);
@@ -393,7 +393,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       expect(resExplain.success).toBe(true);
       expect(resExplain.output).toContain('### Code Explanation');
       expect(mockGithub.postIssueComment).toHaveBeenCalledWith(
-        'calltelemetry',
+        'exampleorg',
         'ct-review-bot',
         42,
         expect.stringContaining('### Code Explanation')
@@ -448,7 +448,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         triggerAction: 'created',
         deliveryId: 'deliv-unknown',
         commandText: '@review-yeti unknownCommand',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         prNumber: 42,
         sender: 'developer1',
@@ -515,7 +515,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
           action: 'created',
           issue: { number: 42, pull_request: {} },
           comment: { id: 100, body: '@review-yeti explain' },
-          repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+          repository: { name: 'ct-review-bot', owner: { login: 'exampleorg' } },
           sender: { login: senderLogin },
         };
 
@@ -534,7 +534,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         action: 'created',
         issue: { number: 42, pull_request: {} },
         comment: { id: 101, body: '@review-yeti explain' },
-        repository: { name: 'ct-review-bot', owner: { login: 'calltelemetry' } },
+        repository: { name: 'ct-review-bot', owner: { login: 'exampleorg' } },
         sender: { login: mixedCaseSender },
       };
 
@@ -562,7 +562,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
       };
 
       failingContext = {
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         prNumber: 42,
         commentId: 101,
@@ -572,7 +572,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
 
     it('propagates HTTP 401 Unauthorized error when GitHub API credentials/token are invalid', async () => {
       failingGithub.replyToReviewComment.mockRejectedValue(
-        new Error('GitHub API 401 /repos/calltelemetry/ct-review-bot/pulls/42/comments/101/replies: {"message":"Bad credentials"}')
+        new Error('GitHub API 401 /repos/exampleorg/ct-review-bot/pulls/42/comments/101/replies: {"message":"Bad credentials"}')
       );
 
       await expect(
@@ -582,7 +582,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
 
     it('propagates HTTP 403 Forbidden error when GitHub App lacks review comment permissions or hits rate limits', async () => {
       failingGithub.replyToReviewComment.mockRejectedValue(
-        new Error('GitHub API 403 /repos/calltelemetry/ct-review-bot/pulls/42/comments/101/replies: {"message":"Resource not accessible by integration"}')
+        new Error('GitHub API 403 /repos/exampleorg/ct-review-bot/pulls/42/comments/101/replies: {"message":"Resource not accessible by integration"}')
       );
 
       await expect(
@@ -592,7 +592,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
 
     it('propagates HTTP 422 Unprocessable Entity error when comment thread is locked or line is invalid', async () => {
       failingGithub.replyToReviewComment.mockRejectedValue(
-        new Error('GitHub API 422 /repos/calltelemetry/ct-review-bot/pulls/42/comments/101/replies: {"message":"Validation Failed"}')
+        new Error('GitHub API 422 /repos/exampleorg/ct-review-bot/pulls/42/comments/101/replies: {"message":"Validation Failed"}')
       );
 
       await expect(
@@ -603,7 +603,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
     it('propagates HTTP 401/403/422 on postIssueComment when commentId is omitted', async () => {
       const topLevelContext = { ...failingContext, commentId: undefined };
       failingGithub.postIssueComment.mockRejectedValue(
-        new Error('GitHub API 403 /repos/calltelemetry/ct-review-bot/issues/42/comments: {"message":"Resource not accessible by integration"}')
+        new Error('GitHub API 403 /repos/exampleorg/ct-review-bot/issues/42/comments: {"message":"Resource not accessible by integration"}')
       );
 
       await expect(
@@ -630,7 +630,7 @@ describe('Milestone 2 Empirical Stress Tests — R2 Interactive PR Chat & Comman
         triggerAction: 'created',
         deliveryId: 'deliv-fail-token',
         commandText: '@review-yeti explain',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'ct-review-bot',
         prNumber: 42,
         sender: 'developer1',

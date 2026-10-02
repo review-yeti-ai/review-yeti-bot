@@ -83,7 +83,7 @@ describe('Milestone 6: Interactive Dashboard & Connection Manager Unit & Integra
       expect(graphRes.status).toBe(200);
 
       const memRes = await request(app)
-        .get('/api/memory/query?repo=calltelemetry/cisco-cdr')
+        .get('/api/memory/query?repo=exampleorg/example-api')
         .set('x-api-key', apiKey);
 
       expect(memRes.status).toBe(200);

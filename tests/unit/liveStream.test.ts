@@ -428,7 +428,7 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
     });
 
     it('tracks active jobs metadata, persona progress, and LLM token usage', () => {
-      const jobId = 'job_calltelemetry_cisco-cdr_pr88_b2c3d4e';
+      const jobId = 'job_exampleorg_example-api_pr88_b2c3d4e';
       bus.publishEvent({
         jobId,
         timestamp: new Date().toISOString(),
@@ -456,7 +456,7 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
       const activeJobs = bus.getActiveJobs();
       expect(activeJobs.length).toBe(1);
       expect(activeJobs[0].jobId).toBe(jobId);
-      expect(activeJobs[0].repo).toBe('calltelemetry/cisco-cdr');
+      expect(activeJobs[0].repo).toBe('exampleorg/example-api');
       expect(activeJobs[0].prNumber).toBe(88);
       expect(activeJobs[0].personaProgress.security.status).toBe('completed');
       expect(activeJobs[0].personaProgress.security.findingsCount).toBe(2);
@@ -804,8 +804,8 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
       };
 
       const res = await publisher.publishReview({
-        owner: 'calltelemetry',
-        repo: 'ct-meta',
+        owner: 'exampleorg',
+        repo: 'example-meta',
         prNumber: 1448,
         commitSha: 'a1b2c3d4e5f6',
         event: 'COMMENT',
@@ -814,7 +814,7 @@ describe('Live Agent Stream & Terminal View Suite (Release v1.3.0)', () => {
 
       expect(res.success).toBe(true);
       expect(capturedBody).toContain('Live Terminal Dashboard');
-      expect(capturedBody).toContain('/dashboard/live?jobId=job_calltelemetry_ct-meta_pr1448_a1b2c3d');
+      expect(capturedBody).toContain('/dashboard/live?jobId=job_exampleorg_example-meta_pr1448_a1b2c3d');
       expect(capturedBody).toContain('/dashboard/organization');
     });
   });

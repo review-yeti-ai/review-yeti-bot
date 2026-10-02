@@ -9,7 +9,7 @@ import {
 import { reducedDepthEntriesOf } from '../../src/panel/emptyModerationSkip';
 
 /**
- * REL-1139 (ct-meta ADR 0687): the one shared decision. Eligible only when every lane completed
+ * REL-1139 (example-meta ADR 0687): the one shared decision. Eligible only when every lane completed
  * with an empty APPROVE and coverage was full; every disqualifier below keeps the moderator.
  */
 
@@ -46,9 +46,9 @@ describe('skipEmptyModerationEnabledFor (REVIEW_YETI_INCREMENTAL grammar)', () =
     expect(skipEmptyModerationEnabledFor({ [SKIP_EMPTY_MODERATION_FLAG]: value }, 'acme/app')).toBe(true);
   });
   it('is an owner/repo allowlist otherwise (comma or space separated, case-insensitive)', () => {
-    const env = { [SKIP_EMPTY_MODERATION_FLAG]: 'calltelemetry/ct-meta, Acme/App other/repo' };
+    const env = { [SKIP_EMPTY_MODERATION_FLAG]: 'exampleorg/example-meta, Acme/App other/repo' };
     expect(skipEmptyModerationEnabledFor(env, 'acme/app')).toBe(true);
-    expect(skipEmptyModerationEnabledFor(env, 'calltelemetry/ct-meta')).toBe(true);
+    expect(skipEmptyModerationEnabledFor(env, 'exampleorg/example-meta')).toBe(true);
     expect(skipEmptyModerationEnabledFor(env, 'acme/app-2')).toBe(false);
     expect(skipEmptyModerationEnabledFor(env, '')).toBe(false);
   });

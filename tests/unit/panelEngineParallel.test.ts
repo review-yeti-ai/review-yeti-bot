@@ -90,7 +90,7 @@ describe('Panel Engine Parallel Execution', () => {
     const result = await executePersonaPanel({
       config: mockConfig,
       changedFiles: [{ path: 'src/service.ts', patch: '+ const x = 1;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc1234',
       client: mockClient,
     });
@@ -139,7 +139,7 @@ describe('Panel Engine Parallel Execution', () => {
     const result = await executePersonaPanel({
       config: mockConfig,
       changedFiles: [{ path: 'src/service.ts', patch: '+ const x = 1;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc1234',
       client: mockClient,
     });
@@ -183,7 +183,7 @@ describe('Panel Engine Parallel Execution', () => {
     const result = await executePersonaPanel({
       config: mockConfig,
       changedFiles: [{ path: 'src/service.ts', patch: '+ const x = 1;' }],
-      repository: 'calltelemetry/ct-meta',
+      repository: 'exampleorg/example-meta',
       headSha: 'abc1234',
       client: mockClient,
     });

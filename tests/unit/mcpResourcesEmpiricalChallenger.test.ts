@@ -37,8 +37,8 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
             rows: [
               {
                 run_id: 'run_stress_100',
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 123,
                 head_sha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
                 run_status: 'complete',
@@ -48,7 +48,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
                 lease_expires_at: null,
                 created_at: new Date('2026-09-22T10:00:00Z'),
                 updated_at: new Date('2026-09-22T10:05:00Z'),
-                attempt_id: 'attempt-cisco-cdr-123-1',
+                attempt_id: 'attempt-example-api-123-1',
                 check_id: '102735106478',
                 desired_state: 'success',
                 decision: JSON.stringify({ verdict: 'SHIP', summary: 'Clean review' }),
@@ -104,7 +104,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
             authType: 'static_token',
             tokenDigest: 'valid-token1',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/review-yeti-bot', 'error-owner/cisco-cdr']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/review-yeti-bot', 'error-owner/example-api']),
             callerId: 'test-caller',
           } satisfies McpAuthenticatedCaller;
         }
@@ -162,35 +162,35 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
   // =========================================================================
   describe('Adversarial Dimension 1: Boundary Conditions & Malformed URIs', () => {
     const malformedUris = [
-      { name: 'Standard HTTP URL', uri: 'http://github.com/calltelemetry/cisco-cdr/pull/123' },
-      { name: 'HTTPS URL', uri: 'https://github.com/calltelemetry/cisco-cdr/pull/123' },
+      { name: 'Standard HTTP URL', uri: 'http://github.com/exampleorg/example-api/pull/123' },
+      { name: 'HTTPS URL', uri: 'https://github.com/exampleorg/example-api/pull/123' },
       { name: 'File scheme', uri: 'file:///etc/passwd' },
-      { name: 'Invalid scheme name', uri: 'custom-scheme://runs/calltelemetry/cisco-cdr/123' },
-      { name: 'Missing scheme slash (single slash)', uri: 'review-yeti:/runs/calltelemetry/cisco-cdr/123' },
-      { name: 'Triple slash', uri: 'review-yeti:///runs/calltelemetry/cisco-cdr/123' },
-      { name: 'Unsupported resource collection', uri: 'review-yeti://unknown/calltelemetry/cisco-cdr/123' },
-      { name: 'Unsupported commits collection', uri: 'review-yeti://commits/calltelemetry/cisco-cdr/123' },
-      { name: 'Runs URI missing pr_number', uri: 'review-yeti://runs/calltelemetry/cisco-cdr' },
-      { name: 'Runs URI missing repo and pr_number', uri: 'review-yeti://runs/calltelemetry' },
+      { name: 'Invalid scheme name', uri: 'custom-scheme://runs/exampleorg/example-api/123' },
+      { name: 'Missing scheme slash (single slash)', uri: 'review-yeti:/runs/exampleorg/example-api/123' },
+      { name: 'Triple slash', uri: 'review-yeti:///runs/exampleorg/example-api/123' },
+      { name: 'Unsupported resource collection', uri: 'review-yeti://unknown/exampleorg/example-api/123' },
+      { name: 'Unsupported commits collection', uri: 'review-yeti://commits/exampleorg/example-api/123' },
+      { name: 'Runs URI missing pr_number', uri: 'review-yeti://runs/exampleorg/example-api' },
+      { name: 'Runs URI missing repo and pr_number', uri: 'review-yeti://runs/exampleorg' },
       { name: 'Runs URI root only', uri: 'review-yeti://runs' },
-      { name: 'Runs URI empty repo double slash', uri: 'review-yeti://runs/calltelemetry//123' },
-      { name: 'Runs URI empty owner double slash', uri: 'review-yeti://runs//cisco-cdr/123' },
-      { name: 'Runs URI non-numeric pr_number (letters)', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/abc' },
-      { name: 'Runs URI non-numeric pr_number (alphanumeric)', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123a' },
-      { name: 'Runs URI zero pr_number', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/0' },
-      { name: 'Runs URI negative pr_number', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/-123' },
-      { name: 'Runs URI decimal pr_number', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/12.34' },
-      { name: 'Runs URI overflow safe integer', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/99999999999999999999999999999' },
-      { name: 'Runs URI with query string', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123?foo=bar' },
-      { name: 'Runs URI with URL hash/fragment', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123#summary' },
-      { name: 'Runs URI with extra trailing path segments', uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123/extra/path' },
-      { name: 'Findings URI missing pr_number', uri: 'review-yeti://findings/calltelemetry/cisco-cdr' },
-      { name: 'Findings URI with negative pr_number', uri: 'review-yeti://findings/calltelemetry/cisco-cdr/-1' },
-      { name: 'Findings URI with zero pr_number', uri: 'review-yeti://findings/calltelemetry/cisco-cdr/0' },
-      { name: 'Charters URI missing repo', uri: 'review-yeti://charters/calltelemetry' },
+      { name: 'Runs URI empty repo double slash', uri: 'review-yeti://runs/exampleorg//123' },
+      { name: 'Runs URI empty owner double slash', uri: 'review-yeti://runs//example-api/123' },
+      { name: 'Runs URI non-numeric pr_number (letters)', uri: 'review-yeti://runs/exampleorg/example-api/abc' },
+      { name: 'Runs URI non-numeric pr_number (alphanumeric)', uri: 'review-yeti://runs/exampleorg/example-api/123a' },
+      { name: 'Runs URI zero pr_number', uri: 'review-yeti://runs/exampleorg/example-api/0' },
+      { name: 'Runs URI negative pr_number', uri: 'review-yeti://runs/exampleorg/example-api/-123' },
+      { name: 'Runs URI decimal pr_number', uri: 'review-yeti://runs/exampleorg/example-api/12.34' },
+      { name: 'Runs URI overflow safe integer', uri: 'review-yeti://runs/exampleorg/example-api/99999999999999999999999999999' },
+      { name: 'Runs URI with query string', uri: 'review-yeti://runs/exampleorg/example-api/123?foo=bar' },
+      { name: 'Runs URI with URL hash/fragment', uri: 'review-yeti://runs/exampleorg/example-api/123#summary' },
+      { name: 'Runs URI with extra trailing path segments', uri: 'review-yeti://runs/exampleorg/example-api/123/extra/path' },
+      { name: 'Findings URI missing pr_number', uri: 'review-yeti://findings/exampleorg/example-api' },
+      { name: 'Findings URI with negative pr_number', uri: 'review-yeti://findings/exampleorg/example-api/-1' },
+      { name: 'Findings URI with zero pr_number', uri: 'review-yeti://findings/exampleorg/example-api/0' },
+      { name: 'Charters URI missing repo', uri: 'review-yeti://charters/exampleorg' },
       { name: 'Charters URI root only', uri: 'review-yeti://charters' },
-      { name: 'Charters URI with trailing slash', uri: 'review-yeti://charters/calltelemetry/' },
-      { name: 'Charters URI with extra path segments', uri: 'review-yeti://charters/calltelemetry/cisco-cdr/extra' },
+      { name: 'Charters URI with trailing slash', uri: 'review-yeti://charters/exampleorg/' },
+      { name: 'Charters URI with extra path segments', uri: 'review-yeti://charters/exampleorg/example-api/extra' },
     ];
 
     for (const testCase of malformedUris) {
@@ -257,7 +257,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
         { uri: null },
         { uri: 12345 },
         { uri: true },
-        { uri: ['review-yeti://runs/calltelemetry/cisco-cdr/123'] },
+        { uri: ['review-yeti://runs/exampleorg/example-api/123'] },
         { uri: '' },
       ];
 
@@ -283,7 +283,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
     it('rejects path traversal attempts in owner or repo via RBAC fail-closed', async () => {
       const traversalUris = [
         'review-yeti://runs/../../../123',
-        'review-yeti://findings/..%2f..%2f/cisco-cdr/123',
+        'review-yeti://findings/..%2f..%2f/example-api/123',
         'review-yeti://charters/../etc/passwd',
       ];
 
@@ -306,7 +306,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
     });
 
     it('gracefully handles database errors during resource read without crashing', async () => {
-      const uri = 'review-yeti://runs/error-owner/cisco-cdr/123';
+      const uri = 'review-yeti://runs/error-owner/example-api/123';
       const res = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-token')
@@ -346,7 +346,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
       const sessionId = initRes.header['mcp-session-id'];
       expect(sessionId).toBeDefined();
 
-      const uri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
+      const uri = 'review-yeti://runs/exampleorg/example-api/123';
 
       // 2. First subscribe
       const sub1 = await request(app)
@@ -398,7 +398,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
         });
       const sessionId = initRes.header['mcp-session-id'];
 
-      const uri = 'review-yeti://runs/calltelemetry/cisco-cdr/999';
+      const uri = 'review-yeti://runs/exampleorg/example-api/999';
 
       const unsubRes = await request(app)
         .post('/api/mcp')
@@ -431,7 +431,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
           params: { protocolVersion: '2024-11-05', capabilities: {} },
         });
       const sessionId = initRes.header['mcp-session-id'];
-      const uri = 'review-yeti://findings/calltelemetry/cisco-cdr/123';
+      const uri = 'review-yeti://findings/exampleorg/example-api/123';
 
       // Subscribe first
       await request(app)
@@ -486,9 +486,9 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
         });
       const sessionId = initRes.header['mcp-session-id'];
 
-      const uriA = 'review-yeti://runs/calltelemetry/cisco-cdr/101';
-      const uriB = 'review-yeti://findings/calltelemetry/cisco-cdr/101';
-      const uriC = 'review-yeti://charters/calltelemetry/cisco-cdr';
+      const uriA = 'review-yeti://runs/exampleorg/example-api/101';
+      const uriB = 'review-yeti://findings/exampleorg/example-api/101';
+      const uriC = 'review-yeti://charters/exampleorg/example-api';
 
       // Subscribe to all 3
       for (const u of [uriA, uriB, uriC]) {
@@ -523,7 +523,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
           jsonrpc: '2.0',
           id: 50,
           method: 'resources/unsubscribe',
-          params: { uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/example-api/123' },
         });
 
       expect(res.status).toBe(200);
@@ -538,7 +538,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
           jsonrpc: '2.0',
           id: 51,
           method: 'resources/subscribe',
-          params: { uri: 'review-yeti://runs/calltelemetry/cisco-cdr/123' },
+          params: { uri: 'review-yeti://runs/exampleorg/example-api/123' },
         });
 
       expect(res.status).toBe(200);
@@ -548,7 +548,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
 
       const createdSession = router.sessionManager.getSession(newSessionId);
       expect(createdSession).toBeDefined();
-      expect(createdSession?.subscriptions.has('review-yeti://runs/calltelemetry/cisco-cdr/123')).toBe(true);
+      expect(createdSession?.subscriptions.has('review-yeti://runs/exampleorg/example-api/123')).toBe(true);
     });
   });
 
@@ -563,8 +563,8 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
       const mockWriteSessionUnsubscribed = vi.fn();
       const mockWriteSessionNeverSubscribed = vi.fn();
 
-      const targetUri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
-      const otherUri = 'review-yeti://runs/calltelemetry/cisco-cdr/456';
+      const targetUri = 'review-yeti://runs/exampleorg/example-api/123';
+      const otherUri = 'review-yeti://runs/exampleorg/example-api/456';
 
       // 1. Session A: Subscribed to targetUri
       const s1 = router.sessionManager.createSession({
@@ -618,7 +618,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
     it('notifyResourceUpdated safely skips streams with writableEnded === true', () => {
       const mockWriteEnded = vi.fn();
       const mockWriteActive = vi.fn();
-      const targetUri = 'review-yeti://findings/calltelemetry/cisco-cdr/555';
+      const targetUri = 'review-yeti://findings/exampleorg/example-api/555';
 
       // Session 1: Ended stream
       const s1 = router.sessionManager.createSession({
@@ -642,7 +642,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
 
     it('notifyResourceUpdated without payload conforms to standard MCP spec params', () => {
       const mockWrite = vi.fn();
-      const targetUri = 'review-yeti://charters/calltelemetry/cisco-cdr';
+      const targetUri = 'review-yeti://charters/exampleorg/example-api';
 
       const s = router.sessionManager.createSession({
         write: mockWrite,
@@ -669,7 +669,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
         throw new Error('EPIPE: broken pipe on disconnected socket');
       });
       const goodWrite = vi.fn();
-      const targetUri = 'review-yeti://runs/calltelemetry/cisco-cdr/777';
+      const targetUri = 'review-yeti://runs/exampleorg/example-api/777';
 
       // Session 1: Socket write throws
       const s1 = router.sessionManager.createSession({
@@ -701,8 +701,8 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
 
     it('EMPIRICAL OBSERVATION: Subscribing with mixed-case repo does not match lower-case notification URI', async () => {
       const mockWrite = vi.fn();
-      const mixedCaseUri = 'review-yeti://runs/CallTelemetry/Cisco-CDR/123';
-      const canonicalUri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
+      const mixedCaseUri = 'review-yeti://runs/Exampleorg/Example-Api/123';
+      const canonicalUri = 'review-yeti://runs/exampleorg/example-api/123';
 
       const s = router.sessionManager.createSession({
         write: mockWrite,
@@ -722,7 +722,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
 
     it('end-to-end SSE stream connection receives live resource updates', async () => {
       const eventEmitter = new EventEmitter();
-      const targetUri = 'review-yeti://runs/calltelemetry/cisco-cdr/123';
+      const targetUri = 'review-yeti://runs/exampleorg/example-api/123';
 
       // 1. Establish SSE stream via supertest request
       // We simulate Express SSE connection by attaching router to a mock server

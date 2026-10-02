@@ -726,7 +726,7 @@ describe('Release Benchmark & Automated Regression Gate E2E Test Suite', () => {
         ],
         prContext: {
           prNumber: 999,
-          repo: 'calltelemetry/ai-workspace',
+          repo: 'exampleorg/example-workspace',
           title: 'Empty PR',
           headSha: 'e2e0000000000000000000000000000000000fd',
         },

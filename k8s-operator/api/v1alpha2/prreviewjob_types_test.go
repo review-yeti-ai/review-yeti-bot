@@ -27,7 +27,7 @@ func contractFixture() *v1alpha2.PRReviewJob {
 			RunID:            "run_11111111111111111111111111111111",
 			DeliveryID:       "actions:98765:2:123:42:head",
 			RepositoryID:     123,
-			Repo:             "calltelemetry/cisco-cdr",
+			Repo:             "exampleorg/example-api",
 			PRNumber:         42,
 			HeadSHA:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			BaseSHA:          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -36,7 +36,7 @@ func contractFixture() *v1alpha2.PRReviewJob {
 			PolicyDigest:     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			PublicationMode:  "disabled",
-			WorkerImage:      "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
 		Status: v1alpha2.PRReviewJobStatus{

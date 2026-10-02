@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { GitHubEventHandler } from '../../src/github/eventHandler';
 
 describe('eventHandler.ts — Comprehensive Unit Expansion Tests', () => {
-  const repository = { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' };
+  const repository = { owner: { login: 'exampleorg' }, name: 'ct-review-bot' };
 
   it('initializes with default trigger labels when options omitted', () => {
     const handler = new GitHubEventHandler();

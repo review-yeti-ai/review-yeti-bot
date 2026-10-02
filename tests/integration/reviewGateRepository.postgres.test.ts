@@ -67,8 +67,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     executionAttempt: number,
   ): ReviewGateCoordinates {
     return {
-      owner: 'calltelemetry',
-      repo: 'ct-review-actions',
+      owner: 'exampleorg',
+      repo: 'example-review-actions',
       repositoryId: REPOSITORY_ID,
       prNumber: 42,
       headSha: 'a'.repeat(40),
@@ -92,7 +92,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
         effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
-      ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4,
+      ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4,
         $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
     `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT, APP_ID]);
     await pool!.query(`
@@ -1012,7 +1012,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
 
       const event: WorkerReviewCompletion = {
         version: 'WorkerReviewCompletion.v1', runId: id,
-        repositoryId: REPOSITORY_ID, owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
+        repositoryId: REPOSITORY_ID, owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
         policyDigest: 'c'.repeat(64), configDigest: CONFIG_DIGEST, executionAttempt: 5,
         result: {

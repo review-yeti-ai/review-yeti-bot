@@ -1462,7 +1462,7 @@ export async function runPublishingReviewWorker(
   // The dispatching workflow may tell this lane the repository's visibility. In
   // production nothing does yet, and the first live run after the visibility
   // change published "Repository visibility: UNKNOWN" for a private repository
-  // (ct-meta#2884). This lane already holds a repository-scoped read token for
+  // (example-meta#2884). This lane already holds a repository-scoped read token for
   // the diff, so it can ask GitHub itself. A failed lookup settles to UNKNOWN
   // and never blocks the run; it is never allowed to become a guess.
   try {
@@ -2353,7 +2353,7 @@ export async function runPublishingReviewWorker(
           && lane.failureClass === 'malformed_output');
       // REL-1113: the same "a lane died on the way to the model and nothing found anything"
       // shape on the AUTHORITATIVE path. `isRecoverableIncompletePanel` refuses authoritative
-      // results (the service owns that verdict), so ct-meta#3446 -- one of two lanes lost to a
+      // results (the service owns that verdict), so example-meta#3446 -- one of two lanes lost to a
       // gateway 502, zero findings -- was published as "Review Yeti: BLOCK" and never re-run.
       // Here it is only a candidate: the shared `isInfrastructureIncompleteResult` decision
       // below, evaluated on the exact payload the service will re-evaluate, is the authority.

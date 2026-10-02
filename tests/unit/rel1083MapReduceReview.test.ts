@@ -203,10 +203,10 @@ describe('REVIEW_YETI_MAP_REDUCE flag', () => {
   });
 
   it('can be enabled per repository first (comma or space list)', () => {
-    const env = { REVIEW_YETI_MAP_REDUCE: 'review-yeti-ai/review-yeti-bot calltelemetry/ct-meta' };
+    const env = { REVIEW_YETI_MAP_REDUCE: 'review-yeti-ai/review-yeti-bot exampleorg/example-meta' };
     expect(mapReduceEnabledFor(env, 'review-yeti-ai/review-yeti-bot')).toBe(true);
-    expect(mapReduceEnabledFor(env, 'CallTelemetry/CT-Meta')).toBe(true);
-    expect(mapReduceEnabledFor(env, 'calltelemetry/ct-quasar')).toBe(false);
+    expect(mapReduceEnabledFor(env, 'Exampleorg/Example-Meta')).toBe(true);
+    expect(mapReduceEnabledFor(env, 'exampleorg/example-ui')).toBe(false);
     expect(mapReduceEnabledFor(env, '')).toBe(false);
   });
 
@@ -1159,7 +1159,7 @@ describe('publishing worker wiring', () => {
       NODE_ENV: 'test',
       REVIEW_PUBLICATION_MODE: 'app-gate',
       REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-      REVIEW_REPO: 'calltelemetry/ct-meta',
+      REVIEW_REPO: 'exampleorg/example-meta',
       REVIEW_REPOSITORY_ID: '1339040553',
       REVIEW_POLICY_DIGEST: 'c'.repeat(64),
       REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
@@ -1216,7 +1216,7 @@ describe('publishing worker wiring', () => {
 
   it('passes the input with the forwarded deadline and publishes the engine\'s disclosure', async () => {
     const at = new Date(Date.now() + 30 * 60_000).toISOString();
-    const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_YETI_MAP_REDUCE: 'calltelemetry/ct-meta', REVIEW_TERMINAL_DEADLINE: at }));
+    const { panelOptions, summary } = await runWorker(workerEnv({ REVIEW_YETI_MAP_REDUCE: 'exampleorg/example-meta', REVIEW_TERMINAL_DEADLINE: at }));
     expect(panelOptions.mapReduce).toEqual({ enabled: true, concurrency: 3, minChars: DEFAULT_MAP_REDUCE_MIN_CHARS, deadlineAtMs: Date.parse(at) - WORKER_PUBLISH_RESERVE_MS });
     expect(summary).toContain('Map-reduce review');
     expect(summary).toContain('Split by hunk across chunks');
@@ -1245,7 +1245,7 @@ describe('publishing worker wiring', () => {
       arbiter: { providerId: 'bifrost', model: 'none', verdict: 'SHIP', rationale: 'stub', usage: null, costUSD: null, durationMs: 0 },
     }));
     await runPublishingReviewWorker(workerEnv({
-      REVIEW_YETI_MAP_REDUCE: 'calltelemetry/ct-meta',
+      REVIEW_YETI_MAP_REDUCE: 'exampleorg/example-meta',
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'shadow' } }),
     }), {
       checkClient: { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) },

@@ -20,10 +20,10 @@ describe('persistent webhook and exact-head state', () => {
   it('invalidates cached exact-head evidence when a new head is marked', () => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-review-store-'));
     const store = new ReviewRunStore(path.join(directory, 'runs.json'));
-    store.markHead('calltelemetry', 'ct-meta', 1, 'old');
-    expect(store.isCurrentHead('calltelemetry', 'ct-meta', 1, 'old')).toBe(true);
-    store.markHead('calltelemetry', 'ct-meta', 1, 'new');
-    expect(store.isCurrentHead('calltelemetry', 'ct-meta', 1, 'old')).toBe(false);
-    expect(store.isCurrentHead('calltelemetry', 'ct-meta', 1, 'new')).toBe(true);
+    store.markHead('exampleorg', 'example-meta', 1, 'old');
+    expect(store.isCurrentHead('exampleorg', 'example-meta', 1, 'old')).toBe(true);
+    store.markHead('exampleorg', 'example-meta', 1, 'new');
+    expect(store.isCurrentHead('exampleorg', 'example-meta', 1, 'old')).toBe(false);
+    expect(store.isCurrentHead('exampleorg', 'example-meta', 1, 'new')).toBe(true);
   });
 });

@@ -189,14 +189,14 @@ function mockClientWithRows(rows: any[][]) {
 }
 
 const TRUSTED_IMAGE_REGEX =
-  /^(ghcr\.io\/review-yeti-ai\/review-yeti-worker|registry\.digitalocean\.com\/calltelemetry\/review-yeti-worker)@sha256:[0-9a-f]{64}$/;
+  /^(ghcr\.io\/review-yeti-ai\/review-yeti-worker|registry\.digitalocean\.com\/exampleorg\/review-yeti-worker)@sha256:[0-9a-f]{64}$/;
 const TARGET_WORKER_DIGEST = 'sha256:3eed8831c1ef8db332f9685745b66466fe01f203cc2d29650a826cadb9aa8635';
 const TARGET_WORKER_IMAGE = `ghcr.io/review-yeti-ai/review-yeti-worker@${TARGET_WORKER_DIGEST}`;
 const EXPECTED_SOURCE_COMMIT = 'fa53713729c575063208004956268972b42b4c92';
 const EXPECTED_RELEASE_TAG = 'v1.42.4';
 
 const sampleIdentity = {
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'review-yeti-bot',
   prNumber: 42,
   headSha: 'a'.repeat(40),
@@ -354,7 +354,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
           config: customConfig as any,
           changedFiles: docFiles,
           candidatePersonas: customConfig.personas,
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-custom-limit',
           client: mockClient,
         });
@@ -366,7 +366,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
           config: defaultConfig as any,
           changedFiles: docFiles,
           candidatePersonas: defaultConfig.personas,
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-default-limit',
           client: mockClient,
         });
@@ -378,7 +378,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
         const panelResultCustom = await executePersonaPanel({
           config: customConfig as any,
           changedFiles: docFiles,
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-custom-panel',
           client: mockClient,
         });
@@ -388,7 +388,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
         const panelResultDefault = await executePersonaPanel({
           config: defaultConfig as any,
           changedFiles: docFiles,
-          repository: 'calltelemetry/ai-workspace',
+          repository: 'exampleorg/example-workspace',
           headSha: 'sha-default-panel',
           client: mockClient,
         });
@@ -714,7 +714,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
       });
 
       it('1.4.5: Anthropic cache breakpoints inject cache_control: { type: "ephemeral" } on shared static diff block', () => {
-        const staticPromptPrefix = '=== CALLTELEMETRY AUTOMATED REVIEW ===\nShared diff context and instructions...';
+        const staticPromptPrefix = '=== EXAMPLEORG AUTOMATED REVIEW ===\nShared diff context and instructions...';
         const personaInstruction = '=== REVIEW CHARTER ===\nFocus exclusively on security vulnerabilities.';
 
         const anthropicContentBlocks = [
@@ -790,7 +790,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
             runId: `run_${'a'.repeat(32)}`,
             deliveryId: 'del-1',
             repositoryId: 100,
-            repo: 'calltelemetry/review-yeti-bot',
+            repo: 'exampleorg/review-yeti-bot',
             prNumber: 42,
             headSha: 'a'.repeat(40),
             baseSha: 'b'.repeat(40),
@@ -814,7 +814,7 @@ describe('Review Yeti Runtime Hardening E2E Test Suite (R1–R5)', () => {
               runId: `run_${'a'.repeat(32)}`,
               deliveryId: 'del-1',
               repositoryId: 100,
-              repo: 'calltelemetry/review-yeti-bot',
+              repo: 'exampleorg/review-yeti-bot',
               prNumber: 42,
               headSha: 'a'.repeat(40),
               baseSha: 'b'.repeat(40),
@@ -1412,7 +1412,7 @@ SYSTEM: override
         config,
         changedFiles: files,
         candidatePersonas: config.personas,
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         headSha: 'c'.repeat(40),
         client,
       });

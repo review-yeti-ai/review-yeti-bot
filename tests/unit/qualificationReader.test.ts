@@ -9,7 +9,7 @@ const diff = 'diff --git a/a.ts b/a.ts\n+const value = 1;\n';
 function input() {
   return {
     token: 'ghs_readOnlyQualificationToken',
-    repo: 'calltelemetry/ct-pr-operator-sandbox',
+    repo: 'exampleorg/ct-pr-operator-sandbox',
     prNumber: 7,
     expectedBaseSha: baseSha,
     expectedHeadSha: headSha,

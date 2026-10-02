@@ -251,7 +251,7 @@ describe('Milestone 4 (R4): Domain-Based Persona Gating & Budgeting', () => {
       const panelResult = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         headSha: 'docs-gating-sha',
         client: mockClient as any,
         requestPolicy: { responseFormat: { type: 'json_object' } },
@@ -345,7 +345,7 @@ describe('Milestone 4 (R4): Domain-Based Persona Gating & Budgeting', () => {
       const panelResult = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         headSha: 'mixed-gating-sha',
         client: mockClient as any,
         requestPolicy: { responseFormat: { type: 'json_object' } },

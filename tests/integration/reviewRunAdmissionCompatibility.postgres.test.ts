@@ -26,7 +26,7 @@ const databaseUrl = configuredDatabaseUrl || '';
 const describeWithPostgres = describeWithPostgresShared;
 
 const repositoryId = 123;
-const owner = 'calltelemetry';
+const owner = 'exampleorg';
 const repo = 'review-yeti';
 const baseIdentity: ReviewRunIdentity = {
   owner,

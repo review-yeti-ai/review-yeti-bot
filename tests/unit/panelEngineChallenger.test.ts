@@ -73,7 +73,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -119,7 +119,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -186,7 +186,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       const result = await executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -248,7 +248,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       await expect(executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       })).rejects.toThrow(/turn budget exhausted/u);
@@ -309,7 +309,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
       await expect(executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       })).rejects.toThrow(/turn budget exhausted/u);
@@ -335,7 +335,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         })
@@ -400,7 +400,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await expect(executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         })).rejects.toThrow();
@@ -423,7 +423,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await expect(executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         })).rejects.toThrow();
@@ -446,7 +446,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await expect(executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         })).rejects.toThrow();
@@ -494,7 +494,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         });
@@ -581,7 +581,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         });
@@ -631,7 +631,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         });
@@ -679,7 +679,7 @@ describe('Engine Multi-Turn & Reasoning Effort Empirical Challenger Suite', () =
         await executePersonaPanel({
           config,
           changedFiles,
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         });

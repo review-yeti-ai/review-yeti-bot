@@ -196,8 +196,8 @@ func TestPublishingConfigFromEnvReadsDiffShrink(t *testing.T) {
 	if config := publishingConfigFromEnv(); config.DiffShrink != "" {
 		t.Fatalf("unset diff shrink must stay empty: %+v", config)
 	}
-	t.Setenv("REVIEW_YETI_DIFF_SHRINK", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
-	if config := publishingConfigFromEnv(); config.DiffShrink != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+	t.Setenv("REVIEW_YETI_DIFF_SHRINK", " review-yeti-ai/review-yeti-bot,exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.DiffShrink != "review-yeti-ai/review-yeti-bot,exampleorg/example-meta" {
 		t.Fatalf("diff shrink not read: %+v", config)
 	}
 }
@@ -208,8 +208,8 @@ func TestPublishingConfigFromEnvReadsIncremental(t *testing.T) {
 	if config := publishingConfigFromEnv(); config.Incremental != "" {
 		t.Fatalf("unset incremental flag must stay empty: %+v", config)
 	}
-	t.Setenv("REVIEW_YETI_INCREMENTAL", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
-	if config := publishingConfigFromEnv(); config.Incremental != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+	t.Setenv("REVIEW_YETI_INCREMENTAL", " review-yeti-ai/review-yeti-bot,exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.Incremental != "review-yeti-ai/review-yeti-bot,exampleorg/example-meta" {
 		t.Fatalf("incremental flag not read: %+v", config)
 	}
 }
@@ -220,8 +220,8 @@ func TestPublishingConfigFromEnvReadsReviewBudget(t *testing.T) {
 	if config := publishingConfigFromEnv(); config.Budget != "" {
 		t.Fatalf("unset review budget must stay empty: %+v", config)
 	}
-	t.Setenv("REVIEW_YETI_BUDGET", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
-	if config := publishingConfigFromEnv(); config.Budget != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+	t.Setenv("REVIEW_YETI_BUDGET", " review-yeti-ai/review-yeti-bot,exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.Budget != "review-yeti-ai/review-yeti-bot,exampleorg/example-meta" {
 		t.Fatalf("review budget not read: %+v", config)
 	}
 }
@@ -232,8 +232,8 @@ func TestPublishingConfigFromEnvReadsVerdictCache(t *testing.T) {
 	if config := publishingConfigFromEnv(); config.VerdictCache != "" {
 		t.Fatalf("unset verdict cache flag must stay empty: %+v", config)
 	}
-	t.Setenv("REVIEW_YETI_VERDICT_CACHE", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
-	if config := publishingConfigFromEnv(); config.VerdictCache != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+	t.Setenv("REVIEW_YETI_VERDICT_CACHE", " review-yeti-ai/review-yeti-bot,exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.VerdictCache != "review-yeti-ai/review-yeti-bot,exampleorg/example-meta" {
 		t.Fatalf("verdict cache flag not read: %+v", config)
 	}
 }
@@ -244,8 +244,8 @@ func TestPublishingConfigFromEnvReadsMapReduce(t *testing.T) {
 	if config := publishingConfigFromEnv(); config.MapReduce != "" {
 		t.Fatalf("unset map-reduce must stay empty: %+v", config)
 	}
-	t.Setenv("REVIEW_YETI_MAP_REDUCE", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
-	if config := publishingConfigFromEnv(); config.MapReduce != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+	t.Setenv("REVIEW_YETI_MAP_REDUCE", " review-yeti-ai/review-yeti-bot,exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.MapReduce != "review-yeti-ai/review-yeti-bot,exampleorg/example-meta" {
 		t.Fatalf("map-reduce not read: %+v", config)
 	}
 }

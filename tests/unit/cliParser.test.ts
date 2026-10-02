@@ -6,7 +6,7 @@ describe('cliParser Unit Tests', () => {
     const args = [
       'stats',
       '--owner',
-      'cisco-cdr',
+      'example-api',
       '--repo',
       'ct-review-bot',
       '--pr',
@@ -30,7 +30,7 @@ describe('cliParser Unit Tests', () => {
     const parsed = parseCLIArgs(args);
 
     expect(parsed.command).toBe('stats');
-    expect(parsed.options.owner).toBe('cisco-cdr');
+    expect(parsed.options.owner).toBe('example-api');
     expect(parsed.options.repo).toBe('ct-review-bot');
     expect(parsed.options.prNumber).toBe(42);
     expect(parsed.options.verdict).toBe('SHIP');

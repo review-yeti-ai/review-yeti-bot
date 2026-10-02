@@ -81,7 +81,7 @@ describe('Adversarial Challenge 1 (Final Milestone) Empirical Stress Harness', (
         config,
         candidatePersonas: [{ id: 'sec', required: true, charter: 'security checks' } as any],
         changedFiles: [{ path: 'docs/readme.md', patch: maliciousPatch }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -201,7 +201,7 @@ personas:
       await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/main.ts', patch: '+ const x = 1;' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient,
       });
@@ -240,7 +240,7 @@ personas:
       await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/main.ts', patch: '+ const x = 1;' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         repositoryVisibility: 'PRIVATE',
         client: mockClient,
@@ -354,8 +354,8 @@ personas:
         publicationMode: 'disabled',
         centralActionDispatch: false,
         identity: {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           prNumber: 42,
           headSha: 'abc1234',
           baseSha: 'base123',

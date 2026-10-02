@@ -94,21 +94,21 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
       fetchImplementation: fetchMock as any,
     });
 
-    const id = await client.publishGateCheck('calltelemetry', 'dashboard', 'a'.repeat(40), {
+    const id = await client.publishGateCheck('exampleorg', 'dashboard', 'a'.repeat(40), {
       conclusion: 'success',
       title: 'Review Yeti Gate: Approved (SHIP)',
       summary: 'Policy eligibility gate passed with 0 blocking findings.',
-      detailsUrl: 'https://review-bot.calltelemetry.com/runs/run_1',
+      detailsUrl: 'https://review-bot.example.com/runs/run_1',
     });
 
     expect(id).toBe(1001);
-    expect(capturedUrl).toContain('/repos/calltelemetry/dashboard/check-runs');
+    expect(capturedUrl).toContain('/repos/exampleorg/dashboard/check-runs');
     expect(capturedBody.name).toBe('Review Yeti Gate');
     expect(capturedBody.head_sha).toBe('a'.repeat(40));
     expect(capturedBody.status).toBe('completed');
     expect(capturedBody.conclusion).toBe('success');
     expect(capturedBody.output.title).toBe('Review Yeti Gate: Approved (SHIP)');
-    expect(capturedBody.details_url).toBe('https://review-bot.calltelemetry.com/runs/run_1');
+    expect(capturedBody.details_url).toBe('https://review-bot.example.com/runs/run_1');
   });
 
   it('publishValidationCheck creates a completed check with Review Yeti CI', async () => {
@@ -129,14 +129,14 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
       fetchImplementation: fetchMock as any,
     });
 
-    const id = await client.publishValidationCheck('calltelemetry', 'dashboard', 'b'.repeat(40), {
+    const id = await client.publishValidationCheck('exampleorg', 'dashboard', 'b'.repeat(40), {
       conclusion: 'failure',
       title: 'Review Yeti CI: Tests Failed',
       summary: 'Candidate test suite failed with exit code 1.',
     });
 
     expect(id).toBe(2002);
-    expect(capturedUrl).toContain('/repos/calltelemetry/dashboard/check-runs');
+    expect(capturedUrl).toContain('/repos/exampleorg/dashboard/check-runs');
     expect(capturedBody.name).toBe('Review Yeti CI');
     expect(capturedBody.head_sha).toBe('b'.repeat(40));
     expect(capturedBody.status).toBe('completed');
@@ -205,9 +205,9 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
       fetchImplementation: fetchMock as any,
     });
 
-    await client.emitRepositoryDispatch('calltelemetry', 'dashboard', 'custom-event', { foo: 'bar' });
+    await client.emitRepositoryDispatch('exampleorg', 'dashboard', 'custom-event', { foo: 'bar' });
 
-    expect(capturedUrl).toContain('/repos/calltelemetry/dashboard/dispatches');
+    expect(capturedUrl).toContain('/repos/exampleorg/dashboard/dispatches');
     expect(capturedBody.event_type).toBe('custom-event');
     expect(capturedBody.client_payload).toEqual({ foo: 'bar' });
     const authHeader = capturedHeaders instanceof Headers ? capturedHeaders.get('Authorization') : capturedHeaders?.Authorization;
@@ -235,7 +235,7 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
     const validPayload = {
       schema_version: SCHEMA_VERSION_CI_REQUEST,
       repository_id: 12345,
-      repository: 'calltelemetry/dashboard',
+      repository: 'exampleorg/dashboard',
       pr_number: 100,
       base_sha: 'a'.repeat(40),
       head_sha: 'b'.repeat(40),
@@ -244,13 +244,13 @@ describe('GitHubInstallationClient expansion for Review Yeti Gate, CI, and Dispa
       validation_request_id: 'val-100-attempt-1',
     };
 
-    await client.emitCIRequest('calltelemetry', 'dashboard', validPayload);
+    await client.emitCIRequest('exampleorg', 'dashboard', validPayload);
 
     expect(capturedBody.event_type).toBe('review-yeti-ci-request');
     expect(capturedBody.client_payload).toEqual(validPayload);
 
     // Invalid payload should throw before network transmission
-    await expect(client.emitCIRequest('calltelemetry', 'dashboard', {
+    await expect(client.emitCIRequest('exampleorg', 'dashboard', {
       ...validPayload,
       extraneous: 'disallowed',
     } as any)).rejects.toThrow('Invalid review-yeti-ci-request payload');
@@ -265,7 +265,7 @@ describe('getGitHubAppRepositoryDispatchToken', () => {
 
   it('mints a token scoped strictly to contents: write and tolerates implicit metadata: read', async () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/repos/calltelemetry/dashboard/installation')) {
+      if (url.endsWith('/repos/exampleorg/dashboard/installation')) {
         return {
           ok: true,
           status: 200,
@@ -292,7 +292,7 @@ describe('getGitHubAppRepositoryDispatchToken', () => {
     const result = await getGitHubAppRepositoryDispatchToken({
       appId: '4385771',
       privateKey: privateKeyPem,
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'dashboard',
     }, fetchMock as any);
 
@@ -302,7 +302,7 @@ describe('getGitHubAppRepositoryDispatchToken', () => {
 
   it('rejects an unsafe token granting unexpected permissions', async () => {
     const fetchMock = vi.fn(async (url: string) => {
-      if (url.endsWith('/repos/calltelemetry/dashboard/installation')) {
+      if (url.endsWith('/repos/exampleorg/dashboard/installation')) {
         return { ok: true, status: 200, json: async () => ({ id: 555 }) };
       }
       return {
@@ -319,7 +319,7 @@ describe('getGitHubAppRepositoryDispatchToken', () => {
     await expect(getGitHubAppRepositoryDispatchToken({
       appId: '4385771',
       privateKey: privateKeyPem,
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'dashboard',
     }, fetchMock as any)).rejects.toThrow('GitHub App repository dispatch token exchange returned an unsafe contract');
   });

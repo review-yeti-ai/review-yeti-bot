@@ -31,7 +31,7 @@ describe('Milestone 26: Telemetry to Analytics API Integration Test', () => {
     // Simulate review run recording
     dashboardStore.recordReviewRun({
       id: `rev-integration-${Date.now()}`,
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       prNumber: 99,
       headSha: 'head-sha-integration',
       triggerSource: 'pr_event',

@@ -25,7 +25,7 @@ function makeMockPayload(overrides: Partial<PrepPayload> = {}): PrepPayload {
     runId: 'run_' + '7'.repeat(32),
     headSha: 'a'.repeat(40),
     baseSha: 'b'.repeat(40),
-    repository: 'calltelemetry/review-yeti-bot',
+    repository: 'exampleorg/review-yeti-bot',
     prNumber: 101,
     triageSummary: {
       filesCount: 3,

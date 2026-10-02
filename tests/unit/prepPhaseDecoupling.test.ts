@@ -39,7 +39,7 @@ describe('Milestone 2: Prep Pod Decoupling & State Storage (Requirement R3)', ()
     it('verifies shallow fetch stub contract in test mode (< 1500ms)', async () => {
       const result = await shallowFetchHead({
         workspacePath: '/tmp/test-workspace',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         headSha: '0123456789abcdef0123456789abcdef01234567',
       });
       expect(result.sha).toBe('0123456789abcdef0123456789abcdef01234567');
@@ -79,7 +79,7 @@ index 1234567..89abcde 100644
   describe('4. Prompt Assembly & 256KB Boundary Truncation', () => {
     it('assembles OpenAI-compatible persona prompt messages', () => {
       const { messages, truncated } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 42,
         headSha: 'a1b2c3d4e5f6',
         astSymbols: ['handleIncomingCall', 'evaluateRoutePolicy'],
@@ -95,7 +95,7 @@ index 1234567..89abcde 100644
       expect(messages[0].role).toBe('system');
       expect(messages[0].content).toContain('Review Yeti');
       expect(messages[1].role).toBe('user');
-      expect(messages[1].content).toContain('Repository: calltelemetry/review-yeti-bot');
+      expect(messages[1].content).toContain('Repository: exampleorg/review-yeti-bot');
       expect(messages[1].content).toContain('handleIncomingCall');
       expect(truncated).toBe(false);
     });
@@ -103,7 +103,7 @@ index 1234567..89abcde 100644
     it('truncates prompt context when exceeding 256KB boundary', () => {
       const hugePatch = '+\n'.repeat(150_000); // Exceeds 256KB
       const { messages, truncated } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 99,
         headSha: 'deadbeef',
         astSymbols: ['testSymbol'],
@@ -130,7 +130,7 @@ index 1234567..89abcde 100644
         runId: 'run-m2-001',
         headSha: '1111222233334444555566667777888899990000',
         baseSha: '0000999988887777666655554444333322221111',
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         prNumber: 101,
         triageSummary: { filesCount: 3, hunksCount: 7, astSymbols: ['authCheck'], truncated: false },
         promptMessages: [{ role: 'user', content: 'Review diff' }],
@@ -166,7 +166,7 @@ index 1234567..89abcde 100644
         runId: 'run-mux-1',
         headSha: 'sha1',
         baseSha: 'sha2',
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         prNumber: 5,
         triageSummary: { filesCount: 1, hunksCount: 1, astSymbols: [], truncated: false },
         promptMessages: [{ role: 'user', content: 'Diff' }],
@@ -205,7 +205,7 @@ index 0000000..1111111 100644
 
       const result = await runPrepPhase({
         runId: 'run-prep-e2e',
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 77,
         headSha: '0123456789abcdef0123456789abcdef01234567',
         baseSha: 'abcdef0123456789abcdef0123456789abcdef01',
@@ -230,7 +230,7 @@ index 0000000..1111111 100644
         jobName: 'worker-prep-test',
         namespace: 'ct-review-system',
         persona: 'code-quality',
-        repoUrl: 'https://github.com/calltelemetry/review-yeti-bot.git',
+        repoUrl: 'https://github.com/exampleorg/review-yeti-bot.git',
         prNumber: 42,
         commitSha: '0123456789abcdef0123456789abcdef01234567',
         phase: 'prep',

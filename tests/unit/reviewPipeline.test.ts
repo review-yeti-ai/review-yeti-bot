@@ -76,7 +76,7 @@ index 123456..789abc 100644
 
     const prContext = {
       prNumber: '99',
-      repo: 'calltelemetry/ct-review-bot',
+      repo: 'exampleorg/ct-review-bot',
       headSha: 'abc1234def',
       title: 'Destructive DB Migration PR',
     };
@@ -117,7 +117,7 @@ index 123456..789abc 100644
 
     const prContext = {
       prNumber: '101',
-      repo: 'calltelemetry/ct-review-bot',
+      repo: 'exampleorg/ct-review-bot',
       headSha: '1a2b3c4d5e',
     };
 
@@ -152,7 +152,7 @@ index 123456..789abc 100644
     const comment = formatPRComment(
       arbitration,
       personaResults,
-      { prNumber: '102', repo: 'calltelemetry/test' },
+      { prNumber: '102', repo: 'exampleorg/test' },
       {},
       { enabled: true, model: 'different-model/configured' },
     );
@@ -180,7 +180,7 @@ index 123456..789abc 100644
     const comment = formatPRComment(
       arbitration,
       personaResults,
-      { prNumber: '103', repo: 'calltelemetry/test' },
+      { prNumber: '103', repo: 'exampleorg/test' },
       {},
       { enabled: true, model: 'configured/default-model' },
     );
@@ -225,7 +225,7 @@ index 123456..789abc 100644
       verdict: 'BLOCK',
       rationale: 'P0 finding requires a fix.',
       metrics: { p0Count: 1, p1Count: 1, p2Count: 1, totalFindings: 3 },
-    }, results, { prNumber: '102', repo: 'calltelemetry/ct-review-bot', headSha: 'abc1234' });
+    }, results, { prNumber: '102', repo: 'exampleorg/ct-review-bot', headSha: 'abc1234' });
 
     expect(formattedComment).toContain('| Reviewer Persona | Provider | Model | Decision | P0 | P1 | P2 / Nits | Input Tokens | Output Tokens | Cost |');
     expect(formattedComment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ⚠️ FINDINGS | 🔴 1 | 🟠 1 | 🟡 1 | 100 | 20 | $0.007 |');
@@ -249,7 +249,7 @@ index 123456..789abc 100644
       model: 'openrouter/auto',
       decision: 'APPROVE',
       findings: [],
-    }], { prNumber: '103', repo: 'calltelemetry/ct-review-bot', headSha: 'def4567' });
+    }], { prNumber: '103', repo: 'exampleorg/ct-review-bot', headSha: 'def4567' });
 
     expect(formattedComment).toContain('| Security | `unknown` | `openrouter/auto` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
     expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
@@ -268,7 +268,7 @@ index 123456..789abc 100644
     }, [
       { personaId: 'security', displayName: 'Security', model: 'm1', provider: 'openrouter', decision: 'APPROVE', cost: 0.001, findings: [] },
       { personaId: 'style', displayName: 'Style', model: 'm2', provider: 'openrouter', decision: 'APPROVE', findings: [] },
-    ], { prNumber: '104', repo: 'calltelemetry/ct-review-bot', headSha: 'fed7654' });
+    ], { prNumber: '104', repo: 'exampleorg/ct-review-bot', headSha: 'fed7654' });
 
     expect(formattedComment).toContain('| Security | `openrouter` | `m1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.001 |');
     expect(formattedComment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
@@ -286,7 +286,7 @@ index 123456..789abc 100644
     }, [
       { personaId: 'security', displayName: 'Security', model: 'model`one|x', provider: 'provider`one|x', decision: 'APPROVE', cost: -1, findings: [] },
       { personaId: 'style', displayName: 'Style', model: 'model-two', provider: 'openrouter', decision: 'APPROVE', cost: 1e21, findings: [] },
-    ], { prNumber: '105', repo: 'calltelemetry/ct-review-bot', headSha: 'fed7655' });
+    ], { prNumber: '105', repo: 'exampleorg/ct-review-bot', headSha: 'fed7655' });
 
     expect(formattedComment).toContain('| Security | `provider\'one\\|x` | `model\'one\\|x` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
     expect(formattedComment).toContain('| Style | `openrouter` | `model-two` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
@@ -439,7 +439,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'Clean review across subscription transports.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, results, { prNumber: '201', repo: 'calltelemetry/ct-review-bot', headSha: 'sub1234' });
+        }, results, { prNumber: '201', repo: 'exampleorg/ct-review-bot', headSha: 'sub1234' });
 
         expect(comment).toContain('| Security | `fireworks` | `fireworks/llama-v3p3-70b-instruct` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,200 | 350 | Subscription |');
         expect(comment).toContain('| Architecture | `ollama-cloud` | `ollama-cloud/qwen2.5-coder` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 400 | Subscription |');
@@ -490,7 +490,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'Explicit subscription review.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, results, { prNumber: '202', repo: 'calltelemetry/ct-review-bot', headSha: 'sub5678' });
+        }, results, { prNumber: '202', repo: 'exampleorg/ct-review-bot', headSha: 'sub5678' });
 
         expect(comment).toContain('| Security | `custom` | `custom/model-sec` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 800 | 150 | Subscription |');
         expect(comment).toContain('| Performance | `custom` | `custom/model-perf` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 900 | 200 | Subscription |');
@@ -542,7 +542,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'Mixed metered and subscription evaluation passed.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, results, { prNumber: '203', repo: 'calltelemetry/ct-review-bot', headSha: 'mix1234' });
+        }, results, { prNumber: '203', repo: 'exampleorg/ct-review-bot', headSha: 'mix1234' });
 
         expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,000 | 200 | $0.007 |');
         expect(comment).toContain('| Architecture | `fireworks` | `accounts/fireworks/models/deepseek-v3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,500 | 300 | Subscription |');
@@ -583,7 +583,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'Pure metered review.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, results, { prNumber: '204', repo: 'calltelemetry/ct-review-bot', headSha: 'met1234' });
+        }, results, { prNumber: '204', repo: 'exampleorg/ct-review-bot', headSha: 'met1234' });
 
         expect(comment).toContain('| Security | `openrouter` | `openai/gpt-5.6-luna` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,200 | 250 | $0.007 |');
         expect(comment).toContain('| Performance | `openrouter` | `anthropic/claude-3.7-sonnet` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | 1,800 | 400 | $0.013 |');
@@ -605,7 +605,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'Mixed with unknown.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, mixedWithUnknown, { prNumber: '205', repo: 'calltelemetry/ct-review-bot', headSha: 'unk1234' });
+        }, mixedWithUnknown, { prNumber: '205', repo: 'exampleorg/ct-review-bot', headSha: 'unk1234' });
 
         expect(comment1).toContain('| Security | `openrouter` | `m1` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | $0.007 |');
         expect(comment1).toContain('| Performance | `fireworks` | `m2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
@@ -625,7 +625,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'Subscription with unknown.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, subWithUnknown, { prNumber: '206', repo: 'calltelemetry/ct-review-bot', headSha: 'unk5678' });
+        }, subWithUnknown, { prNumber: '206', repo: 'exampleorg/ct-review-bot', headSha: 'unk5678' });
 
         expect(comment2).toContain('| Performance | `fireworks` | `m2` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | Subscription |');
         expect(comment2).toContain('| Style | `openrouter` | `m3` | ✅ APPROVE | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
@@ -640,7 +640,7 @@ index 123456..789abc 100644
           verdict: 'SHIP',
           rationale: 'No personas enabled.',
           metrics: { p0Count: 0, p1Count: 0, p2Count: 0, totalFindings: 0 },
-        }, [], { prNumber: '207', repo: 'calltelemetry/ct-review-bot', headSha: 'empty123' });
+        }, [], { prNumber: '207', repo: 'exampleorg/ct-review-bot', headSha: 'empty123' });
 
         expect(comment).toContain('| **Total** | — | — | — | 🔴 0 | 🟠 0 | 🟡 0 | — | — | — |');
       });

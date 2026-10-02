@@ -17,13 +17,13 @@ function payload(overrides: Record<string, unknown> = {}) {
     action: 'opened', number: 42,
     installation: { id: 456 },
     repository: {
-      id: 614653796, name: 'dashboard', full_name: 'calltelemetry/dashboard',
-      owner: { id: 57884877, login: 'calltelemetry' },
+      id: 614653796, name: 'dashboard', full_name: 'exampleorg/dashboard',
+      owner: { id: 57884877, login: 'exampleorg' },
     },
     pull_request: {
       number: 42, state: 'open', draft: false,
       head: { sha: HEAD },
-      base: { sha: BASE, repo: { full_name: 'calltelemetry/dashboard' } },
+      base: { sha: BASE, repo: { full_name: 'exampleorg/dashboard' } },
     },
     ...overrides,
   };
@@ -32,7 +32,7 @@ function payload(overrides: Record<string, unknown> = {}) {
 function refreshPayload(overrides: Record<string, unknown> = {}) {
   const repository = payload().repository;
   const identity = buildReviewRunIdentity({
-    owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+    owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
     headSha: HEAD, baseSha: BASE,
   });
   const runId = deriveReviewRunId(identity);
@@ -49,8 +49,8 @@ function refreshPayload(overrides: Record<string, unknown> = {}) {
       output: { title: 'Review Yeti: review did not complete', summary: 'failed before verdict' },
       pull_requests: [{
         number: 42,
-        head: { sha: HEAD, repo: { full_name: 'calltelemetry/dashboard' } },
-        base: { sha: BASE, repo: { full_name: 'calltelemetry/dashboard' } },
+        head: { sha: HEAD, repo: { full_name: 'exampleorg/dashboard' } },
+        base: { sha: BASE, repo: { full_name: 'exampleorg/dashboard' } },
       }],
     },
     ...overrides,
@@ -67,12 +67,12 @@ function closedPayload(overrides: Record<string, unknown> = {}) {
     action: 'closed', number: 42,
     installation: { id: 456 },
     repository: {
-      id: 614653796, name: 'dashboard', full_name: 'calltelemetry/dashboard',
-      owner: { id: 57884877, login: 'calltelemetry' },
+      id: 614653796, name: 'dashboard', full_name: 'exampleorg/dashboard',
+      owner: { id: 57884877, login: 'exampleorg' },
     },
     pull_request: {
       number: 42, state: 'closed', merged: false,
-      base: { repo: { full_name: 'calltelemetry/dashboard' } },
+      base: { repo: { full_name: 'exampleorg/dashboard' } },
     },
     ...overrides,
   };
@@ -152,7 +152,7 @@ describe('native GitHub App webhook admission', () => {
       deliveryId: `github-webhook:${auth.delivery}`,
       eventName: 'pull_request', repositoryId: 614653796, installationId: 456,
       publicationMode: 'app-gate', centralActionDispatch: false, receivedAt: NOW,
-      identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE }),
+      identity: expect.objectContaining({ owner: 'exampleorg', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE }),
     }));
   });
 
@@ -176,7 +176,7 @@ describe('native GitHub App webhook admission', () => {
       repositoryId: 614653796, installationId: 456, publicationMode: 'app-gate',
       retryRequested: true,
       retryAfterExecutionAttempt: 1,
-      identity: expect.objectContaining({ owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      identity: expect.objectContaining({ owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
         headSha: HEAD, baseSha: BASE }),
     }));
   });
@@ -241,10 +241,10 @@ describe('native GitHub App webhook admission', () => {
           head: {
             sha: HEAD,
             repo: {
-              full_name: 'calltelemetry/dashboard',
+              full_name: 'exampleorg/dashboard',
               id: 999,
               name: 'dashboard',
-              url: 'https://api.github.com/repos/calltelemetry/dashboard',
+              url: 'https://api.github.com/repos/exampleorg/dashboard',
             },
           },
         }],
@@ -267,7 +267,7 @@ describe('native GitHub App webhook admission', () => {
     const original = rerequestPayload();
     const liveRepositoryReference = {
       id: 614653796,
-      url: 'https://api.github.com/repos/calltelemetry/dashboard',
+      url: 'https://api.github.com/repos/exampleorg/dashboard',
       name: 'dashboard',
     };
     const body = rerequestPayload({
@@ -283,7 +283,7 @@ describe('native GitHub App webhook admission', () => {
       },
     });
     const identity = buildReviewRunIdentity({
-      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
     });
     const prepared = { policy: { effectivePolicyDigest: identity.configDigest } };
@@ -308,7 +308,7 @@ describe('native GitHub App webhook admission', () => {
       headSha: HEAD, reason: 'refresh_requested',
     });
     expect(resolve).toHaveBeenCalledExactlyOnceWith({
-      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
     });
     expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -384,7 +384,7 @@ describe('native GitHub App webhook admission', () => {
       check_run: { ...original.check_run, external_id: `run_${'f'.repeat(32)}:a1` },
     });
     const identity = buildReviewRunIdentity({
-      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
     });
     const prepared = { policy: { effectivePolicyDigest: identity.configDigest } };
@@ -428,7 +428,7 @@ describe('native GitHub App webhook admission', () => {
         rerequestPayload().check_run.pull_requests[0]] } }],
     ['mismatched PR head', { check_run: { ...rerequestPayload().check_run,
       pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
-        head: { sha: 'd'.repeat(40), repo: { full_name: 'calltelemetry/dashboard' } } }] } }],
+        head: { sha: 'd'.repeat(40), repo: { full_name: 'exampleorg/dashboard' } } }] } }],
     ['foreign PR repository', { check_run: { ...rerequestPayload().check_run,
       pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
         head: { sha: HEAD, repo: { full_name: 'attacker/dashboard' } } }] } }],
@@ -438,8 +438,8 @@ describe('native GitHub App webhook admission', () => {
           url: 'https://api.github.com/repos/attacker/dashboard' } } }] } }],
     ['mixed PR repository identity', { check_run: { ...rerequestPayload().check_run,
       pull_requests: [{ ...rerequestPayload().check_run.pull_requests[0],
-        head: { sha: HEAD, repo: { full_name: 'calltelemetry/dashboard', id: 999,
-          name: 'dashboard', url: 'https://api.github.com/repos/calltelemetry/dashboard' } } }] } }],
+        head: { sha: HEAD, repo: { full_name: 'exampleorg/dashboard', id: 999,
+          name: 'dashboard', url: 'https://api.github.com/repos/exampleorg/dashboard' } } }] } }],
   ])('rejects native rerequest with %s', async (_label, overrides) => {
     const body = rerequestPayload(overrides);
     const resolve = vi.fn();
@@ -464,7 +464,7 @@ describe('native GitHub App webhook admission', () => {
   it('rejects a refresh whose external id is not the persisted exact-head identity', async () => {
     const f = fixture();
     const wrongIdentity = buildReviewRunIdentity({
-      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: 'd'.repeat(40),
     });
     const body = refreshPayload({
@@ -488,7 +488,7 @@ describe('native GitHub App webhook admission', () => {
   it.each([
     ['check head does not match pull request head', { check_run: {
       ...refreshPayload().check_run,
-      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], head: { sha: 'd'.repeat(40), repo: { full_name: 'calltelemetry/dashboard' } } }],
+      pull_requests: [{ ...refreshPayload().check_run.pull_requests[0], head: { sha: 'd'.repeat(40), repo: { full_name: 'exampleorg/dashboard' } } }],
     } }],
     ['pull request head repository does not match webhook repository', { check_run: {
       ...refreshPayload().check_run,
@@ -555,7 +555,7 @@ describe('native GitHub App webhook admission', () => {
 
   it('re-resolves the current policy before admitting an enrolled authoritative refresh', async () => {
     const identity = { ...buildReviewRunIdentity({
-      owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
     }) };
     const runId = deriveReviewRunId(identity);
@@ -583,7 +583,7 @@ describe('native GitHub App webhook admission', () => {
     })).resolves.toEqual({ status: 'accepted', deliveryId: 'authoritative-refresh', prNumber: 42,
       headSha: HEAD, reason: 'refresh_requested' });
     expect(resolve).toHaveBeenCalledExactlyOnceWith({
-      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE,
     });
     expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -752,7 +752,7 @@ describe('native GitHub App webhook admission', () => {
   });
 
   it.each([
-    payload({ repository: { id: 999, name: 'dashboard', full_name: 'calltelemetry/dashboard', owner: { id: 57884877, login: 'calltelemetry' } } }),
+    payload({ repository: { id: 999, name: 'dashboard', full_name: 'exampleorg/dashboard', owner: { id: 57884877, login: 'exampleorg' } } }),
     payload({ pull_request: { number: 42, state: 'open', draft: false, head: { sha: HEAD }, base: { sha: BASE, repo: { full_name: 'other/dashboard' } } } }),
   ])('quietly ignores a mismatched repository identity', async (body) => {
     const f = fixture();
@@ -770,7 +770,7 @@ describe('native GitHub App webhook admission', () => {
 
   it.each([
     payload({ action: 'closed' }),
-    payload({ pull_request: { number: 42, state: 'open', draft: true, head: { sha: HEAD }, base: { sha: BASE, repo: { full_name: 'calltelemetry/dashboard' } } } }),
+    payload({ pull_request: { number: 42, state: 'open', draft: true, head: { sha: HEAD }, base: { sha: BASE, repo: { full_name: 'exampleorg/dashboard' } } } }),
   ])('ignores unsupported PR states without admitting a review', async (body) => {
     const f = fixture();
     const auth = signed(body);
@@ -805,7 +805,7 @@ describe('native GitHub App webhook admission', () => {
   it('binds an enrolled authoritative resolution and prepared policy into admission', async () => {
     const effectivePolicyDigest = 'd'.repeat(64);
     const prepared = { policy: { effectivePolicyDigest }, marker: 'prepared' };
-    const identity = { owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+    const identity = { owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       headSha: HEAD, baseSha: BASE, snapshotDigest: 'e'.repeat(64), configDigest: 'f'.repeat(64) };
     const resolve = vi.fn(async () => ({ identity, prepared }));
     const admit = vi.fn(async () => ({ status: 'accepted', run: { runId: `run_${'1'.repeat(32)}` } }));
@@ -821,7 +821,7 @@ describe('native GitHub App webhook admission', () => {
       rawBody: Buffer.from(JSON.stringify(payload())), body: payload() };
     await expect(onEvent(event)).resolves.toEqual({ status: 'accepted', deliveryId: 'authoritative', prNumber: 42, headSha: HEAD });
     expect(resolve).toHaveBeenCalledExactlyOnceWith({
-      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE,
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42, headSha: HEAD, baseSha: BASE,
     });
     expect(admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       identity, effectivePolicyDigest, authoritativeGate: { expectedAppId: 4385771, prepared },
@@ -856,7 +856,7 @@ describe('pull request closed admission (REL-896)', () => {
     const response = await postWebhook(f.instance, closedPayload(), 'delivery-stale-close');
     expect(response.body).toMatchObject({ status: 'ignored', reason: 'stale_closed_delivery' });
     expect(currentPullRequestForClose).toHaveBeenCalledExactlyOnceWith({
-      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
     });
     expect(f.terminalizeRunsForClosedPullRequest).not.toHaveBeenCalled();
   });
@@ -867,7 +867,7 @@ describe('pull request closed admission (REL-896)', () => {
     expect(response.body).toMatchObject({ status: 'accepted', reason: 'pull_request_closed', terminalized: 1 });
     expect(currentPullRequestForClose).toHaveBeenCalledOnce();
     expect(f.terminalizeRunsForClosedPullRequest).toHaveBeenCalledExactlyOnceWith({
-      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       merged: false, now: NOW, deliveryId: 'github-webhook:delivery-live-closed',
     });
   });
@@ -882,7 +882,7 @@ describe('pull request closed admission (REL-896)', () => {
   it('terminalizes in-flight runs when a PR is merged', async () => {
     const f = closedFixture();
     const body = closedPayload({ pull_request: {
-      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'calltelemetry/dashboard' } },
+      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'exampleorg/dashboard' } },
     } });
     const response = await postWebhook(f.instance, body, 'delivery-closed-merged');
     expect(response.status).toBe(200);
@@ -891,7 +891,7 @@ describe('pull request closed admission (REL-896)', () => {
       reason: 'pull_request_closed', terminalized: 1,
     });
     expect(f.terminalizeRunsForClosedPullRequest).toHaveBeenCalledExactlyOnceWith({
-      repositoryId: 614653796, owner: 'calltelemetry', repo: 'dashboard', prNumber: 42,
+      repositoryId: 614653796, owner: 'exampleorg', repo: 'dashboard', prNumber: 42,
       merged: true, now: NOW, deliveryId: 'github-webhook:delivery-closed-merged',
     });
     expect(f.admit).not.toHaveBeenCalled();
@@ -900,7 +900,7 @@ describe('pull request closed admission (REL-896)', () => {
   it.each([
     ['the top-level number disagrees with pull_request.number', { number: 43 }],
     ['the base repository disagrees with the delivering repository', { pull_request: {
-      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'calltelemetry/other' } },
+      number: 42, state: 'closed', merged: true, base: { repo: { full_name: 'exampleorg/other' } },
     } }],
   ])('ignores a closed payload as not_enrolled when %s, terminalizing nothing', async (_label, overrides) => {
     const f = closedFixture();
@@ -912,7 +912,7 @@ describe('pull request closed admission (REL-896)', () => {
 
   it.each([
     ['the merged flag is missing', { pull_request: {
-      number: 42, state: 'closed', base: { repo: { full_name: 'calltelemetry/dashboard' } },
+      number: 42, state: 'closed', base: { repo: { full_name: 'exampleorg/dashboard' } },
     } }],
     ['the base repository name is malformed', { pull_request: {
       number: 42, state: 'closed', merged: false, base: { repo: { full_name: 42 } },
@@ -970,8 +970,8 @@ describe('pull request closed admission (REL-896)', () => {
   it('ignores a closed delivery for a repository outside the direct App enrollment', async () => {
     const f = closedFixture();
     const body = closedPayload({ repository: {
-      id: 999999, name: 'other', full_name: 'calltelemetry/other',
-      owner: { id: 57884877, login: 'calltelemetry' },
+      id: 999999, name: 'other', full_name: 'exampleorg/other',
+      owner: { id: 57884877, login: 'exampleorg' },
     } });
     const response = await postWebhook(f.instance, body, 'delivery-closed-unenrolled');
     expect(response.status).toBe(200);

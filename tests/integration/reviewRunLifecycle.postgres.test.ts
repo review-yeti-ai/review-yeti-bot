@@ -49,7 +49,7 @@ let pool: Pool;
 let schema: string;
 
 const baseIdentity: ReviewRunIdentity = {
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'review-yeti',
   prNumber: 42,
   headSha: 'a'.repeat(40),

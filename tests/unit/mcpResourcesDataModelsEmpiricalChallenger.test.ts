@@ -18,12 +18,12 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
   // =========================================================================
   describe('Mandate 1: runResource Zero-State Fallback & Exception Safety', () => {
     it('1.1: Returns valid zero-state response without throwing when db is undefined', async () => {
-      const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 42, undefined);
+      const res = await fetchRunResource('exampleorg', 'example-api', 42, undefined);
 
       expect(res).toBeDefined();
-      expect(res.uri).toBe('review-yeti://runs/calltelemetry/cisco-cdr/42');
-      expect(res.owner).toBe('calltelemetry');
-      expect(res.repo).toBe('cisco-cdr');
+      expect(res.uri).toBe('review-yeti://runs/exampleorg/example-api/42');
+      expect(res.owner).toBe('exampleorg');
+      expect(res.repo).toBe('example-api');
       expect(res.pr_number).toBe(42);
       expect(res.found).toBe(false);
       expect(res.run_id).toBeNull();
@@ -41,7 +41,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
         query: vi.fn().mockResolvedValue({ rows: [] }),
       };
 
-      const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 999, mockDb);
+      const res = await fetchRunResource('exampleorg', 'example-api', 999, mockDb);
 
       expect(mockDb.query).toHaveBeenCalledTimes(1);
       expect(res.found).toBe(false);
@@ -63,7 +63,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
           .mockResolvedValueOnce({ rows: [] }),
       };
 
-      const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 500, mockDb);
+      const res = await fetchRunResource('exampleorg', 'example-api', 500, mockDb);
 
       expect(mockDb.query).toHaveBeenCalledTimes(2);
       expect(res.found).toBe(false);
@@ -77,7 +77,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
         query: vi.fn().mockRejectedValue(new Error('FATAL: 57P01: terminating connection due to administrator command')),
       };
 
-      const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 501, mockDb);
+      const res = await fetchRunResource('exampleorg', 'example-api', 501, mockDb);
 
       expect(mockDb.query).toHaveBeenCalledTimes(2);
       expect(res.found).toBe(false);
@@ -103,8 +103,8 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
               {
                 run_id: 'run-phase-test',
                 head_sha: 'a'.repeat(40),
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 10,
                 run_status: tc.status,
                 run_stage: tc.stage,
@@ -114,7 +114,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
           }),
         };
 
-        const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 10, mockDb);
+        const res = await fetchRunResource('exampleorg', 'example-api', 10, mockDb);
         expect(res.phase).toBe(tc.expectedPhase);
       }
     });
@@ -138,8 +138,8 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
               {
                 run_id: 'run-verdict',
                 head_sha: 'a'.repeat(40),
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 1,
                 run_status: 'complete',
                 decision: dc.decision,
@@ -147,7 +147,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
             ],
           }),
         };
-        const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 1, mockDb);
+        const res = await fetchRunResource('exampleorg', 'example-api', 1, mockDb);
         expect(res.verdict).toBe(dc.expectedVerdict);
       }
 
@@ -171,15 +171,15 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
               {
                 run_id: 'run-desired',
                 head_sha: 'a'.repeat(40),
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 1,
                 desired_state: dsc.desired_state,
               },
             ],
           }),
         };
-        const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 1, mockDb);
+        const res = await fetchRunResource('exampleorg', 'example-api', 1, mockDb);
         expect(res.verdict).toBe(dsc.expectedVerdict);
       }
 
@@ -200,15 +200,15 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
               {
                 run_id: 'run-status',
                 head_sha: 'a'.repeat(40),
-                owner: 'calltelemetry',
-                repo: 'cisco-cdr',
+                owner: 'exampleorg',
+                repo: 'example-api',
                 pr_number: 1,
                 run_status: sc.run_status,
               },
             ],
           }),
         };
-        const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 1, mockDb);
+        const res = await fetchRunResource('exampleorg', 'example-api', 1, mockDb);
         expect(res.verdict).toBe(sc.expectedVerdict);
       }
     });
@@ -220,8 +220,8 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
             {
               run_id: 'run-check',
                 head_sha: 'a'.repeat(40),
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               pr_number: 77,
               check_id: '88776655',
               desired_state: 'failure',
@@ -231,10 +231,10 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
         }),
       };
 
-      const res = await fetchRunResource('calltelemetry', 'cisco-cdr', 77, mockDb);
+      const res = await fetchRunResource('exampleorg', 'example-api', 77, mockDb);
       expect(res.check_run).toEqual({
         id: 88776655,
-        url: 'https://github.com/calltelemetry/cisco-cdr/runs/88776655',
+        url: 'https://github.com/exampleorg/example-api/runs/88776655',
         conclusion: 'failure',
       });
     });
@@ -514,11 +514,11 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
   // =========================================================================
   describe('Mandate 3: chartersResource Personas & Directives Contract', () => {
     it('3.1: Returns 4 standard charters and default directives when db is undefined', async () => {
-      const res = await fetchChartersResource('calltelemetry', 'cisco-cdr', undefined);
+      const res = await fetchChartersResource('exampleorg', 'example-api', undefined);
 
-      expect(res.uri).toBe('review-yeti://charters/calltelemetry/cisco-cdr');
-      expect(res.owner).toBe('calltelemetry');
-      expect(res.repo).toBe('cisco-cdr');
+      expect(res.uri).toBe('review-yeti://charters/exampleorg/example-api');
+      expect(res.owner).toBe('exampleorg');
+      expect(res.repo).toBe('example-api');
 
       expect(res.active_personas).toHaveLength(4);
       const personaIds = res.active_personas.map((p) => p.id);
@@ -573,7 +573,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
         }),
       };
 
-      const res = await fetchChartersResource('calltelemetry', 'cisco-cdr', mockDb);
+      const res = await fetchChartersResource('exampleorg', 'example-api', mockDb);
       expect(res.active_personas).toHaveLength(1);
       expect(res.active_personas[0].id).toBe('custom_auditor');
 
@@ -589,7 +589,7 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
         query: vi.fn().mockRejectedValue(new Error('Table repo_review_policies does not exist')),
       };
 
-      const res = await fetchChartersResource('calltelemetry', 'cisco-cdr', mockDb);
+      const res = await fetchChartersResource('exampleorg', 'example-api', mockDb);
       expect(res.active_personas).toEqual(DEFAULT_ACTIVE_PERSONAS);
       expect(res.directives).toEqual(DEFAULT_DIRECTIVES);
     });
@@ -604,17 +604,17 @@ describe('Empirical Challenger 2 Suite: Data Models, Queries & Zero-State Fallba
         query: vi.fn().mockResolvedValue({ rows: [] }),
       };
 
-      const runRes = await readResourceContent('review-yeti://runs/calltelemetry/cisco-cdr/100', mockDb);
+      const runRes = await readResourceContent('review-yeti://runs/exampleorg/example-api/100', mockDb);
       expect(runRes.contents[0].mimeType).toBe('application/json');
       const runData = JSON.parse((runRes.contents[0] as any).text);
       expect(runData.found).toBe(false);
 
-      const findRes = await readResourceContent('review-yeti://findings/calltelemetry/cisco-cdr/100', mockDb);
+      const findRes = await readResourceContent('review-yeti://findings/exampleorg/example-api/100', mockDb);
       expect(findRes.contents[0].mimeType).toBe('application/json');
       const findData = JSON.parse((findRes.contents[0] as any).text);
       expect(findData.total_count).toBe(0);
 
-      const charterRes = await readResourceContent('review-yeti://charters/calltelemetry/cisco-cdr', mockDb);
+      const charterRes = await readResourceContent('review-yeti://charters/exampleorg/example-api', mockDb);
       expect(charterRes.contents[0].mimeType).toBe('application/json');
       const charterData = JSON.parse((charterRes.contents[0] as any).text);
       expect(charterData.active_personas).toHaveLength(4);

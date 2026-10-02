@@ -41,7 +41,7 @@ import {
 import { McpRbacError } from '../../src/mcp/server/mcpRbac';
 
 describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (tests/unit/mcpAttestReplyEmpiricalChallenger.test.ts)', () => {
-  const TEST_OWNER = 'calltelemetry';
+  const TEST_OWNER = 'exampleorg';
   const TEST_REPO = 'ct-review-bot';
   const TEST_PR = 789;
   const VALID_HEAD_SHA = 'abcdef0123456789abcdef0123456789abcdef01';
@@ -891,7 +891,7 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
       const mockRequest = vi.fn().mockResolvedValue({
         id: 771122,
         in_reply_to_id: 4433,
-        html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/789#discussion_r771122',
+        html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/789#discussion_r771122',
         created_at: '2026-09-22T13:50:00Z',
       });
 
@@ -1075,7 +1075,7 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
         replyToReviewComment: vi.fn().mockResolvedValue({
           id: 101010,
           in_reply_to_id: 202020,
-          html_url: 'https://github.com/calltelemetry/ct-review-bot/pull/789#discussion_r101010',
+          html_url: 'https://github.com/review-yeti-ai/review-yeti-bot/pull/789#discussion_r101010',
           created_at: '2026-09-22T13:55:00Z',
         }),
       };

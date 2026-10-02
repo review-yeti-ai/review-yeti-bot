@@ -44,7 +44,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
             isAdmin: false,
             allowedRepositories: new Set([
               `${tenantAOwner}/${tenantARepo}`,
-              'calltelemetry/cisco-cdr',
+              'exampleorg/example-api',
             ]),
             callerId: 'tenant-a-agent',
           } satisfies McpAuthenticatedCaller;
@@ -68,7 +68,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
             isAdmin: false,
             allowedRepositories: new Set([
               `${tenantAOwner}/${tenantARepo}`,
-              'calltelemetry/cisco-cdr',
+              'exampleorg/example-api',
             ]),
             callerId: 'tenant-a-agent',
           };
@@ -319,7 +319,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
 +const { exec } = require('child_process');
 +exec("ping -c 1 " + hostName);
 `;
-      const res = await tool.execute({ repo: 'calltelemetry/cisco-cdr', diff });
+      const res = await tool.execute({ repo: 'exampleorg/example-api', diff });
       const data = JSON.parse((res.content[0] as any).text);
 
       expect(data.eligible_to_ship).toBe(false);
@@ -335,7 +335,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
 +const { execSync } = require('child_process');
 +execSync(cmdPrefix + " -v");
 `;
-      const res = await tool.execute({ repo: 'calltelemetry/cisco-cdr', diff });
+      const res = await tool.execute({ repo: 'exampleorg/example-api', diff });
       const data = JSON.parse((res.content[0] as any).text);
 
       expect(data.eligible_to_ship).toBe(false);
@@ -350,7 +350,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
 +import { exec } from 'child_process';
 +exec(\`git checkout \${branchName}\`);
 `;
-      const res = await tool.execute({ repo: 'calltelemetry/cisco-cdr', diff });
+      const res = await tool.execute({ repo: 'exampleorg/example-api', diff });
       const data = JSON.parse((res.content[0] as any).text);
 
       expect(data.eligible_to_ship).toBe(false);
@@ -368,7 +368,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
 +  return proc;
  }
 `;
-      const res = await tool.execute({ repo: 'calltelemetry/cisco-cdr', diff });
+      const res = await tool.execute({ repo: 'exampleorg/example-api', diff });
       const data = JSON.parse((res.content[0] as any).text);
 
       expect(data.eligible_to_ship).toBe(false);
@@ -385,7 +385,7 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
 +execSync("npm test");
 +spawn("node", ["server.js"]);
 `;
-      const res = await tool.execute({ repo: 'calltelemetry/cisco-cdr', diff: benignDiff });
+      const res = await tool.execute({ repo: 'exampleorg/example-api', diff: benignDiff });
       const data = JSON.parse((res.content[0] as any).text);
 
       // Should not flag any Command Injection findings on constant strings without variables/interpolation
@@ -422,10 +422,10 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
     });
 
     it('infers owner when owner omitted but caller has unique match in allowedRepositories', async () => {
-      // Caller has 'tenant-a-org/tenant-a-service' and 'calltelemetry/cisco-cdr' in allowedRepositories
-      // If repo: 'cisco-cdr' is given without owner, router infers owner: 'calltelemetry' and allows access
+      // Caller has 'tenant-a-org/tenant-a-service' and 'exampleorg/example-api' in allowedRepositories
+      // If repo: 'example-api' is given without owner, router infers owner: 'exampleorg' and allows access
       const res = await invokeTool('preflight_diff_review', {
-        repo: 'cisco-cdr',
+        repo: 'example-api',
         diff: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# A\n+# B',
       });
 
@@ -478,8 +478,8 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
       const tool = createWatchReviewProgressTool({});
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 10,
         })
       ).rejects.toThrow('JetStream subscription service unavailable: subscribeProgress dependency is required to watch review progress');
@@ -488,8 +488,8 @@ describe('Milestone 2 Iteration 2: Deep Empirical Adversarial Verification Suite
     it('get_review_status returns found: false and Database unavailable message when db is missing (never fake SHIP)', async () => {
       const tool = createGetReviewStatusTool();
       const result = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 10,
       });
 

@@ -5,7 +5,7 @@ import { RepositoryContext } from '../../src/review/repositoryContext';
 import { createPRSnapshot } from '../../src/review/prSnapshot';
 
 const snapshot = createPRSnapshot({
-  owner: 'calltelemetry', repo: 'ct-review-bot', prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+  owner: 'exampleorg', repo: 'ct-review-bot', prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
   configRef: 'main:.review.yml', configDigest: 'c'.repeat(64), engineVersion: 'test', changedFiles: [{ path: 'packages/api/src/handler.ts', patch: '@@ -1 +1 @@' }],
 });
 

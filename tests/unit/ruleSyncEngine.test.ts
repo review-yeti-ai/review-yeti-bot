@@ -28,16 +28,16 @@ path_instructions:
     const platformStore = new PlatformMemoryStore(':memory:');
 
     const syncEngine = new RuleSyncEngine(prStore, platformStore);
-    const result = await syncEngine.syncYamlConfigToMemory('calltelemetry/cisco-cdr', yamlSample);
+    const result = await syncEngine.syncYamlConfigToMemory('exampleorg/example-api', yamlSample);
 
     expect(result.rulesSyncedCount).toBe(2);
     expect(result.pathInstructionsSyncedCount).toBe(2);
 
-    const memory = await prStore.queryLearnings('calltelemetry/cisco-cdr');
+    const memory = await prStore.queryLearnings('exampleorg/example-api');
     expect(memory.learnings.length).toBe(2);
     expect(memory.learnings[0].title).toBe('no-customer-identifiers');
 
-    const pathInsts = prStore.queryPathInstructions('calltelemetry/cisco-cdr');
+    const pathInsts = prStore.queryPathInstructions('exampleorg/example-api');
     expect(pathInsts.length).toBe(2);
     expect(pathInsts[0].pathPattern).toBe('tools/**/*.py');
     expect(pathInsts[0].instructions).toContain('Stdlib-first');

@@ -11,7 +11,7 @@ import { VERDICT_CACHE_FLAG } from '../../src/review/verdictCache';
  * empty by default, so an unconfigured install renders exactly what it rendered before.
  */
 const root = path.resolve(__dirname, '../..');
-const pilots = 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta';
+const pilots = 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta';
 
 interface Manifest {
   kind: string;

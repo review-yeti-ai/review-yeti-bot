@@ -63,7 +63,7 @@ index 3333333..4444444 100644
 
       const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
       const res: any = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: diffWithSecretAndCode,
       });
 
@@ -104,7 +104,7 @@ index 3333333..4444444 100644
 
       const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient });
       const res: any = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: diffWithSqliAndCmdi,
       });
 
@@ -215,7 +215,7 @@ index 3333333..4444444 100644
 
       vi.useFakeTimers();
       const execPromise = tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: diffWithSecretAndCode,
       });
 
@@ -266,7 +266,7 @@ index 3333333..4444444 100644
         },
       ]);
 
-      const parsed = parseModelPersonaFindings(rawText, 'cisco-cdr');
+      const parsed = parseModelPersonaFindings(rawText, 'example-api');
       expect(parsed).toHaveLength(1);
       expect(parsed[0].title).toBe('High confidence defect');
     });
@@ -389,8 +389,8 @@ index 3333333..4444444 100644
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: 'find-del-101',
       });
@@ -438,8 +438,8 @@ index 3333333..4444444 100644
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 101,
         finding_id: 'find-ast-202',
       });

@@ -38,7 +38,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('handles 200 concurrent learning, 200 nit, and 50 ADR insertions into in-memory store', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
 
       const learningPromises = Array.from({ length: 200 }, (_, i) =>
         memoryStore.recordLearning(repo, 100 + i, {
@@ -81,7 +81,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
 
     it('handles high-volume concurrent insertions into disk-backed SQLite database file', async () => {
       const diskStore = new PRMemoryStore(DISK_DB_PATH);
-      const repo = 'calltelemetry/disk-stress-repo';
+      const repo = 'exampleorg/disk-stress-repo';
 
       const insertPromises = Array.from({ length: 150 }, (_, i) =>
         diskStore.recordLearning(repo, i, {
@@ -101,7 +101,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('supports interleaved concurrent reads and writes without lock contention failures', async () => {
-      const repo = 'calltelemetry/interleaved-repo';
+      const repo = 'exampleorg/interleaved-repo';
 
       // Seed initial learnings
       for (let i = 0; i < 20; i++) {
@@ -138,7 +138,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('correctly increments nit suppression count under 50 concurrent parallel calls', async () => {
-      const repo = 'calltelemetry/nit-concurrency';
+      const repo = 'exampleorg/nit-concurrency';
       const nit = await memoryStore.recordResolvedNit(repo, 1, {
         pattern: 'avoid-any-type',
         filePath: 'src/types.ts',
@@ -200,7 +200,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('handles invalid regex nit patterns gracefully without throwing uncaught exceptions', async () => {
-      const repo = 'calltelemetry/invalid-regex';
+      const repo = 'exampleorg/invalid-regex';
 
       // Insert invalid regexes that fail RegExp constructor
       const invalidPatterns = [
@@ -246,7 +246,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('matches complex valid regex patterns case-insensitively across title and body', async () => {
-      const repo = 'calltelemetry/regex-repo';
+      const repo = 'exampleorg/regex-repo';
 
       await memoryStore.recordResolvedNit(repo, 1, {
         pattern: 'console\\.(log|warn|error)\\(.*\\)',
@@ -292,7 +292,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('respects file path specificity for resolved nit suppression', async () => {
-      const repo = 'calltelemetry/path-repo';
+      const repo = 'exampleorg/path-repo';
 
       await memoryStore.recordResolvedNit(repo, 1, {
         pattern: 'unused variable',
@@ -344,7 +344,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('correctly matches wildcards, nested paths, and root path edge cases', async () => {
-      const repo = 'calltelemetry/adr-globs';
+      const repo = 'exampleorg/adr-globs';
 
       await memoryStore.recordADRConstraint(repo, {
         adrNumber: 10,
@@ -400,7 +400,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('does not apply ADR constraints when changed file paths do not match globs', async () => {
-      const repo = 'calltelemetry/adr-no-match';
+      const repo = 'exampleorg/adr-no-match';
 
       await memoryStore.recordADRConstraint(repo, {
         adrNumber: 20,
@@ -425,7 +425,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('handles glob patterns containing special regex characters without throwing errors', async () => {
-      const repo = 'calltelemetry/adr-special-chars';
+      const repo = 'exampleorg/adr-special-chars';
 
       await memoryStore.recordADRConstraint(repo, {
         adrNumber: 30,
@@ -468,7 +468,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('calculates default base risk score (0.1) when callers and learnings are zero', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
       const risk = await engine.calculateSymbolRisk(repo, 'UnknownSymbol');
 
       expect(risk.symbolName).toBe('UnknownSymbol');
@@ -478,7 +478,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('calculates score accurately for moderate callers and learnings count', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
       const symbolName = 'ModerateSymbol';
 
       // Insert callers directly into SQLite store
@@ -516,7 +516,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('caps risk score at 1.0 when caller count is extremely high (150 callers)', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
       const symbolName = 'HighCallerSymbol';
 
       const db = (symbolStore as any).db;
@@ -542,7 +542,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('caps risk score at 1.0 when past learnings count is extremely high (150 learnings)', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
       const symbolName = 'BuggySymbol';
 
       for (let i = 0; i < 150; i++) {
@@ -562,7 +562,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
     });
 
     it('maintains 2 decimal precision without floating point representation issues', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
       const symbolName = 'PrecisionSymbol';
 
       // 1 caller (0.05), 1 learning (0.15) -> 0.1 + 0.05 + 0.15 = 0.3
@@ -605,7 +605,7 @@ describe('Milestone 9: PR Memory & Graph Learning Engine Stress & Oracle Verific
           fs.unlinkSync(dbPath);
         } catch {}
       }
-      const repo = 'calltelemetry/persistent-repo';
+      const repo = 'exampleorg/persistent-repo';
 
       // Phase 1: Write data and close store
       const store1 = new PRMemoryStore(dbPath);

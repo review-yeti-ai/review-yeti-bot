@@ -24,11 +24,11 @@ describe('sessionRepository Unit Tests', () => {
   });
 
   it('loads sessions from disk session directory structure and index.json', () => {
-    const sessionPath = path.join(tempDir, 'cisco-cdr', 'ct-review-bot', 'pr-101');
+    const sessionPath = path.join(tempDir, 'example-api', 'ct-review-bot', 'pr-101');
     fs.mkdirSync(sessionPath, { recursive: true });
 
     const metadata = {
-      owner: 'cisco-cdr',
+      owner: 'example-api',
       repo: 'ct-review-bot',
       prNumber: '101',
       branch: 'feature/analytics',
@@ -44,7 +44,7 @@ describe('sessionRepository Unit Tests', () => {
     fs.writeFileSync(path.join(sessionPath, 'metadata.json'), JSON.stringify(metadata, null, 2));
 
     const turn1 = {
-      owner: 'cisco-cdr',
+      owner: 'example-api',
       repo: 'ct-review-bot',
       prNumber: 101,
       headSha: 'sha111',
@@ -60,7 +60,7 @@ describe('sessionRepository Unit Tests', () => {
     fs.writeFileSync(path.join(sessionPath, 'turn-1.json'), JSON.stringify(turn1, null, 2));
 
     const turn2 = {
-      owner: 'cisco-cdr',
+      owner: 'example-api',
       repo: 'ct-review-bot',
       prNumber: 101,
       headSha: 'sha222',
@@ -79,14 +79,14 @@ describe('sessionRepository Unit Tests', () => {
     const sessions = repo.getSessions();
 
     expect(sessions.length).toBe(1);
-    expect(sessions[0].id).toBe('cisco-cdr/ct-review-bot#101');
+    expect(sessions[0].id).toBe('example-api/ct-review-bot#101');
     expect(sessions[0].lastVerdict).toBe('SHIP');
     expect(sessions[0].totalTurns).toBe(2);
     expect(sessions[0].costUSD).toBe(0.05);
     expect(sessions[0].latencyMs).toBe(900);
     expect(sessions[0].findingsDelta?.resolvedFindings).toBe(1);
 
-    const detail = repo.getSessionById('cisco-cdr/ct-review-bot#101');
+    const detail = repo.getSessionById('example-api/ct-review-bot#101');
     expect(detail).not.toBeNull();
     expect(detail?.turns.length).toBe(2);
     expect(detail?.history.length).toBe(2);

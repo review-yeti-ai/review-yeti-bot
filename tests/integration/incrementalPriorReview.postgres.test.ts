@@ -53,7 +53,7 @@ function runId(number: number): string {
 function completionFor(id: string, headSha: string, baseSha: string, executionAttempt: number, prNumber = 42,
   findings: WorkerReviewCompletion['result']['personas'][number]['findings'] = []): WorkerReviewCompletion {
   return {
-    version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: 3210, owner: 'calltelemetry', repo: 'ct-review-actions',
+    version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: 3210, owner: 'exampleorg', repo: 'example-review-actions',
     prNumber, headSha, baseSha, policyDigest: POLICY, configDigest: CONFIG, executionAttempt,
     result: {
       version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T11:00:00.000Z',
@@ -79,7 +79,7 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
         effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
-      ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4, $5, 'app-gate', $6, $7, 3210, $8,
+      ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4, $5, 'app-gate', $6, $7, 3210, $8,
         to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
     `, [id, options.prNumber ?? 42, options.headSha ?? HEAD, options.baseSha ?? BASE, POLICY, options.status ?? 'queued',
       options.generation ?? 0, CONFIG, receivedAt, options.appId === undefined ? APP_ID : options.appId]);

@@ -12,7 +12,7 @@ import { AgentExecutionReceipt, AgentWorkRequest } from '../../src/schemas/agent
 describe('Empirical Challenger M2 R2.1: Pod Log Receipt Extraction Stress Test', () => {
   const baseSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 101,
     commitSha: 'beefcafe1234567890abcdef1234567890abcdef',
     logicalChildId: 'sec-pod-stress-101',

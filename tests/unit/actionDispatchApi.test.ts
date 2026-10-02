@@ -112,7 +112,7 @@ describe('ActionDispatchApi - GET status endpoint', () => {
     const receipt = {
       version: 'AppGateReceipt.v1' as const,
       runId: 'run_abc123', executionAttempt: 2, repositoryId: 42,
-      owner: 'calltelemetry', repo: 'ct-meta', prNumber: 3591,
+      owner: 'exampleorg', repo: 'example-meta', prNumber: 3591,
       headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
       policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
       digest: `sha256:${'e'.repeat(64)}`,

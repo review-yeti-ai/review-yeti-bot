@@ -15,7 +15,7 @@ describe('Tier 4: Real-World Application Scenarios', () => {
 
   it('S1: Full End-to-End Webhook to Canary Check Execution Flow', async () => {
     let doksFallbackPayload: any = null;
-    const fallbackUrl = 'https://doks.calltelemetry.internal/api/webhooks';
+    const fallbackUrl = 'https://doks.example.internal/api/webhooks';
 
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async (url: any, init?: any) => {

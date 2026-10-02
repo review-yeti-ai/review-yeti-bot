@@ -1,7 +1,7 @@
 name: v1 release integrity alarm
 
 # Every consumer resolves this repository's rolling `v1` tag at review time
-# (ct-review-actions pins `action_channel: "v1"`). The promise `v1` makes is
+# (example-review-actions pins `action_channel: "v1"`). The promise `v1` makes is
 # "a commit that passed the release pipeline" — not merely "a commit on main".
 #
 # release.yml's promote-rolling-v1 job upholds that: it only ever moves `v1` to

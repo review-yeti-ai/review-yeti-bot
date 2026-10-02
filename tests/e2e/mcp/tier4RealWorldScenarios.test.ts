@@ -33,8 +33,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
   it('Scenario 1: Multi-file microservice refactor with AST blast radius and ct-impact analysis', async () => {
     // Step 1: Pre-commit diff review across multiple modified files
     const preflightRes = await env.callTool('preflight_diff_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       diff: DIFF_FIXTURES.multiFileRefactor,
       target_branch: 'main',
     });
@@ -51,12 +51,12 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
     expect(impactRes.success).toBe(true);
     expect(impactRes.output.blast_radius).toBe('MEDIUM');
     expect(impactRes.output.transitive_callers).toBe(8);
-    expect(impactRes.output.affected_repos).toContain('calltelemetry/cisco-cdr');
+    expect(impactRes.output.affected_repos).toContain('exampleorg/example-api');
 
     // Step 3: Trigger official exact-head review
     const triggerRes = await env.callTool('trigger_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 901,
       head_sha: 'a'.repeat(40),
       priority: 'normal',
@@ -68,16 +68,16 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 4: Verify status query returns recorded attempt
     env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 901,
       head_sha: 'a'.repeat(40),
       status: 'running',
     });
 
     const statusRes = await env.callTool('get_review_status', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 901,
     });
 
@@ -92,8 +92,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
   it('Scenario 2: Security vulnerability detection, ADR explanation, and fix diff synthesis', async () => {
     // Step 1: Preflight catches SQL injection in local uncommitted changes
     const preflightRes = await env.callTool('preflight_diff_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       diff: DIFF_FIXTURES.sqlInjection,
       target_branch: 'main',
     });
@@ -105,8 +105,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 2: Seed finding into review ledger
     const run = env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 902,
       head_sha: 'b'.repeat(40),
     });
@@ -126,8 +126,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 3: Developer asks for ADR explanation
     const explainRes = await env.callTool('explain_finding', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 902,
       finding_id: sqliFinding.finding_id,
       question: 'What ADR governs SQL queries and what is the required parameterization pattern?',
@@ -138,8 +138,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 4: Synthesize unified git diff patch
     const fixRes = await env.callTool('generate_fix_diff', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 902,
       finding_id: sqliFinding.finding_id,
     });
@@ -157,8 +157,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
   it('Scenario 3: Developer disputes P1 memory finding with bounded LRU proof; quorum unlocks gate', async () => {
     // Step 1: Initial review run records a P1 blocker finding
     const run = env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 903,
       head_sha: 'c'.repeat(40),
     });
@@ -174,8 +174,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 2: Verify finding blocks gate in get_review_findings
     const initialFindings = await env.callTool('get_review_findings', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 903,
       severity: 'P1',
     });
@@ -184,8 +184,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 3: Developer disputes finding with technical justification citing LRU bounds
     const disputeRes = await env.callTool('dispute_finding', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 903,
       finding_id: finding.finding_id,
       counter_argument: 'The event cache is bounded by an LRU cache limited to 1,000 entries with a 5-minute TTL per ADR 0564.',
@@ -198,8 +198,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 4: Developer verifies fix proposal with explain_finding
     const explainRes = await env.callTool('explain_finding', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 903,
       finding_id: finding.finding_id,
       question: 'Does implementing an LRU cache with max-size 1000 satisfy the memory requirements?',
@@ -214,7 +214,7 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
   it('Scenario 4: Composed review engine queries Bifrost blocker-quorum and issues clean SHIP verdict', async () => {
     // Step 1: Query blocker-quorum for repository policy compliance
     const quorumRes = await env.bifrost.executeTool('advise_blocker', {
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
     });
 
     expect(quorumRes.success).toBe(true);
@@ -223,8 +223,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 2: Trigger review for PR
     const triggerRes = await env.callTool('trigger_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 904,
       head_sha: 'd'.repeat(40),
     });
@@ -234,8 +234,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 3: Complete review with SHIP verdict in ledger
     env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 904,
       head_sha: 'd'.repeat(40),
       status: 'completed',
@@ -244,8 +244,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
     // Step 4: Verify review status is SHIP
     const statusRes = await env.callTool('get_review_status', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 904,
     });
 
@@ -267,8 +267,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
     try {
       // Step 1: Preflight catches security rule even when cloud model times out
       const secretRes = await degradedEnv.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.hardcodedSecret,
         target_branch: 'main',
       });
@@ -288,8 +288,8 @@ describe('Tier 4: Real-World Application Scenarios (tests/e2e/mcp/tier4RealWorld
 
       // Step 3: Clean documentation diff remains eligible for fast-ship despite degraded fleet
       const docRes = await degradedEnv.callTool('preflight_diff_review', {
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         diff: DIFF_FIXTURES.safeMarkdown,
         target_branch: 'main',
       });

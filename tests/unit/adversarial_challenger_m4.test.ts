@@ -101,7 +101,7 @@ index 1111111..2222222 100644
 
       const tool = createPreflightDiffReviewTool({ modelClient: mockModelClient as any });
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff,
       });
 
@@ -134,7 +134,7 @@ index 1111111..2222222 100644
       const tool = createPreflightDiffReviewTool({ modelClient: failingModelClient as any });
       // Should NOT throw despite model error
       const result = await tool.execute({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         diff: diffWithSecret,
       });
 
@@ -199,8 +199,8 @@ index 1111111..2222222 100644
 
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 42,
           finding_id: 'f-fix-1',
         },
@@ -260,8 +260,8 @@ index 1111111..2222222 100644
 
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 42,
           finding_id: 'f-fix-2',
         },
@@ -335,8 +335,8 @@ index 1111111..2222222 100644
 
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 10,
           finding_id: 'f-dispute-1',
           counter_argument: 'Cache update is serialized using a dedicated Mutex lock instantiated in line 12.',
@@ -357,8 +357,8 @@ index 1111111..2222222 100644
       expect(updatedPayload.findings[0].status).toBe('OVERRULED');
 
       // Verify SSE resource update notifications were emitted
-      expect(notifySpy).toHaveBeenCalledWith('review-yeti://findings/calltelemetry/cisco-cdr/10');
-      expect(notifySpy).toHaveBeenCalledWith('review-yeti://runs/calltelemetry/cisco-cdr/10');
+      expect(notifySpy).toHaveBeenCalledWith('review-yeti://findings/exampleorg/example-api/10');
+      expect(notifySpy).toHaveBeenCalledWith('review-yeti://runs/exampleorg/example-api/10');
     });
 
     it('EMP-INB-06: dispute_finding rejects low-effort arguments immediately with upheld verdict via defaultAdjudicateFinding heuristics', async () => {
@@ -388,7 +388,7 @@ index 1111111..2222222 100644
             sources: [
               {
                 repositoryId: 1001,
-                repository: 'calltelemetry/cisco-cdr',
+                repository: 'exampleorg/example-api',
                 sha: 'b'.repeat(40),
                 path: 'policy/review.json',
                 contentDigest: 'c'.repeat(64),
@@ -416,8 +416,8 @@ index 1111111..2222222 100644
       });
 
       const res = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 99,
         head_sha: '0123456789abcdef0123456789abcdef01234567',
         review_engine: 'composed',
@@ -444,8 +444,8 @@ index 1111111..2222222 100644
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           head_sha: '1111111111111111111111111111111111111111',
         })
@@ -469,7 +469,7 @@ index 1111111..2222222 100644
     const ciscoCaller: McpAuthenticatedCaller = {
       authType: 'static_token',
       isAdmin: false,
-      allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+      allowedRepositories: new Set(['exampleorg/example-api']),
       callerId: 'cisco-caller',
       tokenDigest: 'd2',
     };
@@ -523,7 +523,7 @@ index 1111111..2222222 100644
 
       // 1. Match by finding_id
       const res1 = await tool.execute(
-        { owner: 'calltelemetry', repo: 'cisco-cdr', finding_id: 'f-explicit-id', question: 'Explain this' },
+        { owner: 'exampleorg', repo: 'example-api', finding_id: 'f-explicit-id', question: 'Explain this' },
         { caller: adminCaller }
       );
       const data1 = JSON.parse((res1 as any).content[0].text);
@@ -532,7 +532,7 @@ index 1111111..2222222 100644
 
       // 2. Match by id alias
       const res2 = await tool.execute(
-        { owner: 'calltelemetry', repo: 'cisco-cdr', finding_id: 'f-alias-id', question: 'Explain this' },
+        { owner: 'exampleorg', repo: 'example-api', finding_id: 'f-alias-id', question: 'Explain this' },
         { caller: adminCaller }
       );
       const data2 = JSON.parse((res2 as any).content[0].text);
@@ -540,7 +540,7 @@ index 1111111..2222222 100644
 
       // 3. Match by SHA-256 hashId
       const res3 = await tool.execute(
-        { owner: 'calltelemetry', repo: 'cisco-cdr', finding_id: expectedHashId, question: 'Explain this' },
+        { owner: 'exampleorg', repo: 'example-api', finding_id: expectedHashId, question: 'Explain this' },
         { caller: adminCaller }
       );
       const data3 = JSON.parse((res3 as any).content[0].text);
@@ -577,7 +577,7 @@ index 1111111..2222222 100644
 
       const tool = createExplainFindingTool({ queryableDatabase: mockDb });
       const res = await tool.execute(
-        { owner: 'calltelemetry', repo: 'cisco-cdr', finding_id: 'f-result-100', question: 'Why is this bad?' },
+        { owner: 'exampleorg', repo: 'example-api', finding_id: 'f-result-100', question: 'Why is this bad?' },
         { caller: adminCaller }
       );
 
@@ -621,7 +621,7 @@ index 1111111..2222222 100644
 
       const toolResult = createExplainFindingTool({ queryableDatabase: mockDbResult });
       const res1 = await toolResult.execute(
-        { owner: 'calltelemetry', repo: 'cisco-cdr', finding_id: 'f-sec-nested', question: 'What is HttpOnly?' },
+        { owner: 'exampleorg', repo: 'example-api', finding_id: 'f-sec-nested', question: 'What is HttpOnly?' },
         { caller: adminCaller }
       );
       expect(JSON.parse((res1 as any).content[0].text).explanation).toContain('Insecure cookie configuration');
@@ -657,7 +657,7 @@ index 1111111..2222222 100644
 
       const toolLegacy = createExplainFindingTool({ queryableDatabase: mockDbLegacy });
       const res2 = await toolLegacy.execute(
-        { owner: 'calltelemetry', repo: 'cisco-cdr', finding_id: 'f-arch-legacy', question: 'Explain cycle' },
+        { owner: 'exampleorg', repo: 'example-api', finding_id: 'f-arch-legacy', question: 'Explain cycle' },
         { caller: adminCaller }
       );
       expect(JSON.parse((res2 as any).content[0].text).explanation).toContain('Circular dependency between modules');
@@ -705,8 +705,8 @@ index 1111111..2222222 100644
       // Case A: with pull_number
       const resWithPr = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 123,
           finding_id: 'f-art-1',
           question: 'Explain artifact finding',
@@ -723,8 +723,8 @@ index 1111111..2222222 100644
       queriedTables.length = 0;
       const resWithoutPr = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'f-art-1',
           question: 'Explain artifact finding without pr',
         },
@@ -747,8 +747,8 @@ index 1111111..2222222 100644
 
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'nonexistent-uuid-999',
           question: 'Can I ignore this?',
         },
@@ -768,8 +768,8 @@ index 1111111..2222222 100644
         query: vi.fn().mockResolvedValue({
           rows: [
             {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               run_id: 'run-secret',
               payload: {
                 findings: [
@@ -790,11 +790,11 @@ index 1111111..2222222 100644
 
       const tool = createExplainFindingTool({ queryableDatabase: mockDb });
 
-      // 1. Authorized caller for calltelemetry/cisco-cdr: SUCCEEDS
+      // 1. Authorized caller for exampleorg/example-api: SUCCEEDS
       const resAllowed = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'f-confidential',
           question: 'Explain this',
         },
@@ -803,11 +803,11 @@ index 1111111..2222222 100644
       const dataAllowed = JSON.parse((resAllowed as any).content[0].text);
       expect(dataAllowed.explanation).toContain('Confidential security vulnerability');
 
-      // 2. Unauthorized caller for calltelemetry/cisco-cdr: FAILS CLOSED (returns finding not found, 0 data leaked)
+      // 2. Unauthorized caller for exampleorg/example-api: FAILS CLOSED (returns finding not found, 0 data leaked)
       const resDenied = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'f-confidential',
           question: 'Explain this',
         },
@@ -818,8 +818,8 @@ index 1111111..2222222 100644
 
       // 3. Missing caller context on scoped query: FAILS CLOSED
       const resNoCaller = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         finding_id: 'f-confidential',
         question: 'Explain this',
       });
@@ -832,8 +832,8 @@ index 1111111..2222222 100644
         query: vi.fn().mockResolvedValue({
           rows: [
             {
-              owner: 'calltelemetry',
-              repo: 'cisco-cdr',
+              owner: 'exampleorg',
+              repo: 'example-api',
               run_id: 'run-cisco',
               payload: {
                 findings: [{ finding_id: 'f-cisco', title: 'Cisco Finding' }],
@@ -893,8 +893,8 @@ index 1111111..2222222 100644
       // Should not throw SyntaxError; should gracefully return not found
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'any-id',
           question: 'Explain this',
         },
@@ -939,8 +939,8 @@ index 1111111..2222222 100644
 
       const res = await tool.execute(
         {
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           finding_id: 'f-timeout-1',
           question: 'What if I implement a bounded LRU ring buffer with max capacity 100?',
         },

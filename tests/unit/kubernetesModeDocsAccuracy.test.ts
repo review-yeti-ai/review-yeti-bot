@@ -74,7 +74,7 @@ describe('Kubernetes Mode documentation matches enforced behaviour', () => {
     // instead of checking the behaviour.
     expect(() => validateDispatchEndpoint('https://review.example.invalid/api/dispatch/action'))
       .toThrow(/must be exactly/u);
-    expect(() => validateDispatchEndpoint('http://review-bot.calltelemetry.com/api/dispatch/action'))
+    expect(() => validateDispatchEndpoint('http://review-bot.example.com/api/dispatch/action'))
       .toThrow(/must be exactly/u);
     // If this ever stops throwing, self-hosting became real and these docs
     // assertions should be revisited rather than mechanically satisfied.

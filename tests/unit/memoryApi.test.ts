@@ -32,7 +32,7 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
       .post('/api/memory/record')
       .set('x-api-key', apiKey)
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 99,
         type: 'learning',
         data: {
@@ -52,7 +52,7 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
       .post('/api/memory/query')
       .set('x-api-key', apiKey)
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         filePath: 'src/api/memoryApi.ts',
       });
 
@@ -68,7 +68,7 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
       .post('/api/memory/record')
       .set('x-api-key', apiKey)
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 10,
         type: 'nit',
         data: {
@@ -85,7 +85,7 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
       .post('/api/memory/record')
       .set('x-api-key', apiKey)
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         type: 'adr',
         data: {
           adrNumber: 3,
@@ -102,7 +102,7 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
     const queryRes = await request(app)
       .post('/api/memory/query')
       .set('x-api-key', apiKey)
-      .send({ repo: 'calltelemetry/cisco-cdr' });
+      .send({ repo: 'exampleorg/example-api' });
 
     expect(queryRes.status).toBe(200);
     expect(queryRes.body.resolvedNits.length).toBe(1);
@@ -212,12 +212,12 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
 
   it('GET and POST /api/memory/learnings return repo learnings, nits, and adrs', async () => {
     const getRes = await request(app)
-      .get('/api/memory/learnings?repo=calltelemetry/cisco-cdr')
+      .get('/api/memory/learnings?repo=exampleorg/example-api')
       .set('x-api-key', apiKey);
 
     expect(getRes.status).toBe(200);
     expect(getRes.body.success).toBe(true);
-    expect(getRes.body.repo).toBe('calltelemetry/cisco-cdr');
+    expect(getRes.body.repo).toBe('exampleorg/example-api');
     expect(Array.isArray(getRes.body.learnings)).toBe(true);
     expect(Array.isArray(getRes.body.resolvedNits)).toBe(true);
     expect(Array.isArray(getRes.body.adrConstraints)).toBe(true);
@@ -225,7 +225,7 @@ describe('MemoryApi REST Endpoints Unit Tests', () => {
     const postRes = await request(app)
       .post('/api/memory/learnings')
       .set('x-api-key', apiKey)
-      .send({ repo: 'calltelemetry/cisco-cdr' });
+      .send({ repo: 'exampleorg/example-api' });
 
     expect(postRes.status).toBe(200);
     expect(postRes.body.success).toBe(true);

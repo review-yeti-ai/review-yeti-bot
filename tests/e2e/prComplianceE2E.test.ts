@@ -24,7 +24,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
       action: 'opened',
       number: 101,
       installation: { id: 98765 },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       pull_request: {
         number: 101,
         head: { sha: 'head-sha-101' },
@@ -43,7 +43,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
     expect(result.reason).toContain('PR opened event triggered review');
     expect(result.parsedPayload).toBeDefined();
     expect(result.parsedPayload?.installationId).toBe('98765');
-    expect(result.parsedPayload?.owner).toBe('calltelemetry');
+    expect(result.parsedPayload?.owner).toBe('exampleorg');
     expect(result.parsedPayload?.repo).toBe('ct-review-bot');
     expect(result.parsedPayload?.prNumber).toBe(101);
     expect(result.parsedPayload?.headSha).toBe('head-sha-101');
@@ -57,7 +57,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
       action: 'synchronize',
       number: 102,
       installation: { id: 98765 },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       pull_request: {
         number: 102,
         head: { sha: 'head-sha-102-v2' },
@@ -82,7 +82,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
       action: 'opened',
       number: 103,
       installation: { id: 98765 },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       pull_request: {
         number: 103,
         head: { sha: 'head-sha-103' },
@@ -134,7 +134,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
     const payload = {
       action: 'created',
       installation: { id: 98765 },
-      repository: { owner: { login: 'calltelemetry' }, name: 'ct-review-bot' },
+      repository: { owner: { login: 'exampleorg' }, name: 'ct-review-bot' },
       issue: {
         number: 201,
         title: 'PR Title',
@@ -167,7 +167,7 @@ describe('End-to-End PR Compliance Checks & Webhook Pipeline Lifecycle', () => {
   });
 
   it('tracks head SHA updates and detects current vs stale head in ReviewRunStore', () => {
-    const owner = 'calltelemetry';
+    const owner = 'exampleorg';
     const repo = 'ct-review-bot';
     const prNumber = 301;
 

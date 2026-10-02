@@ -19,23 +19,23 @@ import { RepositorySetting, ReviewJob, PersonaSetting, ProviderConfigRecord, Mod
 // --- Fixtures for Testing ---
 const mockRepos: RepositorySetting[] = [
   {
-    owner: 'calltelemetry',
-    repo: 'cisco-cdr',
+    owner: 'exampleorg',
+    repo: 'example-api',
     automationEnabled: true,
     generateArchitecturalFlowchart: true,
     customProfile: 'balanced',
     updatedAt: new Date().toISOString(),
   },
   {
-    owner: 'calltelemetry',
-    repo: 'ct-meta',
+    owner: 'exampleorg',
+    repo: 'example-meta',
     automationEnabled: false,
     generateArchitecturalFlowchart: false,
     customProfile: 'assertive',
     updatedAt: new Date().toISOString(),
   },
   {
-    owner: 'calltelemetry',
+    owner: 'exampleorg',
     repo: 'undefined-flowchart-repo',
     automationEnabled: true,
     generateArchitecturalFlowchart: undefined,
@@ -46,7 +46,7 @@ const mockRepos: RepositorySetting[] = [
 
 const mockJob: ReviewJob = {
   id: 'job-m3-test-999',
-  repo: 'calltelemetry/cisco-cdr',
+  repo: 'exampleorg/example-api',
   prNumber: 4040,
   title: 'feat(m3): empirical verification test job',
   verdict: 'SHIP',
@@ -111,17 +111,17 @@ describe('Milestone 3 Empirical Stress Verification', () => {
         />
       );
 
-      const firstToggle = screen.getByTestId('repo-flowchart-toggle-calltelemetry-cisco-cdr');
+      const firstToggle = screen.getByTestId('repo-flowchart-toggle-exampleorg-example-api');
       fireEvent.click(firstToggle);
 
       expect(onToggleFlowchart).toHaveBeenCalledTimes(1);
-      expect(onToggleFlowchart).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr', false);
+      expect(onToggleFlowchart).toHaveBeenCalledWith('exampleorg', 'example-api', false);
 
-      const secondToggle = screen.getByTestId('repo-flowchart-toggle-calltelemetry-ct-meta');
+      const secondToggle = screen.getByTestId('repo-flowchart-toggle-exampleorg-example-meta');
       fireEvent.click(secondToggle);
 
       expect(onToggleFlowchart).toHaveBeenCalledTimes(2);
-      expect(onToggleFlowchart).toHaveBeenLastCalledWith('calltelemetry', 'ct-meta', true);
+      expect(onToggleFlowchart).toHaveBeenLastCalledWith('exampleorg', 'example-meta', true);
     });
 
     it('1.3 Handles settings modal flowchart toggle and state updates without crashing when onToggleFlowchart is missing', () => {
@@ -133,10 +133,10 @@ describe('Milestone 3 Empirical Stress Verification', () => {
         />
       );
 
-      const settingsBtn = screen.getByTestId('repo-settings-btn-calltelemetry-cisco-cdr');
+      const settingsBtn = screen.getByTestId('repo-settings-btn-exampleorg-example-api');
       fireEvent.click(settingsBtn);
 
-      expect(screen.getByText(/Repository Settings — calltelemetry\/cisco-cdr/i)).toBeInTheDocument();
+      expect(screen.getByText(/Repository Settings — exampleorg\/example-api/i)).toBeInTheDocument();
       const modalToggle = screen.getByTestId('modal-repo-flowchart-toggle');
       expect(modalToggle).toHaveAttribute('aria-checked', 'true');
 

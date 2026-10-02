@@ -281,7 +281,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth.ts', patch: '+auth' }],
-        repository: 'calltelemetry/ct-meta',
+        repository: 'exampleorg/example-meta',
         headSha: 'abc123',
         client: { complete } as unknown as OmniRouteClient,
       });
@@ -340,7 +340,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth.ts', patch: '+test' }],
-        repository: 'calltelemetry/ct-meta',
+        repository: 'exampleorg/example-meta',
         headSha: 'abc123',
         client: { complete } as unknown as OmniRouteClient,
       });
@@ -372,7 +372,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth.ts', patch: '+test' }],
-        repository: 'calltelemetry/ct-meta',
+        repository: 'exampleorg/example-meta',
         headSha: 'abc123',
         client: { complete } as unknown as OmniRouteClient,
       });
@@ -391,7 +391,7 @@ describe('Challenger Empirical Suite: Code Review Suggestions, Panel Parser & Fo
       await expect(executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth.ts', patch: '+test' }],
-        repository: 'calltelemetry/ct-meta',
+        repository: 'exampleorg/example-meta',
         headSha: 'abc123',
         client: { complete } as unknown as OmniRouteClient,
       })).rejects.toThrow(PanelConfigurationError);

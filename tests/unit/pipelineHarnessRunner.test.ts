@@ -138,7 +138,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
           { path: 'sip_signaling_service/index.ts', patch: '@@ -1,1 +1,2 @@\n+const x = 1;' },
         ],
         prContext: {
-          repo: 'calltelemetry/telecom-engine',
+          repo: 'exampleorg/telecom-engine',
           prNumber: 42,
           title: 'Add call router',
           headSha: 'abc1234',
@@ -151,7 +151,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
       const userPrompt = buildPersonaUserPrompt(scenario, budget);
 
       expect(userPrompt).toContain('PR #42: Add call router');
-      expect(userPrompt).toContain('Repository: calltelemetry/telecom-engine');
+      expect(userPrompt).toContain('Repository: exampleorg/telecom-engine');
       expect(userPrompt).toContain('sip_signaling_service/index.ts');
       expect(userPrompt).toContain('+const x = 1;');
     });
@@ -206,7 +206,7 @@ describe('Pipeline Harness Runner Unit Tests (Milestone M2)', () => {
           { path: 'sip_signaling_service/index.ts', patch: '@@ -1,1 +1,2 @@\n+export const v = 1;' },
         ],
         prContext: {
-          repo: 'calltelemetry/telecom-engine',
+          repo: 'exampleorg/telecom-engine',
           prNumber: 99,
           title: 'Multi-turn test PR',
           headSha: 'sha99',

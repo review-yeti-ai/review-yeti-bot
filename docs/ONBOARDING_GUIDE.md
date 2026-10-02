@@ -255,12 +255,12 @@ Review Yeti features an interactive web management and analytics portal with liv
 
 ### Dashboard URLs
 
-- ⚡ **Cloudflare Edge Worker**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev)
-  - **Live Review Inspector**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/live`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/live)
-  - **Executive Analytics**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/analytics`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/analytics)
-  - **Repository Management**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/repos`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/repos)
-  - **Settings**: [`https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/settings`](https://review-yeti-cf-orchestrator.call-telemetry.workers.dev/settings)
-- 🌐 **Production Domain**: [`https://review-bot.calltelemetry.com`](https://review-bot.calltelemetry.com)
+- ⚡ **Cloudflare Edge Worker**: [`https://review-yeti-cf-orchestrator.example.workers.dev`](https://review-yeti-cf-orchestrator.example.workers.dev)
+  - **Live Review Inspector**: [`https://review-yeti-cf-orchestrator.example.workers.dev/live`](https://review-yeti-cf-orchestrator.example.workers.dev/live)
+  - **Executive Analytics**: [`https://review-yeti-cf-orchestrator.example.workers.dev/analytics`](https://review-yeti-cf-orchestrator.example.workers.dev/analytics)
+  - **Repository Management**: [`https://review-yeti-cf-orchestrator.example.workers.dev/repos`](https://review-yeti-cf-orchestrator.example.workers.dev/repos)
+  - **Settings**: [`https://review-yeti-cf-orchestrator.example.workers.dev/settings`](https://review-yeti-cf-orchestrator.example.workers.dev/settings)
+- 🌐 **Production Domain**: [`https://review-bot.example.com`](https://review-bot.example.com)
 - 💻 **Local Development**: [`http://localhost:3000`](http://localhost:3000)
 
 ### Deploying the Portal to Cloudflare

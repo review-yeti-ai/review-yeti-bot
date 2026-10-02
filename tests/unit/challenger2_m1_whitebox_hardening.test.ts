@@ -252,7 +252,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         executePersonaPanel({
           config: validBaseConfig,
           changedFiles: [{ path: 'pkg/driver.go', patch: '+ package driver' }], // sec-lane only matches src/**, and pkg/driver.go is code
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'head-sha-123',
           client,
         })
@@ -281,7 +281,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         config: validBaseConfig,
         changedFiles: [{ path: 'src/index.ts', patch: '+ code' }],
         candidatePersonas: [],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'head-sha-123',
         client,
       });
@@ -327,7 +327,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       const result = await executePersonaPanel({
         config: validBaseConfig,
         changedFiles: [{ path: 'src/main.ts', patch: '+ const a = 1;' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'head-sha-single',
         client: { complete } as any,
       });
@@ -377,7 +377,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
         executePersonaPanel({
           config: higherQuorumConfig as any,
           changedFiles: [{ path: 'src/main.ts', patch: '+ const a = 1;' }],
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'head-sha-quorum-fail',
           client: { complete } as any,
         })
@@ -422,7 +422,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       await executePersonaPanel({
         config: validBaseConfig,
         changedFiles: [{ path: 'src/main.ts', patch: '+ const a = 1;' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'head-sha-anthropic-blocks',
         client: { complete } as any,
       });
@@ -463,7 +463,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      await expect(client.getBasePolicy('calltelemetry', 'cisco-cdr', 'sha-base')).rejects.toThrow(
+      await expect(client.getBasePolicy('exampleorg', 'example-api', 'sha-base')).rejects.toThrow(
         /^GitHub API 404\b/u
       );
 
@@ -503,7 +503,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      const policy = await client.getBasePolicy('calltelemetry', 'cisco-cdr', 'sha-base');
+      const policy = await client.getBasePolicy('exampleorg', 'example-api', 'sha-base');
       expect(policy).toContain('profile: balanced');
       expect(mockFetch).toHaveBeenCalledTimes(2);
 
@@ -536,7 +536,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      await expect(client.getBasePolicy('calltelemetry', 'cisco-cdr', 'sha-base')).rejects.toThrow(
+      await expect(client.getBasePolicy('exampleorg', 'example-api', 'sha-base')).rejects.toThrow(
         'GitHub API 500'
       );
       // Stopped at secondary (2 attempts)
@@ -569,7 +569,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      await expect(client.getBasePolicy('calltelemetry', 'cisco-cdr', 'sha-base')).rejects.toThrow(
+      await expect(client.getBasePolicy('exampleorg', 'example-api', 'sha-base')).rejects.toThrow(
         'GitHub API 403'
       );
       expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -604,7 +604,7 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      await expect(client.getBasePolicy('calltelemetry', 'cisco-cdr', 'sha-base')).rejects.toThrow(
+      await expect(client.getBasePolicy('exampleorg', 'example-api', 'sha-base')).rejects.toThrow(
         'base policy response is not base64 file content'
       );
 
@@ -617,8 +617,8 @@ describe('Adversarial Challenge 2: White-Box Coverage Hardening', () => {
   // ==========================================================================
   describe('5. ReviewDispatchRepository: Re-admission Conflict Handling', () => {
     const identity = {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       prNumber: 42,
       headSha: 'a'.repeat(40),
       baseSha: 'b'.repeat(40),

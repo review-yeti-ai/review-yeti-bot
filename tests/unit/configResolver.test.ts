@@ -14,8 +14,8 @@ describe('ConfigResolver Unit Tests (Milestone 39)', () => {
     const client = mockClient({});
 
     const config = await resolver.resolveConfig({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       ref: 'main',
       client,
     });
@@ -106,7 +106,7 @@ personas:
     const client = mockClient({ '.ct-review.yaml': repoYaml });
 
     const config = await resolver.resolveConfig({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       ref: 'main',
       client,

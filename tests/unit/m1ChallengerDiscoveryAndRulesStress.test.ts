@@ -19,14 +19,14 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
     (dashboardStore as any).data.repositories = [];
 
     // Seed baseline test repository (monitored)
-    dashboardStore.updateRepository('calltelemetry', 'cisco-cdr', {
+    dashboardStore.updateRepository('exampleorg', 'example-api', {
       automationEnabled: true,
       customProfile: 'balanced',
       generateArchitecturalFlowchart: true,
     });
 
     // Seed a disabled test repository
-    dashboardStore.updateRepository('calltelemetry', 'paused-service', {
+    dashboardStore.updateRepository('exampleorg', 'paused-service', {
       automationEnabled: false,
       customProfile: 'chill',
     });
@@ -56,7 +56,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       for (const profile of invalidProfiles) {
         const res = await request(app)
-          .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+          .put('/api/dashboard/repositories/exampleorg/example-api/rules')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({
             reviews: { profile },
@@ -73,7 +73,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       for (const profile of invalidTypes) {
         const res = await request(app)
-          .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+          .put('/api/dashboard/repositories/exampleorg/example-api/rules')
           .set('Authorization', `Bearer ${adminToken}`)
           .send({
             reviews: { profile },
@@ -87,28 +87,28 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
     it('enforces confidence_threshold boundaries [0, 100]', async () => {
       // Out of range: negative
       const resNeg = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { confidence_threshold: -1 } });
       expect(resNeg.status).toBe(400);
 
       // Out of range: over 100
       const resOver = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { confidence_threshold: 100.01 } });
       expect(resOver.status).toBe(400);
 
       // Invalid type: string
       const resStr = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { confidence_threshold: '75' } });
       expect(resStr.status).toBe(400);
 
       // Valid boundary: 0
       const res0 = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { confidence_threshold: 0 } });
       expect(res0.status).toBe(200);
@@ -116,7 +116,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       // Valid boundary: 100
       const res100 = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { confidence_threshold: 100 } });
       expect(res100.status).toBe(200);
@@ -126,34 +126,34 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
     it('enforces default_max_turns boundaries [1, 20] and integer constraint', async () => {
       // Less than 1
       const resZero = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { default_max_turns: 0 } });
       expect(resZero.status).toBe(400);
 
       const resNeg = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { default_max_turns: -5 } });
       expect(resNeg.status).toBe(400);
 
       // Greater than 20
       const res21 = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { default_max_turns: 21 } });
       expect(res21.status).toBe(400);
 
       // Non-integer float
       const resFloat = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { default_max_turns: 5.5 } });
       expect(resFloat.status).toBe(400);
 
       // Valid boundary: 1
       const res1 = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { default_max_turns: 1 } });
       expect(res1.status).toBe(200);
@@ -161,7 +161,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       // Valid boundary: 20
       const res20 = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { default_max_turns: 20 } });
       expect(res20.status).toBe(200);
@@ -171,14 +171,14 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
     it('rejects invalid reviewer_effort and enforcement_policy.failure_action', async () => {
       // Invalid reviewer_effort
       const resEffort = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { reviewer_effort: 'insane' } });
       expect(resEffort.status).toBe(400);
 
       // Valid reviewer_effort: max
       const resEffortValid = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ reviews: { reviewer_effort: 'max' } });
       expect(resEffortValid.status).toBe(200);
@@ -186,14 +186,14 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       // Invalid failure_action
       const resAction = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ enforcement_policy: { failure_action: 'destroy_repo' } });
       expect(resAction.status).toBe(400);
 
       // Valid failure_action: quarantine
       const resActionValid = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({ enforcement_policy: { failure_action: 'quarantine' } });
       expect(resActionValid.status).toBe(200);
@@ -203,7 +203,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
     it('rejects malformed path_instructions items', async () => {
       // Invalid: instruction missing or not string
       const resBadItem = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           reviews: {
@@ -214,7 +214,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       // Valid path instruction
       const resValid = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           reviews: {
@@ -228,7 +228,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
     it('handles non-object and array payloads safely without crashing', async () => {
       const resArray = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .set('Content-Type', 'application/json')
         .send(JSON.stringify(['reviews', 'auto_review']));
@@ -236,7 +236,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
       expect([400, 422]).toContain(resArray.status);
 
       const resString = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .set('Content-Type', 'application/json')
         .send(JSON.stringify('malformed string'));
@@ -246,7 +246,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
     it('supports camelCase aliases for autoReview and enforcementPolicy via schema preprocess', async () => {
       const res = await request(app)
-        .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+        .put('/api/dashboard/repositories/exampleorg/example-api/rules')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           autoReview: {
@@ -272,8 +272,8 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
     it('returns 404 for GET /rules on nonexistent repository and owner', async () => {
       const cases = [
         { owner: 'nonexistent-owner', repo: 'nonexistent-repo' },
-        { owner: 'calltelemetry', repo: 'phantom-repo' },
-        { owner: 'ghost-org', repo: 'cisco-cdr' },
+        { owner: 'exampleorg', repo: 'phantom-repo' },
+        { owner: 'ghost-org', repo: 'example-api' },
       ];
 
       for (const c of cases) {
@@ -350,7 +350,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
       for (const pr of invalidPrs) {
         const res = await request(app)
-          .post(`/api/github/repos/calltelemetry/cisco-cdr/pulls/${pr}/review`)
+          .post(`/api/github/repos/exampleorg/example-api/pulls/${pr}/review`)
           .set('Authorization', `Bearer ${adminToken}`)
           .send({
             headSha: 'abcdef1234567890',
@@ -365,7 +365,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
     it('rejects decimal PR numbers like 3.14 with 400 Bad Request', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/3.14/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/3.14/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -400,7 +400,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
     it('rejects review dispatch when repo automation is explicitly disabled', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/paused-service/pulls/12/review')
+        .post('/api/github/repos/exampleorg/paused-service/pulls/12/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
@@ -411,7 +411,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
     it('successfully queues on-demand review for valid high integer prNumber and returns 202', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/999999/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/999999/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           headSha: 'feedface0987654321',
@@ -425,18 +425,18 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
     it('generates random headSha and default title when body is empty', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/500/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/500/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({});
 
       expect(res.status).toBe(202);
       expect(res.body.success).toBe(true);
-      expect(res.body.jobId).toContain('job_calltelemetry_cisco-cdr_pr500');
+      expect(res.body.jobId).toContain('job_exampleorg_example-api_pr500');
     });
 
     it('records review run into dashboardStore after mock dispatch', async () => {
       const res = await request(app)
-        .post('/api/github/repos/calltelemetry/cisco-cdr/pulls/88/review')
+        .post('/api/github/repos/exampleorg/example-api/pulls/88/review')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           headSha: '88888888888888888888',
@@ -472,7 +472,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
 
         requests.push(
           request(app)
-            .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+            .put('/api/dashboard/repositories/exampleorg/example-api/rules')
             .set('Authorization', `Bearer ${adminToken}`)
             .send({
               reviews: {
@@ -497,7 +497,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
       }
 
       // Check that final repository state in store is consistent and valid
-      const finalRules = dashboardStore.getRepositoryRules('calltelemetry', 'cisco-cdr');
+      const finalRules = dashboardStore.getRepositoryRules('exampleorg', 'example-api');
       expect(profiles).toContain(finalRules.reviews.profile);
       expect(finalRules.reviews.confidence_threshold).toBeGreaterThanOrEqual(50);
       expect(finalRules.reviews.confidence_threshold).toBeLessThanOrEqual(99);
@@ -506,7 +506,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
       expect(typeof finalRules.auto_review.enabled).toBe('boolean');
 
       // Top-level synced fields should match
-      const repoSetting = dashboardStore.getRepository('calltelemetry', 'cisco-cdr');
+      const repoSetting = dashboardStore.getRepository('exampleorg', 'example-api');
       expect(repoSetting?.customProfile).toBe(finalRules.reviews.profile);
       expect(repoSetting?.automationEnabled).toBe(finalRules.auto_review.enabled);
     });
@@ -526,7 +526,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
       for (let i = 1; i <= 25; i++) {
         requests.push(
           request(app)
-            .post(`/api/github/repos/calltelemetry/cisco-cdr/pulls/${i}/review`)
+            .post(`/api/github/repos/exampleorg/example-api/pulls/${i}/review`)
             .set('Authorization', `Bearer ${adminToken}`)
             .send({
               headSha: `sha_${i}_${Date.now()}`,
@@ -557,7 +557,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
         if (i % 2 === 0) {
           interleaved.push(
             request(app)
-              .put('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+              .put('/api/dashboard/repositories/exampleorg/example-api/rules')
               .set('Authorization', `Bearer ${adminToken}`)
               .send({
                 reviews: {
@@ -569,7 +569,7 @@ describe('Milestone 1 Challenger: Adversarial Stress Test Suite (Discovery & Rev
         } else {
           interleaved.push(
             request(app)
-              .get('/api/dashboard/repositories/calltelemetry/cisco-cdr/rules')
+              .get('/api/dashboard/repositories/exampleorg/example-api/rules')
               .set('Authorization', `Bearer ${adminToken}`)
           );
         }

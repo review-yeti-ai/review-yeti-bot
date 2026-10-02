@@ -72,7 +72,7 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
       await pool.query(`INSERT INTO review_runs
         (run_id, owner, repo, pr_number, head_sha, status, stage, attempt,
          created_at, updated_at, received_at, burst_started_at, terminal_deadline, artifacts)
-        VALUES ($1, 'calltelemetry', 'timing-fixture', 42, $2, 'failed', 'publish', 1,
+        VALUES ($1, 'exampleorg', 'timing-fixture', 42, $2, 'failed', 'publish', 1,
           $3, $4, $5, $3, $6, '{}'::jsonb)`,
       [RUN, HEAD, CREATED, COMPLETED, RECEIVED, '2026-09-30T13:42:51.000Z']);
       await pool.query(`INSERT INTO review_gate_attempts
@@ -130,7 +130,7 @@ for (const shape of ['typed', 'payload-only legacy'] as const) {
 
     async function status(head = true) {
       const result = await createGetReviewStatusTool(pool).execute({
-        owner: 'calltelemetry', repo: 'timing-fixture', pull_number: 42,
+        owner: 'exampleorg', repo: 'timing-fixture', pull_number: 42,
         ...(head ? { head_sha: HEAD } : {}),
       });
       return JSON.parse((result.content[0] as { text: string }).text);

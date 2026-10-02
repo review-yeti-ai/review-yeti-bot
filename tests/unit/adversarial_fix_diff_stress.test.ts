@@ -413,8 +413,8 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 42,
         finding_id: 'find-all-fallbacks',
       });
@@ -458,8 +458,8 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 42,
         finding_id: 'find-fixopt',
       });
@@ -497,8 +497,8 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
 
       const tool = createGenerateFixDiffTool({ queryableDatabase: mockDb });
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 42,
         finding_id: 'find-sugg',
       });
@@ -538,13 +538,13 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
       });
 
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 42,
         finding_id: 'find-fetch-remote',
       });
 
-      expect(mockFetch).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr', 'src/remote.ts', 20, 21);
+      expect(mockFetch).toHaveBeenCalledWith('exampleorg', 'example-api', 'src/remote.ts', 20, 21);
       const data = JSON.parse(res.content[0].text);
       expect(data.original_lines).toBe('line 20 content;\nline 21 content;');
       expect(data.patch).toContain('@@ -20,2 +20,1 @@');
@@ -592,8 +592,8 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
       });
 
       const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pr_number: 42,
         finding_id: 'find-model-fail',
       });
@@ -616,8 +616,8 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
       await expect(
         tool.execute(
           {
-            owner: 'calltelemetry',
-            repo: 'cisco-cdr',
+            owner: 'exampleorg',
+            repo: 'example-api',
             pr_number: 42,
             finding_id: 'any-finding-id',
           },
@@ -632,8 +632,8 @@ describe('Adversarial Fix Diff Empirical Stress Suite (tests/unit/adversarial_fi
 
       await expect(
         tool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 42,
           finding_id: 'ghost-finding-1234',
         })

@@ -7,12 +7,12 @@ import * as yaml from 'js-yaml';
 describe('Milestone 1 Challenger 1: Resource Envelope & Boundary Stress Suite', () => {
   const baseSpec: K8sJobSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 42,
     commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
   };
 
-  const ctInfraPath = process.env.CT_INFRA_PATH || path.resolve(__dirname, '../../../../ct-infrastructure');
+  const ctInfraPath = process.env.CT_INFRA_PATH || path.resolve(__dirname, '../../../../example-infra');
   const appsDir = path.join(ctInfraPath, 'clusters/doks-nyc1/apps/ct-review-system');
 
   // ==========================================================================
@@ -120,7 +120,7 @@ describe('Milestone 1 Challenger 1: Resource Envelope & Boundary Stress Suite', 
   // ==========================================================================
   // Section 3: Cross-Manifest ResourceQuota & Concurrency Consistency
   // ==========================================================================
-  describe('Section 3: ct-infrastructure Manifest & ResourceQuota Mathematical Verification', () => {
+  describe('Section 3: example-infra Manifest & ResourceQuota Mathematical Verification', () => {
     // Reference production envelope for target N=10 and rightsized worker constants
     const referenceOperatorEnv = {
       REVIEW_YETI_WORKER_CPU_REQUEST: '50m',

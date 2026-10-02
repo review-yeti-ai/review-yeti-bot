@@ -21,7 +21,7 @@ import {
 import type { McpAuthenticatedCaller } from '../../src/mcp/server/mcpAuthenticator';
 
 describe('Empirical Challenger Suite: generate_fix_diff & dispute_finding (Milestone M8)', () => {
-  const TEST_OWNER = 'calltelemetry';
+  const TEST_OWNER = 'exampleorg';
   const TEST_REPO = 'ct-review-bot';
   const TEST_PR = 789;
   const TEST_HEAD_SHA = 'abcdef0123456789abcdef0123456789abcdef01';

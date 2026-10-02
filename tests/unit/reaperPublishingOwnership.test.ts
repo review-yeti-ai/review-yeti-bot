@@ -46,7 +46,7 @@ beforeEach(() => {
   state.loop.mockReset().mockImplementation(async (engine) => { await engine.runOnce(); });
   state.reap.mockReset().mockImplementation(async (signal) => {
     state.events.push('reconcile');
-    await state.reaperOptions!.checkClientFor({ owner: 'calltelemetry', repo: 'ct-release' }, signal);
+    await state.reaperOptions!.checkClientFor({ owner: 'exampleorg', repo: 'example-release' }, signal);
   });
   state.close.mockReset().mockImplementation(async () => { state.events.push('close'); });
   state.k8sList.mockReset().mockResolvedValue({ items: [] });
@@ -96,7 +96,7 @@ describe('dispatcher publishing ownership composition', () => {
     expect(state.credentials).toMatchObject({ appId: '4385771', privateKey: 'offline-key' });
     expect(state.reaperOptions).toMatchObject({ publisherAppId: 4385771, limit: 1 });
     expect(state.mint).toHaveBeenCalledWith({ appId: '4385771', privateKey: 'offline-key',
-      owner: 'calltelemetry', repo: 'ct-release', signal: expect.any(AbortSignal) });
+      owner: 'exampleorg', repo: 'example-release', signal: expect.any(AbortSignal) });
     expect(state.events).toEqual(['reconcile', 'dispatch', 'close']);
     expectIdleCompletionPool();
   });
@@ -115,7 +115,7 @@ describe('dispatcher publishing ownership composition', () => {
     expect(credentialsForRepository('review-yeti-ai', 'review-yeti-bot')).toEqual({
       appId: '7654321', privateKey: 'public-key',
     });
-    expect(credentialsForRepository('calltelemetry', 'ct-meta')).toEqual({
+    expect(credentialsForRepository('exampleorg', 'example-meta')).toEqual({
       appId: '4385771', privateKey: 'offline-key',
     });
 

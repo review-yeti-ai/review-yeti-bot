@@ -7,12 +7,12 @@ import type { ContainerJobSpec } from '../src/runners/containerRunner.js';
 const sampleSpec: ContainerJobSpec = {
   jobId: 'job_challenger_iter2_001',
   runId: 'run_challenger_iter2_001',
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'reviewyeti',
   prNumber: 42,
   headSha: '0123456789abcdef0123456789abcdef01234567',
   baseSha: 'abcdef0123456789abcdef0123456789abcdef01',
-  workerImage: 'docker.io/calltelemetry/reviewyeti-worker:latest',
+  workerImage: 'docker.io/exampleorg/reviewyeti-worker:latest',
   env: {
     NODE_ENV: 'test',
   },

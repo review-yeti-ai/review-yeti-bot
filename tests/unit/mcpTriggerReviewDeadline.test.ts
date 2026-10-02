@@ -24,7 +24,7 @@ describe('trigger_review terminal deadline parity', () => {
     const { createTriggerReviewTool } = await import('../../src/mcp/server/tools/triggerReview');
     const admit = vi.fn(async (_input: any) => ({ run: { runId: `run_${'e'.repeat(32)}` } }));
     const identity = {
-      owner: 'calltelemetry', repo: 'ct-meta', prNumber: 3587,
+      owner: 'exampleorg', repo: 'example-meta', prNumber: 3587,
       headSha: HEAD_SHA, baseSha: BASE_SHA,
     };
     const tool = createTriggerReviewTool({
@@ -47,7 +47,7 @@ describe('trigger_review terminal deadline parity', () => {
     } as any);
 
     await tool.execute({
-      owner: 'calltelemetry', repo: 'ct-meta', pull_number: 3587,
+      owner: 'exampleorg', repo: 'example-meta', pull_number: 3587,
       head_sha: HEAD_SHA,
     });
 

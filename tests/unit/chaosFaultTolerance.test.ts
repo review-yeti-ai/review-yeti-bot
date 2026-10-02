@@ -129,7 +129,7 @@ describe('Chaos & Fault Tolerance Suite', () => {
     ];
 
     const diffFiles = [{ path: 'lib/core.ex', patch: '+ def run do' }];
-    const prContext = { repo: 'calltelemetry/cisco-cdr', prNumber: 4452 };
+    const prContext = { repo: 'exampleorg/example-api', prNumber: 4452 };
 
     // Persona 1: Security runs and discovers Fireworks is 503 -> fails over to Ollama
     const res1 = await reviewWithModel(
@@ -200,7 +200,7 @@ describe('Chaos & Fault Tolerance Suite', () => {
     const result = await reviewWithModel(
       { id: 'testing', name: 'Testing', charter: 'Tests' },
       [{ path: 'lib/core.ex', patch: '+ def run do' }],
-      { repo: 'calltelemetry/cisco-cdr', prNumber: 4472 },
+      { repo: 'exampleorg/example-api', prNumber: 4472 },
       null,
       {
         fetchImplementation: mockFetch,

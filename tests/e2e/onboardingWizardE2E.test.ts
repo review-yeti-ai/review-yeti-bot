@@ -85,7 +85,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       expect(scanRes.body.scanResult).toBeDefined();
 
       const repoPick = await request(server)
-        .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+        .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
         .set('Authorization', `Bearer ${token}`)
         .send({ automationEnabled: true, customProfile: 'assertive' });
       expect(repoPick.status).toBe(200);
@@ -130,7 +130,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       // Step 5: Diagnostic Scan SHIP verdict
       const testReview = await request(server)
         .post('/api/dashboard/trigger-test-review')
-        .send({ repo: 'calltelemetry/cisco-cdr', verdict: 'SHIP' });
+        .send({ repo: 'exampleorg/example-api', verdict: 'SHIP' });
       expect(testReview.status).toBe(200);
       expect(testReview.body.success).toBe(true);
       expect(testReview.body.job).toBeDefined();
@@ -217,7 +217,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
   it('Scenario 3: Monitored Repo Strictness Profile Change from Chill to Assertive, toggle automation off and back on, verify enforcement policy persistence', async () => {
     // 1. Set customProfile to 'chill'
     const chillRes = await request(server)
-      .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
       .set('Authorization', `Bearer ${token}`)
       .send({ customProfile: 'chill' });
     expect(chillRes.status).toBe(200);
@@ -226,7 +226,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
 
     // Change to 'assertive'
     const assertiveRes = await request(server)
-      .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
       .set('Authorization', `Bearer ${token}`)
       .send({ customProfile: 'assertive' });
     expect(assertiveRes.status).toBe(200);
@@ -234,7 +234,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
 
     // 2. Toggle automation off
     const toggleOff = await request(server)
-      .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
       .set('Authorization', `Bearer ${token}`)
       .send({ automationEnabled: false });
     expect(toggleOff.status).toBe(200);
@@ -246,13 +246,13 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
       .set('Authorization', `Bearer ${token}`);
     expect(listRepos.status).toBe(200);
     const cdrRepo = listRepos.body.repositories.find(
-      (r: any) => r.owner === 'calltelemetry' && r.repo === 'cisco-cdr'
+      (r: any) => r.owner === 'exampleorg' && r.repo === 'example-api'
     );
     expect(cdrRepo.automationEnabled).toBe(false);
 
     // Toggle automation back on
     const toggleOn = await request(server)
-      .patch('/api/github/app-config/monitored-repos/calltelemetry/cisco-cdr')
+      .patch('/api/github/app-config/monitored-repos/exampleorg/example-api')
       .set('Authorization', `Bearer ${token}`)
       .send({ automationEnabled: true });
     expect(toggleOn.status).toBe(200);
@@ -340,7 +340,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
         title: 'feat(core): add CDR ingestion queue',
         head: { sha: 'e2e-hmac-sha-555' },
       },
-      repository: { name: 'cisco-cdr', owner: { login: 'calltelemetry' } },
+      repository: { name: 'example-api', owner: { login: 'exampleorg' } },
       installation: { id: 12345 },
     };
     const signature = computeGitHubSignature(payloadObj, secret);
@@ -392,7 +392,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     const diagRun = await request(server)
       .post('/api/dashboard/trigger-test-review')
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         personas: personaIds,
         verdict: 'SHIP',
       });
@@ -473,7 +473,7 @@ describe('Tier 4: Real-World Application Scenarios E2E Suite (Onboarding Wizard)
     const finalScan = await request(server)
       .post('/api/dashboard/trigger-test-review')
       .send({
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         verdict: 'SHIP',
       });
     expect(finalScan.status).toBe(200);

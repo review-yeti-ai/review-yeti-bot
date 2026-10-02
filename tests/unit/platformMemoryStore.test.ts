@@ -20,7 +20,7 @@ describe('PlatformMemoryStore & Cross-Repo Collective Intelligence', () => {
       'security',
       'no-customer-identifiers',
       'No customer names or IPs like 192.168.1.1 or ghp_1234567890abcdef in code',
-      'calltelemetry/ct-meta'
+      'exampleorg/example-meta'
     );
 
     expect(pattern.category).toBe('security');
@@ -34,7 +34,7 @@ describe('PlatformMemoryStore & Cross-Repo Collective Intelligence', () => {
   it('redacts the complete current GitHub installation token format', async () => {
     const token = 'ghs_header-segment.payload_segment.signature-with-dash';
     const pattern = await platformStore.recordPlatformPattern(
-      'security', 'current-installation-token', `Never persist ${token} in memory`, 'calltelemetry/ct-meta'
+      'security', 'current-installation-token', `Never persist ${token} in memory`, 'exampleorg/example-meta'
     );
 
     expect(pattern.sanitizedDescription).toBe('Never persist [SECRET_TOKEN] in memory');
@@ -46,14 +46,14 @@ describe('PlatformMemoryStore & Cross-Repo Collective Intelligence', () => {
       'architecture',
       'bash-3.2-safe',
       'NO mapfile, NO declare -A',
-      'calltelemetry/ct-meta'
+      'exampleorg/example-meta'
     );
 
     const elevated = await platformStore.recordPlatformPattern(
       'architecture',
       'bash-3.2-safe',
       'NO mapfile, NO declare -A',
-      'calltelemetry/ct-review-bot'
+      'exampleorg/ct-review-bot'
     );
 
     expect(elevated.sourceRepoCount).toBe(2);
@@ -77,7 +77,7 @@ describe('PlatformMemoryStore & Cross-Repo Collective Intelligence', () => {
     const engine = new GraphLearningEngine(undefined, undefined, platformStore);
 
     await engine.learnAndElevatePattern(
-      'calltelemetry/ct-meta',
+      'exampleorg/example-meta',
       'security',
       'no-hardcoded-secrets',
       'Never commit API keys or private RSA keys'

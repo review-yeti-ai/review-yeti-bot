@@ -35,8 +35,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
   it('CF-01: trigger_review with composed engine and outbound ct-impact blast radius query', async () => {
     // 1. Enqueue review for PR
     const triggerRes = await env.callTool('trigger_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 801,
       head_sha: '1'.repeat(40),
       priority: 'normal',
@@ -58,7 +58,7 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
     expect(impactRes.success).toBe(true);
     expect(impactRes.output.blast_radius).toBe('MEDIUM');
     expect(impactRes.output.transitive_callers).toBe(8);
-    expect(impactRes.output.affected_repos).toContain('calltelemetry/cisco-cdr');
+    expect(impactRes.output.affected_repos).toContain('exampleorg/example-api');
   });
 
   // ===========================================================================
@@ -67,8 +67,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
   it('CF-02: trigger_review with panel engine and outbound ct-knowledge ADR compliance query', async () => {
     // 1. Trigger review
     const triggerRes = await env.callTool('trigger_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 802,
       head_sha: '2'.repeat(40),
       priority: 'expedited',
@@ -95,8 +95,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
   it('CF-03: complete finding lifecycle from ledger query to explanation, dispute, and fix diff', async () => {
     // Seed initial review run and finding
     const run = env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 803,
       head_sha: '3'.repeat(40),
     });
@@ -116,8 +116,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 1. Query findings via get_review_findings
     const findingsRes = await env.callTool('get_review_findings', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 803,
     });
 
@@ -127,8 +127,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 2. Developer asks for explanation via explain_finding
     const explainRes = await env.callTool('explain_finding', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 803,
       finding_id: f.finding_id,
       question: 'What if I use an LRUCache with bounded capacity?',
@@ -139,8 +139,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 3. Developer submits dispute with technical justification
     const disputeRes = await env.callTool('dispute_finding', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 803,
       finding_id: f.finding_id,
       counter_argument: 'We implemented LRUCache bounded to 1000 items in store.ts with automatic eviction.',
@@ -152,8 +152,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 4. Synthesize unified fix diff for codebase application
     const fixRes = await env.callTool('generate_fix_diff', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 803,
       finding_id: f.finding_id,
     });
@@ -171,8 +171,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
   it('CF-04: preflight detects security violation, developer generates fix patch from finding', async () => {
     // 1. Run preflight diff review on uncommitted diff with hardcoded secret
     const preflightRes = await env.callTool('preflight_diff_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       diff: DIFF_FIXTURES.hardcodedSecret,
       target_branch: 'main',
     });
@@ -186,8 +186,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 2. Seed this preflight finding into review run for patch synthesis
     const run = env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 804,
       head_sha: '4'.repeat(40),
     });
@@ -205,8 +205,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 3. Generate fix patch
     const fixRes = await env.callTool('generate_fix_diff', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 804,
       finding_id: finding.finding_id,
     });
@@ -241,8 +241,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
   it('CF-06: trigger_review with force=true supersedes in-flight run and resets attempt', async () => {
     // 1. Seed existing running review
     env.db.seedRun({
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pr_number: 806,
       head_sha: '6'.repeat(40),
       status: 'running',
@@ -250,8 +250,8 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
 
     // 2. Trigger review with force: true
     const res = await env.callTool('trigger_review', {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'exampleorg',
+      repo: 'example-api',
       pull_number: 806,
       head_sha: '6'.repeat(40),
       force: true,

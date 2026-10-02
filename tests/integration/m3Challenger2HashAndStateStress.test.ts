@@ -144,25 +144,25 @@ describe('Milestone 3 Iteration 2 Challenger 2: Hash Parity & Concurrent State G
     it('HASH_06 — computeFindingId Normalization and Parity with Canonical Formula', () => {
       const testCases = [
         {
-          repo: 'calltelemetry/review-yeti-core',
+          repo: 'exampleorg/review-yeti-core',
           file: 'src/api/auth.ts',
           line: 55,
           title: 'Weak Token Signing',
         },
         {
-          repo: '  calltelemetry/review-yeti-core  ',
+          repo: '  exampleorg/review-yeti-core  ',
           file: './src/api/auth.ts',
           line: 55,
           title: '  Weak Token Signing  ',
         },
         {
-          repo: 'calltelemetry/review-yeti-core',
+          repo: 'exampleorg/review-yeti-core',
           file: '/src/api/auth.ts',
           line: 55,
           title: 'Weak Token Signing',
         },
         {
-          repo: 'calltelemetry/review-yeti-core',
+          repo: 'exampleorg/review-yeti-core',
           file: 'src/components/live/diff-viewer.tsx',
           line: 1,
           title: 'Unescaped HTML attribute in diff card',
@@ -354,7 +354,7 @@ describe('Milestone 3 Iteration 2 Challenger 2: Hash Parity & Concurrent State G
   describe('3. Check Run Title and Summary Synchronization with Gate Publisher', () => {
     function makeStoredGate(overrides: Partial<StoredReviewGate> = {}): StoredReviewGate {
       const coordinates = {
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti-core',
         repositoryId: 201,
         prNumber: 99,

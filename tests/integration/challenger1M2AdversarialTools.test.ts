@@ -37,8 +37,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
   let mockDb: any;
 
   const validToken = 'valid-challenger-m2-token';
-  const allowedOwner = 'calltelemetry';
-  const allowedRepo = 'cisco-cdr';
+  const allowedOwner = 'exampleorg';
+  const allowedRepo = 'example-api';
 
   beforeEach(() => {
     mockDb = {
@@ -58,7 +58,7 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
             isAdmin: false,
             allowedRepositories: new Set([
               `${allowedOwner}/${allowedRepo}`,
-              'calltelemetry/pr-manager-mcp',
+              'exampleorg/example-pr-manager',
             ]),
             callerId: 'challenger-agent-m2',
           } satisfies McpAuthenticatedCaller;
@@ -396,7 +396,7 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
           repo: '   ',
           pull_number: 10,
         });
-        // Fails RBAC tenancy check because caller has no permission for 'calltelemetry/   '
+        // Fails RBAC tenancy check because caller has no permission for 'exampleorg/   '
         expect(resWhitespaceRepo.status).toBe(403);
         expect(resWhitespaceRepo.body.error.code).toBe(MCP_ERRORS.FORBIDDEN);
       });
@@ -509,7 +509,7 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
       expect(content.active_worker).toBeNull();
       expect(content.run_id).toBeUndefined();
       expect(content.timing).toBeUndefined();
-      expect(content.message).toContain('No review run found for calltelemetry/cisco-cdr PR #99999999');
+      expect(content.message).toContain('No review run found for exampleorg/example-api PR #99999999');
     });
 
     it('get_review_findings returns empty list for PR with zero review findings', async () => {
@@ -546,7 +546,7 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
       expect(res.body.error).toBeDefined();
       expect(res.body.error.code).toBe(JSONRPC_ERRORS.INTERNAL_ERROR);
       expect(res.body.error.message).toContain(
-        'Not Found: No active review run found for calltelemetry/cisco-cdr PR #77777777 to cancel'
+        'Not Found: No active review run found for exampleorg/example-api PR #77777777 to cancel'
       );
     });
 
@@ -810,13 +810,13 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
       expect(
         PreflightDiffReviewInputSchema.safeParse({
           diff: valid512Kb,
-          repo: 'cisco-cdr',
+          repo: 'example-api',
         }).success
       ).toBe(true);
 
       const invalidResult = PreflightDiffReviewInputSchema.safeParse({
         diff: invalid512KbPlusOne,
-        repo: 'cisco-cdr',
+        repo: 'example-api',
       });
       expect(invalidResult.success).toBe(false);
       if (!invalidResult.success) {
@@ -827,8 +827,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
     it('WatchReviewProgressInputSchema asserts timeout_seconds bounds [1, 900]', () => {
       expect(
         WatchReviewProgressInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           timeout_seconds: 0,
         }).success
@@ -836,8 +836,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
 
       expect(
         WatchReviewProgressInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           timeout_seconds: 901,
         }).success
@@ -845,8 +845,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
 
       expect(
         WatchReviewProgressInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           timeout_seconds: 1,
         }).success
@@ -854,8 +854,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
 
       expect(
         WatchReviewProgressInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           timeout_seconds: 900,
         }).success
@@ -865,8 +865,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
     it('TriggerReviewInputSchema asserts priority enum [normal, expedited]', () => {
       expect(
         TriggerReviewInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           head_sha: 'a'.repeat(40),
           priority: 'urgent',
@@ -875,8 +875,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
 
       expect(
         TriggerReviewInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           head_sha: 'a'.repeat(40),
           priority: 'normal',
@@ -885,8 +885,8 @@ describe('Milestone 2 Challenger 1: Adversarial Tool Input & Boundary Verificati
 
       expect(
         TriggerReviewInputSchema.safeParse({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 1,
           head_sha: 'a'.repeat(40),
           priority: 'expedited',

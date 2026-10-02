@@ -40,8 +40,8 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
         client = new Client({
           host: 'localhost',
           port: 5432,
-          user: 'calltelemetry',
-          password: 'calltelemetry_dev_password',
+          user: 'exampleorg',
+          password: 'exampleorg_dev_password',
           database: 'postgres',
         });
         await client.connect();
@@ -93,7 +93,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
       it(`ADV-EMOJI-01: Boundary offset sweep for ${name}`, async () => {
         // Measure baseline overhead of assemblePrepPrompt header
         const probe = assemblePrepPrompt({
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           prNumber: 1,
           headSha: '0'.repeat(40),
           astSymbols: [],
@@ -112,7 +112,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
           const patch = prefix + emoji + 'TRAIL_DATA_EXCEEDING_LIMIT'.repeat(100);
 
           const { messages, truncated } = assemblePrepPrompt({
-            repo: 'calltelemetry/review-yeti-bot',
+            repo: 'exampleorg/review-yeti-bot',
             prNumber: 1,
             headSha: '0'.repeat(40),
             astSymbols: ['sym1'],
@@ -149,7 +149,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
               runId,
               headSha: '0'.repeat(40),
               baseSha: '0'.repeat(40),
-              repository: 'calltelemetry/review-yeti-bot',
+              repository: 'exampleorg/review-yeti-bot',
               prNumber: 1,
               triageSummary: { filesCount: 1, hunksCount: 1, astSymbols: ['sym1'], truncated: true },
               promptMessages: messages,
@@ -175,7 +175,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
       // 3 bytes per character: 審 (U+5BE9 = E5 AF A9)
       const cjkPatch = '審'.repeat(100_000);
       const { messages, truncated } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 88,
         headSha: 'cjk123',
         astSymbols: ['triageFunction'],
@@ -198,7 +198,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
           runId: 'run-cjk-100k',
           headSha: 'cjk123',
           baseSha: '0'.repeat(40),
-          repository: 'calltelemetry/review-yeti-bot',
+          repository: 'exampleorg/review-yeti-bot',
           prNumber: 88,
           triageSummary: { filesCount: 1, hunksCount: 1, astSymbols: ['triageFunction'], truncated: true },
           promptMessages: messages,
@@ -214,7 +214,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
 
     it('ADV-CJK-02: 3-byte CJK boundary alignment offsets (256KB - 3, -2, -1, 0, +1, +2, +3)', async () => {
       const probe = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 1,
         headSha: '0'.repeat(40),
         astSymbols: [],
@@ -229,7 +229,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
 
         const patch = 'X'.repeat(prefixLen) + '漢字測試'.repeat(2000);
         const { messages, truncated } = assemblePrepPrompt({
-          repo: 'calltelemetry/review-yeti-bot',
+          repo: 'exampleorg/review-yeti-bot',
           prNumber: 1,
           headSha: '0'.repeat(40),
           astSymbols: [],
@@ -258,7 +258,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
         'more bytes\x00\x01\x02\x00';
 
       const { messages } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 1,
         headSha: '0'.repeat(40),
         astSymbols: ['binParser\x00Invalid', 'cleanSymbol'],
@@ -275,7 +275,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
           runId: 'run-null-bytes-01',
           headSha: '0'.repeat(40),
           baseSha: '0'.repeat(40),
-          repository: 'calltelemetry/review-yeti-bot',
+          repository: 'exampleorg/review-yeti-bot',
           prNumber: 1,
           triageSummary: { filesCount: 1, hunksCount: 1, astSymbols: ['cleanSymbol'], truncated: false },
           promptMessages: messages,
@@ -336,7 +336,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
       ].join('\n');
 
       const { messages } = assemblePrepPrompt({
-        repo: 'calltelemetry/review-yeti-bot',
+        repo: 'exampleorg/review-yeti-bot',
         prNumber: 99,
         headSha: 'extreme-sha-123',
         astSymbols: ['alert', 'jsonStr', 'slash$path'],
@@ -347,7 +347,7 @@ describe('Challenger M2 Iteration 2 Gate: Adversarial UTF-8 Surrogates & Postgre
         runId: 'run-extreme-jsonb',
         headSha: 'extreme-sha-123',
         baseSha: 'base-sha-456',
-        repository: 'calltelemetry/review-yeti-bot',
+        repository: 'exampleorg/review-yeti-bot',
         prNumber: 99,
         triageSummary: {
           filesCount: 1,

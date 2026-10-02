@@ -46,11 +46,11 @@ function createEmpiricalTestEnv() {
   const env: any = {
     ENVIRONMENT: 'production',
     PARALLEL_MODE: 'shadow',
-    PILOT_REPOSITORIES: 'calltelemetry/review-yeti,review-yeti-ai/review-yeti-bot',
+    PILOT_REPOSITORIES: 'exampleorg/review-yeti,review-yeti-ai/review-yeti-bot',
     GITHUB_WEBHOOK_SECRET: 'm1-adversarial-challenge-secret-999',
-    DOKS_FALLBACK_URL: 'https://doks-internal.calltelemetry.com/webhooks/github',
+    DOKS_FALLBACK_URL: 'https://doks-internal.example.com/webhooks/github',
     PARALLEL_CHECK_NAME: 'Review Yeti (Cloudflare Canary)',
-    DEFAULT_WORKER_IMAGE: 'ghcr.io/calltelemetry/review-yeti-worker:latest',
+    DEFAULT_WORKER_IMAGE: 'ghcr.io/exampleorg/review-yeti-worker:latest',
     REPO_GATE: {
       idFromName: (name: string) => name.toLowerCase(),
       get: (id: string) => {
@@ -101,7 +101,7 @@ function createEmpiricalTestEnv() {
 describe('M1 Empirical Challenge: Commit Supersession & Burst Stress Tests', () => {
   it('cancels active run within < 3 seconds SLA and increments fencing epoch when a burst of 10 commits arrives', async () => {
     const { env, repoGateInstances, reviewRunInstances, debounceQueue, mockCtx } = createEmpiricalTestEnv();
-    const repoKey = 'calltelemetry/review-yeti';
+    const repoKey = 'exampleorg/review-yeti';
     const prNumber = 77;
     const initialRunId = 'run_initial_001';
 
@@ -121,7 +121,7 @@ describe('M1 Empirical Challenge: Commit Supersession & Burst Stress Tests', () 
       method: 'POST',
       body: JSON.stringify({
         runId: initialRunId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'commit_sha_0',
@@ -160,14 +160,14 @@ describe('M1 Empirical Challenge: Commit Supersession & Burst Stress Tests', () 
         repository: {
           name: 'review-yeti',
           full_name: repoKey,
-          owner: { login: 'calltelemetry' },
+          owner: { login: 'exampleorg' },
         },
         installation: { id: 5555 },
       };
       const rawBody = JSON.stringify(payload);
       const signature = await signPayload(env.GITHUB_WEBHOOK_SECRET, rawBody);
 
-      const req = new Request('https://operator.calltelemetry.internal/api/webhooks/github', {
+      const req = new Request('https://operator.example.internal/api/webhooks/github', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -243,7 +243,7 @@ describe('M1 Empirical Challenge: Commit Supersession & Burst Stress Tests', () 
 
   it('evicts stale queued runs in RepoGateDO when multiple commits arrive before slot is granted', async () => {
     const { env } = createEmpiricalTestEnv();
-    const repoKey = 'calltelemetry/review-yeti';
+    const repoKey = 'exampleorg/review-yeti';
     const prNumber = 88;
     const repoGateId = env.REPO_GATE.idFromName(repoKey);
     const repoGate = env.REPO_GATE.get(repoGateId);
@@ -314,7 +314,7 @@ describe('M1 Empirical Challenge: Commit Supersession & Burst Stress Tests', () 
 
   it('supports explicit queue eviction by PR number and runId via POST /evict', async () => {
     const { env } = createEmpiricalTestEnv();
-    const repoKey = 'calltelemetry/review-yeti';
+    const repoKey = 'exampleorg/review-yeti';
     const repoGateId = env.REPO_GATE.idFromName(repoKey);
     const repoGate = env.REPO_GATE.get(repoGateId);
 
@@ -378,7 +378,7 @@ describe('M1 Empirical Challenge: Worker Lease Fencing & Rival Workers', () => {
       method: 'POST',
       body: JSON.stringify({
         runId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 50,
         headSha: 'fencing_sha_1',
@@ -431,7 +431,7 @@ describe('M1 Empirical Challenge: Worker Lease Fencing & Rival Workers', () => {
       method: 'POST',
       body: JSON.stringify({
         runId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 51,
         headSha: 'fencing_sha_2',
@@ -477,7 +477,7 @@ describe('M1 Empirical Challenge: Worker Lease Fencing & Rival Workers', () => {
       method: 'POST',
       body: JSON.stringify({
         runId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 52,
         headSha: 'sha_50_rivals',
@@ -514,7 +514,7 @@ describe('M1 Empirical Challenge: Worker Lease Fencing & Rival Workers', () => {
       method: 'POST',
       body: JSON.stringify({
         runId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 53,
         headSha: 'sha_idem',
@@ -552,7 +552,7 @@ describe('M1 Empirical Challenge: Worker Lease Fencing & Rival Workers', () => {
       method: 'POST',
       body: JSON.stringify({
         runId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 54,
         headSha: 'sha_term',
@@ -595,7 +595,7 @@ describe('M1 Empirical Challenge: Worker Lease Fencing & Rival Workers', () => {
 describe('M1 Empirical Challenge: Queue Eviction & Polling Race Condition Stress Test', () => {
   it('reproduces and tests queue polling behavior during commit supersession', async () => {
     const { env } = createEmpiricalTestEnv();
-    const repoKey = 'calltelemetry/review-yeti';
+    const repoKey = 'exampleorg/review-yeti';
     const prNumber = 60;
     const repoGateId = env.REPO_GATE.idFromName(repoKey);
     const repoGate = env.REPO_GATE.get(repoGateId);
@@ -655,7 +655,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
       method: 'POST',
       body: JSON.stringify({
         runId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 90,
         headSha: 'sha_head_pull',
@@ -669,7 +669,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
     });
 
     // Query status via Worker route: GET /api/dispatch/runs/:runId/status
-    const req1 = new Request(`https://operator.calltelemetry.internal/api/dispatch/runs/${runId}/status`);
+    const req1 = new Request(`https://operator.example.internal/api/dispatch/runs/${runId}/status`);
     const res1 = await worker.fetch(req1, env, mockCtx as any);
     assert.equal(res1.status, 200);
     const status1 = await res1.json() as any;
@@ -686,7 +686,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
     });
 
     // Query status again via Worker route
-    const req2 = new Request(`https://operator.calltelemetry.internal/api/dispatch/runs/${runId}/status`);
+    const req2 = new Request(`https://operator.example.internal/api/dispatch/runs/${runId}/status`);
     const res2 = await worker.fetch(req2, env, mockCtx as any);
     assert.equal(res2.status, 200);
     const status2 = await res2.json() as any;
@@ -702,7 +702,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
     const rawBody = JSON.stringify({ action: 'synchronize' });
 
     // Missing signature header
-    const reqNoSig = new Request('https://operator.calltelemetry.internal/api/webhooks/github', {
+    const reqNoSig = new Request('https://operator.example.internal/api/webhooks/github', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': 'pull_request' },
       body: rawBody,
@@ -711,7 +711,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
     assert.equal(resNoSig.status, 401);
 
     // Mismatched signature
-    const reqBadSig = new Request('https://operator.calltelemetry.internal/api/webhooks/github', {
+    const reqBadSig = new Request('https://operator.example.internal/api/webhooks/github', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -725,7 +725,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
 
     // Malformed JSON body
     const validSigBadJson = await signPayload(env.GITHUB_WEBHOOK_SECRET, 'NOT_VALID_JSON{{{');
-    const reqBadJson = new Request('https://operator.calltelemetry.internal/api/webhooks/github', {
+    const reqBadJson = new Request('https://operator.example.internal/api/webhooks/github', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -740,7 +740,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
 
   it('guarantees saga compensating slot release even when container runner throws', async () => {
     const { env } = createEmpiricalTestEnv();
-    const repoKey = 'calltelemetry/review-yeti';
+    const repoKey = 'exampleorg/review-yeti';
     const runId = 'run_saga_failure_test';
     const prNumber = 95;
 
@@ -767,7 +767,7 @@ describe('M1 Empirical Challenge: Pull-Path Worker Invalidation & Ingress Securi
         {
           payload: {
             runId,
-            owner: 'calltelemetry',
+            owner: 'exampleorg',
             repo: 'review-yeti',
             prNumber,
             headSha: 'sha_saga_fail',

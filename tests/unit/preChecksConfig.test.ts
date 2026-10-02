@@ -540,7 +540,7 @@ pre_checks:
       const client = mockClient({ '.ct-review.yaml': repoYaml });
 
       const config: any = await resolver.resolveConfig({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'my-service',
         ref: 'main',
         client,
@@ -562,7 +562,7 @@ pre_checks:
       const client = mockClient({ '.reviewyeti.yaml': repoYaml });
 
       const config: any = await resolver.resolveConfig({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'my-service',
         ref: 'main',
         client,
@@ -576,7 +576,7 @@ pre_checks:
       const client = mockClient({});
 
       const config: any = await resolver.resolveConfig({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'my-service',
         ref: 'main',
         client,

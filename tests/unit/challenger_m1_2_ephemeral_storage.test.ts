@@ -21,7 +21,7 @@ const execFileAsync = promisify(execFile);
 describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite', () => {
   const baseSpec: K8sJobSpec = {
     persona: 'security',
-    repoUrl: 'calltelemetry/cisco-cdr',
+    repoUrl: 'exampleorg/example-api',
     prNumber: 42,
     commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
   };
@@ -95,13 +95,13 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
       const manifestA = runner.generateJobManifest({
         ...baseSpec,
         prNumber: 101,
-        repoUrl: 'calltelemetry/repo-alpha',
+        repoUrl: 'exampleorg/repo-alpha',
       });
 
       const manifestB = runner.generateJobManifest({
         ...baseSpec,
         prNumber: 102,
-        repoUrl: 'calltelemetry/repo-beta',
+        repoUrl: 'exampleorg/repo-beta',
       });
 
       // Distinct job names
@@ -113,8 +113,8 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
       // Isolated subpaths
       const subPathA = manifestA.spec.template.spec.containers[0].volumeMounts[0].subPath;
       const subPathB = manifestB.spec.template.spec.containers[0].volumeMounts[0].subPath;
-      expect(subPathA).toBe('repos/calltelemetry_repo-alpha_pr101');
-      expect(subPathB).toBe('repos/calltelemetry_repo-beta_pr102');
+      expect(subPathA).toBe('repos/exampleorg_repo-alpha_pr101');
+      expect(subPathB).toBe('repos/exampleorg_repo-beta_pr102');
       expect(subPathA).not.toBe(subPathB);
     });
 
@@ -147,7 +147,7 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
         runId: 'run_1234567890abcdef1234567890abcdef',
         deliveryId: 'deliv-101',
         repositoryId: 999,
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 42,
         headSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         baseSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
@@ -156,7 +156,7 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
         policyDigest: 'c'.repeat(64),
         configDigest: 'd'.repeat(64),
         publicationMode: 'disabled' as const,
-        workerImage: 'registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:' + 'e'.repeat(64),
+        workerImage: 'registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:' + 'e'.repeat(64),
         namespace: 'ct-review-system',
       };
 

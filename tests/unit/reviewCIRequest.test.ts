@@ -10,7 +10,7 @@ describe('reviewCIRequest contract validation', () => {
   const validPayload: ReviewCIRequestPayload = {
     schema_version: SCHEMA_VERSION_CI_REQUEST,
     repository_id: 12345678,
-    repository: 'calltelemetry/dashboard',
+    repository: 'exampleorg/dashboard',
     pr_number: 100,
     base_sha: 'a'.repeat(40),
     head_sha: 'b'.repeat(40),

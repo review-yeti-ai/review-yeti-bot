@@ -11,7 +11,7 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
     dashboardStore.updateGitHubAppConfig({
       appId: '1029384',
       installationId: '59302194',
-      webhookUrl: 'https://api.calltelemetry.com/api/webhooks/github',
+      webhookUrl: 'https://api.example.com/api/webhooks/github',
       webhookSecret: 'whsec_test_secret_key_12345',
       privateKeyPem: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0M...\n-----END RSA PRIVATE KEY-----',
       isVerified: true,
@@ -23,7 +23,7 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
       const config = dashboardStore.getGitHubAppConfig();
       expect(config.appId).toBe('1029384');
       expect(config.installationId).toBe('59302194');
-      expect(config.webhookUrl).toBe('https://api.calltelemetry.com/api/webhooks/github');
+      expect(config.webhookUrl).toBe('https://api.example.com/api/webhooks/github');
       expect(config.webhookSecret).toBe('whsec_test_secret_key_12345');
       expect(config.privateKeyPem).toContain('RSA PRIVATE KEY');
       expect(config.isVerified).toBe(true);
@@ -62,20 +62,20 @@ describe('Milestone 1: Data Model, Store & API Synchronization', () => {
         .patch('/api/github/app-config/monitored-repos')
         .set('Authorization', 'Bearer demo_token_public')
         .send({
-          full_name: 'calltelemetry/cisco-cdr',
+          full_name: 'exampleorg/example-api',
           automationEnabled: false,
           strictnessProfile: 'assertive',
         });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
-      expect(res.body.repository.full_name).toBe('calltelemetry/cisco-cdr');
+      expect(res.body.repository.full_name).toBe('exampleorg/example-api');
       expect(res.body.repository.automationEnabled).toBe(false);
       expect(res.body.repository.strictnessProfile).toBe('assertive');
 
       // Verify updated state in store
       const repos = dashboardStore.getRepositories();
-      const ciscoCdr = repos.find((r) => r.full_name === 'calltelemetry/cisco-cdr');
+      const ciscoCdr = repos.find((r) => r.full_name === 'exampleorg/example-api');
       expect(ciscoCdr?.automationEnabled).toBe(false);
       expect(ciscoCdr?.strictnessProfile).toBe('assertive');
     });

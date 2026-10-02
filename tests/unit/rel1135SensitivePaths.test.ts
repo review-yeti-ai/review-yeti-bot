@@ -39,7 +39,7 @@ afterEach(() => {
 const LOCKFILES = [
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'npm-shrinkwrap.json', 'bun.lock', 'go.sum', 'Cargo.lock',
   'poetry.lock', 'uv.lock', 'Pipfile.lock', 'Gemfile.lock', 'mix.lock', 'composer.lock', 'flake.lock',
-  'ios/Podfile.lock', 'Package.resolved', 'packages.lock.json', 'ct-meta.lock', 'services/api/deps-lock.json',
+  'ios/Podfile.lock', 'Package.resolved', 'packages.lock.json', 'example-meta.lock', 'services/api/deps-lock.json',
 ];
 const TOOLCHAIN_PINS = [
   '.tool-versions', '.nvmrc', '.node-version', '.python-version', '.ruby-version', '.terraform-version',
@@ -134,7 +134,7 @@ function parsed(diff: string) {
 const SHRINK_ON: DiffShrinkInput = { enabled: true };
 
 describe('W2 diff shrink never shrinks a lockfile or toolchain pin', () => {
-  it.each(['package-lock.json', 'bun.lock', 'ct-meta.lock', 'composer.lock', '.tool-versions', '.nvmrc'])(
+  it.each(['package-lock.json', 'bun.lock', 'example-meta.lock', 'composer.lock', '.tool-versions', '.nvmrc'])(
     'keeps a whitespace-only change to %s in full', (path) => {
       const { files: out, disclosure } = planDiffShrink(parsed(modified(path, [WS_HUNK])), SHRINK_ON);
       expect(disclosure.whitespaceOnlyFiles).toEqual([]);
@@ -249,7 +249,7 @@ describe('fast-ship guard', () => {
 // ---------------------------------------------------------------------------
 
 describe('security-lane gate', () => {
-  it.each(['.tool-versions', 'rust-toolchain.toml', 'bun.lock', 'ct-meta.lock', 'package.json', 'Dockerfile'])(
+  it.each(['.tool-versions', 'rust-toolchain.toml', 'bun.lock', 'example-meta.lock', 'package.json', 'Dockerfile'])(
     'runs sec-lane at full depth (not weakMatch) on a change to %s alone', (path) => {
       const result = evaluatePersonaGating({
         persona: { id: 'sec-lane', charter: 'Security review', paths: ['**/*'] },
@@ -285,7 +285,7 @@ describe('security-lane gate', () => {
 // ---------------------------------------------------------------------------
 
 describe('Jev shadow reads the shared predicate', () => {
-  it.each([...TOOLCHAIN_PINS, 'ct-meta.lock', 'bun.lock', 'scripts/deploy.sh', 'db/migrations/002.sql'])(
+  it.each([...TOOLCHAIN_PINS, 'example-meta.lock', 'bun.lock', 'scripts/deploy.sh', 'db/migrations/002.sql'])(
     'facts.security_sensitive is true for %s', (path) => {
       expect(computeTriageFileFacts({ path, patch: '@@ -1 +1 @@\n-a\n+b\n' }, 1000).facts.security_sensitive).toBe(true);
     },

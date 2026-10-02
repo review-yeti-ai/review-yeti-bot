@@ -21,7 +21,7 @@ import type {
 } from '../../src/review/reviewGateContracts';
 
 describe('Milestone 3 Challenger 2: State Machine, Gate Sync & Audit Trail Integrity', () => {
-  const testRepo = 'calltelemetry/review-yeti-core';
+  const testRepo = 'exampleorg/review-yeti-core';
   let app: any;
   let reviewerToken: string;
   let viewerToken: string;
@@ -253,7 +253,7 @@ describe('Milestone 3 Challenger 2: State Machine, Gate Sync & Audit Trail Integ
   describe('2. Downstream Check Run Synchronization & Gate Publisher Behavior', () => {
     function makeStoredGate(overrides: Partial<StoredReviewGate> = {}): StoredReviewGate {
       const coordinates = {
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti-core',
         repositoryId: 101,
         prNumber: 42,
@@ -904,7 +904,7 @@ describe('Milestone 3 Challenger 2: State Machine, Gate Sync & Audit Trail Integ
     });
 
     it('TEST_M3_CHALLENGE_28 — PR-level guidance aggregation accurately queries items by repository and prNumber across diverse review sessions', () => {
-      const repoTarget = 'calltelemetry/multi-pr-repo';
+      const repoTarget = 'exampleorg/multi-pr-repo';
       const revPR10 = `rev-pr10-${Date.now()}`;
       const revPR20 = `rev-pr20-${Date.now()}`;
       const revOtherRepo = `rev-other-${Date.now()}`;

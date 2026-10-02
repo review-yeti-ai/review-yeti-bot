@@ -33,9 +33,9 @@ describe('M2 & M3 Adversarial Stress Testing: Empty State & Zero-Value Metrics',
       const nonExistentPath = path.join(TEST_DIR, 'non_existent_review_runs.json');
       const store = new ReviewRunStore(nonExistentPath);
 
-      expect(store.getHead('calltelemetry', 'cisco-cdr', 1)).toBeUndefined();
-      expect(store.getPreviousHead('calltelemetry', 'cisco-cdr', 1)).toBeUndefined();
-      expect(store.isCurrentHead('calltelemetry', 'cisco-cdr', 1, 'sha123')).toBe(false);
+      expect(store.getHead('exampleorg', 'example-api', 1)).toBeUndefined();
+      expect(store.getPreviousHead('exampleorg', 'example-api', 1)).toBeUndefined();
+      expect(store.isCurrentHead('exampleorg', 'example-api', 1, 'sha123')).toBe(false);
       expect(store.filterResolvedNits(1, [])).toEqual([]);
     });
 
@@ -90,12 +90,12 @@ describe('M2 & M3 Adversarial Stress Testing: Empty State & Zero-Value Metrics',
         adrConstraintsCount: 0,
       });
 
-      const repoState = await memoryStore.queryLearnings('calltelemetry/cisco-cdr');
+      const repoState = await memoryStore.queryLearnings('exampleorg/example-api');
       expect(repoState.learnings).toEqual([]);
       expect(repoState.resolvedNits).toEqual([]);
       expect(repoState.adrConstraints).toEqual([]);
 
-      const feedback = memoryStore.getFeedbackCounts('calltelemetry/cisco-cdr');
+      const feedback = memoryStore.getFeedbackCounts('exampleorg/example-api');
       expect(feedback).toEqual({
         positiveFeedbackCount: 0,
         negativeFeedbackCount: 0,
@@ -345,7 +345,7 @@ describe('M2 & M3 Adversarial Stress Testing: Empty State & Zero-Value Metrics',
       const jobsWithMissingFields = [
         {
           id: 'job-1',
-          repo: 'calltelemetry/cisco-cdr',
+          repo: 'exampleorg/example-api',
           prNumber: 101,
           title: 'Fix issue',
           status: 'completed' as const,
@@ -359,7 +359,7 @@ describe('M2 & M3 Adversarial Stress Testing: Empty State & Zero-Value Metrics',
       ];
 
       render(<RecentReviewsTable jobs={jobsWithMissingFields} />);
-      expect(screen.getByText('calltelemetry/cisco-cdr')).toBeInTheDocument();
+      expect(screen.getByText('exampleorg/example-api')).toBeInTheDocument();
       expect(screen.getByText('Fix issue')).toBeInTheDocument();
     });
 
