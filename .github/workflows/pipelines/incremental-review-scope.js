@@ -369,7 +369,7 @@ async function githubRequest(fetchImplementation, token, url, accept = 'applicat
  * could smuggle in a report for an arbitrary headSha.
  *
  * Cross-repo (central `repository_dispatch`) mode: the artifact instead lives in the *executing*
- * repository (for example the private `calltelemetry/ct-review-actions`), which holds run reports
+ * repository (for example a private central review-actions repository), which holds run reports
  * for every consumer repository it reviews on their behalf. A PR author on the reviewed repo has
  * no write access to that executing repo, so they cannot forge, replace, or redirect its artifacts
  * or its runs. `run.head_sha` there is the *executing* repo's own commit (the dispatch workflow's

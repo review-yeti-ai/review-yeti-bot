@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -120,7 +120,7 @@ type PRReviewJobSpec struct {
 	//               image from any other registry was rejected. A tenant could not
 	//               pin from their own registry, and the vendor namespace allowed
 	//               tags. That inverts the control.
-	//   too narrow — it hardcoded two CallTelemetry-controlled registries, so a
+	//   too narrow — it hardcoded two operator-controlled registries, so a
 	//               self-hosted install could not pull from its own registry at
 	//               all. Self-hosting was impossible by construction.
 	//
