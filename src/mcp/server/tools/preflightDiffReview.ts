@@ -767,6 +767,162 @@ function isExecPropertyAssignment(tokens: PreflightSqlToken[], propertyIndex: nu
     tokens[propertyIndex + 2]?.text === '=';
 }
 
+function groupedPrototypeReceiverEnd(
+  tokens: PreflightSqlToken[],
+  receiverEnd: number,
+  endIndex: number,
+  matchingIndexes: number[],
+): number {
+  while (receiverEnd + 1 < endIndex && tokens[receiverEnd + 1]?.text === ')') {
+    const openIndex = matchingIndexes[receiverEnd + 1];
+    const preceding = tokens[openIndex - 1];
+    // Cross only balanced grouping, not a call/control parenthesis or an
+    // arbitrary intervening token. Every step advances within the scan bound.
+    const groupingContext = !preceding ||
+      (preceding.kind === 'punctuation' && ![')', ']', '.', '++', '--'].includes(preceding.text)) ||
+      (preceding.kind === 'identifier' &&
+        ['return', 'throw', 'case', 'yield', 'await', 'void', 'typeof', 'delete'].includes(preceding.text));
+    if (openIndex < 0 || openIndex > receiverEnd || !groupingContext) break;
+    receiverEnd++;
+  }
+  return receiverEnd;
+}
+
+function staticMemberEnd(
+  tokens: PreflightSqlToken[],
+  receiverEnd: number,
+  name: string,
+  endIndex: number,
+): number {
+  let memberIndex = receiverEnd + 1;
+  let computed = tokens[memberIndex]?.text === '[';
+  // The lexer emits optional access as two punctuation tokens, not `?.`.
+  if (tokens[memberIndex]?.text === '?' && tokens[memberIndex + 1]?.text === '.') {
+    memberIndex += 2;
+    computed = tokens[memberIndex]?.text === '[';
+  } else if (tokens[memberIndex]?.text === '.') {
+    memberIndex++;
+  } else if (!computed) {
+    return -1;
+  }
+  const member = tokens[memberIndex + (computed ? 1 : 0)];
+  if (
+    !computed && memberIndex < endIndex &&
+    member?.kind === 'identifier' && member.text === name
+  ) return memberIndex;
+  if (
+    computed && memberIndex + 2 < endIndex &&
+    member?.kind === 'string' && member.closed === true && member.interpolated !== true &&
+    member.value === name && tokens[memberIndex + 2]?.text === ']'
+  ) return memberIndex + 2;
+  return -1;
+}
+
+function boundedBuiltinCallOpen(
+  tokens: PreflightSqlToken[],
+  receiverEnd: number,
+  endIndex: number,
+  matchingIndexes: number[],
+): number {
+  let callOpen = groupedPrototypeReceiverEnd(tokens, receiverEnd, endIndex, matchingIndexes) + 1;
+  if (tokens[callOpen]?.text === '?' && tokens[callOpen + 1]?.text === '.') callOpen += 2;
+  if (callOpen >= endIndex || tokens[callOpen]?.text !== '(') return -1;
+  const callClose = matchingIndexes[callOpen];
+  return callClose > callOpen && callClose < endIndex ? callOpen : -1;
+}
+
+function prototypeEscapeReceiverEnd(
+  tokens: PreflightSqlToken[],
+  index: number,
+  endIndex: number,
+  matchingIndexes: number[],
+): number {
+  const token = tokens[index];
+  const computedMember = token?.kind === 'string' && token.closed === true &&
+    token.interpolated !== true && tokens[index - 1]?.text === '[' && tokens[index + 1]?.text === ']';
+  const name = token?.kind === 'identifier' ? token.text : computedMember ? token.value : undefined;
+  const memberEnd = computedMember ? index + 1 : index;
+  if (name === '__proto__') return memberEnd;
+  if (token?.kind === 'identifier' && name === 'RegExp' && tokens[index - 1]?.text !== '.') {
+    const ownerEnd = groupedPrototypeReceiverEnd(tokens, index, endIndex, matchingIndexes);
+    return staticMemberEnd(tokens, ownerEnd, 'prototype', endIndex);
+  }
+  if (name === 'constructor') {
+    const constructorEnd = groupedPrototypeReceiverEnd(tokens, memberEnd, endIndex, matchingIndexes);
+    return staticMemberEnd(tokens, constructorEnd, 'prototype', endIndex);
+  }
+  if (name === 'getPrototypeOf') {
+    const callOpen = boundedBuiltinCallOpen(tokens, memberEnd, endIndex, matchingIndexes);
+    if (callOpen >= 0) return matchingIndexes[callOpen];
+  }
+  return -1;
+}
+
+function hasExplicitPrototypeMutationCall(
+  tokens: PreflightSqlToken[],
+  index: number,
+  endIndex: number,
+  matchingIndexes: number[],
+  prototypeAliases: Set<string>,
+): boolean {
+  const owner = tokens[index];
+  if (
+    owner?.kind !== 'identifier' || !['Object', 'Reflect'].includes(owner.text) ||
+    tokens[index - 1]?.text === '.'
+  ) return false;
+  const methods = owner.text === 'Object'
+    ? ['assign', 'defineProperty', 'defineProperties']
+    : ['set', 'defineProperty'];
+  const ownerEnd = groupedPrototypeReceiverEnd(tokens, index, endIndex, matchingIndexes);
+  let methodEnd = -1;
+  for (const method of methods) {
+    methodEnd = staticMemberEnd(tokens, ownerEnd, method, endIndex);
+    if (methodEnd >= 0) break;
+  }
+  if (methodEnd < 0) return false;
+  const callOpen = boundedBuiltinCallOpen(tokens, methodEnd, endIndex, matchingIndexes);
+  if (callOpen < 0) return false;
+  const callClose = matchingIndexes[callOpen];
+
+  // Delimit only the first target argument. Skip balanced calls/grouping and
+  // balance object/array literals so source/descriptor arguments cannot leak in.
+  let targetStart = callOpen + 1;
+  let targetEnd = callClose;
+  const delimiters: string[] = [];
+  for (let cursor = targetStart; cursor < callClose; cursor++) {
+    const text = tokens[cursor].text;
+    if (text === '(') {
+      const close = matchingIndexes[cursor];
+      if (close <= cursor || close >= callClose) return false;
+      cursor = close;
+    } else if (text === '[' || text === '{') {
+      delimiters.push(text);
+    } else if (text === ']' || text === '}') {
+      if (delimiters.pop() !== (text === ']' ? '[' : '{')) return false;
+    } else if (text === ',' && delimiters.length === 0) {
+      targetEnd = cursor;
+      break;
+    }
+  }
+  if (delimiters.length > 0) return false;
+  while (tokens[targetStart]?.text === '(' && matchingIndexes[targetStart] === targetEnd - 1) {
+    targetStart++;
+    targetEnd--;
+  }
+  if (
+    targetStart + 1 === targetEnd && tokens[targetStart]?.kind === 'identifier' &&
+    prototypeAliases.has(tokens[targetStart].text)
+  ) return true;
+  for (let cursor = targetStart; cursor < targetEnd; cursor++) {
+    const escapeEnd = prototypeEscapeReceiverEnd(tokens, cursor, targetEnd, matchingIndexes);
+    if (
+      escapeEnd >= 0 &&
+      groupedPrototypeReceiverEnd(tokens, escapeEnd, targetEnd, matchingIndexes) === targetEnd - 1
+    ) return true;
+  }
+  return false;
+}
+
 function hasRegexIntrinsicMutationBarrier(
   tokens: PreflightSqlToken[],
   endIndex: number,
@@ -785,20 +941,12 @@ function hasRegexIntrinsicMutationBarrier(
       token.kind === 'identifier' && ['eval', 'Function'].includes(token.text) &&
       tokens[index + 1]?.text === '('
     ) return true;
+    if (hasExplicitPrototypeMutationCall(tokens, index, endIndex, matchingIndexes, prototypeAliases)) return true;
 
-    if (
-      token.kind === 'identifier' && token.text === '__proto__' &&
-      isExecPropertyAssignment(tokens, index + 2)
-    ) return true;
-    if (
-      token.kind === 'identifier' && token.text === 'constructor' &&
-      tokens[index + 1]?.text === '.' && tokens[index + 2]?.text === 'prototype' &&
-      isExecPropertyAssignment(tokens, index + 4)
-    ) return true;
-
-    if (token.kind === 'identifier' && token.text === 'getPrototypeOf' && tokens[index + 1]?.text === '(') {
-      const closeIndex = matchingIndexes[index + 1];
-      if (closeIndex > index && isExecPropertyAssignment(tokens, closeIndex + 2)) return true;
+    const escapeEnd = prototypeEscapeReceiverEnd(tokens, index, endIndex, matchingIndexes);
+    if (escapeEnd >= 0) {
+      const receiverEnd = groupedPrototypeReceiverEnd(tokens, escapeEnd, endIndex, matchingIndexes);
+      if (isExecPropertyAssignment(tokens, receiverEnd + 2)) return true;
     }
 
     if (
@@ -808,20 +956,15 @@ function hasRegexIntrinsicMutationBarrier(
     ) {
       let declarationEnd = index + 3;
       while (declarationEnd < endIndex && tokens[declarationEnd].text !== ';') declarationEnd++;
-      const initializer = tokens.slice(index + 3, declarationEnd);
-      const escapesPrototype = initializer.some((candidate, candidateIndex) =>
-        candidate.kind === 'identifier' && (
-          candidate.text === '__proto__' ||
-          (candidate.text === 'getPrototypeOf' && initializer[candidateIndex + 1]?.text === '(') ||
-          (candidate.text === 'constructor' && initializer[candidateIndex + 1]?.text === '.' &&
-            initializer[candidateIndex + 2]?.text === 'prototype')
-        )
+      const escapesPrototype = tokens.slice(index + 3, declarationEnd).some((_, candidateIndex) =>
+        prototypeEscapeReceiverEnd(tokens, index + 3 + candidateIndex, declarationEnd, matchingIndexes) >= 0
       );
       if (escapesPrototype) prototypeAliases.add(tokens[index + 1].text);
     }
     if (
       token.kind === 'identifier' && prototypeAliases.has(token.text) &&
-      isExecPropertyAssignment(tokens, index + 2)
+      isExecPropertyAssignment(tokens,
+        groupedPrototypeReceiverEnd(tokens, index, endIndex, matchingIndexes) + 2)
     ) return true;
   }
   return false;

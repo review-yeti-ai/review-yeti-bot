@@ -485,6 +485,344 @@ describe('preflight command injection static screening precision', () => {
       expected: true,
     },
     {
+      label: 'a grouped __proto__ dot assignment revokes the literal matcher exemption',
+      line: '((/seed/).__proto__).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a computed __proto__ escape mutation revokes the literal matcher exemption',
+      line: '(/seed/)["__proto__"].exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a computed constructor prototype escape mutation revokes the literal matcher exemption',
+      line: '/seed/.constructor["prototype"].exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a computed Object getPrototypeOf escape mutation revokes the literal matcher exemption',
+      line: 'Object["getPrototypeOf"](/seed/).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a computed Reflect getPrototypeOf escape mutation revokes the literal matcher exemption',
+      line: 'Reflect["getPrototypeOf"](/seed/).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped __proto__ computed assignment revokes the constructor matcher exemption',
+      line: '(((/seed/).__proto__))["exec"] = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped constructor prototype dot assignment revokes the constructor matcher exemption',
+      line: '(/seed/.constructor.prototype).exec = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped constructor prototype computed assignment revokes a regex binding exemption',
+      line: '((/seed/.constructor.prototype))["exec"] = child_process.exec; const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped Object prototype dot assignment revokes the literal matcher exemption',
+      line: '(Object.getPrototypeOf(/seed/)).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped Object prototype computed assignment revokes the constructor matcher exemption',
+      line: '((Object.getPrototypeOf(/seed/)))["exec"] = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped Reflect prototype dot assignment revokes a regex binding exemption',
+      line: '(Reflect.getPrototypeOf(/seed/)).exec = child_process.exec; const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped Reflect prototype computed assignment revokes the literal matcher exemption',
+      line: '((Reflect.getPrototypeOf(/seed/)))["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped __proto__ alias dot assignment revokes the literal matcher exemption',
+      line: 'const p = (/seed/).__proto__; (p).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped __proto__ alias computed assignment revokes a regex binding exemption',
+      line: 'const p = (((/seed/).__proto__)); ((p))["exec"] = child_process.exec; const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped constructor prototype alias dot assignment revokes the constructor matcher exemption',
+      line: 'const p = (/seed/.constructor.prototype); (p).exec = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped constructor prototype alias computed assignment revokes the literal matcher exemption',
+      line: 'const p = ((/seed/.constructor.prototype)); ((p))["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped Object prototype alias dot assignment revokes a regex binding exemption',
+      line: 'const p = (Object.getPrototypeOf(/seed/)); (p).exec = child_process.exec; const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped Object prototype alias computed assignment revokes the literal matcher exemption',
+      line: 'const p = ((Object.getPrototypeOf(/seed/))); ((p))["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped Reflect prototype alias dot assignment revokes the literal matcher exemption',
+      line: 'const p = (Reflect.getPrototypeOf(/seed/)); (p).exec = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a multiply grouped Reflect prototype alias computed assignment revokes the constructor matcher exemption',
+      line: 'const p = ((Reflect.getPrototypeOf(/seed/))); ((p))["exec"] = child_process.exec; new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'quoted grouped prototype mutation text does not revoke an intrinsic literal exemption',
+      line: 'const example = "((/seed/).__proto__).exec = child_process.exec"; /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'commented grouped prototype mutation text does not revoke a regex binding exemption',
+      line: '/* ((Reflect.getPrototypeOf(/seed/)))["exec"] = child_process.exec */ const re = /needle/; re.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'opaque template grouped prototype mutation text does not revoke a constructor exemption',
+      line: 'const example = `const p = Object.getPrototypeOf(/seed/); ((p))["exec"] = child_process.exec`; new RegExp("needle").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'a computed RegExp prototype exec write revokes the literal matcher exemption',
+      line: 'RegExp["prototype"].exec = child_process.exec; /needle/.exec("sh -c "+req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped RegExp owner prototype write revokes a regex binding exemption',
+      line: '(RegExp).prototype.exec = child_process.exec; const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a grouped computed RegExp prototype computed write revokes the literal matcher exemption',
+      line: '(((RegExp)["prototype"]))["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'a computed RegExp prototype alias grouped write revokes the literal matcher exemption',
+      line: 'const p = ((RegExp)["prototype"]); ((p))["exec"] = child_process.exec; /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.assign on an explicit instance prototype revokes the literal matcher exemption',
+      line: 'Object.assign((/seed/).__proto__, {exec:child_process.exec}); /needle/.exec("sh -c "+req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'computed Object.assign on a grouped computed prototype alias revokes the constructor exemption',
+      line: 'const p = Object["getPrototypeOf"](/seed/); Object["assign"]((p), { exec: child_process.exec }); new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.defineProperty on a grouped computed constructor prototype revokes a regex binding exemption',
+      line: 'Object.defineProperty((/seed/.constructor["prototype"]), "exec", { value: child_process.exec }); const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'computed Object.defineProperty on a grouped instance prototype alias revokes the literal exemption',
+      line: 'const p = (/seed/)["__proto__"]; Object["defineProperty"](((p)), "exec", { value: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.defineProperties on a grouped Object prototype revokes the constructor matcher exemption',
+      line: 'Object.defineProperties((Object.getPrototypeOf(/seed/)), { exec: { value: child_process.exec } }); new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'computed Object.defineProperties on a grouped Reflect prototype alias revokes the literal exemption',
+      line: 'const p = Reflect.getPrototypeOf(/seed/); Object["defineProperties"](((p)), { exec: { value: child_process.exec } }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Reflect.set on a grouped Reflect prototype revokes a regex binding exemption',
+      line: 'Reflect.set((Reflect.getPrototypeOf(/seed/)), "exec", child_process.exec); const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'computed Reflect.set on a grouped computed constructor prototype alias revokes the literal exemption',
+      line: 'const p = /seed/.constructor["prototype"]; Reflect["set"]((p), "exec", child_process.exec); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Reflect.defineProperty on a grouped computed Object prototype revokes the constructor exemption',
+      line: 'Reflect.defineProperty(((Object["getPrototypeOf"](/seed/))), "exec", { value: child_process.exec }); new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'computed Reflect.defineProperty on a grouped RegExp prototype alias revokes the literal exemption',
+      line: 'const p = (RegExp)["prototype"]; Reflect["defineProperty"](((p)), "exec", { value: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.assign on an unrelated plain object leaves a literal matcher intrinsic',
+      line: 'Object.assign({}, { exec: child_process.exec }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'Object.assign does not treat its prototype source argument as its mutation target',
+      line: 'Object["assign"]({}, (/seed/).__proto__); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'Object.defineProperty does not treat a descriptor prototype reference as its target',
+      line: 'Object.defineProperty({}, "exec", { value: child_process.exec, saved: Object.getPrototypeOf(/seed/) }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'Object.defineProperties on an object containing a prototype reference leaves a literal matcher intrinsic',
+      line: 'Object["defineProperties"]({ saved: Object.getPrototypeOf(/seed/) }, { exec: { value: child_process.exec } }); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'Reflect.set on an unrelated grouped plain object leaves a literal matcher intrinsic',
+      line: 'Reflect["set"](({}), "exec", child_process.exec); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'Reflect.defineProperty on an unrelated plain object leaves a regex binding intrinsic',
+      line: 'Reflect.defineProperty({}, "exec", { value: child_process.exec }); const re = /needle/; re.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'quoted Object.assign prototype mutation text leaves a literal matcher intrinsic',
+      line: 'const example = "Object.assign((/seed/).__proto__, {exec:child_process.exec})"; /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'commented Reflect.set prototype mutation text leaves a regex binding intrinsic',
+      line: '/* Reflect.set(Reflect.getPrototypeOf(/seed/), "exec", child_process.exec) */ const re = /needle/; re.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'opaque template defineProperty prototype mutation text leaves a constructor intrinsic',
+      line: 'const example = `Object["defineProperty"]((/seed/).__proto__, "exec", {value:child_process.exec})`; new RegExp("needle").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'pure computed Object prototype inspection leaves a literal matcher intrinsic',
+      line: 'const p = Object["getPrototypeOf"](/seed/); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'pure grouped Reflect prototype inspection leaves a regex binding intrinsic',
+      line: 'const p = (Reflect.getPrototypeOf(/seed/)); const re = /needle/; re.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'pure grouped computed RegExp prototype inspection leaves a literal matcher intrinsic',
+      line: 'const p = (RegExp)["prototype"]; /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    ...[
+      { owner: 'Object', method: 'assign', mutationArguments: '{exec:child_process.exec}' },
+      { owner: 'Object', method: 'defineProperty', mutationArguments: '"exec", { value: child_process.exec }' },
+      { owner: 'Object', method: 'defineProperties', mutationArguments: '{ exec: { value: child_process.exec } }' },
+      { owner: 'Reflect', method: 'set', mutationArguments: '"exec", child_process.exec' },
+      { owner: 'Reflect', method: 'defineProperty', mutationArguments: '"exec", { value: child_process.exec }' },
+    ].flatMap(({ owner, method, mutationArguments }) => [
+      {
+        label: `optional property ${owner}.${method} on an explicit prototype revokes the literal exemption`,
+        line: `${owner}?.${method}((/seed/).__proto__,${mutationArguments}); /needle/.exec("sh -c "+req.query.command);`,
+        expected: true,
+      },
+      {
+        label: `optional call ${owner}.${method} on an explicit prototype revokes the literal exemption`,
+        line: `${owner}.${method}?.((/seed/).__proto__,${mutationArguments}); /needle/.exec("sh -c "+req.query.command);`,
+        expected: true,
+      },
+      {
+        label: `combined optional computed ${owner}.${method} on a grouped alias revokes a regex binding exemption`,
+        line: `const p = (/seed/).__proto__; ${owner}?.["${method}"]?.(((p)),${mutationArguments}); const re = /needle/; re.exec("sh -c "+req.query.command);`,
+        expected: true,
+      },
+      {
+        label: `combined optional computed ${owner}.${method} on a plain object leaves the literal exemption intact`,
+        line: `${owner}?.["${method}"]?.(({}),${mutationArguments}); /needle/.exec(req.query.input);`,
+        expected: false,
+      },
+    ]),
+    {
+      label: 'Object.assign on an optional Object prototype inspection revokes the literal exemption',
+      line: 'Object.assign(Object.getPrototypeOf?.(/seed/), { exec: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Reflect.set on combined optional computed Reflect prototype inspection revokes the constructor exemption',
+      line: 'Reflect.set(Reflect?.["getPrototypeOf"]?.(/seed/), "exec", child_process.exec); new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'Object.assign on a grouped Object prototype inspection callee revokes the literal exemption',
+      line: 'Object.assign((Object.getPrototypeOf)(/seed/), { exec: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an optional grouped Object.assign callee revokes the literal exemption',
+      line: '(Object.assign)?.((/seed/).__proto__, { exec: child_process.exec }); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'optional grouped computed Reflect mutation and inspection callees revoke a regex binding exemption',
+      line: '(Reflect["defineProperty"])?.((Reflect["getPrototypeOf"])?.(/seed/), "exec", { value: child_process.exec }); const re = /needle/; re.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an optional grouped prototype inspection alias remains an explicit Reflect.set target',
+      line: 'const p = (Object.getPrototypeOf)?.(/seed/); Reflect.set((p), "exec", child_process.exec); /needle/.exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'combined optional computed grouped Object mutation and inspection callees revoke the constructor exemption',
+      line: '(Object?.["assign"])?.(((Object?.["getPrototypeOf"])?.(/seed/)), { exec: child_process.exec }); new RegExp("needle").exec("sh -c " + req.query.command);',
+      expected: true,
+    },
+    {
+      label: 'an optional Object.assign source prototype is not its plain-object mutation target',
+      line: 'Object?.["assign"]?.({}, (Object.getPrototypeOf)?.(/seed/)); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'quoted optional Object.assign prototype mutation text leaves the literal exemption intact',
+      line: 'const example = "Object?.assign((/seed/).__proto__,{exec:child_process.exec})"; /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'commented optional Reflect.set prototype mutation text leaves a regex binding exemption intact',
+      line: '/* Reflect["set"]?.((/seed/).__proto__, "exec", child_process.exec) */ const re = /needle/; re.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'opaque template combined optional defineProperty mutation text leaves the constructor exemption intact',
+      line: 'const example = `Object?.["defineProperty"]?.((/seed/).__proto__, "exec", {value:child_process.exec})`; new RegExp("needle").exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'pure optional grouped Object prototype inspection leaves the literal exemption intact',
+      line: 'const p = (Object?.["getPrototypeOf"])?.(/seed/); /needle/.exec(req.query.input);',
+      expected: false,
+    },
+    {
+      label: 'pure optional Reflect prototype inspection leaves a regex binding exemption intact',
+      line: 'const p = Reflect?.getPrototypeOf?.(/seed/); const re = /needle/; re.exec(req.query.input);',
+      expected: false,
+    },
+    {
       label: 'eval during RegExp construction blocks the intrinsic matcher exemption',
       line: 'const match = new RegExp(eval("RegExp.prototype.exec = child_process.exec")).exec("sh -c " + req.query.command);',
       expected: true,
