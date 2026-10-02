@@ -2,6 +2,12 @@ name = "review-yeti-cf-orchestrator"
 main = "src/worker.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# 🌐 Custom Domain in example.com
+routes = [
+  { pattern = "review-yeti.example.com", custom_domain = true }
+]
 
 # 🎨 Serve the Next.js Portal directly from Cloudflare Edge
 [assets]
