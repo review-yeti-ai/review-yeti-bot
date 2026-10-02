@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { operationalTelemetrySchema } from '../../src/review/workerCompletion';
-import type { OpenRouterRequest, OpenRouterResponse, ReviewModelClient } from '../../src/gateway/openRouterClient';
+import { OpenRouterClient, OpenRouterResponseError, type OpenRouterRequest, type OpenRouterResponse, type ReviewModelClient } from '../../src/gateway/openRouterClient';
 import { createPanelDeadlineSignal, validateFindings, PanelFindingsValidationError } from '../../src/panel/panelEngine';
 import {
   createPublishingProgress,
@@ -30,6 +30,38 @@ function request(overrides: Partial<OpenRouterRequest> = {}): OpenRouterRequest 
     internalProgress: { turn: 3, lane: 'security_lane' },
     ...overrides,
   };
+}
+
+async function failureFromHttpResponse(status: number, message: string): Promise<unknown> {
+  const client = new OpenRouterClient({
+    apiKey: 'test-openrouter-key',
+    maxRetries: 0,
+    fetchImplementation: async () => new Response(JSON.stringify({ error: { message } }), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+  return client.complete(request({ stream: false })).catch((error) => error);
+}
+
+async function failureFromSdkBodyCode(status: number, message: string): Promise<unknown> {
+  const body = `data: ${JSON.stringify({
+    id: 'chatcmpl-body-error',
+    object: 'chat.completion.chunk',
+    created: 1_700_000_000,
+    model: 'openai/gpt-4o-mini',
+    choices: [{ index: 0, finish_reason: null, delta: {} }],
+    error: { code: status, message },
+  })}\n\ndata: [DONE]\n\n`;
+  const client = new OpenRouterClient({
+    apiKey: 'test-openrouter-key',
+    maxRetries: 0,
+    fetchImplementation: async () => new Response(body, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }),
+  });
+  return client.complete(request({ stream: false })).catch((error) => error);
 }
 
 describe('publishing progress diagnostics', () => {
@@ -85,6 +117,94 @@ describe('publishing progress diagnostics', () => {
     expect(events[1]).toMatchObject({ status: 'failed', rejectionCode: 'provider_error', runId: 'run-fail', executionAttempt: 3 });
     expect(JSON.stringify(events)).not.toContain('SECRET prompt and provider response');
     expect(JSON.stringify(events)).not.toContain('private prompt content');
+  });
+
+  it.each([
+    [401, 'auth'],
+    [403, 'auth'],
+    [429, 'rate_limit'],
+    [500, 'provider_error'],
+    [503, 'provider_error'],
+  ] as const)('retains only safe status and failure class for provider HTTP %i', async (status, rejectionCode) => {
+    const events: Array<Record<string, unknown>> = [];
+    const sensitiveText = `response body for ${status} https://gateway.example/private?api_key=do-not-export and prompt text`;
+    const failure = await failureFromHttpResponse(status, sensitiveText);
+    const progress = createPublishingProgress({ runId: 'run-http-failure', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+
+    await expect(progress.instrument({ complete: async () => { throw failure; } }).complete(request()))
+      .rejects.toBe(failure);
+
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect((failure as OpenRouterResponseError).status).toBe(status);
+    expect((failure as OpenRouterResponseError).observedHttpStatus).toBe(status);
+    expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBe('sdk_http_error');
+    expect(safePublishingRejectionCode(failure)).toBe(rejectionCode);
+    expect(events[1]).toMatchObject({ task: 'provider_call', status: 'failed', rejectionCode, responseStatus: status });
+    expect(progress.snapshot?.()?.recentEvents[1]).toMatchObject({ rejectionCode, responseStatus: status });
+    const serialized = JSON.stringify({ events, telemetry: progress.snapshot?.() });
+    expect(serialized).not.toContain(sensitiveText);
+    expect(serialized).not.toContain('do-not-export');
+    expect(serialized).not.toContain('gateway.example');
+    expect(serialized).not.toContain('response body');
+    expect(serialized).not.toContain('prompt text');
+    expect(serialized).not.toContain('responseStatusSource');
+  });
+
+  it.each([401, 429])('does not classify SDK stream-body error code %i as HTTP authentication/rate telemetry', async (status) => {
+    const sensitiveText = `body-only error ${status} https://gateway.example/private?key=do-not-export`;
+    const failure = await failureFromSdkBodyCode(status, sensitiveText);
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: `run-body-error-${status}`, executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect((failure as OpenRouterResponseError).status).toBe(status);
+    expect((failure as OpenRouterResponseError).observedHttpStatus).toBeUndefined();
+    expect((failure as OpenRouterResponseError).observedHttpStatusSource).toBeUndefined();
+    await expect(progress.instrument({ complete: async () => { throw failure; } }).complete(request())).rejects.toBe(failure);
+
+    expect(safePublishingRejectionCode(failure)).toBe('provider_error');
+    expect(events[1]).toMatchObject({ status: 'failed', rejectionCode: 'provider_error' });
+    expect(events[1]).not.toHaveProperty('responseStatus');
+    expect(JSON.stringify(events)).not.toContain(sensitiveText);
+    expect(JSON.stringify(events)).not.toContain('do-not-export');
+  });
+
+  it('keeps a local retry sentinel status out of HTTP telemetry and HTTP classification', async () => {
+    const failure = new OpenRouterResponseError('local retry sentinel body must stay private', 502);
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-local-sentinel', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+
+    await expect(progress.instrument({ complete: async () => { throw failure; } }).complete(request())).rejects.toBe(failure);
+
+    expect(failure.status).toBe(502);
+    expect(failure.observedHttpStatus).toBeUndefined();
+    expect(failure.observedHttpStatusSource).toBeUndefined();
+    expect(safePublishingRejectionCode(failure)).toBe('provider_error');
+    expect(events[1]).not.toHaveProperty('responseStatus');
+    expect(JSON.stringify(events)).not.toContain('local retry sentinel body');
+  });
+
+  it('does not trust arbitrary status-shaped objects or emit out-of-range status values', () => {
+    const events: Array<Record<string, unknown>> = [];
+    const progress = createPublishingProgress({ runId: 'run-invalid-status', executionAttempt: 1 }, {
+      sink: (event) => events.push(event),
+    });
+    const spoofed = Object.assign(new Error('private message'), { name: 'OpenRouterResponseError', status: 401 });
+
+    expect(safePublishingRejectionCode(spoofed)).toBe('provider_error');
+    progress.emit({ task: 'provider_call', status: 'failed', responseStatus: 700 } as never);
+    expect(events[0]).not.toHaveProperty('responseStatus');
+    progress.emit({ task: 'provider_call', status: 'failed', responseStatus: 401, responseStatusSource: 'sdk_http_error' } as never);
+    expect(events[1]).not.toHaveProperty('responseStatus');
+    expect(events[1]).not.toHaveProperty('responseStatusSource');
+    expect(progress.snapshot?.()?.recentEvents[0]).not.toHaveProperty('responseStatus');
+    expect(progress.snapshot?.()?.recentEvents[1]).not.toHaveProperty('responseStatus');
   });
 
   it('maps an unknown failureClass to a fixed code without emitting the caller-controlled value', async () => {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.115.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.1...v1.115.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* keep composed WORK task context truthful ([#1275](https://github.com/review-yeti-ai/review-yeti-bot/issues/1275)) ([ff35bc6](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff35bc6117fb93fd0ca25222230ad16081722a35))
+
 ## [1.115.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.0...v1.115.1) (2026-10-02)
 
 
