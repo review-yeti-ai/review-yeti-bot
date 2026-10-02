@@ -1,7 +1,7 @@
 --- FILE: lib/exampleorg/crypto/signature.ex ---
 diff --git a/lib/exampleorg/crypto/signature.ex b/lib/exampleorg/crypto/signature.ex
 @@ -1,5 +1,14 @@
- defmodule exampleorg.Crypto.Signature do
+ defmodule Exampleorg.Crypto.Signature do
    @moduledoc """
    Provides secure HMAC-SHA256 signature generation and constant-time verification.
    """
@@ -19,9 +19,9 @@ diff --git a/lib/exampleorg/crypto/signature.ex b/lib/exampleorg/crypto/signatur
 --- FILE: test/exampleorg/crypto/signature_test.exs ---
 diff --git a/test/exampleorg/crypto/signature_test.exs b/test/exampleorg/crypto/signature_test.exs
 @@ -1,5 +1,15 @@
- defmodule exampleorg.Crypto.SignatureTest do
+ defmodule Exampleorg.Crypto.SignatureTest do
    use ExUnit.Case, async: true
-   alias exampleorg.Crypto.Signature
+   alias Exampleorg.Crypto.Signature
 +
 +  test "signs and verifies valid hmac signatures" do
 +    secret = "test-secret-key"

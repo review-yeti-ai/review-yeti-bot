@@ -1,9 +1,9 @@
 --- FILE: lib/example_org/importer/bulk_cdr_importer.ex ---
 diff --git a/lib/example_org/importer/bulk_cdr_importer.ex b/lib/example_org/importer/bulk_cdr_importer.ex
 @@ -1,6 +1,20 @@
- defmodule exampleorg.Importer.BulkCdrImporter do
-   alias exampleorg.CdrParser
-   alias exampleorg.Repo
+ defmodule Exampleorg.Importer.BulkCdrImporter do
+   alias Exampleorg.CdrParser
+   alias Exampleorg.Repo
 
 +  def import_cdr_stream(file_stream) do
 +    file_stream

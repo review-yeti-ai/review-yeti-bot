@@ -1,7 +1,7 @@
 --- FILE: lib/example_org/quota/ets_tracker.ex ---
 diff --git a/lib/example_org/quota/ets_tracker.ex b/lib/example_org/quota/ets_tracker.ex
 @@ -1,6 +1,19 @@
- defmodule exampleorg.Quota.EtsTracker do
+ defmodule Exampleorg.Quota.EtsTracker do
    @table :call_quota_table
 
    def init_table do

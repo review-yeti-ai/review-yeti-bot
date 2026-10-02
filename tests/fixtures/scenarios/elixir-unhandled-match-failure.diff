@@ -3,6 +3,6 @@ diff --git a/lib/exampleorg/billing/invoice_generator.ex b/lib/exampleorg/billin
 @@ -12,5 +12,9 @@
    def process_invoice(account, amount) do
 +    # Unhandled pattern match: will raise MatchError when Gateway returns {:error, reason}
-+    {:ok, invoice} = exampleorg.PaymentGateway.charge(account.customer_id, amount)
-+    exampleorg.Repo.insert!(invoice)
++    {:ok, invoice} = Exampleorg.PaymentGateway.charge(account.customer_id, amount)
++    Exampleorg.Repo.insert!(invoice)
    end
