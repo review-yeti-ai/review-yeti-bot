@@ -34,6 +34,11 @@ runs:
         node_major="$(node -p 'process.versions.node.split(".")[0]')"
         echo "deps=${deps}" >> "$GITHUB_OUTPUT"
         echo "node=${node_major}" >> "$GITHUB_OUTPUT"
+        # Derived ONCE, here, and referenced by all four mount steps below.
+        # Writing the key expressions out per-family is what let them drift; a
+        # single derivation makes parity structural instead of a comment.
+        echo "npm_cache_key=${GITHUB_REPOSITORY}-npm-cache-${RUNNER_OS}-${RUNNER_ARCH}" >> "$GITHUB_OUTPUT"
+        echo "node_modules_key=${GITHUB_REPOSITORY}-node-modules-${RUNNER_OS}-${RUNNER_ARCH}-node${node_major}-${deps}" >> "$GITHUB_OUTPUT"
         if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
           echo "commit=false" >> "$GITHUB_OUTPUT"
         else
@@ -45,7 +50,7 @@ runs:
       if: runner.environment == 'self-hosted'
       uses: useblacksmith/stickydisk@94697d49e77d0dd78b77deb85ad3de63a28b4b8a # v1.7.1
       with:
-        key: ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}
+        key: ${{ steps.key.outputs.npm_cache_key }}
         path: ~/.npm
         commit: ${{ steps.key.outputs.commit }}
 
@@ -53,7 +58,7 @@ runs:
       if: runner.environment == 'self-hosted'
       uses: useblacksmith/stickydisk@94697d49e77d0dd78b77deb85ad3de63a28b4b8a # v1.7.1
       with:
-        key: ${{ github.repository }}-node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.key.outputs.node }}-${{ steps.key.outputs.deps }}
+        key: ${{ steps.key.outputs.node_modules_key }}
         path: ./node_modules
         commit: ${{ steps.key.outputs.commit }}
 
@@ -73,16 +78,16 @@ runs:
         # tarballs), so both families share one coarse key. node_modules, by
         # contrast, IS keyed by node+deps on both families because it is an
         # installed tree. Those are the only two parity rules; keep them true.
-        key: ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}
+        key: ${{ steps.key.outputs.npm_cache_key }}
         restore-keys: |
-          ${{ github.repository }}-npm-cache-${{ runner.os }}-${{ runner.arch }}
+          ${{ steps.key.outputs.npm_cache_key }}
 
     - name: Restore node_modules (Actions cache)
       if: runner.environment == 'github-hosted'
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
       with:
         path: ./node_modules
-        key: ${{ github.repository }}-node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.key.outputs.node }}-${{ steps.key.outputs.deps }}
+        key: ${{ steps.key.outputs.node_modules_key }}
 
     # The marker is written only after a successful `npm ci`, so an interrupted install is never
     # trusted. `npm ci` clears node_modules' contents itself, which works on a mount point.

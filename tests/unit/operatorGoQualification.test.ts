@@ -128,16 +128,32 @@ describe('embedded operator Go qualification workflow', () => {
       'publish-ghcr-arch', 'publish-ghcr', 'attest-published-indexes',
     ]);
 
-    // Coverage is DERIVED, never restated. A literal job list drifts the first
-    // time a job is added, and the guard silently stops covering it -- which is
-    // exactly the "mixed runner set with no signal" failure it exists to prevent.
-    const benchCovered = Object.entries(workflow.jobs)
-      .filter(([name, job]: [string, any]) =>
-        !PUBLISH_LANE.has(name) &&
-        typeof job['runs-on'] === 'string' &&
-        job['runs-on'].includes('blacksmith-'))
-      .map(([name]) => name);
+    // Coverage is DERIVED, and deliberately NOT from the current `runs-on`:
+    // filtering on `includes('blacksmith-')` would let a job escape this guard
+    // simply by dropping the expression (e.g. moving vitest to ubuntu-latest),
+    // which is the "mixed runner set with no signal" failure it exists to prevent.
+    const benchCovered = Object.keys(workflow.jobs).filter((name) => !PUBLISH_LANE.has(name));
 
+    // Per-job default SKU, pinned explicitly. A loose [24]vcpu pattern cannot
+    // detect a 2<->4 vCPU change, and the test's copy of these values drifted
+    // from the workflow once already. Decisions documented from the same-SHA A/B.
+    const EXPECTED_DEFAULTS: Record<string, string> = {
+      // Measured green on 2 vCPU in the A/B (PR #1247).
+      'test-plan': 'blacksmith-2vcpu-ubuntu-2404',
+      'worker-helper': 'blacksmith-2vcpu-ubuntu-2404',
+      typecheck: 'blacksmith-2vcpu-ubuntu-2404',
+      'operator-test': 'blacksmith-2vcpu-ubuntu-2404',
+      'legacy-runtime': 'blacksmith-2vcpu-ubuntu-2404',
+      test: 'blacksmith-2vcpu-ubuntu-2404',
+      // DECLINED: vitest + vitest-postgres are CPU-bound (2.11-2.31x stretch;
+      // postgres 518s vs 115s) and build roughly doubles its wall time.
+      vitest: 'blacksmith-4vcpu-ubuntu-2404',
+      'vitest-postgres': 'blacksmith-4vcpu-ubuntu-2404',
+      build: 'blacksmith-4vcpu-ubuntu-2404',
+    };
+    // A job added without a documented SKU decision fails here rather than
+    // escaping the guard silently.
+    expect(benchCovered.filter((j) => !(j in EXPECTED_DEFAULTS))).toEqual([]);
     expect(benchCovered.length).toBeGreaterThan(0);
 
     // THE SOURCE, not just the consumers: deleting or renaming the input block
@@ -161,14 +177,51 @@ describe('embedded operator Go qualification workflow', () => {
     ]));
 
     for (const job of benchCovered) {
-      const actual = (workflow.jobs[job] as any)['runs-on'] as string;
-      // Direction is pinned: `!=` -> `==` (which disables the override on every
-      // job) fails here. Matched as a regex over the whole string so an inverted
-      // guard, a flipped default SKU, or a stray wrapper all fail.
-      expect(`${job}|${actual}`).toMatch(
-        /^[a-z-]+\|\$\{\{ inputs\.bench_runner != '' && inputs\.bench_runner \|\| 'blacksmith-[24]vcpu-ubuntu-2404' \}\}$/,
-      );
+      const actual = (workflow.jobs[job] as any)['runs-on'];
+      const expected =
+        "${{ inputs.bench_runner != '' && inputs.bench_runner || '" +
+        EXPECTED_DEFAULTS[job] +
+        "' }}";
+      // Full literal: pins direction (a `!=` -> `==` inversion fails), the exact
+      // default SKU (a 2<->4 vCPU change fails), and the arm axis.
+      expect(job + '|' + actual).toBe(job + '|' + expected);
     }
+  });
+
+
+  it('gates the cache layer on runner.environment with one derived key per family', () => {
+    // The portability claim rests on this discriminator, and nothing else
+    // exercised it: inverting a single `==` here would silently send every
+    // Blacksmith run down a cold `npm ci` -- green, just minutes slower. The
+    // composite action is parsed with the same treatment the workflow gets.
+    const actionPath = path.join(root, '.github/actions/node-deps/action.yml');
+    const action = yaml.load(fs.readFileSync(actionPath, 'utf8')) as any;
+    const steps = action.runs.steps as Array<Record<string, any>>;
+
+    const sticky = steps.filter((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('useblacksmith/stickydisk@'));
+    const actionsCache = steps.filter((s) =>
+      typeof s.uses === 'string' && s.uses.startsWith('actions/cache@'));
+
+    expect(sticky.length).toBe(2);
+    expect(actionsCache.length).toBe(2);
+    for (const s of sticky) {
+      expect(s.if).toBe("runner.environment == 'self-hosted'");
+    }
+    for (const s of actionsCache) {
+      expect(s.if).toBe("runner.environment == 'github-hosted'");
+    }
+
+    // Parity is structural: every mount step references a value derived once in
+    // the `key` step, so the two families cannot drift onto different keys.
+    const mountKeys = [...sticky, ...actionsCache].map((s) => s.with.key);
+    for (const k of mountKeys) {
+      expect(k).toMatch(/^\$\{\{ steps\.key\.outputs\.(npm_cache_key|node_modules_key) \}\}$/);
+    }
+    const keyStep = steps.find((s) => s.id === 'key');
+    expect(keyStep).toBeDefined();
+    expect(keyStep!.run).toContain('npm_cache_key=');
+    expect(keyStep!.run).toContain('node_modules_key=');
   });
 
   it('bounds the build heap so the build does not OOM on a smaller runner', () => {
