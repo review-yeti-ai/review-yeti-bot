@@ -30,6 +30,7 @@ import {
 } from '../../../src/components/dashboard/tremor';
 import OverviewPage from '../../../src/app/page';
 import { ShieldCheck, Cpu } from 'lucide-react';
+import { assertTokenTelemetryMarkup } from '../../support/dashboardMarkup';
 
 vi.mock('../../../src/components/live/LiveDashboardView', () => ({ LiveDashboardView: () => <div>Active live fixture</div> }));
 vi.mock('../../../src/lib/api-client', () => ({
@@ -259,7 +260,8 @@ describe('Overview telemetry navigation', () => {
     expect(container.querySelector('[id="chart-tokens-timeseries"]')).toBeNull();
     const fleet = screen.getByRole('tab', { name: 'Fleet Telemetry & Compaction ROI' });
     fireEvent.mouseDown(fleet, { button: 0, ctrlKey: false });
-    await waitFor(() => expect(container.querySelector('[id="chart-tokens-timeseries"]')?.textContent).toContain('Prompt (80%)120'));
+    await waitFor(() => assertTokenTelemetryMarkup(container.querySelector('[id="chart-tokens-timeseries"]'),
+      { prompt: 120, completion: 30, total: 150 }));
     expect(container.querySelector('[id="chart-model-costs"]')?.textContent).toContain('$0.000');
     expect(fleet).toHaveAttribute('aria-selected', 'true');
   });
