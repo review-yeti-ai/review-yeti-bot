@@ -82,11 +82,15 @@ describe('429 Retry-After', () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
   });
-  it.each(['10', '86401'])('client refuses cooldown %s which cannot fit its original deadline', async header => {
+  it.each(['10', '86401'])('streaming client preserves bounded cooldown metadata for %s without retrying 429', async header => {
     const fetchImplementation = vi.fn(async () => throttled(header));
     const sleep = vi.fn(async () => {});
     const client = new OpenRouterClient({ baseUrl: 'https://gateway.test/v1', apiKey: 'synthetic', now: () => epoch, fetchImplementation, maxRetries: 1, random: () => 0, sleep });
-    await expect(client.complete({ ...request, stream: true })).rejects.toBeInstanceOf(OpenRouterResponseError);
+    const error = await client.complete({ ...request, stream: true }).catch(error => error);
+    expect(error).toBeInstanceOf(OpenRouterResponseError);
+    expect(error.retryAfter).toEqual(header === '10'
+      ? { notBeforeMs: epoch + 10_000, format: 'delta_seconds' }
+      : { exceedsBound: true });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
   });
