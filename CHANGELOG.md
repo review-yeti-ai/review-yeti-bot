@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.115.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.114.1...v1.115.0) (2026-10-02)
+
+
+### Features
+
+* **grounding:** bound Zoekt index memory, add per-repo canary and a container memory floor (REL-1282) ([#1271](https://github.com/review-yeti-ai/review-yeti-bot/issues/1271)) ([2560a26](https://github.com/review-yeti-ai/review-yeti-bot/commit/2560a2639c2704103a15d75f09aee4597398ff2e))
+
+## [1.114.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.114.0...v1.114.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* keep deleted diff paths out of head tree evidence ([#1268](https://github.com/review-yeti-ai/review-yeti-bot/issues/1268)) ([ecfe7c1](https://github.com/review-yeti-ai/review-yeti-bot/commit/ecfe7c1e44df5a337bf8c5a8f7e5d664e8f3a861))
+
 ## [1.114.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.113.0...v1.114.0) (2026-10-02)
 
 

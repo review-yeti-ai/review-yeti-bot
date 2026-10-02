@@ -2,6 +2,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { runPublishingReviewWorker, zoektGroundingEnabledFor } from '../../src/cli/publishingReview';
 import { mergeZoektToolConfig } from '../../src/panel/panelEngine';
 import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
+import { initTelemetry, getRecentSpans, clearSpans } from '../../src/telemetry';
+import { logger } from '../../src/utils/logger';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -77,6 +79,37 @@ describe('zoektGroundingEnabledFor — the three-conjunct gate (REL-677)', () =>
   });
 });
 
+describe('zoektGroundingEnabledFor — per-repository canary (REL-1282)', () => {
+  const cfg = { pre_checks: { zoekt: { enabled: true } } };
+  const withFlag = (v: string) => ({ NODE_ENV: 'test', ZOEKT_GROUNDING_ENABLED: v }) as NodeJS.ProcessEnv;
+
+  it('enables only the listed repositories for an owner/repo allow-list, case-insensitively', () => {
+    const env = withFlag('Example-Org/Canary, example-org/other');
+    expect(zoektGroundingEnabledFor(env, cfg, 'example-org/canary')).toBe(true);
+    expect(zoektGroundingEnabledFor(env, cfg, 'EXAMPLE-ORG/OTHER')).toBe(true);
+    expect(zoektGroundingEnabledFor(env, cfg, 'example-org/big-repo')).toBe(false);
+  });
+
+  it('keeps `true` as every repository', () => {
+    expect(zoektGroundingEnabledFor(withFlag('true'), cfg, 'example-org/anything')).toBe(true);
+    expect(zoektGroundingEnabledFor(withFlag('true'), cfg)).toBe(true);
+  });
+
+  it.each(['', 'false', 'FALSE', 'maybe-not-a-repo'])('is off for %j', (flag) => {
+    expect(zoektGroundingEnabledFor(withFlag(flag), cfg, 'example-org/canary')).toBe(false);
+  });
+
+  it('an allow-list never matches without a repository', () => {
+    expect(zoektGroundingEnabledFor(withFlag('example-org/canary'), cfg)).toBe(false);
+  });
+
+  it('the kill switch and config opt-out still override an allow-list match', () => {
+    const env = { ...withFlag('example-org/canary'), ZOEKT_GROUNDING_DISABLED: 'true' } as NodeJS.ProcessEnv;
+    expect(zoektGroundingEnabledFor(env, cfg, 'example-org/canary')).toBe(false);
+    expect(zoektGroundingEnabledFor(withFlag('example-org/canary'), { pre_checks: { zoekt: { enabled: false } } }, 'example-org/canary')).toBe(false);
+  });
+});
+
 describe('mergeZoektToolConfig — the panel-owned lookup policy (REL-677)', () => {
   it('an evidence indexDir takes precedence and is re-pinned, with knobs merged', () => {
     const merged = mergeZoektToolConfig(
@@ -135,6 +168,56 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     for (let i = 0; i < 64; i++) last = await session.call('code_search_zoekt', { query: '' });
     expect(last).toMatchObject({ reason: 'call_budget_exhausted', indexScope,
       identity: { repository: 'calltelemetry/ct-meta', headSha: HEAD } });
+  });
+
+  describe('container memory evidence (REL-1282)', () => {
+    const MiB = 1024 * 1024;
+    beforeEach(() => { initTelemetry('review-yeti-bot'); clearSpans(); });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it('surfaces the container limit and cgroup peak as span attributes and a structured log', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      const zoektGrounding = vi.fn(async () => ({
+        indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch',
+        memory: { limitBytes: 512 * MiB, peakBytesAfterBuild: 301 * MiB },
+      }));
+      await runPublishingReviewWorker(env(), deps(vi.fn(async () => basePanel()), { zoektGrounding: zoektGrounding as never }));
+
+      const span = getRecentSpans().find((candidate) => candidate.name === 'review_yeti_zoekt_index_build');
+      expect(span?.attributes['review_yeti.zoekt_index_build.memory_limit_bytes']).toBe(512 * MiB);
+      expect(span?.attributes['review_yeti.zoekt_index_build.cgroup_peak_bytes']).toBe(301 * MiB);
+      expect(info).toHaveBeenCalledWith('Zoekt grounding memory', expect.objectContaining({
+        event: 'zoekt_grounding_memory', repository: 'calltelemetry/ct-meta', status: 'ok',
+        memoryLimitBytes: 512 * MiB, cgroupPeakBytesAfterBuild: 301 * MiB,
+      }));
+    });
+
+    it('records a memory-floor skip as the build status and still completes the review', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      const panelRunner = vi.fn(async () => basePanel());
+      const zoektGrounding = vi.fn(async () => ({
+        indexDir: undefined, reason: 'grounding_skipped:memory_limit_below_floor',
+        memory: { limitBytes: 256 * MiB, floorBytes: 512 * MiB },
+      }));
+      const receipt = await runPublishingReviewWorker(env(), deps(panelRunner, { zoektGrounding: zoektGrounding as never }));
+
+      expect(receipt.conclusion).toBe('success');
+      const span = getRecentSpans().find((candidate) => candidate.name === 'review_yeti_zoekt_index_build');
+      expect(span?.attributes['review_yeti.zoekt_index_build.status']).toBe('grounding_skipped:memory_limit_below_floor');
+      expect(info).toHaveBeenCalledWith('Zoekt grounding memory', expect.objectContaining({
+        status: 'grounding_skipped:memory_limit_below_floor', memoryLimitBytes: 256 * MiB, memoryFloorBytes: 512 * MiB,
+      }));
+      const panelArg = (panelRunner.mock.calls[0] as unknown as unknown[])[0] as Record<string, any>;
+      expect(panelArg.config.evidence?.zoekt?.indexDir).toBeUndefined();
+    });
+
+    it('emits no memory log when grounding is disabled for the repository', async () => {
+      const info = vi.spyOn(logger, 'info').mockImplementation(() => {});
+      const zoektGrounding = vi.fn(async () => ({ indexDir: undefined, reason: 'disabled_or_unauthenticated' }));
+      await runPublishingReviewWorker(env({ ZOEKT_GROUNDING_ENABLED: 'example-org/some-other-repo' }),
+        deps(vi.fn(async () => basePanel()), { zoektGrounding: zoektGrounding as never }));
+      expect(info).not.toHaveBeenCalledWith('Zoekt grounding memory', expect.anything());
+    });
   });
 
   it('leaves the panel config untouched when grounding resolves without an index', async () => {

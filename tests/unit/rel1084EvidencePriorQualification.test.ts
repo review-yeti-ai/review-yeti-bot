@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import type { PanelResult } from '../../src/panel/types';
 import {
@@ -37,6 +37,21 @@ import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResul
  * verifies current-policy re-derivation: a stored success label does not make a P2-bearing prior
  * eligible for reuse.
  */
+
+// Keep the real import-time opt-out separate from the timed review assertions.
+let advisoryOptOutWorker: typeof runPublishingReviewWorker;
+beforeAll(async () => {
+  const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+  try {
+    process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
+    vi.resetModules();
+    ({ runPublishingReviewWorker: advisoryOptOutWorker } = await import('../../src/cli/publishingReview'));
+  } finally {
+    if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+    vi.resetModules();
+  }
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -77,7 +92,8 @@ type LaneFinding = PanelResult['personas'][number]['findings'][number];
 
 /** The WorkerReviewEvidence the real non-authoritative worker reports for the PRIOR head. */
 async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
-  override?: { diff?: string; panel?: PanelResult }): Promise<WorkerReviewEvidence> {
+  override?: { diff?: string; panel?: PanelResult; expectedPublishedAnnotation?: 'failure' | 'warning' },
+  worker: typeof runPublishingReviewWorker = runPublishingReviewWorker): Promise<WorkerReviewEvidence> {
   const env: NodeJS.ProcessEnv = {
     NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate', REVIEW_RUN_ID: PRIOR_RUN, REVIEW_REPO: 'acme/app',
     REVIEW_REPOSITORY_ID: String(REPO_ID), REVIEW_POLICY_DIGEST: POLICY, REVIEW_CONFIG_DIGEST: CONFIG,
@@ -106,7 +122,7 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
   vi.spyOn(logger, 'info').mockImplementation(() => undefined);
   vi.spyOn(logger, 'warn').mockImplementation(() => undefined);
   vi.spyOn(logger, 'error').mockImplementation(() => undefined);
-  await runPublishingReviewWorker(env, {
+  await worker(env, {
     checkClient: { createCheck: vi.fn(async () => 4242), completeCheck },
     completion: { reportTerminalFailure: vi.fn(async () => {}), reportTerminalSuccess: vi.fn(async () => {}), reportReviewEvidence } as never,
     currentPullRequestVerifier: vi.fn(async () => undefined),
@@ -120,6 +136,15 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     verdictCacheBase: { read: vi.fn(async () => ({ source: null, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) },
     verdictCacheCompareReader: contentReader(),
   });
+  expect(completeCheck).toHaveBeenCalledTimes(1);
+  if (override?.expectedPublishedAnnotation) {
+    expect(completeCheck).toHaveBeenCalledWith(expect.objectContaining({
+      annotations: expect.arrayContaining([expect.objectContaining({
+        annotation_level: override.expectedPublishedAnnotation,
+        title: 'P2: Naming is inconsistent with the module',
+      })]),
+    }));
+  }
   expect(reportReviewEvidence).toHaveBeenCalledTimes(1);
   const evidence = parseWorkerReviewEvidence((reportReviewEvidence.mock.calls as unknown[][])[0][0]);
   expect(completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conclusion: evidence.conclusion }));
@@ -192,10 +217,11 @@ describe('a non-authoritative prior built by the real worker', () => {
       title: 'Naming is inconsistent with the module', body: 'Rename it.' };
     const evidence = await realPriorEvidence({ 'sec-lane': [
       finding,
-    ] });
+    ] }, { expectedPublishedAnnotation: 'failure' });
     expect(evidence.result.personas[0].findings).toEqual([finding]);
     expect(publishedFindingSeverity(evidence.result.personas[0].findings[0])).toBe('P2');
     expect(evidence.conclusion).toBe('failure');
+    expect(evidence.result.personas.flatMap((lane) => lane.findings ?? []).map((finding) => finding.severity)).toEqual(['P1']);
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({
       shipComplete: false, shipIncompleteReason: 'run-not-succeeded', findingPaths: ['src/stable.ts'],
@@ -241,6 +267,22 @@ describe('a non-authoritative prior built by the real worker', () => {
     });
     expect(decideNext(rows)).toEqual({
       mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'rederived-not-ship',
+    });
+  });
+
+  it('#1034 shape: only an explicitly imported advisory opt-out permits a calibrated P2 prior', async () => {
+    expect(advisoryOptOutWorker).toBeTypeOf('function');
+    const evidence = await realPriorEvidence({ 'sec-lane': [
+      { severity: 'P1' as const, path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
+    ] }, { expectedPublishedAnnotation: 'warning' }, advisoryOptOutWorker);
+    expect(evidence.conclusion).toBe('success');
+    // Stored lane evidence remains raw P1; the actual published annotation is calibrated P2.
+    expect(evidence.result.personas.flatMap((lane) => lane.findings ?? []).map((finding) => finding.severity)).toEqual(['P1']);
+    const rows = storedRows(evidence);
+    expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });
+    expect(decideNext(rows)).toMatchObject({
+      mode: 'incremental', reviewPaths: ['src/changed.ts', 'src/stable.ts'], carriedForwardPaths: ['src/same.ts'],
+      openFindingPaths: ['src/stable.ts'],
     });
   });
 

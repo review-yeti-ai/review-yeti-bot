@@ -143,6 +143,21 @@ describe('materializeReviewWorkdir', () => {
     expect(result.reason).toBe('archive_too_large');
   });
 
+  it('skips an archive declared larger than the 128 MiB default cap without reading the body (REL-1282)', async () => {
+    const read = vi.fn();
+    const fetchImplementation = vi.fn(async () => ({
+      ok: true, status: 200,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-length' ? String(129 * 1024 * 1024) : null) },
+      body: { getReader: () => ({ read, cancel: vi.fn() }) },
+    }));
+    const destDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zoekt-materializer-dest-'));
+    const result = await materializeReviewWorkdir({
+      repository: 'review-yeti-ai/review-yeti-bot', headSha: 'a'.repeat(40), token: 'gh-token', destDir, fetchImplementation,
+    });
+    expect(result).toMatchObject({ status: 'unavailable', reason: 'archive_too_large' });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it('fails soft when the tar binary is missing (ENOENT), exercised against the real spawn path', async () => {
     const { archivePath } = buildFixtureTarball();
     const fetchImplementation = fakeFetchReturning(archivePath);
