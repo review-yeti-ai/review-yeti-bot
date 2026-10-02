@@ -496,6 +496,36 @@ describe('resolveModelConfig', () => {
     expect(result.responseAttempts.map((attempt: any) => attempt.outcome)).toEqual(['malformed_output', 'parsed']);
   });
 
+  it.each([
+    [false, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS],
+    [true, 'caller-specified-model'],
+  ])('preserves format recovery outside the guarded alias (guard=%s, model=%s)', async (guarded, model) => {
+    const gateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-test-key',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+    const requests: any[] = [];
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...gateway,
+      guardedGatewayDestination: guarded,
+      transports: gateway.transports.map((transport: any) => ({ ...transport, model, stream: false, maxTokens: 24_576 })),
+      fetchImplementation: async (_url: string, options: any) => {
+        requests.push(JSON.parse(options.body));
+        return { ok: true, status: 200, json: async () => ({
+          choices: [{ finish_reason: requests.length === 1 ? 'length' : 'stop',
+            message: { content: requests.length === 1 ? '' : '{"findings":[]}' } }],
+        }) };
+      },
+    });
+    expect(result.decision).toBe('APPROVE');
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.model)).toEqual([model, model]);
+    expect(requests.map((request) => request.max_tokens)).toEqual([24_576, pipeline.DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS]);
+    expect(requests[1]).not.toHaveProperty('thinking');
+    expect(requests[1].reasoning_effort).toBe('low');
+  });
+
   it('clamps an oversized transport plan only for the guarded gateway alias', async () => {
     const transport = (baseUrl: string, model: string) => JSON.stringify([{
       name: 'openrouter', base_url: baseUrl, model, max_tokens: 100_000, stream: false,
