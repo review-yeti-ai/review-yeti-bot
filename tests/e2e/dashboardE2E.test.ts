@@ -8,7 +8,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { TelemetryChartsGrid } from '../../src/components/dashboard/telemetry-charts-grid';
 import type { OverviewStats } from '../../src/types/dashboard';
-import { assertDashboardClientAssets, assertLiveMarkup, assertSettingsMarkup, dashboardDocument } from '../support/dashboardMarkup';
+import { assertDashboardClientAssets, assertLiveMarkup, assertSettingsMarkup, dashboardDocument, assertTokenTelemetryMarkup } from '../support/dashboardMarkup';
 
 describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suite', () => {
   let app: any;
@@ -49,9 +49,33 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
 
     it('renders token throughput from overview data when telemetry is mounted', () => {
       const card = telemetry().querySelector('#chart-tokens-timeseries');
-      expect(card?.textContent).toContain('150');
-      expect(card?.textContent).toContain('Prompt (80%)120');
-      expect(card?.textContent).toContain('Completion (20%)30');
+      assertTokenTelemetryMarkup(card, stats.totalTokens);
+    });
+
+    it('accepts harmless whitespace between telemetry labels and their values', () => {
+      const document = telemetry();
+      const card = document.querySelector('#chart-tokens-timeseries')!;
+      const label = Array.from(card.querySelectorAll('span')).find((span) => span.textContent === 'Prompt (80%)')!;
+      label.textContent = ' \n Prompt \t (80%) \n ';
+      label.nextElementSibling!.textContent = '\n 120 \t';
+      label.parentElement!.insertBefore(document.createTextNode('\n  '), label.nextSibling);
+      assertTokenTelemetryMarkup(card, stats.totalTokens);
+    });
+
+    it.each(['swapped counts', 'wrong total', 'wrong prompt percentage', 'wrong completion percentage'] as const)
+    ('rejects %s even when other token values remain in the same card', (damage) => {
+      const card = telemetry().querySelector('#chart-tokens-timeseries')!;
+      const spans = Array.from(card.querySelectorAll('span'));
+      const prompt = spans.find((span) => span.textContent === 'Prompt (80%)')!;
+      const completion = spans.find((span) => span.textContent === 'Completion (20%)')!;
+      if (damage === 'swapped counts') {
+        prompt.nextElementSibling!.textContent = '30';
+        completion.nextElementSibling!.textContent = '120';
+      }
+      if (damage === 'wrong total') spans.find((span) => span.textContent === '150')!.textContent = '151';
+      if (damage === 'wrong prompt percentage') prompt.textContent = 'Prompt (79%)';
+      if (damage === 'wrong completion percentage') completion.textContent = 'Completion (21%)';
+      expect(() => assertTokenTelemetryMarkup(card, stats.totalTokens)).toThrow();
     });
 
     it('renders an observed zero model spend without substituting sample costs', () => {

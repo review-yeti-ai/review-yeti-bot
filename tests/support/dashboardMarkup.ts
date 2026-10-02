@@ -53,3 +53,20 @@ export async function assertDashboardClientAssets(app: any, html: string, route:
     expect(response.text, source).not.toMatch(/<!doctype html>/i);
   }
 }
+
+/** Couple each observed token count to its label in the same rendered row. */
+export function assertTokenTelemetryMarkup(card: Element | null, expected: { prompt: number; completion: number; total: number }): void {
+  expect(card).not.toBeNull();
+  const normalized = (element: Element) => element.textContent?.replace(/\s+/g, ' ').trim();
+  const promptPct = Math.round(expected.prompt / expected.total * 100);
+  for (const [label, value] of [
+    ['Token Compaction', expected.total],
+    [`Prompt (${promptPct}%)`, expected.prompt],
+    [`Completion (${100 - promptPct}%)`, expected.completion],
+  ] as const) {
+    const labels = Array.from(card!.querySelectorAll('span')).filter((span) => normalized(span) === label);
+    expect(labels, label).toHaveLength(1);
+    const siblings = Array.from(labels[0].parentElement?.children ?? []).filter((element) => element !== labels[0]);
+    expect(siblings.map(normalized), label).toContain(value.toLocaleString());
+  }
+}
