@@ -299,7 +299,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
         })),
       });
       const result = await runPublishingReviewWorker(testEnv(), deps as any);
-      const completed = completeCheck.mock.calls.at(-1)?.[0] as Record<string, any>;
+      const completed = (completeCheck.mock.calls as unknown as Array<[Record<string, any>]>).at(-1)![0];
       return { result, completed };
     };
 
