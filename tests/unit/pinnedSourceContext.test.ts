@@ -41,6 +41,16 @@ function sourceLines(count: number, line = (index: number) => `const value${inde
   return Array.from({ length: count }, (_unused, index) => line(index + 1)).join('\n');
 }
 
+function parseRenderedContext(text: string) {
+  const payloadStart = text.indexOf('\n') + 1;
+  const payloadEnd = text.lastIndexOf(`\n${sourceContext.SOURCE_CONTEXT_END}`);
+  return JSON.parse(text.slice(payloadStart, payloadEnd));
+}
+
+function textSha256(text: string) {
+  return createHash('sha256').update(text).digest('hex');
+}
+
 function makeReader(contentsByPath: Map<string, string>, calls: string[] = []) {
   return (command: string, args: string[]) => {
     expect(command).toBe('gh');
@@ -361,6 +371,175 @@ describe('pinned source context', () => {
       expect(result.fullText).not.toContain(syntheticJsonToken);
       expect(result.fullText).not.toContain(syntheticDockerAuth);
     }
+  });
+
+  it('preserves JSON escaping and rendered context bytes', () => {
+    const path = 'src/escaped.ts';
+    const content = ['quote"', 'backslash\\', 'tab\tcontrol\u0001', 'emoji😀', 'end'].join('\n');
+    const context = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 1_000,
+      files: [{ path, patch: patchFor(path, 3), status: 'modified' }],
+      commandRunner: () => githubContents(path, content),
+    });
+
+    expect(textSha256(context.fullText)).toBe('e710c35df7cffaf795685706638cbb541633ea47ec614228cfae31dded7d4fb7');
+    expect(parseRenderedContext(context.fullText).files[0].lines).toEqual([
+      '1: quote"',
+      '2: backslash\\',
+      '3: tab\tcontrol\u0001',
+      '4: emoji😀',
+      '5: end',
+    ]);
+  });
+
+  it('keeps shared files ahead of ordinary files at a partial context boundary', () => {
+    const sharedPath = 'tests/setup.ts';
+    const ordinaryPath = 'src/feature.ts';
+    const files = [
+      { path: ordinaryPath, patch: patchFor(ordinaryPath, 40), status: 'modified' },
+      { path: sharedPath, patch: patchFor(sharedPath, 40), status: 'modified' },
+    ];
+    const contents = new Map([
+      [sharedPath, sourceLines(80, (index) => `s${index}`)],
+      [ordinaryPath, sourceLines(80, (index) => `ordinary-${index}-xxxxxxxxxxxx`)],
+    ]);
+    const context = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 1_400, files,
+      commandRunner: makeReader(contents),
+    });
+    const renderedFiles = parseRenderedContext(context.fullText).files;
+
+    expect(textSha256(context.fullText)).toBe('160f763a8e82ff6a025ee2eb5624136a3223c175c785292ac48c0e1a345d3ce0');
+    expect(context.fullText.length).toBe(1_389);
+    expect(renderedFiles[0]).toMatchObject({ path: sharedPath, status: 'available', sharedAcrossPartitions: true });
+    expect(renderedFiles[0].lines).toEqual(Array.from({ length: 80 }, (_unused, index) => `${index + 1}: s${index + 1}`));
+    expect(renderedFiles[1]).toMatchObject({ path: ordinaryPath, status: 'truncated', reason: 'context_budget' });
+    expect(renderedFiles[1].lines).toEqual(Array.from({ length: 5 }, (_unused, index) => `${index + 1}: ordinary-${index + 1}-xxxxxxxxxxxx`));
+
+    const fullContext = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 24_000, files,
+      commandRunner: makeReader(contents),
+    });
+    const fullBlockChars = fullContext.fullText.length;
+    expect(fullContext.fullText).toBe(sourceContext.sourceContextBlock(headSha, fullContext.entries));
+    const oneShort = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: fullBlockChars - 1, files,
+      commandRunner: makeReader(contents),
+    });
+    const exact = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: fullBlockChars, files,
+      commandRunner: makeReader(contents),
+    });
+    const oneExtra = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: fullBlockChars + 1, files,
+      commandRunner: makeReader(contents),
+    });
+
+    expect(oneShort.fullText.length).toBeLessThanOrEqual(fullBlockChars - 1);
+    expect(parseRenderedContext(oneShort.fullText).files.some((file: any) => file.status === 'truncated')).toBe(true);
+    expect(exact.fullText).toBe(fullContext.fullText);
+    expect(oneExtra.fullText).toBe(fullContext.fullText);
+  });
+
+  it('preserves an existing truncation reason and fits added status metadata at the boundary', () => {
+    const longPath = 'src/long-line.ts';
+    const longLineContent = sourceLines(100, (index) => index === 50 ? 'x'.repeat(2_501) : `line-${index}`);
+    const existingReason = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 700,
+      files: [{ path: longPath, patch: patchFor(longPath, 50), status: 'modified' }],
+      commandRunner: () => githubContents(longPath, longLineContent),
+    });
+    const existingReasonFile = parseRenderedContext(existingReason.fullText).files[0];
+
+    expect(textSha256(existingReason.fullText)).toBe('379fd653648dc6f5a5284f70e0a714107861418b1e68110a49087f5982af45e9');
+    expect(existingReasonFile).toMatchObject({ status: 'truncated', reason: 'source_line_limit' });
+    expect(existingReasonFile.lines).toHaveLength(25);
+    expect(existingReasonFile.lines[0]).toBe('10: line-10');
+    expect(existingReasonFile.lines.at(-1)).toBe('34: line-34');
+
+    const tailPath = 'src/tail.ts';
+    const firstLine = `1: ${'x'.repeat(168)}`;
+    const availableEntry = {
+      path: tailPath,
+      status: 'available',
+      sharedAcrossPartitions: false,
+      ranges: [{ start: 1, end: 2 }],
+      lines: [firstLine],
+    };
+    const truncatedEntry = { ...availableEntry, status: 'truncated', reason: 'context_budget' };
+    const maxChars = 512;
+    expect(sourceContext.sourceContextBlock(headSha, [availableEntry]).length).toBeLessThanOrEqual(maxChars);
+    expect(sourceContext.sourceContextBlock(headSha, [truncatedEntry]).length).toBeGreaterThan(maxChars);
+    expect(sourceContext.sourceContextBlock(headSha, [{ ...truncatedEntry, lines: [] }]).length).toBeLessThanOrEqual(maxChars);
+
+    const metadataBoundary = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars,
+      files: [{ path: tailPath, patch: patchFor(tailPath, 1), status: 'modified' }],
+      commandRunner: () => githubContents(tailPath, `${'x'.repeat(168)}\n${'y'.repeat(168)}`),
+    });
+    const metadataFile = parseRenderedContext(metadataBoundary.fullText).files[0];
+    expect(textSha256(metadataBoundary.fullText)).toBe('63af8af10731c533e08923455fbeee232a31f0fb73a9f833a42becaa4d9e5ce3');
+    expect(metadataBoundary.fullText.length).toBe(340);
+    expect(metadataFile).toMatchObject({ path: tailPath, status: 'truncated', reason: 'context_budget', lines: [] });
+  });
+
+  it('keeps tiny budgets status-only without requesting source', () => {
+    const path = 'src/tiny.ts';
+    let calls = 0;
+    const result = sourceContext.readPinnedSourceContext({
+      repo: 'owner/repo', headSha, maxChars: 159,
+      files: [{ path, patch: patchFor(path, 1), status: 'modified' }],
+      commandRunner: () => { calls += 1; return githubContents(path, 'source'); },
+    });
+
+    expect(calls).toBe(0);
+    expect(result.fullText).toBe('');
+    expect(result.renderStatus).toBe('not_included');
+    expect(result.entries[0]).toMatchObject({ status: 'unavailable', reason: 'context_budget' });
+  });
+
+  it('accounts for escaped line deltas without repeatedly serializing the entire context', () => {
+    const path = 'src/large-empty.ts';
+    const lineCount = 2_200;
+    const content = Array(lineCount).fill('').join('\n');
+    const response = githubContents(path, content);
+    const patch = [
+      `diff --git a/${path} b/${path}`,
+      'index 0000000..1111111 100644',
+      `@@ -1,0 +1,${lineCount} @@`,
+      '+',
+    ].join('\n');
+    const descriptor = Object.getOwnPropertyDescriptor(JSON, 'stringify');
+    if (!descriptor || typeof descriptor.value !== 'function') throw new Error('JSON.stringify descriptor is unavailable');
+    const originalStringify = descriptor.value as Function;
+    let serializedChars = 0;
+    Object.defineProperty(JSON, 'stringify', {
+      ...descriptor,
+      value: (...args: unknown[]) => {
+        const serialized = Reflect.apply(originalStringify, JSON, args) as string | undefined;
+        if (typeof serialized === 'string') serializedChars += serialized.length;
+        return serialized;
+      },
+    });
+    let context: ReturnType<typeof sourceContext.readPinnedSourceContext>;
+    try {
+      context = sourceContext.readPinnedSourceContext({
+        repo: 'owner/repo', headSha, maxChars: 24_000,
+        files: [{ path, patch, status: 'modified' }],
+        commandRunner: () => response,
+      });
+    } finally {
+      Object.defineProperty(JSON, 'stringify', descriptor);
+    }
+    const renderedFile = parseRenderedContext(context.fullText).files[0];
+
+    // The prior full-block-per-line renderer serialized about 20.2M characters for this fixture.
+    expect(serializedChars).toBeLessThan(100_000);
+    expect(textSha256(context.fullText)).toBe('5e8401f589fbff6cd1cdbab99e386e4f76e1e9b340755e70b337fe56707dbb3e');
+    expect(context.fullText.length).toBe(19_007);
+    expect(context.renderStatus).toBe('included');
+    expect(renderedFile.status).toBe('available');
+    expect(renderedFile.lines).toHaveLength(2_199);
   });
 
   it('marks hunk windows and line-level context truncation while respecting each render budget', () => {

@@ -157,16 +157,48 @@ function candidateContextLines(file, content) {
   return { status: reason ? 'truncated' : 'available', reason, ranges, lines };
 }
 
-function sourceContextBlock(headSha, entries) {
-  if (!Array.isArray(entries) || entries.length === 0) return '';
-  const payload = JSON.stringify({ headSha, files: entries.map((entry) => ({
+function sourceContextEntry(entry) {
+  return {
     path: entry.path,
     status: entry.status,
     ...(entry.reason ? { reason: entry.reason } : {}),
     sharedAcrossPartitions: entry.sharedAcrossPartitions === true,
     ranges: entry.ranges || [],
     lines: entry.lines || [],
-  })) });
+  };
+}
+
+function sourceContextFrameLengths(headSha) {
+  const emptyPayload = JSON.stringify({ headSha, files: [] });
+  const filesMarker = emptyPayload.indexOf('[]');
+  return {
+    prefix: SOURCE_CONTEXT_BEGIN.length + 1 + filesMarker + 1,
+    suffix: emptyPayload.length - filesMarker - 2 + 2 + SOURCE_CONTEXT_END.length,
+  };
+}
+
+function sourceContextEntryMetadataLength(entry) {
+  const metadata = sourceContextEntry(entry);
+  metadata.lines = [];
+  return JSON.stringify(metadata).length;
+}
+
+function markContextEntryTruncated(entry) {
+  if (entry.status === 'truncated' && entry.reason) return 0;
+  const priorLength = sourceContextEntryMetadataLength(entry);
+  entry.status = 'truncated';
+  entry.reason = entry.reason || 'context_budget';
+  return sourceContextEntryMetadataLength(entry) - priorLength;
+}
+
+function sourceContextBlockLength(frame, entryLengths) {
+  if (entryLengths.length === 0) return 0;
+  return frame.prefix + frame.suffix + entryLengths.reduce((sum, length) => sum + length, 0) + entryLengths.length - 1;
+}
+
+function sourceContextBlock(headSha, entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return '';
+  const payload = JSON.stringify({ headSha, files: entries.map(sourceContextEntry) });
   return `${SOURCE_CONTEXT_BEGIN}\n${payload}\n${SOURCE_CONTEXT_END}`;
 }
 
@@ -198,7 +230,11 @@ function renderWithBudget(headSha, entries, maxChars) {
   for (const entry of candidates) entry._candidateLines = [...entry.lines];
   for (const entry of candidates) entry.lines = [];
 
-  if (sourceContextBlock(headSha, candidates).length > maxChars) {
+  const frame = sourceContextFrameLengths(headSha);
+  const entryLengths = candidates.map(sourceContextEntryMetadataLength);
+  const renderedLineLengths = new Map(candidates.map((entry) => [entry, []]));
+  let renderedLength = sourceContextBlockLength(frame, entryLengths);
+  if (renderedLength > maxChars) {
     return { entries: candidates, text: statusOnly, omitted: true, renderStatus: 'not_included' };
   }
 
@@ -209,30 +245,44 @@ function renderWithBudget(headSha, entries, maxChars) {
   for (const entry of priority) {
     let omittedLine = false;
     for (const line of entry._candidateLines) {
+      const lineJsonLength = JSON.stringify(line).length;
+      const separatorLength = entry.lines.length > 0 ? 1 : 0;
+      const lineLength = lineJsonLength + separatorLength;
       entry.lines.push(line);
-      if (sourceContextBlock(headSha, candidates).length > maxChars) {
+      if (renderedLength + lineLength > maxChars) {
         entry.lines.pop();
         omittedLine = true;
         break;
       }
+      renderedLength += lineLength;
+      renderedLineLengths.get(entry).push(lineJsonLength);
     }
     if (omittedLine || entry._candidateLines.length > entry.lines.length) {
-      entry.status = 'truncated';
-      entry.reason = entry.reason || 'context_budget';
+      const metadataDelta = markContextEntryTruncated(entry);
+      renderedLength += metadataDelta;
     }
     delete entry._candidateLines;
   }
-  let text = sourceContextBlock(headSha, candidates);
   // Marking entries truncated adds metadata after their lines are selected. Trim lower-priority
-  // lines until that final representation also fits, instead of discarding every rendered line.
-  while (text.length > maxChars) {
-    const lastRendered = [...candidates].reverse().find((entry) => entry.lines.length > 0);
+  // lines until the final representation also fits, instead of discarding every rendered line.
+  while (renderedLength > maxChars) {
+    let lastRendered = null;
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      if (candidates[index].lines.length > 0) {
+        lastRendered = candidates[index];
+        break;
+      }
+    }
     if (!lastRendered) return { entries: candidates, text: statusOnly, omitted: true, renderStatus: 'not_included' };
+    const lineJsonLengths = renderedLineLengths.get(lastRendered);
+    const removedLineLength = lineJsonLengths.pop();
+    const separatorLength = lastRendered.lines.length > 1 ? 1 : 0;
+    renderedLength -= removedLineLength + separatorLength;
     lastRendered.lines.pop();
-    lastRendered.status = 'truncated';
-    lastRendered.reason = lastRendered.reason || 'context_budget';
-    text = sourceContextBlock(headSha, candidates);
+    const metadataDelta = markContextEntryTruncated(lastRendered);
+    renderedLength += metadataDelta;
   }
+  const text = sourceContextBlock(headSha, candidates);
   if (text.length > maxChars) {
     return { entries: candidates, text: statusOnly, omitted: true, renderStatus: 'not_included' };
   }
