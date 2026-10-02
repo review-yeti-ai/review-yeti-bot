@@ -1619,6 +1619,8 @@ export interface ScopedDiffSectionOptions {
   headSha?: string;
   domainLanes?: Record<string, DomainLane>;
   persona?: string;
+  /** Marks a task-local index explicitly; other callers retain the PR-wide label. */
+  fileIndexScope?: 'pull-request' | 'task-assignment';
   tokenBudget?: number;
   charsPerToken?: number;
   maxFileDiffChars?: number;
@@ -1748,6 +1750,7 @@ export function buildScopedDiffSection(
 
   const fileEntries = changedFiles.map((f: any) => {
     const filePath = f.path || f.filePath || 'unknown';
+    const renderedPath = options?.fileIndexScope === 'task-assignment' ? JSON.stringify(filePath) : filePath;
     const lane = domainLanes[filePath] || classifyPathByHeuristic(filePath);
     const isAffinity = !isShared && personaAffinities.includes(lane as DomainLane);
     const stats = computeDiffStats(f.patch);
@@ -1755,12 +1758,12 @@ export function buildScopedDiffSection(
     const affinityTag = isAffinity ? ' (★ YOUR LANE)' : '';
 
     if (skippedSet.has(filePath)) {
-      return `- ${filePath} (OVERSIZED: ${filePatchChars(f)} chars; use get_diff_page or read_file_page in bounded pages) [${lane}]`;
+      return `- ${renderedPath} (OVERSIZED: ${filePatchChars(f)} chars; use get_diff_page or read_file_page in bounded pages) [${lane}]`;
     }
     if (indexedSet.has(filePath)) {
-      return `- ${filePath} [${lane}]${affinityTag}${statStr} [INDEXED: on-demand get_diff available]`;
+      return `- ${renderedPath} [${lane}]${affinityTag}${statStr} [INDEXED: on-demand get_diff available]`;
     }
-    return `- ${filePath} [${lane}]${affinityTag}${statStr} [INLINED]`;
+    return `- ${renderedPath} [${lane}]${affinityTag}${statStr} [INLINED]`;
   });
 
   const personaFocusSection = (!isShared && persona && personaAffinities.length > 0)
@@ -1776,7 +1779,9 @@ export function buildScopedDiffSection(
   const protocolAdvisory = tier === 'tier_a'
     ? [
         `=== PRE-FETCHED DIFF HUNKS (${inlinedPaths.length} file(s) inlined, budget: ${tokenBudget.toLocaleString()} tokens) ===`,
-        `All modified file diffs for this PR are pre-fetched below enclosed in <untrusted_diff_data> XML blocks.`,
+        options?.fileIndexScope === 'task-assignment'
+          ? `All modified file diffs assigned to this task are pre-fetched below; this is not the full PR diff.`
+          : `All modified file diffs for this PR are pre-fetched below enclosed in <untrusted_diff_data> XML blocks.`,
         `Inspect the inlined diffs and emit your findings immediately on Turn 1. Do not make redundant get_diff calls.`,
       ]
     : tier === 'tier_b'
@@ -1786,8 +1791,10 @@ export function buildScopedDiffSection(
         `Remaining files are indexed above and can be inspected on-demand using get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}.`,
       ]
     : [
-        `=== ALL FILES OVERSIZED ===`,
-        `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`,
+        options?.fileIndexScope === 'task-assignment' ? `=== ALL ASSIGNED FILES OVERSIZED ===` : `=== ALL FILES OVERSIZED ===`,
+        options?.fileIndexScope === 'task-assignment'
+          ? `All files assigned to this task exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`
+          : `All files in this PR exceed max-file-diff-chars (${maxFileDiffChars.toLocaleString()} chars). Use get_diff_page to inspect original patches in bounded pages.`,
       ];
 
   const diffText = [
@@ -1804,7 +1811,9 @@ export function buildScopedDiffSection(
         ]
       : []),
     ...personaFocusSection,
-    `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
+    options?.fileIndexScope === 'task-assignment'
+      ? `=== TASK-ASSIGNED CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`
+      : `=== PR CHANGED FILES INDEX (${changedFiles.length} file(s)) ===`,
     fileEntries.join('\n') || 'None',
     ``,
     ...protocolAdvisory,
