@@ -1328,21 +1328,21 @@ describe('runPublishingReviewWorker', () => {
     }
   });
 
-  it('keeps P2-only findings advisory even when the model arbiter says FIX_FIRST', async () => {
+  it('requires P2-only findings even when the model arbiter says SHIP', async () => {
     const d = deps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['sec-lane'],
-        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'docs/guide.md', line: 1, title: 'Advisory', body: 'Advisory' }] }],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Advisory', body: 'Advisory' }] }],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
-        arbiter: { verdict: 'FIX_FIRST' },
+        arbiter: { verdict: 'SHIP' },
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.verdict).toBe('SHIP');
-    expect(receipt.conclusion).toBe('success');
-    expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.verdict).toBe('FIX_FIRST');
+    expect(receipt.conclusion).toBe('failure');
+    expect(receipt.blockingFindingCount).toBe(1);
     expect(d.checkClient.completeCheck).toHaveBeenCalledWith(
-      expect.objectContaining({ conclusion: 'success', title: 'Review Yeti: SHIP' }),
+      expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: FIX_FIRST' }),
     );
   });
 
@@ -1567,9 +1567,9 @@ describe('runPublishingReviewWorker', () => {
     ]);
   });
 
-  it('never reports terminal success or invalid evidence when unresolved P2 results fail the contract', async () => {
-    // The failed check is already published before evidence is built. An oversized
-    // finding must suppress invalid evidence without reporting terminal success.
+  it('publishes a required P2 as failure and omits evidence that violates the wire contract', async () => {
+    // A finding body past the contract's text bound cannot be sent as evidence,
+    // but the publisher has already seen a P2 and must not turn that into SHIP.
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
@@ -1583,10 +1583,11 @@ describe('runPublishingReviewWorker', () => {
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
-      })) as never,
+    })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('failure');
+    expect(d.checkClient.completeCheck).toHaveBeenCalledWith(expect.objectContaining({ conclusion: 'failure' }));
     expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();

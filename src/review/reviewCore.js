@@ -5,6 +5,11 @@ const { compareClaims } = require('./claimSimilarity');
 const { isSubmodulePatch } = require('./submodulePatch');
 const VALID_VERDICTS = new Set(['SHIP', 'FIX_FIRST', 'BLOCK']);
 
+/** Trusted runtime default shared by publishing boundaries. Low-level arbitration remains opt-in. */
+function advisoryRequiredByDefault() {
+  return process.env.REVIEW_YETI_REQUIRE_ADVISORY !== 'false';
+}
+
 function canonicalize(value) {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === 'object') {
@@ -542,5 +547,6 @@ module.exports = {
   publishFinding,
   clusterFindings,
   resolvePanelSize,
+  advisoryRequiredByDefault,
   computeArbitration,
 };

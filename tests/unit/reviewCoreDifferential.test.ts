@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeAppVerdict } from '../../src/review/reviewAdapters';
-import { ReviewLane } from '../../src/review/reviewCore';
+import { advisoryRequiredByDefault, computeArbitration, ReviewLane } from '../../src/review/reviewCore';
 
 const pipeline = require('../../.github/workflows/pipelines/review-pipeline.js');
 
@@ -28,6 +28,36 @@ describe('canonical review contract differential', () => {
     expect(action).toEqual(app);
     expect(action.verdict).toBe('SHIP');
     expect(action.status).toBe('SHIP');
+  });
+
+  it('requires P2 at both publishing boundaries while keeping low-level arbitration opt-in', () => {
+    const p2Only: ReviewLane[] = [
+      { id: 'security', required: true, decision: 'FINDINGS', findings: [
+        { severity: 'P2', path: 'src/review.ts', line: 10, title: 'Required advisory', body: 'Address this before merge.' },
+      ] },
+      { id: 'correctness', required: false, decision: 'APPROVE', findings: [] },
+    ];
+    const configured = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    try {
+      const app = computeAppVerdict({
+        lanes: p2Only,
+        expectedLanes: 2,
+        changedFiles,
+        candidateVerdict: 'SHIP',
+      });
+      const action = actionVerdict(p2Only);
+      const pure = computeArbitration(p2Only, 2, { changedFiles });
+
+      expect(advisoryRequiredByDefault()).toBe(true);
+      expect(app.verdict).toBe('FIX_FIRST');
+      expect(app.metrics.p2Count).toBe(1);
+      expect(action.verdict).toBe('FIX_FIRST');
+      expect(pure.verdict).toBe('SHIP');
+    } finally {
+      if (configured === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = configured;
+    }
   });
 
   it('keeps findings and verdicts identical while removing out-of-diff paths', () => {

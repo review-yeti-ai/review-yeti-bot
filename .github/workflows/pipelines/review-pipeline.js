@@ -17,6 +17,7 @@ const { createHash } = require('crypto');
 const { spawnSync, execSync } = require('child_process');
 const {
   computeArbitration: computeCanonicalArbitration,
+  advisoryRequiredByDefault,
   sanitizeFindings: sanitizeCanonicalFindings,
   normalizeFindingReplacement,
   sha256,
@@ -6101,7 +6102,11 @@ async function callFalsificationModelTurn({ messages, timeoutMs, signal } = {}, 
  * Canonical arbitration boundary shared with the typed App runtime.
  */
 function computeArbitrationQuorum(personaResults, expectedPersonas = personaResults.length, options = {}) {
-  return computeCanonicalArbitration(personaResults, expectedPersonas, options);
+  return computeCanonicalArbitration(personaResults, expectedPersonas, {
+    ...options,
+    requireAdvisory: options.requireAdvisory === true || options.advisoryRequired === true
+      || advisoryRequiredByDefault(),
+  });
 }
 
 /**
@@ -6986,7 +6991,7 @@ function formatStickyOverview(commentBody) {
   const fields = lines.filter((line) => /^- \*\*(?:Commit SHA Range|Commit SHA|Reviewed Commit|Review Mode|Review Scope|Parallel Personas Evaluated|Quorum Status|Review Status|Total Findings|Rationale|Coverage|Degraded Lanes)\*\*:/.test(line));
   const unavailable = String(commentBody).match(/\n\n### Actionable findings without publishable anchors[\s\S]*$/)?.[0] || '';
   const coverageWarnings = lines.filter((line) => /^> .*This verdict covers part of the change/.test(line));
-  return [heading, '', ...fields, ...coverageWarnings, '', 'Findings are posted inline in **Files changed**. P2 findings do not change the verdict.', unavailable].filter((line) => line !== undefined).join('\n');
+  return [heading, '', ...fields, ...coverageWarnings, '', 'Findings are posted inline in **Files changed**. P2 findings are evaluated by the shared arbitration policy.', unavailable].filter((line) => line !== undefined).join('\n');
 }
 
 function renderStickySummaryBody(commentBody, prContext, priorBody, options = {}) {

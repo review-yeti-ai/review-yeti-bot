@@ -19,7 +19,7 @@ import {
   verdictCacheSourceFromRows,
   type ComparisonContentFile,
 } from '../../src/review/verdictCache';
-import { parseWorkerReviewEvidence, workerReviewEvidenceDigest, type WorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { parseWorkerReviewEvidence, publishedFindingSeverity, workerReviewEvidenceDigest, type WorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { logger } from '../../src/utils/logger';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 
@@ -182,13 +182,21 @@ describe('a non-authoritative prior built by the real worker', () => {
     expect(decision.mode === 'cache' && decision.permitted.map((entry) => entry.path)).toEqual(['src/same.ts', 'src/stable.ts']);
   });
 
-  it('#1034 shape: a raw P1 published as unresolved P2 cannot supply a successful prior', async () => {
+  it('#1034 shape: a raw P1 published as P2 is not a SHIP prior under the default required-advisory policy', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
     ] });
+    const rawFinding = evidence.result.personas.flatMap((lane) => lane.findings)[0];
+    expect(rawFinding.severity).toBe('P1');
+    expect(publishedFindingSeverity(rawFinding)).toBe('P2');
     expect(evidence.conclusion).toBe('failure');
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: false, shipIncompleteReason: 'run-not-succeeded' });
+    expect(priorReviewRecordFromRows(storedRows(evidence, { status: 'succeeded' })))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'evidence-conclusion-not-success' });
+    const forgedSuccess = edited(evidence, (copy) => { copy.conclusion = 'success'; });
+    expect(priorReviewRecordFromRows(storedRows(forgedSuccess)))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'rederived-not-ship' });
     expect(decideNext(rows)).toEqual({ mode: 'full', reason: 'prior-not-ship-complete', priorRefusal: 'run-not-succeeded' });
   });
 
