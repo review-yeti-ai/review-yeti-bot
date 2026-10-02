@@ -83,6 +83,28 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it.each([true, false])('gives real panel personas current classification while keeping moderator/arbiter prompts independent: %s', async (current) => {
+    const repository = 'acme/reviewer-fixture', headSha = 'a'.repeat(40);
+    const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository,
+      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status: 'complete',
+      totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, groups: [{ id: 'guard', label: 'Guard retirement',
+        proof: 'individual_path', risk: 'high', paths: ['src/auth/guard.ts'], categories: ['source'], obligationCount: 5 }] };
+    const roles: string[] = [];
+    const client = { complete: vi.fn(async (payload: any) => {
+      const role = payload.metadata?.role, nonce = issuedNonce(payload.messages);
+      roles.push(role);
+      expect(JSON.stringify(payload.messages).includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current && role === 'persona');
+      return fakeResponse(JSON.stringify(role === 'persona' ? { nonce, decision: 'APPROVE', findings: [] }
+        : role === 'moderator' ? { nonce, decision: 'RECONCILED', findings: [] }
+        : { nonce, verdict: 'SHIP', rationale: 'Clean fixture.' }));
+    }) };
+    const result = await executePersonaPanel({ config: config(), changedFiles: CODE_FILES, repository, headSha, client,
+      repoFileProvider: { findFiles: async () => [], readFile: async () => null, deletionPlan: () => plan },
+      requestPolicy: { responseFormat: { type: 'json_object' } } });
+    expect(roles).toContain('persona');
+    expect(result.personas).toMatchObject([{ decision: 'APPROVE' }]);
+  });
+
   it('raises classified contract risk without lowering security floors or losing tasks', () => {
     const tasks = [
       { id: 'source', dimension: 'performance' as const, paths: ['src/a.ts'], question: 'Fast?', rationale: 'Changed.' },

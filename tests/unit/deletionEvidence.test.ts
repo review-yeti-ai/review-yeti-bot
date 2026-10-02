@@ -27,6 +27,36 @@ const outcome = (model = 'jev-test') => ({ status: 'ok', model, durationMs: 1,
   } });
 
 describe('deletion evidence replay', () => {
+  it('keeps every path unresolved without extra reads when enabled transport is unavailable', async () => {
+    const { runtime, provider, search } = setup([file('one.ts'), file('two.ts')],
+      { env: { NODE_ENV: 'test', REVIEW_YETI_JEV_EVIDENCE: repository } });
+    const plan = await runtime.prepare();
+    expect(plan).toMatchObject({ status: 'unavailable', totalFiles: 2, classifiedFiles: 0, unresolvedFiles: 2 });
+    expect(plan.groups.flatMap((group) => group.paths)).toHaveLength(2);
+    expect(provider.readFileAt).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+  });
+
+  it.each(['source', 'classifier'])('stops stalled %s preparation without exhausting the ordinary review or dropping the tail', async (stalled) => {
+    const ask = vi.fn(() => new Promise<never>(() => undefined));
+    const { runtime, provider } = setup(Array.from({ length: 12 }, (_, i) => file(`${i}.ts`)),
+      { asker: { ask } as unknown as JevAsker, modelPin: 'jev-test' });
+    if (stalled === 'source') provider.readFileAt.mockImplementation(() => new Promise<never>(() => undefined));
+    const started = Date.now();
+    const plan = await runtime.prepare({ budgetMs: 15 });
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(plan).toMatchObject({ status: 'partial', totalFiles: 12, classifiedFiles: 0, unresolvedFiles: 12 });
+    expect(plan.groups.flatMap((group) => group.paths)).toHaveLength(12);
+    expect(plan.groups.reduce((sum, group) => sum + group.obligationCount, 0)).toBe(60);
+    expect(ask.mock.calls.length).toBeLessThanOrEqual(4);
+    if (stalled === 'source') expect(provider.readFileAt.mock.calls.length).toBeLessThanOrEqual(4);
+    else {
+      ask.mockResolvedValue(outcome() as never);
+      expect((await runtime.evidence('0.ts')).classification.status).toBe('ok');
+      expect(runtime.plan()).toBe(plan); // The pre-planning receipt remains an immutable snapshot.
+    }
+  });
+
   it('uses a fresh real transport window after setup and between independent tool calls', async () => {
     let clock = 0;
     const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);

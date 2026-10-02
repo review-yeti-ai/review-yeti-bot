@@ -13,6 +13,7 @@ import { executeZoektSearch } from '../mcp/zoektSearchTool';
 import { DELETION_CLASSIFICATION_VERSION, deletionRiskRank, deletionSubsystemCandidates, type DeletionClassificationPlan, type DeletionRisk } from './deletionClassification';
 
 export const DELETION_QUESTION_VERSION = 'deletion-evidence.v2';
+export const DELETION_CLASSIFICATION_TIMEOUT_MS = 15_000;
 export const JEV_EVIDENCE_FLAG = 'REVIEW_YETI_JEV_EVIDENCE';
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 type File = { path: string; patch?: string; mode?: string; originalPatchLength?: number };
@@ -121,8 +122,8 @@ export function createDeletionEvidenceRuntime(input: {
       nextOffset: offset + limit < all.length ? offset + limit : null, authority: 'evidence_only' };
   };
 
-  const collectEvidence = async (path: string) => {
-    throwIfPanelAborted(input.signal);
+  const collectEvidence = async (path: string, signal = input.signal) => {
+    throwIfPanelAborted(signal);
     const entry = byPath.get(path);
     if (!entry || !entry.available || !input.provider.readFileAt) return { status: 'unavailable', reason: 'original_evidence_unavailable', authority: 'none' };
     // A contents lookup may dereference a symlink. Do not call those bytes the
@@ -130,27 +131,27 @@ export function createDeletionEvidenceRuntime(input: {
     if (entry.oldMode && !/^100(?:644|755)$/u.test(entry.oldMode)) return { status: 'unavailable', reason: 'unsupported_old_file_mode', authority: 'none' };
     let old, current;
     try {
-      old = await raceWithPanelAbort(input.provider.readFileAt(entry.oldPath, 'merge-base'), input.signal);
+      old = await raceWithPanelAbort(input.provider.readFileAt(entry.oldPath, 'merge-base'), signal);
       if (old.content === null || !/^[0-9a-f]{40}$/u.test(old.sha)) return { status: 'unavailable', reason: 'old_source_unavailable', authority: 'none' };
-      current = await raceWithPanelAbort(input.provider.readFileAt(path, 'head'), input.signal);
+      current = await raceWithPanelAbort(input.provider.readFileAt(path, 'head'), signal);
       if (current.sha !== input.headSha) return { status: 'unavailable', reason: 'head_source_identity_mismatch', authority: 'none' };
-    } catch { throwIfPanelAborted(input.signal); return { status: 'unavailable', reason: 'source_lookup_failed', authority: 'none' }; }
+    } catch { throwIfPanelAborted(signal); return { status: 'unavailable', reason: 'source_lookup_failed', authority: 'none' }; }
     const oldSummary = summarizeSource(entry.oldPath, old.content);
     entry.sourceDigest = oldSummary.digest; entry.sourceSha = old.sha;
     const currentSummary = current.content === null ? null : summarizeSource(path, current.content);
     const queryCandidates = [...new Set([basename(entry.oldPath), ...oldSummary.ast.symbols.map((symbol) => symbol.name)])];
     const consumers: Array<Record<string, unknown>> = [];
     for (const candidate of queryCandidates.slice(0, 2)) {
-      throwIfPanelAborted(input.signal);
+      throwIfPanelAborted(signal);
       const query = `content:${JSON.stringify(candidate)}`;
       let search: any;
       try {
         if (!searches.has(query)) searches.set(query, executeZoektSearch({ query }, input.zoektConfig,
-          { signal: input.signal, session: input.zoektConfig?.searchSession }));
-        search = await raceWithPanelAbort(searches.get(query)!, input.signal);
+          { signal: signal, session: input.zoektConfig?.searchSession }));
+        search = await raceWithPanelAbort(searches.get(query)!, signal);
       } catch {
         searches.delete(query);
-        throwIfPanelAborted(input.signal);
+        throwIfPanelAborted(signal);
         search = { status: 'unavailable', reason: 'search_failed' };
       }
       if (search.status === 'ok' && (search.identity?.repository !== input.repository || search.identity?.headSha !== input.headSha)) {
@@ -192,7 +193,7 @@ export function createDeletionEvidenceRuntime(input: {
           };
           try {
             const client = createAsker!();
-            const outcome = await raceWithPanelAbort(client.ask({ state: packet, questions, seam: 'deletion_evidence', signal: input.signal }), input.signal);
+            const outcome = await raceWithPanelAbort(client.ask({ state: packet, questions, seam: 'deletion_evidence', signal: signal }), signal);
             if (outcome.status !== 'ok') return { status: 'unavailable', reason: outcome.reason, authority: 'none' };
             if (outcome.model !== modelPin) return { status: 'unavailable', reason: 'model_pin_mismatch', authority: 'none' };
             for (const [id, question] of Object.entries(questions)) {
@@ -209,13 +210,16 @@ export function createDeletionEvidenceRuntime(input: {
         })());
       }
       classification = await answers.get(key)!;
+      // Transient failures and preparation cancellation may be retried by a
+      // later investigation call at the same evidence identity.
+      if (classification.status !== 'ok') answers.delete(key);
     }
-    throwIfPanelAborted(input.signal);
+    throwIfPanelAborted(signal);
     entry.classificationStatus = String(classification.status);
     if (classification.status === 'ok') {
       const choices = classification.answers as Record<string, { choice: string }>;
       entry.category = choices.category.choice;
-      entry.risk = entry.sensitive || choices.category.choice === 'sensitive'
+      entry.risk = entry.sensitive || choices.risk.choice === 'high' || choices.category.choice === 'sensitive'
         || choices.visible_consumer.choice === 'supported' || choices.contract_change.choice === 'supported'
         ? 'high' : ['source', 'unknown'].includes(choices.category.choice) && choices.contract_change.choice === 'unknown'
           ? 'unknown' : choices.risk.choice as DeletionRisk;
@@ -224,29 +228,39 @@ export function createDeletionEvidenceRuntime(input: {
     }
     return { status: 'ok', evidenceDigest, packet, classification, authority: 'evidence_only', resolution: 'review_required' };
   };
-  const evidence = async (path: string): Promise<any> => {
-    throwIfPanelAborted(input.signal);
-    if (!packets.has(path)) packets.set(path, collectEvidence(path).then((result) => {
-      if (result.status !== 'ok') packets.delete(path);
+  const evidence = async (path: string, signal = input.signal): Promise<any> => {
+    throwIfPanelAborted(signal);
+    if (!packets.has(path)) packets.set(path, collectEvidence(path, signal).then((result) => {
+      if (result.status !== 'ok' || (createAsker && modelPin && result.classification?.status !== 'ok')) packets.delete(path);
       return result;
     }).catch((error) => { packets.delete(path); throw error; }));
     return packets.get(path)!;
   };
-  const prepare = async (): Promise<DeletionClassificationPlan> => {
+  const prepare = async (options?: { budgetMs: number }): Promise<DeletionClassificationPlan> => {
     throwIfPanelAborted(input.signal);
     if (!preparation) preparation = (async () => {
       const started = Date.now();
       if (stageEnabled && createAsker && modelPin) {
+        const budgetMs = options && Number.isFinite(options.budgetMs)
+          ? Math.max(0, options.budgetMs) : DELETION_CLASSIFICATION_TIMEOUT_MS;
+        const controller = new AbortController();
+        const signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
+        const timer = setTimeout(() => controller.abort(), budgetMs);
+        if (budgetMs === 0) controller.abort();
+        const pendingEntries = [...entries].sort((a, b) => Number(b.sensitive) - Number(a.sensitive));
         let cursor = 0;
-        // Bound in-flight retrieval/questions, never the number of admitted paths.
-        await Promise.all(Array.from({ length: Math.min(4, entries.length) }, async () => {
-          while (cursor < entries.length) {
-            const entry = entries[cursor++];
-            throwIfPanelAborted(input.signal);
-            try { await evidence(entry.path); }
-            catch { throwIfPanelAborted(input.signal); entry.classificationStatus = 'unavailable'; }
-          }
-        }));
+        try {
+          // Prioritize sensitive paths; bound concurrency and wall time, never file count.
+          // An exhausted classifier window returns the untouched tail to ordinary review.
+          await Promise.all(Array.from({ length: Math.min(4, pendingEntries.length) }, async () => {
+            while (cursor < pendingEntries.length && !signal.aborted) {
+              const entry = pendingEntries[cursor++];
+              throwIfPanelAborted(input.signal);
+              try { await evidence(entry.path, signal); }
+              catch { throwIfPanelAborted(input.signal); entry.classificationStatus = 'unavailable'; }
+            }
+          }));
+        } finally { clearTimeout(timer); }
       }
       throwIfPanelAborted(input.signal);
       const full = manifest(0, Math.max(1, entries.length));

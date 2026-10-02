@@ -33,7 +33,7 @@ import {
 } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
-import { createDeletionEvidenceRuntime } from '../review/deletionEvidence';
+import { createDeletionEvidenceRuntime, DELETION_CLASSIFICATION_TIMEOUT_MS } from '../review/deletionEvidence';
 import type { DeletionClassificationPlan } from '../review/deletionClassification';
 import { buildEffectiveReviewFiles } from '../review/personaApplicability';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
@@ -1954,7 +1954,10 @@ export async function runPublishingReviewWorker(
       // Classification runs before either engine starts planning. Disabled or
       // unavailable JEV keeps the full normal review; no path is exempted.
       if (deletionRuntime) {
-        deletionClassification = await deletionRuntime.prepare();
+        deletionClassification = await deletionRuntime.prepare({
+          budgetMs: Math.min(DELETION_CLASSIFICATION_TIMEOUT_MS,
+            Math.max(0, (panelDeadline.budget.deadlineAtMs - panelDeadline.now()) / 10)),
+        });
         panelDeadline.check();
       }
       shadowDeadline = isShadow
