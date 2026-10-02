@@ -521,7 +521,8 @@ describe('resolveModelConfig', () => {
     expect(result.decision).toBe('APPROVE');
     expect(requests).toHaveLength(2);
     expect(requests.map((request) => request.model)).toEqual([model, model]);
-    expect(requests.map((request) => request.max_tokens)).toEqual([24_576, pipeline.DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS]);
+    // The recovery floor raises smaller reserves and preserves larger ones.
+    expect(requests.map((request) => request.max_tokens)).toEqual([24_576, 24_576]);
     expect(requests[1]).not.toHaveProperty('thinking');
     expect(requests[1].reasoning_effort).toBe('low');
   });
