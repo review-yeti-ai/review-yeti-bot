@@ -19,7 +19,8 @@ const root = path.resolve(__dirname, '../..');
 
 const FORBIDDEN = new RegExp([
   ORG, `call-${'telemetry'}`, `call_${'telemetry'}`, `call[ \\t]+${'telemetry'}`,
-  ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name}(?![a-z0-9])`),
+  // Hyphen, underscore or space between the words of a repository name.
+  ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name.split('-').join('[-_ ]')}(?![a-z0-9])`),
 ].join('|'), 'giu');
 
 // Binary assets only: lockfiles are text and are scanned like everything else.

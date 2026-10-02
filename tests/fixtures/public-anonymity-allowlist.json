@@ -944,8 +944,8 @@
   "digest": "f156c3b5a3d99f5b"
  },
  "src/persistence/dashboardStore.ts": {
-  "count": 67,
-  "digest": "faa8f124aa47582e"
+  "count": 68,
+  "digest": "278c7edc7e5851ad"
  },
  "src/review/actionDispatch.ts": {
   "count": 1,
@@ -1056,8 +1056,8 @@
   "digest": "ff0bf2af55b03cc3"
  },
  "tests/e2e/telecomWorkspace.test.ts": {
-  "count": 4,
-  "digest": "b80d6724cc90c777"
+  "count": 5,
+  "digest": "34d6699ef850c74d"
  },
  "tests/empirical/m2LiveStreamingChallenger.test.tsx": {
   "count": 2,
@@ -1155,6 +1155,14 @@
   "count": 15,
   "digest": "1086a11a3f9508b2"
  },
+ "tests/integration/challenger1EmpiricalM3.test.ts": {
+  "count": 1,
+  "digest": "36af84ec1f40a896"
+ },
+ "tests/integration/challenger1EmpiricalM3Diagnostic.test.ts": {
+  "count": 2,
+  "digest": "f0970e1d2a7123e7"
+ },
  "tests/integration/challenger1EmpiricalM3Stress.test.ts": {
   "count": 9,
   "digest": "9b5825e5fde52f8a"
@@ -1180,8 +1188,8 @@
   "digest": "bd71aa54e6a916f1"
  },
  "tests/integration/challenger2EmpiricalM3.test.ts": {
-  "count": 10,
-  "digest": "54f70c21dba7cbb3"
+  "count": 14,
+  "digest": "7a278f2c7784d13f"
  },
  "tests/integration/challenger2LifecycleStreamingAdversarial.test.ts": {
   "count": 66,
@@ -1299,6 +1307,10 @@
   "count": 2,
   "digest": "bd71aa54e6a916f1"
  },
+ "tests/integration/personaPersistenceStress.test.ts": {
+  "count": 2,
+  "digest": "f0970e1d2a7123e7"
+ },
  "tests/integration/prCloseIntegration.test.ts": {
   "count": 4,
   "digest": "4e5bf95f05470f68"
@@ -1378,6 +1390,10 @@
  "tests/integration/verdictCacheSource.postgres.test.ts": {
   "count": 4,
   "digest": "bb45ca62004a3761"
+ },
+ "tests/setup.ts": {
+  "count": 4,
+  "digest": "539abd1fdf034210"
  },
  "tests/support/composedTaskLedgerFixture.ts": {
   "count": 3,
@@ -1671,6 +1687,14 @@
   "count": 1,
   "digest": "eede0415576da9c5"
  },
+ "tests/unit/dashboardStoreFallback.test.ts": {
+  "count": 11,
+  "digest": "4a418cbe08d0da1d"
+ },
+ "tests/unit/dashboardStoreResetEmpirical.test.ts": {
+  "count": 4,
+  "digest": "539abd1fdf034210"
+ },
  "tests/unit/diffDelta.test.ts": {
   "count": 5,
   "digest": "f156c3b5a3d99f5b"
@@ -1814,6 +1838,10 @@
  "tests/unit/installationClientExpansion.test.ts": {
   "count": 15,
   "digest": "a522681ece4f232e"
+ },
+ "tests/unit/integrationsApi.test.ts": {
+  "count": 1,
+  "digest": "36af84ec1f40a896"
  },
  "tests/unit/jevTriageShadow.test.ts": {
   "count": 5,
@@ -2264,8 +2292,8 @@
   "digest": "854801114ca2dfcb"
  },
  "tests/unit/rel1118NoPersonaDocsManifest.test.ts": {
-  "count": 12,
-  "digest": "c8ca6a1a3b18769e"
+  "count": 19,
+  "digest": "73bd134a718d11b2"
  },
  "tests/unit/rel1124ThrownPanelInfrastructure.test.ts": {
   "count": 4,
@@ -2276,8 +2304,8 @@
   "digest": "7f955215c60c5073"
  },
  "tests/unit/rel1136ToolchainPinsNewPackageLockfiles.test.ts": {
-  "count": 24,
-  "digest": "189596ffac2e69d0"
+  "count": 53,
+  "digest": "98525dd51db7ab71"
  },
  "tests/unit/rel1138OpenRouterClientErrorCause.test.ts": {
   "count": 1,
@@ -2528,8 +2556,12 @@
   "digest": "53af342c51c98d8b"
  },
  "tests/unit/telecomWorkspace.test.ts": {
-  "count": 4,
-  "digest": "b80d6724cc90c777"
+  "count": 5,
+  "digest": "34d6699ef850c74d"
+ },
+ "tests/unit/testStateIsolation.test.ts": {
+  "count": 3,
+  "digest": "41daf7111316b968"
  },
  "tests/unit/transportFailover.test.ts": {
   "count": 2,
