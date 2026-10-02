@@ -23,8 +23,8 @@ describe('Empirical Challenger 2 — Milestone 1 Overhaul Edge Case & Utility Su
     it('renders Topbar cleanly when all optional props are omitted or undefined', () => {
       mockPathname = '/';
       const { container } = render(<Topbar />);
-      expect(screen.getByText('Overview Dashboard')).toBeDefined();
-      expect(screen.getByText('Real-time review metrics, pass rates, and active persona status')).toBeDefined();
+      expect(screen.getByText('Review Yeti Swarm Control Plane')).toBeDefined();
+      expect(screen.getByText('Path-scoped diff analysis, context compaction, and P0 blocker enforcement')).toBeDefined();
       expect(screen.getAllByText('Live Stream').length).toBeGreaterThan(0);
       expect(container.querySelector('header')).toBeDefined();
     });
@@ -32,8 +32,8 @@ describe('Empirical Challenger 2 — Milestone 1 Overhaul Edge Case & Utility Su
     it('renders Topbar with fallback values when given an unknown pathname', () => {
       mockPathname = '/unknown-route';
       render(<Topbar />);
-      expect(screen.getByText('ct-review-bot')).toBeDefined();
-      expect(screen.getByText('Persona Panel Dashboard')).toBeDefined();
+      expect(screen.getByText('Review Yeti')).toBeDefined();
+      expect(screen.getByText('Autonomous Review Swarm Dashboard')).toBeDefined();
     });
 
     it('renders Topbar with custom title and description overriding route defaults', () => {
@@ -85,8 +85,8 @@ describe('Empirical Challenger 2 — Milestone 1 Overhaul Edge Case & Utility Su
     it('renders Sidebar gracefully on root and deep path names', () => {
       mockPathname = '/settings';
       render(<Sidebar />);
-      expect(screen.getByText('ct-review-bot')).toBeDefined();
-      expect(screen.getByText('Persona Editor')).toBeDefined();
+      expect(screen.getByText('Review Yeti AI')).toBeDefined();
+      expect(screen.getByText('Swarm Tasks & Policies')).toBeDefined();
     });
   });
 

@@ -34,6 +34,15 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
       expect(indexHtmlContent).toContain('echarts.min.js');
     });
 
+    it('preserves the protected-main overview headings and audit navigation in the rendered document', () => {
+      const document = dashboardDocument(indexHtmlContent);
+      expect(document.querySelector('header h1')?.textContent).toBe('Review Yeti Swarm Control Plane');
+      expect(document.querySelector('main')?.textContent).toContain('Total PR Reviews');
+      expect(document.querySelector('main')?.textContent).toContain('Recent Reviews & Audit Log');
+      expect(Array.from(document.querySelectorAll('main [role="tab"]')).map((tab) => tab.textContent))
+        .toContain('Fleet Telemetry & Compaction ROI');
+    });
+
     const stats = { totalTokens: { prompt: 120, completion: 30, total: 150 }, totalCostUSD: 0,
       passRatePercent: 64.5, r2CacheHitRatePercent: 77.4 } as unknown as OverviewStats;
     const telemetry = () => new (require('jsdom').JSDOM)(renderToStaticMarkup(createElement(TelemetryChartsGrid, { stats }))).window.document as Document;
@@ -74,6 +83,7 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
 
     it('serves a hydratable live swarm page and its actual client chunks', async () => {
       assertLiveMarkup(liveHtmlContent);
+      expect(dashboardDocument(liveHtmlContent).querySelector('header h1')?.textContent).toBe('Live Review Inspector');
       await assertDashboardClientAssets(app, liveHtmlContent, 'live');
     });
 
@@ -135,6 +145,7 @@ describe('Milestone 4: Web Dashboard Frontend & Linear Dark UI Redesign E2E Suit
 
     it('contains the task settings editor and save controls in public/settings.html', () => {
       assertSettingsMarkup(settingsHtmlContent);
+      expect(dashboardDocument(settingsHtmlContent).querySelector('main')?.textContent).toContain('Composed Swarm Review Task Dimensions');
     });
 
     it('loads all 11 reviewer personas via GET /api/dashboard/personas', async () => {

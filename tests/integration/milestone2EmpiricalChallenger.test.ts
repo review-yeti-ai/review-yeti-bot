@@ -30,7 +30,8 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
 
       expect(values).not.toContain('gpt-4o');
       expect(values).not.toContain('gpt-4o-mini');
-      expect(values).toContain('claude-5-haiku:high');
+      // The catalog is the single native swarm model; third-party disables never remove it.
+      expect(values).toContain('reviewyeti-ai/yeti-pr-reviewer');
     });
 
     it('excludes Gemini 1.5 Pro when Google (gemini) provider is disabled', () => {
@@ -49,7 +50,7 @@ describe('Milestone 2 Empirical Challenger Test Suite', () => {
       const values = filteredOptions.map((opt) => opt.value);
 
       expect(values).not.toContain('gemini-1.5-pro');
-      expect(values).toContain('claude-5-haiku:high');
+      expect(values).toContain('reviewyeti-ai/yeti-pr-reviewer');
     });
   });
 

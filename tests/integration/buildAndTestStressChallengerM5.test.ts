@@ -85,6 +85,13 @@ describe('Milestone 5: Build & Test Stress Challenger M5', () => {
       }
     });
 
+    it('preserves every protected-main built-in reviewer charter in the settings export', () => {
+      const settingsHtml = fs.readFileSync(path.join(publicDir, 'settings.html'), 'utf8');
+      const personas = ['security', 'architecture', 'performance', 'quality', 'database',
+        'api_contract', 'reliability', 'devops', 'docs_compliance', 'finops', 'red_team'];
+      for (const persona of personas) expect(settingsHtml).toContain(`builtin:${persona}`);
+    });
+
     it('preserves the hydratable live swarm route after repeated packaging', () => {
       const liveHtml = fs.readFileSync(path.join(publicDir, 'live.html'), 'utf8');
       assertLiveMarkup(liveHtml);
