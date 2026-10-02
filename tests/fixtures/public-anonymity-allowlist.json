@@ -844,8 +844,8 @@
   "digest": "eede0415576da9c5"
  },
  "tests/integration/reviewDispatchRepository.postgres.test.ts": {
-  "count": 49,
-  "digest": "25a65831a8e5420a"
+  "count": 59,
+  "digest": "2db5a91dd9d413d3"
  },
  "tests/integration/reviewGateRepository.postgres.test.ts": {
   "count": 14,
@@ -1316,8 +1316,8 @@
   "digest": "8d36aee2311416aa"
  },
  "tests/unit/githubWebhookAdmission.test.ts": {
-  "count": 37,
-  "digest": "8847c941483fa716"
+  "count": 40,
+  "digest": "5e83200791af0d74"
  },
  "tests/unit/gracefulComposedRecovery.test.ts": {
   "count": 1,
