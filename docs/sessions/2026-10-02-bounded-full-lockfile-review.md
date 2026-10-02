@@ -51,6 +51,18 @@ suite passes 861 tests; 254 database-backed cases are skipped locally because
 no test database is configured. Backend build and TypeScript validation pass.
 Full CI's actual database lane and a fresh hosted review remain required.
 
+The native review of `f8b5f72` returned SHIP with full file coverage; its actual
+database CI lane passed. The privacy shard nevertheless failed because a
+concurrent main update raised the two baselines above the cleaned source.
+After integrating main `1cab903`, only those entries are tightened back to
+49 and 37 with their original match digests. The newer deployment-configured
+central identity and producer-neutral policy schema are preserved. No audit
+rule or source assertion is relaxed. The integrated nineteen-file suite passes
+997 tests, with 254 database-backed cases skipped locally; backend build and
+TypeScript validation pass. Fresh exact-head review and full CI are required.
+The subsequent main `bd6c051` generated-changelog audit exclusion is preserved
+as an already-landed owner change, not added or used to fix these two entries.
+
 ## Activation boundary
 
 No central policy value is enabled by this source change. No service deployment
