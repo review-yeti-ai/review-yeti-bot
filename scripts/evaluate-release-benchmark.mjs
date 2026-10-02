@@ -186,7 +186,7 @@ Options:
   --min-coverage-pct=<n>        Min review coverage percentage (default: 100.0)
   --format-digest               Emit release notes benchmark digest to stdout
   --extract-digest-from=<path>  Extract and format release notes digest from existing markdown report
-  --repository=<owner/repo>     GitHub repository name (defaults to GITHUB_REPOSITORY or calltelemetry/ct-review-bot)
+  --repository=<owner/repo>     GitHub repository name (defaults to GITHUB_REPOSITORY or exampleorg/ct-review-bot)
   --api-key=<key>               OpenRouter API key for live execution
   --help, -h                    Show this help message
 

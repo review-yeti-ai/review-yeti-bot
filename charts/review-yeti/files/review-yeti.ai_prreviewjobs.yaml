@@ -189,7 +189,7 @@ spec:
                                 image from any other registry was rejected. A tenant could not
                                 pin from their own registry, and the vendor namespace allowed
                                 tags. That inverts the control.
-                    too narrow — it hardcoded two CallTelemetry-controlled registries, so a
+                    too narrow — it hardcoded two Exampleorg-controlled registries, so a
                                 self-hosted install could not pull from its own registry at
                                 all. Self-hosting was impossible by construction.
 

@@ -25,7 +25,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2125,
       "title": "refactor(sip): standardize signaling event payload properties",
       "headSha": "a1b2c3d4e5f67890123456789012345678902125",
@@ -75,7 +75,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2126,
       "title": "refactor(rtp): asynchronous port deallocation with Redis cooldown",
       "headSha": "a1b2c3d4e5f67890123456789012345678902126",
@@ -125,7 +125,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2127,
       "title": "refactor(pbx): structured trunk capacity with burst channels",
       "headSha": "a1b2c3d4e5f67890123456789012345678902127",
@@ -173,7 +173,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2128,
       "title": "refactor(cdr): rename duration_sec column to billed_seconds",
       "headSha": "a1b2c3d4e5f67890123456789012345678902128",
@@ -223,7 +223,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2129,
       "title": "refactor(sip): split G.711 codec enum into ULAW and ALAW variants",
       "headSha": "a1b2c3d4e5f67890123456789012345678902129",
@@ -273,7 +273,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2130,
       "title": "refactor(pbx): clarify endpoint lifecycle statuses",
       "headSha": "a1b2c3d4e5f67890123456789012345678902130",
@@ -321,7 +321,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2131,
       "title": "feat(rtp): default jitter buffer to 48kHz HD voice sampling rate",
       "headSha": "a1b2c3d4e5f67890123456789012345678902131",
@@ -371,7 +371,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2132,
       "title": "refactor(cdr): strict UUIDv4 format validation on tenant identifiers",
       "headSha": "a1b2c3d4e5f67890123456789012345678902132",
@@ -420,7 +420,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2133,
       "title": "refactor(sip): modernize transfer callback signature",
       "headSha": "a1b2c3d4e5f67890123456789012345678902133",
@@ -469,7 +469,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2134,
       "title": "refactor(webhook): modernize HTTP HMAC signature header name",
       "headSha": "a1b2c3d4e5f67890123456789012345678902134",
@@ -518,7 +518,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2135,
       "title": "refactor(media): instantaneous socket destruction on call teardown",
       "headSha": "a1b2c3d4e5f67890123456789012345678902135",
@@ -568,7 +568,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2136,
       "title": "refactor(sip): strict RFC 3261 URI grammar validation",
       "headSha": "a1b2c3d4e5f67890123456789012345678902136",
@@ -616,7 +616,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2137,
       "title": "refactor(cdr): round intermediate rating cost to 2 decimal places",
       "headSha": "a1b2c3d4e5f67890123456789012345678902137",
@@ -665,7 +665,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2138,
       "title": "refactor(pbx): serialize failover codes as JSON array",
       "headSha": "a1b2c3d4e5f67890123456789012345678902138",
@@ -715,7 +715,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2139,
       "title": "perf(rtp): static buffer caching to reduce GC allocations",
       "headSha": "a1b2c3d4e5f67890123456789012345678902139",
@@ -763,7 +763,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2140,
       "title": "refactor(sip): deterministic initial CSeq sequence numbers",
       "headSha": "a1b2c3d4e5f67890123456789012345678902140",
@@ -812,7 +812,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2141,
       "title": "perf(cdr): reduce database write frequency by extending batch interval",
       "headSha": "a1b2c3d4e5f67890123456789012345678902141",
@@ -862,7 +862,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2142,
       "title": "refactor(pbx): enforce fast registration expiry for NAT tracking",
       "headSha": "a1b2c3d4e5f67890123456789012345678902142",
@@ -911,7 +911,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2143,
       "title": "refactor(media): fast RFC 2833 DTMF relay packet handler",
       "headSha": "a1b2c3d4e5f67890123456789012345678902143",
@@ -961,7 +961,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2144,
       "title": "refactor(sip): format Q.850 release cause headers on BYE",
       "headSha": "a1b2c3d4e5f67890123456789012345678902144",
@@ -1009,7 +1009,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2145,
       "title": "refactor(cdr): export CDR timestamps as localized formatted strings",
       "headSha": "a1b2c3d4e5f67890123456789012345678902145",
@@ -1057,7 +1057,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2146,
       "title": "refactor(trunk): prioritize primary carrier trunk routes",
       "headSha": "a1b2c3d4e5f67890123456789012345678902146",
@@ -1107,7 +1107,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2147,
       "title": "refactor(media): bypass SRTP encryption on high-throughput WAN routes",
       "headSha": "a1b2c3d4e5f67890123456789012345678902147",
@@ -1157,7 +1157,7 @@ export const CROSS_MODULE_SCENARIOS = [
       }
     ],
     "prContext": {
-      "repo": "calltelemetry/telecom-call-engine",
+      "repo": "exampleorg/telecom-call-engine",
       "prNumber": 2148,
       "title": "refactor(sip): dynamic auth realm extraction for multi-tenant domains",
       "headSha": "a1b2c3d4e5f67890123456789012345678902148",

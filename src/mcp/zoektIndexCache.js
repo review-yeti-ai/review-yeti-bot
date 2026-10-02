@@ -3,7 +3,7 @@
 // ADR: knowledge/adr/0329-adopt-zoekt-as-a-bounded-review-time-search-pilot-for-review-yeti.md
 //
 // zoektWorkdirMaterializer.js + zoektIndexBuilder.js build a Zoekt index fresh, inside every
-// review's own request path. Measured live against cisco-cdr (14.2k files): 7,865ms materialize
+// review's own request path. Measured live against example-api (14.2k files): 7,865ms materialize
 // + 4,692ms index build = 12,557ms flat, paid on every review, structurally BEFORE any persona
 // lane's own laneDeadline clock starts. Operator direction: the repo tree and its index are
 // deployment/provisioning assets, not request-path work -- "there should be a tarball, this is

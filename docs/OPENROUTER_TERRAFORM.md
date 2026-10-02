@@ -7,7 +7,7 @@
 > `centralized review actions`. See [Documentation authority](DOCUMENTATION_AUTHORITY.md).
 
 This retained record described a direct OpenRouter deployment for the historical `CT Review Fleet`.
-Its provider template and reference stack were associated with the ct-meta
+Its provider template and reference stack were associated with the example-meta
 `ct-platform/openrouter` skill;
 this repository's [`infra/openrouter/`](../infra/openrouter/) directory is a
 consumer template for operators who need the deployment beside the bot.
@@ -27,8 +27,8 @@ Use separate credentials for separate jobs:
 
 | Secret | Where it lives | Use |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | Doppler `ai-workspace` | Terraform/OpenTofu management and provisioning only |
-| `OPENROUTER_REVIEW_FLEET_KEY` | Doppler `ai-workspace` | Guarded completion key for review traffic |
+| `OPENROUTER_API_KEY` | Doppler `example-workspace` | Terraform/OpenTofu management and provisioning only |
+| `OPENROUTER_REVIEW_FLEET_KEY` | Doppler `example-workspace` | Guarded completion key for review traffic |
 | `OPENROUTER_PR_REVIEW_API_KEY` | Target GitHub repository secret | Compatibility name consumed by the deployed Action workflow |
 | `GITHUB_TOKEN` | GitHub Actions runtime | Read the PR and publish its comment |
 
@@ -36,7 +36,7 @@ The management key enters Terraform through the standard `TF_VAR_` convention;
 the value is never written to a file or printed:
 
 ```bash
-export TF_VAR_openrouter_management_key="$(doppler secrets get OPENROUTER_API_KEY --project ai-workspace --config dev --plain)"
+export TF_VAR_openrouter_management_key="$(doppler secrets get OPENROUTER_API_KEY --project example-workspace --config dev --plain)"
 trap 'unset TF_VAR_openrouter_management_key' EXIT
 ```
 
@@ -98,7 +98,7 @@ that value to the target repository's `OPENROUTER_PR_REVIEW_API_KEY` secret
 without printing it:
 
 ```bash
-doppler secrets get OPENROUTER_REVIEW_FLEET_KEY --project ai-workspace --config dev --plain \
+doppler secrets get OPENROUTER_REVIEW_FLEET_KEY --project example-workspace --config dev --plain \
   | gh secret set OPENROUTER_PR_REVIEW_API_KEY --repo my-org/REPOSITORY --body -
 ```
 

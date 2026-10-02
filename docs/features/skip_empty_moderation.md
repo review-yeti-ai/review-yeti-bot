@@ -1,7 +1,7 @@
 # Skip the moderator on empty, fully covered runs
 
 Flag: `REVIEW_YETI_SKIP_EMPTY_MODERATION` on the publishing worker. It is **off by default and is not enabled anywhere**.
-Issue: REL-1139, from §6 #12 of the 2026-09-25 calibration report. Policy: ct-meta ADR 0687 (status proposed). Do not turn the flag on in production before that ADR is accepted.
+Issue: REL-1139, from §6 #12 of the 2026-09-25 calibration report. Policy: example-meta ADR 0687 (status proposed). Do not turn the flag on in production before that ADR is accepted.
 
 Code:
 - `src/review/emptyModeration.ts` is the one shared decision (`decideEmptyModeration`), the flag grammar and the published reason.

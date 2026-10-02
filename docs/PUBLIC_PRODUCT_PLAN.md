@@ -42,7 +42,7 @@ Each item states the problem in one line, the change, how we know it worked, and
 ### 0.4 Move internal artifacts out of the repo
 
 - **Problem:** Repo root and `docs/` contain project-management and operations material that reads as internal and dilutes what a stranger should read.
-- **Change:** Remove `ORIGINAL_REQUEST.md` and `PROJECT.md` from the repo root. Move `DOKS_REVIEW_OPERATIONS.md`, `GENERATIONAL_REVIEW_ENGINE_TASKS.md`, `COMPETITIVE_LANDSCAPE.md`, `DOCUMENTATION_AUTHORITY.md`, and `ADVERSARIAL_REVIEW_PATTERNS.md` to the private ct-meta knowledge tree. The adversarial patterns content is good material; if any of it becomes public later, it comes back rewritten as a user-facing "how the personas think" page, not as an internal design note.
+- **Change:** Remove `ORIGINAL_REQUEST.md` and `PROJECT.md` from the repo root. Move `DOKS_REVIEW_OPERATIONS.md`, `GENERATIONAL_REVIEW_ENGINE_TASKS.md`, `COMPETITIVE_LANDSCAPE.md`, `DOCUMENTATION_AUTHORITY.md`, and `ADVERSARIAL_REVIEW_PATTERNS.md` to the private example-meta knowledge tree. The adversarial patterns content is good material; if any of it becomes public later, it comes back rewritten as a user-facing "how the personas think" page, not as an internal design note.
 - **Done when:** `git ls-files docs/` lists only pages a consumer would read. The repo root has a README, LICENSE, action.yml, CHANGELOG, and source.
 - **Size:** S.
 
