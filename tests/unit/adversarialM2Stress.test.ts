@@ -235,7 +235,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     );
   });
 
-  it('Scenario 7: a raw SHIP with a P2 finding still fails the strict published conclusion', async () => {
+  it('Scenario 7: unresolved P2 findings block success even when the raw verdict is SHIP', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['style'],

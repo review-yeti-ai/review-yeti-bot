@@ -26,6 +26,7 @@ import { createMcpStaticAdminRecoveryOrigin } from '../../src/review/mcpStaticAd
 import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } from '../../src/persistence/incompleteP2Recovery';
 import { incompleteP2RecoveryClaimFor } from '../../src/review/incompleteP2Recovery';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
 import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
@@ -5464,6 +5465,166 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt + 1, reason: 'worker_contract_rejected' },
       ])).resolves.toEqual([]);
       expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
+  });
+
+  describe('Gate-bound abandoned failure publication', () => {
+    async function projectedGateRun() {
+      const { repository, client, gateRepository } = await createRepository();
+      const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
+        review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 2 } } });
+      const prepared = preparePublishingPolicy({ content, source: {
+        repositoryId: 789, repository: 'example-org/review-policy', sha: 'c'.repeat(40),
+        path: 'review-policy.json', contentDigest: createHash('sha256').update(content).digest('hex'),
+      } }, { baseUrl: 'https://gateway.example/v1', model: 'review-model' });
+      const candidate = { repositoryId: 123, owner: 'example-org', repo: 'widgets', prNumber: 17,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
+      const identity = buildAuthoritativeReviewIdentity({ requested: candidate,
+        current: { ...candidate, open: true, draft: false }, policy: prepared.policy });
+      const input = { deliveryId: 'synthetic-gate-failure', eventName: 'pull_request',
+        repositoryId: candidate.repositoryId, installationId: 456, receivedAt: 1_000,
+        terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS, payloadDigest: sha256(identity),
+        publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
+        effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
+        authoritativeGate: { expectedAppId: 12345, prepared } };
+      const admitted = await repository.admit(input);
+      await bindPendingGate(gateRepository, 1_001);
+      const claim = (await repository.claimNext('synthetic-worker', 1_003, 30_000))!;
+      expect(claim).not.toBeNull();
+      expect(await repository.markProjected(claim.runId, 'synthetic-worker', claim.claimAttempt,
+        'synthetic-projection', 1_004, 'd'.repeat(64))).toBe(true);
+      return { repository, client, runId: admitted.run.runId, attempt: claim.executionAttempt,
+        now: input.terminalDeadline - 1, deadline: input.terminalDeadline };
+    }
+
+    it('does not mistake a current queued Gate for abandonment before the deadline', async () => {
+      const f = await projectedGateRun();
+      expect((await dispatchState(f.client, f.runId)).run).toMatchObject({ status: 'queued', stage: 'admission' });
+      expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.now, 5)).toEqual([]);
+      await f.client.query("UPDATE review_runs SET lease_owner = 'active-owner', lease_expires_at = to_timestamp(($2 + 60000) / 1000.0) WHERE run_id = $1", [f.runId, f.now]);
+      expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.now, 5,
+        [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' }])).toEqual([]);
+    });
+
+    it.each(['delegated', 'deadline', 'durable-failure'] as const)(
+      'publishes the exact current Gate-bound %s attempt once', async (route) => {
+        const f = await projectedGateRun();
+        if (route === 'durable-failure') {
+          await f.client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [f.runId]);
+          await f.client.query("UPDATE review_gate_attempts SET desired_state = 'timed_out' WHERE run_id = $1", [f.runId]);
+        }
+        const now = route === 'deadline' ? f.deadline : f.now;
+        const delegated = route === 'delegated'
+          ? [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' as const }] : [];
+        const claimed = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', now, 5, delegated);
+        expect(claimed).toHaveLength(1);
+        expect(claimed[0]).toMatchObject({ runId: f.runId, executionAttempt: f.attempt,
+          owner: 'example-org', repo: 'widgets', headSha: 'a'.repeat(40), authoritativeGateAppId: 12345 });
+        const publish = vi.fn(async () => 'failure-published' as const);
+        expect(await f.repository.reconcileAbandonedPublishingRun(claimed[0], 'synthetic-reaper', now + 1, publish))
+          .toEqual({ reconciled: true, outcome: 'failure-published' });
+        expect(publish).toHaveBeenCalledOnce();
+        const state = await dispatchState(f.client, f.runId);
+        expect(state.run).toMatchObject({ status: 'terminal', result_digest: null, lease_owner: null });
+        expect(state.outbox.status).toBe('terminal');
+        expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', now + 2, 5, delegated)).toEqual([]);
+      },
+    );
+
+    it.each([
+      ["UPDATE review_gate_attempts SET expected_app_id = 54321", 'wrong App'],
+      ["UPDATE review_gate_attempts SET coordinates = jsonb_set(coordinates, '{headSha}', to_jsonb(repeat('c', 40)))", 'wrong head'],
+      ["UPDATE review_gate_attempts SET execution_attempt = execution_attempt + 1", 'wrong attempt'],
+      ["UPDATE review_gate_attempts SET review_generation = review_generation + 1", 'wrong generation'],
+      ["UPDATE review_gate_attempts SET current_attempt = false", 'superseded Gate'],
+      ["UPDATE review_gate_attempts SET worker_result_digest = repeat('e', 64)", 'recorded result'],
+      ["UPDATE review_gate_attempts SET desired_state = 'success'", 'successful Gate'],
+      ["UPDATE review_gate_attempts SET desired_state = 'cancelled'", 'cancelled Gate'],
+      ["UPDATE review_runs SET result_digest = repeat('e', 64)", 'recorded run result'],
+      ["UPDATE review_gate_attempts SET creation_state = 'reserved', check_id = NULL", 'unbound Gate'],
+    ])('refuses $1 both before claim and after a valid claim', async (mutation) => {
+      const f = await projectedGateRun();
+      const delegated = [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' as const }];
+      const claimed = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.now, 5, delegated);
+      expect(claimed).toHaveLength(1);
+      await f.client.query(`${mutation} WHERE run_id = $1`, [f.runId]);
+      const publish = vi.fn(async () => 'failure-published' as const);
+      expect(await f.repository.reconcileAbandonedPublishingRun(claimed[0], 'synthetic-reaper', f.now + 1, publish))
+        .toEqual({ reconciled: false });
+      expect(publish).not.toHaveBeenCalled();
+      await f.client.query('UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL WHERE run_id = $1', [f.runId]);
+      expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline + 1, 5, delegated)).toEqual([]);
+    });
+
+    it.each(['bound', 'unbound', 'recorded-result'] as const)(
+      'fences Gate-bound superseded retirement with %s state', async (gateState) => {
+        const f = await projectedGateRun();
+        const [claimed] = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline, 5);
+        expect(claimed).toBeDefined();
+        const before = await dispatchState(f.client, f.runId);
+        const publish = vi.fn(async () => {
+          // Change the Gate after the locked eligibility check so the retirement
+          // UPDATE itself must reject it and roll both durable rows back.
+          if (gateState === 'unbound') await f.client.query(
+            "UPDATE review_gate_attempts SET creation_state = 'reserved', check_id = NULL WHERE run_id = $1", [f.runId]);
+          if (gateState === 'recorded-result') await f.client.query(
+            "UPDATE review_gate_attempts SET worker_result_digest = repeat('e', 64) WHERE run_id = $1", [f.runId]);
+          return 'superseded' as const;
+        });
+        const reconciliation = f.repository.reconcileAbandonedPublishingRun(
+          claimed, 'synthetic-reaper', f.deadline + 1, publish);
+        if (gateState === 'bound') {
+          await expect(reconciliation).resolves.toEqual({ reconciled: true, outcome: 'superseded' });
+          const state = await dispatchState(f.client, f.runId);
+          expect(state.run).toMatchObject({ status: 'terminal', stage: 'terminal', result_digest: null, lease_owner: null });
+          expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null });
+          expect(await f.repository.claimAbandonedPublishingRuns('later-reaper', f.deadline + 2, 5)).toEqual([]);
+        } else {
+          await expect(reconciliation).rejects.toThrow('superseded run retirement lost its lease');
+          expect(await dispatchState(f.client, f.runId)).toEqual(before);
+        }
+        expect(publish).toHaveBeenCalledOnce();
+      },
+    );
+
+    it('rejects a claimed publisher identity changed consistently in both durable rows', async () => {
+      const f = await projectedGateRun();
+      const [claimed] = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline, 5);
+      expect(claimed).toBeDefined();
+      await f.client.query('UPDATE review_runs SET authoritative_gate_app_id = 54321 WHERE run_id = $1', [f.runId]);
+      await f.client.query('UPDATE review_gate_attempts SET expected_app_id = 54321 WHERE run_id = $1', [f.runId]);
+      const publish = vi.fn(async () => 'failure-published' as const);
+      expect(await f.repository.reconcileAbandonedPublishingRun(claimed, 'synthetic-reaper', f.deadline + 1, publish))
+        .toEqual({ reconciled: false });
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it('reaches the exact App/head/attempt failure PATCH through the real repository and reaper', async () => {
+      const f = await projectedGateRun();
+      const exact = { id: 101, name: 'Review Yeti', head_sha: 'a'.repeat(40), app: { id: 12345 },
+        external_id: `${f.runId}:a${f.attempt}`, status: 'in_progress', conclusion: null };
+      const checks = [
+        { ...exact, id: 102, app: { id: 54321 } },
+        { ...exact, id: 103, head_sha: 'c'.repeat(40) },
+        { ...exact, id: 104, external_id: `${f.runId}:a${f.attempt + 1}` }, exact,
+      ];
+      const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+        new Response(JSON.stringify(init?.method === 'PATCH' ? {}
+          : String(url).includes('/commits/') ? { check_runs: checks } : exact)));
+      const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation: transport });
+      const reaper = new AbandonedRunReaper({ repository: f.repository, checkClientFor: async () => client,
+        publisherAppId: 12345, workerId: 'synthetic-reaper', now: () => f.now,
+        delegatedFailureReader: { listCandidates: async () =>
+          [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' }] } });
+      expect(await reaper.runOnce()).toEqual({ swept: 1, published: 1, failed: 0, delegated: 1 });
+      const writes = transport.mock.calls.filter(([, init]) => ['POST', 'PATCH'].includes(init?.method || ''));
+      expect(writes).toHaveLength(1);
+      expect(writes[0][0]).toBe('https://api.github.com/repos/example-org/widgets/check-runs/101');
+      expect(writes[0][1]?.method).toBe('PATCH');
+      expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure' });
+      expect((await dispatchState(f.client, f.runId)).run.result_digest).toBeNull();
+      expect(await reaper.runOnce()).toEqual({ swept: 0, published: 0, failed: 0 });
+      expect(transport.mock.calls.filter(([, init]) => ['POST', 'PATCH'].includes(init?.method || ''))).toHaveLength(1);
     });
   });
 

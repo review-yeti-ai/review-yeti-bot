@@ -1655,6 +1655,7 @@ describe('authoritative prepared publishing worker', () => {
     } });
     expect(completed.output.text).toContain(finding.body);
     expect(completed.output.title).toBe('Review Yeti: SHIP');
+    expect(completed.conclusion).toBe('failure');
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');

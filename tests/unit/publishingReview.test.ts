@@ -7,7 +7,7 @@ import * as publishingProgress from '../../src/telemetry/publishingProgress';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
-import { MAX_PERSONAS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { MAX_PERSONAS, MAX_TEXT_CHARACTERS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
 import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import {
   classifyFailure,
@@ -1459,9 +1459,11 @@ describe('runPublishingReviewWorker', () => {
     });
   });
 
-  it('reports lane evidence before the terminal callback for a blocking failure and a clean success', async () => {
+  it('reports lane evidence before the terminal callback for blocking findings and clean success', async () => {
     for (const { findings, conclusion, expectedDecision } of [
       { findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }],
+        conclusion: 'failure', expectedDecision: 'FINDINGS' },
+      { findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }],
         conclusion: 'failure', expectedDecision: 'FINDINGS' },
       { findings: [], conclusion: 'success', expectedDecision: 'APPROVE' },
     ] as const) {
@@ -1477,7 +1479,7 @@ describe('runPublishingReviewWorker', () => {
         completion, checkClient: cc,
         panelRunner: vi.fn(async () => ({
           applicablePersonaIds: ['sec-lane'],
-          personas: [{ id: 'sec-lane', findings }],
+          personas: [{ id: 'sec-lane', findings: [...findings] }],
           optionalFailures: [],
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict: 'SHIP' },
@@ -1573,7 +1575,7 @@ describe('runPublishingReviewWorker', () => {
     expect(receipt.findingCount).toBe(2);
   });
 
-  it('still reports a clean terminal success, and no evidence, when the result fails the contract', async () => {
+  it('still reports a clean terminal success, and no evidence, when the lane decision fails the evidence contract', async () => {
     // The green check is already published by the time evidence is built. A
     // result the service would refuse (here: an invalid lane decision) must be
     // dropped, not allowed to abort the report. Keep this success fixture clean:
@@ -1600,6 +1602,31 @@ describe('runPublishingReviewWorker', () => {
     const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(event.version).toBe('WorkerTerminalSuccess.v1');
     expect(event).not.toHaveProperty('result');
+    expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+  });
+
+  it('never reports terminal success or invalid evidence when unresolved P2 results fail the contract', async () => {
+    // The failed check is already published before evidence is built. An oversized
+    // finding must suppress invalid evidence without reporting terminal success.
+    const completion = {
+      reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
+      reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+      reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
+    };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'x'.repeat(MAX_TEXT_CHARACTERS + 1) }] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('failure');
+    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
