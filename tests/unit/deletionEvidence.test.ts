@@ -74,14 +74,19 @@ describe('deletion evidence replay', () => {
     }
   });
 
-  it('retains successful classifications and every obligation when the remaining tail stalls', async () => {
+  it('classifies the sensitive path first and retains every obligation when the remaining tail stalls', async () => {
     const ask = vi.fn().mockResolvedValueOnce(outcome()).mockImplementation(() => new Promise<never>(() => undefined));
-    const { runtime } = setup([file('one.ts'), file('two.ts')],
+    const { runtime } = setup([file('src/old.ts'), file('src/auth/guard.ts')],
       { asker: { ask } as unknown as JevAsker, modelPin: 'jev-test' });
     const plan = await runtime.prepare({ budgetMs: 100 });
     expect(plan).toMatchObject({ status: 'partial', totalFiles: 2, classifiedFiles: 1, unresolvedFiles: 1 });
     expect(formatDeletionClassification(plan)).toContain('DELETION CLASSIFICATION AND REVIEW GROUPS');
-    expect(plan.groups.flatMap((group) => group.paths).sort()).toEqual(['one.ts', 'two.ts']);
+    expect(plan.groups.flatMap((group) => group.paths).sort()).toEqual(['src/auth/guard.ts', 'src/old.ts']);
+    const members = runtime.manifest().groups!.flatMap((group) => group.members);
+    expect(members.find((member) => member.path === 'src/auth/guard.ts'))
+      .toMatchObject({ sensitive: true, classificationStatus: 'ok' });
+    expect(members.find((member) => member.path === 'src/old.ts'))
+      .toMatchObject({ sensitive: false, classificationStatus: 'unavailable' });
     expect(plan.groups.reduce((sum, group) => sum + group.obligationCount, 0)).toBe(10);
   });
 
