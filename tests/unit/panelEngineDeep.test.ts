@@ -2641,8 +2641,11 @@ describe('REL-1211 current public panel closeout branches', () => {
     expect(getActivePersonaCallCount()).toBe(0);
   });
 
-it.each(['rate_limit', 'auth'] as const)('retries only a coded %s failure through the public multichunk execution path', async (failureClass) => {
+  it.each(['rate_limit', 'auth'] as const)('retries only a coded %s failure through the public multichunk execution path', async (failureClass) => {
+    const { UpstreamCapacityRejectionError } = await import('../../src/gateway/openRouterClient');
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const scheduled = vi.spyOn(globalThis, 'setTimeout');
+    const cleared = vi.spyOn(globalThis, 'clearTimeout');
     const config = buildDeepConfig();
     config.personas = [{ ...config.personas[0], providers: ['claude'] }];
     config.quorum = 1;
@@ -2671,7 +2674,9 @@ it.each(['rate_limit', 'auth'] as const)('retries only a coded %s failure throug
         chunks.push(chunk[1]);
         if (chunks.length === 1) {
           releaseFailure();
-          throw new PanelConfigurationError('Injected coded provider refusal', { failureClass });
+          throw failureClass === 'rate_limit'
+            ? new UpstreamCapacityRejectionError('claude', 'Injected provider capacity rejection')
+            : new OpenRouterResponseError('Injected unauthorized provider response', 401);
         }
       }
       return successfulRoleResponse(opts);
@@ -2696,8 +2701,14 @@ it.each(['rate_limit', 'auth'] as const)('retries only a coded %s failure throug
       expect(chunks).toEqual(failureClass === 'rate_limit' ? ['1', '1', '2'] : ['1']);
       expect(reduceCalls).toBe(failureClass === 'rate_limit' ? 1 : 0);
       expect(getActivePersonaCallCount()).toBe(0);
+      const deadlineTimerIndex = scheduled.mock.calls.findIndex(([, delay]) => delay === 1_200_000);
+      expect(deadlineTimerIndex).toBeGreaterThanOrEqual(0);
+      expect(cleared).toHaveBeenCalledWith(scheduled.mock.results[deadlineTimerIndex].value);
+      await vi.advanceTimersByTimeAsync(0);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
+      scheduled.mockRestore();
+      cleared.mockRestore();
       vi.useRealTimers();
     }
   });

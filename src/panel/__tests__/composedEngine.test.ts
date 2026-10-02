@@ -2482,7 +2482,9 @@ describe('executeComposedReview', () => {
     expect(result.personas[0].turnUsages).toHaveLength(2);
     expect(computeArbitration(result.personas, 1, { changedFiles: CODE_FILES, coverageComplete: true, panelSize: 1 }).verdict)
       .toBe(severity === 'P0' ? 'BLOCK' : 'SHIP');
-  });describe('REL-1211 current composed public closeout branches', () => {
+  });
+
+  describe('REL-1211 current composed public closeout branches', () => {
     function currentTaskId(payload: any): string {
       const directive = payload.messages.find((message: any) => typeof message.content === 'string'
         && message.content.includes('=== WORK TURN'))?.content;
@@ -2518,6 +2520,8 @@ describe('executeComposedReview', () => {
     it('retries one provider request timeout inside the inherited cutoff and cleans the deadline timer', async () => {
       const { OpenRouterTimeoutError } = await import('../../gateway/openRouterClient');
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      const scheduled = vi.spyOn(globalThis, 'setTimeout');
+      const cleared = vi.spyOn(globalThis, 'clearTimeout');
       let releaseFailure!: () => void;
       const firstFailure = new Promise<void>((resolve) => { releaseFailure = resolve; });
       let attempts = 0;
@@ -2543,8 +2547,18 @@ describe('executeComposedReview', () => {
         expect(complete).toHaveBeenCalledTimes(3);
         expect(result.personas.map((lane) => lane.id)).toEqual(['task-1']);
         expect(complete.mock.calls.every(([payload]) => payload.timeoutMs <= 5_000)).toBe(true);
+        const deadlineTimerIndex = scheduled.mock.calls.findIndex(([, delay]) => delay === 5_000);
+        expect(deadlineTimerIndex).toBeGreaterThanOrEqual(0);
+        expect(cleared).toHaveBeenCalledWith(scheduled.mock.results[deadlineTimerIndex].value);
+        // The span exporter acknowledges completion on its own zero-delay callback.
+        await vi.advanceTimersByTimeAsync(0);
         expect(vi.getTimerCount()).toBe(0);
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(complete.mock.calls.every(([payload]) => !payload.signal.aborted)).toBe(true);
+        expect(complete).toHaveBeenCalledTimes(3);
       } finally {
+        scheduled.mockRestore();
+        cleared.mockRestore();
         vi.useRealTimers();
       }
     });
@@ -2582,28 +2596,29 @@ describe('executeComposedReview', () => {
         peakWrites = Math.max(peakWrites, activeWrites);
         try {
           if (writes.length === 1) await firstWrite;
-          if (snapshot.completedTasks.length === 9) releaseLatestWrite();
+          if (snapshot.completedTasks.length === 8) releaseLatestWrite();
         } finally {
           activeWrites -= 1;
         }
       });
       const complete = vi.fn(async (payload: any) => lastText(payload.messages).includes('PLAN TURN')
-        ? fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks: manyTasks(9) }))
+        ? fakeResponse(JSON.stringify({ nonce: issuedNonce(payload.messages), tasks: manyTasks(8) }))
         : responseForTask(payload, currentTaskId(payload)));
       try {
         const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: config(), changedFiles: CODE_FILES,
           repository: 'example/rel1211', headSha: 'current-checkpoint-coalescing', client: { complete },
           checkpoint: { resumed: null, capture: (snapshot) => captures.push(structuredClone(snapshot)), save } }));
-        expect(result.personas).toHaveLength(9);
+        expect(result.personas).toHaveLength(8);
+        expect(complete).toHaveBeenCalledTimes(9);
         expect(writes).toHaveLength(1);
-        expect(captures.at(-1)).toMatchObject({ revision: 10, completedTasks: expect.any(Array) });
-        expect(captures.at(-1).completedTasks).toHaveLength(9);
+        expect(captures.at(-1)).toMatchObject({ revision: 9, completedTasks: expect.any(Array) });
+        expect(captures.at(-1).completedTasks).toHaveLength(8);
         releaseFirstWrite();
         await latestWrite;
         expect(peakWrites).toBe(1);
-        expect(writes.map((snapshot) => snapshot.revision)).toEqual([1, 10]);
+        expect(writes.map((snapshot) => snapshot.revision)).toEqual([1, 9]);
         expect(writes.at(-1).completedTasks.map((task: any) => task.id).sort())
-          .toEqual(manyTasks(9).map((task) => task.id).sort());
+          .toEqual(manyTasks(8).map((task) => task.id).sort());
       } finally {
         releaseFirstWrite();
       }
@@ -2651,7 +2666,7 @@ describe('executeComposedReview', () => {
         if (task === tasks[0].id) return fakeResponse(JSON.stringify({ nonce, task, status: 'BLOCKED', findings: [] }));
         if (task === tasks[1].id) return fakeResponse('No usable task verdict');
         return fakeResponse(JSON.stringify({ nonce, task, status: 'COMPLETE', findings: [{
-          severity: 'P0', path: 'src/auth/guard.ts', line: 2, startLine: null,
+          severity: 'P0', path: 'src/auth/guard.ts', line: 1, startLine: null,
           title: 'Current guard permits unauthorized access', body: 'The changed guard must reject an unauthenticated caller.',
           suggestion: null, replacementCode: null,
         }] }));
@@ -2661,6 +2676,8 @@ describe('executeComposedReview', () => {
       expect(result.optionalFailures?.map((lane) => lane.id)).toEqual([tasks[0].id]);
       expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual([tasks[1].id]);
       expect(result.personas.map((lane) => lane.id)).toEqual([tasks[2].id]);
+      expect(result.personas[0]).toMatchObject({ decision: 'FINDINGS', findings: [{ severity: 'P0', line: 1 }] });
+      expect(result.quorum.satisfied).toBe(false);
       expect(result.applicablePersonaIds).toEqual(tasks.map((task) => task.id));
       expect(result.arbiter.verdict).toBe('BLOCK');
       expect(result.arbiter.rationale).toContain('P0 blocker finding detected');
