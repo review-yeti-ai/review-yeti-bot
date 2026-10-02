@@ -1550,7 +1550,9 @@ describe('runPublishingReviewWorker', () => {
         personas: [
           { id: 'found', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy this' }] },
           { id: 'clean', findings: [] },
-          { id: 'stated', decision: 'APPROVE', findings: [{ severity: 'P2', path: 'src/a.ts', line: 2, title: 'Nit', body: 'Also' }] },
+          // The fixture diff changes only line 1. Use a distinct, anchored
+          // contribution; an out-of-diff line 2 is correctly discarded.
+          { id: 'stated', decision: 'APPROVE', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Distinct finding', body: 'Also' }] },
         ],
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
