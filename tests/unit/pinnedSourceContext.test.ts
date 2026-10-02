@@ -247,7 +247,7 @@ describe('pinned source context', () => {
     const patch = patchFor(path);
     const failingTransport = sourceContext.readPinnedSourceContext({
       repo: 'owner/repo', headSha, maxChars: 2_000, files: [{ path, patch }],
-      commandRunner: () => ({ status: 1, stdout: '', stderr: 'Bearer private-detail-must-not-appear' }),
+      commandRunner: () => ({ status: 1, stdout: '', stderr: 'synthetic transport detail omitted from context' }),
     });
     const wrongPath = sourceContext.readPinnedSourceContext({
       repo: 'owner/repo', headSha, maxChars: 2_000, files: [{ path, patch }],
