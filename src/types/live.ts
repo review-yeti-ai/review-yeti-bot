@@ -29,6 +29,7 @@ export type LiveStreamEventType =
   | 'stage:transition'
   | 'turn:step'
   | 'token:update'
+  | 'token:metrics'
   // Legacy event type shims
   | 'agent_start'
   | 'llm_chunk'

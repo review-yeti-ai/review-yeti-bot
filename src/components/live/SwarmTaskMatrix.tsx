@@ -33,6 +33,14 @@ export interface SwarmTaskItem {
   findingsCount: number;
   lastMessage?: string;
   durationMs?: number;
+  tokensBurned?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  tokensPerSec?: number;
+  costUSD?: number;
+  budgetUSD?: number;
+  turn?: number;
+  maxTurns?: number;
 }
 
 export interface ContextCompactionMetrics {
@@ -111,6 +119,14 @@ const DEFAULT_SWARM_TASKS: SwarmTaskItem[] = [
     status: 'COMPLETED',
     progress: 100,
     findingsCount: 0,
+    tokensBurned: 3800,
+    promptTokens: 3400,
+    completionTokens: 400,
+    tokensPerSec: 0,
+    costUSD: 0.0025,
+    budgetUSD: 0.0125,
+    turn: 1,
+    maxTurns: 20,
     lastMessage: 'Pass — Zero security vulnerabilities detected',
     durationMs: 4200,
   },
@@ -123,6 +139,14 @@ const DEFAULT_SWARM_TASKS: SwarmTaskItem[] = [
     status: 'RUNNING',
     progress: 80,
     findingsCount: 1,
+    tokensBurned: 7600,
+    promptTokens: 6400,
+    completionTokens: 1200,
+    tokensPerSec: 180,
+    costUSD: 0.0052,
+    budgetUSD: 0.0125,
+    turn: 3,
+    maxTurns: 20,
     lastMessage: 'Context compaction: 4.2x ratio achieved on unified diff',
     durationMs: 6800,
   },
@@ -135,6 +159,14 @@ const DEFAULT_SWARM_TASKS: SwarmTaskItem[] = [
     status: 'RUNNING',
     progress: 60,
     findingsCount: 0,
+    tokensBurned: 3200,
+    promptTokens: 2800,
+    completionTokens: 400,
+    tokensPerSec: 195,
+    costUSD: 0.0022,
+    budgetUSD: 0.0125,
+    turn: 3,
+    maxTurns: 20,
     lastMessage: 'Cloudflare Worker CPU execution time: 8.4ms (within 50ms SLA)',
     durationMs: 3100,
   },
@@ -147,6 +179,14 @@ const DEFAULT_SWARM_TASKS: SwarmTaskItem[] = [
     status: 'PENDING',
     progress: 10,
     findingsCount: 0,
+    tokensBurned: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    tokensPerSec: 0,
+    costUSD: 0,
+    budgetUSD: 0.0125,
+    turn: 0,
+    maxTurns: 20,
     lastMessage: 'Queued for AST verification and test assertions',
     durationMs: 0,
   },
@@ -280,6 +320,26 @@ export function SwarmTaskMatrix({
                 </div>
               )}
 
+              {/* Task Tokens & Budget Consumption Strip */}
+              <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400 bg-white/[0.02] px-2 py-1 rounded border border-white/[0.04] mb-2">
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-500">Tokens:</span>
+                  <span className="text-zinc-200 font-semibold font-mono">
+                    {(task.tokensBurned || 0).toLocaleString()}
+                  </span>
+                  {task.tokensPerSec ? (
+                    <span className="text-[9px] text-cyan-400">({task.tokensPerSec} t/s)</span>
+                  ) : null}
+                </div>
+                <div className="flex items-center gap-1">
+                  <span className="text-zinc-500">Budget:</span>
+                  <span className="text-emerald-400 font-semibold font-mono">
+                    ${(task.costUSD || 0).toFixed(4)}
+                  </span>
+                  <span className="text-[9px] text-zinc-600">/ ${(task.budgetUSD || 0.0125).toFixed(4)}</span>
+                </div>
+              </div>
+
               {/* Progress & Status */}
               <div className="space-y-1 pt-1.5 border-t border-white/[0.05]">
                 <div className="flex items-center justify-between text-[10px] font-mono">
@@ -296,12 +356,12 @@ export function SwarmTaskMatrix({
                     </span>
                   </div>
 
-                  <span className="text-zinc-400 tabular-nums">{task.progress}%</span>
+                  <span className="text-zinc-400 tabular-nums font-semibold">{task.progress}%</span>
                 </div>
 
                 <Progress
                   value={task.progress}
-                  className="h-1 bg-white/[0.06]"
+                  className="h-1.5 bg-white/[0.06]"
                 />
 
                 {/* Subagent message / findings indicator */}

@@ -19,7 +19,7 @@ import { StatusBadge, StatusType } from '@/components/layout/status-badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Radio, RefreshCw, Play, FileCode, Brain, Terminal, Layers, RotateCcw, Loader2, Scissors, ShieldCheck, Activity, Cpu, CheckCircle2, Network } from 'lucide-react';
+import { Radio, RefreshCw, Play, FileCode, Brain, Terminal, Layers, RotateCcw, Loader2, Scissors, ShieldCheck, Activity, Cpu, CheckCircle2, Network, Zap } from 'lucide-react';
 import { ChangedFileDiff, AnchoredFinding } from '@/types/diff';
 import { VerdictOverrideControls } from '@/components/dashboard/verdict-override-controls';
 import { PromptGuidanceCard } from '@/components/live/prompt-guidance-card';
@@ -509,11 +509,24 @@ function LiveStreamContent() {
       {/* Sleek Live Review HUD Strip (Review-First, Clutter-Free) */}
       <div className="flex flex-wrap items-center justify-between gap-3 px-3.5 py-2 bg-[#08090d]/90 border border-white/[0.08] rounded-xl text-xs font-mono shadow-sm">
         <div className="flex flex-wrap items-center gap-3 text-zinc-300">
-          <div className="flex items-center gap-1.5 text-zinc-200 font-semibold">
+          <div className="flex items-center gap-1.5 text-zinc-200 font-semibold" data-testid="hud-tokens-meter">
             <Activity className="h-3.5 w-3.5 text-amber-400" />
             <span>Tokens:</span>
             <span className="text-zinc-100 font-mono">{tokenMetrics.totalTokens.toLocaleString()}</span>
-            <span className="text-[11px] text-zinc-500">(${tokenMetrics.estimatedCostUSD.toFixed(4)})</span>
+            {tokenMetrics.tokensPerSec ? (
+              <span className="text-[11px] text-cyan-400 font-mono">({tokenMetrics.tokensPerSec} t/s)</span>
+            ) : null}
+          </div>
+
+          <span className="text-zinc-700 hidden sm:inline">•</span>
+
+          <div className="flex items-center gap-1.5 text-zinc-200 font-semibold" data-testid="hud-budget-meter">
+            <Zap className="h-3.5 w-3.5 text-emerald-400" />
+            <span>Budget:</span>
+            <span className="text-emerald-300 font-mono">${tokenMetrics.estimatedCostUSD.toFixed(4)}</span>
+            <span className="text-[11px] text-zinc-500 font-mono hidden sm:inline">
+              / $0.0500 ({Math.min(100, Math.round((tokenMetrics.estimatedCostUSD / 0.0500) * 100))}%)
+            </span>
           </div>
 
           <span className="text-zinc-700 hidden sm:inline">•</span>
