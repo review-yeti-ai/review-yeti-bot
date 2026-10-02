@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.114.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.113.0...v1.114.0) (2026-10-02)
+
+
+### Features
+
+* **REL-1250:** portable runner families + bounded build heap + same-SHA A/B hook ([#1259](https://github.com/review-yeti-ai/review-yeti-bot/issues/1259)) ([91c42b7](https://github.com/review-yeti-ai/review-yeti-bot/commit/91c42b7865076eb1273b2565e4d5c462f14e8290))
+
 ## [1.113.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.2...v1.113.0) (2026-10-02)
 
 
