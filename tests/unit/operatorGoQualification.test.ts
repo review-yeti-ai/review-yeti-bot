@@ -98,10 +98,39 @@ describe('embedded operator Go qualification workflow', () => {
   });
 
   it('leaves the existing Vitest job boundary and timeout intact', () => {
-    expect(vitest['runs-on']).toBe('blacksmith-4vcpu-ubuntu-2404');
+    // PEG DECLINED for the default SKU. The shards are CPU-bound: measured
+    // same-SHA on PR #1247 against the 4-vCPU main baseline, every shard
+    // stretched 2.11x-2.31x, past the 2x budget where a vCPU cut loses on
+    // normalized compute (wall x vCPU). The node_modules cache was warm in the
+    // 2-vCPU run, so this is CPU and not a cold-cache artifact.
+    //
+    // `runs-on` is now the bench-aware expression: it honours the
+    // workflow_dispatch `bench_runner` override when set (for same-SHA A/B) and
+    // otherwise resolves to this job's own SKU.
+    expect(vitest['runs-on']).toContain('blacksmith-4vcpu-ubuntu-2404');
+    expect(vitest['runs-on']).toContain('inputs.bench_runner');
     expect(vitest['timeout-minutes']).toBe(25);
     expect(vitest.permissions).toEqual({ contents: 'read' });
     expect(vitest.container).toBeUndefined();
+  });
+
+  it('bounds the build heap so the build does not OOM on a smaller runner', () => {
+    // Node derives its default old-space cap from the HOST's RAM, so `next
+    // build` OOM'd on 2 vCPU (
+    //   FATAL ERROR: Ineffective mark-compacts near heap limit
+    //   Allocation failed - JavaScript heap out of memory)
+    // while the build's real working set is only ~1.4 GB RSS (measured with
+    // /usr/bin/time -l). Pinning NODE_OPTIONS makes the requirement a property
+    // of the build rather than of whichever runner it lands on -- which is what
+    // lets the SKU be chosen on cost without changing whether the build
+    // succeeds.
+    const build = workflow.jobs.build;
+    const buildSteps = build.steps as Array<Record<string, any>>;
+    const buildStep = buildSteps.find((s) =>
+      typeof s.run === 'string' && s.run.includes('npm run build'));
+    expect(buildStep).toBeDefined();
+    expect(buildStep!.env?.NODE_OPTIONS).toMatch(/--max-old-space-size=\d+/);
+    expect(build['timeout-minutes']).toBe(15);
   });
 
   it('parses only a successful conventional Go version readback', () => {
