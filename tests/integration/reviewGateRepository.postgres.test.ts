@@ -72,8 +72,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
     executionAttempt: number,
   ): ReviewGateCoordinates {
     return {
-      owner: 'exampleorg',
-      repo: 'example-review-actions',
+      owner: 'calltelemetry',
+      repo: 'ct-review-actions',
       repositoryId: REPOSITORY_ID,
       prNumber: 42,
       headSha: 'a'.repeat(40),
@@ -97,7 +97,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
         effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
-      ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4,
+      ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4,
         $5, 'app-gate', 'queued', $6, $7, $8, to_timestamp($9/1000.0), to_timestamp(($9+900000)/1000.0), $10)
     `, [id, prNumber, 'a'.repeat(40), 'b'.repeat(40), 'c'.repeat(64), generation, repositoryId, CONFIG_DIGEST, RECEIVED_AT, APP_ID]);
     await pool!.query(`
@@ -1017,7 +1017,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
 
       const event: WorkerReviewCompletion = {
         version: 'WorkerReviewCompletion.v1', runId: id,
-        repositoryId: REPOSITORY_ID, owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        repositoryId: REPOSITORY_ID, owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
         policyDigest: 'c'.repeat(64), configDigest: CONFIG_DIGEST, executionAttempt: 5,
         result: {
@@ -1064,7 +1064,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const currentCoordinates = coordinatesFor(id, 2, 3);
       const sourceCompletion: WorkerReviewCompletion = {
         version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: REPOSITORY_ID,
-        owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
         configDigest: CONFIG_DIGEST, executionAttempt: 2,
         result: { version: 'WorkerReviewResult.v1', completedAt: new Date(COMPLETED_AT - 20_000).toISOString(),
@@ -1078,7 +1078,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       const unsigned = {
         requestId: randomUUID(), runId: id, sourceExecutionAttempt: 2, sourceContentDigest: sourceDigest,
         sourcePlanDigest: sha256(canonicalJson(plan)), sourceGateAttemptId: sourceCoordinates.attemptId,
-        repositoryId: REPOSITORY_ID, owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        repositoryId: REPOSITORY_ID, owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
         configDigest: CONFIG_DIGEST, findingId, personaId: task.id, taskId: task.id,
         finding: sourceFinding, counterArgument, counterArgumentDigest: sha256(counterArgument),
@@ -1125,7 +1125,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       if (receiptPersisted) {
         const checkpoint = {
           version: 'ReviewExecutionCheckpoint.v1', runId: id, repositoryId: REPOSITORY_ID,
-          owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+          owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
           headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
           configDigest: CONFIG_DIGEST, executionAttempt: 3, revision: 1, plan,
           completedTasks: [{ id: task.id, findings: hasFreshFinding ? [freshFinding] : [] }],
@@ -1140,7 +1140,7 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
 
       const event: WorkerReviewCompletion = {
         version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: REPOSITORY_ID,
-        owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        owner: 'calltelemetry', repo: 'ct-review-actions', prNumber: 42,
         headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
         configDigest: CONFIG_DIGEST, executionAttempt: 3,
         result: { version: 'WorkerReviewResult.v1', completedAt: new Date(COMPLETED_AT - 10_000).toISOString(),

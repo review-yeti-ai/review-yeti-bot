@@ -138,7 +138,7 @@ describeWithPostgres('REL-1053 fenced CI-request dispatch across dispatcher repl
     const record = await repository.recordCompletion({
       runId,
       repositoryId: 123,
-      repository: 'exampleorg/dashboard',
+      repository: 'calltelemetry/dashboard',
       prNumber: 42,
       baseSha: 'a'.repeat(40),
       headSha: 'b'.repeat(40),

@@ -53,8 +53,8 @@ function runId(number: number): string {
 function completionFor(id: string, headSha: string, baseSha: string, options: { repositoryId?: number; prNumber?: number;
   verdictCache?: boolean } = {}): WorkerReviewCompletion {
   return {
-    version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: options.repositoryId ?? 3210, owner: 'exampleorg',
-    repo: 'example-review-actions', prNumber: options.prNumber ?? 42, headSha, baseSha, policyDigest: POLICY, configDigest: CONFIG,
+    version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: options.repositoryId ?? 3210, owner: 'calltelemetry',
+    repo: 'ct-review-actions', prNumber: options.prNumber ?? 42, headSha, baseSha, policyDigest: POLICY, configDigest: CONFIG,
     executionAttempt: 1,
     result: {
       version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T11:00:00.000Z',
@@ -79,7 +79,7 @@ describeWithPostgres('verdict cache source selection (real SQL)', () => {
         run_id, owner, repo, pr_number, head_sha, base_sha,
         effective_policy_digest, publication_mode, status, attempt, repository_id,
         effective_config_digest, received_at, terminal_deadline, authoritative_gate_app_id
-      ) VALUES ($1, 'exampleorg', 'example-review-actions', $2, $3, $4, $5, 'app-gate', $6, $7, $8, $9,
+      ) VALUES ($1, 'calltelemetry', 'ct-review-actions', $2, $3, $4, $5, 'app-gate', $6, $7, $8, $9,
         to_timestamp($10/1000.0), to_timestamp(($10+900000)/1000.0), $11)
     `, [id, options.prNumber ?? 42, options.headSha ?? HEAD, options.baseSha ?? BASE, POLICY, options.status ?? 'queued',
       options.generation ?? 0, options.repositoryId ?? 3210, CONFIG, RECEIVED_AT, APP_ID]);

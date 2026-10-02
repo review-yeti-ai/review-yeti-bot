@@ -18,8 +18,8 @@ import { findingRecheckAdmission } from '../support/findingRecheckAdmission';
 import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
 requireDatabaseUrlInCi();
-const identity = { runId: `run_${'9'.repeat(32)}`, repositoryId: 1450000002, owner: 'exampleorg',
-  repo: 'example-review-actions', prNumber: 1266, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+const identity = { runId: `run_${'9'.repeat(32)}`, repositoryId: 1450000002, owner: 'calltelemetry',
+  repo: 'ct-review-actions', prNumber: 1266, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
   policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64) };
 const now = Date.now();
 const tasks = ['security', 'correctness', 'contracts'].map((id) => ({ id, dimension: 'security' as const,
