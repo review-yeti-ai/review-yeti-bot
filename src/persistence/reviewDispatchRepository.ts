@@ -465,6 +465,8 @@ export interface AbandonedPublishingRun {
   repo: string;
   prNumber: number;
   headSha: string;
+  /** Service-reserved publisher identity, when this run has an authoritative Gate. */
+  authoritativeGateAppId?: number;
   /** The run-side delivery identity. Legacy rows may have no run-side binding. */
   deliveryId?: string;
   executionAttempt: number;
@@ -722,6 +724,27 @@ function dispatchClaimPredicate(timeParameter: string): string {
               AND (outbox.status = 'pending'
                 OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp(${timeParameter} / 1000.0)))`;
 }
+
+// Gate enrollment is not failure evidence. The surrounding abandonment,
+// result and lease predicates must still hold. A reserved App without its
+// exact current bound Gate remains ineligible, as does a recorded verdict.
+const ABANDONED_PUBLISHING_GATE_SQL = `(runs.authoritative_gate_app_id IS NULL OR EXISTS (
+  SELECT 1 FROM review_gate_attempts gate
+    JOIN review_dispatch_outbox publication_outbox ON publication_outbox.run_id = gate.run_id
+   WHERE gate.run_id = runs.run_id AND gate.current_attempt
+     AND gate.review_generation = runs.attempt
+     AND gate.execution_attempt = publication_outbox.execution_attempt + 1
+     AND gate.expected_app_id = runs.authoritative_gate_app_id
+     AND gate.repository_id = runs.repository_id AND gate.pr_number = runs.pr_number
+     AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
+     AND gate.desired_state IN ('queued', 'in_progress', 'failure', 'timed_out')
+     AND gate.worker_result_digest IS NULL
+     AND gate.coordinates = jsonb_build_object(
+       'owner', runs.owner, 'repo', runs.repo, 'repositoryId', runs.repository_id,
+       'prNumber', runs.pr_number, 'headSha', runs.head_sha, 'baseSha', runs.base_sha,
+       'policyDigest', runs.effective_policy_digest, 'runId', runs.run_id,
+       'attemptId', gate.attempt_id, 'executionAttempt', gate.execution_attempt)
+))`;
 
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
   private readonly queryable: Queryable;
@@ -1718,7 +1741,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           )
             AND publication_mode = ANY($6::text[])
             AND result_digest IS NULL
-            AND authoritative_gate_app_id IS NULL
+            AND ${ABANDONED_PUBLISHING_GATE_SQL}
             AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
           -- A durable worker failure is actionable immediately. Keep it ahead of
           -- deadline sweeps so a failed head is not hidden behind old backlog.
@@ -1753,7 +1776,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               END
          FROM retired
         WHERE runs.run_id = retired.run_id
-       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
+       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha, runs.authoritative_gate_app_id,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
                  retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only,
                  retired.delivery_identity_mismatch, retired.delegated_reason`,
@@ -1771,6 +1794,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         repo: String(row.repo),
         prNumber: Number(row.pr_number),
         headSha: String(row.head_sha),
+        ...(row.authoritative_gate_app_id == null ? {} : { authoritativeGateAppId: Number(row.authoritative_gate_app_id) }),
         ...(row.delivery_id == null ? {} : { deliveryId: String(row.delivery_id) }),
         executionAttempt: Number(row.execution_attempt),
         receivedAt: milliseconds(row.received_at) || 0,
@@ -2229,7 +2253,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
           WHERE runs.run_id = $1 AND runs.delivery_id IS NOT DISTINCT FROM $2::text
             AND runs.status = 'terminal' AND runs.publication_mode = 'app-gate'
-            AND runs.authoritative_gate_app_id IS NULL
+            AND ${ABANDONED_PUBLISHING_GATE_SQL}
+            AND runs.authoritative_gate_app_id IS NOT DISTINCT FROM $12::bigint
             AND runs.result_digest IS NULL AND runs.lease_owner = $3
             AND runs.lease_expires_at > to_timestamp($4 / 1000.0)
             AND outbox.execution_attempt + 1 = $5
@@ -2244,7 +2269,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             AND runs.terminal_deadline < to_timestamp(($11::double precision + 1) / 1000.0)
           FOR UPDATE OF runs, outbox`,
         [run.runId, run.deliveryId, workerId, now, run.executionAttempt,
-          run.owner, run.repo, run.prNumber, run.headSha, run.receivedAt, run.terminalDeadline],
+          run.owner, run.repo, run.prNumber, run.headSha, run.receivedAt, run.terminalDeadline,
+          run.authoritativeGateAppId ?? null],
       );
       if (current.rows.length === 0) {
         await client.query('COMMIT');
@@ -2283,7 +2309,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           throw new Error('delivery identity mismatch outbox retirement lost its exact attempt');
         }
         const retiredRun = await client.query(
-          `UPDATE review_runs
+          `UPDATE review_runs AS runs
               SET status = 'terminal', stage = 'terminal',
                   error_text = $2::text, failure_diagnostics = $3::jsonb,
                   lease_owner = NULL, lease_expires_at = NULL,
@@ -2291,7 +2317,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             WHERE run_id = $1
               AND delivery_id IS NOT DISTINCT FROM $4::text
               AND status = 'terminal' AND publication_mode = 'app-gate'
-              AND authoritative_gate_app_id IS NULL AND result_digest IS NULL
+              AND ${ABANDONED_PUBLISHING_GATE_SQL} AND result_digest IS NULL
               AND lease_owner = $5::text
               AND lease_expires_at > to_timestamp($6 / 1000.0)
           RETURNING run_id`,
@@ -2349,7 +2375,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           throw new Error('superseded outbox retirement lost its exact attempt');
         }
         const retiredRun = await client.query(
-          `UPDATE review_runs
+          `UPDATE review_runs AS runs
               SET status = 'terminal', stage = 'terminal',
                   error_text = $2::text, failure_diagnostics = $3::jsonb,
                   lease_owner = NULL, lease_expires_at = NULL,
@@ -2357,11 +2383,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             WHERE run_id = $1
               AND delivery_id IS NOT DISTINCT FROM $4::text
               AND status = 'terminal' AND publication_mode = 'app-gate'
-              AND authoritative_gate_app_id IS NULL AND result_digest IS NULL
+              AND ${ABANDONED_PUBLISHING_GATE_SQL} AND result_digest IS NULL
               AND lease_owner = $5::text
               AND lease_expires_at > to_timestamp($6 / 1000.0)
               AND EXISTS (SELECT 1 FROM review_dispatch_outbox outbox
-                WHERE outbox.run_id = review_runs.run_id
+                WHERE outbox.run_id = runs.run_id
                   AND outbox.execution_attempt + 1 = $7)
           RETURNING run_id`,
           [run.runId, SUPERSEDED_PUBLISHING_ERROR_TEXT, JSON.stringify(diagnostics),
