@@ -102,6 +102,31 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
       assert.ok(payload.comments[0].body.includes('```suggestion'));
     });
 
+    describe('review event follows the blocking severities only (P2 is advisory)', () => {
+      const finding = (severity: 'P0' | 'P1' | 'P2'): InlineFindingSuggestion => ({
+        path: 'src/a.ts', line: 3, severity, title: `${severity} finding`, description: 'Detail.',
+      });
+      const event = (verdict: 'success' | 'action_required' | 'neutral', severities: Array<'P0' | 'P1' | 'P2'>) =>
+        buildGitHubReviewPayload({
+          commitId: 'abcdef0123456789abcdef0123456789abcdef01', verdict, summaryMarkdown: '## Review Yeti',
+          findings: severities.map(finding),
+        }).event;
+
+      it('approves a SHIP review that only has P2 findings', () => {
+        assert.equal(event('success', ['P2']), 'APPROVE');
+      });
+
+      it('comments, without requesting changes, on action_required with only P2 findings', () => {
+        assert.equal(event('action_required', ['P2']), 'COMMENT');
+      });
+
+      it('requests changes for P0/P1 findings on both verdicts, even when the verdict says success', () => {
+        assert.equal(event('success', ['P1']), 'REQUEST_CHANGES');
+        assert.equal(event('success', ['P2', 'P0']), 'REQUEST_CHANGES');
+        assert.equal(event('action_required', ['P1']), 'REQUEST_CHANGES');
+      });
+    });
+
     it('includes runner cost and total runtime as an item in Review Yeti review payload when managed runners are used', () => {
       const payload = buildGitHubReviewPayload({
         commitId: 'abcdef0123456789abcdef0123456789abcdef01',
