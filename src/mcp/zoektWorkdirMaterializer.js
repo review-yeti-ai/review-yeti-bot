@@ -42,7 +42,9 @@ const path = require('path');
 // Zoekt index could not be built -- the composed evidence registry degrades
 // to the existing GitHub-blob-backed tools, unaffected.
 
-const DEFAULTS = Object.freeze({ timeoutMs: 60_000, maxBytes: 300 * 1024 * 1024 });
+// 128 MiB compressed: measured working trees of 50-230 MiB are 7-42 MiB as tarballs, so this leaves 3x
+// headroom while skipping genuinely huge repositories with an explicit archive_too_large reason.
+const DEFAULTS = Object.freeze({ timeoutMs: 60_000, maxBytes: 128 * 1024 * 1024 });
 const MAX_LIMITS = Object.freeze({ timeoutMs: 120_000, maxBytes: 768 * 1024 * 1024 });
 
 const SHA = /^[a-f0-9]{40,64}$/iu;
