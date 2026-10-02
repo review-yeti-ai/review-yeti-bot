@@ -1,3 +1,6 @@
+// This suite isolates authentication and unavailable dependencies. Positive append-only admission,
+// returned receipts and immutable source evidence are covered by disputedFindingRecheckFlow.test.ts
+// and completedFindingRecheckAdmission.postgres.test.ts, which fail if enqueue is never reached.
 import { describe, expect, it, vi } from 'vitest';
 import {
   createGenerateFixDiffTool,
@@ -319,67 +322,18 @@ describe('Milestone 1 Iteration 2 Challenger Stress Harness', () => {
   // =========================================================================
   describe('disputeFinding & explainFinding resilience', () => {
 
-    it('CHAL-DIS-01: disputeFinding handles model returning raw json with leading/trailing text', async () => {
-      const mockDb = {
-        query: vi.fn().mockImplementation(async (sql: string) => {
-          if (sql.includes('SELECT')) {
-            return {
-              rows: [
-                {
-                  run_id: 'run-dis-md',
-                  execution_attempt: 1,
-                  payload: {
-                    result: {
-                      personas: [
-                        {
-                          findings: [
-                            {
-                              finding_id: 'f-dis-1',
-                              title: 'Race condition in cache',
-                              severity: 'P1',
-                              category: 'Concurrency',
-                              file_path: 'src/cache.ts',
-                              line_start: 10,
-                              line_end: 15,
-                              status: 'OPEN',
-                              resolved: false,
-                            },
-                          ],
-                        },
-                      ],
-                    },
-                  },
-                },
-              ],
-            };
-          }
-          return { rows: [] };
-        }),
-      };
-
-      const mockModelClient = {
-        complete: vi.fn().mockResolvedValue({
-          content: 'Here is my evaluation:\n```json\n{"verdict": "overruled", "reasoning": "Single-threaded event loop prevents race condition here", "confidence": 0.91}\n```\nHope this helps.',
-        }),
-      };
-
-      const tool = createDisputeFindingTool({
-        queryableDatabase: mockDb,
-        modelClient: mockModelClient,
-      });
-
-      const res: any = await tool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
-        pr_number: 99,
-        finding_id: 'f-dis-1',
+    it('CHAL-DIS-01: disputeFinding refuses direct adjudication without a fresh-review transaction', async () => {
+      const modelClient = { complete: vi.fn() };
+      const tool = createDisputeFindingTool({ queryableDatabase: { query: vi.fn() }, modelClient });
+      await expect(tool.execute({
+        owner: 'calltelemetry', repo: 'cisco-cdr', pr_number: 99, finding_id: 'f-dis-1',
         counter_argument: 'Node.js is single-threaded and the operation is synchronous.',
-      });
-
-      const data = JSON.parse(res.content[0].text);
-      expect(data.verdict).toBe('overruled');
-      expect(data.confidence).toBe(0.91);
-      expect(data.reasoning).toContain('Single-threaded event loop');
+      }, {
+        caller: { authType: 'static_token', isAdmin: true, allowedRepositories: null, callerId: 'admin', tokenDigest: 'd' },
+        authenticatedByConfiguredAuthenticator: true,
+        authorizedRepository: { owner: 'calltelemetry', repo: 'cisco-cdr' },
+      })).rejects.toThrow('Fresh finding review is temporarily unavailable');
+      expect(modelClient.complete).not.toHaveBeenCalled();
     });
 
     it('CHAL-EXP-01: explainFinding evaluates proposal with authenticated caller and cites ADRs', async () => {

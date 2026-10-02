@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_DISPUTE_RECHECKS_PER_REVIEW } from './disputedFindingRecheckLimits';
 import {
   MAX_CHANGED_FILES,
   MAX_PATH_CHARACTERS,
@@ -11,6 +12,8 @@ import {
   type ReviewTask,
 } from '../reviewTaskContract';
 import type { PanelFinding } from '../panel/types';
+import type { WorkerReviewCompletion } from './workerReviewCompletion';
+import { canonicalJson } from './reviewCore';
 
 export const REVIEW_EXECUTION_CHECKPOINT_VERSION = 'ReviewExecutionCheckpoint.v1' as const;
 export const MAX_REVIEW_CHECKPOINT_BYTES = 600_000;
@@ -66,11 +69,18 @@ const checkpointSchema = z.object({
   configDigest: digest,
   executionAttempt: positiveInteger,
   revision: positiveInteger,
+  /** Append-only worker receipt ids for completed dispute-triggered task re-reviews. */
+  satisfiedFindingRecheckIds: z.array(z.string().uuid()).max(MAX_DISPUTE_RECHECKS_PER_REVIEW).optional(),
   plan: z.array(taskSchema).min(1).max(MAX_TASKS_HARD_CAP),
   completedTasks: z.array(completedTaskSchema).max(MAX_TASKS_HARD_CAP),
 }).strict().superRefine((value, context) => {
   const planIds = new Set(value.plan.map((task) => task.id));
   const completedIds = new Set<string>();
+  const recheckIds = value.satisfiedFindingRecheckIds ?? [];
+  if (new Set(recheckIds).size !== recheckIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['satisfiedFindingRecheckIds'],
+      message: 'satisfied disputed finding receipt ids must be unique' });
+  }
   for (const [index, task] of value.completedTasks.entries()) {
     if (!planIds.has(task.id)) context.addIssue({ code: z.ZodIssueCode.custom,
       path: ['completedTasks', index, 'id'], message: 'completed task is absent from plan' });
@@ -98,3 +108,14 @@ export const reviewCheckpointReadRequestSchema = z.object({
   runId: z.string().regex(/^run_[a-f0-9]{32}$/u),
   executionAttempt: positiveInteger,
 }).strict();
+
+/** Bind a durable task checkpoint to the exact immutable completion that it represents. */
+export function reviewCheckpointMatchesCompletion(
+  checkpoint: ReviewExecutionCheckpoint, completion: WorkerReviewCompletion,
+): boolean {
+  const fields = ['runId', 'repositoryId', 'owner', 'repo', 'prNumber', 'headSha', 'baseSha',
+    'policyDigest', 'configDigest', 'executionAttempt'] as const;
+  return fields.every((field) => checkpoint[field] === completion[field])
+    && completion.result.taskPlan !== undefined
+    && canonicalJson(checkpoint.plan) === canonicalJson(completion.result.taskPlan);
+}

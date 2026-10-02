@@ -325,7 +325,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         if (!ownedSharedSchema.test(sharedSchema)) throw new Error('Refusing to remove an unowned test schema');
         await client.query(`DROP SCHEMA ${sharedSchema} CASCADE`);
       } else {
-        await client.query('DROP TABLE IF EXISTS pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
+        await client.query('DROP TABLE IF EXISTS pg_temp.review_finding_recheck_admissions, pg_temp.review_finding_rechecks, pg_temp.review_execution_checkpoints, pg_temp.review_worker_completions, pg_temp.review_event_outbox, pg_temp.review_event_sequence_counters, pg_temp.review_generation_recoveries, pg_temp.review_gate_attempts, pg_temp.prepared_review_policies, pg_temp.review_dispatch_outbox, pg_temp.review_runs, pg_temp.github_deliveries');
       }
       client.release();
       client = undefined;
@@ -794,7 +794,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { priorProof, followupProof, completion, digest };
   }
 
-  it.each([false, true])('retains a P2 partial (historical inclusive=%s) and publishes its complete retry using current policy', async (historical) => {
+  it.each([false, true])('retains a graceful composed P2 partial (historical inclusive=%s) on an ordinary MCP retry and publishes its complete retry using current policy', async (historical) => {
     let proof: any;
     const resolveGenerationRecovery = vi.fn(async () => [proof]);
     const { repository, client, gateRepository } = await createRepository({
@@ -900,6 +900,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     };
     await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
       async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
+    // Authenticated continuation preserves P2 evidence under the established
+    // P0/P1-only blocking policy.
     expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
       .toBe('succeeded');
     expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
