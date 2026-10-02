@@ -22,7 +22,7 @@ function env(overrides: Record<string, string | undefined> = {}): NodeJS.Process
     NODE_ENV: 'test',
     REVIEW_PUBLICATION_MODE: 'app-gate',
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-    REVIEW_REPO: 'calltelemetry/ct-meta',
+    REVIEW_REPO: 'exampleorg/example-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),

@@ -15,7 +15,7 @@ const configError = 'Worker review completion transport configuration is invalid
 function event(): WorkerReviewCompletion {
   return {
     version: 'WorkerReviewCompletion.v1', runId: `run_${'a'.repeat(32)}`,
-    repositoryId: 123, owner: 'calltelemetry', repo: 'review-yeti-bot', prNumber: 42,
+    repositoryId: 123, owner: 'exampleorg', repo: 'review-yeti-bot', prNumber: 42,
     headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40), policyDigest: 'd'.repeat(64),
     configDigest: 'e'.repeat(64), executionAttempt: 2,
     result: { version: 'WorkerReviewResult.v1', completedAt: '2026-09-09T12:00:00.000Z',

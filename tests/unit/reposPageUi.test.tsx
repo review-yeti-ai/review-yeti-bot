@@ -27,8 +27,8 @@ vi.mock('../../src/lib/api-client', () => ({
 const mockOrgs: GitHubOrganizationSummary[] = [
   {
     id: 1,
-    login: 'calltelemetry',
-    name: 'CallTelemetry Org',
+    login: 'exampleorg',
+    name: 'Exampleorg Org',
     avatarUrl: 'https://avatars.githubusercontent.com/u/1000',
     totalReposCount: 8,
     monitoredCount: 5,
@@ -45,8 +45,8 @@ const mockOrgs: GitHubOrganizationSummary[] = [
 
 const mockRepos: RepositorySetting[] = [
   {
-    owner: 'calltelemetry',
-    repo: 'cisco-cdr',
+    owner: 'exampleorg',
+    repo: 'example-api',
     automationEnabled: true,
     generateArchitecturalFlowchart: true,
     customProfile: 'balanced',
@@ -55,7 +55,7 @@ const mockRepos: RepositorySetting[] = [
     updatedAt: '2026-10-01T08:00:00Z',
   },
   {
-    owner: 'calltelemetry',
+    owner: 'exampleorg',
     repo: 'review-yeti',
     automationEnabled: false,
     generateArchitecturalFlowchart: false,
@@ -176,7 +176,7 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
         />
       );
 
-      expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
+      expect(screen.getByText('example-api')).toBeInTheDocument();
       expect(screen.getByText('review-yeti')).toBeInTheDocument();
       expect(screen.getByText('billing-engine')).toBeInTheDocument();
 
@@ -194,7 +194,7 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       expect(configButtons.length).toBe(3);
 
       fireEvent.click(configButtons[0]);
-      expect(onOpenRules).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr');
+      expect(onOpenRules).toHaveBeenCalledWith('exampleorg', 'example-api');
     });
 
     it('displays empty placeholder when no repositories match', () => {
@@ -212,7 +212,7 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
 
   describe('3. ActivePrTable Component', () => {
     it('renders open PR list with authors, branches, and review verdict badges', async () => {
-      render(<ActivePrTable owner="calltelemetry" repo="cisco-cdr" />);
+      render(<ActivePrTable owner="exampleorg" repo="example-api" />);
 
       await waitFor(() => {
         expect(screen.getByText('feat: add WebRTC jitter analysis')).toBeInTheDocument();
@@ -231,7 +231,7 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
         jobId: 'job-new-101',
       });
 
-      render(<ActivePrTable owner="calltelemetry" repo="cisco-cdr" />);
+      render(<ActivePrTable owner="exampleorg" repo="example-api" />);
 
       await waitFor(() => {
         expect(screen.getByText('feat: add WebRTC jitter analysis')).toBeInTheDocument();
@@ -243,12 +243,12 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       fireEvent.click(reviewButtons[0]);
 
       await waitFor(() => {
-        expect(apiClient.triggerPullRequestReview).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr', 101);
+        expect(apiClient.triggerPullRequestReview).toHaveBeenCalledWith('exampleorg', 'example-api', 101);
       });
     });
 
     it('reloads pull requests on Reload PRs button click', async () => {
-      render(<ActivePrTable owner="calltelemetry" repo="cisco-cdr" />);
+      render(<ActivePrTable owner="exampleorg" repo="example-api" />);
 
       await waitFor(() => {
         expect(screen.getByText('feat: add WebRTC jitter analysis')).toBeInTheDocument();
@@ -269,14 +269,14 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
         <ReviewRulesModal
           isOpen={true}
           onClose={vi.fn()}
-          owner="calltelemetry"
-          repo="cisco-cdr"
+          owner="exampleorg"
+          repo="example-api"
         />
       );
 
       await waitFor(() => {
-        expect(apiClient.fetchRepositoryReviewRules).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr');
-        expect(screen.getByText(/Repository Review Rules — calltelemetry\/cisco-cdr/i)).toBeInTheDocument();
+        expect(apiClient.fetchRepositoryReviewRules).toHaveBeenCalledWith('exampleorg', 'example-api');
+        expect(screen.getByText(/Repository Review Rules — exampleorg\/example-api/i)).toBeInTheDocument();
       });
 
       expect(screen.getByText('Reviews')).toBeInTheDocument();
@@ -293,14 +293,14 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
         <ReviewRulesModal
           isOpen={true}
           onClose={onClose}
-          owner="calltelemetry"
-          repo="cisco-cdr"
+          owner="exampleorg"
+          repo="example-api"
           onRulesSaved={onRulesSaved}
         />
       );
 
       await waitFor(() => {
-        expect(screen.getByText(/Repository Review Rules — calltelemetry\/cisco-cdr/i)).toBeInTheDocument();
+        expect(screen.getByText(/Repository Review Rules — exampleorg\/example-api/i)).toBeInTheDocument();
       });
 
       const saveBtn = screen.getByRole('button', { name: /save rules/i });
@@ -308,8 +308,8 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
 
       await waitFor(() => {
         expect(apiClient.updateRepositoryReviewRules).toHaveBeenCalledWith(
-          'calltelemetry',
-          'cisco-cdr',
+          'exampleorg',
+          'example-api',
           expect.objectContaining({
             reviews: expect.any(Object),
             auto_review: expect.any(Object),
@@ -326,7 +326,7 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       render(<ReposPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
+        expect(screen.getByText('example-api')).toBeInTheDocument();
       });
 
       // Default is table view
@@ -345,7 +345,7 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       fireEvent.click(screen.getByTestId('view-table-btn'));
 
       await waitFor(() => {
-        expect(screen.getByTestId('repo-flowchart-toggle-calltelemetry-cisco-cdr')).toBeInTheDocument();
+        expect(screen.getByTestId('repo-flowchart-toggle-exampleorg-example-api')).toBeInTheDocument();
       });
     });
 
@@ -353,14 +353,14 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       render(<ReposPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
+        expect(screen.getByText('example-api')).toBeInTheDocument();
         expect(screen.getByText('review-yeti')).toBeInTheDocument();
       });
 
       // Click "monitored" filter
       fireEvent.click(screen.getByTestId('filter-status-monitored'));
 
-      expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
+      expect(screen.getByText('example-api')).toBeInTheDocument();
       expect(screen.getByText('billing-engine')).toBeInTheDocument();
       expect(screen.queryByText('review-yeti')).not.toBeInTheDocument();
 
@@ -368,13 +368,13 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       fireEvent.click(screen.getByTestId('filter-status-paused'));
 
       expect(screen.getByText('review-yeti')).toBeInTheDocument();
-      expect(screen.queryByText('cisco-cdr')).not.toBeInTheDocument();
+      expect(screen.queryByText('example-api')).not.toBeInTheDocument();
       expect(screen.queryByText('billing-engine')).not.toBeInTheDocument();
 
       // Click "all" filter
       fireEvent.click(screen.getByTestId('filter-status-all'));
 
-      expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
+      expect(screen.getByText('example-api')).toBeInTheDocument();
       expect(screen.getByText('review-yeti')).toBeInTheDocument();
       expect(screen.getByText('billing-engine')).toBeInTheDocument();
     });
@@ -383,14 +383,14 @@ describe('Milestone 1 Frontend UI Unit Tests', () => {
       render(<ReposPage />);
 
       await waitFor(() => {
-        expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
+        expect(screen.getByText('example-api')).toBeInTheDocument();
       });
 
-      const rulesBtn = screen.getByTestId('repo-rules-btn-calltelemetry-cisco-cdr');
+      const rulesBtn = screen.getByTestId('repo-rules-btn-exampleorg-example-api');
       fireEvent.click(rulesBtn);
 
       await waitFor(() => {
-        expect(screen.getByText(/Repository Review Rules — calltelemetry\/cisco-cdr/i)).toBeInTheDocument();
+        expect(screen.getByText(/Repository Review Rules — exampleorg\/example-api/i)).toBeInTheDocument();
       });
     });
   });

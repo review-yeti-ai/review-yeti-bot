@@ -20,7 +20,7 @@ const changedFiles = [{
 const expectedCoordinates = {
   runId: `run_${'a'.repeat(32)}`,
   repositoryId: 3210,
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'review-yeti-bot',
   prNumber: 42,
   headSha: 'b'.repeat(40),

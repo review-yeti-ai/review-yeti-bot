@@ -34,7 +34,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
             authType: 'static_token',
             tokenDigest: 'valid-token1',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr', 'calltelemetry/review-yeti-bot']),
+            allowedRepositories: new Set(['exampleorg/example-api', 'exampleorg/review-yeti-bot']),
             callerId: 'test-caller',
           } satisfies McpAuthenticatedCaller;
         }
@@ -55,7 +55,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
             authType: 'static_token',
             tokenDigest: 'valid-token1',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+            allowedRepositories: new Set(['exampleorg/example-api']),
             callerId: 'test-caller',
           };
         }
@@ -178,12 +178,12 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
     const tool = registry.getTool('cancel_review');
     expect(tool).toBeDefined();
     const result = await tool!.execute({
-      owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 44, reason: 'Operator request',
+      owner: 'exampleorg', repo: 'example-api', pull_number: 44, reason: 'Operator request',
     }, {} as any) as any;
 
     expect(JSON.parse((result.content[0] as any).text)).toMatchObject({ cancelled: true });
     expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith(expect.objectContaining({
-      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 44, gateReason: 'operator-cancelled',
+      owner: 'exampleorg', repo: 'example-api', prNumber: 44, gateReason: 'operator-cancelled',
     }));
   });
 
@@ -199,7 +199,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
     const tool = registry.getTool('cancel_review');
     expect(tool).toBeDefined();
     const result = await tool!.execute({
-      owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 45, reason: 'Operator request',
+      owner: 'exampleorg', repo: 'example-api', pull_number: 45, reason: 'Operator request',
     }, {} as any) as any;
 
     expect(JSON.parse((result.content[0] as any).text)).toMatchObject({
@@ -207,7 +207,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
       attempt_id: 'review-attempt-45-2',
     });
     expect(cancelActiveRunsForPullRequest).toHaveBeenCalledWith(expect.objectContaining({
-      owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 45, gateReason: 'operator-cancelled',
+      owner: 'exampleorg', repo: 'example-api', prNumber: 45, gateReason: 'operator-cancelled',
     }));
   });
 
@@ -676,7 +676,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
           method: 'tools/call',
           params: {
             name: 'get_review_status',
-            arguments: { owner: 'calltelemetry', repo: 'cisco-cdr', pull_number: 42 },
+            arguments: { owner: 'exampleorg', repo: 'example-api', pull_number: 42 },
           },
         });
 
@@ -837,7 +837,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
             name: 'preflight_diff_review',
             arguments: {
               diff: 'diff --git a/src/auth.ts b/src/auth.ts\n--- a/src/auth.ts\n+++ b/src/auth.ts\n@@ -1,1 +1,2 @@\n+const token = "weak";',
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
             },
           },
         });
@@ -893,7 +893,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
             name: 'preflight_diff_review',
             arguments: {
               diff: 'diff --git a/src/router.ts b/src/router.ts\n--- a/src/router.ts\n+++ b/src/router.ts\n@@ -1,1 +1,2 @@\n+const r = 1;',
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
             },
           },
         });
@@ -926,7 +926,7 @@ describe('Remote MCP Router Unit Suite (tests/unit/remoteMcpRouter.test.ts)', ()
             name: 'preflight_diff_review',
             arguments: {
               diff: 'diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1,1 +1,2 @@\n+# Clean Documentation Update',
-              repo: 'calltelemetry/cisco-cdr',
+              repo: 'exampleorg/example-api',
             },
           },
         });

@@ -111,8 +111,8 @@ describe('Challenger 2: Store & Config Hierarchy Empirical Verification', () => 
       const client = createMockClient({});
 
       const config = await resolver.resolveConfig({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         client,
       });
 
@@ -131,8 +131,8 @@ default_max_turns: 15
       });
 
       const config = await resolver.resolveConfig({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr', // requesting repo cisco-cdr, mock client returns .ct-review.yaml for .github
+        owner: 'exampleorg',
+        repo: 'example-api', // requesting repo example-api, mock client returns .ct-review.yaml for .github
         client: {
           getFileContent: async (owner: string, repo: string, path: string) => {
             if (repo === '.github' && path === '.ct-review.yaml') {
@@ -151,7 +151,7 @@ default_max_turns: 15
       const resolver = new ConfigResolver();
       const client: RepositoryContentClient = {
         getFileContent: async (_owner: string, repo: string, path: string) => {
-          if (repo === 'cisco-cdr' && path === '.ct-review.yaml') {
+          if (repo === 'example-api' && path === '.ct-review.yaml') {
             return 'version: 3\ndefault_max_turns: 8\n';
           }
           if (repo === '.github' && path === '.ct-review.yaml') {
@@ -162,8 +162,8 @@ default_max_turns: 15
       };
 
       const config = await resolver.resolveConfig({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         client,
       });
 
@@ -175,7 +175,7 @@ default_max_turns: 15
       const resolver = new ConfigResolver();
       const client: RepositoryContentClient = {
         getFileContent: async (_owner: string, repo: string, path: string) => {
-          if (repo === 'cisco-cdr' && path === '.ct-review.yaml') {
+          if (repo === 'example-api' && path === '.ct-review.yaml') {
             return `
 version: 3
 reviews:
@@ -194,8 +194,8 @@ reviews:
       };
 
       const config = await resolver.resolveConfig({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         client,
       });
 

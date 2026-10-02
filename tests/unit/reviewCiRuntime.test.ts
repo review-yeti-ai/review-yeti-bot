@@ -67,7 +67,7 @@ const NOW = Date.parse('2026-09-09T12:00:00.000Z');
 const id = '00000000-0000-4000-8000-000000000001';
 
 function fixture() {
-  const selected = { repositoryId: 1232078607, ownerId: 99, owner: 'calltelemetry', repo: 'ct-meta',
+  const selected = { repositoryId: 1232078607, ownerId: 99, owner: 'exampleorg', repo: 'example-meta',
     relay: { workflowId: 3211, workflowPath: '.github/workflows/relay.yml', workflowRef: 'refs/heads/main', workflowSha: 'f'.repeat(40) },
     validation: { workflowId: 3212, workflowPath: '.github/workflows/candidate.yml', workflowRef: 'refs/tags/ci-v1', workflowSha: 'e'.repeat(40) },
     lanePlan: createReviewCiLanePlan(['core', 'tools'], ['validate']) };

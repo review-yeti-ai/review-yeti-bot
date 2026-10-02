@@ -14,7 +14,7 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     NODE_ENV: 'test',
     REVIEW_PUBLICATION_MODE: 'app-gate',
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-    REVIEW_REPO: 'calltelemetry/ct-meta',
+    REVIEW_REPO: 'exampleorg/example-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_POLICY_DIGEST: 'c'.repeat(64),
     REVIEW_CONFIG_DIGEST: 'd'.repeat(64),
@@ -134,7 +134,7 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
   it('injects the grounded indexDir into both pre_checks.zoekt and evidence.zoekt', async () => {
     const panelRunner = vi.fn(async () => basePanel());
     const indexScope = { complete: false, excludedDirectories: ['build'], fileLimitBytes: 2097152,
-      repository: 'calltelemetry/ct-meta', headSha: HEAD };
+      repository: 'exampleorg/example-meta', headSha: HEAD };
     const zoektGrounding = vi.fn(async () => ({ indexDir: '/tmp/fake-index', scratchDir: '/tmp/fake-scratch', indexScope }));
     const signal = new AbortController().signal;
     await runPublishingReviewWorker(
@@ -144,7 +144,7 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
 
     expect(zoektGrounding).toHaveBeenCalledTimes(1);
     const groundingArg = (zoektGrounding.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
-    expect(groundingArg.repository).toBe('calltelemetry/ct-meta');
+    expect(groundingArg.repository).toBe('exampleorg/example-meta');
     expect(groundingArg.headSha).toBe(HEAD);
     expect(groundingArg.token).toBe('ghs_test');
     expect(groundingArg.enabled).toBe(true);
@@ -167,7 +167,7 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
     let last;
     for (let i = 0; i < 64; i++) last = await session.call('code_search_zoekt', { query: '' });
     expect(last).toMatchObject({ reason: 'call_budget_exhausted', indexScope,
-      identity: { repository: 'calltelemetry/ct-meta', headSha: HEAD } });
+      identity: { repository: 'exampleorg/example-meta', headSha: HEAD } });
   });
 
   describe('container memory evidence (REL-1282)', () => {
@@ -187,7 +187,7 @@ describe('zoekt review-time grounding wiring (REL-677 / ADR 0329)', () => {
       expect(span?.attributes['review_yeti.zoekt_index_build.memory_limit_bytes']).toBe(512 * MiB);
       expect(span?.attributes['review_yeti.zoekt_index_build.cgroup_peak_bytes']).toBe(301 * MiB);
       expect(info).toHaveBeenCalledWith('Zoekt grounding memory', expect.objectContaining({
-        event: 'zoekt_grounding_memory', repository: 'calltelemetry/ct-meta', status: 'ok',
+        event: 'zoekt_grounding_memory', repository: 'exampleorg/example-meta', status: 'ok',
         memoryLimitBytes: 512 * MiB, cgroupPeakBytesAfterBuild: 301 * MiB,
       }));
     });

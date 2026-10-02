@@ -14,8 +14,8 @@ function failure(overrides: Partial<WorkerTerminalFailure> = {}): WorkerTerminal
     version: 'WorkerTerminalFailure.v1',
     runId: RUN_ID,
     repositoryId: 123,
-    owner: 'calltelemetry',
-    repo: 'cisco-cdr',
+    owner: 'exampleorg',
+    repo: 'example-api',
     prNumber: 42,
     headSha: 'b'.repeat(40),
     baseSha: 'c'.repeat(40),
@@ -30,7 +30,7 @@ function failure(overrides: Partial<WorkerTerminalFailure> = {}): WorkerTerminal
 }
 
 const IDENTITY = {
-  owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
+  owner: 'exampleorg', repo: 'example-api', prNumber: 42,
   headSha: 'b'.repeat(40), baseSha: 'c'.repeat(40),
   snapshotDigest: 'f'.repeat(64), configDigest: 'e'.repeat(64),
 };

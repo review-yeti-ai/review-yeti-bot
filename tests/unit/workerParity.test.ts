@@ -4,7 +4,7 @@ import path from 'node:path';
 import { resolveWorkerConfig } from '../../src/cli/publishingReview';
 
 describe('GHA and DOKS Worker Configuration Policy Parity', () => {
-  const policyPath = path.resolve(__dirname, '../../../../ct-review-actions/policy/review-yeti.json');
+  const policyPath = path.resolve(__dirname, '../../../../example-review-actions/policy/review-yeti.json');
   const policyRaw = fs.existsSync(policyPath) ? fs.readFileSync(policyPath, 'utf8') : null;
 
   const transport = {

@@ -408,7 +408,7 @@ describe('REL-972: every engine takes the same outcome', () => {
         'diff --git a/yarn.lock b/yarn.lock\nindex 1a2b3c4..5d6e7f8 100644\n--- a/yarn.lock\n+++ b/yarn.lock\n'
         + `${YARN_BUMP}\n`,
       ).files,
-      repository: 'calltelemetry/ct-quasar',
+      repository: 'exampleorg/example-ui',
       headSha: 'a'.repeat(40),
       client: unreachableClient,
       deterministicRoster: true,
@@ -426,7 +426,7 @@ describe('REL-972: every engine takes the same outcome', () => {
     const result = await executeComposedReview({
       config: roster(),
       changedFiles: [lock('mix.lock', MIX_BUMP)],
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       headSha: 'b'.repeat(40),
       client: unreachableClient,
     });

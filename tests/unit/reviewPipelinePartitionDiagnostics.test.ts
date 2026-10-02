@@ -868,7 +868,7 @@ function runSdkRouteProbe(
         : [route === 'gateway'
           ? {
               name: 'gateway-fixture', provider: 'openrouter', compat: 'openrouter',
-              base_url: 'https://gateway.calltelemetry.invalid/v1', api_key_env: 'OPENROUTER_API_KEY',
+              base_url: 'https://gateway.exampleorg.invalid/v1', api_key_env: 'OPENROUTER_API_KEY',
               model: 'pr-reviewer', stream: false,
             }
           : directTransport];

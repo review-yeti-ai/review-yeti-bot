@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 
-// ct-meta#2884: the DOKS app-gate lane has no GitHub client to look visibility up
+// example-meta#2884: the DOKS app-gate lane has no GitHub client to look visibility up
 // with -- its identity is entirely env-driven -- so the dispatching workflow is the
 // only source of the fact here. These tests prove REVIEW_REPOSITORY_VISIBILITY
 // reaches both the panel runner (so the persona prompt carries it) and the
@@ -17,7 +17,7 @@ function env(overrides: Record<string, string> = {}): NodeJS.ProcessEnv {
     NODE_ENV: 'test',
     REVIEW_PUBLICATION_MODE: 'app-gate',
     REVIEW_RUN_ID: `run_${'c'.repeat(32)}`,
-    REVIEW_REPO: 'calltelemetry/ct-meta',
+    REVIEW_REPO: 'exampleorg/example-meta',
     REVIEW_REPOSITORY_ID: '1339040553',
     REVIEW_PR_NUMBER: '2884',
     REVIEW_HEAD_SHA: HEAD,

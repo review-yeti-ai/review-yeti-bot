@@ -10,7 +10,7 @@ import { PostgresReviewCiRepository } from '../../src/persistence/reviewCiReposi
 const REQUEST_ID = 'b55887e4-3c20-4db7-8a98-7755c532a250';
 function coordinates(): ReviewCiCoordinates {
   const runId = `run_${'1'.repeat(32)}`;
-  return { repositoryId: 1232078607, owner: 'calltelemetry', repo: 'ct-meta', prNumber: 42,
+  return { repositoryId: 1232078607, owner: 'exampleorg', repo: 'example-meta', prNumber: 42,
     headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
     runId, reviewGeneration: 0, executionAttempt: 1, attemptId: `${runId}-g0-e1` };
 }
@@ -32,7 +32,7 @@ function execution() {
 describe('Review CI immutable domain/wire boundaries', () => {
   it('emits only the nine coordinate-only completion fields with the runtime bare digest', () => {
     expect(reviewCiRequestEvent(request())).toEqual({ schema_version: 'review-yeti-ci-request.v1',
-      repository_id: 1232078607, repository: 'calltelemetry/ct-meta', pr_number: 42,
+      repository_id: 1232078607, repository: 'exampleorg/example-meta', pr_number: 42,
       base_sha: 'b'.repeat(40), head_sha: 'a'.repeat(40), attempt_id: coordinates().attemptId,
       policy_digest: 'c'.repeat(64), validation_request_id: REQUEST_ID });
   });

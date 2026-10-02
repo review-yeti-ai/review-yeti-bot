@@ -15,10 +15,10 @@ import { isDocumentationOrAssetPath } from '../../src/review/reviewableContent';
  * REL-1058 (a concrete case of REL-972): two diff shapes failed every review
  * deterministically with "no enabled persona applies to the changed paths".
  *
- *  (a) calltelemetry/vitepress#238 -- a docs-only `.mdx` change against the
+ *  (a) exampleorg/vitepress#238 -- a docs-only `.mdx` change against the
  *      roster [arch-lane, sec-lane]; no persona covered `.mdx`.
- *  (b) calltelemetry/ai-workspace#3097/#3103 -- a change whose only path is the
- *      `ct-dashboard` submodule gitlink.
+ *  (b) exampleorg/example-workspace#3097/#3103 -- a change whose only path is the
+ *      `example-dashboard` submodule gitlink.
  */
 
 const transport = { baseUrl: 'https://gateway.example.invalid/v1', apiKey: 'k', model: 'review-model' };
@@ -26,8 +26,8 @@ const roster = (personas: string) => resolveWorkerConfig({ REVIEW_PERSONAS: pers
 const enabled = (personas: string) => roster(personas).personas.filter((persona) => persona.enabled);
 
 const MDX_PATH = 'docusaurus/docs/deployment/appliance-firewall-requirements.mdx';
-const GITLINK_DIFF = 'diff --git a/ct-dashboard b/ct-dashboard\n'
-  + 'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n'
+const GITLINK_DIFF = 'diff --git a/example-dashboard b/example-dashboard\n'
+  + 'index 6c3f36d89d..f84610fbbf 160000\n--- a/example-dashboard\n+++ b/example-dashboard\n'
   + '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n'
   + '+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
 
@@ -109,7 +109,7 @@ describe('REL-1058: .mdx policy', () => {
     const scoped = Object.fromEntries(result.applicable.map((persona) => [
       persona.id, scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.path),
     ]));
-    expect(scoped).toEqual({ 'arch-lane': ['ct-dashboard'], 'sec-lane': ['docs/guide/intro.MDX'] });
+    expect(scoped).toEqual({ 'arch-lane': ['example-dashboard'], 'sec-lane': ['docs/guide/intro.MDX'] });
     expect(result.unmatchedPaths).toEqual([]);
   });
 
@@ -119,7 +119,7 @@ describe('REL-1058: .mdx policy', () => {
       await executePersonaPanel({
         config: roster('architecture,security'),
         changedFiles: [mdx],
-        repository: 'calltelemetry/vitepress',
+        repository: 'exampleorg/vitepress',
         headSha: '0cd93c2f56e26926c4708e8d9b06a5baf0493799',
         client: unreachableClient,
         deterministicRoster: true,
@@ -136,7 +136,7 @@ describe('REL-1058: .mdx policy', () => {
 describe('REL-1058: submodule gitlink policy', () => {
   const [gitlink] = parseChangedFiles(GITLINK_DIFF).files;
 
-  it('routes a pointer bump to the architecture lane when the roster has one (ai-workspace roster)', () => {
+  it('routes a pointer bump to the architecture lane when the roster has one (example-workspace roster)', () => {
     const result = resolveReviewApplicability(enabled('architecture,security,documentation'), [gitlink]);
     expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane']);
     expect(result.unmatchedPaths).toEqual([]);
@@ -150,7 +150,7 @@ describe('REL-1058: submodule gitlink policy', () => {
     expect(result.unmatchedPaths).toEqual([]);
     // The routed lane actually receives the gitlink (old -> new SHA) to review.
     expect(scopeFilesForPersona(result.applicable[0], result.effectiveFiles).map((file) => file.path))
-      .toEqual(['ct-dashboard']);
+      .toEqual(['example-dashboard']);
   });
 
   it('falls back to the first enabled persona when none is required', () => {
@@ -178,7 +178,7 @@ describe('REL-1058: submodule gitlink policy', () => {
       await executePersonaPanel({
         config: roster('security,documentation'),
         changedFiles: [gitlink],
-        repository: 'calltelemetry/ai-workspace',
+        repository: 'exampleorg/example-workspace',
         headSha: '7b95e18b067796d94e44c238fcd99fb783a13631',
         client: unreachableClient,
         deterministicRoster: true,
@@ -199,10 +199,10 @@ describe('REL-1058: one applicability decision for worker and service', () => {
   it('keeps gitlink metadata that the hunk filter would otherwise drop', () => {
     // A gitlink identified only by its mode (as GitHub's files API reports it),
     // with no "Subproject commit" text in the patch.
-    const file = { path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-6c3f36d\n+f84610f\n', mode: '160000' };
+    const file = { path: 'example-dashboard', patch: '@@ -1 +1 @@\n-6c3f36d\n+f84610f\n', mode: '160000' };
     const result = resolveReviewApplicability(enabled('architecture,security'), [file]);
     expect(result.applicable.map((persona) => persona.id)).toEqual(['arch-lane']);
-    expect(result.effectiveFiles[0]).toMatchObject({ path: 'ct-dashboard', mode: '160000' });
+    expect(result.effectiveFiles[0]).toMatchObject({ path: 'example-dashboard', mode: '160000' });
   });
 
   it('applies the repository path_filters', () => {
@@ -237,7 +237,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     const run = (config: typeof base) => executeComposedReview({
       config,
       changedFiles,
-      repository: 'calltelemetry/vitepress',
+      repository: 'exampleorg/vitepress',
       headSha: 'c'.repeat(40),
       client: unreachableClient,
       // Past the zero-lane decision, a stale head aborts before any provider call.
@@ -281,7 +281,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     const result = resolveReviewApplicability([], [gitlink]);
     expect(result.applicable).toEqual([]);
     expect(result.noReviewableContent).toBe(false);
-    expect(result.unmatchedPaths).toEqual(['ct-dashboard']);
+    expect(result.unmatchedPaths).toEqual(['example-dashboard']);
   });
 
   it('ignores malformed path_filters entries rather than widening what is excluded', () => {
@@ -307,7 +307,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     const run = (config: typeof base) => executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/vitepress',
+      repository: 'exampleorg/vitepress',
       headSha: 'd'.repeat(40),
       client: unreachableClient,
       deterministicRoster: true,
@@ -331,7 +331,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
 
     expect(result.applicable.map((persona) => persona.id)).toEqual(['sec-lane', 'qual-lane']);
     for (const persona of result.applicable) {
-      expect(scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.path)).toEqual(['ct-dashboard']);
+      expect(scopeFilesForPersona(persona, result.effectiveFiles).map((file) => file.path)).toEqual(['example-dashboard']);
     }
   });
 
@@ -342,7 +342,7 @@ describe('REL-1058: one applicability decision for worker and service', () => {
     await expect(executeComposedReview({
       config: roster('architecture,security'),
       changedFiles: parseChangedFiles(diff).files,
-      repository: 'calltelemetry/ai-workspace',
+      repository: 'exampleorg/example-workspace',
       headSha: 'e'.repeat(40),
       client: unreachableClient,
       // Past the zero-lane decision, a stale head aborts before any provider call:

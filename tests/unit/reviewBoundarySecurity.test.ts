@@ -56,8 +56,8 @@ describe('review boundary security contracts', () => {
 
   it('matches GitHub repository authorization case-insensitively', () => {
     expect(() => new TenantBoundary().assertAccess(
-      { tenantId: 'tenant-a', repositories: ['CallTelemetry/CT-Review-Bot'] },
-      { tenantId: 'tenant-a', owner: 'calltelemetry', repo: 'ct-review-bot' },
+      { tenantId: 'tenant-a', repositories: ['Exampleorg/CT-Review-Bot'] },
+      { tenantId: 'tenant-a', owner: 'exampleorg', repo: 'ct-review-bot' },
     )).not.toThrow();
   });
 });

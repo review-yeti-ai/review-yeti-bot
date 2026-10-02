@@ -20,12 +20,12 @@ import type { WorkerReviewCompletion, WorkerReviewResult } from '../../src/revie
 import { logger } from '../../src/utils/logger';
 
 const NOW = Date.parse('2026-09-24T18:28:53.000Z');
-const identity = buildReviewRunIdentity({ owner: 'calltelemetry', repo: 'ct-meta', prNumber: 3446,
+const identity = buildReviewRunIdentity({ owner: 'exampleorg', repo: 'example-meta', prNumber: 3446,
   headSha: '6b560284'.padEnd(40, '0'), baseSha: 'c'.repeat(40) });
 const RUN_ID = deriveReviewRunId(identity);
 const EXPECTED_APP_ID = 777;
 
-/** The ct-meta#3446 result: 2 lanes, 1 completed clean, 1 lost to a gateway 502, 0 findings. */
+/** The example-meta#3446 result: 2 lanes, 1 completed clean, 1 lost to a gateway 502, 0 findings. */
 function infraResult(overrides: Partial<WorkerReviewResult> = {}): WorkerReviewResult {
   return {
     version: 'WorkerReviewResult.v1', completedAt: '2026-09-24T18:28:50.000Z',
@@ -41,7 +41,7 @@ function infraResult(overrides: Partial<WorkerReviewResult> = {}): WorkerReviewR
 }
 
 function completion(result: WorkerReviewResult = infraResult(), executionAttempt = 1): WorkerReviewCompletion {
-  return { version: 'WorkerReviewCompletion.v1', runId: RUN_ID, repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta',
+  return { version: 'WorkerReviewCompletion.v1', runId: RUN_ID, repositoryId: 123, owner: 'exampleorg', repo: 'example-meta',
     prNumber: 3446, headSha: identity.headSha, baseSha: identity.baseSha,
     policyDigest: 'd'.repeat(64), configDigest: 'e'.repeat(64), executionAttempt, result };
 }
@@ -95,7 +95,7 @@ describe('REL-1113 shared infrastructure-incomplete decision', () => {
   });
 
   it('extracts only a numeric provider status from free-form lane errors', () => {
-    expect(laneProviderStatus('bifrost: gateway-internal.calltelemetry.com HTTP 502: <html>nginx</html>')).toBe(502);
+    expect(laneProviderStatus('bifrost: gateway-internal.example.com HTTP 502: <html>nginx</html>')).toBe(502);
     expect(laneProviderStatus('OpenRouter SDK connection failure for model pr-reviewer: terminated')).toBeUndefined();
     expect(laneProviderStatus('HTTP 200 fine')).toBeUndefined();
   });
@@ -140,7 +140,7 @@ describe('REL-1113 authoritative infrastructure re-attempt', () => {
   it('#3446 shape: re-admits the exact head as the next execution attempt through the recovery path', async () => {
     const h = harness();
     await expect(h.run(completion())).resolves.toBe('requeued');
-    expect(h.resolve).toHaveBeenCalledExactlyOnceWith({ repositoryId: 123, owner: 'calltelemetry', repo: 'ct-meta',
+    expect(h.resolve).toHaveBeenCalledExactlyOnceWith({ repositoryId: 123, owner: 'exampleorg', repo: 'example-meta',
       prNumber: 3446, headSha: identity.headSha, baseSha: identity.baseSha });
     expect(h.admit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       deliveryId: `internal-infrastructure-incomplete-retry:${RUN_ID}:a1`,
@@ -195,7 +195,7 @@ describe('REL-1113 authoritative infrastructure re-attempt', () => {
 
   it('refuses when the pull request moved (a superseded head is never re-reviewed)', async () => {
     const h = harness();
-    h.resolve.mockResolvedValue({ identity: buildReviewRunIdentity({ owner: 'calltelemetry', repo: 'ct-meta', prNumber: 3446,
+    h.resolve.mockResolvedValue({ identity: buildReviewRunIdentity({ owner: 'exampleorg', repo: 'example-meta', prNumber: 3446,
       headSha: 'f'.repeat(40), baseSha: identity.baseSha }), prepared });
     await expect(h.run(completion())).resolves.toBe('candidate-changed');
     expect(h.admit).not.toHaveBeenCalled();

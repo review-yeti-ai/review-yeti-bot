@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 
-// ct-meta#2884: `getRepositoryVisibility` is the fallback source of visibility for
+// example-meta#2884: `getRepositoryVisibility` is the fallback source of visibility for
 // any run mode whose webhook payload did not carry `repository.private` /
 // `repository.visibility` directly. A lookup failure here must never throw and
 // must never block or fail the review it was requested for -- it degrades to
@@ -17,9 +17,9 @@ describe('GitHubInstallationClient.getRepositoryVisibility', () => {
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const client = new GitHubInstallationClient({ token, baseUrl: 'https://api.github.com', fetchImplementation });
 
-    await expect(client.getRepositoryVisibility('calltelemetry', 'ct-meta')).resolves.toBe('PRIVATE');
+    await expect(client.getRepositoryVisibility('exampleorg', 'example-meta')).resolves.toBe('PRIVATE');
     expect(fetchImplementation).toHaveBeenCalledWith(
-      'https://api.github.com/repos/calltelemetry/ct-meta',
+      'https://api.github.com/repos/exampleorg/example-meta',
       expect.anything(),
     );
   });
@@ -30,7 +30,7 @@ describe('GitHubInstallationClient.getRepositoryVisibility', () => {
     }), { status: 200, headers: { 'content-type': 'application/json' } }));
     const client = new GitHubInstallationClient({ token, baseUrl: 'https://api.github.com', fetchImplementation });
 
-    await expect(client.getRepositoryVisibility('calltelemetry', 'calltelemetry')).resolves.toBe('PUBLIC');
+    await expect(client.getRepositoryVisibility('exampleorg', 'exampleorg')).resolves.toBe('PUBLIC');
   });
 
   it('prefers the string `visibility` field over `private` when both are present', async () => {
@@ -42,14 +42,14 @@ describe('GitHubInstallationClient.getRepositoryVisibility', () => {
 
     // 'internal' normalizes to PRIVATE, same conclusion here, but exercised via the
     // `visibility` branch rather than the `private` branch.
-    await expect(client.getRepositoryVisibility('calltelemetry', 'ct-meta')).resolves.toBe('PRIVATE');
+    await expect(client.getRepositoryVisibility('exampleorg', 'example-meta')).resolves.toBe('PRIVATE');
   });
 
   it('resolves to UNKNOWN, and does not throw, when the GitHub API call rejects (network error)', async () => {
     const fetchImplementation = vi.fn().mockRejectedValue(new Error('fetch failed: ECONNRESET'));
     const client = new GitHubInstallationClient({ token, baseUrl: 'https://api.github.com', fetchImplementation });
 
-    await expect(client.getRepositoryVisibility('calltelemetry', 'ct-meta')).resolves.toBe('UNKNOWN');
+    await expect(client.getRepositoryVisibility('exampleorg', 'example-meta')).resolves.toBe('UNKNOWN');
   });
 
   it('resolves to UNKNOWN, and does not throw, on a non-2xx GitHub response (e.g. 404)', async () => {
@@ -59,7 +59,7 @@ describe('GitHubInstallationClient.getRepositoryVisibility', () => {
     }));
     const client = new GitHubInstallationClient({ token, baseUrl: 'https://api.github.com', fetchImplementation });
 
-    await expect(client.getRepositoryVisibility('calltelemetry', 'missing-repo')).resolves.toBe('UNKNOWN');
+    await expect(client.getRepositoryVisibility('exampleorg', 'missing-repo')).resolves.toBe('UNKNOWN');
   });
 
   it('resolves to UNKNOWN when the response body has neither `private` nor `visibility`', async () => {
@@ -69,7 +69,7 @@ describe('GitHubInstallationClient.getRepositoryVisibility', () => {
     }));
     const client = new GitHubInstallationClient({ token, baseUrl: 'https://api.github.com', fetchImplementation });
 
-    await expect(client.getRepositoryVisibility('calltelemetry', 'ct-meta')).resolves.toBe('UNKNOWN');
+    await expect(client.getRepositoryVisibility('exampleorg', 'example-meta')).resolves.toBe('UNKNOWN');
   });
 
   it('memoises the lookup per owner/repo: a second call for the same repo does not re-fetch', async () => {
@@ -80,8 +80,8 @@ describe('GitHubInstallationClient.getRepositoryVisibility', () => {
     const client = new GitHubInstallationClient({ token, baseUrl: 'https://api.github.com', fetchImplementation });
 
     const [first, second] = await Promise.all([
-      client.getRepositoryVisibility('calltelemetry', 'ct-meta'),
-      client.getRepositoryVisibility('calltelemetry', 'ct-meta'),
+      client.getRepositoryVisibility('exampleorg', 'example-meta'),
+      client.getRepositoryVisibility('exampleorg', 'example-meta'),
     ]);
     expect(first).toBe('PRIVATE');
     expect(second).toBe('PRIVATE');

@@ -4,7 +4,7 @@ import { buildReviewRunIdentity, deriveReviewRunId } from '../../src/review/revi
 describe('review admission identity', () => {
   it('binds the durable run to repository, PR, exact head/base, and the event snapshot', () => {
     const input = {
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'a'.repeat(40),
@@ -24,7 +24,7 @@ describe('review admission identity', () => {
 
   it('derives the same run id for every persistence and webhook caller from the full identity', () => {
     const identity = buildReviewRunIdentity({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'a'.repeat(40),

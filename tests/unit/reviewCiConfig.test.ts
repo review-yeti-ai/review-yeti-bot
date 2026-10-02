@@ -15,7 +15,7 @@ const repository = {
     workflowRef: 'refs/heads/main', workflowSha: 'a'.repeat(40) },
   validation: { workflowId: 12, workflowPath: '.github/workflows/validation.yml',
     workflowRef: 'refs/tags/ci-v1', workflowSha: 'b'.repeat(40) },
-  lanePlan: createReviewCiLanePlan(['ct-meta-hermetic-v1'],
+  lanePlan: createReviewCiLanePlan(['example-meta-hermetic-v1'],
     ['Review CI preflight', 'Review CI dependencies', 'Review CI unit']),
 };
 const env = () => ({ REVIEW_CI_ENABLED: 'true', REVIEW_CI_REPOSITORIES: JSON.stringify([repository]) });

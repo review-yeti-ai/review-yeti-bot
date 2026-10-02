@@ -26,7 +26,7 @@ const patch = '@@ -1 +1 @@\n-a\n+b\n';
 const files = (...paths: string[]) => paths.map((path) => ({ path, patch }));
 
 const UNCOVERED = 'tools/inventory.lua';
-const LAB_ASSETS = 'plugins/ct-lab/skills/lab-inventory/inventory/lab-assets.json';
+const LAB_ASSETS = 'plugins/example-lab/skills/lab-inventory/inventory/lab-assets.json';
 
 /** security (required) covers TypeScript/Elixir; architecture covers src/ and lib/. */
 function sourceOnlyRoster() {

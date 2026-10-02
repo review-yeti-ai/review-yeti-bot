@@ -7,7 +7,7 @@ const {
 } = require('../../src/review/reviewCore.js');
 import { renderFindingsMarkdown } from '../../src/cli/publishingReview';
 
-// Three false P1s from calltelemetry/ct-meta#2882, verbatim. Each states its own premise was
+// Three false P1s from exampleorg/example-meta#2882, verbatim. Each states its own premise was
 // never confirmed and asks the author to do the verification -- a question, not a defect.
 const FALSE_P1_UNUSED_CONSTANT = {
   severity: 'P1',
@@ -43,7 +43,7 @@ const FALSE_P1_UNLOCATED_TABLE = {
 
 const FALSE_P1S = [FALSE_P1_UNUSED_CONSTANT, FALSE_P1_UNCONFIRMED_IMPORT, FALSE_P1_UNLOCATED_TABLE];
 
-// A genuine P1 from the same day (calltelemetry/ct-meta#2882): a defect the reviewer verified
+// A genuine P1 from the same day (exampleorg/example-meta#2882): a defect the reviewer verified
 // against code it read, with no hedge on its own premise. Must never be downgraded.
 const GENUINE_P1_KUBE_TIMEOUT = {
   severity: 'P1',
@@ -189,7 +189,7 @@ describe('downgradeUnverifiedPremise (unit)', () => {
 });
 
 describe('computeArbitration with the unverified-premise downgrade wired in', () => {
-  it('the three false P1s from ct-meta#2882 all downgrade and arbitration ships', () => {
+  it('the three false P1s from example-meta#2882 all downgrade and arbitration ships', () => {
     const personas = [{ findings: FALSE_P1S.map((f) => ({ ...f })) }];
     const arbitration = computeArbitration(personas, 1, { changedFiles });
     expect(arbitration.metrics.p1Count).toBe(0);

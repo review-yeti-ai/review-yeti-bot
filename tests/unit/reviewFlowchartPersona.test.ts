@@ -38,17 +38,17 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
 
   describe('Task 1: Repository Flowchart Toggle Persistence', () => {
     it('persists and updates generateArchitecturalFlowchart setting in dashboardStore', () => {
-      const repo = dashboardStore.updateRepository('calltelemetry', 'flowchart-test-repo', {
+      const repo = dashboardStore.updateRepository('exampleorg', 'flowchart-test-repo', {
         automationEnabled: true,
         generateArchitecturalFlowchart: true,
       });
 
       expect(repo.generateArchitecturalFlowchart).toBe(true);
 
-      const fetched = dashboardStore.getRepository('calltelemetry', 'flowchart-test-repo');
+      const fetched = dashboardStore.getRepository('exampleorg', 'flowchart-test-repo');
       expect(fetched?.generateArchitecturalFlowchart).toBe(true);
 
-      const updated = dashboardStore.updateRepository('calltelemetry', 'flowchart-test-repo', {
+      const updated = dashboardStore.updateRepository('exampleorg', 'flowchart-test-repo', {
         generateArchitecturalFlowchart: false,
       });
       expect(updated.generateArchitecturalFlowchart).toBe(false);
@@ -106,7 +106,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             patch: '@@ -1,5 +1,10 @@\n+import { processPayment } from "./gateway";\n+export function pay() { processPayment(); }',
           },
         ],
-        repository: 'calltelemetry/flowchart-test-repo',
+        repository: 'exampleorg/flowchart-test-repo',
         headSha: 'abc12345',
         client: mockClient,
         generateArchitecturalFlowchart: true,
@@ -176,7 +176,7 @@ describe('Milestone 2: Flowchart Persona & Diagram Generation Engine', () => {
             patch: '@@ -1,3 +1,6 @@\n+export function createUser() { fetch(); }',
           },
         ],
-        repository: 'calltelemetry/flowchart-test-repo',
+        repository: 'exampleorg/flowchart-test-repo',
         headSha: 'def67890',
         client: mockClient,
       });

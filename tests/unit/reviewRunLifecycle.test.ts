@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PostgresReviewRunRepository } from '../../src/persistence/reviewRunRepository';
 
 const identity = {
-  owner: 'calltelemetry',
+  owner: 'exampleorg',
   repo: 'review-yeti',
   prNumber: 42,
   headSha: 'a'.repeat(40),

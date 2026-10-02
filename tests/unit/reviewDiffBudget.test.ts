@@ -857,7 +857,7 @@ describe('guarded gateway input budgeting', () => {
 });
 
 describe('REL-556: an oversized diff never reaches a direct-reasoning transport intact', () => {
-  // Mirrors the evidence PR: cisco-cdr #4861, 727,269 chars across 126 files. Build an
+  // Mirrors the evidence PR: example-api #4861, 727,269 chars across 126 files. Build an
   // equivalent-scale synthetic diff and confirm the applied budget for a lane whose fallback
   // chain includes Ollama is far under both the diff total and the OpenRouter-only budget for
   // the same lane, and that priority ordering (files earlier in the caller-supplied order win

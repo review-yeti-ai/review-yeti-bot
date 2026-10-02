@@ -7,16 +7,16 @@ import { RepositorySetting } from '../../src/types/dashboard';
 
 const mockRepos: RepositorySetting[] = [
   {
-    owner: 'calltelemetry',
-    repo: 'cisco-cdr',
+    owner: 'exampleorg',
+    repo: 'example-api',
     automationEnabled: true,
     generateArchitecturalFlowchart: true,
     customProfile: 'balanced',
     updatedAt: new Date().toISOString(),
   },
   {
-    owner: 'calltelemetry',
-    repo: 'ct-meta',
+    owner: 'exampleorg',
+    repo: 'example-meta',
     automationEnabled: false,
     generateArchitecturalFlowchart: false,
     customProfile: 'assertive',
@@ -35,9 +35,9 @@ describe('Repository Settings UI - Generate Architectural Sequence & Flowchart D
       />
     );
 
-    expect(screen.getAllByText(/calltelemetry/).length).toBeGreaterThan(0);
-    expect(screen.getByText('cisco-cdr')).toBeInTheDocument();
-    expect(screen.getByText('ct-meta')).toBeInTheDocument();
+    expect(screen.getAllByText(/exampleorg/).length).toBeGreaterThan(0);
+    expect(screen.getByText('example-api')).toBeInTheDocument();
+    expect(screen.getByText('example-meta')).toBeInTheDocument();
 
     const toggles = screen.getAllByRole('switch', {
       name: /Generate Architectural Sequence & Flowchart Diagrams/i,
@@ -62,13 +62,13 @@ describe('Repository Settings UI - Generate Architectural Sequence & Flowchart D
       />
     );
 
-    const firstToggle = screen.getByTestId('repo-flowchart-toggle-calltelemetry-cisco-cdr');
+    const firstToggle = screen.getByTestId('repo-flowchart-toggle-exampleorg-example-api');
     expect(firstToggle).toHaveAttribute('aria-checked', 'true');
 
     fireEvent.click(firstToggle);
 
     expect(onToggleFlowchart).toHaveBeenCalledTimes(1);
-    expect(onToggleFlowchart).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr', false);
+    expect(onToggleFlowchart).toHaveBeenCalledWith('exampleorg', 'example-api', false);
   });
 
   it('opens repository settings modal when Settings button is clicked and displays flowchart toggle', () => {
@@ -82,10 +82,10 @@ describe('Repository Settings UI - Generate Architectural Sequence & Flowchart D
       />
     );
 
-    const settingsBtn = screen.getByTestId('repo-settings-btn-calltelemetry-cisco-cdr');
+    const settingsBtn = screen.getByTestId('repo-settings-btn-exampleorg-example-api');
     fireEvent.click(settingsBtn);
 
-    expect(screen.getByText(/Repository Settings — calltelemetry\/cisco-cdr/i)).toBeInTheDocument();
+    expect(screen.getByText(/Repository Settings — exampleorg\/example-api/i)).toBeInTheDocument();
     expect(screen.getByText('Generate Architectural Sequence & Flowchart Diagrams')).toBeInTheDocument();
 
     const modalToggle = screen.getByTestId('modal-repo-flowchart-toggle');
@@ -94,6 +94,6 @@ describe('Repository Settings UI - Generate Architectural Sequence & Flowchart D
 
     fireEvent.click(modalToggle);
 
-    expect(onToggleFlowchart).toHaveBeenCalledWith('calltelemetry', 'cisco-cdr', false);
+    expect(onToggleFlowchart).toHaveBeenCalledWith('exampleorg', 'example-api', false);
   });
 });

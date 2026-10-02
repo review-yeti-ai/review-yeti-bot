@@ -24,7 +24,7 @@ function createMockPrepPayload(overrides: Partial<PrepPayload> = {}): PrepPayloa
     runId: 'run_' + 'a'.repeat(32),
     headSha: '1111222233334444555566667777888899990000',
     baseSha: '0000111122223333444455556666777788889999',
-    repository: 'calltelemetry/review-yeti-bot',
+    repository: 'exampleorg/review-yeti-bot',
     prNumber: 42,
     triageSummary: {
       filesCount: 1,

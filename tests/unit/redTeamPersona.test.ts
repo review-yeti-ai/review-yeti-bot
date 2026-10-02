@@ -230,7 +230,7 @@ describe('redTeamPersona unit tests', () => {
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/index.ts', patch: '+ console.log("hello");' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -307,7 +307,7 @@ describe('redTeamPersona unit tests', () => {
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/index.ts', patch: '+ console.log("hello");' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -383,7 +383,7 @@ describe('redTeamPersona unit tests', () => {
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/index.ts' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'abc1234',
         client: mockClient as unknown as OmniRouteClient,
       });
@@ -440,7 +440,7 @@ describe('redTeamPersona unit tests', () => {
         executePersonaPanel({
           config,
           changedFiles: [{ path: 'src/index.ts' }],
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: 'abc1234',
           client: mockClient as unknown as OmniRouteClient,
         })

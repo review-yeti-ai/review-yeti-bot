@@ -8,7 +8,7 @@ describe('ReviewCompletionDeliveryEngine', () => {
     completionId: 'cpl_test',
     runId: 'run_test',
     repositoryId: 12345,
-    repository: 'calltelemetry/dashboard',
+    repository: 'exampleorg/dashboard',
     prNumber: 42,
     baseSha: '0'.repeat(40),
     headSha: '1'.repeat(40),

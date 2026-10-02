@@ -303,7 +303,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
   // all-finding inline publication) belong to tests/unit/actionReviewPublication.test.ts.
   const publishContext = {
     prNumber: '42',
-    repo: 'calltelemetry/ct-review-bot',
+    repo: 'exampleorg/ct-review-bot',
     headSha: 'exact-head',
     baseSha: 'exact-base',
   };
@@ -392,7 +392,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     const addressed = commands.filter((command) => command.args.some((arg) => /\/(?:pulls|issues)\/42\b/u.test(arg))
       || (command.args[0] === 'pr' && command.args[1] === 'view'));
     expect(addressed.length).toBeGreaterThan(0);
-    expect(addressed.every((command) => command.args.some((arg) => arg.includes('calltelemetry/ct-review-bot')))).toBe(true);
+    expect(addressed.every((command) => command.args.some((arg) => arg.includes('exampleorg/ct-review-bot')))).toBe(true);
     expect(writes.size).toBe(0);
   });
 
@@ -420,7 +420,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
   });
 
   it('refuses to publish without a repository and an exact head SHA', () => {
-    const result = pipeline.postOrOutputComment('body', { prNumber: '42', repo: 'calltelemetry/ct-review-bot' }, emptyPlan, {
+    const result = pipeline.postOrOutputComment('body', { prNumber: '42', repo: 'exampleorg/ct-review-bot' }, emptyPlan, {
       commandRunner: () => {
         throw new Error('must not reach GitHub without an exact head');
       },
@@ -432,7 +432,7 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
 
   it('writes the body to disk instead of GitHub when there is no pull request', () => {
     const writes = new Map<string, string>();
-    const result = pipeline.postOrOutputComment('local body', { repo: 'calltelemetry/ct-review-bot' }, emptyPlan, {
+    const result = pipeline.postOrOutputComment('local body', { repo: 'exampleorg/ct-review-bot' }, emptyPlan, {
       cwd: '/workspace',
       fileSystem: {
         writeFileSync(filePath: string, body: string) {
@@ -459,14 +459,14 @@ describe('Dispatch path: GitHub CLI side effects use explicit boundaries', () =>
     });
     expect(pipeline.assertCurrentPullRequest({
       prNumber: '42',
-      repo: 'calltelemetry/ct-review-bot',
+      repo: 'exampleorg/ct-review-bot',
       headSha: 'exact-head',
       baseSha: 'exact-base',
     }, { commandRunner })).toEqual({ headRefOid: 'exact-head', baseRefOid: 'exact-base' });
 
     expect(() => pipeline.assertCurrentPullRequest({
       prNumber: '42',
-      repo: 'calltelemetry/ct-review-bot',
+      repo: 'exampleorg/ct-review-bot',
       headSha: 'stale-head',
       baseSha: 'exact-base',
     }, { commandRunner })).toThrow('PR head changed during review');

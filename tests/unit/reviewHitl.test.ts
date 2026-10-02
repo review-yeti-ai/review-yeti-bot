@@ -6,7 +6,7 @@ import { createApp } from '../../src/app';
 import { authService } from '../../src/dashboard/authService';
 
 describe('Human-in-the-Loop (HITL) Controls, Verdict Overrides & Audit Persistence', () => {
-  const testRepo = 'calltelemetry/test-repo';
+  const testRepo = 'exampleorg/test-repo';
   const testFile = 'src/security/auth.ts';
   const testLine = 42;
   const testTitle = 'Insecure Token Generation';

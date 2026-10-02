@@ -13,24 +13,24 @@ import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domain
 describe('Submodule Architecture Persona Routing', () => {
   describe('isSubmoduleEntry', () => {
     it('identifies gitlink mode 160000 entries across all field variants as submodules', () => {
-      expect(isSubmoduleEntry({ path: 'ct-dashboard', mode: '160000' })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'cisco-cdr', newMode: '160000' })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'ct-meta', old_mode: '160000' })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'ct-meta', oldMode: '160000' })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'ct-meta', new_mode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-dashboard', mode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-api', newMode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-meta', old_mode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-meta', oldMode: '160000' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-meta', new_mode: '160000' })).toBe(true);
     });
 
     it('identifies submodule flags as submodules', () => {
-      expect(isSubmoduleEntry({ path: 'ct-dashboard', isSubmodule: true })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'cisco-cdr', submoduleCandidate: true })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-dashboard', isSubmodule: true })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-api', submoduleCandidate: true })).toBe(true);
     });
 
     it('identifies submodules from diff patch content with Subproject commit or mode 160000', () => {
-      const gitPatch = 'diff --git a/ct-dashboard b/ct-dashboard\n' +
-        'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+      const gitPatch = 'diff --git a/example-dashboard b/example-dashboard\n' +
+        'index 6c3f36d89d..f84610fbbf 160000\n--- a/example-dashboard\n+++ b/example-dashboard\n' +
         '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
-      expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: gitPatch })).toBe(true);
-      expect(isSubmoduleEntry({ path: 'ct-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit abc1234\n+Subproject commit def5678\n' })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-dashboard', patch: gitPatch })).toBe(true);
+      expect(isSubmoduleEntry({ path: 'example-dashboard', patch: '@@ -1 +1 @@\n-Subproject commit abc1234\n+Subproject commit def5678\n' })).toBe(true);
       expect(isSubmodulePatch(gitPatch)).toBe(true);
     });
 
@@ -76,7 +76,7 @@ describe('Submodule Architecture Persona Routing', () => {
     const wildcardPersona = { id: 'general', name: 'General', paths: ['**'] };
 
     it('routes submodule gitlinks to architecture persona even when paths do not match', () => {
-      const submoduleFile = { path: 'ct-dashboard', mode: '160000' };
+      const submoduleFile = { path: 'example-dashboard', mode: '160000' };
       expect(personaCoversFile(archPersona, submoduleFile)).toBe(true);
       expect(personaCoversFile(secPersona, submoduleFile)).toBe(false);
     });
@@ -103,14 +103,14 @@ describe('Submodule Architecture Persona Routing', () => {
 
     it('scopes changedFiles in runPersona such that submodule changes belong to arch lane only', () => {
       const changedFiles = [
-        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'example-dashboard', mode: '160000' },
         { path: 'auth/login.ts', mode: '100644' },
       ];
 
       const archScoped = scopeFilesForPersona(archPersona, changedFiles);
       const secScoped = scopeFilesForPersona(secPersona, changedFiles);
 
-      expect(archScoped.map((f) => f.path)).toEqual(['ct-dashboard']);
+      expect(archScoped.map((f) => f.path)).toEqual(['example-dashboard']);
       expect(secScoped.map((f) => f.path)).toEqual(['auth/login.ts']);
     });
   });
@@ -121,26 +121,26 @@ describe('Submodule Architecture Persona Routing', () => {
 
     it('excludes submodule gitlink entries from unmatched paths when architecture persona is active', () => {
       const effectiveFiles = [
-        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'example-dashboard', mode: '160000' },
         { path: 'uncovered/code.ts', mode: '100644' },
       ];
 
       const unmatched = computeUnmatchedPaths(effectiveFiles, [archPersona]);
 
       expect(unmatched).toEqual(['uncovered/code.ts']);
-      expect(unmatched).not.toContain('ct-dashboard');
+      expect(unmatched).not.toContain('example-dashboard');
     });
 
     it('includes submodule entries in unmatched paths when NO architecture persona is active', () => {
       const effectiveFiles = [
-        { path: 'ct-dashboard', mode: '160000' },
+        { path: 'example-dashboard', mode: '160000' },
         { path: 'auth/login.ts', mode: '100644' },
       ];
 
-      // Only security persona active: ct-dashboard is uncovered
+      // Only security persona active: example-dashboard is uncovered
       const unmatched = computeUnmatchedPaths(effectiveFiles, [secPersona]);
 
-      expect(unmatched).toEqual(['ct-dashboard']);
+      expect(unmatched).toEqual(['example-dashboard']);
       expect(unmatched).not.toContain('auth/login.ts');
     });
 
@@ -175,7 +175,7 @@ describe('Submodule Architecture Persona Routing', () => {
         { id: 'devops', name: 'DevOps', enabled: true, paths: ['deploy/**'] },
       ] as any;
 
-      const files = [{ path: 'ct-dashboard', mode: '160000' }];
+      const files = [{ path: 'example-dashboard', mode: '160000' }];
       const result = deriveApplicablePersonas(personas, files);
       expect(result.map((p: any) => p.id)).toEqual(['architecture']);
     });
@@ -187,26 +187,26 @@ describe('Submodule Architecture Persona Routing', () => {
         { id: 'documentation', name: 'Docs', enabled: true, paths: ['docs/**'] },
       ] as any;
 
-      const gitPatch = 'diff --git a/ct-dashboard b/ct-dashboard\n' +
-        'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+      const gitPatch = 'diff --git a/example-dashboard b/example-dashboard\n' +
+        'index 6c3f36d89d..f84610fbbf 160000\n--- a/example-dashboard\n+++ b/example-dashboard\n' +
         '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
-      const files = [{ path: 'ct-dashboard', patch: gitPatch }];
+      const files = [{ path: 'example-dashboard', patch: gitPatch }];
       const result = deriveApplicablePersonas(personas, files);
       expect(result.map((p: any) => p.id)).toEqual(['arch-lane']);
 
       const unmatched = computeUnmatchedPaths(files, [personas[1]]);
-      expect(unmatched).not.toContain('ct-dashboard');
+      expect(unmatched).not.toContain('example-dashboard');
       expect(unmatched).toHaveLength(0);
     });
 
     it('integrates parseChangedFiles so submodule diffs automatically activate arch lane', () => {
-      const diff = 'diff --git a/ct-dashboard b/ct-dashboard\n' +
-        'index 6c3f36d89d..f84610fbbf 160000\n--- a/ct-dashboard\n+++ b/ct-dashboard\n' +
+      const diff = 'diff --git a/example-dashboard b/example-dashboard\n' +
+        'index 6c3f36d89d..f84610fbbf 160000\n--- a/example-dashboard\n+++ b/example-dashboard\n' +
         '@@ -1 +1 @@\n-Subproject commit 6c3f36d89d675d27c0a8b88f684d57c6185a7e6b\n+Subproject commit f84610fbbf478540b07861fa7a18174126ffe5bb\n';
       const { files, unreadable } = parseChangedFiles(diff);
       expect(unreadable).toHaveLength(0);
       expect(files).toHaveLength(1);
-      expect(files[0].path).toBe('ct-dashboard');
+      expect(files[0].path).toBe('example-dashboard');
       expect(files[0].mode).toBe('160000');
       expect(files[0].isSubmodule).toBe(true);
 
@@ -224,7 +224,7 @@ describe('Submodule Architecture Persona Routing', () => {
         { id: 'frontend', name: 'Frontend', enabled: true, paths: ['src/**/*.vue'] },
       ] as any;
 
-      const files = [{ path: 'cisco-cdr', isSubmodule: true }];
+      const files = [{ path: 'example-api', isSubmodule: true }];
       const result = deriveApplicablePersonas(personas, files);
       expect(result).toHaveLength(0);
     });

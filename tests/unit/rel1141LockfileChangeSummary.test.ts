@@ -83,7 +83,7 @@ describe('REL-1141: npm (package-lock.json)', () => {
 });
 
 describe('REL-1141: yarn.lock', () => {
-  it('reads berry: a bump, a new transitive package and a re-key (ct-quasar#847 shape)', () => {
+  it('reads berry: a bump, a new transitive package and a re-key (example-ui#847 shape)', () => {
     const text = ok(summarizeLockfileChange('yarn.lock', [
       '@@ -12462,11 +12462,12 @@ __metadata:',
       '   linkType: hard',

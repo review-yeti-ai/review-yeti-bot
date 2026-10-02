@@ -24,7 +24,7 @@ import { logger } from '../../src/utils/logger';
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 
 /**
- * REL-1084 (pilot, non-authoritative repos): review-yeti-bot and ct-meta publish their own Review
+ * REL-1084 (pilot, non-authoritative repos): review-yeti-bot and example-meta publish their own Review
  * Yeti check, so every stored prior is a WorkerReviewEvidence.v1 record with no gate row, and was
  * refused (`no-gate-evidence-record`). A non-authoritative run may now rest on one, from the
  * stored evidence alone: published conclusion success, run succeeded, the recorded lane roster

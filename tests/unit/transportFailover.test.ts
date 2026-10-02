@@ -116,7 +116,7 @@ describe('Multi-Transport Fast Failover', () => {
 
     const persona = { id: 'architecture', name: 'System Architecture & Design', charter: 'Check layering' };
     const diffFiles = [{ path: 'lib/supervisor.ex', patch: '+ def start_link do' }];
-    const prContext = { repo: 'calltelemetry/cisco-cdr', prNumber: 4452 };
+    const prContext = { repo: 'exampleorg/example-api', prNumber: 4452 };
 
     const result = await reviewWithModel(persona, diffFiles, prContext, null, {
       fetchImplementation: mockFetch,

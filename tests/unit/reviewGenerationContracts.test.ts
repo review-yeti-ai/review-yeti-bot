@@ -13,7 +13,7 @@ import { ConfigResolver } from '../../src/config/configResolver';
 describe('generational review identity and policy contracts', () => {
   it('creates a stable immutable snapshot bound to exact head and base commits', () => {
     const snapshot = createPRSnapshot({
-      owner: 'calltelemetry',
+      owner: 'exampleorg',
       repo: 'ct-review-bot',
       prNumber: 42,
       headSha: 'a'.repeat(40),
@@ -168,14 +168,14 @@ describe('generational review identity and policy contracts', () => {
       mode: '160000',
       oldSha: 'a'.repeat(40),
       newSha: 'b'.repeat(40),
-      newSubmoduleUrl: 'https://github.com/calltelemetry/ct-pr-operator.git',
+      newSubmoduleUrl: 'https://github.com/exampleorg/ct-pr-operator.git',
       isSubmodule: true,
     };
-    expect(resolveSubmoduleDecision(file, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
+    expect(resolveSubmoduleDecision(file, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['exampleorg/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
     expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://example.invalid/attacker.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: [] })).toMatchObject({ decision: 'BLOCK' });
     expect(resolveSubmoduleDecision({ ...file, oldSubmoduleUrl: undefined }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], url_change: 'block' })).toMatchObject({ decision: 'BLOCK' });
-    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://token@github.com:443/calltelemetry/ct-pr-operator.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
-    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://github.com@attacker.invalid/calltelemetry/ct-pr-operator.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['calltelemetry/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'BLOCK' });
+    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://token@github.com:443/exampleorg/ct-pr-operator.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['exampleorg/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
+    expect(resolveSubmoduleDecision({ ...file, newSubmoduleUrl: 'https://github.com@attacker.invalid/exampleorg/ct-pr-operator.git' }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], allowed_repositories: ['exampleorg/ct-pr-operator'], url_change: 'review' })).toMatchObject({ decision: 'BLOCK' });
   });
 
   it('resolves relative submodule URLs against the parent repository', () => {
@@ -185,7 +185,7 @@ describe('generational review identity and policy contracts', () => {
       oldSha: 'a'.repeat(40),
       newSha: 'b'.repeat(40),
       newSubmoduleUrl: '../dependency.git',
-      parentRepository: 'calltelemetry/parent',
+      parentRepository: 'exampleorg/parent',
       isSubmodule: true,
     }, { mode: 'metadata_only', require_pinned_commit: true, allowed_hosts: ['github.com'], url_change: 'review' })).toMatchObject({ decision: 'REVIEW_METADATA' });
   });

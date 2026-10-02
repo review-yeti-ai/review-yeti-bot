@@ -17,7 +17,7 @@ describe('PostgresReviewCompletionRepository', () => {
   const baseInput: ReviewCompletionRecordInput = {
     runId: 'run_12345',
     repositoryId: 98765,
-    repository: 'calltelemetry/dashboard',
+    repository: 'exampleorg/dashboard',
     prNumber: 42,
     baseSha: 'a'.repeat(40),
     headSha: 'b'.repeat(40),
@@ -32,7 +32,7 @@ describe('PostgresReviewCompletionRepository', () => {
     run_id: 'run_12345',
     delivery_id: null,
     repository_id: '98765',
-    repository: 'calltelemetry/dashboard',
+    repository: 'exampleorg/dashboard',
     pr_number: 42,
     base_sha: 'a'.repeat(40),
     head_sha: 'b'.repeat(40),
