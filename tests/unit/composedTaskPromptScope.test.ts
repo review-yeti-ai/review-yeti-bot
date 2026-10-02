@@ -51,6 +51,40 @@ function fakeResponse(content: string) {
 }
 
 describe('composed WORK task prompt scope', () => {
+  it('keeps an all-oversized task index local and requires original-patch paging', () => {
+    const section = buildScopedDiffSection([
+      { path: 'src/first.ts', patch: '+firstTaskEvidence'.repeat(100) },
+      { path: 'src/second.ts', patch: '+secondTaskEvidence'.repeat(100) },
+    ], { fileIndexScope: 'task-assignment', maxFileDiffChars: 512, tokenBudget: 1_000 });
+
+    expect(section.tier).toBe('tier_c_only');
+    expect(section.inlinedPaths).toEqual([]);
+    expect(section.indexedPaths).toEqual([]);
+    expect(section.skippedPaths).toEqual(['src/first.ts', 'src/second.ts']);
+    expect(section.diffText).toContain('=== TASK-ASSIGNED CHANGED FILES INDEX (2 file(s)) ===');
+    expect(section.diffText).toContain('=== ALL ASSIGNED FILES OVERSIZED ===');
+    expect(section.diffText).toContain('All files assigned to this task exceed max-file-diff-chars (512 chars). Use get_diff_page to inspect original patches in bounded pages.');
+    expect(section.diffText).not.toContain('=== ALL FILES OVERSIZED ===');
+    expect(section.diffText).not.toContain('All files in this PR exceed');
+    expect(section.diffText).not.toContain('=== PR CHANGED FILES INDEX');
+  });
+
+  it('keeps a budget-indexed task local while directing remaining paths to read-only diff tools', () => {
+    const section = buildScopedDiffSection([
+      { path: 'src/first.ts', patch: '+firstTaskEvidence'.repeat(25) },
+      { path: 'src/second.ts', patch: '+secondTaskEvidence'.repeat(25) },
+    ], { fileIndexScope: 'task-assignment', maxFileDiffChars: 1_000, tokenBudget: 700, charsPerToken: 1 });
+
+    expect(section.tier).toBe('tier_b');
+    expect(section.inlinedPaths).toEqual(['src/first.ts']);
+    expect(section.indexedPaths).toEqual(['src/second.ts']);
+    expect(section.skippedPaths).toEqual([]);
+    expect(section.diffText).toContain('=== TASK-ASSIGNED CHANGED FILES INDEX (2 file(s)) ===');
+    expect(section.diffText).toContain('Remaining files are indexed above and can be inspected on-demand using get_diff');
+    expect(section.diffText).not.toContain('=== PR CHANGED FILES INDEX');
+    expect(section.diffText).not.toContain('+secondTaskEvidence');
+  });
+
   it('requires paged inspection of oversized task files even when all remaining diffs fit inline', () => {
     const section = buildScopedDiffSection([
       { path: 'src/small.ts', patch: '+export const small = true;' },
