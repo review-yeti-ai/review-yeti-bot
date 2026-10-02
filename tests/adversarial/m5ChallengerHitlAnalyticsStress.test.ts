@@ -587,15 +587,15 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
         );
         const D30 = 30 * 86400 * 1000;
         (dashboardStore as any).data.reviewLogs = [
-          { id: '30d-exact', timestamp: new Date(now - D30).toISOString(), repo: 'calltelemetry/test' },
-          { id: '30d-outside', timestamp: new Date(now - D30 - 1).toISOString(), repo: 'calltelemetry/test' },
-          { id: 'pr-run-match', timestamp: new Date(now).toISOString(), prRun: 'calltelemetry/test#42' },
-          { id: 'repo-mismatch', timestamp: new Date(now).toISOString(), repo: 'calltelemetry/other', prRun: 'calltelemetry/other#42' },
+          { id: '30d-exact', timestamp: new Date(now - D30).toISOString(), repo: 'example/test' },
+          { id: '30d-outside', timestamp: new Date(now - D30 - 1).toISOString(), repo: 'example/test' },
+          { id: 'pr-run-match', timestamp: new Date(now).toISOString(), prRun: 'example/test#42' },
+          { id: 'repo-mismatch', timestamp: new Date(now).toISOString(), repo: 'example/other', prRun: 'example/other#42' },
           { id: 'repo-missing', timestamp: new Date(now).toISOString() },
         ];
-        expect(dashboardStore.getFilteredReviewLogs('30d', 'calltelemetry/test').map((l) => l.id))
+        expect(dashboardStore.getFilteredReviewLogs('30d', 'example/test').map((l) => l.id))
           .toEqual(['30d-exact', 'pr-run-match']);
-        expect(dashboardStore.getFilteredReviewLogs('7d', 'calltelemetry/test').map((l) => l.id))
+        expect(dashboardStore.getFilteredReviewLogs('7d', 'example/test').map((l) => l.id))
           .toEqual(['pr-run-match']);
         expect(Date.now()).toBe(now);
       } finally {
