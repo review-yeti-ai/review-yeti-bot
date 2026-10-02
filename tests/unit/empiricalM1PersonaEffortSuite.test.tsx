@@ -101,25 +101,25 @@ describe('Empirical Challenge Suite — Milestone 1: Default Persona Effort to L
       let yamlText = '';
       const preElements = document.querySelectorAll('pre');
       preElements.forEach((pre) => {
-        if (pre.textContent && pre.textContent.includes('personas:')) {
+        if (pre.textContent && pre.textContent.includes('tasks:')) {
           yamlText = pre.textContent;
         }
       });
 
       // Parse generated YAML text
       expect(yamlText).not.toBe('');
-      expect(yamlText).toContain('# Reviewer Personas Ensemble Configuration (11 Personas)');
+      expect(yamlText).toContain('# Swarm Review Tasks Configuration');
 
       const parsed: any = yaml.load(yamlText);
       expect(parsed).toBeDefined();
-      expect(parsed.personas).toBeDefined();
+      expect(parsed.tasks).toBeDefined();
 
-      const personaKeys = Object.keys(parsed.personas);
+      const personaKeys = Object.keys(parsed.tasks);
       expect(personaKeys).toHaveLength(11);
 
       // Verify EVERY persona has effort === 'low'
       for (const key of personaKeys) {
-        const p = parsed.personas[key];
+        const p = parsed.tasks[key];
         expect(p.effort).toBe('low');
       }
     });
@@ -130,7 +130,7 @@ describe('Empirical Challenge Suite — Milestone 1: Default Persona Effort to L
       let yamlText = '';
       const codeElements = document.querySelectorAll('code, pre');
       codeElements.forEach((el) => {
-        if (el.textContent && el.textContent.includes('personas:')) {
+        if (el.textContent && el.textContent.includes('tasks:')) {
           yamlText = el.textContent;
         }
       });
