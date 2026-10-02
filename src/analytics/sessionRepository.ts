@@ -15,8 +15,11 @@ import { computeFindingsDelta } from './kpiCalculator';
 export class SessionRepository {
   private baseDir: string;
   private store: any;
+  /** The service-log fallback applies to the default ledger, or to a store the caller supplied itself. */
+  private readonly allowStoreFallback: boolean;
 
   constructor(baseDir?: string, store?: any) {
+    this.allowStoreFallback = !baseDir || store !== undefined;
     this.baseDir = baseDir || path.join(process.cwd(), 'sessions');
     this.store = store || dashboardStore;
   }
@@ -28,7 +31,10 @@ export class SessionRepository {
   public getSessions(filter?: SessionFilterOptions): SessionRecord[] {
     let sessions = this.loadDiskSessions();
 
-    if (sessions.length === 0) {
+    // The dashboard-store fallback exists for the default ledger location (or a store the caller
+    // supplied). When the caller names a ledger directory explicitly, e.g. `--dir`, an empty or
+    // missing directory means "no sessions", not "show the service's (possibly seeded) review logs".
+    if (sessions.length === 0 && this.allowStoreFallback) {
       sessions = this.loadFallbackSessions();
     }
 
