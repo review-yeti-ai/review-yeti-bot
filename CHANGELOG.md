@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.116.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.2...v1.116.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **auth:** remove the built-in admin password and fail closed without ADMIN_PASSWORD ([#1293](https://github.com/review-yeti-ai/review-yeti-bot/issues/1293)) ([8b3ab78](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b3ab78284927b08776315d87024ed861e3b646f))
+
 ## [1.116.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.1...v1.116.2) (2026-10-02)
 
 
