@@ -436,10 +436,10 @@ jobs:
         run: node scripts/verify-legacy-runtime-image.mjs --image review-yeti-legacy-runtime:ci
 
   # OSS image publish. GHCR only: no Docker Hub, no DigitalOcean registry,
-  # and no kubectl/doctl. CallTelemetry's cluster stays disconnected until a
+  # and no kubectl/doctl. Exampleorg's cluster stays disconnected until a
   # later, explicit pull from these digests.
   #
-  # cisco-cdr docker-backend-release pattern: native linux/amd64 and
+  # example-api docker-backend-release pattern: native linux/amd64 and
   # native linux/arm64 on matching runners, then imagetools merge.
   # Never qemu. Never platforms: linux/amd64,linux/arm64 on one job.
   # review-yeti-ai has no live Blacksmith pool (2204-arm queued with no
@@ -734,7 +734,7 @@ jobs:
       - name: Attest the multi-arch GHCR indexes
         run: |
           set -euo pipefail
-          # Production rolls when calltelemetry/ct-infrastructure pins these
+          # Production rolls when exampleorg/example-infra pins these
           # index digests. This public workflow only proves the indexes exist
           # and contain both platforms. It does not kubectl or doctl.
           index_digest() {

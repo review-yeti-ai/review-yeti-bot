@@ -63,11 +63,11 @@
             },
             {
               "name": "REVIEW_YETI_BUDGET",
-              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta,calltelemetry/ct-release"
+              "value": "review-yeti-ai/review-yeti-bot,exampleorg/example-meta,exampleorg/example-release"
             },
             {
               "name": "REVIEW_YETI_MAP_REDUCE",
-              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+              "value": "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
             }
           ],
           "typesafe_names": [
@@ -93,11 +93,11 @@
             },
             {
               "name": "REVIEW_YETI_BUDGET",
-              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta,calltelemetry/ct-release"
+              "value": "review-yeti-ai/review-yeti-bot,exampleorg/example-meta,exampleorg/example-release"
             },
             {
               "name": "REVIEW_YETI_MAP_REDUCE",
-              "value": "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta"
+              "value": "review-yeti-ai/review-yeti-bot,exampleorg/example-meta"
             }
           ],
           "typesafe_names": []

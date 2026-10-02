@@ -171,15 +171,15 @@ Requested team: Full multi-agent team (parallel work streams across dispatcher, 
 
 ## 2026-09-27T21:52:53Z
 
-Implement the new agentic harness improvements from recent `ct-meta` commits (API-3330 and API-3333) into the DOKS runner lifecycle across both the TypeScript dispatcher and Go Kubernetes operator.
+Implement the new agentic harness improvements from recent `example-meta` commits (API-3330 and API-3333) into the DOKS runner lifecycle across both the TypeScript dispatcher and Go Kubernetes operator.
 
 Working directory: /Users/jasonbarbee/work/review-yeti-bot
 Integrity mode: development
 
 Reference material:
-- Architecture specification: `docs/plans/adaptive-agent-factory/2026-09-27-generalize-review-yeti-agent-harness.md` in `ct-meta`
-- Schema contracts: `knowledge/contracts/agent-harness.v1.schema.json` in `ct-meta`
-- Contract validator: `tools/agent_harness_contract.py` in `ct-meta`
+- Architecture specification: `docs/plans/adaptive-agent-factory/2026-09-27-generalize-review-yeti-agent-harness.md` in `example-meta`
+- Schema contracts: `knowledge/contracts/agent-harness.v1.schema.json` in `example-meta`
+- Contract validator: `tools/agent_harness_contract.py` in `example-meta`
 - Operator controllers: `k8s-operator/controllers/` in `review-yeti-bot`
 - Runner infrastructure: `src/infrastructure/k8sJobRunner.ts` in `review-yeti-bot`
 
@@ -203,14 +203,14 @@ All Kubernetes manifests generated or reconciled must target the namespaced boun
 ## Acceptance Criteria
 
 ### Schema & Contract Conformance
-- [ ] Runner WorkRequest payloads validate cleanly against `ct-agent-work-request.v1` schema from `ct-meta`
-- [ ] Execution receipt payloads validate cleanly against `ct-agent-execution-receipt.v1` schema from `ct-meta`
+- [ ] Runner WorkRequest payloads validate cleanly against `ct-agent-work-request.v1` schema from `example-meta`
+- [ ] Execution receipt payloads validate cleanly against `ct-agent-execution-receipt.v1` schema from `example-meta`
 - [ ] Fencing epoch mismatches or stale worker lease tokens trigger fail-closed reconciliation in the Go controller
 
 ### Controller & Dispatcher Tests
 - [ ] Go controller unit and reconciliation tests pass (`go test ./controllers/...` in `k8s-operator`) with zero regressions
 - [ ] TypeScript runner unit tests pass (`npm test tests/unit/...`) with zero regressions
-- [ ] Offline contract qualification in `ct-meta` (`python3 test/agent_harness_contract_test.py`) passes without errors
+- [ ] Offline contract qualification in `example-meta` (`python3 test/agent_harness_contract_test.py`) passes without errors
 
 ## 2026-10-01T14:02:49Z
 

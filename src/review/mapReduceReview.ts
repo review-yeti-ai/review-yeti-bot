@@ -122,7 +122,7 @@ export const MAP_REDUCE_MIN_CHARS_ENV = 'REVIEW_YETI_MAP_REDUCE_MIN_CHARS';
  * the reduce pass. The REL-1077 pilot measured it: review-yeti-bot#1033
  * (~13.8k tokens, just over the budget) took 471 s and 36 turns chunked
  * (4 lanes -> 8 chunks + 4 reduce passes) against 285 s and 8 turns in one
- * pass, and W5 alone packed ct-meta#3414 (~66k chars per lane) in one pass.
+ * pass, and W5 alone packed example-meta#3414 (~66k chars per lane) in one pass.
  */
 export const DEFAULT_MAP_REDUCE_MIN_CHARS = MAX_PACKED_DIFF_CHARS;
 

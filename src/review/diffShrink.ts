@@ -394,7 +394,7 @@ export function resolveShrunkReviewApplicability<P extends Parameters<typeof res
  * REL-1141: every changed file the decision did not send whole, for a reason
  * outside diff shrinking, in a stable order. A summary that says "every change
  * was sent in full" beside a hidden or summarized lockfile is what let
- * calltelemetry/openclaw-linear-plugin#30 read as a complete review.
+ * exampleorg/openclaw-linear-plugin#30 read as a complete review.
  */
 export function notSentInFullOf(
   decision: Pick<ReviewApplicability<unknown>, 'effectiveFiles' | 'hunkResult' | 'truncatedFiles' | 'unavailablePatches'

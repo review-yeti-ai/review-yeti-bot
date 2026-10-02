@@ -88,7 +88,7 @@ export const PERSONA_BUDGET_CHARS = 56_000;
 
 /**
  * Body limit on the path review workers use to reach Bifrost. The in-cluster
- * front `gateway-internal-https` (ct-infrastructure,
+ * front `gateway-internal-https` (example-infra,
  * `clusters/doks-nyc1/apps/llm-gateway/deploy-gateway-internal-https.yaml`) is
  * nginx with no `client_max_body_size`, so nginx's default of 1 MiB applies.
  * Bifrost's own `maxRequestBodySizeMb` is 10. An oversized sec-lane request

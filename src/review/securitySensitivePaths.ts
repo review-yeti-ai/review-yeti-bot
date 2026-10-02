@@ -5,7 +5,7 @@
  * fast-ship guard and security-lane gate in the panel, the preflight MCP tool,
  * and the Jev triage shadow's `security_sensitive` fact. There is no second
  * list; before REL-1135 there were three, and the one that decided depth had no
- * lockfiles and no toolchain pins (ct-meta ADRs 0685 and 0688).
+ * lockfiles and no toolchain pins (example-meta ADRs 0685 and 0688).
  *
  * Paths that always get full review depth, whatever any shrinking rule, budget
  * or classifier would otherwise decide (plan 2026-09-23, section 3, invariant 2).
