@@ -42,6 +42,7 @@ import { createReviewExecutionCheckpointHandler } from '../../src/api/reviewExec
 import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2RecoveryHttp';
 import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { createActionDispatchApp } from '../../src/dispatchServer';
+import { buildGracefulComposedPanelResult, executeComposedReview } from '../../src/panel/composedEngine';
 
 import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -299,7 +300,6 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
     } as any)).rejects.toThrow('Graceful composed continuation is service-derived');
     expect(connect).not.toHaveBeenCalled();
   });
-
   it('rejects ready-for-review provenance on any other admission route before persistence', async () => {
     const { repository, connect } = repositoryThatStopsAtPersistence();
     await expect(repository.admit({
@@ -597,6 +597,7 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     gates: PostgresReviewGateRepository,
     sourceMode: 'p2' | 'p1' | 'zero' = 'p2',
     historicalP2Inclusive = false,
+    layout: { concurrent?: boolean; explicitEmptyRechecks?: boolean } = {},
   ) {
     const seeded = await seedMcpIncompleteAttempt(repository, database, gates, 'p2', 'composed');
     const gate = (await database.query(
@@ -626,13 +627,23 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       findings: sourceMode === 'zero' ? [] : index < distinctFindings.length ? [distinctFindings[index]]
         : index === 4 ? [{ ...distinctFindings[0] }] : [],
     }));
+    const tasksInPlanOrder = personas.map((persona) => ({ id: persona.id, findings: persona.findings }));
+    const completedTasks = layout.concurrent
+      ? [4, 1, 3, 0, 2, 5].map((index) => tasksInPlanOrder[index]) : tasksInPlanOrder;
+    // Exercise the deployed closeout producer: completed tasks arrive in
+    // concurrent order, while immutable persona evidence is emitted in plan order.
+    const closeout = buildGracefulComposedPanelResult({ config: {},
+      snapshot: { revision: 7, plan, completedTasks, satisfiedFindingRecheckIds: [] },
+      headSha: seeded.run.identity.headSha, repositoryVisibility: 'PRIVATE', panelWallClockMs: 100 });
+    expect(closeout.personas.map((persona) => persona.id)).toEqual(personas.map((persona) => persona.id));
     const completedAt = '2026-09-29T12:00:00.000Z';
     const completion: WorkerReviewCompletion = {
       ...seeded.completion,
       result: {
         ...seeded.completion.result,
         completedAt,
-        personas,
+        personas: closeout.personas.map((persona) => ({ id: persona.id, decision: persona.decision,
+          status: 'COMPLETE' as const, findings: persona.findings })),
         taskPlan: plan,
         coverageComplete: false,
         quorumSatisfied: false,
@@ -659,7 +670,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       executionAttempt: 1,
       revision: 7,
       plan,
-      completedTasks: personas.map((persona) => ({ id: persona.id, findings: persona.findings })),
+      completedTasks,
+      ...(layout.explicitEmptyRechecks ? { satisfiedFindingRecheckIds: [] } : {}),
     });
     const checkpointJson = JSON.stringify(checkpoint);
     await database.query(`INSERT INTO review_execution_checkpoints
@@ -813,14 +825,17 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { priorProof, followupProof, completion, digest };
   }
 
-  it.each([false, true])('retains a graceful composed P2 partial (historical inclusive=%s) on an ordinary MCP retry and publishes its complete retry using current policy', async (historical) => {
+  it.each([false, true].flatMap((historical) => [false, true].flatMap((concurrent) =>
+    [false, true].map((explicitEmptyRechecks) => ({ historical, concurrent, explicitEmptyRechecks })))))
+  ('retains graceful composed evidence through admission and complete retry (historical=$historical, concurrent=$concurrent, explicit-empty=$explicitEmptyRechecks)', async ({ historical, concurrent, explicitEmptyRechecks }) => {
     let proof: any;
     const resolveGenerationRecovery = vi.fn(async () => [proof]);
     const { repository, client, gateRepository } = await createRepository({
       validateAuthoritativeAdmission: async () => undefined,
       resolveGenerationRecovery,
     }, true);
-    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', historical);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', historical,
+      { concurrent, explicitEmptyRechecks });
     proof = seeded.proof;
     const a1WorkerToken = 'ghs_rel1214_graceful_a1_worker';
     await client.query('UPDATE review_dispatch_outbox SET worker_token_digest = $2 WHERE run_id = $1',
@@ -882,12 +897,29 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     expect(retained.context?.findings).toHaveLength(5);
 
     const workerStartedAt = 1_790_000_130_000;
-    const resumedPersonas = seeded.checkpoint.completedTasks.map((task) => ({
-      id: task.id,
-      decision: task.findings.length > 0 ? 'FINDINGS' as const : 'APPROVE' as const,
-      status: 'COMPLETE' as const,
-      findings: task.findings,
-    }));
+    const addedLinesPatch = ['@@ -0,0 +1,20 @@', ...Array.from({ length: 20 }, (_, index) =>
+      `+const coveredLine${index + 1} = ${index + 1};`), ''].join('\n');
+    const complete = vi.fn(async (payload: any) => {
+      const last = payload.messages.at(-1)?.content;
+      const text = typeof last === 'string' ? last : (last ?? []).map((part: any) => part.text ?? '').join('\n');
+      const task = text.match(/Task id: (task-\d+)/u)?.[1];
+      const nonce = text.match(/CT_REVIEW_NONCE:([a-f0-9-]+)/u)?.[1];
+      expect(task).toMatch(/^task-[78]$/u);
+      expect(nonce).toBeDefined();
+      return { model: 'local-fixture', content: JSON.stringify({ nonce, task, status: 'COMPLETE', findings: [] }),
+        usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0, raw: {} };
+    });
+    const resumed = await executeComposedReview({
+      config: authoritativeAdmission('resumed-engine', 1_000, 'composed').authoritativeGate.prepared.config,
+      repository: `${seeded.run.identity.owner}/${seeded.run.identity.repo}`, headSha: seeded.run.identity.headSha,
+      changedFiles: seeded.checkpoint.plan.map((task) => ({ path: task.paths[0], patch: addedLinesPatch })),
+      client: { complete }, checkpoint: { resumed: a2Checkpoint, save: async () => undefined },
+    });
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(resumed.personas.map((persona) => persona.id).sort()).toEqual(seeded.checkpoint.plan.map((task) => task.id).sort());
+    for (const task of seeded.checkpoint.completedTasks) {
+      expect(resumed.personas.find((persona) => persona.id === task.id)?.findings).toEqual(task.findings);
+    }
     const workerResult: WorkerReviewCompletion = {
       version: 'WorkerReviewCompletion.v1', runId: seeded.run.runId,
       repositoryId: seeded.completion.repositoryId, owner: seeded.run.identity.owner,
@@ -897,16 +929,13 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       executionAttempt: 2,
       result: {
         version: 'WorkerReviewResult.v1', completedAt: new Date(workerStartedAt + 1_000).toISOString(),
-        personas: [...resumedPersonas, ...seeded.checkpoint.plan.slice(resumedPersonas.length).map((task) => ({
-          id: task.id, decision: 'APPROVE' as const, status: 'COMPLETE' as const, findings: [],
-        }))],
-        taskPlan: seeded.checkpoint.plan,
+        personas: resumed.personas.map((persona) => ({ id: persona.id, decision: persona.decision,
+          status: 'COMPLETE' as const, findings: persona.findings })),
+        taskPlan: resumed.taskPlan,
         coverageComplete: true, quorumSatisfied: true, findingCount: 4, blockingFindingCount: 0,
         incompleteP2Recovery: incompleteP2RecoveryClaimFor(retained.context!),
       },
     };
-    const addedLinesPatch = ['@@ -0,0 +1,20 @@', ...Array.from({ length: 20 }, (_, index) =>
-      `+const coveredLine${index + 1} = ${index + 1};`), ''].join('\n');
     const trusted = {
       current: { repositoryId: seeded.completion.repositoryId, prNumber: seeded.run.identity.prNumber,
         headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha,
@@ -1157,6 +1186,175 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       [seeded.run.runId])).rows[0].count)).toBe(gatesBefore);
     expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
       [seeded.run.runId])).rows[0].count).toBe(0);
+  });
+
+  it.each(['duplicate task', 'omitted task', 'unknown task', 'uncompleted task', 'changed findings',
+    'swapped findings', 'changed plan', 'changed head', 'nonempty recheck receipts'] as const)
+  ('refuses a %s in a concurrent checkpoint before any recovery allocation', async (damage) => {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', false,
+      { concurrent: true, explicitEmptyRechecks: true });
+    proof = seeded.proof;
+    const damaged = structuredClone(seeded.checkpoint);
+    if (damage === 'duplicate task') damaged.completedTasks[1] = structuredClone(damaged.completedTasks[0]);
+    if (damage === 'omitted task') damaged.completedTasks.pop();
+    if (damage === 'unknown task') damaged.completedTasks[0].id = 'unknown-task';
+    if (damage === 'uncompleted task') damaged.completedTasks[0].id = damaged.plan[7].id;
+    if (damage === 'changed findings') damaged.completedTasks[0].findings[0].body = 'Changed evidence.';
+    if (damage === 'swapped findings') {
+      [damaged.completedTasks[0].findings, damaged.completedTasks[1].findings]
+        = [damaged.completedTasks[1].findings, damaged.completedTasks[0].findings];
+    }
+    if (damage === 'changed plan') damaged.plan[0].question = 'Changed source question.';
+    if (damage === 'changed head') damaged.headSha = 'f'.repeat(40);
+    if (damage === 'nonempty recheck receipts') damaged.satisfiedFindingRecheckIds = [randomUUID()];
+    const payload = JSON.stringify(damaged);
+    await client.query('UPDATE review_execution_checkpoints SET payload=$2::jsonb,byte_length=$3 WHERE run_id=$1',
+      [seeded.run.runId, payload, Buffer.byteLength(payload)]);
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = (await client.query('SELECT count(*)::int count FROM github_deliveries')).rows[0].count;
+    await expect(repository.admit({
+      ...authoritativeAdmission(`checkpoint-damage-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    })).rejects.toThrow();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int count FROM github_deliveries')).rows[0].count).toBe(deliveriesBefore);
+    expect((await client.query('SELECT count(*)::int count FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+    expect((await client.query('SELECT count(*)::int count FROM review_gate_attempts WHERE run_id=$1',
+      [seeded.run.runId])).rows[0].count).toBe(1);
+  });
+
+  type ImmutableDuplicateDamage = 'immutable completed persona' | 'matching completed IDs' | 'matching pending plan IDs';
+
+  async function duplicateImmutableTaskEvidence(
+    database: PoolClient, seeded: Awaited<ReturnType<typeof seedGracefulComposedIncompleteAttempt>>,
+    damage: ImmutableDuplicateDamage, replaceSourceCheckpoint = false,
+  ) {
+    const completion = structuredClone(seeded.completion);
+    if (damage === 'matching pending plan IDs') {
+      // Duplicate two unfinished plan members: all six completed task IDs and
+      // their findings remain unchanged, so missing completed work is not the refusal.
+      completion.result.taskPlan![7].id = completion.result.taskPlan![6].id;
+    } else {
+      // Preserve array length and exact findings while making plan-order persona
+      // evidence repeat an ID. The second original completed ID is now missing.
+      completion.result.personas[1].id = completion.result.personas[0].id;
+    }
+    const digest = workerReviewCompletionDigest(completion);
+    const payload = JSON.stringify(completion);
+    // Bind the seeded immutable source and its source Gate to the actual changed
+    // bytes; rejection must not be an incidental stale digest/SQL join mismatch.
+    await database.query(`UPDATE review_worker_completions SET payload=$2::jsonb,content_digest=$3,byte_length=$4
+      WHERE run_id=$1 AND execution_attempt=1`, [seeded.run.runId, payload, digest, Buffer.byteLength(payload)]);
+    await database.query(`UPDATE review_gate_attempts SET worker_result_digest=$2
+      WHERE run_id=$1 AND execution_attempt=1`, [seeded.run.runId, digest]);
+    if (replaceSourceCheckpoint) {
+      const checkpoint = structuredClone(seeded.checkpoint);
+      if (damage === 'matching pending plan IDs') checkpoint.plan = completion.result.taskPlan!;
+      else {
+        checkpoint.completedTasks = seeded.completion.result.personas.map((persona) =>
+          structuredClone(seeded.checkpoint.completedTasks.find((task) => task.id === persona.id)!));
+        checkpoint.completedTasks[1].id = checkpoint.completedTasks[0].id;
+        expect(checkpoint.completedTasks).toEqual(completion.result.personas.map((persona) => ({ id: persona.id, findings: persona.findings })));
+      }
+      const json = JSON.stringify(checkpoint);
+      await database.query(`UPDATE review_execution_checkpoints SET payload=$2::jsonb,byte_length=$3
+        WHERE run_id=$1`, [seeded.run.runId, json, Buffer.byteLength(json)]);
+    }
+    expect(digest).not.toBe(seeded.digest);
+    expect((await database.query(`SELECT c.content_digest,g.worker_result_digest FROM review_worker_completions c
+      JOIN review_gate_attempts g ON g.run_id=c.run_id AND g.execution_attempt=c.execution_attempt
+      WHERE c.run_id=$1 AND c.execution_attempt=1`, [seeded.run.runId])).rows[0])
+      .toEqual({ content_digest: digest, worker_result_digest: digest });
+  }
+
+  it.each(['immutable completed persona', 'matching completed IDs', 'matching pending plan IDs'] as const)
+  ('refuses duplicate IDs in %s source evidence before any recovery allocation', async (damage) => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', false,
+      { concurrent: true, explicitEmptyRechecks: true });
+    proof = seeded.proof;
+    await duplicateImmutableTaskEvidence(client, seeded, damage, damage !== 'immutable completed persona');
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveriesBefore = (await client.query('SELECT count(*)::int count FROM github_deliveries')).rows[0].count;
+    const gatesBefore = (await client.query('SELECT * FROM review_gate_attempts WHERE run_id=$1 ORDER BY execution_attempt',
+      [seeded.run.runId])).rows;
+    await expect(repository.admit({
+      ...authoritativeAdmission(`immutable-duplicate-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    })).rejects.toThrow();
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int count FROM github_deliveries')).rows[0].count).toBe(deliveriesBefore);
+    expect((await client.query('SELECT * FROM review_gate_attempts WHERE run_id=$1 ORDER BY execution_attempt',
+      [seeded.run.runId])).rows).toEqual(gatesBefore);
+    expect((await client.query('SELECT count(*)::int count FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+  });
+
+  it.each(['immutable completed persona', 'matching pending plan IDs'] as const)
+  ('refuses duplicate IDs in %s immutable evidence while reconstructing an admitted receipt', async (damage) => {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', false,
+      { concurrent: true, explicitEmptyRechecks: true });
+    proof = seeded.proof;
+    await repository.admit({ ...authoritativeAdmission(`immutable-reconstruction-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false });
+    await bindPendingGate(gateRepository, 1_790_000_120_000);
+    const token = 'ghs_rel1302_immutable_duplicate_worker';
+    await client.query(`UPDATE review_dispatch_outbox SET status='claimed',worker_token_digest=$2,
+      lease_owner='immutable-duplicate-worker',lease_expires_at=to_timestamp($3/1000.0) WHERE run_id=$1`,
+      [seeded.run.runId, sha256(token), 1_790_000_460_000]);
+    expect((await writeCheckpointOverRealHttp({ ...seeded.checkpoint, executionAttempt: 2, revision: 8 }, token)).status).toBe(200);
+    expect((await readRetainedOverRealHttp(seeded.run.runId, token, 2)).statuses).toEqual([200]);
+    await duplicateImmutableTaskEvidence(client, seeded, damage);
+    const before = await dispatchState(client, seeded.run.runId);
+    const receiptBefore = (await client.query('SELECT * FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows;
+    const refused = await readRetainedOverRealHttp(seeded.run.runId, token, 2);
+    expect(refused.statuses).toEqual([503]);
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT * FROM review_generation_recoveries WHERE run_id=$1',
+      [seeded.run.runId])).rows).toEqual(receiptBefore);
+  });
+
+  it.each(['digest', 'revision'] as const)('rejects a tampered %s when reconstructing the admitted receipt after checkpoint replacement', async (damage) => {
+    let proof: any;
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined, resolveGenerationRecovery: async () => [proof],
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p2', false,
+      { concurrent: true, explicitEmptyRechecks: true });
+    proof = seeded.proof;
+    await repository.admit({ ...authoritativeAdmission(`receipt-tamper-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false });
+    await bindPendingGate(gateRepository, 1_790_000_120_000);
+    const token = 'ghs_rel1302_receipt_tamper_worker';
+    await client.query(`UPDATE review_dispatch_outbox SET status='claimed',worker_token_digest=$2,
+      lease_owner='receipt-tamper-worker',lease_expires_at=to_timestamp($3/1000.0) WHERE run_id=$1`,
+      [seeded.run.runId, sha256(token), 1_790_000_460_000]);
+    const replaced = { ...seeded.checkpoint, executionAttempt: 2, revision: 8 };
+    expect((await writeCheckpointOverRealHttp(replaced, token)).status).toBe(200);
+    expect((await readRetainedOverRealHttp(seeded.run.runId, token, 2)).statuses).toEqual([200]);
+    await client.query(`UPDATE review_generation_recoveries SET evidence=jsonb_set(evidence,$2::text[],$3::jsonb)
+      WHERE run_id=$1 AND recovered_generation=1`, [seeded.run.runId,
+      ['legacyIncompleteRoster', 'gracefulCheckpointReceipt', damage], JSON.stringify(damage === 'digest' ? 'f'.repeat(64) : 99)]);
+    const before = await dispatchState(client, seeded.run.runId);
+    const refused = await readRetainedOverRealHttp(seeded.run.runId, token, 2);
+    expect(refused.statuses).toEqual([503]);
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
   });
 
   it('refuses a composed graceful retry when its App summary reports blocking findings before allocating', async () => {

@@ -706,8 +706,20 @@ export async function loadIncompleteP2RecoveryContext(
           || checkpoint.policyDigest !== identity.policyDigest || checkpoint.configDigest !== identity.configDigest
           || canonicalJson(checkpoint.plan) !== canonicalJson(completion.result.taskPlan)
           || checkpoint.completedTasks.length !== counts.completed
-          || canonicalJson(checkpoint.completedTasks) !== canonicalJson(checkpointShape.completedTasks)) refuse();
-        checkpointReceipt = { revision: checkpoint.revision, digest: sha256(canonicalJson(checkpoint)) };
+          || (checkpoint.satisfiedFindingRecheckIds?.length ?? 0) !== 0) refuse();
+        // Concurrent tasks enter the checkpoint in completion order; immutable
+        // closeout personas use plan order. Bind the same task evidence by id,
+        // retaining exact findings and rejecting duplicate or missing members.
+        const completionOrder = new Map(checkpointShape.completedTasks.map((task, index) => [task.id, index]));
+        if (completionOrder.size !== counts.completed
+          || checkpoint.completedTasks.some((task) => !completionOrder.has(task.id))) refuse();
+        const completedTasks = [...checkpoint.completedTasks].sort((left, right) =>
+          completionOrder.get(left.id)! - completionOrder.get(right.id)!);
+        if (canonicalJson(completedTasks) !== canonicalJson(checkpointShape.completedTasks)) refuse();
+        // Receipt reconstruction must use the same order, while preserving the
+        // deployed checkpoint's optional explicit empty recheck-receipt field.
+        checkpointReceipt = { revision: checkpoint.revision,
+          digest: sha256(canonicalJson({ ...checkpoint, completedTasks })) };
       } else {
         // The attempt-2 worker legitimately replaces the single latest-checkpoint
         // row. Reconstruct the admitted a1 checkpoint from its immutable
@@ -719,8 +731,14 @@ export async function loadIncompleteP2RecoveryContext(
         const checkpoint = parseReviewExecutionCheckpoint({
           ...checkpointShape, revision: Number(storedCheckpointReceipt.revision),
         });
-        const digest = sha256(canonicalJson(checkpoint));
-        if (!constantTimeDigestEqual(digest, storedCheckpointReceipt.digest)) refuse();
+        let digest = sha256(canonicalJson(checkpoint));
+        if (!constantTimeDigestEqual(digest, storedCheckpointReceipt.digest)) {
+          // Older checkpoints omit this optional field; deployed workers also
+          // emit an explicit empty list. Both forms remain hash-bound. No
+          // nonempty receipt is invented from the immutable completion.
+          digest = sha256(canonicalJson({ ...checkpoint, satisfiedFindingRecheckIds: [] }));
+          if (!constantTimeDigestEqual(digest, storedCheckpointReceipt.digest)) refuse();
+        }
         checkpointReceipt = { revision: checkpoint.revision, digest };
       }
       (proof.legacyIncompleteRoster as NonNullable<typeof proof.legacyIncompleteRoster>)

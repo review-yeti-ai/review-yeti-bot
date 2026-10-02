@@ -3,6 +3,7 @@ import request from 'supertest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createApp } from '../../src/app';
+import { assertLiveMarkup } from '../support/dashboardMarkup';
 
 describe('Milestone 4 Empirical Challenger: Express Static Serving & Middleware Harness', () => {
   let app: any;
@@ -141,7 +142,7 @@ describe('Milestone 4 Empirical Challenger: Express Static Serving & Middleware 
       const res = await request(app).get('/live');
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toMatch(/html/);
-      expect(res.text).toContain('Live Review Inspector');
+      assertLiveMarkup(res.text);
     });
 
     it('GET /settings delivers public/settings.html static export', async () => {
