@@ -1460,9 +1460,10 @@ describe('runPublishingReviewWorker', () => {
   });
 
   it('reports the findings behind a self-published check as evidence, before the terminal callback, for both conclusions', async () => {
-    for (const [finding, conclusion] of [
-      [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }, 'failure'],
-      [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }, 'success'],
+    for (const [findings, conclusion] of [
+      [[{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }], 'failure'],
+      [[{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }], 'failure'],
+      [[], 'success'],
     ] as const) {
       const order: string[] = [];
       const completion = {
@@ -1476,7 +1477,7 @@ describe('runPublishingReviewWorker', () => {
         completion, checkClient: cc,
         panelRunner: vi.fn(async () => ({
           applicablePersonaIds: ['sec-lane'],
-          personas: [{ id: 'sec-lane', findings: [finding] }],
+          personas: [{ id: 'sec-lane', findings: [...findings] }],
           optionalFailures: [],
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict: 'SHIP' },
@@ -1489,8 +1490,8 @@ describe('runPublishingReviewWorker', () => {
       const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as Record<string, any>;
       expect(event).toMatchObject({
         version: 'WorkerReviewEvidence.v1', runId: env().REVIEW_RUN_ID, executionAttempt: 2, checkId: 4242, conclusion,
-        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: 'FINDINGS',
-          findings: [expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })] }] },
+        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: findings.length ? 'FINDINGS' : 'APPROVE',
+          findings: findings.map((finding) => expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })) }] },
       });
       if (conclusion === 'success') {
         expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
@@ -1557,7 +1558,7 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('success');
+    expect(receipt.conclusion).toBe('failure');
     const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
     expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
       ['found', 'FINDINGS'],   // no stated decision, findings present
@@ -1566,10 +1567,9 @@ describe('runPublishingReviewWorker', () => {
     ]);
   });
 
-  it('still reports the terminal success, and no evidence, when the result fails the contract', async () => {
-    // The green check is already published by the time evidence is built. A
-    // result the service would refuse (here: a finding body past the contract's
-    // text bound) must be dropped, not allowed to abort the report.
+  it('never reports terminal success or invalid evidence when unresolved P2 results fail the contract', async () => {
+    // The failed check is already published before evidence is built. An oversized
+    // finding must suppress invalid evidence without reporting terminal success.
     const completion = {
       reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
       reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
@@ -1586,11 +1586,8 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('success');
-    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
-    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(event.version).toBe('WorkerTerminalSuccess.v1');
-    expect(event).not.toHaveProperty('result');
+    expect(receipt.conclusion).toBe('failure');
+    expect(completion.reportTerminalSuccess).not.toHaveBeenCalled();
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
