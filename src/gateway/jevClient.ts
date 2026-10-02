@@ -415,8 +415,9 @@ export class JevClient implements JevAsker {
   private readonly maxRetryDelayMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
-  /** Deadline for this client instance's whole run, computed once at construction. */
-  private readonly stageDeadline: number;
+  /** Shared stage window begins with the first request, never during idle setup. */
+  private stageDeadline: number | undefined;
+  private readonly stageBudgetMs: number;
 
   constructor(options: JevClientOptions = {}) {
     this.baseUrl = resolveJevEndpoint(options.baseUrl || `${DEFAULT_JEV_ORIGIN}${JEV_SYSTEM_ONE_PATH}`);
@@ -432,11 +433,13 @@ export class JevClient implements JevAsker {
     this.maxRetryDelayMs = options.maxRetryDelayMs ?? 2000;
     this.sleep = options.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     this.random = options.random || Math.random;
-    this.stageDeadline = this.now() + (options.stageBudgetMs ?? DEFAULT_STAGE_BUDGET_MS);
+    this.stageBudgetMs = options.stageBudgetMs ?? DEFAULT_STAGE_BUDGET_MS;
   }
 
   private remainingBudgetMs(): number {
-    return this.stageDeadline - this.now();
+    const now = this.now();
+    this.stageDeadline ??= now + this.stageBudgetMs;
+    return this.stageDeadline - now;
   }
 
   /** ms available to the next call, or null if the budget cannot usefully start a call. */

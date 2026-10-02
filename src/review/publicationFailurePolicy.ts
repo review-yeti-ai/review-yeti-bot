@@ -1,4 +1,8 @@
-import type { IncompleteLaneDescription } from './laneInfrastructure';
+import {
+  formatIncompleteInfrastructureDetail,
+  formatIncompleteInfrastructureTitle,
+  type IncompleteLaneDescription,
+} from './laneInfrastructure';
 
 // REL-1113: the lane-infrastructure decision, its classes/reason, the provider-status extractor and
 // the INCOMPLETE title renderer are owned by `./laneInfrastructure` (plain CommonJS), so the
@@ -82,17 +86,73 @@ export const RECOVERABLE_PANEL_AUTO_RETRY_CAP = 2;
 
 /**
  * Single source of truth for "does this execution attempt still have an
- * automatic recoverable-panel retry available." Both the dispatcher's
- * re-queue gate (`recoverablePanelRetry.requeueRecoverableIncompletePanelFailure`)
- * and the worker's own "no further automatic retry" exhaustion summary
- * (`publishingReview.ts`) call this instead of inlining the comparison, so
- * the two can never drift on what counts as eligible (REL-620).
+ * automatic recoverable-panel retry available." The dispatcher's re-queue
+ * gate calls this to decide eligibility. Worker-facing reporting uses
+ * `recoverablePanelRetryReportingStatus` and does not treat eligibility as a
+ * scheduling receipt (REL-620).
  */
 export function isRecoverablePanelRetryEligible(executionAttempt: number): boolean {
   // Execution attempts are 1-based: the first worker execution reports
   // attempt 1. Zero or a negative value is not a real attempt and must never
   // be re-queued as `retryAfterExecutionAttempt: 0`.
   return Number.isSafeInteger(executionAttempt) && executionAttempt >= 1 && executionAttempt <= RECOVERABLE_PANEL_AUTO_RETRY_CAP;
+}
+
+export type RecoverablePanelRetryReportingStatus = 'not_confirmed' | 'cap_exhausted' | 'unknown';
+
+/**
+ * Reporting-only state for the worker. Eligibility is not a dispatch receipt:
+ * the completion API acknowledges delivery before the service independently
+ * validates and admits any replacement attempt.
+ */
+export function recoverablePanelRetryReportingStatus(executionAttempt: number): RecoverablePanelRetryReportingStatus {
+  if (isRecoverablePanelRetryEligible(executionAttempt)) return 'not_confirmed';
+  if (Number.isSafeInteger(executionAttempt) && executionAttempt === RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1) return 'cap_exhausted';
+  return 'unknown';
+}
+
+/** Worker-facing title: never turn retry eligibility or a delivery ACK into a scheduled-next-attempt claim. */
+export function renderRecoverablePanelRetryTitle(
+  lanes: readonly IncompleteLaneDescription[],
+  executionAttempt: number,
+): string {
+  const detail = formatIncompleteInfrastructureDetail(lanes);
+  const status = recoverablePanelRetryReportingStatus(executionAttempt);
+  const statusText = status === 'not_confirmed'
+    ? 'automatic retry NOT CONFIRMED'
+    : status === 'cap_exhausted'
+      ? 'automatic retry cap EXHAUSTED'
+      : 'automatic retry status UNKNOWN';
+  return formatIncompleteInfrastructureTitle(`${statusText}; ${detail}`);
+}
+
+/** Shared evidence text; only the caller's retry paragraph differs. */
+function renderIncompleteInfrastructureSummaryBody(
+  headSha: string,
+  lanes: readonly IncompleteLaneDescription[],
+): string {
+  const rows = lanes.map((lane) => `- \`${lane.id}\`: ${lane.failureClass}${lane.providerStatus !== undefined ? ` (provider HTTP ${lane.providerStatus})` : ''}`);
+  return [
+    '### Review Yeti: INCOMPLETE — infrastructure',
+    `This is **not a review verdict** for \`${headSha}\`. ${lanes.length === 1 ? 'A reviewer lane' : 'Reviewer lanes'} could not reach the model, so the panel did not complete; no lane reported a finding.`,
+    '**Lanes that did not complete:**',
+    ...rows,
+  ].join('\n');
+}
+
+/** Worker-facing summary, distinct from the compatibility renderer that accepts an actual schedule. */
+export function renderRecoverablePanelRetrySummary(
+  headSha: string,
+  lanes: readonly IncompleteLaneDescription[],
+  executionAttempt: number,
+): string {
+  const status = recoverablePanelRetryReportingStatus(executionAttempt);
+  const retryStatus = status === 'not_confirmed'
+    ? `Automatic retry is NOT CONFIRMED for execution attempt ${executionAttempt}. The completion API acknowledgement confirms delivery only; it does not confirm a retry was admitted or scheduled. No next attempt or supersession is promised.`
+    : status === 'cap_exhausted'
+      ? `Automatic retry is NOT CONFIRMED: the cap of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP} additional attempts was exhausted at execution attempt ${executionAttempt}. No further automatic retry is available; re-run after the gateway recovers.`
+      : `Automatic retry is NOT CONFIRMED for execution attempt ${executionAttempt}; this value proves neither retry eligibility nor cap exhaustion. No next attempt or supersession is promised.`;
+  return `${renderIncompleteInfrastructureSummaryBody(headSha, lanes)}\n${retryStatus}`;
 }
 
 /**
@@ -118,14 +178,8 @@ export function renderIncompleteInfrastructureSummary(
   retry: { nextAttempt: number; maxAttempts: number } | undefined,
   executionAttempt: number,
 ): string {
-  const rows = lanes.map((lane) => `- \`${lane.id}\`: ${lane.failureClass}${lane.providerStatus !== undefined ? ` (provider HTTP ${lane.providerStatus})` : ''}`);
-  return [
-    '### Review Yeti: INCOMPLETE — infrastructure',
-    `This is **not a review verdict** for \`${headSha}\`. ${lanes.length === 1 ? 'A reviewer lane' : 'Reviewer lanes'} could not reach the model, so the panel did not complete; no lane reported a finding.`,
-    '**Lanes that did not complete:**',
-    ...rows,
-    retry
-      ? `Execution attempt ${executionAttempt} failed on infrastructure. A fresh attempt (${retry.nextAttempt} of ${retry.maxAttempts}) is scheduled automatically; this check is superseded by it.`
-      : `Execution attempt ${executionAttempt} was the last automatic attempt (${executionAttempt} of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1}). Re-run the review once the gateway is healthy; do not merge on this result.`,
-  ].join('\n');
+  const retryStatus = retry
+    ? `Execution attempt ${executionAttempt} failed on infrastructure. A fresh attempt (${retry.nextAttempt} of ${retry.maxAttempts}) is scheduled automatically; this check is superseded by it.`
+    : `Execution attempt ${executionAttempt} was the last automatic attempt (${executionAttempt} of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1}). Re-run the review once the gateway is healthy; do not merge on this result.`;
+  return `${renderIncompleteInfrastructureSummaryBody(headSha, lanes)}\n${retryStatus}`;
 }

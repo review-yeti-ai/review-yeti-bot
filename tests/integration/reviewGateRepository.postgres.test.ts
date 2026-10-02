@@ -1,5 +1,7 @@
 import { randomBytes, randomInt } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
+import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
 import { Pool, type PoolClient } from 'pg';
 import {
   deriveReviewGateExternalId,
@@ -172,10 +174,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           stage TEXT NOT NULL DEFAULT 'admission',
           result_digest VARCHAR(64),
           error_text TEXT,
+          burst_started_at TIMESTAMPTZ, cancel_requested_at TIMESTAMPTZ, cancel_propagated_at TIMESTAMPTZ,
           failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
           artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           lease_owner TEXT,
           lease_expires_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE review_dispatch_outbox (
@@ -1070,6 +1074,37 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         lease_owner: null, lease_token: null, lease_expires_at: null,
       });
     }
+
+    it('stores authenticated timeout observations and exposes only the exact current execution', async()=>{
+      const {id,repository,event,resolve}=await completionFixture();
+      const progress=createPublishingProgress({runId:id,executionAttempt:5},{sink:()=>{}});
+      await progress.instrument({complete:async()=>({model:'safe',content:'SECRET',usage:{prompt:11,completion:7,total:18,cached:2},costUSD:0.004,raw:{}})}).complete({model:'safe',messages:[],timeoutMs:1000});
+      const operationalTelemetry=progress.snapshot?.();
+      event.result.personas=event.result.personas.map(lane=>({...lane,id:'prepared-static-'+lane.id,decision:'ERROR',status:'ERROR',errorClass:'timeout',findings:[]}));
+      event.result.coverageComplete=false; event.result.quorumSatisfied=false;
+      event.result.failureDiagnostics={reason:'worker_terminal_deadline_exceeded',logTail:'timeout',...(operationalTelemetry?{operationalTelemetry}:{})};
+      expect(await repository.recordWorkerResult(event,WORKER_PROOF,resolve,COMPLETED_AT)).toBe('recorded');
+      const state=await snapshot(id);expect(state.run.status).toBe('failed'); expect(state.gates[0].decision.reason).toBe('invalid-evidence');
+      expect(state.gates[0].evidence).toBeNull(); expect(state.run.failure_diagnostics.operationalTelemetry).toMatchObject({providerCalls:{completed:1},responseUsage:{totals:{totalTokens:18}}});
+      const get=async()=>JSON.parse(((await createGetReviewStatusTool(pool!).execute({owner:event.owner,repo:event.repo,pull_number:42,head_sha:event.headSha})).content[0] as {text:string}).text);
+      const current=await get();expect(current.operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);expect(current.verdict).toBe('FAILED');
+      expect(JSON.stringify(current.operational_telemetry)).not.toContain('SECRET');
+      expect(current.operational_telemetry).toMatchObject({cause:'unknown',panel:{invoked:false},phaseCounts:{persona_lane:{started:0},composed_task:{started:0}}});
+      // A stored observation cannot be projected from an unauthenticated digest,
+      // another config, or a gate which stopped being current. Status still fails closed.
+      for(const [tamper,restore] of [
+        ["UPDATE review_worker_completions SET content_digest=repeat('f',64) WHERE run_id=$1","UPDATE review_worker_completions SET content_digest=$2 WHERE run_id=$1"],
+        ["UPDATE review_worker_completions SET payload=jsonb_set(payload,'{configDigest}',to_jsonb(repeat('f',64))) WHERE run_id=$1","UPDATE review_worker_completions SET payload=jsonb_set(payload,'{configDigest}',to_jsonb($2::text)) WHERE run_id=$1"],
+        ["UPDATE review_gate_attempts SET current_attempt=false WHERE run_id=$1","UPDATE review_gate_attempts SET current_attempt=true WHERE run_id=$1"],
+      ] as const) {
+        await pool!.query(tamper,[id]);
+        try { const guarded=await get(); expect(guarded).not.toHaveProperty('operational_telemetry'); expect(guarded.verdict).toBe('FAILED'); }
+        finally { await pool!.query(restore,restore.includes('$2')?[id,restore.includes('content_digest')?state.gates[0].worker_result_digest:event.configDigest]:[id]); }
+        expect((await get()).operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);
+      }
+      await pool!.query("UPDATE review_runs SET failure_diagnostics=jsonb_set(failure_diagnostics,'{executionAttempt}','4') WHERE run_id=$1",[id]);
+      expect(await get()).not.toHaveProperty('operational_telemetry');
+    });
 
     it.each([null, APP_ID + 1])('rejects completion without the exact enrolled App marker (%s)', async (appId) => {
       const { id, repository, event, resolve } = await completionFixture();

@@ -11,7 +11,7 @@
  *    - GitHub App ID 4385771 configuration, User-Agent, payload structure, threading endpoint
  *    - Client pathways & robust error handling (404, 403, 500, network crash, input boundaries)
  * 3. System-level integration:
- *    - 12-tool catalog listing over remoteMcpRouter HTTP JSON-RPC 2.0
+ *    - Complete 18-tool catalog listing over remoteMcpRouter HTTP JSON-RPC 2.0
  *    - Remote tools/call execution for attest_pr_gate and reply_review_thread
  *    - Authentication (401) and tenancy authorization (403) boundary verification
  */
@@ -48,6 +48,26 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
   const ALTERED_HEAD_SHA = '1111111111111111111111111111111111111111';
   const ATTESTATION_SECRET = 'challenger-super-secure-attestation-secret-2026';
   const FIXED_TIMESTAMP = 1774012345678;
+  const EXPECTED_MCP_TOOL_NAMES = [
+    'get_review_status',
+    'get_review_findings',
+    'get_model_matrix',
+    'trigger_review',
+    'cancel_review',
+    'watch_review_progress',
+    'preflight_diff_review',
+    'explain_finding',
+    'generate_fix_diff',
+    'dispute_finding',
+    'attest_pr_gate',
+    'reply_review_thread',
+    'query_active_jobs',
+    'get_cloudflare_status',
+    'get_billable_runtime_report',
+    'get_runtime_metrics',
+    'get_analytics_dashboard',
+    'purge_cache',
+  ];
 
   function createMockCaller(options: {
     isAdmin?: boolean;
@@ -1018,9 +1038,9 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
   });
 
   // ===========================================================================
-  // SECTION 3: SYSTEM-LEVEL INTEGRATION & 12-TOOL CATALOG ROUTING
+  // SECTION 3: SYSTEM-LEVEL INTEGRATION & 18-TOOL CATALOG ROUTING
   // ===========================================================================
-  describe('6. System-Level Integration: 12-Tool Catalog & Remote Router Invocations', () => {
+  describe('6. System-Level Integration: 18-Tool Catalog & Remote Router Invocations', () => {
     let app: express.Express;
     let router: RemoteMcpRouter;
 
@@ -1078,7 +1098,11 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
       router.destroy();
     });
 
-    it('CHALLENGE: remote router tools/list returns complete 12-tool catalog', async () => {
+    it.each(['registration', 'reversed'] as const)('CHALLENGE: tools/list returns the complete 18-tool catalog in %s listing order', async (order) => {
+      if (order === 'reversed') {
+        const registered = router.toolRegistry.listTools();
+        vi.spyOn(router.toolRegistry, 'listTools').mockImplementation(() => [...registered].reverse());
+      }
       const res = await request(app)
         .post('/api/mcp')
         .set('Authorization', 'Bearer valid-admin-token')
@@ -1091,25 +1115,10 @@ describe('Empirical Challenger Suite: attest_pr_gate & reply_review_thread (test
 
       expect(res.status).toBe(200);
       expect(res.body.error).toBeUndefined();
-      expect(res.body.result.tools).toHaveLength(12);
-
-      const toolNames = res.body.result.tools.map((t: any) => t.name).sort();
-      const expectedCatalog = [
-        'attest_pr_gate',
-        'cancel_review',
-        'dispute_finding',
-        'explain_finding',
-        'generate_fix_diff',
-        'get_model_matrix',
-        'get_review_findings',
-        'get_review_status',
-        'preflight_diff_review',
-        'reply_review_thread',
-        'trigger_review',
-        'watch_review_progress',
-      ].sort();
-
-      expect(toolNames).toEqual(expectedCatalog);
+      const toolNames = res.body.result.tools.map((t: any) => t.name);
+      expect(toolNames).toHaveLength(18);
+      expect(new Set(toolNames).size).toBe(18);
+      expect([...toolNames].sort()).toEqual([...EXPECTED_MCP_TOOL_NAMES].sort());
     });
 
     it('CHALLENGE: executes attest_pr_gate over HTTP JSON-RPC 2.0 and receives valid attestation', async () => {

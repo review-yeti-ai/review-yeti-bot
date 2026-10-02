@@ -213,7 +213,7 @@ describe('Milestone 3 Outbound Fleet MCP Federation — Adversarial Challenge Su
         const result = await runReadOnlyTool('ct_mesh_query', { query: massiveQuery }, baseContext());
 
         expect(result.toolScope).toBe('cross-repository-ast-mesh');
-        expect(result.isExhaustive).toBe(true);
+        expect(result.isExhaustive).toBe(false);
         expect(result.toolOutput).toContain('"matches": 42');
         expect(fetchSpy).toHaveBeenCalled();
       });
@@ -353,7 +353,7 @@ describe('Milestone 3 Outbound Fleet MCP Federation — Adversarial Challenge Su
         const result = await runReadOnlyTool('ct_mesh_stats', {}, baseContext());
 
         expect(result.toolScope).toBe('cross-repository-ast-mesh');
-        expect(result.isExhaustive).toBe(true);
+        expect(result.isExhaustive).toBe(false);
         expect(result.toolOutput).toContain('"content": []');
       });
 

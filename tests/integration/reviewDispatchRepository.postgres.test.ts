@@ -26,6 +26,7 @@ import { createMcpStaticAdminRecoveryOrigin } from '../../src/review/mcpStaticAd
 import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } from '../../src/persistence/incompleteP2Recovery';
 import { incompleteP2RecoveryClaimFor } from '../../src/review/incompleteP2Recovery';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
+import { AbandonedRunReaper } from '../../src/review/abandonedRunReaper';
 import { buildRunSecretName } from '../../src/k8s/reviewJobProjection';
 import { workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import { createGitHubWebhookAdmissionHandler } from '../../src/review/githubWebhookAdmission';
@@ -37,7 +38,9 @@ import { ReviewGenerationRecoveryLedgerError } from '../../src/review/reviewGene
 import express from 'express';
 import { once } from 'node:events';
 import { createIncompleteP2RecoveryHandler } from '../../src/api/incompleteP2RecoveryRoute';
+import { createReviewExecutionCheckpointHandler } from '../../src/api/reviewExecutionCheckpointRoute';
 import { HttpIncompleteP2RecoverySource } from '../../src/review/incompleteP2RecoveryHttp';
+import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 
 import { describeWithPostgres as describeWithPostgresShared, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
@@ -66,9 +69,12 @@ async function markWorkerFailureAndRequeue(
   return transition;
 }
 
-function authoritativeAdmission(deliveryId = 'authoritative', receivedAt = 1_000) {
+function authoritativeAdmission(
+  deliveryId = 'authoritative', receivedAt = 1_000, reviewEngine: 'panel' | 'composed' = 'panel',
+) {
   const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
-    review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 2 } } });
+    review_yeti: { personas: 'security,testing', ...(reviewEngine === 'composed' ? { review_engine: 'composed' } : {}),
+      budget: { max_investigation_turns: 2 } } });
   const prepared = preparePublishingPolicy({ content, source: {
     repositoryId: 789, repository: 'calltelemetry/ct-review-actions', sha: 'c'.repeat(40),
     path: 'review-policy.json', contentDigest: createHash('sha256').update(content).digest('hex'),
@@ -273,6 +279,16 @@ describe('PostgresReviewDispatchRepository central dispatch validation', () => {
     } as any)).rejects.toThrow(/verified static-admin repository admission/u);
     expect(connect).not.toHaveBeenCalled();
   });
+
+  it('rejects a caller-supplied graceful continuation marker before persistence', async () => {
+    const { repository, connect } = repositoryThatStopsAtPersistence();
+    await expect(repository.admit({
+      ...authoritativeAdmission('graceful-continuation-origin-spoof'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false,
+      gracefulComposedContinuation: true,
+    } as any)).rejects.toThrow('Graceful composed continuation is service-derived');
+    expect(connect).not.toHaveBeenCalled();
+  });
 });
 
 async function dispatchState(client: PoolClient, runId: string) {
@@ -457,9 +473,10 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     database: PoolClient,
     gates: PostgresReviewGateRepository,
     mode: 'p2' | 'zero' | 'p1' | 'tampered' = 'p2',
+    reviewEngine: 'panel' | 'composed' = 'panel',
   ) {
     const receivedAt = 1_790_000_000_000;
-    const firstInput = authoritativeAdmission(`mcp-seed-${randomUUID()}`, receivedAt);
+    const firstInput = authoritativeAdmission(`mcp-seed-${randomUUID()}`, receivedAt, reviewEngine);
     const first = await repository.admit(firstInput);
     await bindPendingGate(gates, receivedAt + 10);
     const run = first.run;
@@ -555,6 +572,137 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     return { run, proof, completion, digest };
   }
 
+  async function seedGracefulComposedIncompleteAttempt(
+    repository: PostgresReviewDispatchRepository,
+    database: PoolClient,
+    gates: PostgresReviewGateRepository,
+    sourceMode: 'p2' | 'p1' | 'zero' = 'p2',
+  ) {
+    const seeded = await seedMcpIncompleteAttempt(repository, database, gates, 'p2', 'composed');
+    const gate = (await database.query(
+      'SELECT * FROM review_gate_attempts WHERE run_id = $1 AND execution_attempt = 1',
+      [seeded.run.runId],
+    )).rows[0];
+    const plan = Array.from({ length: 8 }, (_, index) => ({
+      id: `task-${index + 1}`,
+      dimension: (['security', 'performance', 'architecture', 'testing', 'dependencies', 'contract', 'licensing'] as const)[index % 7],
+      paths: [`src/file-${index + 1}.ts`],
+      question: `Review task ${index + 1}.`,
+      rationale: `The task covers source file ${index + 1}.`,
+    }));
+    const sourceSeverity = sourceMode === 'p1' ? 'P1' as const : 'P2' as const;
+    const distinctFindings = Array.from({ length: sourceMode === 'zero' ? 0 : 4 }, (_, index) => ({
+      severity: sourceSeverity,
+      path: `src/file-${index + 1}.ts`,
+      line: index + 10,
+      title: `Validated advisory ${index + 1}`,
+      body: `Preserved P2 evidence ${index + 1}.`,
+    }));
+    const blockingCount = sourceMode === 'p1' ? distinctFindings.length : 0;
+    const personas = Array.from({ length: 6 }, (_, index) => ({
+      id: `task-${index + 1}`,
+      decision: sourceMode !== 'zero' && index < 5 ? 'FINDINGS' as const : 'APPROVE' as const,
+      status: 'COMPLETE' as const,
+      findings: sourceMode === 'zero' ? [] : index < distinctFindings.length ? [distinctFindings[index]]
+        : index === 4 ? [{ ...distinctFindings[0] }] : [],
+    }));
+    const completedAt = '2026-09-29T12:00:00.000Z';
+    const completion: WorkerReviewCompletion = {
+      ...seeded.completion,
+      result: {
+        ...seeded.completion.result,
+        completedAt,
+        personas,
+        taskPlan: plan,
+        coverageComplete: false,
+        quorumSatisfied: false,
+        findingCount: distinctFindings.length,
+        blockingFindingCount: blockingCount,
+        failureDiagnostics: {
+          reason: 'review_evidence_deadline',
+          logTail: 'Evidence cutoff preserved completed composed tasks.',
+          recoverableIncompletePanel: false,
+        },
+      },
+    };
+    const checkpoint = parseReviewExecutionCheckpoint({
+      version: 'ReviewExecutionCheckpoint.v1',
+      runId: seeded.run.runId,
+      repositoryId: seeded.run.repositoryId,
+      owner: seeded.run.identity.owner,
+      repo: seeded.run.identity.repo,
+      prNumber: seeded.run.identity.prNumber,
+      headSha: seeded.run.identity.headSha,
+      baseSha: seeded.run.identity.baseSha,
+      policyDigest: seeded.run.effectivePolicyDigest,
+      configDigest: seeded.run.identity.configDigest,
+      executionAttempt: 1,
+      revision: 7,
+      plan,
+      completedTasks: personas.map((persona) => ({ id: persona.id, findings: persona.findings })),
+    });
+    const checkpointJson = JSON.stringify(checkpoint);
+    await database.query(`INSERT INTO review_execution_checkpoints
+      (run_id, execution_attempt, revision, head_sha, config_digest, payload, byte_length)
+      VALUES ($1, 1, $2, $3, $4, $5::jsonb, $6)`,
+    [seeded.run.runId, checkpoint.revision, checkpoint.headSha, checkpoint.configDigest,
+      checkpointJson, Buffer.byteLength(checkpointJson, 'utf8')]);
+
+    const completionDigest = workerReviewCompletionDigest(completion);
+    const completionJson = JSON.stringify(completion);
+    await database.query(`UPDATE review_worker_completions
+      SET content_digest = $2, payload = $3::jsonb, byte_length = $4
+      WHERE run_id = $1 AND execution_attempt = 1`,
+    [seeded.run.runId, completionDigest, completionJson, Buffer.byteLength(completionJson, 'utf8')]);
+    const gateEvidence = {
+      verdict: 'BLOCK', completedAt: '2026-09-29T12:00:02Z', coverageComplete: false,
+      quorumSatisfied: false, infrastructureFailure: false, p0Count: 0, p1Count: blockingCount,
+      expectedLanes: 8, completedLanes: 6, reviewEngine: 'composed',
+    };
+    await database.query(`UPDATE review_gate_attempts
+      SET desired_state = 'failure', desired_version = desired_version + 1,
+          published_version = desired_version + 1, evidence = $2::jsonb,
+          decision = $3::jsonb, worker_result_digest = $4
+      WHERE run_id = $1 AND execution_attempt = 1`,
+    [seeded.run.runId, JSON.stringify(gateEvidence),
+      JSON.stringify({ status: 'failure', eligible: false, reason: 'incomplete-review' }), completionDigest]);
+    await database.query(`UPDATE review_runs SET status = 'failed', result_digest = $2,
+      error_text = 'review gate: incomplete-review' WHERE run_id = $1`, [seeded.run.runId, completionDigest]);
+
+    const workerSummary = 'Evidence collection reached its 20-minute cutoff at `'
+      + seeded.run.identity.headSha + '`. '
+      + `The final closeout preserved and published ${distinctFindings.length} validated finding(s); 2 risk-ordered task(s) remain. `
+      + 'This is fail-closed, not an approval. An exact-head rerun resumes the durable completed-task checkpoint.\n\n'
+      + `Findings: ${distinctFindings.length} (blocking P0/P1: ${blockingCount}; ${sourceMode === 'zero' ? 0 : 5} raw persona finding(s) before clustering).\n\n`
+      + '1 raw finding(s) were discarded as unanchorable and are not counted above.\n\n'
+      + 'Coverage: engine=composed; planned tasks=8; expected tasks=8; completed tasks=6; failed tasks=0; '
+      + 'roster valid=false; quorum satisfied=false; task coverage complete=false.';
+    const proof = {
+      generation: 1,
+      checkId: 10_002,
+      externalId: `${seeded.run.runId}:a1`,
+      conclusion: 'failure' as const,
+      title: 'Review Yeti: INCOMPLETE (partial evidence published)',
+      legacyIncompleteRoster: {
+        workerSummary,
+        workerCompletedAt: '2026-09-29T12:00:00Z',
+        workerStartedAt: '2026-09-29T11:40:00Z',
+        gracefulComposedPartial: true as const,
+        gateChecks: [{
+          id: Number(gate.check_id), name: REVIEW_GATE_CHECK_NAME, head_sha: seeded.run.identity.headSha,
+          app: { id: 4385771, slug: 'ct-review-bot' },
+          status: 'completed', conclusion: 'failure', external_id: gate.external_id,
+          started_at: '2026-09-29T11:59:58Z', completed_at: '2026-09-29T12:00:02Z',
+          output: {
+            title: 'Review Yeti Gate: Failed (incomplete panel)',
+            summary: formatIncompleteRosterGateSummary(8, 6),
+          },
+        }],
+      },
+    };
+    return { ...seeded, completion, digest: completionDigest, proof, checkpoint };
+  }
+
   async function seedZeroFindingIncompleteSecondAttempt(
     database: PoolClient,
     gates: PostgresReviewGateRepository,
@@ -644,6 +792,235 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     };
     return { priorProof, followupProof, completion, digest };
   }
+
+  it('retains a graceful composed partial on an ordinary MCP retry and accepts its authenticated full Gate result', async () => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    proof = seeded.proof;
+    const a1WorkerToken = 'ghs_rel1214_graceful_a1_worker';
+    await client.query('UPDATE review_dispatch_outbox SET worker_token_digest = $2 WHERE run_id = $1',
+      [seeded.run.runId, sha256(a1WorkerToken)]);
+
+    const admission = await repository.admit({
+      ...authoritativeAdmission(`graceful-checkpoint-a2-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review',
+      centralActionDispatch: false,
+      debounce: false,
+    });
+
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect(resolveGenerationRecovery).toHaveBeenCalledWith(expect.objectContaining({
+      eventName: 'mcp.trigger_review', centralActionDispatch: false,
+      gracefulComposedContinuation: true, expectedGeneration: 2,
+      retryRequested: true, retryAfterExecutionAttempt: 1,
+    }));
+    expect(admission.run.attempt).toBe(1);
+    const contextDigest = (admission.run.artifacts as Record<string, unknown>).graceful_composed_p2_recovery_digest;
+    expect(contextDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count).toBe(1);
+
+    const gate = await bindPendingGate(gateRepository, 1_790_000_120_000);
+    expect(gate.coordinates.executionAttempt).toBe(2);
+    const workerToken = 'ghs_rel1214_graceful_retry_worker';
+    const workerTokenDigest = sha256(workerToken);
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'claimed', worker_token_digest = $2,
+      lease_owner = 'graceful-a2-worker', lease_expires_at = to_timestamp($3 / 1000.0)
+      WHERE run_id = $1`, [seeded.run.runId, workerTokenDigest, 1_790_000_460_000]);
+
+    // The real worker writes its resumed a2 checkpoint before requesting the
+    // retained context. This replaces the one-row checkpoint record, so the
+    // later Gate callback must validate the immutable a1 checkpoint receipt
+    // bound during admission rather than relying on this mutable row.
+    const a2Checkpoint = parseReviewExecutionCheckpoint({
+      ...seeded.checkpoint,
+      executionAttempt: 2,
+      revision: seeded.checkpoint.revision + 1,
+    });
+    const staleCheckpointWrite = await writeCheckpointOverRealHttp(a2Checkpoint, a1WorkerToken);
+    expect(staleCheckpointWrite.status).toBe(403);
+    const checkpointWrite = await writeCheckpointOverRealHttp(a2Checkpoint, workerToken);
+    expect(checkpointWrite.status).toBe(200);
+    expect(checkpointWrite.body).toMatchObject({ status: 'recorded', revision: 8 });
+    expect((await client.query(`SELECT execution_attempt, revision FROM review_execution_checkpoints
+      WHERE run_id = $1`, [seeded.run.runId])).rows[0]).toEqual({ execution_attempt: 2, revision: 8 });
+
+    const retained = await readRetainedOverRealHttp(seeded.run.runId, workerToken, 2);
+    expect(retained.statuses).toEqual([200]);
+    expect(retained.errorBodies).toEqual([]);
+    expect(retained.context?.contextDigest).toBe(contextDigest);
+    expect(retained.context?.gracefulComposedContinuation).toBe(true);
+    expect(retained.context?.sources).toEqual([expect.objectContaining({
+      executionAttempt: 1, workerResultDigest: seeded.digest, workerCheckId: seeded.proof.checkId,
+      rawFindingCount: 5, canonicalFindingCount: 4,
+    })]);
+    expect(retained.context?.findings).toHaveLength(5);
+
+    const workerStartedAt = 1_790_000_130_000;
+    const resumedPersonas = seeded.checkpoint.completedTasks.map((task) => ({
+      id: task.id,
+      decision: task.findings.length > 0 ? 'FINDINGS' as const : 'APPROVE' as const,
+      status: 'COMPLETE' as const,
+      findings: task.findings,
+    }));
+    const workerResult: WorkerReviewCompletion = {
+      version: 'WorkerReviewCompletion.v1', runId: seeded.run.runId,
+      repositoryId: seeded.completion.repositoryId, owner: seeded.run.identity.owner,
+      repo: seeded.run.identity.repo, prNumber: seeded.run.identity.prNumber,
+      headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha,
+      policyDigest: seeded.run.effectivePolicyDigest, configDigest: seeded.run.identity.configDigest,
+      executionAttempt: 2,
+      result: {
+        version: 'WorkerReviewResult.v1', completedAt: new Date(workerStartedAt + 1_000).toISOString(),
+        personas: [...resumedPersonas, ...seeded.checkpoint.plan.slice(resumedPersonas.length).map((task) => ({
+          id: task.id, decision: 'APPROVE' as const, status: 'COMPLETE' as const, findings: [],
+        }))],
+        taskPlan: seeded.checkpoint.plan,
+        coverageComplete: true, quorumSatisfied: true, findingCount: 4, blockingFindingCount: 0,
+        incompleteP2Recovery: incompleteP2RecoveryClaimFor(retained.context!),
+      },
+    };
+    const addedLinesPatch = ['@@ -0,0 +1,20 @@', ...Array.from({ length: 20 }, (_, index) =>
+      `+const coveredLine${index + 1} = ${index + 1};`), ''].join('\n');
+    const trusted = {
+      current: { repositoryId: seeded.completion.repositoryId, prNumber: seeded.run.identity.prNumber,
+        headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha,
+        policyDigest: seeded.run.effectivePolicyDigest, open: true, draft: false },
+      coverage: { expectedPersonaIds: seeded.checkpoint.plan.map((task) => task.id),
+        reviewEngine: 'composed' as const,
+        composedChangedPaths: seeded.checkpoint.plan.flatMap((task) => task.paths),
+        changedFiles: seeded.checkpoint.plan.map((task) => ({ path: task.paths[0], patch: addedLinesPatch })),
+        coverageComplete: true, quorumSatisfied: true },
+    };
+    await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
+      async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
+    expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
+      .toBe('succeeded');
+    expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
+      WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0])
+      .toMatchObject({ desired_state: 'success', decision: { status: 'success', reason: 'clean-review' } });
+  });
+
+  it('refuses a composed graceful retry when its App summary reports blocking findings before allocating', async () => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'p1');
+    proof = seeded.proof;
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveryCount = (await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count;
+
+    await expect(repository.admit({
+      ...authoritativeAdmission(`graceful-p1-refusal-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    })).rejects.toThrow();
+
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count)
+      .toBe(deliveryCount);
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+  });
+
+  it.each(['missing completion', 'mismatched completion digest'] as const)(
+    'refuses an ordinary MCP retry before allocation when an incomplete composed Gate has a %s', async (damage) => {
+      const resolveGenerationRecovery = vi.fn(async () => [] as any[]);
+      const { repository, client, gateRepository } = await createRepository({
+        validateAuthoritativeAdmission: async () => undefined,
+        resolveGenerationRecovery,
+      }, true);
+      const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+      if (damage === 'missing completion') {
+        await client.query('DELETE FROM review_worker_completions WHERE run_id = $1 AND execution_attempt = 1',
+          [seeded.run.runId]);
+      } else {
+        await client.query(`UPDATE review_worker_completions SET content_digest = $2
+          WHERE run_id = $1 AND execution_attempt = 1`, [seeded.run.runId, 'f'.repeat(64)]);
+      }
+      const before = await dispatchState(client, seeded.run.runId);
+      const gatesBefore = (await client.query(`SELECT execution_attempt, worker_result_digest, desired_state, decision
+        FROM review_gate_attempts WHERE run_id = $1 ORDER BY execution_attempt`, [seeded.run.runId])).rows;
+      const deliveryCount = (await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count;
+
+      await expect(repository.admit({
+        ...authoritativeAdmission(`graceful-damaged-source-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+        eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+      })).rejects.toThrow();
+
+      expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+      expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+      expect((await client.query(`SELECT execution_attempt, worker_result_digest, desired_state, decision
+        FROM review_gate_attempts WHERE run_id = $1 ORDER BY execution_attempt`, [seeded.run.runId])).rows).toEqual(gatesBefore);
+      expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count)
+        .toBe(deliveryCount);
+      expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+        [seeded.run.runId])).rows[0].count).toBe(0);
+    },
+  );
+
+  it('keeps zero-finding graceful composed retries on the ordinary checkpoint path', async () => {
+    const resolveGenerationRecovery = vi.fn(async () => []);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository, 'zero');
+
+    const admission = await repository.admit({
+      ...authoritativeAdmission(`graceful-zero-a2-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    });
+
+    expect(admission.run.attempt).toBe(1);
+    expect(admission.run.status).toBe('queued');
+    expect(resolveGenerationRecovery).not.toHaveBeenCalled();
+    expect(admission.run.artifacts).not.toHaveProperty('graceful_composed_p2_recovery_digest');
+    expect((await client.query('SELECT count(*)::int AS count FROM review_generation_recoveries WHERE run_id = $1',
+      [seeded.run.runId])).rows[0].count).toBe(0);
+    await expect(requiredIncompleteP2RecoveryDigest(client, seeded.run.runId, 2, admission.run.artifacts))
+      .resolves.toBeNull();
+  });
+
+  it('refuses a later no-result continuation before allocating a third attempt', async () => {
+    let proof: any;
+    const resolveGenerationRecovery = vi.fn(async () => [proof]);
+    const { repository, client, gateRepository } = await createRepository({
+      validateAuthoritativeAdmission: async () => undefined,
+      resolveGenerationRecovery,
+    }, true);
+    const seeded = await seedGracefulComposedIncompleteAttempt(repository, client, gateRepository);
+    proof = seeded.proof;
+    const a2 = await repository.admit({
+      ...authoritativeAdmission(`graceful-a2-before-no-result-${randomUUID()}`, 1_790_000_100_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    });
+    expect(a2.run.attempt).toBe(1);
+    await client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [seeded.run.runId]);
+    await client.query(`UPDATE review_dispatch_outbox SET status = 'projected', execution_attempt = 1,
+      projection_name = 'graceful-a2-no-result', worker_token_digest = $2 WHERE run_id = $1`,
+    [seeded.run.runId, 'e'.repeat(64)]);
+    const before = await dispatchState(client, seeded.run.runId);
+    const deliveryCount = (await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count;
+
+    await expect(repository.admit({
+      ...authoritativeAdmission(`graceful-a3-no-result-${randomUUID()}`, 1_790_000_200_000, 'composed'),
+      eventName: 'mcp.trigger_review', centralActionDispatch: false, debounce: false,
+    })).rejects.toThrow('first exact-head retry');
+
+    expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
+    expect(await dispatchState(client, seeded.run.runId)).toEqual(before);
+    expect((await client.query('SELECT count(*)::int AS count FROM github_deliveries')).rows[0].count)
+      .toBe(deliveryCount);
+  });
 
   it('admits one authenticated MCP a2 after a fresh App ledger read and a matching locked SQL snapshot', async () => {
     let unblockEvidence!: () => void;
@@ -759,6 +1136,27 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       return { context: await source.read(), statuses, errorBodies };
     } catch (error) {
       return { error, statuses, errorBodies };
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  }
+
+  async function writeCheckpointOverRealHttp(checkpoint: unknown, token: string) {
+    const app = express();
+    app.use(express.json());
+    app.post('/api/dispatch/review-execution-checkpoint', createReviewExecutionCheckpointHandler(pool!));
+    const server = app.listen(0, '127.0.0.1');
+    try {
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing owned HTTP listener');
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/dispatch/review-execution-checkpoint`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(checkpoint),
+      });
+      return { status: response.status, body: await response.json() as Record<string, unknown> };
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
@@ -5067,6 +5465,166 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
         { runId: run.admitted.run.runId, executionAttempt: run.claim.executionAttempt + 1, reason: 'worker_contract_rejected' },
       ])).resolves.toEqual([]);
       expect((await dispatchState(client, run.admitted.run.runId)).run.status).toBe('queued');
+    });
+  });
+
+  describe('Gate-bound abandoned failure publication', () => {
+    async function projectedGateRun() {
+      const { repository, client, gateRepository } = await createRepository();
+      const content = JSON.stringify({ schema: 'calltelemetry.review-policy.v1',
+        review_yeti: { personas: 'security,testing', budget: { max_investigation_turns: 2 } } });
+      const prepared = preparePublishingPolicy({ content, source: {
+        repositoryId: 789, repository: 'example-org/review-policy', sha: 'c'.repeat(40),
+        path: 'review-policy.json', contentDigest: createHash('sha256').update(content).digest('hex'),
+      } }, { baseUrl: 'https://gateway.example/v1', model: 'review-model' });
+      const candidate = { repositoryId: 123, owner: 'example-org', repo: 'widgets', prNumber: 17,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40) };
+      const identity = buildAuthoritativeReviewIdentity({ requested: candidate,
+        current: { ...candidate, open: true, draft: false }, policy: prepared.policy });
+      const input = { deliveryId: 'synthetic-gate-failure', eventName: 'pull_request',
+        repositoryId: candidate.repositoryId, installationId: 456, receivedAt: 1_000,
+        terminalDeadline: 1_000 + TERMINAL_DEADLINE_MS, payloadDigest: sha256(identity),
+        publicationMode: 'app-gate' as const, centralActionDispatch: false, identity,
+        effectivePolicyDigest: prepared.policy.effectivePolicyDigest,
+        authoritativeGate: { expectedAppId: 12345, prepared } };
+      const admitted = await repository.admit(input);
+      await bindPendingGate(gateRepository, 1_001);
+      const claim = (await repository.claimNext('synthetic-worker', 1_003, 30_000))!;
+      expect(claim).not.toBeNull();
+      expect(await repository.markProjected(claim.runId, 'synthetic-worker', claim.claimAttempt,
+        'synthetic-projection', 1_004, 'd'.repeat(64))).toBe(true);
+      return { repository, client, runId: admitted.run.runId, attempt: claim.executionAttempt,
+        now: input.terminalDeadline - 1, deadline: input.terminalDeadline };
+    }
+
+    it('does not mistake a current queued Gate for abandonment before the deadline', async () => {
+      const f = await projectedGateRun();
+      expect((await dispatchState(f.client, f.runId)).run).toMatchObject({ status: 'queued', stage: 'admission' });
+      expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.now, 5)).toEqual([]);
+      await f.client.query("UPDATE review_runs SET lease_owner = 'active-owner', lease_expires_at = to_timestamp(($2 + 60000) / 1000.0) WHERE run_id = $1", [f.runId, f.now]);
+      expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.now, 5,
+        [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' }])).toEqual([]);
+    });
+
+    it.each(['delegated', 'deadline', 'durable-failure'] as const)(
+      'publishes the exact current Gate-bound %s attempt once', async (route) => {
+        const f = await projectedGateRun();
+        if (route === 'durable-failure') {
+          await f.client.query("UPDATE review_runs SET status = 'failed' WHERE run_id = $1", [f.runId]);
+          await f.client.query("UPDATE review_gate_attempts SET desired_state = 'timed_out' WHERE run_id = $1", [f.runId]);
+        }
+        const now = route === 'deadline' ? f.deadline : f.now;
+        const delegated = route === 'delegated'
+          ? [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' as const }] : [];
+        const claimed = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', now, 5, delegated);
+        expect(claimed).toHaveLength(1);
+        expect(claimed[0]).toMatchObject({ runId: f.runId, executionAttempt: f.attempt,
+          owner: 'example-org', repo: 'widgets', headSha: 'a'.repeat(40), authoritativeGateAppId: 12345 });
+        const publish = vi.fn(async () => 'failure-published' as const);
+        expect(await f.repository.reconcileAbandonedPublishingRun(claimed[0], 'synthetic-reaper', now + 1, publish))
+          .toEqual({ reconciled: true, outcome: 'failure-published' });
+        expect(publish).toHaveBeenCalledOnce();
+        const state = await dispatchState(f.client, f.runId);
+        expect(state.run).toMatchObject({ status: 'terminal', result_digest: null, lease_owner: null });
+        expect(state.outbox.status).toBe('terminal');
+        expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', now + 2, 5, delegated)).toEqual([]);
+      },
+    );
+
+    it.each([
+      ["UPDATE review_gate_attempts SET expected_app_id = 54321", 'wrong App'],
+      ["UPDATE review_gate_attempts SET coordinates = jsonb_set(coordinates, '{headSha}', to_jsonb(repeat('c', 40)))", 'wrong head'],
+      ["UPDATE review_gate_attempts SET execution_attempt = execution_attempt + 1", 'wrong attempt'],
+      ["UPDATE review_gate_attempts SET review_generation = review_generation + 1", 'wrong generation'],
+      ["UPDATE review_gate_attempts SET current_attempt = false", 'superseded Gate'],
+      ["UPDATE review_gate_attempts SET worker_result_digest = repeat('e', 64)", 'recorded result'],
+      ["UPDATE review_gate_attempts SET desired_state = 'success'", 'successful Gate'],
+      ["UPDATE review_gate_attempts SET desired_state = 'cancelled'", 'cancelled Gate'],
+      ["UPDATE review_runs SET result_digest = repeat('e', 64)", 'recorded run result'],
+      ["UPDATE review_gate_attempts SET creation_state = 'reserved', check_id = NULL", 'unbound Gate'],
+    ])('refuses $1 both before claim and after a valid claim', async (mutation) => {
+      const f = await projectedGateRun();
+      const delegated = [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' as const }];
+      const claimed = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.now, 5, delegated);
+      expect(claimed).toHaveLength(1);
+      await f.client.query(`${mutation} WHERE run_id = $1`, [f.runId]);
+      const publish = vi.fn(async () => 'failure-published' as const);
+      expect(await f.repository.reconcileAbandonedPublishingRun(claimed[0], 'synthetic-reaper', f.now + 1, publish))
+        .toEqual({ reconciled: false });
+      expect(publish).not.toHaveBeenCalled();
+      await f.client.query('UPDATE review_runs SET lease_owner = NULL, lease_expires_at = NULL WHERE run_id = $1', [f.runId]);
+      expect(await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline + 1, 5, delegated)).toEqual([]);
+    });
+
+    it.each(['bound', 'unbound', 'recorded-result'] as const)(
+      'fences Gate-bound superseded retirement with %s state', async (gateState) => {
+        const f = await projectedGateRun();
+        const [claimed] = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline, 5);
+        expect(claimed).toBeDefined();
+        const before = await dispatchState(f.client, f.runId);
+        const publish = vi.fn(async () => {
+          // Change the Gate after the locked eligibility check so the retirement
+          // UPDATE itself must reject it and roll both durable rows back.
+          if (gateState === 'unbound') await f.client.query(
+            "UPDATE review_gate_attempts SET creation_state = 'reserved', check_id = NULL WHERE run_id = $1", [f.runId]);
+          if (gateState === 'recorded-result') await f.client.query(
+            "UPDATE review_gate_attempts SET worker_result_digest = repeat('e', 64) WHERE run_id = $1", [f.runId]);
+          return 'superseded' as const;
+        });
+        const reconciliation = f.repository.reconcileAbandonedPublishingRun(
+          claimed, 'synthetic-reaper', f.deadline + 1, publish);
+        if (gateState === 'bound') {
+          await expect(reconciliation).resolves.toEqual({ reconciled: true, outcome: 'superseded' });
+          const state = await dispatchState(f.client, f.runId);
+          expect(state.run).toMatchObject({ status: 'terminal', stage: 'terminal', result_digest: null, lease_owner: null });
+          expect(state.outbox).toMatchObject({ status: 'terminal', lease_owner: null });
+          expect(await f.repository.claimAbandonedPublishingRuns('later-reaper', f.deadline + 2, 5)).toEqual([]);
+        } else {
+          await expect(reconciliation).rejects.toThrow('superseded run retirement lost its lease');
+          expect(await dispatchState(f.client, f.runId)).toEqual(before);
+        }
+        expect(publish).toHaveBeenCalledOnce();
+      },
+    );
+
+    it('rejects a claimed publisher identity changed consistently in both durable rows', async () => {
+      const f = await projectedGateRun();
+      const [claimed] = await f.repository.claimAbandonedPublishingRuns('synthetic-reaper', f.deadline, 5);
+      expect(claimed).toBeDefined();
+      await f.client.query('UPDATE review_runs SET authoritative_gate_app_id = 54321 WHERE run_id = $1', [f.runId]);
+      await f.client.query('UPDATE review_gate_attempts SET expected_app_id = 54321 WHERE run_id = $1', [f.runId]);
+      const publish = vi.fn(async () => 'failure-published' as const);
+      expect(await f.repository.reconcileAbandonedPublishingRun(claimed, 'synthetic-reaper', f.deadline + 1, publish))
+        .toEqual({ reconciled: false });
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it('reaches the exact App/head/attempt failure PATCH through the real repository and reaper', async () => {
+      const f = await projectedGateRun();
+      const exact = { id: 101, name: 'Review Yeti', head_sha: 'a'.repeat(40), app: { id: 12345 },
+        external_id: `${f.runId}:a${f.attempt}`, status: 'in_progress', conclusion: null };
+      const checks = [
+        { ...exact, id: 102, app: { id: 54321 } },
+        { ...exact, id: 103, head_sha: 'c'.repeat(40) },
+        { ...exact, id: 104, external_id: `${f.runId}:a${f.attempt + 1}` }, exact,
+      ];
+      const transport = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
+        new Response(JSON.stringify(init?.method === 'PATCH' ? {}
+          : String(url).includes('/commits/') ? { check_runs: checks } : exact)));
+      const client = new GitHubInstallationClient({ token: 'ghs_offline', fetchImplementation: transport });
+      const reaper = new AbandonedRunReaper({ repository: f.repository, checkClientFor: async () => client,
+        publisherAppId: 12345, workerId: 'synthetic-reaper', now: () => f.now,
+        delegatedFailureReader: { listCandidates: async () =>
+          [{ runId: f.runId, executionAttempt: f.attempt, reason: 'worker_failed' }] } });
+      expect(await reaper.runOnce()).toEqual({ swept: 1, published: 1, failed: 0, delegated: 1 });
+      const writes = transport.mock.calls.filter(([, init]) => ['POST', 'PATCH'].includes(init?.method || ''));
+      expect(writes).toHaveLength(1);
+      expect(writes[0][0]).toBe('https://api.github.com/repos/example-org/widgets/check-runs/101');
+      expect(writes[0][1]?.method).toBe('PATCH');
+      expect(JSON.parse(String(writes[0][1]?.body))).toMatchObject({ status: 'completed', conclusion: 'failure' });
+      expect((await dispatchState(f.client, f.runId)).run.result_digest).toBeNull();
+      expect(await reaper.runOnce()).toEqual({ swept: 0, published: 0, failed: 0 });
+      expect(transport.mock.calls.filter(([, init]) => ['POST', 'PATCH'].includes(init?.method || ''))).toHaveLength(1);
     });
   });
 

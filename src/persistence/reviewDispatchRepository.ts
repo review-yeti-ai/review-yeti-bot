@@ -44,7 +44,7 @@ import {
   type ReviewGateCancellationReason,
 } from '../review/reviewGatePolicy';
 import { isLegacyAppGateRun, LEGACY_APP_GATE_RUN_SQL } from './legacyAppGateReceiptPolicy';
-import { loadIncompleteP2RecoveryContext } from './incompleteP2Recovery';
+import { loadIncompleteP2RecoveryContext, requiredIncompleteP2RecoveryDigest } from './incompleteP2Recovery';
 import { REVIEW_DISPATCH_OUTBOX_STATUS } from './reviewDispatchStatus';
 import { MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT } from '../review/incompleteP2RecoveryLimits';
 import { isTrustedMcpStaticAdminRecoveryOrigin } from '../review/mcpStaticAdminRecoveryOrigin';
@@ -73,6 +73,10 @@ interface McpIncompleteP2RecoverySnapshot {
   outboxStateDigest: string;
 }
 
+function usesComposedReviewEngine(input: ReviewAdmissionInput): boolean {
+  return (input.reviewEngine ?? input.authoritativeGate?.prepared.config.review_engine) === 'composed';
+}
+
 function recoveryEvidenceMatches(existingValue: unknown, incoming: ReviewGenerationRecoveryEvidence): boolean {
   const existing = typeof existingValue === 'string'
     ? (() => { try { return JSON.parse(existingValue) as Record<string, any>; } catch { return null; } })()
@@ -92,6 +96,10 @@ function recoveryEvidenceMatches(existingValue: unknown, incoming: ReviewGenerat
       && priorRoster.workerStartedAt !== currentRoster.workerStartedAt)
     || (priorRoster.nextWorkerStartedAt !== undefined
       && priorRoster.nextWorkerStartedAt !== currentRoster.nextWorkerStartedAt)
+    || (currentRoster.gracefulCheckpointReceipt !== undefined
+      && canonicalJson(priorRoster.gracefulCheckpointReceipt) !== canonicalJson(currentRoster.gracefulCheckpointReceipt))
+    || (priorRoster.gracefulCheckpointReceipt === undefined
+      && currentRoster.gracefulCheckpointReceipt !== undefined)
     || !Array.isArray(priorRoster.gateChecks) || !Array.isArray(currentRoster.gateChecks)) return false;
 
   // A later authoritative App read may add subsequent Gate checks and the
@@ -329,6 +337,9 @@ function validateAdmission(
         || input.retryAfterExecutionAttempt !== input.expectedGeneration - 1)))) {
     throw new Error('Incomplete P2 recovery requires authoritative exact-generation admission');
   }
+  if (input.gracefulComposedContinuation !== undefined) {
+    throw new Error('Graceful composed continuation is service-derived');
+  }
   if (input.availableAt !== undefined
     && (!Number.isSafeInteger(input.availableAt) || input.availableAt < input.receivedAt)) {
     throw new Error('available-at must be a safe integer at or after receivedAt');
@@ -371,7 +382,14 @@ function generationRecoveryRequest(
 ): ReviewGenerationRecoveryRequest {
   const expected = input.expectedGeneration;
   const trustedMcpRecovery = isTrustedMcpRecoveryInput(input);
-  if ((!input.centralActionDispatch && !trustedMcpRecovery) || input.publicationMode !== 'app-gate'
+  const trustedGracefulContinuation = input.gracefulComposedContinuation === true
+    && input.centralActionDispatch === false
+    && input.eventName === 'mcp.trigger_review'
+    && input.incompleteP2Recovery === undefined
+    && input.incompleteP2RecoveryOrigin === undefined
+    && usesComposedReviewEngine(input);
+  if ((!input.centralActionDispatch && !trustedMcpRecovery && !trustedGracefulContinuation)
+    || input.publicationMode !== 'app-gate'
     || !input.authoritativeGate || input.retryRequested !== true
     || expected === undefined || expected < 2
     || input.retryAfterExecutionAttempt !== expected - 1) {
@@ -385,6 +403,7 @@ function generationRecoveryRequest(
     expectedGeneration: expected,
     expectedAppId: input.authoritativeGate.expectedAppId,
     ...(input.incompleteP2Recovery === true ? { incompleteP2Recovery: true } : {}),
+    ...(trustedGracefulContinuation ? { gracefulComposedContinuation: true } : {}),
   };
 }
 
@@ -446,6 +465,8 @@ export interface AbandonedPublishingRun {
   repo: string;
   prNumber: number;
   headSha: string;
+  /** Service-reserved publisher identity, when this run has an authoritative Gate. */
+  authoritativeGateAppId?: number;
   /** The run-side delivery identity. Legacy rows may have no run-side binding. */
   deliveryId?: string;
   executionAttempt: number;
@@ -704,6 +725,27 @@ function dispatchClaimPredicate(timeParameter: string): string {
                 OR (outbox.status = 'claimed' AND outbox.lease_expires_at <= to_timestamp(${timeParameter} / 1000.0)))`;
 }
 
+// Gate enrollment is not failure evidence. The surrounding abandonment,
+// result and lease predicates must still hold. A reserved App without its
+// exact current bound Gate remains ineligible, as does a recorded verdict.
+const ABANDONED_PUBLISHING_GATE_SQL = `(runs.authoritative_gate_app_id IS NULL OR EXISTS (
+  SELECT 1 FROM review_gate_attempts gate
+    JOIN review_dispatch_outbox publication_outbox ON publication_outbox.run_id = gate.run_id
+   WHERE gate.run_id = runs.run_id AND gate.current_attempt
+     AND gate.review_generation = runs.attempt
+     AND gate.execution_attempt = publication_outbox.execution_attempt + 1
+     AND gate.expected_app_id = runs.authoritative_gate_app_id
+     AND gate.repository_id = runs.repository_id AND gate.pr_number = runs.pr_number
+     AND gate.creation_state = 'bound' AND gate.check_id IS NOT NULL
+     AND gate.desired_state IN ('queued', 'in_progress', 'failure', 'timed_out')
+     AND gate.worker_result_digest IS NULL
+     AND gate.coordinates = jsonb_build_object(
+       'owner', runs.owner, 'repo', runs.repo, 'repositoryId', runs.repository_id,
+       'prNumber', runs.pr_number, 'headSha', runs.head_sha, 'baseSha', runs.base_sha,
+       'policyDigest', runs.effective_policy_digest, 'runId', runs.run_id,
+       'attemptId', gate.attempt_id, 'executionAttempt', gate.execution_attempt)
+))`;
+
 export class PostgresReviewDispatchRepository implements ReviewDispatchRepository {
   private readonly queryable: Queryable;
   private readonly admissionValidationTimeoutMs: number;
@@ -819,6 +861,106 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     }
   }
 
+  private async hasGracefulComposedContinuationCandidate(
+    input: ReviewAdmissionInput,
+    runId: string,
+  ): Promise<boolean> {
+    if (input.eventName !== 'mcp.trigger_review' || input.centralActionDispatch !== false
+      || input.publicationMode !== 'app-gate' || !input.authoritativeGate
+      || input.retryRequested !== undefined || input.retryAfterExecutionAttempt !== undefined
+      || input.expectedGeneration !== undefined || input.incompleteP2Recovery !== undefined
+      || input.incompleteP2RecoveryOrigin !== undefined || !usesComposedReviewEngine(input)) return false;
+    const result = await this.queryable.query(`
+      SELECT runs.status, runs.publication_mode, runs.authoritative_gate_app_id,
+             runs.attempt, runs.artifacts->>'review_engine' AS review_engine,
+             EXISTS (
+               SELECT 1
+                 FROM review_worker_completions completions
+                 JOIN review_gate_attempts gate
+                   ON gate.run_id = completions.run_id
+                  AND gate.execution_attempt = completions.execution_attempt
+                  AND gate.worker_result_digest = completions.content_digest
+                WHERE completions.run_id = runs.run_id
+                  AND completions.execution_attempt = 1
+                  AND completions.payload #>> '{result,failureDiagnostics,reason}' = 'review_evidence_deadline'
+                  AND completions.payload #>> '{result,failureDiagnostics,recoverableIncompletePanel}' = 'false'
+                  AND completions.payload #>> '{result,coverageComplete}' = 'false'
+                  AND jsonb_typeof(completions.payload #> '{result,taskPlan}') = 'array'
+                  AND gate.evidence->>'reviewEngine' = 'composed'
+                  AND gate.decision->>'reason' = 'incomplete-review'
+                  AND EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements(CASE
+                        WHEN jsonb_typeof(completions.payload #> '{result,personas}') = 'array'
+                          THEN completions.payload #> '{result,personas}' ELSE '[]'::jsonb END) AS persona(value)
+                      CROSS JOIN LATERAL jsonb_array_elements(CASE
+                        WHEN jsonb_typeof(persona.value->'findings') = 'array'
+                          THEN persona.value->'findings' ELSE '[]'::jsonb END) AS finding(value)
+                     WHERE persona.value->>'evidenceSource' IS DISTINCT FROM 'shadow'
+                  )
+             ) AS has_graceful_composed_partial
+        FROM review_runs runs
+       WHERE runs.run_id = $1 AND runs.identity_digest = $2
+         AND runs.owner = $3 AND runs.repo = $4 AND runs.pr_number = $5`,
+    [runId, sha256(input.identity), input.identity.owner, input.identity.repo, input.identity.prNumber]);
+    const row = result.rows[0];
+    return (row?.status === 'failed' || row?.status === 'terminal')
+      && row.publication_mode === 'app-gate'
+      && Number(row.authoritative_gate_app_id) === input.authoritativeGate.expectedAppId
+      && row.review_engine === 'composed'
+      && row.has_graceful_composed_partial === true;
+  }
+
+  private async refuseUnretainedOrdinaryMcpRetry(
+    client: Queryable,
+    input: ReviewAdmissionInput,
+    runId: string,
+  ): Promise<void> {
+    if (input.eventName !== 'mcp.trigger_review' || input.centralActionDispatch !== false
+      || input.publicationMode !== 'app-gate' || !input.authoritativeGate
+      || input.retryRequested !== undefined || input.retryAfterExecutionAttempt !== undefined
+      || input.expectedGeneration !== undefined || input.incompleteP2Recovery !== undefined
+      || input.incompleteP2RecoveryOrigin !== undefined || input.gracefulComposedContinuation === true) return;
+
+    const result = await client.query(`
+      SELECT runs.status, runs.attempt, runs.artifacts,
+             outbox.execution_attempt, outbox.status AS outbox_status
+        FROM review_runs runs
+        JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
+       WHERE runs.run_id = $1 AND runs.identity_digest = $2
+         AND runs.owner = $3 AND runs.repo = $4 AND runs.pr_number = $5
+         AND runs.publication_mode = 'app-gate'
+         AND runs.authoritative_gate_app_id = $6
+         AND runs.status IN ('failed', 'terminal')
+         AND NOT EXISTS (
+           SELECT 1 FROM review_runs newer
+            WHERE newer.owner = runs.owner AND newer.repo = runs.repo
+              AND newer.pr_number = runs.pr_number
+              AND newer.authoritative_gate_app_id IS NOT NULL
+              AND newer.run_id <> runs.run_id AND newer.status <> 'superseded'
+              AND newer.created_at >= runs.created_at
+         )
+       FOR UPDATE OF runs, outbox`,
+    [runId, sha256(input.identity), input.identity.owner, input.identity.repo,
+      input.identity.prNumber, input.authoritativeGate.expectedAppId]);
+    const row = result.rows[0];
+    if (!row) return;
+    const runAttempt = Number(row.attempt);
+    const outboxAttempt = Number(row.execution_attempt);
+    if (!Number.isSafeInteger(runAttempt) || runAttempt < 0
+      || !Number.isSafeInteger(outboxAttempt) || outboxAttempt !== runAttempt
+      || !['projected', 'terminal'].includes(String(row.outbox_status))) {
+      throw new Error('MCP retry state is unavailable or no longer current');
+    }
+    const nextExecutionAttempt = outboxAttempt + 2;
+    const retainedDigest = await requiredIncompleteP2RecoveryDigest(
+      client, runId, nextExecutionAttempt, row.artifacts,
+    );
+    if (retainedDigest !== null) {
+      throw new Error('MCP retry requires an explicitly admitted retained-findings context');
+    }
+  }
+
   private async readMcpIncompleteP2RecoverySnapshot(
     input: ReviewAdmissionInput,
     runId: string,
@@ -893,6 +1035,25 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       ...input,
       expectedGeneration: snapshot.expectedGeneration,
       retryAfterExecutionAttempt: snapshot.expectedGeneration - 1,
+    };
+    generationRecoveryRequest(derivedInput, runId);
+    return { input: derivedInput, snapshot };
+  }
+
+  private async deriveMcpGracefulComposedContinuation(
+    input: ReviewAdmissionInput,
+    runId: string,
+  ): Promise<{ input: ReviewAdmissionInput; snapshot: McpIncompleteP2RecoverySnapshot }> {
+    const snapshot = await this.readMcpIncompleteP2RecoverySnapshot(input, runId, false);
+    if (snapshot.expectedGeneration !== 2) {
+      throw new Error('Graceful composed continuation is available only for the first exact-head retry');
+    }
+    const derivedInput: ReviewAdmissionInput = {
+      ...input,
+      expectedGeneration: snapshot.expectedGeneration,
+      retryRequested: true,
+      retryAfterExecutionAttempt: snapshot.expectedGeneration - 1,
+      gracefulComposedContinuation: true,
     };
     generationRecoveryRequest(derivedInput, runId);
     return { input: derivedInput, snapshot };
@@ -988,6 +1149,21 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     const runId = deriveReviewRunId(input.identity);
     let preparedGenerationRecovery: ReviewGenerationRecoveryEvidence[] = [];
     let mcpRecoverySnapshot: McpIncompleteP2RecoverySnapshot | undefined;
+    if (await this.hasGracefulComposedContinuationCandidate(input, runId)) {
+      // Ordinary MCP retries do not carry a caller-selected generation or P2
+      // recovery flag. Derive the single graceful continuation from the exact
+      // failed run/outbox snapshot, then bind fresh App evidence to that same
+      // snapshot under the PR lock before any retry state is written.
+      await this.validateAuthoritativeAdmission(input);
+      const derived = await this.deriveMcpGracefulComposedContinuation(input, runId);
+      input = derived.input;
+      mcpRecoverySnapshot = derived.snapshot;
+      if (!this.options.resolveGenerationRecovery) {
+        throw new Error('Review generation recovery evidence is unavailable');
+      }
+      preparedGenerationRecovery = await this.resolveGenerationRecovery(input);
+      validateGenerationRecovery(input, runId, preparedGenerationRecovery);
+    }
     if (input.incompleteP2RecoveryOrigin !== undefined) {
       // Do the network read before opening a transaction, then bind it to this
       // exact run/outbox snapshot under the PR lock below. The expected
@@ -1005,6 +1181,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
     if ((input.expectedGeneration ?? 1) > 1
       && input.retryRequested === true
       && input.incompleteP2RecoveryOrigin === undefined
+      && input.gracefulComposedContinuation !== true
       && this.options.resolveGenerationRecovery) {
       generationRecoveryRequest(input, runId);
       // A durable run row alone does not prove that the outbox/projection state
@@ -1025,6 +1202,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       );
       if (input.authoritativeGate) {
         await this.validateAuthoritativeAdmission(input);
+        await this.refuseUnretainedOrdinaryMcpRetry(client, input, runId);
         await savePreparedPublishingPolicy(client, input.authoritativeGate.prepared);
       }
       let generationRecovery: ReviewGenerationRecoveryEvidence[] = [];
@@ -1044,15 +1222,19 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
       }
       // A central P2-only candidate cannot erase its findings by retrying. The
       // complete archive is verified under the same PR lock as generation allocation.
-      const p2RecoveryContext = input.incompleteP2Recovery === true
+      const retainedRecoveryContext = input.incompleteP2Recovery === true
+        || input.gracefulComposedContinuation === true
         ? await loadIncompleteP2RecoveryContext(client, {
           runId, repositoryId: input.repositoryId, identity: input.identity,
-          policyDigest: input.effectivePolicyDigest!, incompleteP2Recovery: true,
+          policyDigest: input.effectivePolicyDigest!,
+          ...(input.incompleteP2Recovery === true ? { incompleteP2Recovery: true as const } : {}),
+          ...(input.gracefulComposedContinuation === true ? { gracefulComposedContinuation: true as const } : {}),
           expectedAppId: input.authoritativeGate!.expectedAppId, executionAttempt: input.expectedGeneration!,
           recoveryEvidence: generationRecovery,
         }) : null;
-      if (input.incompleteP2Recovery === true && !p2RecoveryContext) {
-        throw new Error('Retained P2 findings are required for recovery');
+      if ((input.incompleteP2Recovery === true || input.gracefulComposedContinuation === true)
+        && !retainedRecoveryContext) {
+        throw new Error('Retained findings are required for recovery');
       }
       const delivery = await client.query(
         `INSERT INTO github_deliveries
@@ -1242,7 +1424,10 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           generationRecovery.length,
           JSON.stringify({
             review_engine: input.reviewEngine || input.authoritativeGate?.prepared.config.review_engine || 'panel',
-            ...(p2RecoveryContext ? { incomplete_p2_recovery_digest: p2RecoveryContext.contextDigest } : {}),
+            ...(input.incompleteP2Recovery === true && retainedRecoveryContext
+              ? { incomplete_p2_recovery_digest: retainedRecoveryContext.contextDigest } : {}),
+            ...(input.gracefulComposedContinuation === true && retainedRecoveryContext
+              ? { graceful_composed_p2_recovery_digest: retainedRecoveryContext.contextDigest } : {}),
           }),
         ],
       );
@@ -1376,7 +1561,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             admission_origin: input.incompleteP2RecoveryOrigin.kind,
             actor: input.incompleteP2RecoveryOrigin.callerId,
           } : {}) });
-      if (generationRecovery.length > 0) {
+      if (generationRecovery.length > 0 && input.gracefulComposedContinuation !== true) {
         await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.generation_reconciled', input.receivedAt,
           { stage: 'admission', retry_class: 'service_state_loss_reconciled',
             evidence_pointers: generationRecovery.map((entry) => `github-check-run:${entry.checkId}:a${entry.generation}`) });
@@ -1385,7 +1570,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         { stage: 'queued', policy_digest: input.effectivePolicyDigest || input.identity.configDigest });
       if (Number(runRow.attempt || 0) > 0) {
         await this.appendLifecycle(client, String(runRow.run_id), 'review.lifecycle.retrying', input.receivedAt,
-          { stage: 'admission', retry_class: 'same_identity_redelivery' });
+          { stage: 'admission', retry_class: input.gracefulComposedContinuation === true
+            ? 'graceful_composed_continuation' : 'same_identity_redelivery' });
       }
       await client.query('COMMIT');
       return {
@@ -1555,7 +1741,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           )
             AND publication_mode = ANY($6::text[])
             AND result_digest IS NULL
-            AND authoritative_gate_app_id IS NULL
+            AND ${ABANDONED_PUBLISHING_GATE_SQL}
             AND (runs.lease_expires_at IS NULL OR runs.lease_expires_at <= to_timestamp($2 / 1000.0))
           -- A durable worker failure is actionable immediately. Keep it ahead of
           -- deadline sweeps so a failed head is not hidden behind old backlog.
@@ -1590,7 +1776,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
               END
          FROM retired
         WHERE runs.run_id = retired.run_id
-       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha,
+       RETURNING runs.run_id, runs.owner, runs.repo, runs.pr_number, runs.head_sha, runs.authoritative_gate_app_id,
                  runs.delivery_id, runs.received_at, runs.terminal_deadline,
                  retired.execution_attempt + 1 AS execution_attempt, retired.recovery_only,
                  retired.delivery_identity_mismatch, retired.delegated_reason`,
@@ -1608,6 +1794,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
         repo: String(row.repo),
         prNumber: Number(row.pr_number),
         headSha: String(row.head_sha),
+        ...(row.authoritative_gate_app_id == null ? {} : { authoritativeGateAppId: Number(row.authoritative_gate_app_id) }),
         ...(row.delivery_id == null ? {} : { deliveryId: String(row.delivery_id) }),
         executionAttempt: Number(row.execution_attempt),
         receivedAt: milliseconds(row.received_at) || 0,
@@ -2066,7 +2253,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
            JOIN review_dispatch_outbox outbox ON outbox.run_id = runs.run_id
           WHERE runs.run_id = $1 AND runs.delivery_id IS NOT DISTINCT FROM $2::text
             AND runs.status = 'terminal' AND runs.publication_mode = 'app-gate'
-            AND runs.authoritative_gate_app_id IS NULL
+            AND ${ABANDONED_PUBLISHING_GATE_SQL}
+            AND runs.authoritative_gate_app_id IS NOT DISTINCT FROM $12::bigint
             AND runs.result_digest IS NULL AND runs.lease_owner = $3
             AND runs.lease_expires_at > to_timestamp($4 / 1000.0)
             AND outbox.execution_attempt + 1 = $5
@@ -2081,7 +2269,8 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             AND runs.terminal_deadline < to_timestamp(($11::double precision + 1) / 1000.0)
           FOR UPDATE OF runs, outbox`,
         [run.runId, run.deliveryId, workerId, now, run.executionAttempt,
-          run.owner, run.repo, run.prNumber, run.headSha, run.receivedAt, run.terminalDeadline],
+          run.owner, run.repo, run.prNumber, run.headSha, run.receivedAt, run.terminalDeadline,
+          run.authoritativeGateAppId ?? null],
       );
       if (current.rows.length === 0) {
         await client.query('COMMIT');
@@ -2120,7 +2309,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           throw new Error('delivery identity mismatch outbox retirement lost its exact attempt');
         }
         const retiredRun = await client.query(
-          `UPDATE review_runs
+          `UPDATE review_runs AS runs
               SET status = 'terminal', stage = 'terminal',
                   error_text = $2::text, failure_diagnostics = $3::jsonb,
                   lease_owner = NULL, lease_expires_at = NULL,
@@ -2128,7 +2317,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             WHERE run_id = $1
               AND delivery_id IS NOT DISTINCT FROM $4::text
               AND status = 'terminal' AND publication_mode = 'app-gate'
-              AND authoritative_gate_app_id IS NULL AND result_digest IS NULL
+              AND ${ABANDONED_PUBLISHING_GATE_SQL} AND result_digest IS NULL
               AND lease_owner = $5::text
               AND lease_expires_at > to_timestamp($6 / 1000.0)
           RETURNING run_id`,
@@ -2186,7 +2375,7 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
           throw new Error('superseded outbox retirement lost its exact attempt');
         }
         const retiredRun = await client.query(
-          `UPDATE review_runs
+          `UPDATE review_runs AS runs
               SET status = 'terminal', stage = 'terminal',
                   error_text = $2::text, failure_diagnostics = $3::jsonb,
                   lease_owner = NULL, lease_expires_at = NULL,
@@ -2194,11 +2383,11 @@ export class PostgresReviewDispatchRepository implements ReviewDispatchRepositor
             WHERE run_id = $1
               AND delivery_id IS NOT DISTINCT FROM $4::text
               AND status = 'terminal' AND publication_mode = 'app-gate'
-              AND authoritative_gate_app_id IS NULL AND result_digest IS NULL
+              AND ${ABANDONED_PUBLISHING_GATE_SQL} AND result_digest IS NULL
               AND lease_owner = $5::text
               AND lease_expires_at > to_timestamp($6 / 1000.0)
               AND EXISTS (SELECT 1 FROM review_dispatch_outbox outbox
-                WHERE outbox.run_id = review_runs.run_id
+                WHERE outbox.run_id = runs.run_id
                   AND outbox.execution_attempt + 1 = $7)
           RETURNING run_id`,
           [run.runId, SUPERSEDED_PUBLISHING_ERROR_TEXT, JSON.stringify(diagnostics),

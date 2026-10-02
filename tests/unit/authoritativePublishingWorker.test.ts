@@ -21,13 +21,17 @@ import { isRecoverableFailureTitle } from '../../src/review/reviewCheckIdentity'
 import { buildDocumentationOnlyPanelResult } from '../../src/panel/fastShipResult';
 import { unreportedLaneFailure } from '../../src/panel/composedEngine';
 import type { OpenRouterRequest } from '../../src/gateway/openRouterClient';
+import { JevClient, type JevOutcome } from '../../src/gateway/jevClient';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
+import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { PanelResult } from '../../src/panel/types';
 import * as panelEngine from '../../src/panel/panelEngine';
 import * as qualificationReader from '../../src/github/qualificationReader';
 import { GitHubInstallationClient } from '../../src/github/installationClient';
 import { logger } from '../../src/utils/logger';
+import { getMetrics } from '../../src/telemetry';
 import * as zoektGroundingModule from '../../src/mcp/zoektGrounding';
+import * as deletionEvidenceModule from '../../src/review/deletionEvidence';
 import {
   createIncompleteP2RecoveryContext,
   incompleteP2RecoveryClaimFor,
@@ -134,6 +138,83 @@ function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string
 }
 
 describe('REL-1198 publishing panel respects the admitted lifecycle window', () => {
+  it.each(['panel', 'composed'] as const)('prepares optional core classification before the %s engine and publishes its receipt', async (reviewEngine) => {
+    const f = fixture({ reviewEngine });
+    const budgets: number[] = [];
+    const createRuntime = deletionEvidenceModule.createDeletionEvidenceRuntime;
+    vi.spyOn(deletionEvidenceModule, 'createDeletionEvidenceRuntime').mockImplementation((input) => {
+      const runtime = createRuntime(input), prepare = runtime.prepare;
+      runtime.prepare = (options) => { budgets.push(options!.budgetMs!); return prepare(options); };
+      return runtime;
+    });
+    const removed = (name: string) => `diff --git a/${name} b/${name}\ndeleted file mode 100644\n--- a/${name}\n+++ /dev/null\n@@ -1 +0,0 @@\n-export function old() {}\n`;
+    f.source.diff = removed('src/old.ts') + removed('dist/old.js');
+    const readFileAt = vi.fn(async (_path: string, side: string) => ({ sha: side === 'head' ? HEAD : BASE,
+      content: side === 'head' ? null : 'export function old() {}' }));
+    f.deps.repoFileProviderFactory = () => ({ findFiles: async () => [], readFile: async () => null, readFileAt });
+    Object.assign(f.env, { REVIEW_YETI_JEV_EVIDENCE: 'example/project', TYPESAFE_BASE_URL: 'https://jev.example.invalid',
+      TYPESAFE_MODEL: 'jev-latest', TYPESAFE_MODEL_PIN: 'jev-test', TYPESAFE_API_KEY: 'test-key' });
+    const choices = { risk: 'unknown', subsystem: 'individual', category: 'source', visible_consumer: 'unknown', contract_change: 'unknown' };
+    const ask = vi.spyOn(JevClient.prototype, 'ask').mockResolvedValue({ status: 'ok', model: 'jev-test', durationMs: 1,
+      answers: Object.fromEntries(Object.entries(choices).map(([id, choice]) => [id,
+        { type: 'choice', choice, confidence: 1, probabilities: { [choice]: 1 } }])),
+    } as JevOutcome<string>);
+    const runner = vi.fn(async (options: any) => {
+      expect(ask).toHaveBeenCalledOnce();
+      expect(options.repoFileProvider.deletionPlan()).toMatchObject({ status: 'complete', totalFiles: 1, classifiedFiles: 1 });
+      expect(options.repoFileProvider.deletionPlan().groups.flatMap((group: any) => group.paths)).toEqual(['src/old.ts']);
+      return f.panel;
+    });
+    f.deps.panelRunner = runner;
+    f.deps.composedReviewRunner = runner;
+    await runPublishingReviewWorker(f.env, f.deps);
+    expect(runner).toHaveBeenCalledOnce();
+    expect(budgets).toEqual([15_000]);
+    expect(readFileAt.mock.calls.every(([path]) => path === 'src/old.ts')).toBe(true);
+    expect(parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]).result.deletionClassification)
+      .toMatchObject({ status: 'complete', totalFiles: 1, classifiedFiles: 1, unresolvedFiles: 0, totalGroups: 1 });
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([1_000, 0, -1_000])('reserves the ordinary review window when classification has %sms remaining', async (remaining) => {
+    const f = fixture();
+    let clock = START;
+    f.deps.now = () => clock;
+    f.env.REVIEW_TERMINAL_DEADLINE = new Date(START + 360_000).toISOString();
+    f.deps.currentPullRequestVerifier = vi.fn(async () => { clock = START + 60_000 - remaining; });
+    f.source.diff = 'diff --git a/src/old.ts b/src/old.ts\ndeleted file mode 100644\n--- a/src/old.ts\n+++ /dev/null\n@@ -1 +0,0 @@\n-export function old() {}\n';
+    f.deps.repoFileProviderFactory = () => ({ findFiles: async () => [], readFile: async () => null,
+      readFileAt: async (_path, side) => ({ sha: side === 'head' ? HEAD : BASE,
+        content: side === 'head' ? null : 'export function old() {}' }) });
+    Object.assign(f.env, { REVIEW_YETI_JEV_EVIDENCE: 'example/project', TYPESAFE_BASE_URL: 'https://jev.example.invalid',
+      TYPESAFE_MODEL: 'jev-latest', TYPESAFE_MODEL_PIN: 'jev-test', TYPESAFE_API_KEY: 'test-key' });
+    const ask = vi.spyOn(JevClient.prototype, 'ask').mockImplementation(async () => new Promise(() => {}));
+    const budgets: number[] = [];
+    const createRuntime = deletionEvidenceModule.createDeletionEvidenceRuntime;
+    vi.spyOn(deletionEvidenceModule, 'createDeletionEvidenceRuntime').mockImplementation((input) => {
+      const runtime = createRuntime(input), prepare = runtime.prepare;
+      runtime.prepare = (options) => { budgets.push(options!.budgetMs!); return prepare(options); };
+      return runtime;
+    });
+    const result = await runPublishingReviewWorker(f.env, f.deps).then(() => undefined, (error: unknown) => error);
+    expect(budgets).toEqual([Math.max(0, remaining / 10)]);
+    expect(f.reportReviewResult).toHaveBeenCalledOnce();
+    const event = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0][0]);
+    if (remaining > 0) {
+      expect(result).toBeUndefined();
+      expect(ask).toHaveBeenCalledOnce();
+      expect(f.panelRunner).toHaveBeenCalledOnce();
+      expect(event.result).toMatchObject({ coverageComplete: true,
+        deletionClassification: { status: 'partial', classifiedFiles: 0, unresolvedFiles: 1 } });
+    } else {
+      expect(result).toBeInstanceOf(panelEngine.PanelDeadlineExceededError);
+      expect(ask).not.toHaveBeenCalled();
+      expect(f.panelRunner).not.toHaveBeenCalled();
+      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false });
+    }
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
   it('synthesizes and publishes the latest checkpoint when a composed runner ignores cancellation', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(START);
@@ -978,6 +1059,8 @@ describe('authoritative prepared publishing worker', () => {
       // reason the exact-call assertion below should drift on its own.
       repoFileProvider: {
         findFiles: expect.any(Function), readFile: expect.any(Function), treeTruncated: expect.any(Function),
+        readFileAt: expect.any(Function), readDiff: expect.any(Function),
+        deletionManifest: expect.any(Function), deletionEvidence: expect.any(Function), deletionPlan: expect.any(Function),
       },
       isCurrentHead: undefined,
       deterministicRoster: true,
@@ -1150,8 +1233,10 @@ describe('authoritative prepared publishing worker', () => {
     expect(f.reportReviewResult).toHaveBeenCalledExactlyOnceWith(expectedEvent(f, expected));
     expect(receipt).toMatchObject({ conclusion: 'failure', verdict: 'INCOMPLETE', failureClass: 'rate_limit' });
     expect(f.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-      conclusion: 'failure', title: 'Review Yeti: INCOMPLETE — infrastructure (lane qual-lane failed: rate_limit); retrying as attempt 3 of 3',
+      conclusion: 'failure', title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane qual-lane failed: rate_limit)',
     }));
+    expect(f.checkClient.completeCheck.mock.calls[0]?.[0]?.summary)
+      .toContain('Automatic retry is NOT CONFIRMED for execution attempt 2');
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
     expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(TOKEN);
     expect(JSON.stringify(f.checkClient.completeCheck.mock.calls)).not.toContain(PRIVATE_DETAIL);
@@ -1188,7 +1273,7 @@ describe('authoritative prepared publishing worker', () => {
         current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }) : undefined };
     }
 
-    it('#3446 shape (1 of 2 lanes lost to a gateway 502, 0 findings) is INCOMPLETE with a re-attempt, not BLOCK', async () => {
+    it('#3446 shape (1 of 2 lanes lost to a gateway 502, 0 findings) is INCOMPLETE without a scheduling claim, not BLOCK', async () => {
       const f = incompleteFixture('1');
       const receipt = await runPublishingReviewWorker(f.env, f.deps);
 
@@ -1197,17 +1282,18 @@ describe('authoritative prepared publishing worker', () => {
       expect(check?.title).not.toBe('Review Yeti: BLOCK');
       expect(check?.title).not.toMatch(/BLOCK|FIX_FIRST|SHIP/u);
       expect(check).toMatchObject({ conclusion: 'failure',
-        title: 'Review Yeti: INCOMPLETE — infrastructure (lane qual-lane failed: 502); retrying as attempt 2 of 3' });
+        title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane qual-lane failed: 502)' });
       // Visible: the summary names the lane that did not complete and why.
       expect(check?.summary).toContain('not a review verdict');
       expect(check?.summary).toContain('- `qual-lane`: provider_error (provider HTTP 502)');
-      expect(check?.summary).toContain('A fresh attempt (2 of 3) is scheduled automatically');
+      expect(check?.summary).toContain('Automatic retry is NOT CONFIRMED for execution attempt 1');
+      expect(check?.summary).not.toMatch(/scheduled automatically|fresh attempt \(2 of 3\)|superseded by it/iu);
       expect(check?.summary).not.toContain('nginx');
       expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass: 'provider_error' });
 
-      // The trusted completion side reaches the same decision from the same payload: it records an
-      // infrastructure failure (not blocking-findings), and the shared predicate accepts it, which
-      // is what re-admits attempt 2.
+      // The trusted completion side reaches the same classification from the same payload: it
+      // records an infrastructure failure (not blocking-findings). Admission remains a separate
+      // service decision and is not claimed by the worker's completion acknowledgement.
       const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
       expect(completion.executionAttempt).toBe(1);
       expect(completion.result.failureDiagnostics).toMatchObject({ reason: 'lane_infrastructure_incomplete',
@@ -1219,19 +1305,63 @@ describe('authoritative prepared publishing worker', () => {
       expect(decision).toEqual({ status: 'failure', eligible: false, reason: 'infrastructure-failure' });
     });
 
+    it.each(['recorded', 'duplicate', 'ignored'] as const)(
+      'does not report retry scheduling from a completion delivery ACK with status %s', async (ackStatus) => {
+        const f = incompleteFixture('1');
+        const acknowledgementFetch = vi.fn<typeof fetch>(async (_input, init) => {
+          const event = JSON.parse(String(init?.body)) as { runId: string };
+          return new Response(JSON.stringify({ version: 'WorkerReviewCompletionAccepted.v1', runId: event.runId, status: ackStatus }), {
+            status: 200, headers: { 'content-type': 'application/json' },
+          });
+        });
+        f.deps.reviewCompletion = new HttpWorkerReviewCompletionAdapter({ token: TOKEN, endpoint: ENDPOINT,
+          fetchImplementation: acknowledgementFetch });
+
+        const receipt = await runPublishingReviewWorker(f.env, f.deps);
+
+        const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+        expect(acknowledgementFetch).toHaveBeenCalledOnce();
+        expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure' });
+        expect(check?.title).toContain('automatic retry NOT CONFIRMED');
+        expect(check?.title).not.toMatch(/retrying as attempt|superseded/iu);
+        expect(check?.summary).toContain('Automatic retry is NOT CONFIRMED for execution attempt 1');
+        expect(check?.summary).toContain('acknowledgement confirms delivery only');
+        expect(check?.summary).not.toMatch(/scheduled automatically|fresh attempt \(2 of 3\)/iu);
+      });
+
     it('attempts exhausted: publishes the INCOMPLETE title with no retry, still never BLOCK', async () => {
       const f = incompleteFixture('3');
       await runPublishingReviewWorker(f.env, f.deps);
       const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
       expect(check).toMatchObject({ conclusion: 'failure',
-        title: 'Review Yeti: INCOMPLETE — infrastructure (lane qual-lane failed: 502)' });
-      expect(check?.summary).toContain('was the last automatic attempt (3 of 3)');
+        title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry cap EXHAUSTED; lane qual-lane failed: 502)' });
+      expect(check?.summary).toContain('cap of 2 additional attempts was exhausted at execution attempt 3');
       expect(isRecoverableFailureTitle(check?.title)).toBe(true);
       const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
       // The payload is still marked (the service keeps the reason class); the attempt cap alone
       // stops the re-admission.
       expect(isInfrastructureIncompleteResult(completion.result)).toBe(true);
       expect(completion.executionAttempt).toBe(3);
+    });
+
+    it('safe attempt 4 reports UNKNOWN for a returned incomplete panel without inventing exhaustion', async () => {
+      const f = incompleteFixture('4');
+      const warn = vi.mocked(logger.warn);
+      const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
+
+      await runPublishingReviewWorker(f.env, f.deps);
+
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check).toMatchObject({ conclusion: 'failure',
+        title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry status UNKNOWN; lane qual-lane failed: 502)' });
+      expect(check?.summary).toContain('execution attempt 4; this value proves neither retry eligibility nor cap exhaustion');
+      expect(check?.summary).not.toMatch(/scheduled automatically|cap of 2 additional attempts was exhausted|automatic retry cap of|last automatic attempt/iu);
+      expect(warn).toHaveBeenCalledWith('Review incomplete: reviewer lane(s) failed on infrastructure; not a review verdict',
+        expect.objectContaining({ executionAttempt: 4, retryStatus: 'unknown' }));
+      expect(warn.mock.calls[0]?.[1]).not.toHaveProperty('retryScheduled');
+      expect(metric).toHaveBeenCalledExactlyOnceWith(1, { outcome: 'unknown', failure_class: 'provider_error', authoritative: 'true' });
+      const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+      expect(completion.executionAttempt).toBe(4);
     });
 
     it('a findings BLOCK stays BLOCK even when another lane was lost to the gateway', async () => {
@@ -1644,13 +1774,16 @@ describe('authoritative prepared publishing worker', () => {
       external_id: `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}` });
     expect(created.name).not.toBe('Review Yeti Gate');
     expect(completed).not.toHaveProperty('name');
-    expect(completed).toMatchObject({ status: 'completed', output: {
+    // The service re-derives an advisory P2 SHIP above, independently of the raw publisher's
+    // strict default: the exact finding remains visible and makes the raw check fail.
+    expect(completed).toMatchObject({ status: 'completed', conclusion: 'failure', output: {
       text: expect.stringContaining(finding.title),
       annotations: [{ path: finding.path, start_line: 1, end_line: 1,
-        annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
+        annotation_level: 'failure', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
-    expect(completed.conclusion).toBe('success');
+    expect(completed.output.title).toBe('Review Yeti: SHIP');
+    expect(completed.conclusion).toBe('failure');
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');

@@ -21,7 +21,7 @@ import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
 import { REVIEW_HITL_SCHEMA_SQL } from './reviewHitlSchema';
 import { REVIEW_ANALYTICS_SCHEMA_SQL } from './reviewAnalyticsSchema';
-import { applySchemaOnce, withSchemaLockRetry } from './schemaMigrationGate';
+import { applySchemaOnce, SCHEMA_DDL_LOCK_TIMEOUT, withSchemaLockRetry } from './schemaMigrationGate';
 import { LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL } from './legacyAppGateReceiptPolicy';
 
 export const ADVISORY_LOCK_ID = 1029384;
@@ -112,7 +112,11 @@ export class PostgresStore {
     try {
       client = await pool.connect();
       await client.query('BEGIN');
-      
+
+      // Bound bootstrap serialization as well as DDL. The advisory lock can
+      // otherwise wait indefinitely before applySchemaOnce sets its timeout.
+      await client.query(`SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`);
+
       // Acquire multi-pod advisory lock for schema migration and initialization
       await client.query('SELECT pg_advisory_xact_lock($1)', [ADVISORY_LOCK_ID]);
 

@@ -6,6 +6,8 @@ import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { executePersonaPanel, extractMessageContentText, MAX_INLINE_DIFF_CHARS_CEILING } from '../../src/panel/panelEngine';
 import { executeComposedReview } from '../../src/panel/composedEngine';
+import * as panelEngine from '../../src/panel/panelEngine';
+import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { resolveScopedReviewApplicability } from '../../src/review/incrementalReview';
@@ -1121,6 +1123,47 @@ describe('composed engine wiring', () => {
     expect(plan.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
     expect(work.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
   });
+
+  it('recovers original tail evidence in both phases and validates findings against the admitted patch', async () => {
+    const original = files(BIG_DIFF).find((file) => file.path === 'src/core.ts')!;
+    const validate = vi.spyOn(panelEngine, 'validateFindings');
+    const tail = original.patch!.indexOf('core_TAIL_MARKER');
+    expect(tail).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
+    const { plan, work } = toolResults(await composedRequests(ON, { tool: 'get_diff_page',
+      args: { path: 'src/core.ts', startOffset: tail, maxChars: 100 } }));
+    for (const result of [plan, work]) {
+      expect(result).toContain('core_TAIL_MARKER');
+      expect(result).toContain('original-admitted-diff');
+    }
+    expect(validate).toHaveBeenCalledWith([], expect.arrayContaining([expect.objectContaining({
+      path: original.path, patch: original.patch,
+    })]));
+  });
+
+  it.each([{ line: 702, retained: true }, { line: 999, retained: false }])
+    ('validates resumed findings against original lines: %j', async ({ line, retained }) => {
+      const changedFiles = files(BIG_DIFF);
+      const findings = [{ severity: 'P2', path: 'src/core.ts', line, title: 'Tail contract', body: 'Check the original tail.' }];
+      const checkpoint = parseReviewExecutionCheckpoint({ version: 'ReviewExecutionCheckpoint.v1',
+        runId: `run_${'1'.repeat(32)}`, repositoryId: 1, owner: 'acme', repo: 'app', prNumber: 1,
+        headSha: 'e'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+        executionAttempt: 2, revision: 1,
+        plan: [{ id: 't1', dimension: 'security', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'Tail?', rationale: 'Contract.' }],
+        completedTasks: [{ id: 't1', findings }] });
+      const validate = vi.spyOn(panelEngine, 'validateFindings');
+      const complete = vi.fn(async (request: any) => {
+        const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+        const nonce = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+        return { model: 'm', content: JSON.stringify({ nonce, task: 't1', status: 'COMPLETE', findings: [] }),
+          usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+      });
+      const result = await executeComposedReview({ config: COMPOSED_CONFIG(), changedFiles, repository: 'acme/app',
+        headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
+        checkpoint: { resumed: checkpoint, save: async () => {} } });
+      expect(validate.mock.calls[0]).toEqual([checkpoint.completedTasks[0].findings, changedFiles]);
+      expect(complete).toHaveBeenCalledTimes(retained ? 0 : 1);
+      expect(result.personas[0].findings.map((finding) => finding.line)).toEqual(retained ? [702] : []);
+    });
 
   // The last message of the request after each phase's first tool call is that tool's result.
   function toolResults(requests: string[]): { plan: string; work: string } {

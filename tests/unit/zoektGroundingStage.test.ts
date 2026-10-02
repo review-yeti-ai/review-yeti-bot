@@ -53,6 +53,62 @@ describe('createZoektGroundingStage (REL-677)', () => {
     expect(removed).toHaveLength(0);
   });
 
+  describe('memory budget (REL-1282)', () => {
+    const MiB = 1024 * 1024;
+    const input = { enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't' };
+
+    it('skips with an explicit reason, before any scratch or network work, when the container is below the floor', async () => {
+      const { fs, created } = fakeFs();
+      const materialize = vi.fn();
+      const build = vi.fn();
+      const stage = createZoektGroundingStage({
+        fs, materializeReviewWorkdir: materialize, buildZoektIndex: build, readMemoryLimitBytes: () => 256 * MiB,
+      });
+      const result = await stage(input);
+      expect(result).toMatchObject({ indexDir: undefined, reason: 'grounding_skipped:memory_limit_below_floor',
+        memory: { limitBytes: 256 * MiB, floorBytes: 512 * MiB } });
+      expect(created).toHaveLength(0);
+      expect(materialize).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+    });
+
+    it('runs when the container is at the floor and reports the observed peak', async () => {
+      const { fs } = fakeFs();
+      const stage = createZoektGroundingStage({
+        fs, materializeReviewWorkdir: vi.fn(async () => ({ status: 'ok' })),
+        buildZoektIndex: vi.fn(async () => ({ status: 'ok', indexScope: {} })),
+        readMemoryLimitBytes: () => 512 * MiB, readMemoryPeakBytes: () => 300 * MiB,
+      });
+      const result = await stage(input);
+      expect(result.indexDir).toEqual(expect.any(String));
+      expect(result.memory).toEqual({ limitBytes: 512 * MiB, peakBytesAfterBuild: 300 * MiB });
+    });
+
+    it('runs when the limit cannot be determined (unverified, never a silent skip)', async () => {
+      const { fs } = fakeFs();
+      const build = vi.fn(async () => ({ status: 'ok', indexScope: {} }));
+      const stage = createZoektGroundingStage({
+        fs, materializeReviewWorkdir: vi.fn(async () => ({ status: 'ok' })), buildZoektIndex: build,
+        readMemoryLimitBytes: () => undefined, readMemoryPeakBytes: () => undefined,
+      });
+      const result = await stage(input);
+      expect(build).toHaveBeenCalledTimes(1);
+      expect(result.memory).toBeUndefined();
+    });
+
+    it('reports an oversized archive as a deliberate grounding_skipped, not a materialize failure', async () => {
+      const { fs } = fakeFs();
+      const build = vi.fn();
+      const stage = createZoektGroundingStage({
+        fs, materializeReviewWorkdir: vi.fn(async () => ({ status: 'unavailable', reason: 'archive_too_large' })),
+        buildZoektIndex: build, readMemoryLimitBytes: () => 1024 * MiB,
+      });
+      const result = await stage(input);
+      expect(result.reason).toBe('grounding_skipped:archive_too_large');
+      expect(build).not.toHaveBeenCalled();
+    });
+  });
+
   it('maps an indexer failure to build_<status>', async () => {
     const { fs } = fakeFs();
     const materialize = vi.fn(async () => ({ status: 'ok' }));
@@ -129,17 +185,20 @@ describe('createZoektGroundingStage (REL-677)', () => {
 
   it('returns the indexDir on success and passes bounded args through', async () => {
     const { fs, created } = fakeFs();
+    const indexScope = { complete: false, excludedDirectories: ['build'], fileLimitBytes: 2097152,
+      limitations: ['directory_exclusions'], repository: 'untrusted/builder', headSha: 'b'.repeat(40) };
     const materialize = vi.fn(async (args: any) => { expect(args.destDir.endsWith('/src')).toBe(true); return { status: 'ok' }; });
     const build = vi.fn(async (args: any) => {
       expect(args.indexDir.endsWith('/index')).toBe(true);
       // Binary path is caller-resolved input, never process.env (seams contract).
       expect(args.config.zoektIndexBinaryPath).toBe('/opt/zoekt/zoekt-index');
-      return { status: 'ok', shardCount: 2 };
+      return { status: 'ok', shardCount: 2, indexScope };
     });
     const stage = createZoektGroundingStage({ fs, materializeReviewWorkdir: materialize, buildZoektIndex: build });
 
     const result = await stage({ enabled: true, repository: 'o/r', headSha: 'a'.repeat(40), token: 't', zoektIndexBinaryPath: '/opt/zoekt/zoekt-index' });
     expect(result.indexDir).toBe(result.scratchDir && `${result.scratchDir}/index`);
+    expect(result.indexScope).toEqual({ ...indexScope, repository: 'o/r', headSha: 'a'.repeat(40) });
     expect(created).toHaveLength(1);
     expect(materialize).toHaveBeenCalledTimes(1);
     expect(build).toHaveBeenCalledTimes(1);

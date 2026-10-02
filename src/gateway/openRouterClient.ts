@@ -23,11 +23,39 @@ export class OpenRouterConnectionError extends Error {
 export class OpenRouterResponseError extends Error {
   readonly status?: number;
 
+  get observedHttpStatus(): number | undefined {
+    return observedHttpStatusByError.get(this)?.status;
+  }
+
+  get observedHttpStatusSource(): ObservedHttpStatusSource | undefined {
+    return observedHttpStatusByError.get(this)?.source;
+  }
+
   constructor(message: string, status?: number) {
     super(message);
     this.name = 'OpenRouterResponseError';
     this.status = Number.isInteger(status) ? status : undefined;
   }
+}
+
+type ObservedHttpStatusSource = 'fetch_response' | 'sdk_http_error';
+type ObservedHttpStatus = Readonly<{ status: number; source: ObservedHttpStatusSource }>;
+
+const observedHttpStatusByError = new WeakMap<OpenRouterResponseError, ObservedHttpStatus>();
+
+function withObservedHttpStatus<T extends OpenRouterResponseError>(
+  error: T,
+  status: number,
+  source: ObservedHttpStatusSource,
+): T {
+  if (Number.isSafeInteger(status) && status >= 400 && status <= 599) {
+    observedHttpStatusByError.set(error, Object.freeze({ status, source }));
+  }
+  return error;
+}
+
+export function observedHttpStatusOf(error: unknown): ObservedHttpStatus | undefined {
+  return error instanceof OpenRouterResponseError ? observedHttpStatusByError.get(error) : undefined;
 }
 
 export type OpenRouterTimeoutKind = 'request' | 'ttft' | 'inactivity' | 'total';
@@ -269,10 +297,13 @@ type OpenRouterSdkClient = {
   getRawJson?: () => Promise<any>;
   /** A one-shot buffered response used only for explicitly supported compatible envelopes. */
   getRawResponse?: () => Promise<Response | null>;
+  /** Read-only trusted-status check for SDK HTTP exceptions; arbitrary status-shaped errors fail closed. */
+  observedHttpStatusFromError?: (error: unknown) => number | undefined;
 };
 
 type OpenRouterSdkModule = {
   OpenRouter: new (options?: Record<string, unknown>) => OpenRouterSdkClient;
+  OpenRouterError: new (...args: any[]) => Error;
   HTTPClient: new (options?: Record<string, unknown>) => {
     addHook(type: string, hook: (...args: any[]) => void | Promise<void>): unknown;
   };
@@ -287,7 +318,9 @@ let openRouterSdkModulePromise: Promise<OpenRouterSdkModule> | null = null;
  */
 function loadOpenRouterSdk(): Promise<OpenRouterSdkModule> {
   if (!openRouterSdkModulePromise) {
-    openRouterSdkModulePromise = Promise.resolve(require('@openrouter/sdk') as OpenRouterSdkModule);
+    const sdk = require('@openrouter/sdk') as Omit<OpenRouterSdkModule, 'OpenRouterError'>;
+    const errors = require('@openrouter/sdk/models/errors') as Pick<OpenRouterSdkModule, 'OpenRouterError'>;
+    openRouterSdkModulePromise = Promise.resolve({ ...sdk, OpenRouterError: errors.OpenRouterError });
   }
   return openRouterSdkModulePromise;
 }
@@ -1677,7 +1710,7 @@ async function createOpenRouterSdkClient(options: {
   fetchImplementation: FetchImplementation;
   onGenerationId?: (value: string) => void;
 }): Promise<OpenRouterSdkClient> {
-  const { OpenRouter, HTTPClient } = await loadOpenRouterSdk();
+  const { OpenRouter, OpenRouterError, HTTPClient } = await loadOpenRouterSdk();
   const httpClient = new HTTPClient({
     fetcher: async (sdkRequest: Request) => {
       const body = sdkRequest.body ? await sdkRequest.clone().text() : undefined;
@@ -1767,6 +1800,18 @@ async function createOpenRouterSdkClient(options: {
     // Disable the SDK's default one-hour 5xx retry loop so it cannot outlive the configured terminal deadline.
     retryConfig: { strategy: 'none' },
   });
+  client.observedHttpStatusFromError = (error: unknown): number | undefined => {
+    if (!(error instanceof OpenRouterError)) return undefined;
+    const sdkError = error as Error & { statusCode?: unknown; rawResponse?: unknown };
+    if (!(sdkError.rawResponse instanceof Response)) return undefined;
+    const status = sdkError.rawResponse.status;
+    return Number.isSafeInteger(status)
+      && status >= 400
+      && status <= 599
+      && sdkError.statusCode === status
+      ? status
+      : undefined;
+  };
   client.getRawResponse = async () => {
     if (!rawJsonCapture) return null;
     const json = await rawJsonCapture.getJson();
@@ -1986,6 +2031,7 @@ export class OpenRouterClient implements ReviewModelClient {
     let requestDeadlineExpired = false;
     let callerCancelled = false;
     let streamTransportFailure = false;
+    let observedSdkHttpStatusFromError: ((error: unknown) => number | undefined) | undefined;
     const onCallerAbort = () => {
       callerCancelled = true;
       const cancellation = new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
@@ -2100,9 +2146,13 @@ export class OpenRouterClient implements ReviewModelClient {
             parsedBody = parsed;
             parsedMsg = parsed?.error?.message || parsed?.message || errorBody;
           } catch (_) {}
-          throw new OpenRouterResponseError(
-            `${upstreamLabel(this.baseUrl, parsedBody)} HTTP ${status}: ${parsedMsg}`,
+          throw withObservedHttpStatus(
+            new OpenRouterResponseError(
+              `${upstreamLabel(this.baseUrl, parsedBody)} HTTP ${status}: ${parsedMsg}`,
+              status,
+            ),
             status,
+            'fetch_response',
           );
         }
 
@@ -2155,6 +2205,7 @@ export class OpenRouterClient implements ReviewModelClient {
           }),
           requestAbortController.signal,
         );
+        observedSdkHttpStatusFromError = sdkClient.observedHttpStatusFromError;
         try {
           if (callerCancelled || request.signal?.aborted) {
             throw new OpenRouterTimeoutError('OpenRouter request was cancelled', 'request');
@@ -2325,9 +2376,13 @@ export class OpenRouterClient implements ReviewModelClient {
         classifiedError = error;
       } else {
         const status = sdkErrorStatus(error);
+        const observedHttpStatus = observedSdkHttpStatusFromError?.(error);
         const sdkMessage = sdkErrorMessage(error);
         if (status && status >= 400) {
-          classifiedError = new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status);
+          const responseError = new OpenRouterResponseError(`${upstreamLabel(this.baseUrl, error)} HTTP ${status}: ${sdkMessage}`, status);
+          classifiedError = observedHttpStatus !== undefined
+            ? withObservedHttpStatus(responseError, observedHttpStatus, 'sdk_http_error')
+            : responseError;
         } else if (request.stream !== false && /malformed json|response validation failed/i.test(sdkMessage)) {
           classifiedError = new OpenRouterResponseError(`OpenRouter returned malformed response: ${sdkMessage}`);
         } else if (error?.name === 'ResponseValidationError') {

@@ -11,6 +11,27 @@ on:
   schedule:
     - cron: "23 7 * * *"
   workflow_dispatch:
+    inputs:
+      bench_runner:
+        description: >-
+          Same-SHA A/B override. When set, every job listed here runs on this
+          label instead of its own, so one commit can be measured across runner
+          families without editing and re-pushing the file. Empty (the default)
+          keeps each job on its configured runner. SCOPE: this covers the nine
+          validation/test jobs only. The publish lane (publish-ghcr-arch and
+          below) keeps its own runners, so a bench run measures the validation
+          lane and NOT the publish path.
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - blacksmith-2vcpu-ubuntu-2404
+          - blacksmith-2vcpu-ubuntu-2404-arm
+          - blacksmith-4vcpu-ubuntu-2404
+          - blacksmith-4vcpu-ubuntu-2404-arm
+          - ubuntu-latest
+          - ubuntu-24.04-arm
 
 concurrency:
   # The nightly run gets its own group. Sharing main's would let it replace a main push run that
@@ -22,6 +43,16 @@ concurrency:
   # This can temporarily queue duplicate validation. It is not a no-cancellation promise:
   # a later synchronize or other superseding branch event can still cancel or replace work.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'schedule' && !(github.event_name == 'pull_request' && github.event.action == 'ready_for_review') }}
+
+# WHY PER-JOB EXPRESSIONS (and not one shared value):
+# `jobs.<job_id>.runs-on` permits only the `github`, `needs`, `strategy`,
+# `matrix`, `vars`, and `inputs` contexts -- NOT `env`. A workflow-level
+# `env.BENCH_RUNNER` therefore makes the entire workflow invalid, and GitHub
+# creates no run at all (observed: commit c9faee7 produced zero CI runs).
+# `inputs` IS valid here, which is why the override reads `inputs.bench_runner`
+# directly. The fallback SKU is necessarily per-job because each job has its own
+# default, so a job added later must include this expression; the guard test
+# enforces that for every job it covers.
 
 jobs:
   # Ordinary quality checks run while the author prepares a draft. Paid native
@@ -43,7 +74,7 @@ jobs:
   # typecheck still gates them.
   test-plan:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -102,7 +133,7 @@ jobs:
     needs: test-plan
     if: needs.test-plan.outputs.shard-count != '0'
     name: vitest (${{ matrix.shard }}/${{ needs.test-plan.outputs.shard-count }})
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     # Headroom for a cold node_modules disk (a lockfile change) on top of a full shard.
     timeout-minutes: 25
     permissions:
@@ -151,7 +182,7 @@ jobs:
   vitest-postgres:
     needs: test-plan
     if: needs.test-plan.outputs.postgres-tests != '[]'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     services:
       postgres:
         image: postgres:17-alpine
@@ -183,7 +214,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(jq -r '.[]' <<<"$TESTS")
-          npx vitest run "${files[@]}"
+          npx vitest run --no-file-parallelism "${files[@]}"
 
       - name: Run REL-817 reaper acceptance harness
         if: needs.test-plan.outputs.reaper-acceptance == 'true'
@@ -195,7 +226,7 @@ jobs:
   # guard nobody is checking. It needs node and jq, not node_modules.
   worker-helper:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -210,7 +241,7 @@ jobs:
 
   build:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -219,20 +250,41 @@ jobs:
       - uses: ./.github/actions/node-deps
 
       # Next.js' own content-hashed build cache; a stale entry is a miss, never a wrong build.
-      - name: Mount the Next.js build cache
+      - name: Mount the Next.js build cache (Sticky Disk)
+        if: runner.environment == 'self-hosted'
         uses: useblacksmith/stickydisk@94697d49e77d0dd78b77deb85ad3de63a28b4b8a # v1.7.1
         with:
           key: ${{ github.repository }}-next-cache-${{ runner.os }}-${{ runner.arch }}
           path: ./.next/cache
           commit: ${{ github.event_name == 'pull_request' && 'false' || 'on-change' }}
 
+      - name: Restore Next.js build cache (Actions cache)
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: ./.next/cache
+          key: ${{ github.repository }}-next-cache-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ github.repository }}-next-cache-${{ runner.os }}-${{ runner.arch }}-
+
       - name: Verify TypeScript Build
+        # BOUNDED HEAP -- matches the same fix already applied to the bot-dist
+        # build below. Node derives its default old-space cap from the HOST's
+        # total RAM rather than from what the build needs, so the same command
+        # OOMs on a small runner and succeeds on a large one:
+        #   FATAL ERROR: Ineffective mark-compacts near heap limit
+        #   Allocation failed - JavaScript heap out of memory
+        # `next build` here peaks at ~1.4 GB RSS (measured with
+        # /usr/bin/time -l). Pinning the cap makes the memory requirement a
+        # property of the BUILD, not of whichever runner it lands on.
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
         run: npm run build
 
   test:
     needs: [test-plan, vitest, vitest-postgres, worker-helper, build]
     if: "always() && !(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -267,7 +319,7 @@ jobs:
           exit "$failed"
 
   typecheck:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     # REL-585. `tsconfig.json` stopped excluding `tests/` and `scripts/` (REL-570/REL-573), so
     # `npm run lint:src` (tsc --noEmit) now typechecks the whole tree -- but nothing in CI ran it,
     # so the 464 errors that were burned down to reach that state could silently return unnoticed.
@@ -293,7 +345,7 @@ jobs:
         run: npm run lint:src -- --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo
 
   operator-test:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     # REL-896. `k8s-operator/` is a Go module with its own controller tests, but no workflow ever
     # ran them: the only place Go was touched in CI was the `go build` inside Dockerfile.operator,
     # so a reconciler regression could ship with a fully green PR. This job runs vet and the
@@ -341,7 +393,7 @@ jobs:
 
   legacy-runtime:
     if: "!(github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release'))"
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ inputs.bench_runner != '' && inputs.bench_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -414,11 +466,7 @@ jobs:
           - arch: amd64
             runner: ubuntu-latest
           - arch: arm64
-            # review-yeti-ai's Blacksmith org provisions ARM runners
-            # (verified live: runner group 'blacksmith runners …' picked up in
-            # ~1.5 min; x86 blacksmith labels stay queued, so amd64 keeps
-            # ubuntu-latest).
-            runner: blacksmith-2vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -436,15 +484,6 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
-        if: matrix.arch == 'amd64'
-      # Blacksmith persistent layer cache (docs.blacksmith.sh/blacksmith-caching/docker-builds):
-      # bot, worker and legacy-runtime share their npm/base layers, so they share one
-      # cache-key. Layer state lives on sticky disks; no cache blobs are exported.
-      - name: Set up Blacksmith builder (node-family images)
-        if: matrix.arch == 'arm64'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2
-        with:
-          cache-key: review-yeti-node-images-arm64
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
@@ -452,6 +491,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build bot dist for the context-copied image
+        # The ARM runner's default V8 heap is ~2 GiB; Next's typecheck exceeds
+        # it on the current source tree (main run 36933675579). Keep the
+        # existing runner and checks, with room below its memory ceiling.
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
         run: |
           set -euo pipefail
           npm ci
@@ -467,7 +511,6 @@ jobs:
           echo "image=$image" >> "$GITHUB_OUTPUT"
 
       - id: worker
-        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -485,25 +528,8 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-worker-${{ matrix.arch }}
-      - id: worker-arm
-        if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2
-        with:
-          context: .
-          file: Dockerfile.worker
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          provenance: true
-          sbom: true
-          build-args: |
-            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
-          labels: |
-            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
-            org.opencontainers.image.description=Review Yeti public worker
-          tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-worker:${{ github.sha }}-${{ matrix.arch }}
+
       - id: bot
-        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -518,22 +544,8 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-bot-${{ matrix.arch }}
-      - id: bot-arm
-        if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2
-        with:
-          context: .
-          file: Dockerfile.bot
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          provenance: true
-          sbom: true
-          labels: |
-            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
-          tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-bot:${{ github.sha }}-${{ matrix.arch }}
+
       - id: legacy-runtime
-        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -550,30 +562,14 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-legacy-runtime-${{ matrix.arch }}
-      - id: legacy-runtime-arm
-        if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2
-        with:
-          context: .
-          file: Dockerfile.legacy-runtime
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          provenance: true
-          sbom: true
-          build-args: |
-            NODE_BASE_IMAGE=${{ steps.worker-base.outputs.image }}
-          labels: |
-            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
-          tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime:${{ github.sha }}-${{ matrix.arch }}
+
       - id: resolve-digests
         name: Resolve the pushed image digests for either leg
         run: |
           set -euo pipefail
-          legacy="${{ steps.legacy-runtime.outputs.digest || steps.legacy-runtime-arm.outputs.digest }}"
-          worker="${{ steps.worker.outputs.digest || steps.worker-arm.outputs.digest }}"
-          echo "LEGACY_DIGEST=$legacy" >> "$GITHUB_ENV"
-          echo "WORKER_DIGEST=$worker" >> "$GITHUB_ENV"
+          echo "LEGACY_DIGEST=${{ steps.legacy-runtime.outputs.digest }}" >> "$GITHUB_ENV"
+          echo "WORKER_DIGEST=${{ steps.worker.outputs.digest }}" >> "$GITHUB_ENV"
+
       - name: Prove the published legacy-runtime image
         run: node scripts/verify-legacy-runtime-image.mjs --image ${{ env.GHCR_REGISTRY }}/review-yeti-legacy-runtime@${{ env.LEGACY_DIGEST }}
 
@@ -588,13 +584,7 @@ jobs:
             --tmpfs /tmp:rw,noexec,nosuid,size=64m \
             "$WORKER_IMAGE" --self-test
 
-      - name: Set up Blacksmith builder (operator image)
-        if: matrix.arch == 'arm64'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2
-        with:
-          cache-key: review-yeti-operator-arm64
       - id: operator
-        if: matrix.arch == 'amd64'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
@@ -609,20 +599,6 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
           cache-from: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=ghcr-operator-${{ matrix.arch }}
-      - id: operator-arm
-        if: matrix.arch == 'arm64'
-        uses: useblacksmith/build-push-action@v2
-        with:
-          context: .
-          file: Dockerfile.operator
-          platforms: linux/${{ matrix.arch }}
-          push: true
-          provenance: true
-          sbom: true
-          labels: |
-            org.opencontainers.image.source=${{ env.OCI_SOURCE }}
-          tags: |
-            ${{ env.GHCR_REGISTRY }}/review-yeti-operator:${{ github.sha }}-${{ matrix.arch }}
 
   publish-ghcr:
     needs: [publish-ghcr-arch]

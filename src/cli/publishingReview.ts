@@ -33,6 +33,9 @@ import {
 } from '../panel/composedEngine';
 import { incompleteP2RecoveryClaimFor, type IncompleteP2RecoveryContext } from '../review/incompleteP2Recovery';
 import type { IncompleteP2RecoverySource } from '../review/incompleteP2RecoveryHttp';
+import { createDeletionEvidenceRuntime, DELETION_CLASSIFICATION_TIMEOUT_MS } from '../review/deletionEvidence';
+import type { DeletionClassificationPlan } from '../review/deletionClassification';
+import { buildEffectiveReviewFiles } from '../review/personaApplicability';
 import { createRepoFileProvider } from '../panel/repoFileProvider';
 import { GitHubInstallationClient } from '../github/installationClient';
 import type { FetchImplementation } from '../github/commentPublisher';
@@ -68,16 +71,18 @@ import {
   INFRASTRUCTURE_LANE_FAILURE_CLASSES,
   isInfrastructureIncompleteResult,
   isRecoverableIncompletePanel,
-  isRecoverablePanelRetryEligible,
   laneProviderStatus,
+  recoverablePanelRetryReportingStatus,
   RECOVERABLE_PANEL_AUTO_RETRY_CAP,
-  renderIncompleteInfrastructureSummary,
-  renderIncompleteInfrastructureTitle,
+  renderRecoverablePanelRetrySummary,
+  renderRecoverablePanelRetryTitle,
   type IncompleteLaneDescription,
 } from '../review/publicationFailurePolicy';
 import { redactWorkerFailureLogTail } from '../utils/workerFailureLogRedaction';
 import {
-  buildWorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
+  buildWorkerFailureDiagnostics,
+  normalizeOperationalTelemetry,
+  type WorkerFailureDiagnostics, classifyWorkerFailureMessage, GITHUB_DIFF_NOT_RENDERABLE_EXPLANATION,
   validateWorkerCompletionEndpoint, WorkerCompletionHttpError,
   type WorkerCompletionAdapter, type WorkerTerminalFailure, type WorkerTerminalSuccess,
 } from '../review/workerCompletion';
@@ -126,7 +131,7 @@ import {
 import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAvailability';
 import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
-import { createPublishingProgress } from '../telemetry/publishingProgress';
+import { createPublishingProgress, type PublishingProgressReporter } from '../telemetry/publishingProgress';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -385,7 +390,9 @@ export {
 };
 export type { OpenAITransportConfig };
 
-const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
+export const BLOCKING_SEVERITIES = new Set(
+  process.env.REVIEW_YETI_REQUIRE_ADVISORY === 'false' ? ['P0', 'P1'] : ['P0', 'P1', 'P2']
+);
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
@@ -935,7 +942,7 @@ export interface PublishingReviewDeps {
     enabled: boolean;
     signal?: AbortSignal;
     zoektIndexBinaryPath?: string;
-  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string }>;
+  }) => Promise<{ indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> }>;
   /**
    * Full-repository grounding for a persona's `find_files`/`read_file` tools (see
    * `RepoFileProvider` in `../panel/panelEngine` and `createRepoFileProvider` in
@@ -1032,12 +1039,24 @@ async function lookupRepositoryVisibility(input: { owner: string; repo: string; 
   return repositoryVisibilityFrom(data);
 }
 
-/** REL-677: the three-conjunct zoekt grounding gate, extracted so every kill path is unit-testable. */
+/**
+ * REL-677 / REL-1282: the zoekt grounding gate, extracted so every kill path is unit-testable.
+ *
+ * `ZOEKT_GROUNDING_ENABLED` is `true` (every repository) or a comma-separated `owner/repo`
+ * allow-list (case-insensitive), so grounding can be canaried on one repository before an
+ * organization-wide enablement. Anything else, including unset or `false`, is off. The container
+ * memory floor is enforced separately, per run, inside the grounding stage.
+ */
 export function zoektGroundingEnabledFor(
   env: NodeJS.ProcessEnv,
   config: unknown,
+  repository?: string,
 ): boolean {
-  return value(env, 'ZOEKT_GROUNDING_ENABLED') === 'true'
+  const raw = value(env, 'ZOEKT_GROUNDING_ENABLED').toLowerCase();
+  const optedIn = raw === 'true'
+    || (raw !== '' && raw !== 'false' && !!repository
+      && raw.split(',').map((entry) => entry.trim()).filter(Boolean).includes(repository.trim().toLowerCase()));
+  return optedIn
     && value(env, 'ZOEKT_GROUNDING_DISABLED') !== 'true'
     && (config as { pre_checks?: { zoekt?: { enabled?: boolean } } })?.pre_checks?.zoekt?.enabled !== false;
 }
@@ -1116,6 +1135,30 @@ export async function runPublishingReviewWorker(
   const startedAt = new Date(now()).toISOString();
   // REL-1132: every provider call this run makes goes through `client` below, which records it here.
   const tokenLedger = new TokenLedger();
+  let executionProgress: PublishingProgressReporter | undefined;
+  // Optional diagnostics cannot change native closeout or turn malformed observations into evidence.
+  const safeOperationalSnapshot = (reporter: PublishingProgressReporter | undefined = executionProgress) => {
+    try { return normalizeOperationalTelemetry(reporter?.snapshot?.()); }
+    catch { return undefined; }
+  };
+  const captureOperationalTelemetry = (failureClass: WorkerTerminalFailure['failureClass']) => {
+    try {
+      const unfinished = safeOperationalSnapshot();
+      if (unfinished?.panel.invoked && unfinished.phaseCounts.panel.completed
+        + unfinished.phaseCounts.panel.failed + unfinished.phaseCounts.panel.aborted === 0) {
+        executionProgress?.emit({ task: 'panel', status: failureClass === 'timeout' ? 'aborted' : 'failed' });
+      }
+      const telemetry = safeOperationalSnapshot();
+      if (!telemetry || !(telemetry.providerCalls.started > 0 || value(env, 'REVIEW_TERMINAL_DEADLINE'))) return undefined;
+      const total = tokenLedger.snapshot().total;
+      if (total.calls > 0) {
+        const withLedger = normalizeOperationalTelemetry({ ...telemetry,
+          ledger: { basis: 'returned_responses_including_shadow', availability: 'partial', ...total } });
+        if (withLedger?.ledger) telemetry.ledger = withLedger.ledger;
+      }
+      return telemetry;
+    } catch { return undefined; }
+  };
   const logTokenAccounting = (): void => {
     if (tokenLedger.calls === 0) return;
     try {
@@ -1189,10 +1232,11 @@ export async function runPublishingReviewWorker(
     );
     // REL-1124: a panel that THREW on infrastructure (a required lane, the moderator or the arbiter
     // lost to the gateway, a raw `fetch failed`/`terminated`) with no finding anywhere reaches the
-    // same shared decision as a returned panel (REL-1113): INCOMPLETE and re-attempted.
-    // A legacy (non-authoritative) provider_5xx already had its own bounded re-attempt (REL-620:
-    // the check stays in_progress "requeuing" and the dispatcher re-admits with 5xx backoff), so
-    // it keeps that path unchanged. The authoritative path had no re-attempt for it.
+    // same shared decision as a returned panel (REL-1113): INCOMPLETE; the service separately
+    // decides whether to admit another attempt.
+    // A legacy (non-authoritative) provider_5xx already had its own bounded re-attempt path
+    // (REL-620); keep that dispatch/backoff behavior unchanged. The authoritative path had no
+    // re-attempt for it.
     let thrownInfrastructure = panelFailure === undefined && prePanelCoverageComplete === true
       && !(isProvider5xx && !authoritative)
       ? thrownPanelInfrastructureFailure(error, { aborted: deps.signal?.aborted === true })
@@ -1215,7 +1259,7 @@ export async function runPublishingReviewWorker(
     // this call came from the `isRecoverableIncompletePanel` branch below,
     // from a 502/503 provider outage, or from a thrown infrastructure-incomplete
     // panel (REL-1124), never inferred from `failureClass` alone.
-    const diagnostics = authoritativeInfrastructureBody?.failureDiagnostics
+    const diagnostics: WorkerFailureDiagnostics = authoritativeInfrastructureBody?.failureDiagnostics
       ?? (thrownInfrastructure
         // A legacy provider_5xx never reaches here (it keeps the REL-620 path above).
         ? thrownInfrastructureDiagnostics(thrownInfrastructure, INCOMPLETE_INFRASTRUCTURE_REASON, redactWorkerFailureLogTail)
@@ -1224,16 +1268,16 @@ export async function runPublishingReviewWorker(
           recoverableIncompletePanel: panelFailure !== undefined || isProvider5xx,
           ...(isProvider5xx ? { reason: 'provider_5xx' } : {}),
         }));
-    const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
-      ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
-      : undefined;
+    const operationalTelemetry = captureOperationalTelemetry(failureClass);
+    if (operationalTelemetry) diagnostics.operationalTelemetry = operationalTelemetry;
+    const retryReportingStatus = recoverablePanelRetryReportingStatus(identity.executionAttempt);
     let infrastructureDelivered = false;
     // The dispatcher retries attempts 1..CAP; the attempt that fails as
     // CAP+1 is the exhausted one this exact worker execution is running as
     // (`identity.executionAttempt`), so no cross-process coordination is
     // needed to know whether this is the final word.
     const recoverablePanelExhaustion = (panelFailure !== undefined || isProvider5xx || thrownInfrastructure !== undefined)
-      && !isRecoverablePanelRetryEligible(identity.executionAttempt)
+      && retryReportingStatus === 'cap_exhausted'
       ? { attempts: identity.executionAttempt, cap: RECOVERABLE_PANEL_AUTO_RETRY_CAP }
       : undefined;
     if (authoritative && !authoritativeCompletionAttempted) {
@@ -1283,16 +1327,13 @@ export async function runPublishingReviewWorker(
         });
       }
     };
-    // REL-1124: a thrown infrastructure failure writes its durable record BEFORE the check, so the
-    // check can say whether a re-attempt was actually scheduled; every other failure keeps the
-    // pre-existing order (check, then callback).
+    // REL-1124: a thrown infrastructure failure writes its durable record BEFORE the check. The
+    // completion acknowledgement confirms delivery only; it does not confirm retry admission.
+    // Every other failure keeps the pre-existing order (check, then callback).
     const legacyPersistedFirst = thrownInfrastructure !== undefined;
     if (legacyPersistedFirst) await persistLegacyTerminalFailure();
-    // REL-1124: the automatic re-attempt is driven only by the durable record above (the
-    // service re-admits from the delivered INCOMPLETE body; the legacy dispatcher from the
-    // recoverable terminal failure). When that record was not written, nothing will re-admit this
-    // run, so it keeps the plain terminal failure: the check never promises a re-attempt (nor a
-    // provider_5xx requeue) and the run is not counted as an incomplete_infra retry.
+    // REL-1124: retry admission is a separate service decision after this delivery. A successful
+    // completion acknowledgement is not a scheduling receipt, so reporting remains unconfirmed.
     const infrastructureUndelivered = thrownInfrastructure !== undefined && !infrastructureDelivered;
     if (!infrastructureDelivered) thrownInfrastructure = undefined;
     if (thrownInfrastructure) {
@@ -1305,12 +1346,12 @@ export async function runPublishingReviewWorker(
         headSha: identity.headSha,
         executionAttempt: identity.executionAttempt,
         authoritative,
-        retryScheduled: infrastructureRetry !== undefined,
+        retryStatus: retryReportingStatus,
         failedLanes: thrownInfrastructure.incompleteLanes,
       });
       try {
         getMetrics().reviewIncompleteInfra.add(1, {
-          outcome: infrastructureRetry ? 'retrying' : 'exhausted',
+          outcome: retryReportingStatus,
           failure_class: thrownInfrastructure.failureClass,
           authoritative: String(authoritative),
         });
@@ -1347,9 +1388,9 @@ export async function runPublishingReviewWorker(
             repo: identity.repoName,
             checkId: failedCheckId,
             conclusion: 'failure',
-            title: renderIncompleteInfrastructureTitle(thrownInfrastructure.incompleteLanes, infrastructureRetry),
+            title: renderRecoverablePanelRetryTitle(thrownInfrastructure.incompleteLanes, identity.executionAttempt),
             summary: [
-              renderIncompleteInfrastructureSummary(identity.headSha, thrownInfrastructure.incompleteLanes, infrastructureRetry, identity.executionAttempt),
+              renderRecoverablePanelRetrySummary(identity.headSha, thrownInfrastructure.incompleteLanes, identity.executionAttempt),
               renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
               ...(workerLogLocator ? [workerLogLocator] : []),
             ].join('\n\n'),
@@ -1361,8 +1402,8 @@ export async function runPublishingReviewWorker(
               repo: identity.repoName,
               checkId: failedCheckId,
               status: 'in_progress',
-              title: 'Review Yeti: gateway capacity unavailable (requeuing)',
-              summary: 'Gateway capacity unavailable (502/503 upstream). Execution will automatically requeue.',
+              title: 'Review Yeti: gateway capacity unavailable (automatic retry NOT CONFIRMED)',
+              summary: 'Gateway capacity unavailable (502/503 upstream). Automatic retry is NOT CONFIRMED: the completion acknowledgement confirms delivery only, not dispatch admission. No next attempt or supersession is promised.',
             });
           }
         } else {
@@ -1373,11 +1414,11 @@ export async function runPublishingReviewWorker(
             checkId: failedCheckId,
             conclusion: 'failure',
             title: incompleteLanes && incompleteLanes.length > 0
-              ? renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry)
+              ? renderRecoverablePanelRetryTitle(incompleteLanes, identity.executionAttempt)
               : 'Review Yeti: review did not complete',
             summary: [
               ...(incompleteLanes && incompleteLanes.length > 0
-                ? [renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt)]
+                ? [renderRecoverablePanelRetrySummary(identity.headSha, incompleteLanes, identity.executionAttempt)]
                 : []),
               renderFailureSummary(failureClass, identity.headSha, diagnostics, recoverablePanelExhaustion),
               ...(panelFailure ? [renderCoverageSummary(panelFailure.coverage)] : []),
@@ -1582,6 +1623,20 @@ export async function runPublishingReviewWorker(
     // Phase events describe only this gating publisher execution. Shadow review remains separate
     // non-gating evidence; the existing token ledger continues to account for its provider spend.
     const progress = createPublishingProgress(identity);
+    const emitProgress = progress.emit;
+    progress.emit = (event) => {
+      try {
+        if (event.task === 'panel') {
+          const phase = safeOperationalSnapshot(progress)?.phaseCounts.panel;
+          // Publisher and native composed engine share this phase; a late canceled result is not a second terminal event.
+          if (phase && ((event.status === 'started' && phase.started > 0)
+            || (['completed', 'failed', 'aborted'].includes(event.status)
+              && phase.completed + phase.failed + phase.aborted > 0))) return;
+        }
+        emitProgress(event);
+      } catch { /* optional progress must never change the publication outcome */ }
+    };
+    executionProgress = progress;
     const client = meterModelClient(progress.instrument(modelClient), tokenLedger);
     const shadowClient = meterModelClient(modelClient, tokenLedger, { label: 'composed-shadow' });
 
@@ -1600,7 +1655,7 @@ export async function runPublishingReviewWorker(
       try {
         const factory = deps.repoFileProviderFactory
           || ((input: { token: string; owner: string; repo: string; headSha: string }) => createRepoFileProvider(
-            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha,
+            new GitHubInstallationClient({ token: input.token }), input.owner, input.repo, input.headSha, { baseSha: identity.baseSha, changedFiles },
           ));
         repoFileProvider = factory({
           token: repoReadToken,
@@ -1725,9 +1780,9 @@ export async function runPublishingReviewWorker(
     // removed in the finally below; the index never outlives this review run. Grounding
     // has its own stage budgets, but may not restart or extend the fixed model-work cutoff.
     const zoektGrounding = deps.zoektGrounding || defaultZoektGrounding;
-    const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig);
+    const zoektGroundingEnabled = zoektGroundingEnabledFor(env, workerConfig, identity.repo);
     const panelDeadline = createPublishingPanelDeadline(workerConfig.reviewers.overall_timeout_s, env, deps.signal, now);
-    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string } = {};
+    let zoektScratchRoot: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> } = {};
     // Receipt ownership cannot depend on which continuation wins the abort race:
     // the producer can resolve before cancellation while delivery still loses.
     let resolvedGroundingReceipt: typeof zoektScratchRoot | undefined;
@@ -1748,6 +1803,8 @@ export async function runPublishingReviewWorker(
     // `zoektDuration` (panelEngine.ts) measures query time against an already-built index; this
     // measures materializing the worktree and building that index in the first place.
     let zoektIndexBuildMs = 0;
+    let deletionRuntime: ReturnType<typeof createDeletionEvidenceRuntime> | undefined;
+    let deletionClassification: DeletionClassificationPlan | undefined;
     type ShadowOutcome =
       | { status: 'skipped' }
       | { status: 'settled'; result: PanelResult }
@@ -1790,9 +1847,9 @@ export async function runPublishingReviewWorker(
       // enrichment, never a precondition of the review.
       zoektScratchRoot = await runInSpan('review_yeti_zoekt_index_build', async (span) => {
         const buildStart = deps.now ? deps.now() : Date.now();
-        let result: { indexDir?: string; scratchDir?: string; reason?: string };
+        let result: { indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> };
         try {
-          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string }>(() => {
+          const groundingOperation = Promise.resolve().then<{ indexDir?: string; scratchDir?: string; reason?: string; indexScope?: Record<string, unknown> }>(() => {
             panelDeadline.check();
             return zoektGrounding({
             repository: identity.repo,
@@ -1833,6 +1890,17 @@ export async function runPublishingReviewWorker(
           span.setAttribute('review_yeti.zoekt_index_build.status', status);
           span.setAttribute('review_yeti.zoekt_index_build.duration_ms', zoektIndexBuildMs);
           getMetrics().zoektIndexBuildDuration.record(zoektIndexBuildMs / 1000, { repository: identity.repo, status });
+          // REL-1282: real container memory evidence so the worker limit is sized from runs, not guesses.
+          const groundingMemory = (result as { memory?: { limitBytes?: number; peakBytesAfterBuild?: number; floorBytes?: number } }).memory;
+          if (groundingMemory) {
+            if (groundingMemory.limitBytes !== undefined) span.setAttribute('review_yeti.zoekt_index_build.memory_limit_bytes', groundingMemory.limitBytes);
+            if (groundingMemory.peakBytesAfterBuild !== undefined) span.setAttribute('review_yeti.zoekt_index_build.cgroup_peak_bytes', groundingMemory.peakBytesAfterBuild);
+            logger.info('Zoekt grounding memory', {
+              event: 'zoekt_grounding_memory', repository: identity.repo, status,
+              memoryLimitBytes: groundingMemory.limitBytes, cgroupPeakBytesAfterBuild: groundingMemory.peakBytesAfterBuild,
+              memoryFloorBytes: groundingMemory.floorBytes,
+            });
+          }
         } else {
           span.setAttribute('review_yeti.zoekt_index_build.status', 'disabled');
         }
@@ -1847,19 +1915,39 @@ export async function runPublishingReviewWorker(
       // worker never needs to know that policy.
       const zoektIndexDir = zoektGroundingEnabled ? zoektScratchRoot.indexDir : undefined;
       const zoektBinaryOverride = value(env, 'ZOEKT_BIN') ? { zoektBinaryPath: value(env, 'ZOEKT_BIN') } : {};
+      // Resolve once: both the explicit run session and the engine see the
+      // same limits, binary, identity and index coverage metadata.
+      const resolvedZoektConfig = {
+        ...(workerConfig as any).pre_checks?.zoekt,
+        ...(workerConfig as any).evidence?.zoekt,
+        ...zoektBinaryOverride,
+        indexDir: zoektIndexDir,
+        identity: { repository: identity.repo, headSha: identity.headSha },
+        indexScope: zoektScratchRoot.indexScope,
+      };
+      const zoektSearchSession = zoektIndexDir ? require('../mcp/zoektSearchTool').createZoektSearchTool({
+        identity: resolvedZoektConfig.identity,
+        indexDir: zoektIndexDir,
+        config: resolvedZoektConfig,
+      }) : undefined;
       const groundedConfig = zoektIndexDir
         ? {
             ...workerConfig,
             evidence: {
               ...(workerConfig as { evidence?: Record<string, unknown> }).evidence,
-              zoekt: {
-                ...((workerConfig as { evidence?: { zoekt?: Record<string, unknown> } }).evidence?.zoekt ?? {}),
-                indexDir: zoektIndexDir,
-                ...zoektBinaryOverride,
-              },
+              zoekt: { ...resolvedZoektConfig, searchSession: zoektSearchSession },
             },
           }
         : workerConfig;
+      if (repoFileProvider) {
+        const allowedPaths = new Set(buildEffectiveReviewFiles(changedFiles, { pathFilters: groundedConfig.path_filters }).files.map((file) => file.path));
+        deletionRuntime = createDeletionEvidenceRuntime({ files: changedFiles.filter((file) => allowedPaths.has(file.path)), provider: repoFileProvider,
+          repository: identity.repo, headSha: identity.headSha, env,
+          zoektConfig: (groundedConfig as any).evidence?.zoekt, signal: panelDeadline.signal });
+        repoFileProvider.deletionManifest = deletionRuntime.manifest;
+        repoFileProvider.deletionEvidence = deletionRuntime.evidence;
+        repoFileProvider.deletionPlan = deletionRuntime.plan;
+      }
       // Shadow evidence has a distinct signal linked to the main signal and the SAME fixed
       // cutoff. Late setup cannot mint another relative window for either engine.
       // Started here, before the panel await, so the two engines run CONCURRENTLY -- wall time is
@@ -1881,6 +1969,15 @@ export async function runPublishingReviewWorker(
           throw new ReviewSupersededError('pre_review', identity.headSha, error.currentHeadSha);
         }
         throw error;
+      }
+      // Classification runs before either engine starts planning. Disabled or
+      // unavailable JEV keeps the full normal review; no path is exempted.
+      if (deletionRuntime) {
+        deletionClassification = await deletionRuntime.prepare({
+          budgetMs: Math.min(DELETION_CLASSIFICATION_TIMEOUT_MS,
+            Math.max(0, (panelDeadline.budget.deadlineAtMs - panelDeadline.now()) / 10)),
+        });
+        panelDeadline.check();
       }
       shadowDeadline = isShadow
         ? createPanelDeadlineSignal(workerConfig.reviewers.overall_timeout_s, panelDeadline.signal,
@@ -1947,6 +2044,7 @@ export async function runPublishingReviewWorker(
       panelDeadline.check();
       const panelOperation = Promise.resolve().then(() => {
           panelDeadline.check();
+          progress.emit({task:'panel',status:'started'});
           return panelRunner({
           config: groundedConfig,
           changedFiles,
@@ -2007,6 +2105,7 @@ export async function runPublishingReviewWorker(
           error: lateError instanceof Error ? lateError.message : String(lateError),
         }));
       }
+      progress.emit({ task: 'panel', status: panelResult.gracefulExit ? 'aborted' : 'completed' });
       if (!panelResult.gracefulExit) panelDeadline.check();
       const diffShrinkDisclosure = panelResult.diffShrink ?? null;
       if (diffShrinkDisclosure) {
@@ -2464,6 +2563,7 @@ export async function runPublishingReviewWorker(
     // the service's completion contract accepts. Built once and reported on
     // both paths: the authoritative gate re-arbitrates from it; the legacy
     // terminal success carries it as evidence so the service can keep it.
+    const gracefulOperationalTelemetry = gracefulPartial ? captureOperationalTelemetry('timeout') : undefined;
     const buildReviewResult = (options: { includeShadow?: boolean; includeRoster?: boolean } = {}) => {
       const findingKeys = new Set(['severity', 'path', 'line', 'startLine', 'title', 'body', 'suggestion',
         'replacementCode', 'confidence', 'recommendation', 'fixOptions', 'isArchitectural']);
@@ -2560,8 +2660,15 @@ export async function runPublishingReviewWorker(
           ...(reviewEngine === 'composed' && panelResult.taskPlan ? { taskPlan: panelResult.taskPlan } : {}),
           coverageComplete: coverageGaps.length === 0 && !gracefulPartial,
           quorumSatisfied: panelResult.quorum?.satisfied === true && !unreportedNoVerdict && !gracefulPartial,
+          ...(deletionClassification && deletionClassification.status !== 'disabled' && deletionClassification.totalFiles > 0
+            ? { deletionClassification: {
+              version: deletionClassification.version, digest: deletionClassification.digest, status: deletionClassification.status,
+              totalFiles: deletionClassification.totalFiles, classifiedFiles: deletionClassification.classifiedFiles,
+              unresolvedFiles: deletionClassification.unresolvedFiles, totalGroups: deletionClassification.groups.length,
+            } } : {}),
           ...(gracefulPartial ? { failureDiagnostics: {
             reason: 'review_evidence_deadline',
+            ...(gracefulOperationalTelemetry ? { operationalTelemetry: gracefulOperationalTelemetry } : {}),
             logTail: `Evidence cutoff reached with ${panelResult.gracefulExit?.completedTaskIds.length ?? 0} completed and ${panelResult.gracefulExit?.pendingTaskIds.length ?? 0} pending task(s).${panelResult.gracefulExit?.checkpointPersistenceFailed ? ' Checkpoint persistence failed.' : ''}`,
             recoverableIncompletePanel: false,
           } } : unreportedNoVerdict ? { failureDiagnostics: {
@@ -2592,15 +2699,12 @@ export async function runPublishingReviewWorker(
             ? { roster: [...panelResult.applicablePersonaIds] } : {}) },
       }).result;
     };
-    // REL-1113: an automatic fresh attempt is still available for this execution (the same bound
-    // the dispatcher and the trusted completion service apply), or this is the last one.
-    const infrastructureRetry = isRecoverablePanelRetryEligible(identity.executionAttempt)
-      ? { nextAttempt: identity.executionAttempt + 1, maxAttempts: RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1 }
-      : undefined;
+    // Eligibility is not an admission receipt; keep worker-facing status explicitly unconfirmed.
+    const retryReportingStatus = recoverablePanelRetryReportingStatus(identity.executionAttempt);
     // REL-1113: on the authoritative path, the exact result reported to the service, marked as
     // infrastructure-incomplete, when -- and only when -- the shared decision accepts it. The
-    // service evaluates the same function on the same payload to re-admit a fresh attempt, so
-    // the worker's INCOMPLETE check and the service's retry can never disagree.
+    // service evaluates the same function on the same payload before considering re-admission, so
+    // the worker's INCOMPLETE check and the service's infrastructure classification can never disagree.
     let authoritativeInfrastructureResult: WorkerReviewResult | undefined;
     if (authoritativeInfrastructureCandidate) {
       const primary = incompleteLanes.find((lane) => lane.providerStatus !== undefined) ?? incompleteLanes[0];
@@ -2631,14 +2735,14 @@ export async function runPublishingReviewWorker(
         headSha: identity.headSha,
         executionAttempt: identity.executionAttempt,
         authoritative,
-        retryScheduled: infrastructureRetry !== undefined,
+        retryStatus: retryReportingStatus,
         expectedLanes: coverage.expectedLaneCount,
         completedLanes: coverage.completedLaneCount,
         failedLanes: incompleteLanes,
       });
       try {
         getMetrics().reviewIncompleteInfra.add(1, {
-          outcome: infrastructureRetry ? 'retrying' : 'exhausted',
+          outcome: retryReportingStatus,
           failure_class: incompleteLanes[0]?.failureClass ?? 'unknown',
           authoritative: String(authoritative),
         });
@@ -2667,17 +2771,17 @@ export async function runPublishingReviewWorker(
     } else if (authoritativeInfrastructureResult) {
       // REL-1113: same publication order as a verdict (durable service record first), but the
       // check is INCOMPLETE -- never "BLOCK" -- and names the lanes that did not complete. The
-      // service records `infrastructure-failure` for this result and, while attempts remain,
-      // re-admits a fresh execution attempt from the same shared decision.
+      // service records `infrastructure-failure` and may consider re-admission after its
+      // independent validation; this worker's delivery ACK does not prove a fresh attempt.
       await reportReviewResult(authoritativeInfrastructureResult);
       await deps.checkClient.completeCheck({
         owner: identity.owner,
         repo: identity.repoName,
         checkId,
         conclusion: 'failure',
-        title: renderIncompleteInfrastructureTitle(incompleteLanes, infrastructureRetry),
+        title: renderRecoverablePanelRetryTitle(incompleteLanes, identity.executionAttempt),
         summary: [
-          renderIncompleteInfrastructureSummary(identity.headSha, incompleteLanes, infrastructureRetry, identity.executionAttempt),
+          renderRecoverablePanelRetrySummary(identity.headSha, incompleteLanes, identity.executionAttempt),
           renderCoverageSummary(coverage, reviewEngine, panelResult.taskPlan?.length),
           renderTransportSummary(transport.model, resolvedTransportModel),
           renderTelemetrySummary({ totalTurns, totalToolCalls, totalTokens, laneCount: personaMetrics.length, totalDurationMs, panelWallClockMs, tokenAccounting }),

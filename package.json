@@ -1,6 +1,6 @@
 {
   "name": "ct-review-bot",
-  "version": "1.103.3",
+  "version": "1.115.2",
   "description": "Repository-configurable persona-panel GitHub App with binding arbitration",
   "main": "dist/index.js",
   "bin": {
@@ -23,7 +23,7 @@
   "scripts": {
     "generate:providers": "ts-node scripts/generate-omniroute-providers.ts",
     "build:frontend": "node scripts/clean-frontend.js && next build && node scripts/postbuild.js",
-    "build:backend": "tsc -p tsconfig.server.json",
+    "build:cf-orchestrator": "cd cf-orchestrator && npm run build",
     "build": "npm run build:frontend && npm run build:backend && node scripts/postbuild.js",
     "start": "node dist/index.js",
     "start:dispatch": "node dist/dispatchIndex.js",
@@ -38,6 +38,8 @@
     "test:backend": "vitest run tests/unit/panel*.test.ts tests/unit/summary*.test.ts tests/unit/provider*.test.ts tests/unit/graph*.test.ts tests/unit/indexer*.test.ts",
     "test:components": "vitest run tests/unit/**/*.test.tsx",
     "test:unit": "vitest run tests/unit",
+    "test:cf-orchestrator": "cd cf-orchestrator && npm test",
+    "test:cf-orchestrator:e2e": "cd cf-orchestrator && npm run test:e2e",
     "test:release-contract": "vitest run --config vitest.release.config.ts",
     "test:integration": "vitest run tests/integration",
     "test:acceptance:reaper": "REVIEW_YETI_REAPER_ACCEPTANCE=1 vitest run tests/integration/reaperMetricsAcceptance.postgres.test.ts --maxWorkers=1 --no-file-parallelism",

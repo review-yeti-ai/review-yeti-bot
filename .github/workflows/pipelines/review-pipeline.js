@@ -303,12 +303,10 @@ function getStreamingFetchDispatcher(loadAgent = loadUndiciAgentClass) {
   return streamingFetchDispatcher;
 }
 
-// OpenRouter's official SDK is used only for the OpenRouter gateway branch. Direct providers
-// remain on their existing OpenAI-compatible transport because their response contracts and
-// recovery policies are intentionally different. The Action installs this pinned dependency in
-// its own path before this pipeline starts. Preload the module when available so the first
-// transport deadline measures provider work rather than the SDK's one-time module initialization;
-// the guarded load still lets non-OpenRouter callers report a clear error if packaging is broken.
+// OpenRouter's official SDK is used only for the OpenRouter destination. Direct providers remain
+// on their existing OpenAI-compatible transport because their response contracts and recovery
+// policies are intentionally different. The Action installs this pinned dependency in its own
+// path before this pipeline starts.
 let openRouterSdkModule = null;
 
 function loadOpenRouterSdk() {
@@ -322,11 +320,14 @@ function loadOpenRouterSdk() {
   return openRouterSdkModule;
 }
 
-try {
-  openRouterSdkModule = require('@openrouter/sdk');
-} catch (_) {
-  // Keep import-time behavior compatible for callers that do not exercise OpenRouter. The
-  // OpenRouter branch will fail closed with the actionable error from loadOpenRouterSdk().
+function prewarmOpenRouterSdk() {
+  try {
+    loadOpenRouterSdk();
+  } catch (_) {
+    // Keep this prewarm optional for configured OpenRouter-to-direct fallback. The actual
+    // OpenRouter attempt calls loadOpenRouterSdk() again and retains its actionable fail-closed
+    // error if the pinned package is unavailable.
+  }
 }
 
 function mapOpenRouterSdkKeys(value, mapping) {
@@ -1923,6 +1924,57 @@ function splitDiffPatchForCoverage(patch) {
   return { header: header.join('\n'), hunks };
 }
 
+function hasLosslessHunkFragmentCoverage(sourceHunks, plannedHunks) {
+  const parseUnifiedHunk = shaPartitionManager?.parseUnifiedHunk;
+  const unifiedFragmentRangeStart = shaPartitionManager?.unifiedFragmentRangeStart;
+  if (typeof parseUnifiedHunk !== 'function' || typeof unifiedFragmentRangeStart !== 'function') return false;
+  if (plannedHunks.length === sourceHunks.length
+    && plannedHunks.every((hunk, index) => hunk === sourceHunks[index])) {
+    return sourceHunks.every((hunk) => parseUnifiedHunk(hunk) !== null);
+  }
+
+  let plannedIndex = 0;
+  for (const sourceText of sourceHunks) {
+    if (plannedHunks[plannedIndex] === sourceText) {
+      if (!parseUnifiedHunk(sourceText)) return false;
+      plannedIndex += 1;
+      continue;
+    }
+
+    const source = parseUnifiedHunk(sourceText);
+    if (!source || source.body.length === 0) return false;
+    let bodyOffset = 0;
+    let oldConsumed = 0;
+    let newConsumed = 0;
+
+    while (bodyOffset < source.body.length) {
+      const fragmentText = plannedHunks[plannedIndex];
+      if (typeof fragmentText !== 'string') return false;
+      const fragment = parseUnifiedHunk(fragmentText);
+      if (!fragment || fragment.section !== source.section
+        || fragment.oldStart !== unifiedFragmentRangeStart(source.oldStart, source.oldCount, oldConsumed, fragment.oldCount)
+        || fragment.newStart !== unifiedFragmentRangeStart(source.newStart, source.newCount, newConsumed, fragment.newCount)
+        || fragment.body.length === 0) {
+        return false;
+      }
+
+      const expectedBody = source.body.slice(bodyOffset, bodyOffset + fragment.body.length);
+      if (expectedBody.length !== fragment.body.length
+        || expectedBody.some((line, index) => line !== fragment.body[index])) {
+        return false;
+      }
+      bodyOffset += fragment.body.length;
+      oldConsumed += fragment.oldCount;
+      newConsumed += fragment.newCount;
+      plannedIndex += 1;
+      if (oldConsumed > source.oldCount || newConsumed > source.newCount) return false;
+    }
+
+    if (oldConsumed !== source.oldCount || newConsumed !== source.newCount) return false;
+  }
+  return plannedIndex === plannedHunks.length;
+}
+
 function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
   if (!plan || !Array.isArray(plan.partitions) || plan.partitions.length < 2
     || plan.coveragePercent !== 100 || plan.omittedFilesCount !== 0
@@ -1960,9 +2012,11 @@ function isLosslessBoundedPartitionPlan(files, plan, maxChars) {
     const sourceParts = splitDiffPatchForCoverage(sourcePatch);
     if (sourceParts.hunks.length === 0) return false;
     const plannedParts = plannedCopies.map((planned) => splitDiffPatchForCoverage(planned.patch));
-    return plannedParts.every((parts) => parts.header === sourceParts.header)
-      && plannedParts.flatMap((parts) => parts.hunks).length === sourceParts.hunks.length
-      && plannedParts.flatMap((parts) => parts.hunks).every((hunk, index) => hunk === sourceParts.hunks[index]);
+    if (!plannedParts.every((parts) => parts.header === sourceParts.header)) return false;
+    return hasLosslessHunkFragmentCoverage(
+      sourceParts.hunks,
+      plannedParts.flatMap((parts) => parts.hunks),
+    );
   });
 }
 
@@ -1988,8 +2042,16 @@ function createReviewPartitionPlan({
     if (mustBeLossless) throw new Error('lossless partition manager is unavailable');
     return null;
   }
+  if (mustBeLossless && (!shaPartitionManager || typeof shaPartitionManager.parseUnifiedHunk !== 'function')) {
+    throw new Error('lossless partition validator helper parseUnifiedHunk is unavailable');
+  }
+  if (mustBeLossless && typeof shaPartitionManager.unifiedFragmentRangeStart !== 'function') {
+    throw new Error('lossless partition validator helper unifiedFragmentRangeStart is unavailable');
+  }
 
-  const plan = partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars);
+  const plan = mustBeLossless
+    ? partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars, { splitOversizedHunksAtLines: true })
+    : partitionManager.createPartitionPlan(inputFiles, baseSha, headSha, maxChars);
   if (mustBeLossless && !isLosslessBoundedPartitionPlan(inputFiles, plan, maxChars)) {
     throw new Error('lossless partition manager did not produce complete, bounded file and hunk coverage');
   }
@@ -4211,6 +4273,12 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
       const configuredProvider = resolveConfiguredProvider(transport, transportName, transportBaseUrl);
       // See `resolvesToOpenRouterDestination`: keyed on where the request actually goes.
       const isOpenRouterTransport = resolvesToOpenRouterDestination(transport, transportBaseUrl);
+      if (isOpenRouterTransport) {
+        // Resolve the real destination before initializing its SDK. Prewarm before the provider
+        // heartbeat, attempt, header, and stream watchdog clocks so module startup is not charged
+        // to provider work; non-OpenRouter and no-provider paths never load this optional module.
+        prewarmOpenRouterSdk();
+      }
       const isOllama = isOllamaTransport(transport, transportBaseUrl);
       const isDirectReasoning = isDirectReasoningTransport(transport, transportBaseUrl);
       const configuredMaxOutputTokens =
@@ -5011,8 +5079,25 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
             }
             if (!formatRecoveryAttempted && fetchAttempts < maxFetchAttempts) {
               formatRecoveryAttempted = true;
-              raiseMaxOutputTokens(requestBody, DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
-              if (!isDirectReasoning) requestBody.reasoning_effort = 'low';
+              // The admitted gateway's default reserve can be consumed entirely by
+              // reasoning. Repeating that exhausted reserve cannot recover the JSON.
+              // Grant one doubled reserve only for observed truncation at the
+              // default; preserve tighter caller limits and other route contracts.
+              const gatewayBudgetExhausted = options.guardedGatewayDestination === true
+                && requestBody.model === DIGEST_PINNED_GATEWAY_MODEL_ALIAS
+                && finishReason === 'length'
+                && requestBody.max_tokens === DEFAULT_DIRECT_MAX_OUTPUT_TOKENS;
+              raiseMaxOutputTokens(requestBody, gatewayBudgetExhausted
+                ? DEFAULT_DIRECT_MAX_OUTPUT_TOKENS * 2 : DEFAULT_FORMAT_RECOVERY_MAX_OUTPUT_TOKENS);
+              if (gatewayBudgetExhausted) {
+                // The native Chat thinking toggle is separate from effort. Low
+                // effort still enables thinking and can consume the whole retry.
+                // Recover unrequested/optional thinking; retain explicit effort.
+                if (!configuredReasoningEffort || configuredReasoningEffort === 'none') {
+                  requestBody.thinking = { type: 'disabled' };
+                  delete requestBody.reasoning_effort;
+                }
+              } else if (!isDirectReasoning) requestBody.reasoning_effort = 'low';
               appendRecoveryInstructions([
                 '',
                 'FORMAT RECOVERY:',

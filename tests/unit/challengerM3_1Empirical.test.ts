@@ -464,7 +464,7 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       expect(resultA.skippedPaths).toEqual(['src/huge_data_archive.txt']);
       expect(resultA.inlinedPaths).toEqual(['src/auth/jwt.ts', 'src/utils/math.ts']);
       expect(resultA.indexedPaths).toEqual([]);
-      expect(resultA.diffText).toContain(`- src/huge_data_archive.txt (SKIPPED: 600000 chars > max-file-diff-chars ${REPO_READ_FILE_MAX_CHARS})`);
+      expect(resultA.diffText).toContain(`- src/huge_data_archive.txt (OVERSIZED: 600000 chars; use get_diff_page or read_file_page in bounded pages)`);
       expect(resultA.diffText).toContain('<untrusted_diff_data file="src/auth/jwt.ts">');
       expect(resultA.diffText).toContain('<untrusted_diff_data file="src/utils/math.ts">');
       expect(resultA.diffText).not.toContain('<untrusted_diff_data file="src/huge_data_archive.txt">');
@@ -478,7 +478,7 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       expect(resultB.skippedPaths).toEqual(['src/huge_data_archive.txt']);
       expect(resultB.inlinedPaths).toEqual(['src/auth/big.ts']);
       expect(resultB.indexedPaths).toEqual(['src/ui/big.tsx']);
-      expect(resultB.diffText).toContain('(SKIPPED: 600000 chars > max-file-diff-chars');
+      expect(resultB.diffText).toContain('(OVERSIZED: 600000 chars;');
       expect(resultB.diffText).toContain('[INLINED]');
       expect(resultB.diffText).toContain('[INDEXED: on-demand get_diff available]');
     });
@@ -493,7 +493,7 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       expect(result.indexedPaths).toEqual([]);
       expect(result.skippedPaths).toEqual(['src/archive1.txt', 'src/archive2.txt']);
       expect(result.diffText).toContain('=== ALL FILES OVERSIZED ===');
-      expect(result.diffText).toContain('cannot be inlined or fetched via get_diff');
+      expect(result.diffText).toContain('Use get_diff_page to inspect original patches in bounded pages');
     });
 
     it('boundary transition scales with configurable token budgets (e.g. 10k tokens = 40k chars and 16k tokens = 64k chars)', () => {
@@ -572,9 +572,9 @@ describe('Challenger M3-1 Empirical Stress Tests: Milestone 3 Scoped Diff Inlini
       expect(result.skippedPaths.length).toBe(500);
       expect(result.totalInlinedChars).toBe(0);
       expect(result.diffText).toContain('=== ALL FILES OVERSIZED ===');
-      expect(result.diffText).toContain('cannot be inlined or fetched via get_diff');
+      expect(result.diffText).toContain('Use get_diff_page to inspect original patches in bounded pages');
       expect(result.diffText).toContain('=== PR CHANGED FILES INDEX (500 file(s)) ===');
-      expect(result.diffText).toContain(`- src/data_archive_000.csv (SKIPPED: 550000 chars > max-file-diff-chars ${REPO_READ_FILE_MAX_CHARS})`);
+      expect(result.diffText).toContain(`- src/data_archive_000.csv (OVERSIZED: 550000 chars; use get_diff_page or read_file_page in bounded pages)`);
       expect(result.diffText).not.toContain('<untrusted_diff_data');
       expect(elapsedMs).toBeLessThan(2000);
     });

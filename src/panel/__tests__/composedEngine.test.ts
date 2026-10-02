@@ -23,6 +23,8 @@ import * as toolRuntime from '../toolRuntime';
 import { executePersonaPanel, PanelConfigurationError } from '../panelEngine';
 import { READ_FILE_TOOL_GUIDE } from '../pathMatch';
 import { TokenLedger, meterModelClient } from '../../telemetry/tokenLedger';
+import { initTelemetry, clearSpans, getRecentSpans } from '../../telemetry';
+import type { DeletionClassificationPlan } from '../../review/deletionClassification';
 
 const mockYaml = `
 version: 3
@@ -81,6 +83,82 @@ const CODE_FILES = [
 ];
 
 describe('executeComposedReview', () => {
+  it.each([[true, 'complete', 1, 0], [false, 'complete', 1, 0], [true, 'unavailable', 0, 1],
+    [true, 'partial', 0, 1], [true, 'partial', 1, 1], [false, 'partial', 1, 1]] as const)
+  ('gives real panel personas usable current classification (current=%s, status=%s, classified=%s)', async (current, status, classifiedFiles, unresolvedFiles) => {
+    const repository = 'acme/reviewer-fixture', headSha = 'a'.repeat(40);
+    const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository,
+      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status,
+      totalFiles: classifiedFiles + unresolvedFiles, classifiedFiles, unresolvedFiles, groups: [{ id: 'guard', label: 'Guard retirement',
+        proof: 'individual_path', risk: 'high', paths: ['src/auth/guard.ts'], categories: ['source'], obligationCount: 5 },
+        ...(classifiedFiles > 0 && unresolvedFiles > 0 ? [{ id: 'tail', label: 'Unresolved tail', proof: 'individual_path' as const,
+          risk: 'unknown' as const, paths: ['src/old-tail.ts'], categories: ['unknown' as const], obligationCount: 5 }] : [])] };
+    const roles: string[] = [];
+    const client = { complete: vi.fn(async (payload: any) => {
+      const role = payload.metadata?.role, nonce = issuedNonce(payload.messages);
+      roles.push(role);
+      expect(JSON.stringify(payload.messages).includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current && classifiedFiles > 0 && role === 'persona');
+      expect(JSON.stringify(payload.messages).includes('Guard retirement')).toBe(current && classifiedFiles > 0 && role === 'persona');
+      return fakeResponse(JSON.stringify(role === 'persona' ? { nonce, decision: 'APPROVE', findings: [] }
+        : role === 'moderator' ? { nonce, decision: 'RECONCILED', findings: [] }
+        : { nonce, verdict: 'SHIP', rationale: 'Clean fixture.' }));
+    }) };
+    const result = await executePersonaPanel({ config: config(), changedFiles: CODE_FILES, repository, headSha, client,
+      repoFileProvider: { findFiles: async () => [], readFile: async () => null, deletionPlan: () => plan },
+      requestPolicy: { responseFormat: { type: 'json_object' } } });
+    expect(roles).toContain('persona');
+    expect(result.personas).toMatchObject([{ decision: 'APPROVE' }]);
+  });
+
+  it('raises classified contract risk without lowering security floors or losing tasks', () => {
+    const tasks = [
+      { id: 'source', dimension: 'performance' as const, paths: ['src/a.ts'], question: 'Fast?', rationale: 'Changed.' },
+      { id: 'deleted-contract', dimension: 'contract' as const, paths: ['docs/contract.md'], question: 'Contract?', rationale: 'Removed.' },
+      { id: 'auth', dimension: 'security' as const, paths: ['src/auth/token.ts'], question: 'Secure?', rationale: 'Auth.' },
+    ];
+    const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), digest: 'b'.repeat(64), status: 'complete', totalFiles: 2, classifiedFiles: 2, unresolvedFiles: 0,
+      groups: [{ id: 'contract', label: 'Public contract', proof: 'individual_path', risk: 'high', paths: ['docs/contract.md'], categories: ['docs'], obligationCount: 5 },
+        { id: 'auth', label: 'Auth', proof: 'individual_path', risk: 'low', paths: ['src/auth/token.ts'], categories: ['source'], obligationCount: 5 }] };
+    expect(orderReviewTasksByRisk(tasks).map((task) => task.id)).toEqual(['auth', 'source', 'deleted-contract']);
+    expect(orderReviewTasksByRisk(tasks, plan).map((task) => task.id)).toEqual(['auth', 'deleted-contract', 'source']);
+    expect(orderReviewTasksByRisk(tasks, plan)).toHaveLength(tasks.length);
+    const partial = { ...plan, status: 'partial' as const, classifiedFiles: 1, unresolvedFiles: 1,
+      groups: [plan.groups[0], { ...plan.groups[1], risk: 'unknown' as const }] };
+    expect(orderReviewTasksByRisk(tasks, partial).map((task) => task.id)).toEqual(['auth', 'deleted-contract', 'source']);
+    expect(orderReviewTasksByRisk(tasks, partial)).toHaveLength(tasks.length);
+    expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'disabled' })).toEqual(orderReviewTasksByRisk(tasks));
+    expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'unavailable', classifiedFiles: 0, unresolvedFiles: 2 }))
+      .toEqual(orderReviewTasksByRisk(tasks));
+    expect(orderReviewTasksByRisk(tasks, { ...plan, status: 'partial', classifiedFiles: 0, unresolvedFiles: 2 }))
+      .toEqual(orderReviewTasksByRisk(tasks));
+  });
+
+  it.each([[true, 'complete', 1, 0], [false, 'complete', 1, 0], [true, 'unavailable', 0, 1],
+    [true, 'partial', 0, 1], [true, 'partial', 1, 1], [false, 'partial', 1, 1]] as const)
+  ('uses usable classification in real planner and worker prompts (current=%s, status=%s, classified=%s)', async (current, status, classifiedFiles, unresolvedFiles) => {
+    const repository = 'acme/reviewer-fixture', headSha = 'a'.repeat(40);
+    const plan: DeletionClassificationPlan = { version: 'deletion-classification.v1', repository,
+      headSha: current ? headSha : 'c'.repeat(40), digest: 'b'.repeat(64), status,
+      totalFiles: classifiedFiles + unresolvedFiles, classifiedFiles, unresolvedFiles, groups: [{ id: 'guard', label: 'Guard retirement',
+        proof: 'individual_path', risk: 'high', paths: ['src/auth/guard.ts'], categories: ['source'], obligationCount: 5 },
+        ...(classifiedFiles > 0 && unresolvedFiles > 0 ? [{ id: 'tail', label: 'Unresolved tail', proof: 'individual_path' as const,
+          risk: 'unknown' as const, paths: ['src/old-tail.ts'], categories: ['unknown' as const], obligationCount: 5 }] : [])] };
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages), nonce = nonceFrom(text);
+      const prompt = JSON.stringify(payload.messages);
+      expect(prompt.includes('DELETION CLASSIFICATION AND REVIEW GROUPS')).toBe(current && classifiedFiles > 0);
+      expect(prompt.includes('Guard retirement')).toBe(current && classifiedFiles > 0);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks: [{ id: 'guard', dimension: 'security',
+        paths: ['src/auth/guard.ts'], question: 'Safe?', rationale: 'Changed guard.' }] }));
+      return fakeResponse(JSON.stringify({ nonce, task: 'guard', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES, repository, headSha,
+      client: { complete }, repoFileProvider: { findFiles: async () => [], readFile: async () => null, deletionPlan: () => plan } });
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(result.personas).toMatchObject([{ id: 'guard', decision: 'APPROVE' }]);
+  });
+
   it('orders security and CI/IaC review work before lower-risk tasks deterministically', () => {
     const ordered = orderReviewTasksByRisk([
       { id: 'tests', dimension: 'testing', paths: ['tests/a.test.ts'], question: 'Tests?', rationale: 'Changed.' },
@@ -1737,7 +1815,7 @@ describe('executeComposedReview', () => {
       }
       if (turn === 2) {
         expect(text).toContain('[PI_TOOL_RESULT]');
-        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: true]');
+        expect(text).toContain('[SCOPE: cross-repository-ast-mesh | EXHAUSTIVE: false]');
         toolResultSeen = true;
         return fakeResponse(JSON.stringify({ nonce, tasks: threeTasks() }));
       }
@@ -1767,18 +1845,18 @@ describe('executeComposedReview', () => {
 
   describe('resolveComposedEngineMaxFindings', () => {
     it('defaults to 25 when unconfigured', () => {
-      expect(resolveComposedEngineMaxFindings({}, undefined)).toBe(25);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, undefined)).toBe(25);
     });
 
     it('honours configured max_findings_total narrowed by policy', () => {
-      expect(resolveComposedEngineMaxFindings({}, 10)).toBe(10);
-      expect(resolveComposedEngineMaxFindings({}, 50)).toBe(50);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, 10)).toBe(10);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test' }, 50)).toBe(50);
     });
 
     it('honours operator env overrides bounded by hard cap', () => {
-      expect(resolveComposedEngineMaxFindings({ COMPOSED_ENGINE_MAX_FINDINGS: '15' }, 50)).toBe(15);
-      expect(resolveComposedEngineMaxFindings({ REVIEW_YETI_MAX_FINDINGS: '30' }, undefined)).toBe(30);
-      expect(resolveComposedEngineMaxFindings({ COMPOSED_ENGINE_MAX_FINDINGS: '9999' }, undefined)).toBe(500);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', COMPOSED_ENGINE_MAX_FINDINGS: '15' }, 50)).toBe(15);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', REVIEW_YETI_MAX_FINDINGS: '30' }, undefined)).toBe(30);
+      expect(resolveComposedEngineMaxFindings({ NODE_ENV: 'test', COMPOSED_ENGINE_MAX_FINDINGS: '9999' }, undefined)).toBe(500);
     });
   });
 
@@ -1804,7 +1882,7 @@ describe('executeComposedReview', () => {
     });
   });
 
-  it('finalizes review early and populates all personas when max findings threshold is reached', async () => {
+  it('stops at the findings threshold without approving unfinished tasks', async () => {
     const started: string[] = [];
     const completedTasks: string[] = [];
     const complete = vi.fn(async (payload: any) => {
@@ -1847,10 +1925,10 @@ describe('executeComposedReview', () => {
       client: { complete },
     }));
 
-    // Quorum must be satisfied and all 6 tasks accounted for in personas
-    expect(result.quorum.satisfied).toBe(true);
-    expect(result.personas).toHaveLength(6);
-    expect(result.unreportedLanes).toEqual([]);
+    // Finding-stop is not evidence that any other planned task was reviewed.
+    expect(result.quorum.satisfied).toBe(false);
+    expect(result.personas).toHaveLength(1);
+    expect(result.unreportedLanes).toHaveLength(5);
     expect(result.arbiter.verdict).toBe('BLOCK');
     expect(result.arbiter.rationale).toContain('Max review findings limit (25) reached');
 
@@ -1900,10 +1978,24 @@ describe('executeComposedReview', () => {
         preCheckEvidence: {},
       });
 
-      expect(prefix).toContain('TASK SCOPE: src/auth/guard.ts');
+      expect(prefix).toContain('WORK CONTEXT: ASSIGNED TASK (1 path(s))');
+      expect(prefix).toContain('TASK-ASSIGNED CHANGED FILES INDEX (1 file(s))');
+      expect(prefix).toContain('"src/auth/guard.ts"');
       expect(prefix).toContain('export function guard()');
       expect(prefix).not.toContain('export function migrate()');
       expect(prefix).not.toContain('export function Button()');
+    });
+
+    it('recovers an assigned contract omitted by global planner packing without including unrelated files', () => {
+      const prefix = buildTaskScopedPrefix({
+        task: { id: 'task-auth', dimension: 'security', paths: ['src/auth/guard.ts'], question: 'Auth safe?', rationale: 'Auth.' },
+        effectiveFiles: [multiFiles[2]], originalFiles: multiFiles,
+        domainLanes: { 'src/auth/guard.ts': 'security_auth' }, repository: 'acme/test-repo',
+        headSha: 'abc1234', repositoryVisibility: 'PUBLIC', rules: [], preCheckEvidence: {},
+      });
+      expect(prefix).toContain('export function guard()');
+      expect(prefix).not.toContain('export function Button()');
+      expect(prefix).not.toContain('export function migrate()');
     });
   });
 
@@ -2019,9 +2111,10 @@ describe('executeComposedReview', () => {
     });
 
     expect(taskAuthExecuted).toBe(true);
-    // Quorum is satisfied because unstarted/aborted tasks are populated with clean approvals
-    expect(result.personas).toHaveLength(2);
-    expect(result.unreportedLanes).toEqual([]);
+    expect(taskDbExecuted).toBe(false);
+    expect(result.quorum.satisfied).toBe(false);
+    expect(result.personas).toHaveLength(1);
+    expect(result.unreportedLanes).toMatchObject([{ id: 'task-db', failureClass: 'contract' }]);
 
     const taskAuthPersona = result.personas.find((p) => p.id === 'task-auth');
     expect(taskAuthPersona?.decision).toBe('FINDINGS');
@@ -2036,5 +2129,126 @@ describe('executeComposedReview', () => {
     });
     expect(arbitration.verdict).toBe('BLOCK');
   });
-});
 
+  it('settles funded siblings, retains real outcomes across a plan-order gap, and records known usage once at finding-stop', async () => {
+    initTelemetry('review-yeti-bot');
+    clearSpans();
+    const tasks = orderReviewTasksByRisk(manyTasks(6));
+    const started: string[] = [];
+    const cancelled: string[] = [];
+    const events: Array<Record<string, unknown>> = [];
+    const captures: any[] = [];
+    let releaseFinding!: () => void;
+    const completedSibling = new Promise<void>((resolve) => { releaseFinding = resolve; });
+    let releasePaidTurn!: () => void;
+    const paidTurnStarted = new Promise<void>((resolve) => { releasePaidTurn = resolve; });
+    const progress = createPublishingProgress({ runId: 'run-findings-stop-usage', executionAttempt: 1 }, {
+      sink: (event) => {
+        events.push(event);
+        if (event.task === 'composed_task' && event.status === 'completed' && event.lane === 'composed-task-2') releaseFinding();
+      },
+    });
+    let firstTaskTurns = 0;
+    const complete = vi.fn(async (payload: any) => {
+      const text = lastText(payload.messages);
+      const nonce = issuedNonce(payload.messages);
+      if (text.includes('PLAN TURN')) return fakeResponse(JSON.stringify({ nonce, tasks }));
+      const directive = payload.messages.find((message: any) => typeof message.content === 'string' && message.content.includes('=== WORK TURN'))?.content;
+      const taskId = tasks.find((task) => directive?.includes(`Task id: ${task.id}\n`))?.id;
+      if (!taskId) throw new Error('Missing task in finding-stop fixture');
+      if (!started.includes(taskId)) started.push(taskId);
+      if (taskId === tasks[0].id) {
+        if (++firstTaskTurns === 1) return fakeResponse(JSON.stringify({ tool: 'get_diff', args: { path: 'src/auth/guard.ts' } }));
+        releasePaidTurn();
+        return new Promise<OpenRouterResponse>((_resolve, reject) => {
+          payload.signal.addEventListener('abort', () => { cancelled.push(taskId); reject(payload.signal.reason); }, { once: true });
+        });
+      }
+      await paidTurnStarted;
+      if (taskId === tasks[1].id) return responseForTask(payload, taskId);
+      if (taskId !== tasks[2].id) throw new Error('Finding-stop dispatched an unfunded tail task');
+      await completedSibling;
+      return fakeResponse(JSON.stringify({ nonce, task: taskId, status: 'COMPLETE', findings: Array.from({ length: 25 }, (_, index) => ({
+        severity: 'P2', path: 'src/auth/guard.ts', line: 1, title: `Advisory ${index}`, body: `Local fixture ${index}.`,
+      })) }));
+    });
+    const ledger = new TokenLedger();
+    const cfg = config();
+    cfg.composed = { max_turns_total: 7, max_turns_per_task: 2 };
+    const result = await withMaxTaskConcurrency(() => executeComposedReview({ config: cfg, changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), progress,
+      client: meterModelClient(progress.instrument({ complete }), ledger),
+      checkpoint: { resumed: null, capture: (snapshot) => captures.push(structuredClone(snapshot)), save: async () => {} },
+    }));
+    expect(started).toEqual(tasks.slice(0, 3).map((task) => task.id));
+    expect(cancelled).toEqual([tasks[0].id]);
+    expect(complete).toHaveBeenCalledTimes(5); // Plan + tool + cancelled in-flight call + two real task results.
+    expect(result.personas.map((lane) => lane.id)).toEqual(tasks.slice(1, 3).map((task) => task.id));
+    expect(result.personas.map((lane) => lane.turnsCount)).toEqual([1, 1]);
+    expect(result.personas.reduce((sum, lane) => sum + (lane.turnUsages?.length ?? 0), 0)).toBe(3); // Includes plan exactly once.
+    expect(result.personas.reduce((sum, lane) => sum + (lane.aggregateUsage?.totalTokens ?? 0), 0)).toBe(60);
+    expect(result.unreportedLanes?.map((lane) => lane.id)).toEqual([tasks[0].id, ...tasks.slice(3).map((task) => task.id)]);
+    expect(result.quorum.satisfied).toBe(false);
+    expect(events.filter((event) => event.task === 'composed_task' && event.status === 'completed').map((event) => event.lane))
+      .toEqual(['composed-task-2', 'composed-task-3']);
+    expect(events).toContainEqual(expect.objectContaining({ task: 'composed_task', lane: 'composed-task-1', status: 'aborted', turn: 1,
+      usage: expect.objectContaining({ totalTokens: 20 }) }));
+    expect(events.filter((event) => event.task === 'composed_task' && event.status === 'skipped')).toHaveLength(3);
+    expect(ledger.snapshot().total).toMatchObject({ calls: 4, totalTokens: 80, costUSD: 0.004 });
+    expect(ledger.snapshot().byLane['composed-task-1']).toMatchObject({ calls: 1, totalTokens: 20 });
+    expect(captures.at(-1).completedTasks.map((task: any) => task.id).sort()).toEqual(tasks.slice(1, 3).map((task) => task.id).sort());
+    expect(captures.at(-1).plan).toHaveLength(6);
+    const span = getRecentSpans({ name: 'review_yeti_composed_panel' }).at(-1);
+    expect(span?.attributes).toMatchObject({ 'review_yeti.composed.funded_task_count': 3,
+      'review_yeti.composed.observed_turn_count': 4, 'review_yeti.composed.retained_turn_reservations': 1 });
+  });
+
+  it.each(['cancel', 'deadline'] as const)('keeps parent %s authority when it races findings-stop closeout', async (mode) => {
+    const cancellation = new AbortController();
+    const cfg = config();
+    const progress = createPublishingProgress({ runId: 'run-findings-stop-authority', executionAttempt: 1 }, {
+      sink: (event) => {
+        if (event.task === 'composed_task' && event.status === 'skipped') {
+          cancellation.abort(mode === 'deadline' ? new panelEngine.PanelDeadlineExceededError(30_000) : new Error('private cancellation'));
+        }
+      },
+    });
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      return fakeResponse(JSON.stringify(lastText(payload.messages).includes('PLAN TURN')
+        ? { nonce, tasks: manyTasks(2) }
+        : { nonce, task: 'task-1', status: 'COMPLETE', findings: [{ severity: 'P0', path: 'src/auth/guard.ts', line: 1,
+          title: 'Finding-stop race', body: 'Local fixture.' }] }));
+    });
+    const run = executeComposedReview({ config: cfg, changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), client: { complete }, signal: cancellation.signal, progress });
+    if (mode === 'cancel') await expect(run).rejects.toBeInstanceOf(panelEngine.PanelCancellationError);
+    else {
+      const result = await run;
+      expect(result.gracefulExit).toMatchObject({ reason: 'evidence_deadline', completedTaskIds: ['task-1'], pendingTaskIds: ['task-2'] });
+      expect(result.personas).toHaveLength(1);
+      expect(result.personas[0].findings).toHaveLength(1);
+      expect(result.quorum.satisfied).toBe(false);
+    }
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['P0', 'P2'] as const)('keeps genuine all-tasks-complete evidence at %s finding-stop', async (severity) => {
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      return fakeResponse(JSON.stringify(lastText(payload.messages).includes('PLAN TURN')
+        ? { nonce, tasks: [exhaustionTask] }
+        : { nonce, task: exhaustionTask.id, status: 'COMPLETE', findings: Array.from({ length: severity === 'P2' ? 25 : 1 }, (_, index) => ({
+          severity, path: 'src/auth/guard.ts', line: 1, title: `Finding ${index}`, body: `Local fixture ${index}.`,
+        })) }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES, repository: 'acme/reviewer-fixture',
+      headSha: 'a'.repeat(40), client: { complete } });
+    expect(result.quorum.satisfied).toBe(true);
+    expect(result.unreportedLanes).toEqual([]);
+    expect(result.personas).toMatchObject([{ id: exhaustionTask.id, turnsCount: 1 }]);
+    expect(result.personas[0].turnUsages).toHaveLength(2);
+    expect(computeArbitration(result.personas, 1, { changedFiles: CODE_FILES, coverageComplete: true, panelSize: 1 }).verdict)
+      .toBe(severity === 'P0' ? 'BLOCK' : 'SHIP');
+  });
+});
