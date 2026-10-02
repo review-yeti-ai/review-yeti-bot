@@ -22,8 +22,11 @@ describe('Milestone 26: Telemetry to Analytics API Integration Test', () => {
   });
 
   it('records review run telemetry and reflects updated metrics in analytics endpoints', async () => {
-    const initialOverview = dashboardStore.getOverviewStats();
-    const initialReviews = initialOverview.totalReviewsExecuted;
+    const initialSummary = await request(app)
+      .get('/api/analytics/summary')
+      .set('Authorization', `Bearer ${token}`);
+    expect(initialSummary.status).toBe(200);
+    const initialReviews = initialSummary.body.summary.totalReviews;
 
     // Simulate review run recording
     dashboardStore.recordReviewRun({
