@@ -45,22 +45,6 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
       assert.ok(body.includes('```suggestion\nconst isValid = crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));\n```'));
     });
 
-    it('formats advisory/P2 findings with required to address badge', () => {
-      const finding: InlineFindingSuggestion = {
-        path: 'src/config.ts',
-        line: 45,
-        severity: 'P2',
-        title: 'Deprecated runner configuration',
-        description: 'Update runner SKU to blacksmith-2vcpu-ubuntu-2404-arm.',
-        suggestedFix: 'runs-on: blacksmith-2vcpu-ubuntu-2404-arm',
-      };
-
-      const body = formatSuggestionBody(finding);
-
-      assert.ok(body.includes('⚠️ **[P2 - Required to address]** **Deprecated runner configuration**'));
-      assert.ok(body.includes('```suggestion\nruns-on: blacksmith-2vcpu-ubuntu-2404-arm\n```'));
-    });
-
     it('formats informational/P3 findings without suggestion when suggestedFix is omitted', () => {
       const finding: InlineFindingSuggestion = {
         path: 'src/docs/readme.md',
@@ -118,28 +102,29 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
       assert.ok(payload.comments[0].body.includes('```suggestion'));
     });
 
-    it('builds full GitHub review payload with REQUEST_CHANGES when advisory P2 findings exist', () => {
-      const findings: InlineFindingSuggestion[] = [
-        {
-          path: 'src/workflow.yml',
-          line: 37,
-          severity: 'P2',
-          title: 'Runner SKU standard violation',
-          description: 'Advisory finding requires remediation.',
-          suggestedFix: 'runs-on: blacksmith-2vcpu-ubuntu-2404-arm',
-        },
-      ];
+    describe('review event follows the blocking severities only (P2 is advisory)', () => {
+      const finding = (severity: 'P0' | 'P1' | 'P2'): InlineFindingSuggestion => ({
+        path: 'src/a.ts', line: 3, severity, title: `${severity} finding`, description: 'Detail.',
+      });
+      const event = (verdict: 'success' | 'action_required' | 'neutral', severities: Array<'P0' | 'P1' | 'P2'>) =>
+        buildGitHubReviewPayload({
+          commitId: 'abcdef0123456789abcdef0123456789abcdef01', verdict, summaryMarkdown: '## Review Yeti',
+          findings: severities.map(finding),
+        }).event;
 
-      const payload = buildGitHubReviewPayload({
-        commitId: 'abcdef0123456789abcdef0123456789abcdef01',
-        verdict: 'success',
-        summaryMarkdown: '## Review Yeti: ACTION REQUIRED\n\nAdvisory findings must be addressed.',
-        findings,
+      it('approves a SHIP review that only has P2 findings', () => {
+        assert.equal(event('success', ['P2']), 'APPROVE');
       });
 
-      assert.equal(payload.event, 'REQUEST_CHANGES');
-      assert.equal(payload.comments.length, 1);
-      assert.ok(payload.comments[0].body.includes('P2 - Required to address'));
+      it('comments, without requesting changes, on action_required with only P2 findings', () => {
+        assert.equal(event('action_required', ['P2']), 'COMMENT');
+      });
+
+      it('requests changes for P0/P1 findings on both verdicts, even when the verdict says success', () => {
+        assert.equal(event('success', ['P1']), 'REQUEST_CHANGES');
+        assert.equal(event('success', ['P2', 'P0']), 'REQUEST_CHANGES');
+        assert.equal(event('action_required', ['P1']), 'REQUEST_CHANGES');
+      });
     });
 
     it('includes runner cost and total runtime as an item in Review Yeti review payload when managed runners are used', () => {
