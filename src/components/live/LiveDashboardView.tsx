@@ -13,12 +13,13 @@ import { ActiveJobsSidebar } from '@/components/live/active-jobs-sidebar';
 import { DiffViewer } from '@/components/live/diff-viewer';
 import { ReasoningFeed } from '@/components/live/reasoning-feed';
 import { ToolFeed } from '@/components/live/tool-feed';
+import { LiveSwarmTopologyCanvas } from '@/components/live/LiveSwarmTopologyCanvas';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { StatusBadge, StatusType } from '@/components/layout/status-badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Radio, RefreshCw, Play, FileCode, Brain, Terminal, Layers, RotateCcw, Loader2, Scissors, ShieldCheck, Activity, Cpu, CheckCircle2 } from 'lucide-react';
+import { Radio, RefreshCw, Play, FileCode, Brain, Terminal, Layers, RotateCcw, Loader2, Scissors, ShieldCheck, Activity, Cpu, CheckCircle2, Network } from 'lucide-react';
 import { ChangedFileDiff, AnchoredFinding } from '@/types/diff';
 import { VerdictOverrideControls } from '@/components/dashboard/verdict-override-controls';
 import { PromptGuidanceCard } from '@/components/live/prompt-guidance-card';
@@ -77,6 +78,7 @@ function LiveStreamContent() {
   const [isTriggering, setIsTriggering] = useState<boolean>(false);
   const [selectedPr, setSelectedPr] = useState<number>(1282);
   const [showTelemetryCharts, setShowTelemetryCharts] = useState<boolean>(false);
+  const [showTopologyPreview, setShowTopologyPreview] = useState<boolean>(false);
 
   const handleTriggerLiveReview = async (prNumberToRun?: number) => {
     const targetPr = typeof prNumberToRun === 'number' ? prNumberToRun : selectedPr;
@@ -542,17 +544,46 @@ function LiveStreamContent() {
           </div>
         </div>
 
-        <Button
-          variant="ghost"
-          size="sm"
-          type="button"
-          onClick={() => setShowTelemetryCharts(!showTelemetryCharts)}
-          className="h-7 text-xs font-mono text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-white/[0.06] px-2.5 gap-1.5 ml-auto"
-        >
-          <Activity className="h-3 w-3 text-indigo-400" />
-          <span>{showTelemetryCharts ? 'Hide Telemetry Charts ▴' : 'Show Telemetry Charts ▾'}</span>
-        </Button>
+        <div className="flex items-center gap-2 ml-auto">
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            onClick={() => setShowTopologyPreview(!showTopologyPreview)}
+            className="h-7 text-xs font-mono text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-white/[0.06] px-2.5 gap-1.5"
+            data-testid="toggle-topology-preview-btn"
+          >
+            <Network className="h-3 w-3 text-cyan-400" />
+            <span>{showTopologyPreview ? 'Hide Topology Mesh ▴' : 'Show Topology Mesh ▾'}</span>
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            onClick={() => setShowTelemetryCharts(!showTelemetryCharts)}
+            className="h-7 text-xs font-mono text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.05] border border-white/[0.06] px-2.5 gap-1.5"
+          >
+            <Activity className="h-3 w-3 text-indigo-400" />
+            <span>{showTelemetryCharts ? 'Hide Telemetry Charts ▴' : 'Show Telemetry Charts ▾'}</span>
+          </Button>
+        </div>
       </div>
+
+      {/* Expandable Live Swarm & Infrastructure Topology Preview */}
+      {showTopologyPreview && (
+        <div className="animate-in fade-in duration-200">
+          <LiveSwarmTopologyCanvas
+            jobId={jobId}
+            swarmTasks={swarmTasks}
+            compaction={compactionMetrics}
+            tokenMetrics={tokenMetrics}
+            currentStage={currentStage}
+            connectionStatus={connectionStatus}
+            onSelectAgentTask={setSelectedPersona}
+          />
+        </div>
+      )}
 
       {/* Expandable Deep-Dive Telemetry Curves */}
       {showTelemetryCharts && (
@@ -610,6 +641,17 @@ function LiveStreamContent() {
                       {effectiveFindings.length}
                     </span>
                   )}
+                </TabsTrigger>
+                <TabsTrigger
+                  value="mesh"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
+                  data-testid="swarm-mesh-tab-trigger"
+                >
+                  <Network className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>Swarm & Infra Mesh</span>
+                  <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+                    Live
+                  </span>
                 </TabsTrigger>
                 <TabsTrigger
                   value="tasks"
@@ -680,6 +722,19 @@ function LiveStreamContent() {
                 loading={diffLoading}
                 onDismissFinding={handleDismissFinding}
                 onAdjustSeverity={handleAdjustSeverity}
+              />
+            </TabsContent>
+
+            {/* Tab: Real-Time Live Swarm & Infrastructure Topology Mesh */}
+            <TabsContent value="mesh" className="mt-3 space-y-4">
+              <LiveSwarmTopologyCanvas
+                jobId={jobId}
+                swarmTasks={swarmTasks}
+                compaction={compactionMetrics}
+                tokenMetrics={tokenMetrics}
+                currentStage={currentStage}
+                connectionStatus={connectionStatus}
+                onSelectAgentTask={setSelectedPersona}
               />
             </TabsContent>
 
