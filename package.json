@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "generate:providers": "ts-node scripts/generate-omniroute-providers.ts",
+    "build:backend": "tsc -p tsconfig.server.json && node scripts/ensure-static-assets.js",
     "build:frontend": "node scripts/clean-frontend.js && next build && node scripts/postbuild.js",
     "build:cf-orchestrator": "cd cf-orchestrator && npm run build",
     "build": "npm run build:frontend && npm run build:backend && node scripts/postbuild.js",
