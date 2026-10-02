@@ -1776,13 +1776,18 @@ export function buildScopedDiffSection(
       ]
     : [];
 
+  const taskHasOversizedFiles = options?.fileIndexScope === 'task-assignment' && skippedPaths.length > 0;
   const protocolAdvisory = tier === 'tier_a'
     ? [
         `=== PRE-FETCHED DIFF HUNKS (${inlinedPaths.length} file(s) inlined, budget: ${tokenBudget.toLocaleString()} tokens) ===`,
         options?.fileIndexScope === 'task-assignment'
-          ? `All modified file diffs assigned to this task are pre-fetched below; this is not the full PR diff.`
+          ? taskHasOversizedFiles
+            ? `Non-oversized modified file diffs assigned to this task are pre-fetched below; ${skippedPaths.length} oversized task file(s) require paged inspection. This is not the full PR diff.`
+            : `All modified file diffs assigned to this task are pre-fetched below; this is not the full PR diff.`
           : `All modified file diffs for this PR are pre-fetched below enclosed in <untrusted_diff_data> XML blocks.`,
-        `Inspect the inlined diffs and emit your findings immediately on Turn 1. Do not make redundant get_diff calls.`,
+        taskHasOversizedFiles
+          ? `Inspect the inlined diffs and use get_diff_page or read_file_page for every oversized assigned file before completing this task. Do not make redundant get_diff calls for inlined files.`
+          : `Inspect the inlined diffs and emit your findings immediately on Turn 1. Do not make redundant get_diff calls.`,
       ]
     : tier === 'tier_b'
     ? [

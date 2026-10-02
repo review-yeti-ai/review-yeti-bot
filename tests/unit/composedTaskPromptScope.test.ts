@@ -5,6 +5,7 @@ import {
   executeComposedReview,
 } from '../../src/panel/composedEngine';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
+import { buildScopedDiffSection } from '../../src/panel/panelEngine';
 
 const config = parseAndValidateConfig(`
 version: 3
@@ -50,6 +51,22 @@ function fakeResponse(content: string) {
 }
 
 describe('composed WORK task prompt scope', () => {
+  it('requires paged inspection of oversized task files even when all remaining diffs fit inline', () => {
+    const section = buildScopedDiffSection([
+      { path: 'src/small.ts', patch: '+export const small = true;' },
+      { path: 'src/large.ts', patch: '+oversizedTaskEvidence'.repeat(100) },
+    ], { fileIndexScope: 'task-assignment', maxFileDiffChars: 512, tokenBudget: 1_000 });
+
+    expect(section.tier).toBe('tier_a');
+    expect(section.inlinedPaths).toEqual(['src/small.ts']);
+    expect(section.skippedPaths).toEqual(['src/large.ts']);
+    expect(section.diffText).toContain('1 oversized task file(s) require paged inspection');
+    expect(section.diffText).toContain('Inspect the inlined diffs and use get_diff_page or read_file_page for every oversized assigned file before completing this task.');
+    expect(section.diffText).not.toContain('All modified file diffs assigned to this task are pre-fetched');
+    expect(section.diffText).not.toContain('emit your findings immediately on Turn 1');
+    expect(section.diffText).not.toContain('+oversizedTaskEvidence');
+  });
+
   it('bounds the global path manifest and reports exact partial counts without absence claims', () => {
     const files = Array.from({ length: 1_000 }, (_, index) => ({
       path: `src/${String(index).padStart(4, '0')}-${'x'.repeat(64)}.ts`,
