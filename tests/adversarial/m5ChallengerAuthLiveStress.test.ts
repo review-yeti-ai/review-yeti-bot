@@ -107,13 +107,13 @@ describe('M5 Tier 5 Adversarial Challenger: Auth, Live Stream & Diff Viewer Stre
   // ==========================================================================
   describe('1. OAuth CSRF State & Session Security Adversarial Stress', () => {
     it('enforces single-use CSRF tokens and rejects replay attacks immediately', () => {
-      const state = authService.createOAuthState('/repos/calltelemetry/cisco-cdr');
+      const state = authService.createOAuthState('/repos/exampleorg/example-api');
       expect(state).toHaveLength(48);
 
       // First consumption succeeds
       const firstAttempt = authService.consumeOAuthState(state);
       expect(firstAttempt.valid).toBe(true);
-      expect(firstAttempt.returnTo).toBe('/repos/calltelemetry/cisco-cdr');
+      expect(firstAttempt.returnTo).toBe('/repos/exampleorg/example-api');
 
       // Second consumption (replay attack) fails
       const replayAttempt1 = authService.consumeOAuthState(state);
@@ -186,7 +186,7 @@ describe('M5 Tier 5 Adversarial Challenger: Auth, Live Stream & Diff Viewer Stre
       const safePaths = [
         '/repos',
         '/dashboard/settings',
-        '/repos/calltelemetry/cisco-cdr/pulls/108',
+        '/repos/exampleorg/example-api/pulls/108',
       ];
       for (const safe of safePaths) {
         const state = authService.createOAuthState(safe);
@@ -721,8 +721,8 @@ describe('M5 Tier 5 Adversarial Challenger: Auth, Live Stream & Diff Viewer Stre
 
       // Parse full snapshot diff
       const diffResponse = parseSnapshotDiff('job-anchoring-test', createPRSnapshot({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         prNumber: 402,
         headSha: 'head123',
         baseSha: 'base123',
@@ -744,7 +744,7 @@ describe('M5 Tier 5 Adversarial Challenger: Auth, Live Stream & Diff Viewer Stre
     });
 
     it('computes deterministic, collision-resistant finding IDs with path and line normalization', () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
       const file = 'src/auth/jwtSigner.ts';
       const line = 42;
       const title = 'Potential Timing Attack on HMAC Verification';

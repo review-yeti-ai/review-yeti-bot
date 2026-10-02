@@ -12,7 +12,7 @@ describe('DigitalOceanAgentRunner Integration & Unit Suite', () => {
     prNumber: 42,
     headSha: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
     baseSha: '0123456789abcdef0123456789abcdef01234567',
-    workerImage: 'registry.digitalocean.com/calltelemetry/review-yeti-worker:latest',
+    workerImage: 'registry.digitalocean.com/exampleorg/review-yeti-worker:latest',
     env: { GITHUB_TOKEN: 'token_abc', RUN_ID: 'run_123' },
   };
 

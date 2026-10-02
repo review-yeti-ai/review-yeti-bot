@@ -193,7 +193,7 @@ metadata:
   name: valid-job
   namespace: default
 spec:
-  repo: "calltelemetry/cisco-cdr"
+  repo: "exampleorg/example-api"
   prNumber: 42
   headSha: "1234567"
   baseSha: "7654321"

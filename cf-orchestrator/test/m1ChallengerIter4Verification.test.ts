@@ -53,7 +53,7 @@ function createIter4Harness(): TestHarness {
   const env: any = {
     ENVIRONMENT: 'test',
     PARALLEL_MODE: 'shadow',
-    PILOT_REPOSITORIES: 'calltelemetry/review-yeti,calltelemetry/test-repo',
+    PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-iter4',
     DOKS_FALLBACK_URL: undefined,
 
@@ -141,7 +141,7 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
   describe('Vulnerability A: DO Reboot Eviction Tombstone Persistence on Empty Queue', () => {
     it('persists __EVICTED__ to storage when evictQueue({ prNumber }) is called on empty queue', async () => {
       const harness = createIter4Harness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey));
 
       // PR 88 completed in the past and released slot
@@ -185,7 +185,7 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
 
     it('survives multiple consecutive DO reboots and preserves tombstones across 20 distinct PRs', async () => {
       const harness = createIter4Harness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey));
 
       const prs = Array.from({ length: 20 }, (_, i) => 1000 + i);
@@ -226,7 +226,7 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
 
     it('does NOT tombstone PR when tombstone option is false (synchronize path)', async () => {
       const harness = createIter4Harness();
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const gate = harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName(repoKey));
 
       // PR 99 has active run
@@ -261,18 +261,18 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
     it('rejects debounced commit on closed PR with { granted: false, evicted: true } and 0 dispatches', async () => {
       const harness = createIter4Harness();
       const secret = 'test-secret-iter4';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 200;
 
       // 1. Synchronize arrives at T=0
       const bodySync = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_200_sync' }, base: { sha: 'main' } },
       });
       const sigSync = await signPayload(secret, bodySync);
       const resSync = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -295,12 +295,12 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // 2. PR closed at T=10s
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_200_sync' }, base: { sha: 'main' } },
       });
       const sigClose = await signPayload(secret, bodyClose);
       const resClose = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -347,17 +347,17 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
     it('rejects debounced commit on closed PR even when DO reboots during the debounce window', async () => {
       const harness = createIter4Harness();
       const secret = 'test-secret-iter4';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 250;
 
       // 1. Synchronize arrives at T=0
       const bodySync = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_250_sync' }, base: { sha: 'main' } },
       });
       const resSync = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -374,11 +374,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // 2. PR closed at T=10s
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_250_sync' }, base: { sha: 'main' } },
       });
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -405,7 +405,7 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
     it('rejects all commits in a burst of 5 synchronize events if PR is closed before debounce expiry', async () => {
       const harness = createIter4Harness();
       const secret = 'test-secret-iter4';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 280;
 
       const runIds: string[] = [];
@@ -413,11 +413,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       for (let i = 1; i <= 5; i++) {
         const body = JSON.stringify({
           action: 'synchronize',
-          repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+          repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
           pull_request: { number: prNumber, head: { sha: `sha_280_v${i}` }, base: { sha: 'main' } },
         });
         const res = await worker.fetch(
-          new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+          new Request('https://operator.example.com/api/webhooks/github', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -436,11 +436,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // PR is closed
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_280_v5' }, base: { sha: 'main' } },
       });
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -480,17 +480,17 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-iter4';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 300;
 
       // 1. Developer pushes synchronize
       const bodySync = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_300_valid' }, base: { sha: 'main' } },
       });
       const resSync = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -514,7 +514,7 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // 3. ReviewJobWorkflow runs
       const spec: ReviewRunSpec = {
         runId: debouncedRunId,
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha_300_valid',
@@ -556,17 +556,17 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
     it('supersedes older debounced commits during burst, granting slot only to newest commit', async () => {
       const harness = createIter4Harness();
       const secret = 'test-secret-iter4';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 350;
 
       // Developer pushes Commit 1, then Commit 2
       const body1 = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_350_v1' }, base: { sha: 'main' } },
       });
       const res1 = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -581,11 +581,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
 
       const body2 = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_350_v2' }, base: { sha: 'main' } },
       });
       const res2 = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -628,17 +628,17 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
     it('allows fresh commit on reopened PR while maintaining permanent rejection of pre-closure commits', async () => {
       const harness = createIter4Harness();
       const secret = 'test-secret-iter4';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 400;
 
       // 1. PR 400 has commit 1
       const body1 = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_400_v1' }, base: { sha: 'main' } },
       });
       const res1 = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -654,11 +654,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // 2. PR 400 is closed
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_400_v1' }, base: { sha: 'main' } },
       });
       await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -673,11 +673,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // 3. PR 400 is reopened!
       const bodyReopen = JSON.stringify({
         action: 'reopened',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_400_v1' }, base: { sha: 'main' } },
       });
       const resReopen = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -693,11 +693,11 @@ describe('Milestone 1 Iteration 4 Adversarial Verification Harness', () => {
       // 4. Developer pushes fresh Commit 2
       const body2 = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_400_v2' }, base: { sha: 'main' } },
       });
       const res2 = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

@@ -48,7 +48,7 @@ function createHarness(): TestHarness {
   const env: any = {
     ENVIRONMENT: 'test',
     PARALLEL_MODE: 'shadow',
-    PILOT_REPOSITORIES: 'calltelemetry/review-yeti,calltelemetry/test-repo',
+    PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-iter3',
     DOKS_FALLBACK_URL: undefined,
 
@@ -125,7 +125,7 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
     it('handles a concurrent burst of 60 webhooks with mixed synchronize, closed, and reopened events without crashing or exceeding 3s SLA', async () => {
       const harness = createHarness();
       const secret = 'test-secret-iter3';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 101;
 
       // 1. Establish an active in-flight run on PR 101
@@ -141,7 +141,7 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
         method: 'POST',
         body: JSON.stringify({
           runId: activeRunId,
-          owner: 'calltelemetry',
+          owner: 'exampleorg',
           repo: 'review-yeti',
           prNumber,
           headSha: 'sha_base_pr101',
@@ -170,9 +170,9 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
         const body = JSON.stringify({
           action,
           repository: {
-            full_name: 'calltelemetry/review-yeti',
+            full_name: 'exampleorg/review-yeti',
             name: 'review-yeti',
-            owner: { login: 'calltelemetry' },
+            owner: { login: 'exampleorg' },
           },
           pull_request: {
             number: prNumber,
@@ -183,7 +183,7 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
         const sig = await signPayload(secret, body);
         const reqStart = performance.now();
         const res = await worker.fetch(
-          new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+          new Request('https://operator.example.com/api/webhooks/github', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -243,7 +243,7 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
     it('processes multi-PR rapid-fire bursts across 10 distinct PRs concurrently with total isolation', async () => {
       const harness = createHarness();
       const secret = 'test-secret-iter3';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
 
       // 10 PRs: numbers 201 to 210
       const prs = Array.from({ length: 10 }, (_, i) => 201 + i);
@@ -264,9 +264,9 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
               const body = JSON.stringify({
                 action,
                 repository: {
-                  full_name: 'calltelemetry/review-yeti',
+                  full_name: 'exampleorg/review-yeti',
                   name: 'review-yeti',
-                  owner: { login: 'calltelemetry' },
+                  owner: { login: 'exampleorg' },
                 },
                 pull_request: {
                   number: prNumber,
@@ -276,7 +276,7 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
               });
               const sig = await signPayload(secret, body);
               const res = await worker.fetch(
-                new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+                new Request('https://operator.example.com/api/webhooks/github', {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/json',
@@ -308,18 +308,18 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-iter3';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 150;
 
       // 1. Developer pushes a commit to PR 150: synchronize arrives
       const bodySync = JSON.stringify({
         action: 'synchronize',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_sync_150' }, base: { sha: 'main' } },
       });
       const sigSync = await signPayload(secret, bodySync);
       const resSync = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -343,12 +343,12 @@ describe('M1 Iteration 3 Adversarial Challenge & Empirical Verification Harness'
       // 2. Ten seconds later, developer CLOSES PR 150!
       const bodyClose = JSON.stringify({
         action: 'closed',
-        repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+        repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
         pull_request: { number: prNumber, head: { sha: 'sha_sync_150' }, base: { sha: 'main' } },
       });
       const sigClose = await signPayload(secret, bodyClose);
       const resClose = await worker.fetch(
-        new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+        new Request('https://operator.example.com/api/webhooks/github', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

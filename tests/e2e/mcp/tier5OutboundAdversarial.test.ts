@@ -696,7 +696,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/auth/service.ts', patch: '+ export function verify() {}' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'c0ffee'.repeat(6).slice(0, 40),
         client: mockClient as any,
       });
@@ -744,7 +744,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       const result = await executePersonaPanel({
         config,
         changedFiles: [{ path: 'src/timeout/test.ts', patch: '+ const timeout = true;' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'd00dad'.repeat(6).slice(0, 40),
         client: mockClient as any,
       });
@@ -762,7 +762,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       let toolCallCaptured = false;
       const execSpy = vi.spyOn(mcpFleetManager, 'executeTool').mockResolvedValue({
         success: true,
-        output: { blast_radius: 'HIGH', affected_repos: ['calltelemetry/ct-release'] },
+        output: { blast_radius: 'HIGH', affected_repos: ['exampleorg/example-release'] },
         durationMs: 20,
       });
 
@@ -812,7 +812,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       const result = await executeComposedReview({
         config,
         changedFiles: [{ path: 'src/auth/guard.ts', patch: '@@ -1 +1,2 @@\n+export function guard() {}' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'e0e0e0'.repeat(6).slice(0, 40),
         client: mockClient as any,
       });
@@ -892,7 +892,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       const result = await executeComposedReview({
         config,
         changedFiles: [{ path: 'src/cache/buffer.ts', patch: '@@ -1 +1,5 @@\n+export class Buffer {}' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'f1f1f1'.repeat(6).slice(0, 40),
         client: mockClient as any,
       });
@@ -949,7 +949,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
       const result = await executeComposedReview({
         config,
         changedFiles: [{ path: 'src/auth.ts', patch: '+ const secure = true;' }],
-        repository: 'calltelemetry/cisco-cdr',
+        repository: 'exampleorg/example-api',
         headSha: 'a0b1c2'.repeat(6).slice(0, 40),
         client: mockClient as any,
       });
@@ -997,7 +997,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
             { path: 'src/a.ts', patch: '+ a' },
             { path: 'src/b.ts', patch: '+ b' },
           ],
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: '123456'.repeat(6).slice(0, 40),
           client: mockClient as any,
         });
@@ -1030,7 +1030,7 @@ describe('Tier 5 Adversarial Coverage Hardening (tests/e2e/mcp/tier5OutboundAdve
         executeComposedReview({
           config,
           changedFiles: [{ path: 'src/abort.ts', patch: '+ abort' }],
-          repository: 'calltelemetry/cisco-cdr',
+          repository: 'exampleorg/example-api',
           headSha: '999999'.repeat(6).slice(0, 40),
           client: mockClient as any,
           signal: controller.signal,

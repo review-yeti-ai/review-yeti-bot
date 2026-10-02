@@ -342,11 +342,11 @@ describe('Milestone 3 Empirical Stress Harness: High-Frequency SSE Streams & Liv
     it('serves active jobs list via `/api/live/active` endpoint for public dashboard sidebar', async () => {
       // Publish 2 events to register active job in bus
       bus.publishEvent({
-        jobId: 'job_calltelemetry_cisco-cdr_pr42_abc123',
+        jobId: 'job_exampleorg_example-api_pr42_abc123',
         timestamp: new Date().toISOString(),
         type: 'persona:start',
         persona: 'security',
-        data: { repo: 'calltelemetry/cisco-cdr', prNumber: 42 },
+        data: { repo: 'exampleorg/example-api', prNumber: 42 },
       });
 
       const res = await mockGetRequest(app, '/api/live/active');
@@ -354,8 +354,8 @@ describe('Milestone 3 Empirical Stress Harness: High-Frequency SSE Streams & Liv
       expect(res.statusCode).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.count).toBe(1);
-      expect(res.body.jobs[0].jobId).toBe('job_calltelemetry_cisco-cdr_pr42_abc123');
-      expect(res.body.jobs[0].repo).toBe('calltelemetry/cisco-cdr');
+      expect(res.body.jobs[0].jobId).toBe('job_exampleorg_example-api_pr42_abc123');
+      expect(res.body.jobs[0].repo).toBe('exampleorg/example-api');
       expect(res.body.jobs[0].prNumber).toBe(42);
     });
 
@@ -442,7 +442,7 @@ describe('Milestone 3 Empirical Stress Harness: High-Frequency SSE Streams & Liv
       const mockJobs = [
         {
           jobId: 'job_full_ui_stress',
-          repo: 'calltelemetry/cisco-cdr',
+          repo: 'exampleorg/example-api',
           prNumber: 99,
           title: 'High Throughput Stream PR',
           status: 'active' as const,
@@ -469,7 +469,7 @@ describe('Milestone 3 Empirical Stress Harness: High-Frequency SSE Streams & Liv
 
       // Verify key visual indicators render without crashing
       expect(screen.getByText('High Throughput Stream PR')).toBeDefined();
-      expect(screen.getByText('calltelemetry/cisco-cdr')).toBeDefined();
+      expect(screen.getByText('exampleorg/example-api')).toBeDefined();
       expect(screen.getByText('All Personas')).toBeDefined();
       expect(screen.getByText('Terminal Feed')).toBeDefined();
 

@@ -9,7 +9,7 @@ describe('Milestone 11: PR Memory & Nit Pattern Matching Performance Benchmark',
   let memoryStore: PRMemoryStore;
   let symbolStore: SymbolGraphStore;
   let engine: GraphLearningEngine;
-  const repo = 'calltelemetry/benchmark-repo';
+  const repo = 'exampleorg/benchmark-repo';
 
   beforeAll(async () => {
     memoryStore = new PRMemoryStore(':memory:');
@@ -72,7 +72,7 @@ describe('Milestone 11: PR Memory & Nit Pattern Matching Performance Benchmark',
   });
 
   it('executes nit pattern matching across 1,000 findings with 100% precision in < 100ms', async () => {
-    const nitRepo = 'calltelemetry/nit-precision-repo';
+    const nitRepo = 'exampleorg/nit-precision-repo';
 
     // Seed 100 resolved nit patterns (global scope filePath: '')
     const nitPatterns = [
@@ -152,7 +152,7 @@ describe('Milestone 11: PR Memory & Nit Pattern Matching Performance Benchmark',
   });
 
   it('calculates symbol risk score under high-concurrency in < 50ms', async () => {
-    const riskRepo = 'calltelemetry/risk-repo';
+    const riskRepo = 'exampleorg/risk-repo';
 
     const startTime = performance.now();
     const riskPromises = Array.from({ length: 50 }, (_, i) =>

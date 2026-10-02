@@ -170,7 +170,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
     return {
       runId,
       repositoryId: 123,
-      repository: 'calltelemetry/dashboard',
+      repository: 'exampleorg/dashboard',
       prNumber: 42,
       baseSha: 'a'.repeat(40),
       headSha: 'b'.repeat(40),
@@ -902,7 +902,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
           (completion_id, run_id, repository_id, repository, pr_number, base_sha, head_sha,
            attempt_id, policy_digest, validation_request_id, status, draft_deferred, available_at)
           SELECT $1 || LPAD(value::text, 3, '0'), $2 || LPAD(value::text, 3, '0'),
-                 123, 'calltelemetry/dashboard', 42, $3, $4,
+                 123, 'exampleorg/dashboard', 42, $3, $4,
                  'attempt-' || value, $5, 'validation-batch-cap-' || $6 || '-' || value,
                  'pending', $7, to_timestamp(1)
             FROM generate_series(1, 257) AS value`,
@@ -933,7 +933,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
         (completion_id, run_id, repository_id, repository, pr_number, base_sha, head_sha,
          attempt_id, policy_digest, validation_request_id, status, draft_deferred, available_at)
         SELECT $1 || LPAD(value::text, 3, '0'), $2 || LPAD(value::text, 3, '0'),
-               123, 'calltelemetry/dashboard', 42, $3, $4,
+               123, 'exampleorg/dashboard', 42, $3, $4,
                'attempt-' || value, $5, 'validation-batch-cap-exact-' || value,
                'pending', TRUE, to_timestamp(1)
           FROM generate_series(1, 256) AS value`,
@@ -997,7 +997,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_single',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 10,
         baseSha: 'a'.repeat(40),
         headSha: 'b'.repeat(40),
@@ -1044,7 +1044,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
         await repository.recordCompletion({
           runId: `run_multi_${i}`,
           repositoryId: 100,
-          repository: 'calltelemetry/dashboard',
+          repository: 'exampleorg/dashboard',
           prNumber: 10 + i,
           baseSha: 'a'.repeat(40),
           headSha: 'b'.repeat(40),
@@ -1079,7 +1079,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_lease_test',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 20,
         baseSha: 'a'.repeat(40),
         headSha: 'b'.repeat(40),
@@ -1119,7 +1119,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_heartbeat_bug',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 25,
         baseSha: 'a'.repeat(40),
         headSha: 'b'.repeat(40),
@@ -1152,7 +1152,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_retry_bug',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 26,
         baseSha: 'a'.repeat(40),
         headSha: 'b'.repeat(40),
@@ -1198,7 +1198,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       const oldPending = await repository.recordCompletion({
         runId: 'run_old_pending',
         repositoryId: 500,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 77,
         baseSha: 'a'.repeat(40),
         headSha: headOld,
@@ -1212,7 +1212,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       const oldClaimed = await repository.recordCompletion({
         runId: 'run_old_claimed',
         repositoryId: 500,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 77,
         baseSha: 'a'.repeat(40),
         headSha: headOld,
@@ -1227,7 +1227,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_new',
         repositoryId: 500,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 77,
         baseSha: 'a'.repeat(40),
         headSha: headNew,
@@ -1283,7 +1283,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       const record = await repository.recordCompletion({
         runId: 'run_draft_pr',
         repositoryId: 999,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 88,
         baseSha: 'a'.repeat(40),
         headSha,
@@ -1318,7 +1318,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       const record = await repository.recordCompletion({
         runId: 'run_ready_pr',
         repositoryId: 999,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 89,
         baseSha: 'a'.repeat(40),
         headSha,
@@ -1345,7 +1345,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_10_shaA',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 10,
         baseSha: '0'.repeat(40),
         headSha: shaA,
@@ -1359,7 +1359,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_10_shaB',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 10,
         baseSha: '0'.repeat(40),
         headSha: shaB,
@@ -1373,7 +1373,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       await repository.recordCompletion({
         runId: 'run_20_shaA',
         repositoryId: 100,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 20,
         baseSha: '0'.repeat(40),
         headSha: shaA,
@@ -1406,7 +1406,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
     const validBase: ReviewCIRequestPayload = {
       schema_version: SCHEMA_VERSION_CI_REQUEST,
       repository_id: 12345,
-      repository: 'calltelemetry/dashboard',
+      repository: 'exampleorg/dashboard',
       pr_number: 42,
       base_sha: '1234567890abcdef1234567890abcdef12345678',
       head_sha: 'abcdef1234567890abcdef1234567890abcdef12',
@@ -1605,7 +1605,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
             completionId: `cpl_retry_${attempt}`,
             runId: 'run_1',
             repositoryId: 100,
-            repository: 'calltelemetry/dashboard',
+            repository: 'exampleorg/dashboard',
             prNumber: 42,
             baseSha: 'a'.repeat(40),
             headSha: 'b'.repeat(40),
@@ -1665,7 +1665,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
           completionId: 'cpl_cap_test',
           runId: 'run_cap',
           repositoryId: 100,
-          repository: 'calltelemetry/dashboard',
+          repository: 'exampleorg/dashboard',
           prNumber: 42,
           baseSha: 'a'.repeat(40),
           headSha: 'b'.repeat(40),
@@ -1718,7 +1718,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
           completionId: 'cpl_max_retries',
           runId: 'run_max',
           repositoryId: 100,
-          repository: 'calltelemetry/dashboard',
+          repository: 'exampleorg/dashboard',
           prNumber: 42,
           baseSha: 'a'.repeat(40),
           headSha: 'b'.repeat(40),
@@ -1770,7 +1770,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
             completionId: `cpl_auth_${status}`,
             runId: 'run_auth',
             repositoryId: 100,
-            repository: 'calltelemetry/dashboard',
+            repository: 'exampleorg/dashboard',
             prNumber: 42,
             baseSha: 'a'.repeat(40),
             headSha: 'b'.repeat(40),
@@ -1822,7 +1822,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
           completionId: 'cpl_404',
           runId: 'run_404',
           repositoryId: 100,
-          repository: 'calltelemetry/dashboard',
+          repository: 'exampleorg/dashboard',
           prNumber: 42,
           baseSha: 'a'.repeat(40),
           headSha: 'b'.repeat(40),
@@ -1880,7 +1880,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       const record = await repository.recordCompletion({
         runId: 'run_stale_test',
         repositoryId: 777,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 55,
         baseSha: 'a'.repeat(40),
         headSha: 'b'.repeat(40),
@@ -1952,7 +1952,7 @@ describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
       const oldRecord = await repository.recordCompletion({
         runId: 'run_superseded_race',
         repositoryId: 888,
-        repository: 'calltelemetry/dashboard',
+        repository: 'exampleorg/dashboard',
         prNumber: 99,
         baseSha: 'a'.repeat(40),
         headSha: headOld,

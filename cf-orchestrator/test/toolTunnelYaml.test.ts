@@ -549,7 +549,7 @@ tools:
       const tool: ToolDefinition = {
         name: 'bifrost-llm-gateway',
         type: 'inference',
-        url: 'https://gateway-internal.calltelemetry.com/v1',
+        url: 'https://gateway-internal.example.com/v1',
         tunnel: {
           mode: 'cloudflare',
           cloudflare: {
@@ -658,7 +658,7 @@ tools:
       const tool: ToolDefinition = {
         name: 'cluster-service',
         type: 'http',
-        url: 'http://svc.internal.calltelemetry.internal:8080',
+        url: 'http://svc.internal.example.internal:8080',
         tunnel: { mode: 'auto' },
       };
 

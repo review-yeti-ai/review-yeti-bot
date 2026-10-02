@@ -105,7 +105,7 @@ export function createE2EEnvironment(options: E2ETestHarnessOptions = {}) {
     ENVIRONMENT: options.environment ?? 'staging',
     PARALLEL_MODE: options.parallelMode ?? 'true',
     PARALLEL_CHECK_NAME: options.parallelCheckName ?? 'Review Yeti (Cloudflare Canary)',
-    PILOT_REPOSITORIES: options.pilotRepositories ?? 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta',
+    PILOT_REPOSITORIES: options.pilotRepositories ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
     DOKS_FALLBACK_URL: options.doksFallbackUrl ?? '',
     GITHUB_WEBHOOK_SECRET: options.githubWebhookSecret ?? 'e2e-default-test-secret',
     DEFAULT_WORKER_IMAGE: options.defaultWorkerImage ?? 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
@@ -132,7 +132,7 @@ export function createE2EEnvironment(options: E2ETestHarnessOptions = {}) {
       requestHeaders.set('X-Hub-Signature-256', sig);
     }
 
-    const request = new Request('https://operator.calltelemetry.internal/api/webhooks/github', {
+    const request = new Request('https://operator.example.internal/api/webhooks/github', {
       method: 'POST',
       headers: requestHeaders,
       body: rawBody,

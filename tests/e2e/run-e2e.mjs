@@ -326,13 +326,13 @@ try {
 try {
   let examplesGrep = '';
   try {
-    examplesGrep = execSync('grep -rn "calltelemetry" examples/', { cwd: REPO_ROOT, encoding: 'utf-8' });
+    examplesGrep = execSync('grep -rn "exampleorg" examples/', { cwd: REPO_ROOT, encoding: 'utf-8' });
   } catch (err) {
     // grep returns 1 when no matches found
     examplesGrep = '';
   }
   if (examplesGrep.trim() === '') {
-    record('Tier 4', 'Anonymity Audit: zero "calltelemetry" occurrences in examples/', 'PASS');
+    record('Tier 4', 'Anonymity Audit: zero "exampleorg" occurrences in examples/', 'PASS');
   } else {
     record('Tier 4', 'Anonymity Audit: examples/', 'FAIL', `Found matches: ${examplesGrep.trim()}`);
   }
@@ -345,12 +345,12 @@ if (hasHelmChart) {
   try {
     let chartsGrep = '';
     try {
-      chartsGrep = execSync('grep -rn "calltelemetry" charts/', { cwd: REPO_ROOT, encoding: 'utf-8' });
+      chartsGrep = execSync('grep -rn "exampleorg" charts/', { cwd: REPO_ROOT, encoding: 'utf-8' });
     } catch (err) {
       chartsGrep = '';
     }
     if (chartsGrep.trim() === '') {
-      record('Tier 4', 'Anonymity Audit: zero "calltelemetry" occurrences in charts/', 'PASS');
+      record('Tier 4', 'Anonymity Audit: zero "exampleorg" occurrences in charts/', 'PASS');
     } else {
       record('Tier 4', 'Anonymity Audit: charts/', 'FAIL', `Found matches: ${chartsGrep.trim()}`);
     }
@@ -365,8 +365,8 @@ if (hasHelmChart) {
 if (hasHelmGuide && hasTroubleshooting) {
   const guideText = fs.readFileSync(repoPath('docs/HELM_GUIDE.md'), 'utf-8');
   const troubleText = fs.readFileSync(repoPath('docs/TROUBLESHOOTING.md'), 'utf-8');
-  if (!guideText.toLowerCase().includes('calltelemetry') && !troubleText.toLowerCase().includes('calltelemetry')) {
-    record('Tier 4', 'Anonymity Audit: zero "calltelemetry" occurrences in new docs/', 'PASS');
+  if (!guideText.toLowerCase().includes('exampleorg') && !troubleText.toLowerCase().includes('exampleorg')) {
+    record('Tier 4', 'Anonymity Audit: zero "exampleorg" occurrences in new docs/', 'PASS');
   } else {
     record('Tier 4', 'Anonymity Audit: new docs/', 'FAIL', 'Found proprietary name in new docs');
   }

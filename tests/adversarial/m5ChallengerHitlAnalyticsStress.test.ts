@@ -81,7 +81,7 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
 
     it('generates strictly unique finding IDs across 1,000 distinct variations', () => {
       const ids = new Set<string>();
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
 
       for (let i = 1; i <= 1000; i++) {
         const id = computeFindingId(repo, `src/module_${i % 10}.ts`, i, `Finding title variation #${i}`);
@@ -164,7 +164,7 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
       });
 
       dashboardStore.setFinding(reviewId, {
-        id: computeFindingId('calltelemetry/test', 'auth.ts', 10, 'Secret Leak'),
+        id: computeFindingId('exampleorg/test', 'auth.ts', 10, 'Secret Leak'),
         severity: 'P0',
         file: 'auth.ts',
         line: 10,
@@ -175,7 +175,7 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
     });
 
     it('rejects whitespace-only actors in finding dismissals with 400 Bad Request', async () => {
-      const findingId = computeFindingId('calltelemetry/test', 'auth.ts', 10, 'Secret Leak');
+      const findingId = computeFindingId('exampleorg/test', 'auth.ts', 10, 'Secret Leak');
       const whitespaceActors = ['', '   ', '\t\t', '\n\r\n', ' \t '];
 
       for (const actor of whitespaceActors) {
@@ -194,7 +194,7 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
     });
 
     it('rejects whitespace-only dismissal reason with 400 Bad Request', async () => {
-      const findingId = computeFindingId('calltelemetry/test', 'auth.ts', 10, 'Secret Leak');
+      const findingId = computeFindingId('exampleorg/test', 'auth.ts', 10, 'Secret Leak');
       const whitespaceReasons = ['', '   ', '\t', '\n\n'];
 
       for (const reason of whitespaceReasons) {
@@ -240,7 +240,7 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
     });
 
     it('is idempotent on repeated finding dismissals and preserves active count', async () => {
-      const findingId = computeFindingId('calltelemetry/test', 'auth.ts', 10, 'Secret Leak');
+      const findingId = computeFindingId('exampleorg/test', 'auth.ts', 10, 'Secret Leak');
 
       // First dismissal
       const res1 = await request(app)
@@ -550,21 +550,21 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
           timestamp: new Date(now - H24 + 1000).toISOString(), // 1s inside 24h window
           latencyMs: 1500,
           costUSD: 0.1,
-          repo: 'calltelemetry/test',
+          repo: 'exampleorg/test',
         },
         {
           id: 'log-boundary-exact',
           timestamp: new Date(now - H24).toISOString(), // Exact boundary
           latencyMs: 2000,
           costUSD: 0.2,
-          repo: 'calltelemetry/test',
+          repo: 'exampleorg/test',
         },
         {
           id: 'log-boundary-outside',
           timestamp: new Date(now - H24 - 1000).toISOString(), // 1s outside 24h window
           latencyMs: 2500,
           costUSD: 0.3,
-          repo: 'calltelemetry/test',
+          repo: 'exampleorg/test',
         },
       ];
       // Invalidate cache
@@ -615,13 +615,13 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
         latencyMs: 1500,
         costUSD: 0.25,
         tokens: { prompt: 10000 * (offset + 1), completion: 2000 * (offset + 1), total: 12000 * (offset + 1) },
-        repo: 'calltelemetry/burn-test',
+        repo: 'exampleorg/burn-test',
       }));
 
       (dashboardStore as any).data.reviewLogs = shuffledLogs;
       (dashboardStore as any).cache.tokenTimeSeries = {};
 
-      const tokenSeries = dashboardStore.getTokenTimeSeries('7d', 'calltelemetry/burn-test', 'day');
+      const tokenSeries = dashboardStore.getTokenTimeSeries('7d', 'exampleorg/burn-test', 'day');
       const dataPoints = Array.isArray(tokenSeries.data) ? tokenSeries.data : [];
 
       expect(dataPoints.length).toBe(7);
@@ -651,22 +651,22 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
         latencyMs: 1200,
         costUSD: 0.0001, // 100 * 0.0001 = 0.0100 exactly
         tokens: { prompt: 100, completion: 50, total: 150 },
-        repo: 'calltelemetry/micro-spend',
+        repo: 'exampleorg/micro-spend',
       }));
 
       (dashboardStore as any).data.reviewLogs = fractionalLogs;
       (dashboardStore as any).cache.analyticsSummary = {};
       (dashboardStore as any).cache.costBreakdown = {};
 
-      const summary = dashboardStore.getAnalyticsSummary('24h', 'calltelemetry/micro-spend');
+      const summary = dashboardStore.getAnalyticsSummary('24h', 'exampleorg/micro-spend');
       // 100 * 0.0001 in standard floating point can be 0.010000000000000009
       expect(summary.totalSpendUsd).toBe(0.01);
       expect(String(summary.totalSpendUsd).length).toBeLessThanOrEqual(6);
 
-      const costs = dashboardStore.getCostBreakdown('24h', 'calltelemetry/micro-spend');
+      const costs = dashboardStore.getCostBreakdown('24h', 'exampleorg/micro-spend');
       expect(costs.totalSpendUsd).toBe(0.01);
 
-      const repoEntry = costs.byRepo?.find((r) => r.repo === 'calltelemetry/micro-spend');
+      const repoEntry = costs.byRepo?.find((r) => r.repo === 'exampleorg/micro-spend');
       expect(repoEntry).toBeDefined();
       expect(repoEntry?.spendUsd).toBe(0.01);
       expect(repoEntry?.avgSpendPerPR).toBe(0.0001);

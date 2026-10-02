@@ -10,7 +10,7 @@ describe('Milestone 3 Iteration 2 Challenger 1: Attribution Fuzzing & Boundary S
   let app: any;
   const adminToken = 'sess_fuzz_admin_token_01';
   const reviewerToken = 'sess_fuzz_reviewer_token_01';
-  const testRepo = 'calltelemetry/cisco-cdr';
+  const testRepo = 'exampleorg/example-api';
   const reviewId = 'rev-fuzz-boundary-01';
   const findingId = computeFindingId(testRepo, 'src/api/auth.ts', 42, 'Hardcoded Token Secret');
 

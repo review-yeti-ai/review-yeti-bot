@@ -493,7 +493,7 @@ export class MockBifrostGateway {
           success: true,
           output: {
             blast_radius: 'MEDIUM',
-            affected_repos: ['calltelemetry/cisco-cdr', 'calltelemetry/ct-release'],
+            affected_repos: ['exampleorg/example-api', 'exampleorg/example-release'],
             transitive_callers: 8,
             cross_repo_contracts_impacted: 1,
             summary: `AST mesh query for '${params.target_file || params.query || 'service'}' identified 8 callers across 2 repositories.`,
@@ -575,7 +575,7 @@ export function buildE2eTestEnvironment(customOptions: {
   const bifrost = new MockBifrostGateway();
 
   const allowedRepos = new Set(
-    (customOptions.allowedRepos || ['calltelemetry/cisco-cdr', 'calltelemetry/review-yeti-bot']).map((r) => r.toLowerCase())
+    (customOptions.allowedRepos || ['exampleorg/example-api', 'exampleorg/review-yeti-bot']).map((r) => r.toLowerCase())
   );
 
   const authenticator: McpAuthenticator = {

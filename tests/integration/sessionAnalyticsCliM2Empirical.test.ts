@@ -72,7 +72,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
     it('calculates aggregate SessionKPIs accurately across multi-turn session dataset', () => {
       // Create Session 1: SHIP, 3 turns
       createDiskSession(
-        'cisco-cdr',
+        'example-api',
         'ct-review-bot',
         101,
         {
@@ -144,7 +144,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
 
       // Create Session 2: NACK, 2 turns
       createDiskSession(
-        'cisco-cdr',
+        'example-api',
         'ct-review-bot',
         102,
         {
@@ -197,7 +197,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
 
       // Create Session 3: APPROVE (counts as pass), 1 turn
       createDiskSession(
-        'cisco-cdr',
+        'example-api',
         'other-repo',
         5,
         {
@@ -294,7 +294,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
 
     beforeEach(() => {
       createDiskSession(
-        'cisco-cdr',
+        'example-api',
         'ct-review-bot',
         42,
         {
@@ -345,7 +345,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       const repo = new SessionRepository(tempDir);
       sampleSessions = repo.getSessions();
       sampleKPIs = calculateKPIs(sampleSessions);
-      sampleDetail = repo.getSessionById('cisco-cdr/ct-review-bot#42')!;
+      sampleDetail = repo.getSessionById('example-api/ct-review-bot#42')!;
     });
 
     it('JSONFormatter produces valid JSON for sessions, kpis, and detail', () => {
@@ -355,7 +355,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       const parsedSessions = JSON.parse(sessionsJson);
       expect(parsedSessions).toHaveProperty('sessions');
       expect(Array.isArray(parsedSessions.sessions)).toBe(true);
-      expect(parsedSessions.sessions[0].id).toBe('cisco-cdr/ct-review-bot#42');
+      expect(parsedSessions.sessions[0].id).toBe('example-api/ct-review-bot#42');
 
       const kpisJson = formatter.formatKPIs(sampleKPIs);
       const parsedKPIs = JSON.parse(kpisJson);
@@ -366,7 +366,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       const detailJson = formatter.formatDetail(sampleDetail);
       const parsedDetail = JSON.parse(detailJson);
       expect(parsedDetail).toHaveProperty('session');
-      expect(parsedDetail.session.id).toBe('cisco-cdr/ct-review-bot#42');
+      expect(parsedDetail.session.id).toBe('example-api/ct-review-bot#42');
       expect(parsedDetail.session.history.length).toBe(2);
     });
 
@@ -377,7 +377,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       expect(sessionsOkf).toContain('=== OKF: SESSION ANALYTICS LIST ===');
       expect(sessionsOkf).toContain('=== END OKF ===');
       expect(sessionsOkf).toContain('meta.total_records: 1');
-      expect(sessionsOkf).toContain('id: "cisco-cdr/ct-review-bot#42"');
+      expect(sessionsOkf).toContain('id: "example-api/ct-review-bot#42"');
 
       const kpisOkf = formatter.formatKPIs(sampleKPIs);
       expect(kpisOkf).toContain('=== OKF: SESSION KEY PERFORMANCE INDICATORS ===');
@@ -388,7 +388,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       const detailOkf = formatter.formatDetail(sampleDetail);
       expect(detailOkf).toContain('=== OKF: SESSION DETAIL ===');
       expect(detailOkf).toContain('=== END OKF ===');
-      expect(detailOkf).toContain('session.id: "cisco-cdr/ct-review-bot#42"');
+      expect(detailOkf).toContain('session.id: "example-api/ct-review-bot#42"');
       expect(detailOkf).toContain('session.findings_delta:');
       expect(detailOkf).toContain('resolved: 1');
     });
@@ -409,7 +409,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       expect(kpisMd).toContain('| **Pass Rate** | 100% |');
 
       const detailMd = formatter.formatDetail(sampleDetail);
-      expect(detailMd).toContain('# 🔍 Session Detail: `cisco-cdr/ct-review-bot#42`');
+      expect(detailMd).toContain('# 🔍 Session Detail: `example-api/ct-review-bot#42`');
       expect(detailMd).toContain('### 📉 Findings Delta Summary');
       expect(detailMd).toContain('### 🔄 Turn Execution Timeline');
     });
@@ -437,7 +437,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       expect(kpiWidths.size).toBe(1); // All table lines in KPI summary have identical length
 
       const detailTable = formatter.formatDetail(sampleDetail);
-      expect(detailTable).toContain('=== SESSION DETAIL: cisco-cdr/ct-review-bot#42 ===');
+      expect(detailTable).toContain('=== SESSION DETAIL: example-api/ct-review-bot#42 ===');
       const detailTableLines = detailTable
         .slice(detailTable.indexOf('--- TURN TIMELINE ---'))
         .split('\n')
@@ -450,7 +450,7 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
   describe('3. CLI Parsing & Output File Execution', () => {
     it('executes runCLI for stats, list, inspect, search, help, and writes file output', async () => {
       createDiskSession(
-        'cisco-cdr',
+        'example-api',
         'ct-review-bot',
         1,
         { title: 'Feature PR', branch: 'feat', lastVerdict: 'SHIP', totalTurns: 1, maxTurns: 10 },
@@ -471,12 +471,12 @@ describe('M2: R1 Session Analytics CLI Formatters & Metrics Empirical Harness', 
       // List command with Table format
       const listResult = await runCLI(['list', '--dir', tempDir, '-f', 'table']);
       expect(listResult.exitCode).toBe(0);
-      expect(listResult.output).toContain('cisco-cdr/ct-review-bot#1');
+      expect(listResult.output).toContain('example-api/ct-review-bot#1');
 
       // Inspect command with Markdown format
-      const inspectResult = await runCLI(['inspect', 'cisco-cdr/ct-review-bot#1', '--dir', tempDir, '-f', 'markdown']);
+      const inspectResult = await runCLI(['inspect', 'example-api/ct-review-bot#1', '--dir', tempDir, '-f', 'markdown']);
       expect(inspectResult.exitCode).toBe(0);
-      expect(inspectResult.output).toContain('# 🔍 Session Detail: `cisco-cdr/ct-review-bot#1`');
+      expect(inspectResult.output).toContain('# 🔍 Session Detail: `example-api/ct-review-bot#1`');
 
       // Search command
       const searchResult = await runCLI(['search', 'Feature', '--dir', tempDir, '-f', 'okf']);

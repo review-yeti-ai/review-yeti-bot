@@ -104,7 +104,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
 
     const capturedPersonaCharters: Record<string, string> = {};
     const bus = LiveStreamBus.getInstance();
-    const jobId = 'job_calltelemetry_cisco-cdr_abc1234';
+    const jobId = 'job_exampleorg_example-api_abc1234';
     bus.clearHistory(jobId);
 
     const mockComplete = async ({ model, messages }: any) => {
@@ -151,7 +151,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     const result = await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/main.ts', patch: '+console.log("test");' }],
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       headSha: 'abc1234',
       client: { complete: mockComplete } as unknown as OmniRouteClient,
       jobId,
@@ -208,7 +208,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/main.ts', patch: '+const x = 1;' }],
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       headSha: 'abc1234',
       client: { complete: mockComplete } as unknown as OmniRouteClient,
     });
@@ -244,7 +244,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/main.ts', patch: '+const x = 1;' }],
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       headSha: 'abc1234',
       client: { complete: mockCompletePhase2 } as unknown as OmniRouteClient,
     });
@@ -287,7 +287,7 @@ describe('Challenger 2 Empirical Verification: System Prompt Override Resolution
     await executePersonaPanel({
       config,
       changedFiles: [{ path: 'src/main.ts', patch: '+const x = 1;' }],
-      repository: 'calltelemetry/cisco-cdr',
+      repository: 'exampleorg/example-api',
       headSha: 'abc1234',
       client: { complete: mockComplete } as unknown as OmniRouteClient,
     });

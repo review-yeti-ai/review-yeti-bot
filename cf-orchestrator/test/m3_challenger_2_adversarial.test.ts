@@ -344,7 +344,7 @@ describe('M3 Challenger 2 Adversarial Stress Suite', () => {
           await execFileAsync('bash', [restoreScriptPath], {
             env: {
               PATH: process.env.PATH,
-              OWNER: 'calltelemetry',
+              OWNER: 'exampleorg',
               REPO: 'test-repo',
               PR_NUMBER: '10',
             },
@@ -562,7 +562,7 @@ exit 0
         const testToken = 'ghp_freshSecretToken2026Adversarial';
         const env = {
           PATH: `${mockBin}:${process.env.PATH}`,
-          OWNER: 'calltelemetry',
+          OWNER: 'exampleorg',
           REPO: 'review-yeti',
           PR_NUMBER: '789',
           HEAD_SHA: 'c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
@@ -581,7 +581,7 @@ exit 0
         assert.ok(recordedUrls.some((u) => u.includes(`x-access-token:${testToken}`)), 'Must update git remote origin with active GITHUB_TOKEN');
         assert.equal(
           recordedUrls[recordedUrls.length - 1],
-          'https://github.com/calltelemetry/review-yeti.git',
+          'https://github.com/exampleorg/review-yeti.git',
           'Must sanitize git remote origin before exit to prevent credential leakage into R2'
         );
       });

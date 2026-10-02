@@ -51,8 +51,8 @@ const privateKey = generateKeyPairSync('rsa', { modulusLength: 2048 })
 function payload(prNumber: number): ParsedPRPayload {
   return {
     installationId: '148780830',
-    owner: 'calltelemetry',
-    repo: 'ct-meta',
+    owner: 'exampleorg',
+    repo: 'example-meta',
     prNumber,
     headSha: `head-${prNumber}`,
     baseSha: `base-${prNumber}`,
@@ -293,7 +293,7 @@ describe('GitHub App configurable persona pipeline', () => {
     // The failure to create a check run must be loud (error level), not swallowed as a warn.
     expect(errorSpy).toHaveBeenCalledWith(
       expect.stringContaining('Check Run creation failed'),
-      expect.objectContaining({ owner: 'calltelemetry', repo: 'ct-meta' }),
+      expect.objectContaining({ owner: 'exampleorg', repo: 'example-meta' }),
     );
   });
 });

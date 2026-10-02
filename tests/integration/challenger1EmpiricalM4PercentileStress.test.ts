@@ -432,24 +432,24 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
     });
 
     it('Repository filtering correctly isolates metrics for specific repos', async () => {
-      // Query summary for calltelemetry/cisco-cdr
+      // Query summary for exampleorg/example-api
       const resCisco = await request(app)
-        .get('/api/analytics/summary?range=30d&repo=calltelemetry/cisco-cdr')
+        .get('/api/analytics/summary?range=30d&repo=exampleorg/example-api')
         .set('Authorization', `Bearer ${authToken}`);
 
       expect(resCisco.status).toBe(200);
       expect(resCisco.body.success).toBe(true);
-      expect(resCisco.body.summary.repo).toBe('calltelemetry/cisco-cdr');
+      expect(resCisco.body.summary.repo).toBe('exampleorg/example-api');
       expect(resCisco.body.summary.activeRepositories).toBe(1);
 
-      // Query summary for calltelemetry/ct-meta
+      // Query summary for exampleorg/example-meta
       const resMeta = await request(app)
-        .get('/api/analytics/summary?range=30d&repo=calltelemetry/ct-meta')
+        .get('/api/analytics/summary?range=30d&repo=exampleorg/example-meta')
         .set('Authorization', `Bearer ${authToken}`);
 
       expect(resMeta.status).toBe(200);
       expect(resMeta.body.success).toBe(true);
-      expect(resMeta.body.summary.repo).toBe('calltelemetry/ct-meta');
+      expect(resMeta.body.summary.repo).toBe('exampleorg/example-meta');
 
       // Unfiltered "All Repositories" should have review count >= sum of individual repos
       const resAll = await request(app)
@@ -478,10 +478,10 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
 
     it('Adversarial inputs in repo parameter are sanitized and treated safely', async () => {
       const maliciousRepos = [
-        "calltelemetry/cisco-cdr' OR '1'='1",
+        "exampleorg/example-api' OR '1'='1",
         "../../etc/passwd",
         "<script>alert(1)</script>",
-        "calltelemetry/cisco-cdr; DROP TABLE review_logs;",
+        "exampleorg/example-api; DROP TABLE review_logs;",
       ];
 
       for (const badRepo of maliciousRepos) {
@@ -497,7 +497,7 @@ describe('Milestone 4 Challenger 1: Empirical Percentile & Latency Boundary Stre
     });
 
     it('Repository filtering applies consistently across latency, costs, tokens, and findings endpoints', async () => {
-      const repo = 'calltelemetry/cisco-cdr';
+      const repo = 'exampleorg/example-api';
 
       // 1. Latency
       const resLatency = await request(app)

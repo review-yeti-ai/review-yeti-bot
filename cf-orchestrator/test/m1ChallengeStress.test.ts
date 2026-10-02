@@ -104,8 +104,8 @@ function createStressTestEnv(overrides: Partial<Record<string, any>> = {}): Stre
     ENVIRONMENT: overrides.ENVIRONMENT ?? 'staging',
     PARALLEL_MODE: overrides.PARALLEL_MODE ?? 'true',
     PARALLEL_CHECK_NAME: overrides.PARALLEL_CHECK_NAME ?? 'Review Yeti (Cloudflare Canary)',
-    PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta',
-    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.calltelemetry.com/api/webhooks/github',
+    PILOT_REPOSITORIES: overrides.PILOT_REPOSITORIES ?? 'review-yeti-ai/review-yeti-bot,exampleorg/example-meta',
+    DOKS_FALLBACK_URL: overrides.DOKS_FALLBACK_URL ?? 'https://doks-internal.example.com/api/webhooks/github',
     GITHUB_WEBHOOK_SECRET: overrides.GITHUB_WEBHOOK_SECRET ?? 'challenge-secret-super-key-99',
     DEFAULT_WORKER_IMAGE: 'ghcr.io/review-yeti-ai/review-yeti-worker:latest',
   };
@@ -499,18 +499,18 @@ describe('M1 Challenger Stress Test Suite', () => {
 
   describe('Category 3: Pilot Repository Filtering Edge Cases', () => {
     it('matches repository case-insensitively across mixed case configurations', () => {
-      const pilotConfig = 'Review-Yeti-AI/Review-Yeti-Bot, CallTelemetry/CT-Meta';
+      const pilotConfig = 'Review-Yeti-AI/Review-Yeti-Bot, Exampleorg/Example-Meta';
       assert.equal(isPilotRepository('review-yeti-ai/review-yeti-bot', pilotConfig), true);
       assert.equal(isPilotRepository('REVIEW-YETI-AI/REVIEW-YETI-BOT', pilotConfig), true);
       assert.equal(isPilotRepository('rEvIeW-yEtI-aI/rEvIeW-yEtI-bOt', pilotConfig), true);
-      assert.equal(isPilotRepository('calltelemetry/ct-meta', pilotConfig), true);
-      assert.equal(isPilotRepository('CALLTELEMETRY/CT-META', pilotConfig), true);
+      assert.equal(isPilotRepository('exampleorg/example-meta', pilotConfig), true);
+      assert.equal(isPilotRepository('EXAMPLEORG/EXAMPLE-META', pilotConfig), true);
     });
 
     it('handles leading and trailing whitespace, newlines, and tabs in pilot list', () => {
-      const pilotConfig = ' \t\n review-yeti-ai/review-yeti-bot \n, \t calltelemetry/ct-meta \r\n ';
+      const pilotConfig = ' \t\n review-yeti-ai/review-yeti-bot \n, \t exampleorg/example-meta \r\n ';
       assert.equal(isPilotRepository('review-yeti-ai/review-yeti-bot', pilotConfig), true);
-      assert.equal(isPilotRepository('calltelemetry/ct-meta', pilotConfig), true);
+      assert.equal(isPilotRepository('exampleorg/example-meta', pilotConfig), true);
     });
 
     it('correctly handles repository names with hyphens, underscores, dots, and numbers', () => {

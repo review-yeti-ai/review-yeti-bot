@@ -298,7 +298,7 @@ index 0000000..1111111 100644
    * ======================================================================== */
   describe('3. Malformed/Oversized JSON Payload Handling', () => {
     it('returns 400 Bad Request or handled response when receiving malformed JSON syntax on API endpoints', async () => {
-      const malformedJson = '{"owner": "calltelemetry", "repo": "cisco-cdr", "automationEnabled": true, ';
+      const malformedJson = '{"owner": "exampleorg", "repo": "example-api", "automationEnabled": true, ';
 
       const res = await request(app)
         .post('/api/dashboard/settings/repo')
@@ -313,7 +313,7 @@ index 0000000..1111111 100644
     it('handles oversized JSON payload gracefully without server crash or unhandled errors', async () => {
       // Generate large object payload (~5MB string)
       const largeArray = new Array(50000).fill({
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'large-repo-stress-test',
         data: 'A'.repeat(100),
       });
@@ -352,7 +352,7 @@ index 0000000..1111111 100644
             setTimeout(() => {
               try {
                 if (i % 2 === 0) {
-                  const res = customStore.updateRepository('calltelemetry', `repo_${i}`, {
+                  const res = customStore.updateRepository('exampleorg', `repo_${i}`, {
                     automationEnabled: i % 4 === 0,
                     customProfile: i % 2 === 0 ? 'chill' : 'assertive',
                   });

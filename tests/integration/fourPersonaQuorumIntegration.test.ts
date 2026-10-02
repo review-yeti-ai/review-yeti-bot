@@ -181,7 +181,7 @@ describe('4-Persona Quorum Review Output Generation Integration', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/ct-review-bot',
+      repository: 'exampleorg/ct-review-bot',
       headSha: 'abcd1234efgh5678',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -239,7 +239,7 @@ describe('4-Persona Quorum Review Output Generation Integration', () => {
     const result = await executePersonaPanel({
       config,
       changedFiles,
-      repository: 'calltelemetry/ct-review-bot',
+      repository: 'exampleorg/ct-review-bot',
       headSha: 'clean-commit-sha-999',
       client: mockClient as unknown as OmniRouteClient,
     });
@@ -273,7 +273,7 @@ describe('4-Persona Quorum Review Output Generation Integration', () => {
       executePersonaPanel({
         config,
         changedFiles,
-        repository: 'calltelemetry/ct-review-bot',
+        repository: 'exampleorg/ct-review-bot',
         headSha: 'quorum-fail-sha',
         client: mockClient as unknown as OmniRouteClient,
       })

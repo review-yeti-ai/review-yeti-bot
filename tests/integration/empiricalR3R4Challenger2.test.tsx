@@ -52,7 +52,7 @@ describe('Empirical Verification Suite — R3 (Persona Removal) & R4 (Clickable 
     const mockJobs: LiveJobSummary[] = [
       {
         jobId: 'job_alpha_101',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 101,
         title: 'Fix SIP Protocol Parsing',
         status: 'active',
@@ -73,7 +73,7 @@ describe('Empirical Verification Suite — R3 (Persona Removal) & R4 (Clickable 
       },
       {
         jobId: 'job_beta_202',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: 'exampleorg/example-api',
         prNumber: 202,
         title: 'Upgrade OpenSSL Library',
         status: 'completed',

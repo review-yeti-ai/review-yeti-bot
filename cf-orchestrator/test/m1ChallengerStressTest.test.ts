@@ -44,7 +44,7 @@ function createHarness(): TestHarness {
   const env: any = {
     ENVIRONMENT: 'test',
     PARALLEL_MODE: 'shadow',
-    PILOT_REPOSITORIES: 'calltelemetry/review-yeti,calltelemetry/test-repo',
+    PILOT_REPOSITORIES: 'exampleorg/review-yeti,exampleorg/test-repo',
     GITHUB_WEBHOOK_SECRET: 'test-secret-12345',
     DOKS_FALLBACK_URL: undefined, // disabled in test harness to avoid network DNS noise
 
@@ -114,7 +114,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
     it('cancels active run within < 3s under a burst of 50 concurrent synchronize webhook requests', async () => {
       const harness = createHarness();
       const secret = 'test-secret-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 77;
 
       // 1. Setup an active running job on PR 77
@@ -130,7 +130,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
         method: 'POST',
         body: JSON.stringify({
           runId: activeRunId,
-          owner: 'calltelemetry',
+          owner: 'exampleorg',
           repo: 'review-yeti',
           prNumber,
           headSha: 'sha_base_pr77',
@@ -155,13 +155,13 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
       const requests = Array.from({ length: burstSize }, async (_, idx) => {
         const body = JSON.stringify({
           action: 'synchronize',
-          repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+          repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
           pull_request: { number: prNumber, head: { sha: `commit_sha_${idx}` }, base: { sha: 'main' } },
         });
         const sig = await signPayload(secret, body);
         const reqStart = performance.now();
         const res = await worker.fetch(
-          new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+          new Request('https://operator.example.com/api/webhooks/github', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -375,7 +375,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
       const workflow = new ReviewJobWorkflow(harness.env, runner);
 
       // Occupy slot in RepoGateDO
-      const repoGate = harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName('calltelemetry/review-yeti'));
+      const repoGate = harness.env.REPO_GATE.get(harness.env.REPO_GATE.idFromName('exampleorg/review-yeti'));
       await repoGate.fetch('http://do/acquire', {
         method: 'POST',
         body: JSON.stringify({ runId: 'prior_active_run', headSha: 'prior_sha' }),
@@ -383,7 +383,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
 
       const spec: ReviewRunSpec = {
         runId: 'run_wf_cancel_probe',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber: 88,
         headSha: 'head88',
@@ -437,7 +437,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 95;
 
       // PR 94 is occupying the active slot
@@ -449,7 +449,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
 
       const spec: ReviewRunSpec = {
         runId: 'run_pr95_queued',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha95',
@@ -468,12 +468,12 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
             // During wait, GitHub fires PR closed webhook for PR 95!
             const body = JSON.stringify({
               action: 'closed',
-              repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+              repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
               pull_request: { number: prNumber, head: { sha: 'sha95' }, base: { sha: 'main' } },
             });
             const sig = await signPayload(secret, body);
             const res = await worker.fetch(
-              new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+              new Request('https://operator.example.com/api/webhooks/github', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
@@ -537,7 +537,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
       const runner = new MockContainerRunner();
       const workflow = new ReviewJobWorkflow(harness.env, runner);
       const secret = 'test-secret-12345';
-      const repoKey = 'calltelemetry/review-yeti';
+      const repoKey = 'exampleorg/review-yeti';
       const prNumber = 96;
 
       // PR 94 is occupying the active slot
@@ -550,7 +550,7 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
       // Commit 1 on PR 96 arrives and enters queue
       const specV1: ReviewRunSpec = {
         runId: 'run_pr96_v1',
-        owner: 'calltelemetry',
+        owner: 'exampleorg',
         repo: 'review-yeti',
         prNumber,
         headSha: 'sha96_v1',
@@ -573,12 +573,12 @@ describe('M1 Iteration 2 Adversarial Challenge & Empirical Stress Harness', () =
             // Now developer pushes Commit 2 to PR 96 (synchronize webhook arrives)
             const body = JSON.stringify({
               action: 'synchronize',
-              repository: { full_name: 'calltelemetry/review-yeti', name: 'review-yeti', owner: { login: 'calltelemetry' } },
+              repository: { full_name: 'exampleorg/review-yeti', name: 'review-yeti', owner: { login: 'exampleorg' } },
               pull_request: { number: prNumber, head: { sha: 'sha96_v2' }, base: { sha: 'main' } },
             });
             const sig = await signPayload(secret, body);
             const res = await worker.fetch(
-              new Request('https://operator.calltelemetry.com/api/webhooks/github', {
+              new Request('https://operator.example.com/api/webhooks/github', {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',

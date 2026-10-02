@@ -285,7 +285,7 @@ describe('Adversarial Verification 3: PR Number Substring Collisions in resolveR
     // Record PR #1 log in dashboardStore
     dashboardStore.recordReviewRun({
       id: 'job-orig-pr1',
-      repo: 'calltelemetry/cisco-cdr',
+      repo: 'exampleorg/example-api',
       prNumber: 1,
       title: 'PR 1 Initial Commit',
       timestamp: new Date().toISOString(),
@@ -317,7 +317,7 @@ describe('Adversarial Verification 3: PR Number Substring Collisions in resolveR
   it('ADV_SUBSTR_02: Querying job-test-pr1 and job-test-pr1-custom correctly matches PR #1', async () => {
     dashboardStore.recordReviewRun({
       id: 'job-orig-pr1',
-      repo: 'calltelemetry/cisco-cdr',
+      repo: 'exampleorg/example-api',
       prNumber: 1,
       title: 'PR 1 Initial Commit',
       timestamp: new Date().toISOString(),
@@ -339,7 +339,7 @@ describe('Adversarial Verification 3: PR Number Substring Collisions in resolveR
   it('ADV_SUBSTR_03: Multi-PR collision isolation: PR #1, PR #10, PR #100, PR #11 all resolve to their exact respective PRs', async () => {
     dashboardStore.recordReviewRun({
       id: 'job-p1',
-      repo: 'calltelemetry/test-repo',
+      repo: 'exampleorg/test-repo',
       prNumber: 1,
       title: 'PR 1',
       timestamp: new Date().toISOString(),
@@ -349,7 +349,7 @@ describe('Adversarial Verification 3: PR Number Substring Collisions in resolveR
 
     dashboardStore.recordReviewRun({
       id: 'job-p10',
-      repo: 'calltelemetry/test-repo',
+      repo: 'exampleorg/test-repo',
       prNumber: 10,
       title: 'PR 10',
       timestamp: new Date().toISOString(),
@@ -359,7 +359,7 @@ describe('Adversarial Verification 3: PR Number Substring Collisions in resolveR
 
     dashboardStore.recordReviewRun({
       id: 'job-p11',
-      repo: 'calltelemetry/test-repo',
+      repo: 'exampleorg/test-repo',
       prNumber: 11,
       title: 'PR 11',
       timestamp: new Date().toISOString(),
@@ -369,7 +369,7 @@ describe('Adversarial Verification 3: PR Number Substring Collisions in resolveR
 
     dashboardStore.recordReviewRun({
       id: 'job-p100',
-      repo: 'calltelemetry/test-repo',
+      repo: 'exampleorg/test-repo',
       prNumber: 100,
       title: 'PR 100',
       timestamp: new Date().toISOString(),

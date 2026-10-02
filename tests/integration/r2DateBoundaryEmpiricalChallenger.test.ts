@@ -54,8 +54,8 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Log 1: Exactly at 23:59:59.999 UTC on 2026-07-28
       store.recordReviewRun({
         id: 'run-utc-235959',
-        prRun: 'calltelemetry/cisco-cdr #101',
-        repo: 'calltelemetry/cisco-cdr',
+        prRun: 'exampleorg/example-api #101',
+        repo: 'exampleorg/example-api',
         prNumber: 101,
         timestamp: '2026-07-28T23:59:59.999Z',
         costUSD: 0.15,
@@ -65,8 +65,8 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Log 2: Exactly at 00:00:01.000 UTC on 2026-07-29 (next UTC day)
       store.recordReviewRun({
         id: 'run-utc-000001',
-        prRun: 'calltelemetry/cisco-cdr #102',
-        repo: 'calltelemetry/cisco-cdr',
+        prRun: 'exampleorg/example-api #102',
+        repo: 'exampleorg/example-api',
         prNumber: 102,
         timestamp: '2026-07-29T00:00:01.000Z',
         costUSD: 0.20,
@@ -106,7 +106,7 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Timestamp in UTC-5 offset (CDT): 2026-07-28 09:00:00 -05:00 (= 2026-07-28T14:00:00Z UTC)
       store.recordReviewRun({
         id: 'run-utc-minus-5',
-        prRun: 'calltelemetry/cisco-cdr #201',
+        prRun: 'exampleorg/example-api #201',
         timestamp: '2026-07-28T09:00:00.000-05:00',
         costUSD: 0.10,
       });
@@ -114,7 +114,7 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Timestamp in UTC+9 offset (JST): 2026-07-28 23:00:00 +09:00 (= 2026-07-28T14:00:00Z UTC)
       store.recordReviewRun({
         id: 'run-utc-plus-9',
-        prRun: 'calltelemetry/cisco-cdr #202',
+        prRun: 'exampleorg/example-api #202',
         timestamp: '2026-07-28T23:00:00.000+09:00',
         costUSD: 0.12,
       });
@@ -122,7 +122,7 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Timestamp in standard UTC Z format: 2026-07-28T14:00:00.000Z
       store.recordReviewRun({
         id: 'run-utc-zero',
-        prRun: 'calltelemetry/cisco-cdr #203',
+        prRun: 'exampleorg/example-api #203',
         timestamp: '2026-07-28T14:00:00.000Z',
         costUSD: 0.08,
       });
@@ -146,21 +146,21 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Record run with invalid string timestamp (stored as string, throws RangeError in Date parsing, caught safely)
       store.recordReviewRun({
         id: 'run-invalid-ts',
-        prRun: 'calltelemetry/cisco-cdr #301',
+        prRun: 'exampleorg/example-api #301',
         timestamp: 'not-a-valid-date-string',
       });
 
       // Record run with empty timestamp (falls back to new Date().toISOString() = today)
       store.recordReviewRun({
         id: 'run-empty-ts',
-        prRun: 'calltelemetry/cisco-cdr #302',
+        prRun: 'exampleorg/example-api #302',
         timestamp: '',
       });
 
       // Record run with standard timestamp (explicit today)
       store.recordReviewRun({
         id: 'run-valid-ts',
-        prRun: 'calltelemetry/cisco-cdr #303',
+        prRun: 'exampleorg/example-api #303',
         timestamp: '2026-07-28T14:00:00.000Z',
       });
 
@@ -190,8 +190,8 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       // Simulate incoming Webhook PR review completion event
       store.recordReviewRun({
         id: 'webhook-pr-event-1',
-        prRun: 'calltelemetry/ct-review-bot #501',
-        repo: 'calltelemetry/ct-review-bot',
+        prRun: 'exampleorg/ct-review-bot #501',
+        repo: 'exampleorg/ct-review-bot',
         prNumber: 501,
         timestamp: new Date().toISOString(),
         arbiterVerdict: 'SHIP',
@@ -222,8 +222,8 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       for (let i = 1; i <= burstCount; i++) {
         store.recordReviewRun({
           id: `burst-webhook-run-${i}`,
-          prRun: `calltelemetry/cisco-cdr #${1000 + i}`,
-          repo: 'calltelemetry/cisco-cdr',
+          prRun: `exampleorg/example-api #${1000 + i}`,
+          repo: 'exampleorg/example-api',
           prNumber: 1000 + i,
           timestamp: new Date().toISOString(),
           arbiterVerdict: i % 2 === 0 ? 'SHIP' : 'NACK',
@@ -260,8 +260,8 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
       for (let i = 1; i <= burstCount; i++) {
         store.recordReviewRun({
           id: `burst-over-100-${i}`,
-          prRun: `calltelemetry/cisco-cdr #${2000 + i}`,
-          repo: 'calltelemetry/cisco-cdr',
+          prRun: `exampleorg/example-api #${2000 + i}`,
+          repo: 'exampleorg/example-api',
           prNumber: 2000 + i,
           timestamp: new Date().toISOString(),
           arbiterVerdict: 'SHIP',
@@ -298,7 +298,7 @@ describe('R2 Today\'s Reviews Telemetry & Date Boundary Diagnostic Stress Suite'
         .post('/api/dashboard/trigger-test-review')
         .set('x-api-key', validApiKey)
         .send({
-          repo: 'calltelemetry/cisco-cdr',
+          repo: 'exampleorg/example-api',
           prNumber: 999,
           title: 'Test Date Boundary PR',
         });

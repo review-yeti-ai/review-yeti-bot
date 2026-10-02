@@ -33,7 +33,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
             authType: 'static_token',
             tokenDigest: 'digest-stress',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+            allowedRepositories: new Set(['exampleorg/example-api']),
             callerId: 'stress-tester',
           } satisfies McpAuthenticatedCaller;
         }
@@ -45,7 +45,7 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
             authType: 'static_token',
             tokenDigest: 'digest-stress',
             isAdmin: false,
-            allowedRepositories: new Set(['calltelemetry/cisco-cdr']),
+            allowedRepositories: new Set(['exampleorg/example-api']),
             callerId: 'stress-tester',
           };
         }
@@ -426,8 +426,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         {
           run_id: 'run_active_pr_99',
           repository_id: 123,
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 99,
           attempt: 1,
           status: 'running',
@@ -440,16 +440,16 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const cancelTool = createCancelReviewTool({ cancellationRepository: db });
 
       const triggerPromise = triggerTool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 99,
         head_sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         force: false,
       });
 
       const cancelPromise = cancelTool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 99,
         reason: 'User cancelled due to urgent bugfix commit',
       });
@@ -472,8 +472,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
         {
           run_id: 'run_heavy_cancel_pr_100',
           repository_id: 123,
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 100,
           attempt: 1,
           status: 'running',
@@ -487,8 +487,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const CONCURRENCY = 20;
       const cancelPromises = Array.from({ length: CONCURRENCY }).map((_, i) =>
         cancelTool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 100,
           reason: `Concurrent cancel request ${i}`,
         })
@@ -521,8 +521,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const db = new MockReviewDatabase([
         {
           run_id: 'run_locked_pr_200',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 200,
           attempt: 1,
           status: 'running',
@@ -535,8 +535,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const CONCURRENCY = 20;
       const triggerPromises = Array.from({ length: CONCURRENCY }).map(() =>
         triggerTool.execute({
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pull_number: 200,
           head_sha: 'cccccccccccccccccccccccccccccccccccccccc',
           force: false,
@@ -559,8 +559,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       const db = new MockReviewDatabase([
         {
           run_id: 'run_to_supersede_300',
-          owner: 'calltelemetry',
-          repo: 'cisco-cdr',
+          owner: 'exampleorg',
+          repo: 'example-api',
           pr_number: 300,
           attempt: 1,
           status: 'running',
@@ -591,8 +591,8 @@ describe('Empirical Challenger 2: Lifecycle, Concurrency & Race Condition Stress
       });
 
       const outcome = await triggerTool.execute({
-        owner: 'calltelemetry',
-        repo: 'cisco-cdr',
+        owner: 'exampleorg',
+        repo: 'example-api',
         pull_number: 300,
         head_sha: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
         force: true,
