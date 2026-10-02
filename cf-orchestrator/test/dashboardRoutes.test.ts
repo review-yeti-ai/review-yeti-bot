@@ -126,7 +126,7 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
     assert.ok(Array.isArray(body.breakdown));
     assert.ok(body.breakdown.some((m: any) => m.displayName.includes('Review Yeti PR Reviewer')));
     assert.equal(body.breakdown[0].percentage, 100);
-    assert.equal(body.breakdown[0].model, 'calltelemetry/yeti-pr-reviewer');
+    assert.equal(body.breakdown[0].model, 'reviewyeti-ai/yeti-pr-reviewer');
     assert.ok(Array.isArray(body.byRepo));
   });
 
@@ -198,5 +198,61 @@ describe('Review Yeti Cloudflare Edge REST API Routes', () => {
       assert.equal(body.about.name, 'Review Yeti');
       assert.equal(body.about.version, 'v2.4.0');
     }
+  });
+
+  it('GET /api/live/active returns active review jobs with persona progress', async () => {
+    const env = createMockEnv();
+    const req = new Request('https://worker.dev/api/live/active', { method: 'GET' });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const body = (await res.json()) as any;
+    assert.equal(body.success, true);
+    assert.ok(Array.isArray(body.jobs));
+    assert.ok(body.jobs.length > 0);
+    assert.ok(body.jobs[0].jobId);
+    assert.ok(body.jobs[0].repo.startsWith('reviewyeti-ai/'));
+    assert.ok(body.jobs[0].personaProgress);
+  });
+
+  it('GET /api/live/diff returns structured diff hunks and findings', async () => {
+    const env = createMockEnv();
+    const req = new Request('https://worker.dev/api/live/diff?jobId=run_live_reviewyeti_pr1282', { method: 'GET' });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const body = (await res.json()) as any;
+    assert.equal(body.success, true);
+    assert.ok(Array.isArray(body.files));
+    assert.ok(body.files.length > 0);
+    assert.ok(Array.isArray(body.findings));
+  });
+
+  it('GET /api/live/stream returns SSE text/event-stream headers and readable body', async () => {
+    const env = createMockEnv();
+    const req = new Request('https://worker.dev/api/live/stream?jobId=run_live_reviewyeti_pr1282', { method: 'GET' });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+    assert.ok(res.headers.get('Content-Type')?.includes('text/event-stream'));
+    assert.ok(res.body !== null);
+  });
+
+  it('POST /api/dashboard/hitl/prompt-guidance registers Human-In-The-Loop guidance', async () => {
+    const env = createMockEnv();
+    const req = new Request('https://worker.dev/api/dashboard/hitl/prompt-guidance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId: 'run_live_reviewyeti_pr1282',
+        guidance: 'Enforce tight bounds on context compaction ratio.',
+        targetPersonas: ['architecture'],
+      }),
+    });
+    const res = await worker.fetch(req, env);
+    assert.equal(res.status, 200);
+
+    const body = (await res.json()) as any;
+    assert.equal(body.success, true);
+    assert.ok(body.guidance.id);
   });
 });

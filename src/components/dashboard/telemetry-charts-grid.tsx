@@ -89,7 +89,7 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
             <span className="text-emerald-400 font-semibold tabular-nums">100%</span>
           </div>
           <div className="text-[10px] text-zinc-500 pt-0.5">
-            Native Call Telemetry Edge Swarm Runner (zero external API dependencies)
+            Native reviewyeti-ai Edge Swarm Runner (zero external API dependencies)
           </div>
         </div>
 

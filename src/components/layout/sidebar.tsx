@@ -234,12 +234,12 @@ export function Sidebar() {
             <div className="flex flex-col min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-semibold text-zinc-100 tracking-tight truncate">
-                  Call Telemetry
+                  Review Yeti AI
                 </span>
                 <ChevronDown className="h-3 w-3 text-zinc-500 group-hover:text-zinc-300 transition-colors" />
               </div>
               <span className="text-[10px] font-mono text-zinc-500 tracking-tight truncate">
-                Review Yeti Swarm
+                reviewyeti-ai
               </span>
             </div>
           </Link>

@@ -30,7 +30,7 @@ import type { PromptGuidanceItem, VerdictOverrideRecord } from '@/types/hitl';
 
 function LiveStreamContent() {
   const searchParams = useSearchParams();
-  const initialJobId = searchParams?.get('jobId') || 'default-job';
+  const initialJobId = searchParams?.get('jobId') || 'run_live_reviewyeti_pr1282';
   const initialToken = searchParams?.get('token') || searchParams?.get('access_token') || undefined;
 
   const {
@@ -214,63 +214,77 @@ function LiveStreamContent() {
   };
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-4 pb-12">
       {/* Top Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 pb-2 border-b border-white/10">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-100 flex items-center gap-2">
-            <Radio className="h-6 w-6 text-emerald-400 animate-pulse" />
-            ct-review-bot — Live Agent Review Terminal
-          </h2>
-          <p className="text-sm text-slate-400">
-            Real-time SSE stdout/stderr review stream, persona pipeline execution, and token metrics
+      <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-white/[0.06]">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <span className="status-dot-green" />
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-100 flex items-center gap-2">
+              <Radio className="h-4 w-4 text-emerald-400 animate-pulse" />
+              Review Yeti — Live Agent Review Terminal
+            </h1>
+            <span className="linear-kbd text-[10px] text-zinc-400 font-mono">
+              reviewyeti-ai
+            </span>
+          </div>
+          <p className="text-xs text-zinc-400 font-mono">
+            Real-time SSE multi-agent review stream, context compaction traces, and token metrics on Cloudflare Edge
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
           <div id="connection-status">
-            <StatusBadge
-              status={getStatusBadgeType()}
-              label={
-                connectionStatus === 'connected'
+            <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/[0.03] border border-white/[0.08] text-xs font-mono">
+              <span
+                className={
+                  connectionStatus === 'connected'
+                    ? 'h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]'
+                    : connectionStatus === 'connecting' || connectionStatus === 'reconnecting'
+                    ? 'h-2 w-2 rounded-full bg-indigo-400 animate-pulse'
+                    : 'h-2 w-2 rounded-full bg-rose-500'
+                }
+              />
+              <span className="text-zinc-200 text-xs">
+                {connectionStatus === 'connected'
                   ? 'Streaming Live'
                   : connectionStatus === 'reconnecting'
                   ? 'Reconnecting...'
                   : connectionStatus === 'connecting'
                   ? 'Connecting...'
-                  : 'Disconnected'
-              }
-            />
+                  : 'Disconnected'}
+              </span>
+            </div>
           </div>
 
           <Button
             size="sm"
             variant="outline"
             onClick={reconnect}
-            className="h-8 text-xs border-slate-700 text-slate-300 hover:text-white"
+            className="h-7 text-xs border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:text-white hover:bg-white/[0.06]"
           >
-            <RefreshCw className="h-3.5 w-3.5 mr-1" />
+            <RefreshCw className="h-3 w-3 mr-1" />
             Reconnect
           </Button>
         </div>
       </div>
 
       {/* Stream Target Job Selector */}
-      <form onSubmit={handleConnectJob} className="flex flex-wrap items-center gap-3 p-3 rounded-xl border border-white/10 bg-slate-900/60 backdrop-blur-sm">
-        <span className="text-xs font-semibold text-slate-300 shrink-0">Active Job Stream:</span>
+      <form onSubmit={handleConnectJob} className="linear-card flex flex-wrap items-center gap-3 p-3 text-xs">
+        <span className="font-semibold text-zinc-300 shrink-0 font-mono">Active Job Stream:</span>
         <Input
           type="text"
-          placeholder="Enter Job ID (e.g. job_123 or default-job)"
+          placeholder="Enter Job ID (e.g. run_live_reviewyeti_pr1282)"
           value={inputJobId}
           onChange={(e) => setInputJobId(e.target.value)}
-          className="h-8 w-full sm:w-64 text-xs font-mono bg-slate-950/80 border-slate-700/60 focus:border-indigo-500 text-slate-200"
+          className="h-7 w-full sm:w-72 text-xs font-mono bg-[#050608] border-white/[0.08] focus:border-indigo-500 text-zinc-200"
         />
-        <Button size="sm" type="submit" className="h-8 text-xs bg-indigo-600 hover:bg-indigo-500 text-white gap-1.5">
-          <Play className="h-3.5 w-3.5" />
+        <Button size="sm" type="submit" className="h-7 text-xs bg-indigo-600 hover:bg-indigo-500 text-white gap-1.5 px-3">
+          <Play className="h-3 w-3" />
           <span>Switch Stream</span>
         </Button>
-        <span className="text-xs text-slate-500 font-mono ml-auto hidden md:inline">
-          URL: /api/live/stream?jobId={jobId}
+        <span className="text-[11px] text-zinc-500 font-mono ml-auto hidden md:inline">
+          Endpoint: /api/live/stream?jobId={jobId}
         </span>
       </form>
 
@@ -328,37 +342,42 @@ function LiveStreamContent() {
           {/* Primary View Switcher Tabs: Diff & Findings | Reasoning & Tools | Raw Terminal */}
           <Tabs defaultValue="diff" className="w-full">
             <div className="flex items-center justify-between pb-1">
-              <TabsList className="bg-slate-900/80 border border-white/10">
+              <TabsList className="bg-[#050608] border border-white/[0.08] p-1 h-9 rounded-lg">
                 <TabsTrigger
                   value="diff"
-                  className="gap-1.5 text-xs data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
                 >
-                  <FileCode className="h-3.5 w-3.5" />
+                  <FileCode className="h-3.5 w-3.5 text-emerald-400" />
                   <span>Diff & Findings</span>
                   {effectiveFindings.length > 0 && (
-                    <Badge variant="outline" className="ml-1 text-[10px] bg-red-500/20 text-red-300 border-red-500/30">
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
                       {effectiveFindings.length}
-                    </Badge>
+                    </span>
                   )}
                 </TabsTrigger>
                 <TabsTrigger
                   value="reasoning"
-                  className="gap-1.5 text-xs data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
                 >
-                  <Brain className="h-3.5 w-3.5" />
+                  <Brain className="h-3.5 w-3.5 text-cyan-400" />
                   <span>Reasoning & Tools</span>
                   {toolExecutions.length > 0 && (
-                    <Badge variant="outline" className="ml-1 text-[10px] bg-cyan-500/20 text-cyan-300 border-cyan-500/30">
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
                       {toolExecutions.length}
-                    </Badge>
+                    </span>
                   )}
                 </TabsTrigger>
                 <TabsTrigger
                   value="terminal"
-                  className="gap-1.5 text-xs data-[state=active]:bg-indigo-600 data-[state=active]:text-white"
+                  className="gap-1.5 text-xs data-[state=active]:bg-white/[0.08] data-[state=active]:text-white data-[state=active]:shadow-none"
                 >
-                  <Terminal className="h-3.5 w-3.5" />
+                  <Terminal className="h-3.5 w-3.5 text-indigo-400" />
                   <span>Raw Terminal</span>
+                  {events.length > 0 && (
+                    <span className="ml-1 text-[10px] font-mono px-1.5 py-0.2 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {events.length}
+                    </span>
+                  )}
                 </TabsTrigger>
               </TabsList>
             </div>

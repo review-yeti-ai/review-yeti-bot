@@ -80,7 +80,7 @@ function AnalyticsDashboardContent() {
       })
       .catch(() => {
         // Fallback default repos
-        setAvailableRepos(['calltelemetry/cisco-cdr', 'calltelemetry/ct-review-bot', 'calltelemetry/ct-meta']);
+        setAvailableRepos(['reviewyeti-ai/review-yeti-bot', 'reviewyeti-ai/cisco-cdr', 'reviewyeti-ai/ct-meta']);
       });
   }, []);
 
