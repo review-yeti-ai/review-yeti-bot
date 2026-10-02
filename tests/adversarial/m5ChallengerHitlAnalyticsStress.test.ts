@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import crypto from 'node:crypto';
 import request from 'supertest';
 import { createApp } from '../../src/app';
@@ -540,48 +540,56 @@ describe('M5 Tier 5 Adversarial Stress Suite: HITL Controls, Overrides, Audit & 
   // ==========================================================================
   describe('6. Temporal Boundaries & Window Filtering (24h, 7d, 30d)', () => {
     it('handles exact millisecond boundaries on getFilteredReviewLogs', () => {
+      const originalClock = Date.now;
       const now = Date.now();
-      const H24 = 24 * 3600 * 1000;
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+      try {
+        const H24 = 24 * 3600 * 1000;
 
-      // Reset logs with specific boundary timestamps
-      (dashboardStore as any).data.reviewLogs = [
-        {
-          id: 'log-boundary-inside',
-          timestamp: new Date(now - H24 + 1000).toISOString(), // 1s inside 24h window
-          latencyMs: 1500,
-          costUSD: 0.1,
-          repo: 'exampleorg/test',
-        },
-        {
-          id: 'log-boundary-exact',
-          timestamp: new Date(now - H24).toISOString(), // Exact boundary
-          latencyMs: 2000,
-          costUSD: 0.2,
-          repo: 'exampleorg/test',
-        },
-        {
-          id: 'log-boundary-outside',
-          timestamp: new Date(now - H24 - 1000).toISOString(), // 1s outside 24h window
-          latencyMs: 2500,
-          costUSD: 0.3,
-          repo: 'exampleorg/test',
-        },
-      ];
-      // Invalidate cache
-      (dashboardStore as any).cache.analyticsSummary = {};
+        // Reset logs with specific boundary timestamps
+        (dashboardStore as any).data.reviewLogs = [
+          {
+            id: 'log-boundary-inside',
+            timestamp: new Date(now - H24 + 1000).toISOString(), // 1s inside 24h window
+            latencyMs: 1500,
+            costUSD: 0.1,
+            repo: 'exampleorg/test',
+          },
+          {
+            id: 'log-boundary-exact',
+            timestamp: new Date(now - H24).toISOString(), // Exact boundary
+            latencyMs: 2000,
+            costUSD: 0.2,
+            repo: 'exampleorg/test',
+          },
+          {
+            id: 'log-boundary-outside',
+            timestamp: new Date(now - H24 - 1000).toISOString(), // 1s outside 24h window
+            latencyMs: 2500,
+            costUSD: 0.3,
+            repo: 'exampleorg/test',
+          },
+        ];
+        // Invalidate cache
+        (dashboardStore as any).cache.analyticsSummary = {};
 
-      const filtered24h = dashboardStore.getFilteredReviewLogs('24h');
-      const ids24h = filtered24h.map((l) => l.id);
+        const filtered24h = dashboardStore.getFilteredReviewLogs('24h');
+        const ids24h = filtered24h.map((l) => l.id);
 
-      expect(ids24h).toContain('log-boundary-inside');
-      expect(ids24h).toContain('log-boundary-exact');
-      expect(ids24h).not.toContain('log-boundary-outside');
+        expect(ids24h).toContain('log-boundary-inside');
+        expect(ids24h).toContain('log-boundary-exact');
+        expect(ids24h).not.toContain('log-boundary-outside');
 
-      // However, 7d window must include all three!
-      const filtered7d = dashboardStore.getFilteredReviewLogs('7d');
-      expect(filtered7d.map((l) => l.id)).toEqual(
-        expect.arrayContaining(['log-boundary-inside', 'log-boundary-exact', 'log-boundary-outside'])
-      );
+        // However, 7d window must include all three!
+        const filtered7d = dashboardStore.getFilteredReviewLogs('7d');
+        expect(filtered7d.map((l) => l.id)).toEqual(
+          expect.arrayContaining(['log-boundary-inside', 'log-boundary-exact', 'log-boundary-outside'])
+        );
+        expect(Date.now()).toBe(now);
+      } finally {
+        clock.mockRestore();
+      }
+      expect(Date.now).toBe(originalClock);
     });
 
     it('safely discards invalid, corrupted, or null timestamps', () => {
