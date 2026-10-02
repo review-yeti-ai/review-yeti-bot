@@ -215,7 +215,7 @@ func TestIsContinuationsEnabled(t *testing.T) {
 		{"all config", "all", "exampleorg/example-api", true},
 		{"allowlist match first", "exampleorg/example-api, exampleorg/example-infra", "exampleorg/example-api", true},
 		{"allowlist match second", "exampleorg/example-api, exampleorg/example-infra", "exampleorg/example-infra", true},
-		{"allowlist case insensitive", "exampleorg/example-api", "exampleorg/example-api", true},
+		{"allowlist case insensitive", "Exampleorg/Example-Api", "exampleorg/example-api", true},
 		{"allowlist no match", "exampleorg/example-api", "exampleorg/other-repo", false},
 		{"empty repo", "exampleorg/example-api", "", false},
 	}

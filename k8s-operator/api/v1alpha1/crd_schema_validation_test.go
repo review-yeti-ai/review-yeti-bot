@@ -21,7 +21,7 @@ type CRDValidator struct {
 }
 
 func loadCRDValidator(t *testing.T) *CRDValidator {
-	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "review.example.com_prreviewjobs.yaml")
+	crdPath := filepath.Join("..", "..", "config", "crd", "bases", "legacy.review-yeti.ai_prreviewjobs.yaml")
 	crdBytes, err := os.ReadFile(crdPath)
 	if err != nil {
 		t.Fatalf("Failed to read CRD file at %s: %v", crdPath, err)
@@ -187,7 +187,7 @@ func TestCRDSchemaValidation_ValidManifest(t *testing.T) {
 	validator := loadCRDValidator(t)
 
 	validYAML := `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: valid-job
@@ -220,7 +220,7 @@ func TestCRDSchemaValidation_MissingFields(t *testing.T) {
 		{
 			name: "Missing repo",
 			yamlStr: `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: missing-repo
@@ -235,7 +235,7 @@ spec:
 		{
 			name: "Missing prNumber",
 			yamlStr: `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: missing-prnumber
@@ -250,7 +250,7 @@ spec:
 		{
 			name: "Missing headSha",
 			yamlStr: `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: missing-headsha
@@ -265,7 +265,7 @@ spec:
 		{
 			name: "Missing baseSha",
 			yamlStr: `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: missing-basesha
@@ -280,7 +280,7 @@ spec:
 		{
 			name: "Missing personaRoster",
 			yamlStr: `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: missing-roster
@@ -295,7 +295,7 @@ spec:
 		{
 			name: "Empty personaRoster array",
 			yamlStr: `
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: empty-roster
@@ -335,7 +335,7 @@ func TestCRDSchemaValidation_InvalidPRNumber(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			yamlStr := fmt.Sprintf(`
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: test-invalid-pr
@@ -373,7 +373,7 @@ func TestCRDSchemaValidation_InvalidRepoStringFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			yamlStr := fmt.Sprintf(`
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: test-invalid-repo
@@ -419,7 +419,7 @@ func TestCRDSchemaValidation_InvalidSHALength(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			yamlStr := fmt.Sprintf(`
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: test-invalid-sha
@@ -453,7 +453,7 @@ func TestCRDSchemaValidation_NegativeTTLSeconds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			yamlStr := fmt.Sprintf(`
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: test-negative-ttl

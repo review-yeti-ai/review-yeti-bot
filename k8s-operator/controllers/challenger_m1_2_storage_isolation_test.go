@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Challenger 2 Empirical Adversarial Test Suite:
 Storage Isolation, Universal emptyDir, Zero PVC Provisioning/Mounting, and Concurrent Sandboxing.

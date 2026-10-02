@@ -113,7 +113,7 @@ func TestPRReviewJob_DeepCopy(t *testing.T) {
 		now := metav1.Now()
 		orig := &v1alpha1.PRReviewJob{
 			TypeMeta: metav1.TypeMeta{
-				APIVersion: "review.example.com/v1alpha1",
+				APIVersion: "legacy.review-yeti.ai/v1alpha1",
 				Kind:       "PRReviewJob",
 			},
 			ObjectMeta: metav1.ObjectMeta{
@@ -239,13 +239,13 @@ func TestPRReviewJob_SchemeRegistration(t *testing.T) {
 	}
 
 	expectedGVK := schema.GroupVersionKind{
-		Group:   "review.example.com",
+		Group:   "legacy.review-yeti.ai",
 		Version: "v1alpha1",
 		Kind:    "PRReviewJob",
 	}
 
 	expectedListGVK := schema.GroupVersionKind{
-		Group:   "review.example.com",
+		Group:   "legacy.review-yeti.ai",
 		Version: "v1alpha1",
 		Kind:    "PRReviewJobList",
 	}
@@ -280,7 +280,7 @@ func TestPRReviewJob_SchemeRegistration(t *testing.T) {
 
 func TestPRReviewJob_YAMLUnmarshaling(t *testing.T) {
 	yamlManifest := []byte(`
-apiVersion: review.example.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: test-pr-job
@@ -308,7 +308,7 @@ status:
 	}
 
 	// Validate metadata
-	if job.APIVersion != "review.example.com/v1alpha1" {
+	if job.APIVersion != "legacy.review-yeti.ai/v1alpha1" {
 		t.Errorf("APIVersion mismatch: got %s", job.APIVersion)
 	}
 	if job.Kind != "PRReviewJob" {
