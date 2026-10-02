@@ -390,6 +390,27 @@ describe('KubernetesReviewJobProjector.patchCancellation wire format (REL-1073)'
     }));
   });
 
+  it.each(['Succeeded', 'Failed', 'Expired', 'Cancelled'])(
+    'converges when a CR in terminal phase %s rejects the patch with a whole-object 422',
+    async (phase) => {
+      const client = rejectingClient({ spec: {}, status: { phase } });
+      await expect(new KubernetesReviewJobProjector(client).patchCancellation(
+        projection.metadata.name, 'ct-review-system', 'superseded_by_new_head',
+      )).resolves.toEqual({ status: 'already-terminal' });
+    },
+  );
+
+  it.each(['Queued', 'Running', 'AwaitingResumption'])(
+    'keeps a 422 as a patch failure for a live CR in phase %s',
+    async (phase) => {
+      const client = rejectingClient({ spec: {}, status: { phase } });
+      const caught = await new KubernetesReviewJobProjector(client)
+        .patchCancellation(projection.metadata.name, 'ct-review-system', 'superseded_by_new_head')
+        .then(() => undefined, (error: unknown) => error);
+      expect(kubernetesStatusCode(caught)).toBe(422);
+    },
+  );
+
   it.each([
     ['the stored CR is not cancelled', rejectingClient({ spec: {} })],
     ['the re-read fails', rejectingClient(undefined, 500)],
