@@ -147,7 +147,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       it('TEST_R2_T1_05 — Settings Control Route Delivery', async () => {
         const res = await request(server).get('/settings');
         expect(res.status).toBe(200);
-        expect(res.text).toContain('Platform &amp; Persona Control Panel');
+        expect(res.text).toContain('Swarm Policies &amp; Settings');
       });
     });
 
@@ -162,7 +162,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
         const res = await request(server).get('/live');
         expect(res.status).toBe(200);
         expect(res.text).toContain('Overview');
-        expect(res.text).toContain('Persona Editor');
+        expect(res.text).toContain('Swarm Tasks &amp; Policies');
       });
 
       it('TEST_R3_T1_03 — Overview Dashboard Metrics Endpoint', async () => {
@@ -211,7 +211,7 @@ describe('Tier 1-4 E2E Test Suites per TEST_INFRA.md', () => {
       it('TEST_R4_T1_04 — Legacy Route Aliasing (/dashboard/live -> live.html)', async () => {
         const res = await request(server).get('/dashboard/live');
         expect(res.status).toBe(200);
-        expect(res.text).toContain('Live Agent Review Terminal');
+        expect(res.text).toContain('Live Review Inspector');
       });
 
       it('TEST_R4_T1_05 — Health & Version API Endpoints', async () => {

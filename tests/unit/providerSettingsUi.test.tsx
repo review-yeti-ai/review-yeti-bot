@@ -24,11 +24,11 @@ describe('Milestone 3: AI Providers UI & Persona Sync Component Tests', () => {
     vi.restoreAllMocks();
   });
 
-  it('Sidebar renders "AI Models & Providers" navigation item leading to /settings?tab=models', () => {
+  it('Sidebar renders the "Swarm Tasks & Policies" navigation item leading to /settings', () => {
     render(<Sidebar />);
-    const link = screen.getByRole('link', { name: /AI Models & Providers/i });
+    const link = screen.getByRole('link', { name: /Swarm Tasks & Policies/i });
     expect(link).toBeDefined();
-    expect(link.getAttribute('href')).toBe('/settings?tab=models');
+    expect(link.getAttribute('href')).toBe('/settings');
   });
 
   it('ProviderSettings renders provider cards for OpenAI, Anthropic, Gemini, Grok, DeepSeek, GLM, Doppler, Ollama, and Custom OpenAI', async () => {

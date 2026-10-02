@@ -162,9 +162,10 @@ describe('Milestone 2 Empirical Challenger Stress Suite: UI Filtering, Fallback 
       // DeepSeek models disabled
       expect(enabledValues).not.toContain('deepseek-v3');
 
-      // Synthetic models enabled
-      expect(enabledValues).toContain('synthetic/hf:zai-org/GLM-5.2');
-      expect(enabledValues).toContain('synthetic/hf:moonshotai/Kimi-K3');
+      // The catalog only exposes the native swarm model, which is not a
+      // third-party provider and is therefore never listed by provider state.
+      expect(enabledValues).not.toContain('synthetic/hf:zai-org/GLM-5.2');
+      expect(enabledValues).not.toContain('synthetic/hf:moonshotai/Kimi-K3');
     });
 
     it('handles edge case when ALL canonical providers are explicitly disabled', () => {
