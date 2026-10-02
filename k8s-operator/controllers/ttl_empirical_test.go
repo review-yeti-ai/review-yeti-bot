@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -62,7 +62,7 @@ func TestEmpirical_Reconciler_TTLZero_ImmediateCleanup(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                10,
 			TTLSecondsAfterFinished: &zero,
 		},
@@ -142,7 +142,7 @@ func TestEmpirical_Reconciler_NegativeTTL_ImmediateCleanup(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                11,
 			TTLSecondsAfterFinished: &negTTL,
 		},
@@ -198,7 +198,7 @@ func TestEmpirical_Reconciler_TTLRequeue_Then_ExpirationCleanup(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: reviewv1alpha1.PRReviewJobSpec{
-			Repo:                    "calltelemetry/cisco-cdr",
+			Repo:                    "exampleorg/example-api",
 			PRNumber:                12,
 			TTLSecondsAfterFinished: &ttlVal,
 		},
@@ -288,7 +288,7 @@ func TestEmpirical_Reconciler_ConcurrentReconcile_TTLExpired_Stress(t *testing.T
 				Namespace: "default",
 			},
 			Spec: reviewv1alpha1.PRReviewJobSpec{
-				Repo:                    "calltelemetry/cisco-cdr",
+				Repo:                    "exampleorg/example-api",
 				PRNumber:                int32(i + 1),
 				TTLSecondsAfterFinished: &ttlVal,
 			},

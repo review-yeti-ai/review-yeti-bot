@@ -1,5 +1,5 @@
 /*
-Copyright 2026 CallTelemetry.
+Copyright 2026 Review Yeti.
 
 Adversarial empirical tests for operator emptyDir lifecycle, worker failure modes, and zero PVC leakage.
 */

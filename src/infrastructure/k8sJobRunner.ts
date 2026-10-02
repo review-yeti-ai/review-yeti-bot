@@ -654,13 +654,13 @@ export class K8sJobRunner {
           persona: sanitizedPersona,
           prNumber: String(spec.prNumber),
           commitSha: spec.commitSha.slice(0, 7),
-          'ct.calltelemetry.com/logical-child-id': scope.logical_child_id.slice(0, 63),
-          'ct.calltelemetry.com/fencing-epoch': String(scope.fencing_epoch),
+          'review-yeti.ai/logical-child-id': scope.logical_child_id.slice(0, 63),
+          'review-yeti.ai/fencing-epoch': String(scope.fencing_epoch),
           ...(effectivePhase ? { 'review-yeti.ai/job-phase': effectivePhase } : {}),
         },
         annotations: {
-          'ct.calltelemetry.com/request-digest': reqDigest,
-          'ct.calltelemetry.com/execution-id': scope.execution_id,
+          'review-yeti.ai/request-digest': reqDigest,
+          'review-yeti.ai/execution-id': scope.execution_id,
         },
       },
       spec: {
@@ -675,7 +675,7 @@ export class K8sJobRunner {
               ...(effectivePhase ? { 'review-yeti.ai/job-phase': effectivePhase } : {}),
             },
             annotations: {
-              'ct.calltelemetry.com/request-digest': reqDigest,
+              'review-yeti.ai/request-digest': reqDigest,
             },
           },
           spec: {

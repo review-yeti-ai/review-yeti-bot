@@ -21,7 +21,7 @@ func TestPRReviewJob_SetDefaults(t *testing.T) {
 		{
 			name: "All optional fields unset - should populate defaults",
 			inputSpec: v1alpha1.PRReviewJobSpec{
-				Repo:          "calltelemetry/cisco-cdr",
+				Repo:          "exampleorg/example-api",
 				PRNumber:      42,
 				HeadSHA:       "abc1234",
 				BaseSHA:       "def5678",
@@ -33,7 +33,7 @@ func TestPRReviewJob_SetDefaults(t *testing.T) {
 		{
 			name: "Custom storage size and custom TTL - should preserve values",
 			inputSpec: v1alpha1.PRReviewJobSpec{
-				Repo:                    "calltelemetry/cisco-cdr",
+				Repo:                    "exampleorg/example-api",
 				PRNumber:                42,
 				HeadSHA:                 "abc1234",
 				BaseSHA:                 "def5678",
@@ -47,7 +47,7 @@ func TestPRReviewJob_SetDefaults(t *testing.T) {
 		{
 			name: "Partial defaults - custom storage size only",
 			inputSpec: v1alpha1.PRReviewJobSpec{
-				Repo:           "calltelemetry/cisco-cdr",
+				Repo:           "exampleorg/example-api",
 				PRNumber:       10,
 				HeadSHA:        "1111111",
 				BaseSHA:        "2222222",
@@ -113,7 +113,7 @@ func TestPRReviewJob_DeepCopy(t *testing.T) {
 		now := metav1.Now()
 		orig := &v1alpha1.PRReviewJob{
 			TypeMeta: metav1.TypeMeta{
-				APIVersion: "review.calltelemetry.com/v1alpha1",
+				APIVersion: "legacy.review-yeti.ai/v1alpha1",
 				Kind:       "PRReviewJob",
 			},
 			ObjectMeta: metav1.ObjectMeta{
@@ -124,7 +124,7 @@ func TestPRReviewJob_DeepCopy(t *testing.T) {
 				},
 			},
 			Spec: v1alpha1.PRReviewJobSpec{
-				Repo:                    "calltelemetry/cisco-cdr",
+				Repo:                    "exampleorg/example-api",
 				PRNumber:                101,
 				HeadSHA:                 "sha-head-123",
 				BaseSHA:                 "sha-base-456",
@@ -239,13 +239,13 @@ func TestPRReviewJob_SchemeRegistration(t *testing.T) {
 	}
 
 	expectedGVK := schema.GroupVersionKind{
-		Group:   "review.calltelemetry.com",
+		Group:   "legacy.review-yeti.ai",
 		Version: "v1alpha1",
 		Kind:    "PRReviewJob",
 	}
 
 	expectedListGVK := schema.GroupVersionKind{
-		Group:   "review.calltelemetry.com",
+		Group:   "legacy.review-yeti.ai",
 		Version: "v1alpha1",
 		Kind:    "PRReviewJobList",
 	}
@@ -280,7 +280,7 @@ func TestPRReviewJob_SchemeRegistration(t *testing.T) {
 
 func TestPRReviewJob_YAMLUnmarshaling(t *testing.T) {
 	yamlManifest := []byte(`
-apiVersion: review.calltelemetry.com/v1alpha1
+apiVersion: legacy.review-yeti.ai/v1alpha1
 kind: PRReviewJob
 metadata:
   name: test-pr-job
@@ -288,7 +288,7 @@ metadata:
   labels:
     tier: worker
 spec:
-  repo: "calltelemetry/cisco-cdr"
+  repo: "exampleorg/example-api"
   prNumber: 42
   headSha: "9f8e7d6c5b4a"
   baseSha: "1a2b3c4d5e6f"
@@ -308,7 +308,7 @@ status:
 	}
 
 	// Validate metadata
-	if job.APIVersion != "review.calltelemetry.com/v1alpha1" {
+	if job.APIVersion != "legacy.review-yeti.ai/v1alpha1" {
 		t.Errorf("APIVersion mismatch: got %s", job.APIVersion)
 	}
 	if job.Kind != "PRReviewJob" {
@@ -319,7 +319,7 @@ status:
 	}
 
 	// Validate spec fields
-	if job.Spec.Repo != "calltelemetry/cisco-cdr" {
+	if job.Spec.Repo != "exampleorg/example-api" {
 		t.Errorf("Spec.Repo mismatch: got %s", job.Spec.Repo)
 	}
 	if job.Spec.PRNumber != 42 {

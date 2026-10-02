@@ -67,7 +67,7 @@ func v1alpha2Review(now time.Time) *reviewv1alpha2.PRReviewJob {
 			RunID:            "run_11111111111111111111111111111111",
 			DeliveryID:       "delivery-1",
 			RepositoryID:     123,
-			Repo:             "calltelemetry/cisco-cdr",
+			Repo:             "exampleorg/example-api",
 			PRNumber:         42,
 			HeadSHA:          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			BaseSHA:          "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -76,7 +76,7 @@ func v1alpha2Review(now time.Time) *reviewv1alpha2.PRReviewJob {
 			PolicyDigest:     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			ConfigDigest:     "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 			PublicationMode:  "disabled",
-			WorkerImage:      "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+			WorkerImage:      "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 			RunnerMode:       "generic",
 			RunSecretName:    "ct-review-run-11111111111111111111111111111111",
 		},
@@ -303,7 +303,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsPodLifecycleTiming(t *testing.T) {
 			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: scheduled}},
 			ContainerStatuses: []corev1.ContainerStatus{{
 				Name:    "reviewer-worker",
-				ImageID: "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				ImageID: "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				State:   corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: started}},
 			}},
 		},
@@ -368,7 +368,7 @@ func TestPRReviewJobV1Alpha2ReconcilerPersistsTerminatedPodProcessTiming(t *test
 			Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionTrue, LastTransitionTime: scheduled}},
 			ContainerStatuses: []corev1.ContainerStatus{{
 				Name:    "reviewer-worker",
-				ImageID: "registry.digitalocean.com/calltelemetry/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+				ImageID: "registry.digitalocean.com/exampleorg/review-yeti-worker@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 				State:   corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{StartedAt: started, FinishedAt: finished}},
 			}},
 		},
@@ -569,7 +569,7 @@ func TestPRReviewJobV1Alpha2ReconcilerReleasesLeaseWhenWorkerContractIsRejected(
 	now := time.Date(2026, 8, 31, 12, 0, 0, 0, time.UTC)
 	scheme := v1alpha2Scheme(t)
 	review := v1alpha2Review(now)
-	review.Spec.WorkerImage = "registry.digitalocean.com/calltelemetry/review-yeti-worker:latest"
+	review.Spec.WorkerImage = "registry.digitalocean.com/exampleorg/review-yeti-worker:latest"
 	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(review).WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}).Build()
 	reconciler := &controllers.PRReviewJobV1Alpha2Reconciler{Client: kube, Scheme: scheme, Now: func() time.Time { return now }}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: review.Namespace, Name: review.Name}}

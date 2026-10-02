@@ -8,8 +8,8 @@ func TestPublishingConfigFromEnvReadsSkipEmptyModeration(t *testing.T) {
 	if config := publishingConfigFromEnv(); config.SkipEmptyModeration != "" {
 		t.Fatalf("unset skip empty moderation flag must stay empty: %+v", config)
 	}
-	t.Setenv("REVIEW_YETI_SKIP_EMPTY_MODERATION", " review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta ")
-	if config := publishingConfigFromEnv(); config.SkipEmptyModeration != "review-yeti-ai/review-yeti-bot,calltelemetry/ct-meta" {
+	t.Setenv("REVIEW_YETI_SKIP_EMPTY_MODERATION", " review-yeti-ai/review-yeti-bot,exampleorg/example-meta ")
+	if config := publishingConfigFromEnv(); config.SkipEmptyModeration != "review-yeti-ai/review-yeti-bot,exampleorg/example-meta" {
 		t.Fatalf("skip empty moderation flag not read: %+v", config)
 	}
 }
