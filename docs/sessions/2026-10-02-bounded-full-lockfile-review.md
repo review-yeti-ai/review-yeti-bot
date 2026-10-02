@@ -42,6 +42,15 @@ Fresh exact-head review and full CI must qualify this integration repair too.
 The integrated fourteen-file suite passes 778 tests, including the four-case
 privacy audit and cleaned analytics fixture. Backend build also passes.
 
+A subsequent concurrent main merge added private literals to two new signed
+webhook tests. Only those new literals are replaced by the existing payload
+and seeded run identities, preserving the signed HTTP, duplicate-delivery,
+SQL, recovery and refusal assertions. The whole-tree audit passes without
+changing its code or expanding any allowlist entry. The expanded sixteen-file
+suite passes 861 tests; 254 database-backed cases are skipped locally because
+no test database is configured. Backend build and TypeScript validation pass.
+Full CI's actual database lane and a fresh hosted review remain required.
+
 ## Activation boundary
 
 No central policy value is enabled by this source change. No service deployment

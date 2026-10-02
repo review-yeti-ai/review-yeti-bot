@@ -947,9 +947,11 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const policyInput = authoritativeAdmission(`ready-webhook-policy-${randomUUID()}`, 1_790_000_100_000, 'composed');
     expect(policyInput.identity).toEqual(seeded.run.identity);
     const prepared = policyInput.authoritativeGate!.prepared;
+    const identity = seeded.run.identity;
+    const fullName = `${identity.owner}/${identity.repo}`;
     const resolvedCurrent = {
-      repositoryId: 123, owner: 'calltelemetry', repo: 'cisco-cdr', prNumber: 42,
-      headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha, open: true, draft: false,
+      repositoryId: 123, owner: identity.owner, repo: identity.repo, prNumber: 42,
+      headSha: identity.headSha, baseSha: identity.baseSha, open: true, draft: false,
     };
     const resolve = vi.fn(async () => ({ current: resolvedCurrent, identity: policyInput.identity, prepared }));
     const authoritativePublishing = { expectedAppId: 4385771, repositoryIds: [123], resolver: { resolve } };
@@ -975,11 +977,11 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     const delivery = `ready-webhook-${randomUUID()}`;
     const body = {
       action: 'ready_for_review', number: 42, installation: { id: 456 },
-      repository: { id: 123, name: 'cisco-cdr', full_name: 'calltelemetry/cisco-cdr',
-        owner: { id: 57884877, login: 'calltelemetry' } },
+      repository: { id: 123, name: identity.repo, full_name: fullName,
+        owner: { id: 57884877, login: identity.owner } },
       pull_request: { number: 42, state: 'open', draft: false,
-        head: { sha: seeded.run.identity.headSha },
-        base: { sha: seeded.run.identity.baseSha, repo: { full_name: 'calltelemetry/cisco-cdr' } } },
+        head: { sha: identity.headSha },
+        base: { sha: identity.baseSha, repo: { full_name: fullName } } },
     };
     const rawBody = Buffer.from(JSON.stringify(body));
     const signature = `sha256=${createHmac('sha256', webhookSecret).update(rawBody).digest('hex')}`;
@@ -999,8 +1001,8 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
       expect(admitted.status).toBe(200);
       expect(await admitted.json()).toMatchObject({ status: 'accepted', deliveryId: delivery, prNumber: 42,
         headSha: seeded.run.identity.headSha });
-      expect(resolve).toHaveBeenCalledExactlyOnceWith({ repositoryId: 123, owner: 'calltelemetry',
-        repo: 'cisco-cdr', prNumber: 42, headSha: seeded.run.identity.headSha, baseSha: seeded.run.identity.baseSha });
+      expect(resolve).toHaveBeenCalledExactlyOnceWith({ repositoryId: 123, owner: identity.owner,
+        repo: identity.repo, prNumber: 42, headSha: identity.headSha, baseSha: identity.baseSha });
       expect(resolveGenerationRecovery).toHaveBeenCalledOnce();
 
       const duplicate = await fetch(`${address}/api/webhooks/github`, {
