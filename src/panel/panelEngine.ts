@@ -2220,7 +2220,7 @@ async function invoke(
     // structural no-op: `compactMessageWindow` returns `messages` unchanged, with `[0]`/`[1]`
     // reference-identical, in every path below (see `./messageWindow.ts`).
     const activeMessages = options?.compaction?.enabled
-      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls })
+      ? compactMessageWindow(messages, { activeTurns: options.compaction.activeTurns, toolCalls, retainSmallToolResults: true })
       : messages;
     const requestMessages = nativeJsonMode
       ? withNativeTurnDirective(activeMessages, nativeAdjudication
