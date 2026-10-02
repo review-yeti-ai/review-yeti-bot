@@ -54,6 +54,20 @@ describe('Arbitration scales with the size of the panel', () => {
     expect(computeArbitrationQuorum(results(2, { P2: 4 }), 2, opts).verdict).toBe('FIX_FIRST');
   });
 
+  it('does not let caller false flags override the trusted default P2 requirement', () => {
+    const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+    try {
+      delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      expect(computeArbitrationQuorum(results(1, { P2: 1 }), 1, {
+        requireAdvisory: false,
+        advisoryRequired: false,
+      }).verdict).toBe('FIX_FIRST');
+    } finally {
+      if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+    }
+  });
+
   it('still gates on P0 and P1 alongside required P2 findings', () => {
     expect(computeArbitrationQuorum(results(6, { P0: 1, P2: 99 }), 6).verdict).toBe('BLOCK');
     expect(computeArbitrationQuorum(results(6, { P1: 1, P2: 99 }), 6).verdict).toBe('FIX_FIRST');

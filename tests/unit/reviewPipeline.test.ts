@@ -1042,12 +1042,29 @@ index 123456..789abc 100644
           { severity: 'P2' },
         ],
       }];
-      const quorumP2 = computeArbitrationQuorum(resultsP2 as any);
+      const quorumP2 = computeArbitrationQuorum([{ findings: [{ severity: 'P2' }] }] as any);
       expect(quorumP2.verdict).toBe('FIX_FIRST');
 
       // Even when the legacy volume threshold is enabled, this count is below its floor of five.
       const belowLegacyThreshold = computeArbitrationQuorum(resultsP2 as any, undefined, { p2BlocksMerge: true });
       expect(belowLegacyThreshold.verdict).toBe('FIX_FIRST');
+    });
+
+    it('retains the legacy volume threshold only under the explicit advisory opt-out', () => {
+      const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+      try {
+        process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
+        const resultsWithP2 = (count: number) => [{
+          findings: Array.from({ length: count }, () => ({ severity: 'P2' })),
+        }, { findings: [] }];
+        const below = computeArbitrationQuorum(resultsWithP2(4), 2, { p2BlocksMerge: true });
+        const at = computeArbitrationQuorum(resultsWithP2(5), 2, { p2BlocksMerge: true });
+        expect(below.verdict).toBe('SHIP');
+        expect(at.verdict).toBe('FIX_FIRST');
+      } finally {
+        if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+      }
     });
 
     it('23. Computes BLOCK for 3+ P1 findings or 1 P0 finding', () => {
