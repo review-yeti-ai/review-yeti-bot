@@ -1,7 +1,7 @@
---- FILE: lib/exampleorg/pool/dynamic_worker_supervisor.ex ---
-diff --git a/lib/exampleorg/pool/dynamic_worker_supervisor.ex b/lib/exampleorg/pool/dynamic_worker_supervisor.ex
+--- FILE: lib/calltelemetry/pool/dynamic_worker_supervisor.ex ---
+diff --git a/lib/calltelemetry/pool/dynamic_worker_supervisor.ex b/lib/calltelemetry/pool/dynamic_worker_supervisor.ex
 @@ -1,5 +1,18 @@
- defmodule Exampleorg.Pool.DynamicWorkerSupervisor do
+ defmodule Calltelemetry.Pool.DynamicWorkerSupervisor do
    use DynamicSupervisor
  
    def start_link(init_arg) do
@@ -14,15 +14,15 @@ diff --git a/lib/exampleorg/pool/dynamic_worker_supervisor.ex b/lib/exampleorg/p
 +  end
 +
 +  def start_worker(args) do
-+    spec = {Exampleorg.Pool.Worker, args}
++    spec = {Calltelemetry.Pool.Worker, args}
 +    DynamicSupervisor.start_child(__MODULE__, spec)
 +  end
 +end
 
---- FILE: lib/exampleorg/pool/worker.ex ---
-diff --git a/lib/exampleorg/pool/worker.ex b/lib/exampleorg/pool/worker.ex
+--- FILE: lib/calltelemetry/pool/worker.ex ---
+diff --git a/lib/calltelemetry/pool/worker.ex b/lib/calltelemetry/pool/worker.ex
 @@ -1,5 +1,19 @@
- defmodule Exampleorg.Pool.Worker do
+ defmodule Calltelemetry.Pool.Worker do
    use GenServer, restart: :transient
  
    def start_link(args) do
@@ -41,12 +41,12 @@ diff --git a/lib/exampleorg/pool/worker.ex b/lib/exampleorg/pool/worker.ex
 +  end
 +end
 
---- FILE: test/exampleorg/pool/worker_test.exs ---
-diff --git a/test/exampleorg/pool/worker_test.exs b/test/exampleorg/pool/worker_test.exs
+--- FILE: test/calltelemetry/pool/worker_test.exs ---
+diff --git a/test/calltelemetry/pool/worker_test.exs b/test/calltelemetry/pool/worker_test.exs
 @@ -1,5 +1,16 @@
- defmodule Exampleorg.Pool.WorkerTest do
+ defmodule Calltelemetry.Pool.WorkerTest do
    use ExUnit.Case, async: true
-   alias Exampleorg.Pool.Worker
+   alias Calltelemetry.Pool.Worker
 +
 +  describe "worker execution" do
 +    test "executes task and returns ok tuple" do

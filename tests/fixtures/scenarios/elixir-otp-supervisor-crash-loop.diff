@@ -1,12 +1,12 @@
---- FILE: lib/exampleorg/workers/supervisor.ex ---
-diff --git a/lib/exampleorg/workers/supervisor.ex b/lib/exampleorg/workers/supervisor.ex
+--- FILE: lib/calltelemetry/workers/supervisor.ex ---
+diff --git a/lib/calltelemetry/workers/supervisor.ex b/lib/calltelemetry/workers/supervisor.ex
 @@ -6,6 +6,13 @@
    def init(_init_arg) do
      children = [
 +      # Flaw: Permanent restart on transient network worker causes supervisor crash loop
 +      %{
-+        id: Exampleorg.Workers.TransientWorker,
-+        start: {Exampleorg.Workers.TransientWorker, :start_link, [[]]},
++        id: Calltelemetry.Workers.TransientWorker,
++        start: {Calltelemetry.Workers.TransientWorker, :start_link, [[]]},
 +        restart: :permanent
 +      }
      ]

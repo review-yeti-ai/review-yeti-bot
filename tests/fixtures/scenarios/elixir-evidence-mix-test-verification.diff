@@ -1,7 +1,7 @@
---- FILE: lib/exampleorg/crypto/signature.ex ---
-diff --git a/lib/exampleorg/crypto/signature.ex b/lib/exampleorg/crypto/signature.ex
+--- FILE: lib/calltelemetry/crypto/signature.ex ---
+diff --git a/lib/calltelemetry/crypto/signature.ex b/lib/calltelemetry/crypto/signature.ex
 @@ -1,5 +1,14 @@
- defmodule Exampleorg.Crypto.Signature do
+ defmodule Calltelemetry.Crypto.Signature do
    @moduledoc """
    Provides secure HMAC-SHA256 signature generation and constant-time verification.
    """
@@ -16,12 +16,12 @@ diff --git a/lib/exampleorg/crypto/signature.ex b/lib/exampleorg/crypto/signatur
 +  end
 +end
 
---- FILE: test/exampleorg/crypto/signature_test.exs ---
-diff --git a/test/exampleorg/crypto/signature_test.exs b/test/exampleorg/crypto/signature_test.exs
+--- FILE: test/calltelemetry/crypto/signature_test.exs ---
+diff --git a/test/calltelemetry/crypto/signature_test.exs b/test/calltelemetry/crypto/signature_test.exs
 @@ -1,5 +1,15 @@
- defmodule Exampleorg.Crypto.SignatureTest do
+ defmodule Calltelemetry.Crypto.SignatureTest do
    use ExUnit.Case, async: true
-   alias Exampleorg.Crypto.Signature
+   alias Calltelemetry.Crypto.Signature
 +
 +  test "signs and verifies valid hmac signatures" do
 +    secret = "test-secret-key"
