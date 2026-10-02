@@ -2,6 +2,12 @@ name = "review-yeti-cf-orchestrator"
 main = "src/worker.ts"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# 🌐 Custom Domain in calltelemetry.com
+routes = [
+  { pattern = "review-yeti.calltelemetry.com", custom_domain = true }
+]
 
 # 🎨 Serve the Next.js Portal directly from Cloudflare Edge
 [assets]
