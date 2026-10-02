@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { StatusBadge, StatusType } from './status-badge';
 import { VersionBadge } from './version-badge';
 import { Button } from '@/components/ui/button';
-import { Radio, ExternalLink, RefreshCw, Server, ShieldCheck } from 'lucide-react';
+import { Radio, ExternalLink, RefreshCw, Server, ShieldCheck, Database, Zap } from 'lucide-react';
 import Link from 'next/link';
 
 export interface TopbarProps {
@@ -17,8 +17,8 @@ export interface TopbarProps {
 
 const pageTitles: Record<string, { title: string; description: string }> = {
   '/': {
-    title: 'Overview Dashboard',
-    description: 'Real-time review metrics, pass rates, and active persona status',
+    title: 'Review Yeti Swarm Control Plane',
+    description: 'Path-scoped diff analysis, context compaction, and P0 blocker enforcement',
   },
   '/analytics': {
     title: 'Executive & Engineering Analytics',
@@ -26,19 +26,19 @@ const pageTitles: Record<string, { title: string; description: string }> = {
   },
   '/onboarding': {
     title: 'Onboarding Wizard',
-    description: '5-step GitHub Organization registration, AI model provider routing, and diagnostic probes',
+    description: 'GitHub Organization registration, AI model provider routing, and diagnostic probes',
   },
   '/live': {
-    title: 'Live Agent Stream',
-    description: 'Real-time SSE agent terminal stdout/stderr log stream',
+    title: 'Live Review Inspector',
+    description: 'Real-time agent reasoning feed, tool Example Org, and AST diff viewer',
   },
   '/repos': {
-    title: 'Repositories & Webhooks',
-    description: 'Configured GitHub repositories and webhook delivery health',
+    title: 'Monitored Repositories & Quality Gates',
+    description: 'Configured GitHub repositories, gate enforcement, and webhook delivery health',
   },
   '/settings': {
-    title: 'Persona System Prompt Editor',
-    description: 'Customize 11 reviewer persona prompts and arbitration parameters',
+    title: 'Review Yeti Swarm Policy & Rules',
+    description: 'Customize reviewer rules, severity thresholds, and arbitration parameters',
   },
   '/integrations': {
     title: 'Integrations Panel',
@@ -49,8 +49,8 @@ const pageTitles: Record<string, { title: string; description: string }> = {
     description: 'Installation manifest exchange and repository binding settings',
   },
   '/memory': {
-    title: 'Codebase Memory & Graph Engine',
-    description: 'Symbol AST dependency graph viewer, learned repository rules, and semantic search engine',
+    title: 'Edge Cache & Review Memory',
+    description: 'Cloudflare R2 workspace cache, KV auth tokens, and D1 review memory status',
   },
 };
 
@@ -58,54 +58,55 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
   const pathname = usePathname() || '/';
 
   const routeMeta = pageTitles[pathname] || {
-    title: title || 'ct-review-bot',
-    description: description || 'Persona Panel Dashboard',
+    title: title || 'Review Yeti',
+    description: description || 'Autonomous Review Swarm Dashboard',
   };
 
   const displayTitle = title || routeMeta.title;
   const displayDescription = description || routeMeta.description;
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 w-full items-center justify-between border-b border-border/60 bg-background/80 px-3 sm:px-6 backdrop-blur-xl">
-      {/* Left Title & Description Section */}
-      <div className="flex flex-col justify-center pl-12 lg:pl-0 min-w-0 pr-2">
+    <header className="sticky top-0 z-30 flex h-14 w-full items-center justify-between border-b border-white/[0.06] bg-[#08090a]/90 px-3 sm:px-6 backdrop-blur-xl">
+      {/* Left Title & Breadcrumbs */}
+      <div className="flex flex-col justify-center pl-10 lg:pl-0 min-w-0 pr-2">
         <div className="flex items-center gap-2 truncate">
-          <h1 className="text-sm sm:text-base font-semibold tracking-tight text-foreground truncate">
+          <span className="text-[11px] font-mono text-zinc-500 hidden sm:inline">Swarm /</span>
+          <h1 className="text-xs sm:text-sm font-semibold tracking-tight text-zinc-100 truncate">
             {displayTitle}
           </h1>
           <div className="hidden xs:block sm:block">
             <StatusBadge status={status} />
           </div>
         </div>
-        <p className="text-xs text-muted-foreground hidden sm:block truncate">
+        <p className="text-[11px] text-zinc-400 hidden sm:block truncate">
           {displayDescription}
         </p>
       </div>
 
       {/* Right Environment Badges & Action Buttons */}
-      <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
+      <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+        {/* Cloudflare Edge Status Badge */}
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-mono border bg-emerald-500/10 border-emerald-500/25 text-emerald-300">
+          <Zap className="h-3 w-3 text-emerald-400" />
+          <span>Live Edge</span>
+        </div>
+
         {/* Version & Git Commit Badge */}
         <div className="hidden sm:flex">
           <VersionBadge />
         </div>
 
         {/* Environment Indicator */}
-        <div className="hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border/60 bg-muted/40 text-[11px] font-medium text-muted-foreground">
-          <Server className="h-3.5 w-3.5 text-indigo-400" />
-          <span>Env: <strong className="text-foreground font-semibold">Production</strong></span>
-        </div>
-
-        {/* Security Badge */}
-        <div className="hidden xl:flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border/60 bg-muted/40 text-[11px] font-medium text-muted-foreground">
-          <ShieldCheck className="h-3.5 w-3.5 text-emerald-400" />
-          <span>Binding Arbitration</span>
+        <div className="hidden md:flex items-center gap-1.5 px-2 py-0.5 rounded-md border border-white/[0.06] bg-white/[0.02] text-[11px] font-mono text-zinc-400">
+          <Server className="h-3 w-3 text-indigo-400" />
+          <span>Env: <strong className="text-zinc-200 font-semibold">Production</strong></span>
         </div>
 
         {/* Action Button: Live Stream Shortcut */}
-        {pathname !== '/live' && (
-          <Button asChild variant="outline" size="sm" className="gap-2 text-xs h-8">
+        {pathname !== '/' && pathname !== '/live' && (
+          <Button asChild variant="outline" size="sm" className="gap-1.5 text-xs h-7 px-2.5 border-white/[0.08] bg-white/[0.02] text-zinc-300 hover:text-white hover:bg-white/[0.06]">
             <Link href="/live">
-              <Radio className="h-3.5 w-3.5 text-emerald-400 animate-pulse" />
+              <Radio className="h-3 w-3 text-emerald-400 animate-pulse" />
               <span className="hidden sm:inline">Live Stream</span>
             </Link>
           </Button>
@@ -117,10 +118,10 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
             variant="ghost"
             size="icon"
             onClick={onRefresh}
-            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+            className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]"
             title="Refresh Data"
           >
-            <RefreshCw className="h-3.5 w-3.5" />
+            <RefreshCw className="h-3 w-3" />
           </Button>
         )}
 
@@ -129,15 +130,15 @@ export function Topbar({ title, description, status = 'live', onRefresh }: Topba
           asChild
           variant="ghost"
           size="icon"
-          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+          className="h-7 w-7 text-zinc-400 hover:text-zinc-100 hover:bg-white/[0.04]"
         >
           <a
-            href="https://github.com/exampleorg/example-api"
+            href="https://github.com/reviewyeti-ai/review-yeti-bot"
             target="_blank"
             rel="noreferrer"
             title="GitHub Repository"
           >
-            <ExternalLink className="h-3.5 w-3.5" />
+            <ExternalLink className="h-3 w-3" />
           </a>
         </Button>
       </div>

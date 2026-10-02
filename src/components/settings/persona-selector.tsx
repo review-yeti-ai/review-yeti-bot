@@ -142,7 +142,7 @@ export function PersonaSelector({
           const isSelected = selectedPersonaId === id;
           const isEnabled = pData ? pData.enabled !== false : true;
           const isRequired = pData?.required;
-          const modelName = pData?.model || 'openrouter/auto';
+          const modelName = pData?.model || 'reviewyeti-ai/yeti-pr-reviewer';
           const effortLevel = pData?.effort || 'low';
           const maxTurns = pData?.maxTurns ?? 20;
           const confidence = pData?.confidenceThreshold ?? 80;

@@ -56,7 +56,7 @@ export default function ReposPage() {
 
   // Add Repository Modal state
   const [addModalOpen, setAddModalOpen] = React.useState(false);
-  const [newOwner, setNewOwner] = React.useState('exampleorg');
+  const [newOwner, setNewOwner] = React.useState('reviewyeti-ai');
   const [newRepo, setNewRepo] = React.useState('');
   const [newProfile, setNewProfile] = React.useState<'chill' | 'balanced' | 'assertive'>('balanced');
   const [isAdding, setIsAdding] = React.useState(false);
@@ -227,11 +227,11 @@ export default function ReposPage() {
       {/* Page Header */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-foreground">
-            Monitored Org Repositories Manager
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Configured GitHub repositories, webhook event delivery health, and review profiles
+          <h1 className="text-xl font-bold tracking-tight text-foreground">
+            Repositories &amp; Automation
+          </h1>
+          <p className="text-xs text-muted-foreground">
+            GitHub webhook triggers, enforcement profiles, and active PR review status
           </p>
         </div>
 
@@ -270,7 +270,7 @@ export default function ReposPage() {
                   <Input
                     value={newOwner}
                     onChange={(e) => setNewOwner(e.target.value)}
-                    placeholder="e.g. exampleorg"
+                    placeholder="e.g. reviewyeti-ai"
                     className="font-mono text-xs"
                   />
                 </div>
@@ -425,13 +425,10 @@ export default function ReposPage() {
         <CardHeader className="pb-3">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <CardTitle className="flex items-center gap-2 text-base font-bold">
-                <FolderGit2 className="h-5 w-5 text-indigo-400" />
-                Active Organization Repositories
+              <CardTitle className="flex items-center gap-2 text-sm font-bold">
+                <FolderGit2 className="h-4 w-4 text-indigo-400" />
+                Monitored Repositories ({filteredRepos.length})
               </CardTitle>
-              <CardDescription>
-                Manage automated PR review triggers and per-repo enforcement profiles
-              </CardDescription>
             </div>
 
             {/* Controls: Search, Status Filter Pills, View Mode Switcher */}
@@ -528,13 +525,10 @@ export default function ReposPage() {
         <CardHeader className="pb-3">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
-              <CardTitle className="flex items-center gap-2 text-base font-bold">
-                <GitPullRequest className="h-5 w-5 text-indigo-400" />
-                Active Pull Requests &amp; Review Triggers
+              <CardTitle className="flex items-center gap-2 text-sm font-bold">
+                <GitPullRequest className="h-4 w-4 text-indigo-400" />
+                Active Pull Requests
               </CardTitle>
-              <CardDescription>
-                Inspect open PRs, automated persona review verdicts, and trigger on-demand reviews
-              </CardDescription>
             </div>
 
             {/* Repo selector for PR inspection */}

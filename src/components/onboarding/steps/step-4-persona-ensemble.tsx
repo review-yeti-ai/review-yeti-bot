@@ -18,37 +18,21 @@ import {
 import { AlertTriangle } from 'lucide-react';
 
 export const PERSONA_ENSEMBLE_DEFINITIONS = [
-  { id: 'security', name: '🛡️ Security & Tenancy Guardian', defaultModel: 'synthetic/hf:zai-org/GLM-5.2', provider: 'synthetic' },
-  { id: 'architecture', name: '🏛️ System Architecture & Design', defaultModel: 'synthetic/hf:openai/gpt-oss-120b', provider: 'synthetic' },
-  { id: 'performance', name: '⚡ Performance & Scalability', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
-  { id: 'quality', name: '✨ Code Quality & Style', defaultModel: 'synthetic/hf:Qwen/Qwen3.6-27B', provider: 'synthetic' },
-  { id: 'database', name: '🗄️ Database & Persistence', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
-  { id: 'api_contract', name: '🔌 API Contract & Integration', defaultModel: 'synthetic/hf:Qwen/Qwen3.6-27B', provider: 'synthetic' },
-  { id: 'documentation', name: '📝 Documentation & Compliance', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
-  { id: 'linear_sync', name: '📌 Linear Sync & Issue Tracking', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
-  { id: 'ux_product', name: '🎨 UX & Product Consistency', defaultModel: 'synthetic/hf:Qwen/Qwen3.6-27B', provider: 'synthetic' },
-  { id: 'devops', name: '🐳 DevOps & Containers', defaultModel: 'synthetic/hf:zai-org/GLM-4.7-Flash', provider: 'synthetic' },
-  { id: 'reliability', name: '💥 Reliability & Resilience', defaultModel: 'synthetic/hf:zai-org/GLM-5.2', provider: 'synthetic' },
+  { id: 'security', name: '🛡️ Security & Tenancy Floor', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'architecture', name: '🏛️ System Architecture & Compaction', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'performance', name: '⚡ Performance & Worker Budgets', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'quality', name: '✨ Code Quality & AST Invariants', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'database', name: '🗄️ Database & Schema Migrations', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'api_contract', name: '🔌 API Wire & Contract Compatibility', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'documentation', name: '📝 Documentation & Specifications', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'linear_sync', name: '📌 Linear Sync & Issue Tracking', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'ux_product', name: '🎨 UX & Design Consistency', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'devops', name: '🐳 DevOps & Edge Infrastructure', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
+  { id: 'reliability', name: '💥 Reliability & Resilience (SRE)', defaultModel: 'reviewyeti-ai/yeti-pr-reviewer', provider: 'reviewyeti-ai' },
 ];
 
 export const AVAILABLE_MODEL_OPTIONS = [
-  { label: 'Claude 5 Haiku High (Anthropic Default)', value: 'claude-5-haiku:high' },
-  { label: 'Gemini 3.7 Flash High (Google Default / 1M Context)', value: 'google/gemini-3.7-flash:high' },
-  { label: 'OpenAI GPT-5.6 Luna High (OpenAI Default)', value: 'openai/gpt-5.6-luna:high' },
-  { label: 'DeepSeek V4 Flash High (Pareto Optimal)', value: 'deepseek/deepseek-v4-flash-0731:high' },
-  { label: 'OpenRouter 5.6 Luna High (Top Precision)', value: 'openrouter/5.6-luna-high' },
-  { label: 'Qwen 3.8 27B High', value: 'qwen/qwen-3.8-27b:high' },
-  { label: 'Claude 5 Sonnet (Direct)', value: 'claude-5-sonnet' },
-  { label: 'Claude Opus 4.8 (Direct)', value: 'claude-opus-4-8' },
-  { label: 'OpenAI GPT-5.6 Luna', value: 'openai/gpt-5.6-luna' },
-  { label: 'Codex GPT-5.6 Sol High (Codex)', value: 'codex/gpt-5.6-sol-high' },
-  { label: 'OpenRouter Auto Router', value: 'openrouter/auto' },
-  { label: 'Synthetic GLM 5.2 (Zai Org)', value: 'synthetic/hf:zai-org/GLM-5.2' },
-  { label: 'Synthetic Kimi K3 (Moonshot AI)', value: 'synthetic/hf:moonshotai/Kimi-K3' },
-  { label: 'Synthetic Qwen 3.6 27B (Qwen)', value: 'synthetic/hf:Qwen/Qwen3.6-27B' },
-  { label: 'Grok 4.5 (xAI)', value: 'grok-cli/grok-4.5' },
-  { label: 'GLM 5.2 (Synthetic Arbiter)', value: 'glm-5.2' },
-  { label: 'AGY Opus Thinking (AGY)', value: 'agy/claude-opus-4-6-thinking' },
+  { label: 'Review Yeti PR Reviewer (Native Edge Swarm)', value: 'reviewyeti-ai/yeti-pr-reviewer' },
 ];
 
 interface Step4PersonaEnsembleProps {
@@ -69,8 +53,8 @@ export function Step4PersonaEnsemble({
   ).length;
 
   const filteredModelOptions = React.useMemo(() => {
-    return getEnabledModelOptions(AVAILABLE_MODEL_OPTIONS, providers, modelRegistry);
-  }, [providers, modelRegistry]);
+    return AVAILABLE_MODEL_OPTIONS;
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -81,16 +65,16 @@ export function Step4PersonaEnsemble({
             <Users className="h-6 w-6" />
           </div>
           <div>
-            <h3 className="text-base font-semibold text-foreground">Step 4: Persona Ensemble Assignment</h3>
+            <h3 className="text-base font-semibold text-foreground">Step 4: Composed Swarm Review Task Policies</h3>
             <p className="text-xs text-muted-foreground">
-              Map models, reasoning effort levels, and confidence thresholds for all 11 expert reviewer personas.
+              Configure review policies and thresholds. All tasks execute via native <code className="text-indigo-300">reviewyeti-ai/yeti-pr-reviewer</code> on Cloudflare Edge with bounded subagent context compaction.
             </p>
           </div>
         </div>
 
         <Badge variant="outline" className="bg-indigo-500/10 text-indigo-400 border-indigo-500/30 gap-1.5 text-xs">
           <Sparkles className="h-3.5 w-3.5" />
-          {activeCount} / 11 Personas Active
+          {activeCount} / 11 Task Dimensions Active
         </Badge>
       </div>
 
