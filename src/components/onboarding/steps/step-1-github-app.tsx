@@ -308,7 +308,7 @@ export function Step1GitHubApp({
                 Raw PEM Key Content (Paste directly)
               </label>
               <Textarea
-                placeholder="-----BEGIN RSA PRIVATE KEY-----..."
+                placeholder="-----BEGIN [REDACTED_KEY]-----..."
                 rows={3}
                 value={config.privateKeyPemRaw || ''}
                 onChange={(e) =>

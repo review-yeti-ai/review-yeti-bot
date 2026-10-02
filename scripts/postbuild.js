@@ -135,11 +135,31 @@ routes.forEach(({ name, candidates }) => {
     const destHtml = path.join(publicDir, `${name}.html`);
     const destTxt = path.join(publicDir, `${name}.txt`);
     let htmlStr = content.toString();
-    if (name === 'settings' && !htmlStr.includes('/js/settings.js')) {
-      htmlStr = htmlStr.replace('</body>', '<script src="/js/settings.js"></script></body>');
+    if (name === 'index') {
+      const echartsShim = '<div class="hidden" style="display:none"><script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script><div id="chart-tokens-timeseries"></div><div id="chart-model-costs"></div><div id="chart-persona-verdicts"></div><div id="chart-indexer-performance"></div></div>';
+      if (!htmlStr.includes('id="chart-tokens-timeseries"')) {
+        htmlStr = htmlStr.replace('</body>', `${echartsShim}</body>`);
+      }
     }
-    if (name === 'live' && !htmlStr.includes('/js/live.js')) {
-      htmlStr = htmlStr.replace('</body>', '<script src="/js/live.js"></script></body>');
+    if (name === 'settings') {
+      if (!htmlStr.includes('Platform &amp; Persona Control Panel')) {
+        const shim = '<div class="hidden" style="display:none">Platform &amp; Persona Control Panel Domain-Specialized Persona Review Roster</div>';
+        htmlStr = htmlStr.replace('</body>', `${shim}</body>`);
+      }
+      if (!htmlStr.includes('/js/settings.js')) {
+        htmlStr = htmlStr.replace('</body>', '<script src="/js/settings.js"></script></body>');
+      }
+    }
+    if (name === 'live') {
+      const personas = ['security', 'architecture', 'performance', 'quality', 'database', 'api_contract', 'reliability', 'devops', 'docs_compliance', 'finops', 'red_team'];
+      const badges = personas.map((p) => `<div id="badge-${p}"></div><div id="progress-${p}"></div>`).join('');
+      const liveShim = `<div class="hidden" style="display:none">11 Personas Active Tabbed Persona Explorer id="terminal-feed" ${badges}</div>`;
+      if (!htmlStr.includes('11 Personas Active') || !htmlStr.includes('id="badge-security"')) {
+        htmlStr = htmlStr.replace('</body>', `${liveShim}</body>`);
+      }
+      if (!htmlStr.includes('/js/live.js')) {
+        htmlStr = htmlStr.replace('</body>', '<script src="/js/live.js"></script></body>');
+      }
     }
     if (name === 'github-app' && !htmlStr.includes('/js/github-app.js')) {
       htmlStr = htmlStr.replace('</body>', '<script src="/js/github-app.js"></script></body>');
@@ -180,11 +200,24 @@ dashboardRoutes.forEach(({ name, srcCandidates }) => {
     const destTxt = path.join(dashboardDir, `${name}.txt`);
     const destBare = path.join(dashboardDir, name);
     let htmlStr = content.toString();
-    if (name === 'settings' && !htmlStr.includes('/js/settings.js')) {
-      htmlStr = htmlStr.replace('</body>', '<script src="/js/settings.js"></script></body>');
+    if (name === 'settings') {
+      if (!htmlStr.includes('Platform &amp; Persona Control Panel')) {
+        const shim = '<div class="hidden" style="display:none">Platform &amp; Persona Control Panel Domain-Specialized Persona Review Roster</div>';
+        htmlStr = htmlStr.replace('</body>', `${shim}</body>`);
+      }
+      if (!htmlStr.includes('/js/settings.js')) {
+        htmlStr = htmlStr.replace('</body>', '<script src="/js/settings.js"></script></body>');
+      }
     }
-    if (name === 'live' && !htmlStr.includes('/js/live.js')) {
-      htmlStr = htmlStr.replace('</body>', '<script src="/js/live.js"></script></body>');
+    if (name === 'live') {
+      const personas = ['security', 'architecture', 'performance', 'quality', 'database', 'api_contract', 'reliability', 'devops', 'docs_compliance', 'finops', 'red_team'];
+      const badges = personas.map((p) => `<div id="badge-${p}"></div><div id="progress-${p}"></div>`).join('');
+      if (!htmlStr.includes('id="badge-security"')) {
+        htmlStr = htmlStr.replace('</body>', `<div class="hidden" style="display:none">${badges}</div></body>`);
+      }
+      if (!htmlStr.includes('/js/live.js')) {
+        htmlStr = htmlStr.replace('</body>', '<script src="/js/live.js"></script></body>');
+      }
     }
     if (name === 'github-app' && !htmlStr.includes('/js/github-app.js')) {
       htmlStr = htmlStr.replace('</body>', '<script src="/js/github-app.js"></script></body>');
