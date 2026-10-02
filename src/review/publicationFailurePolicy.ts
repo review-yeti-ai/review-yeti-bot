@@ -1,7 +1,6 @@
 import {
+  formatIncompleteInfrastructureDetail,
   formatIncompleteInfrastructureTitle,
-  INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX,
-  renderIncompleteInfrastructureTitle,
   type IncompleteLaneDescription,
 } from './laneInfrastructure';
 
@@ -117,10 +116,7 @@ export function renderRecoverablePanelRetryTitle(
   lanes: readonly IncompleteLaneDescription[],
   executionAttempt: number,
 ): string {
-  const sharedTitle = renderIncompleteInfrastructureTitle(lanes);
-  const detail = sharedTitle.startsWith(INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX)
-    ? sharedTitle.slice(INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.length, sharedTitle.lastIndexOf(')'))
-    : 'lane failed';
+  const detail = formatIncompleteInfrastructureDetail(lanes);
   const status = recoverablePanelRetryReportingStatus(executionAttempt);
   const statusText = status === 'not_confirmed'
     ? 'automatic retry NOT CONFIRMED'
@@ -130,26 +126,33 @@ export function renderRecoverablePanelRetryTitle(
   return formatIncompleteInfrastructureTitle(`${statusText}; ${detail}`);
 }
 
+/** Shared evidence text; only the caller's retry paragraph differs. */
+function renderIncompleteInfrastructureSummaryBody(
+  headSha: string,
+  lanes: readonly IncompleteLaneDescription[],
+): string {
+  const rows = lanes.map((lane) => `- \`${lane.id}\`: ${lane.failureClass}${lane.providerStatus !== undefined ? ` (provider HTTP ${lane.providerStatus})` : ''}`);
+  return [
+    '### Review Yeti: INCOMPLETE — infrastructure',
+    `This is **not a review verdict** for \`${headSha}\`. ${lanes.length === 1 ? 'A reviewer lane' : 'Reviewer lanes'} could not reach the model, so the panel did not complete; no lane reported a finding.`,
+    '**Lanes that did not complete:**',
+    ...rows,
+  ].join('\n');
+}
+
 /** Worker-facing summary, distinct from the compatibility renderer that accepts an actual schedule. */
 export function renderRecoverablePanelRetrySummary(
   headSha: string,
   lanes: readonly IncompleteLaneDescription[],
   executionAttempt: number,
 ): string {
-  const rows = lanes.map((lane) => `- \`${lane.id}\`: ${lane.failureClass}${lane.providerStatus !== undefined ? ` (provider HTTP ${lane.providerStatus})` : ''}`);
   const status = recoverablePanelRetryReportingStatus(executionAttempt);
   const retryStatus = status === 'not_confirmed'
     ? `Automatic retry is NOT CONFIRMED for execution attempt ${executionAttempt}. The completion API acknowledgement confirms delivery only; it does not confirm a retry was admitted or scheduled. No next attempt or supersession is promised.`
     : status === 'cap_exhausted'
       ? `Automatic retry is NOT CONFIRMED: the cap of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP} additional attempts was exhausted at execution attempt ${executionAttempt}. No further automatic retry is available; re-run after the gateway recovers.`
       : `Automatic retry is NOT CONFIRMED for execution attempt ${executionAttempt}; this value proves neither retry eligibility nor cap exhaustion. No next attempt or supersession is promised.`;
-  return [
-    '### Review Yeti: INCOMPLETE — infrastructure',
-    `This is **not a review verdict** for \`${headSha}\`. ${lanes.length === 1 ? 'A reviewer lane' : 'Reviewer lanes'} could not reach the model, so the panel did not complete; no lane reported a finding.`,
-    '**Lanes that did not complete:**',
-    ...rows,
-    retryStatus,
-  ].join('\n');
+  return `${renderIncompleteInfrastructureSummaryBody(headSha, lanes)}\n${retryStatus}`;
 }
 
 /**
@@ -175,14 +178,8 @@ export function renderIncompleteInfrastructureSummary(
   retry: { nextAttempt: number; maxAttempts: number } | undefined,
   executionAttempt: number,
 ): string {
-  const rows = lanes.map((lane) => `- \`${lane.id}\`: ${lane.failureClass}${lane.providerStatus !== undefined ? ` (provider HTTP ${lane.providerStatus})` : ''}`);
-  return [
-    '### Review Yeti: INCOMPLETE — infrastructure',
-    `This is **not a review verdict** for \`${headSha}\`. ${lanes.length === 1 ? 'A reviewer lane' : 'Reviewer lanes'} could not reach the model, so the panel did not complete; no lane reported a finding.`,
-    '**Lanes that did not complete:**',
-    ...rows,
-    retry
-      ? `Execution attempt ${executionAttempt} failed on infrastructure. A fresh attempt (${retry.nextAttempt} of ${retry.maxAttempts}) is scheduled automatically; this check is superseded by it.`
-      : `Execution attempt ${executionAttempt} was the last automatic attempt (${executionAttempt} of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1}). Re-run the review once the gateway is healthy; do not merge on this result.`,
-  ].join('\n');
+  const retryStatus = retry
+    ? `Execution attempt ${executionAttempt} failed on infrastructure. A fresh attempt (${retry.nextAttempt} of ${retry.maxAttempts}) is scheduled automatically; this check is superseded by it.`
+    : `Execution attempt ${executionAttempt} was the last automatic attempt (${executionAttempt} of ${RECOVERABLE_PANEL_AUTO_RETRY_CAP + 1}). Re-run the review once the gateway is healthy; do not merge on this result.`;
+  return `${renderIncompleteInfrastructureSummaryBody(headSha, lanes)}\n${retryStatus}`;
 }

@@ -4,8 +4,10 @@ import {
   isRecoverablePanelRetryEligible,
   recoverablePanelRetryReportingStatus,
   RECOVERABLE_PANEL_AUTO_RETRY_CAP,
+  renderIncompleteInfrastructureSummary,
   renderRecoverablePanelRetrySummary,
   renderRecoverablePanelRetryTitle,
+  type IncompleteLaneDescription,
   type IncompletePanelEvidence,
 } from '../../src/review/publicationFailurePolicy';
 
@@ -141,4 +143,69 @@ describe('worker retry reporting does not infer scheduling from eligibility', ()
         .toContain('this value proves neither retry eligibility nor cap exhaustion');
     },
   );
+});
+
+describe('incomplete infrastructure rendering preserves retry authority boundaries', () => {
+  const headSha = 'a'.repeat(40);
+  const bodies: [string, readonly IncompleteLaneDescription[], string][] = [
+    ['empty lanes', [], [
+      '### Review Yeti: INCOMPLETE — infrastructure',
+      `This is **not a review verdict** for \`${headSha}\`. Reviewer lanes could not reach the model, so the panel did not complete; no lane reported a finding.`,
+      '**Lanes that did not complete:**',
+    ].join('\n')],
+    ['one lane with punctuation', [{ id: 'arch)lane', failureClass: 'transport)closed' }], [
+      '### Review Yeti: INCOMPLETE — infrastructure',
+      `This is **not a review verdict** for \`${headSha}\`. A reviewer lane could not reach the model, so the panel did not complete; no lane reported a finding.`,
+      '**Lanes that did not complete:**',
+      '- `arch)lane`: transport)closed',
+    ].join('\n')],
+    ['multiple lanes with and without HTTP status', [
+      { id: 'arch)lane', failureClass: 'transport)closed' },
+      { id: 'test-lane', failureClass: 'provider_error', providerStatus: 502 },
+    ], [
+      '### Review Yeti: INCOMPLETE — infrastructure',
+      `This is **not a review verdict** for \`${headSha}\`. Reviewer lanes could not reach the model, so the panel did not complete; no lane reported a finding.`,
+      '**Lanes that did not complete:**',
+      '- `arch)lane`: transport)closed',
+      '- `test-lane`: provider_error (provider HTTP 502)',
+    ].join('\n')],
+  ];
+
+  it.each(bodies)('keeps exact shared summary bytes and distinct retry paragraphs: %s', (_label, lanes, body) => {
+    const scheduled = renderIncompleteInfrastructureSummary(headSha, lanes, { nextAttempt: 2, maxAttempts: 3 }, 1);
+    expect(scheduled).toBe(`${body}\nExecution attempt 1 failed on infrastructure. A fresh attempt (2 of 3) is scheduled automatically; this check is superseded by it.`);
+    expect(scheduled).not.toContain('NOT CONFIRMED');
+
+    expect(renderIncompleteInfrastructureSummary(headSha, lanes, undefined, 3))
+      .toBe(`${body}\nExecution attempt 3 was the last automatic attempt (3 of 3). Re-run the review once the gateway is healthy; do not merge on this result.`);
+
+    const worker = renderRecoverablePanelRetrySummary(headSha, lanes, 1);
+    expect(worker).toBe(`${body}\nAutomatic retry is NOT CONFIRMED for execution attempt 1. The completion API acknowledgement confirms delivery only; it does not confirm a retry was admitted or scheduled. No next attempt or supersession is promised.`);
+    expect(worker).not.toMatch(/scheduled automatically|this check is superseded by it/u);
+
+    expect(renderRecoverablePanelRetrySummary(headSha, lanes, 3))
+      .toBe(`${body}\nAutomatic retry is NOT CONFIRMED: the cap of 2 additional attempts was exhausted at execution attempt 3. No further automatic retry is available; re-run after the gateway recovers.`);
+    expect(renderRecoverablePanelRetrySummary(headSha, lanes, 0))
+      .toBe(`${body}\nAutomatic retry is NOT CONFIRMED for execution attempt 0; this value proves neither retry eligibility nor cap exhaustion. No next attempt or supersession is promised.`);
+  });
+
+  it('preserves lane and failure parentheses without interpreting them as title framing', () => {
+    const lanes = [{ id: 'arch)lane', failureClass: 'transport)closed' }];
+    expect(renderRecoverablePanelRetryTitle(lanes, 1))
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane arch)lane failed: transport)closed)');
+    expect(renderRecoverablePanelRetryTitle(lanes, 3))
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry cap EXHAUSTED; lane arch)lane failed: transport)closed)');
+    expect(renderRecoverablePanelRetryTitle(lanes, 0))
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry status UNKNOWN; lane arch)lane failed: transport)closed)');
+  });
+
+  it('keeps the empty-lane fallback and worker title bounds without a scheduling promise', () => {
+    expect(renderRecoverablePanelRetryTitle([], 1))
+      .toBe('Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane failed)');
+    const title = renderRecoverablePanelRetryTitle([{ id: 'x'.repeat(240), failureClass: 'transport' }], 1);
+    expect(title).toHaveLength(140);
+    expect(title).toContain('(automatic retry NOT CONFIRMED; lane ');
+    expect(title).toMatch(/…\)$/u);
+    expect(title).not.toMatch(/retrying as attempt|scheduled/u);
+  });
 });
