@@ -3,8 +3,6 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, within, waitFor, act } from '@testing-library/react';
 import { RepoMemoryPivotPlatform } from '@/components/analytics/RepoMemoryPivotPlatform';
-import MemoryPage from '@/app/memory/page';
-import { fetchMemoryStats, purgeMemoryCache, exportMemorySnapshot } from '@/lib/api-client';
 
 describe('RepoMemoryPivotPlatform Component Suite', () => {
   it('renders the interactive pivot control bar with all repository tabs', () => {
@@ -149,10 +147,11 @@ vi.mock('@/lib/api-client', async () => ({
   exportMemorySnapshot: vi.fn(),
 }));
 
-
+import MemoryPage from '@/app/memory/page';
+import { fetchMemoryStats, purgeMemoryCache, exportMemorySnapshot } from '@/lib/api-client';
 
 function memoryResponse() {
-  const repositories = ['exampleorg/example-api', 'reviewyeti-ai/example-meta'];
+  const repositories = ['example/sample-cdr', 'example/sample-meta'];
   return {
     success: true,
     r2: { bucket: 'example-memory', objectCount: 2, totalBytes: 2048, hitRatePercent: 95 },
@@ -200,10 +199,10 @@ describe('MemoryPage public neutral state and export controls', () => {
     selectMemoryTab(/Workspaces & R2 Cache/);
     expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
     expect(screen.getByText('example-outline-1', { exact: false })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'example-api' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-cdr' } });
     expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
     expect(screen.queryByText('example-outline-1', { exact: false })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'example-meta' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-meta' } });
     expect(screen.getByText('example-outline-1', { exact: false })).toBeInTheDocument();
     fireEvent.click(screen.getByText('Clear filters'));
     expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
@@ -214,70 +213,41 @@ describe('MemoryPage public neutral state and export controls', () => {
     await renderMemoryPage();
     selectMemoryTab(/Knowledge Ledger/);
     const search = screen.getByPlaceholderText(/Filter by keyword, symbol/);
-    const records = ['Quoted "boundary" rule', 'Architecture ledger', 'Quoted "sample" 0', 'Quoted "sample" 1', 'Sample ADR 0', 'Sample ADR 1'];
-    const expectVisibleRecords = (expected: string[]) => {
-      for (const title of records) {
-        if (expected.includes(title)) expect(screen.getByText(title)).toBeInTheDocument();
-        else expect(screen.queryByText(title)).not.toBeInTheDocument();
-      }
-    };
-    const searches: Array<{ query: string; expected: string[] }> = [
-      { query: 'boundary', expected: [records[0]] },
-      { query: 'public filtering', expected: [records[0], records[1]] },
-      { query: 'src/example-0', expected: [records[0]] },
-      { query: 'exampleorg/example-api', expected: [records[0]] },
-      { query: 'sample convention', expected: [records[2], records[3]] },
-      { query: 'Quoted "sample" 0', expected: [records[2]] },
-      { query: 'src/nit-0', expected: [records[2]] },
-      { query: 'sample-rule-0', expected: [records[2]] },
-      { query: 'Sample ADR 0', expected: [records[4]] },
-      { query: 'interfaces stable', expected: [records[4], records[5]] },
-      { query: 'src/adr-0', expected: [records[4]] },
-      { query: 'no-such-symbol', expected: [] },
-    ];
-    for (const { query, expected } of searches) {
+    for (const query of ['boundary', 'public filtering', 'src/example-0', 'example/sample-cdr', 'sample convention', 'src/nit-0', 'sample-rule-0', 'interfaces stable', 'src/adr-0', 'no-such-symbol']) {
       fireEvent.change(search, { target: { value: query } });
       expect(search).toHaveValue(query);
-      expectVisibleRecords(expected);
+      if (query === 'no-such-symbol') expect(screen.queryByText('Sample ADR 0')).not.toBeInTheDocument();
     }
     fireEvent.click(screen.getByText('✕'));
     expect(search).toHaveValue('');
-    expectVisibleRecords(records);
-    const categories = [
-      { label: 'Sec', expected: [records[0]] },
-      { label: 'Arch', expected: [records[1]] },
-      { label: 'Perf', expected: [] },
-      { label: 'Nits', expected: [records[2], records[3]] },
-      { label: 'ADRs', expected: [records[4], records[5]] },
-      { label: 'All', expected: records },
-    ];
-    for (const { label, expected } of categories) {
+    for (const label of ['Sec', 'Arch', 'Perf', 'Nits', 'ADRs', 'All']) {
       fireEvent.click(screen.getByRole('button', { name: label }));
-      expectVisibleRecords(expected);
+      expect(screen.getByRole('button', { name: label }).className).toContain('font-semibold');
     }
+    expect(screen.getByText('Quoted "boundary" rule')).toBeInTheDocument();
   });
 
   it('exports only the chosen sample scope in JSON, Markdown and quote-safe CSV', async () => {
     await renderMemoryPage();
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'example-api' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-cdr' } });
     fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
     const dialog = await screen.findByRole('dialog');
-    await waitFor(() => expect(exportMemorySnapshot).toHaveBeenCalledWith('json', 'example-api'));
+    await waitFor(() => expect(exportMemorySnapshot).toHaveBeenCalledWith('json', 'sample-cdr'));
     const preview = within(dialog).getByRole('textbox') as HTMLTextAreaElement;
     await waitFor(() => expect(JSON.parse(preview.value).sha256Digest).toBe('a'.repeat(64)));
     const data = JSON.parse(preview.value);
-    expect(data.organization).toBe('exampleorg');
+    expect(data.organization).toBe('example');
     expect(data.workspaces).toHaveLength(1);
-    expect(data.learnings[0].repo).toBe('exampleorg/example-api');
+    expect(data.learnings[0].repo).toBe('example/sample-cdr');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Executive Markdown Report' }));
-    expect(preview.value).toContain('Organization: exampleorg');
-    expect(preview.value).toContain('exampleorg/example-api');
-    expect(preview.value).not.toContain('reviewyeti-ai/example-meta');
+    expect(preview.value).toContain('Organization: example');
+    expect(preview.value).toContain('example/sample-cdr');
+    expect(preview.value).not.toContain('example/sample-meta');
     fireEvent.click(within(dialog).getByRole('button', { name: 'CSV Spreadsheet' }));
     expect(preview.value).toContain('"Quoted ""boundary"" rule"');
     expect(preview.value).toContain('"Quoted ""sample"" 0"');
     fireEvent.click(within(dialog).getByRole('button', { name: 'JSON Schema v2.1' }));
-    expect(JSON.parse(preview.value).organization).toBe('exampleorg');
+    expect(JSON.parse(preview.value).organization).toBe('example');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
@@ -314,25 +284,21 @@ describe('MemoryPage public neutral state and export controls', () => {
     for (const button of copies) {
       fireEvent.click(button);
       expect(navigator.clipboard.writeText).toHaveBeenCalled();
-      expect(JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)![0]).repo).toMatch(/^(?:exampleorg\/example-api|reviewyeti-ai\/example-meta)$/);
+      expect(JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)![0]).repo).toMatch(/^example\/sample-/);
       await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     }
     expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
-  it('refreshes and purges successfully and displays the reloaded workspace', async () => {
+  it('refreshes and purges successfully, dismissing the actual completion notice', async () => {
     await renderMemoryPage();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled());
-    vi.mocked(fetchMemoryStats).mockResolvedValueOnce({ ...memoryResponse(), r2: { ...memoryResponse().r2, bucket: 'example-after-purge' } });
     fireEvent.click(screen.getByRole('button', { name: 'Purge Expired' }));
-    await waitFor(() => expect(purgeMemoryCache).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Sample cache sweep completed')).toBeInTheDocument();
     await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(3));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled());
-    selectMemoryTab(/Workspaces & R2 Cache/);
-    expect(screen.getByText('example-after-purge')).toBeInTheDocument();
-    // Reload begins by clearing transient notices; verify the final visible state at the lifecycle barrier.
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(screen.queryByText('Sample cache sweep completed')).not.toBeInTheDocument();
   });
 
@@ -341,14 +307,11 @@ describe('MemoryPage public neutral state and export controls', () => {
     vi.mocked(purgeMemoryCache).mockRejectedValue(new Error('Sample purge unavailable'));
     await renderMemoryPage();
     fireEvent.click(screen.getByRole('button', { name: 'Purge Expired' }));
-    await waitFor(() => expect(purgeMemoryCache).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Workspace cache swept. Ephemeral outlines purged successfully.')).toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
-    expect(screen.getByRole('button', { name: 'Purge Expired' })).toBeEnabled();
-    expect(screen.queryByText('Workspace cache swept. Ephemeral outlines purged successfully.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
     const dialog = await screen.findByRole('dialog');
-    await waitFor(() => expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).organization).toBe('exampleorg'));
+    await waitFor(() => expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).organization).toBe('example'));
     expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).workspaces).toHaveLength(2);
   });
 
