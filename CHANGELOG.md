@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.115.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.0...v1.115.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **review:** report retry admission only when confirmed ([#1269](https://github.com/review-yeti-ai/review-yeti-bot/issues/1269)) ([4b921c3](https://github.com/review-yeti-ai/review-yeti-bot/commit/4b921c37bfcfeed709aad64097789f2562e2e188))
+
 ## [1.115.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.114.1...v1.115.0) (2026-10-02)
 
 
