@@ -212,6 +212,8 @@ describe('composed WORK task prompt scope', () => {
       .toBe(workSystem.slice(workSystem.indexOf(toolContractHeader)));
     expect(workText).toContain('WORK CONTEXT: ASSIGNED TASK (1 path(s))');
     expect(workText).toContain('TASK-ASSIGNED CHANGED FILES INDEX (1 file(s))');
+    expect(workText).toContain('All modified file diffs assigned to this task are pre-fetched below; this is not the full PR diff.');
+    expect(workText).not.toContain('All modified file diffs for this PR are pre-fetched');
     expect(workText).toContain(`Assigned task paths (the only paths that define this task's obligations): ["${assignedPath}"]`);
     expect(workText).toContain('changed-path discovery manifest');
     expect(workText).toContain(`"baseSha":"${'b'.repeat(40)}"`);
