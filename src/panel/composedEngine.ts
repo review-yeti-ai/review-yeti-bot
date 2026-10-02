@@ -23,6 +23,7 @@
  * role (additive; every existing role's schema is byte-identical to before this file existed).
  */
 import { setImmediate as yieldToNextEventLoop } from 'node:timers/promises';
+import { classificationAtHead, deletionTaskPriority, formatDeletionClassification, type DeletionClassificationPlan } from '../review/deletionClassification';
 import { buildDocumentationOnlyPanelResult } from './fastShipResult';
 import { CtReviewConfigV3, ProviderId } from '../config/schema';
 import type { WorkerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
@@ -225,9 +226,10 @@ const DIMENSION_RISK_ORDER: Record<ReviewTask['dimension'], number> = {
 };
 
 /** Deterministic, content-independent order: high-risk paths and dimensions run first. */
-export function orderReviewTasksByRisk(tasks: readonly ReviewTask[]): ReviewTask[] {
+export function orderReviewTasksByRisk(tasks: readonly ReviewTask[], classification?: DeletionClassificationPlan): ReviewTask[] {
   const rank = (task: ReviewTask) => Math.min(
     ...task.paths.map((path) => budgetCategoryRank(classifyBudgetCategory(path))),
+    deletionTaskPriority(task.paths, classification) ?? Infinity,
   );
   return [...tasks].sort((a, b) => rank(a) - rank(b)
     || DIMENSION_RISK_ORDER[a.dimension] - DIMENSION_RISK_ORDER[b.dimension]
@@ -675,6 +677,8 @@ async function gatherPreCheckEvidence(
 // ---------------------------------------------------------------------------
 
 function buildStaticPrefix(input: {
+  deletionClassification?: DeletionClassificationPlan;
+  classificationPaths?: string[];
   effectiveFiles: Array<{ path: string; patch?: string; content?: string }>;
   domainLanes: Record<string, DomainLane>;
   repository: string;
@@ -709,6 +713,8 @@ function buildStaticPrefix(input: {
   // See ../services/symbolResolutionAppendix.ts for the fail-soft contract: an empty string here
   // means the appendix was unavailable/disabled/skipped and this section is simply absent.
   const symbolAppendixPromptText = formatSymbolResolutionAppendixPrompt(input.preCheckEvidence.symbolAppendix);
+  const deletionText = formatDeletionClassification(input.deletionClassification,
+    input.classificationPaths ?? input.effectiveFiles.map((file) => file.path));
 
   const rulesText = input.rules.length > 0
     ? input.rules.map((r, idx) => `${idx + 1}. ${r}`).join('\n')
@@ -731,6 +737,7 @@ function buildStaticPrefix(input: {
     ``,
     `=== PR CHANGED FILES & DIFF SCOPE (${input.scopeLabel || 'ALL FILES -- UNSCOPED'}) ===`,
     diffSection,
+    ...(deletionText ? ['', deletionText] : []),
     ...(zoektPromptText ? ['', zoektPromptText] : []),
     ...(analyzersPromptText ? ['', analyzersPromptText] : []),
     ...(symbolAppendixPromptText ? ['', symbolAppendixPromptText] : []),
@@ -756,6 +763,7 @@ export function buildTaskScopedFiles(
 }
 
 export function buildTaskScopedPrefix(input: {
+  deletionClassification?: DeletionClassificationPlan;
   task: ReviewTask;
   effectiveFiles: Array<{ path: string; patch?: string; content?: string }>;
   originalFiles?: Array<{ path: string; patch?: string; content?: string }>;
@@ -779,6 +787,7 @@ export function buildTaskScopedPrefix(input: {
     : `TASK SCOPE: ${scopedFiles.map((f) => f.path).join(', ')}`;
 
   return buildStaticPrefix({
+    deletionClassification: input.deletionClassification,
     effectiveFiles: scopedFiles,
     ...(input.inlineTokenBudget ? { inlineTokenBudget: input.inlineTokenBudget } : {}),
     domainLanes: input.domainLanes,
@@ -805,7 +814,7 @@ function buildSystemPrompt(repository: string): string {
     ``,
     `You have access to read-only investigation tools via {"tool":"tool_name","args":{}}:`,
     `- Code Reading: view_file, read_file, get_diff, get_diff_page, read_file_page, deletion_manifest, deletion_evidence`,
-    `For large removals, deletion_manifest({offset:0,limit:24}) inventories groups with per-path obligations. deletion_evidence({path:"<exact path>"}) returns compact old/current source summaries, AST candidates, scoped caller matches and optional JEV answers. Classification never completes an obligation. Preserve path-specific consumers, security and compatibility review even for identical old-source groups.`,
+    `For large removals, prepared classification groups guide task scope and risk priority. deletion_manifest({offset:0,limit:24}) inventories groups with per-path obligations. deletion_evidence({path:"<exact path>"}) returns compact old/current source summaries, AST candidates, scoped caller matches and cached JEV classification. Classification never completes an obligation. Preserve path-specific consumers, security and compatibility review even for identical old-source groups.`,
     `get_diff_page args: {"path":"<exact path>","startOffset":0,"maxChars":16000}. Continue at nextOffset and repeat digest; offsets count UTF-16 code units. It reads the original patch even when globally reduced or oversized.`,
     `read_file_page args: {"path":"<exact path>","side":"merge-base","startOffset":0,"maxChars":16000}. Use merge-base for removed source and head for surviving source. A page is not proof all obligations were reviewed.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
@@ -1585,10 +1594,13 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const inactivityTimeoutMs = configuredInactivityTimeoutMs(spec.review_timeout_s, TURN_IDLE_MS);
 
     const domainLanes = classifyDomainLanesByHeuristic(effectiveFiles);
+    const deletionClassification = classificationAtHead(repoFileProvider?.deletionPlan?.(), repository, headSha);
     const preCheckEvidence = await gatherPreCheckEvidence(config, effectiveFiles, options.workspaceRoot, signal, repoFileProvider);
     const zoektConfig = mergeZoektToolConfig((config as any)?.pre_checks?.zoekt, (config as any)?.evidence?.zoekt);
 
     const staticPrefixText = buildStaticPrefix({
+      deletionClassification,
+      classificationPaths: effectiveFiles.map((file) => file.path),
       effectiveFiles: budgeted ? budgeted.promptFiles : effectiveFiles,
       ...(budgetPack ? { inlineTokenBudget: budgetPack.inlineTokenBudget } : {}),
       domainLanes,
@@ -1651,7 +1663,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     try {
       if (resumedPlan?.valid) {
         planOutcome = {
-          tasks: orderReviewTasksByRisk(resumedPlan.tasks),
+          tasks: orderReviewTasksByRisk(resumedPlan.tasks, deletionClassification),
           messages: baseMessages,
           turnsUsed: 0,
           turnUsages: [],
@@ -1681,7 +1693,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           turnsRemaining: remainingBudget,
           progress: options.progress,
         });
-        planOutcome = { ...freshPlan, tasks: orderReviewTasksByRisk(freshPlan.tasks) };
+        planOutcome = { ...freshPlan, tasks: orderReviewTasksByRisk(freshPlan.tasks, deletionClassification) };
       }
     } catch (error) {
       options.progress?.emit({
@@ -2145,6 +2157,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       fundedTaskCount += 1;
 
       const taskScopedPrefixText = buildTaskScopedPrefix({
+        deletionClassification,
         task: reserved.task,
         effectiveFiles: budgeted ? budgeted.promptFiles : effectiveFiles,
         originalFiles: changedFiles,

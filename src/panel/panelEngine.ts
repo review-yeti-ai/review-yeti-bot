@@ -3,6 +3,7 @@ export { PanelConfigurationError, PanelStructuredOutputError, PanelCancellationE
 import { panelAbortError, throwIfPanelAborted, raceWithPanelAbort } from './panelAbort';
 export { throwIfPanelAborted, raceWithPanelAbort } from './panelAbort';
 import crypto from 'node:crypto';
+import { classificationAtHead, formatDeletionClassification, type DeletionClassificationPlan } from '../review/deletionClassification';
 import { isNativeJsonObject, nativeJsonContent, parseNativeToolCall } from './nativeTurnProtocol';
 import { CtReviewConfigV3, ProviderId, resolvePreChecksConfig } from '../config/schema';
 import { resolveMaxFileSize } from '../config/configLoader';
@@ -249,6 +250,7 @@ export interface RepoFileProvider {
     identity?: { repository: string; baseSha: string; headSha: string } } | null;
   deletionManifest?(offset: number, limit: number, digest?: string): unknown;
   deletionEvidence?(path: string): Promise<unknown>;
+  deletionPlan?(): DeletionClassificationPlan | undefined;
   /**
    * Whether the repository tree behind findFiles was truncated by the API. GitHub
    * truncates recursive trees past ~100k entries, and a zero-hit search over a
@@ -1549,7 +1551,7 @@ export function buildCompactDiffManifest(
     `Fetch diff hunks or inspect source context on-demand using:`,
     `- get_diff: {"tool": "get_diff", "args": {"path": "<path>"}}`,
     `- deletion_manifest: {"tool":"deletion_manifest","args":{"offset":0,"limit":24}}. Page verified old-source groups and per-path obligations; pass returned digest on continuation and restart if groups change.`,
-    `- deletion_evidence: {"tool":"deletion_evidence","args":{"path":"<exact path>"}}. Deterministic AST/source peeks, surviving-head search and optional closed JEV questions; every obligation still requires review.`,
+    `- deletion_evidence: {"tool":"deletion_evidence","args":{"path":"<exact path>"}}. Cached classification, AST/source peeks and surviving-head search. Classification organizes review; every obligation still requires review.`,
     `- get_diff_page: {"tool":"get_diff_page","args":{"path":"<path>","startOffset":0,"maxChars":16000}}; follows nextOffset through the ORIGINAL patch, including oversized single hunks.`,
     `- read_file_page: {"tool":"read_file_page","args":{"path":"<path>","side":"merge-base","startOffset":0,"maxChars":16000}}; use head for surviving source and merge-base for removed source. Repeat returned digest when continuing.`,
     `- ${READ_FILE_TOOL_GUIDE}`,
@@ -1972,6 +1974,9 @@ async function invoke(
     ? formatSymbolResolutionAppendixPrompt(preCheckEvidence.symbolAppendix)
     : '';
 
+  const deletionText = role === 'persona' ? formatDeletionClassification(
+    classificationAtHead(options?.repoFileProvider?.deletionPlan?.(), repoStr, shaStr),
+    changedFiles.map((file: any) => file.path)) : '';
   const staticPrefix = [
     `=== exampleorg AUTOMATED CODE REVIEW TASK ===`,
     ...metadataLines,
@@ -1982,6 +1987,7 @@ async function invoke(
     `=== PR CHANGED FILES & DIFF SCOPE ===`,
     ...(laneBudget?.scopeNote ? [laneBudget.scopeNote, ``] : []),
     diffSection,
+    ...(deletionText ? ['', deletionText] : []),
     ...(zoektPreCheckPromptText ? [
       ``,
       zoektPreCheckPromptText,
