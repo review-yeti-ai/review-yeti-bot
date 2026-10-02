@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.116.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.2...v1.116.0) (2026-10-02)
+
+
+### Features
+
+* **dashboard:** interactive review management portal and analytics dashboard ([#1280](https://github.com/review-yeti-ai/review-yeti-bot/issues/1280)) ([3a377ff](https://github.com/review-yeti-ai/review-yeti-bot/commit/3a377ff138450c74dc09d73b3002a8be7ec14a86))
+
+
+### Bug Fixes
+
+* **REL-1250:** retain small inspected source through review compaction ([#1282](https://github.com/review-yeti-ai/review-yeti-bot/issues/1282)) ([f732aac](https://github.com/review-yeti-ai/review-yeti-bot/commit/f732aac7e1f003d36163b56023f07eb947233fea))
+* **REL-1265:** restore publication build and isolated analytics contracts ([#1290](https://github.com/review-yeti-ai/review-yeti-bot/issues/1290)) ([c221e44](https://github.com/review-yeti-ai/review-yeti-bot/commit/c221e448cbdc279200685178d89e21e3dc6caceb))
+* **review:** restore P2 as advisory so only P0/P1 block the check (REL-1282) ([#1281](https://github.com/review-yeti-ai/review-yeti-bot/issues/1281)) ([7de5424](https://github.com/review-yeti-ai/review-yeti-bot/commit/7de5424096b11203987a394f737f3909abfcc5d0))
+
 ## [1.115.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.1...v1.115.2) (2026-10-02)
 
 
