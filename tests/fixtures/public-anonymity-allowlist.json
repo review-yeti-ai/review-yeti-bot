@@ -200,8 +200,8 @@
   "digest": "8cb25a0f6bb335c6"
  },
  "cf-orchestrator/wrangler.toml": {
-  "count": 1,
-  "digest": "eede0415576da9c5"
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
  },
  "k8s/action-dispatch.yaml.tpl": {
   "count": 4,
