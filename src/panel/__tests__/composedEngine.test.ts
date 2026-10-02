@@ -876,6 +876,31 @@ describe('executeComposedReview', () => {
   });
 
   // --- Mutation target 3: "make a BLOCKED task count as a pass" must go red -------------------
+  it('keeps inspected small source in the actual final model request after several unrelated reads', async () => {
+    let workCalls = 0;
+    const pin = 'worker: ghcr.io/acme/worker@sha256:' + 'b'.repeat(64);
+    const readFile = vi.fn(async (path: string) => path === 'scripts/pins/images.yaml' ? pin : 'related contract');
+    const complete = vi.fn(async (payload: any) => {
+      const nonce = issuedNonce(payload.messages);
+      if (lastText(payload.messages).includes('PLAN TURN')) {
+        return fakeResponse(JSON.stringify({ nonce, tasks: [exhaustionTask] }));
+      }
+      workCalls += 1;
+      if (workCalls <= 4) return fakeResponse(JSON.stringify({ tool: 'read_file', args: {
+        path: workCalls === 1 ? 'scripts/pins/images.yaml' : `src/related-${workCalls}.ts`,
+      } }));
+      const transcript = JSON.stringify(payload.messages);
+      expect(transcript).toContain(pin);
+      expect(transcript).toContain('[SCOPE: full-repository | EXHAUSTIVE: true]');
+      return fakeResponse(JSON.stringify({ nonce, task: 'task-sec', status: 'COMPLETE', findings: [] }));
+    });
+    const result = await executeComposedReview({ config: config(), changedFiles: CODE_FILES,
+      repository: 'acme/reviewer-fixture', headSha: 'a'.repeat(40), client: { complete },
+      repoFileProvider: { findFiles: async () => [], readFile } });
+    expect(readFile).toHaveBeenCalledTimes(4);
+    expect(result.personas).toMatchObject([{ id: 'task-sec', decision: 'APPROVE', toolTurns: 4 }]);
+  });
+
   it('can investigate related reviewed-head files in one tool turn and still requires a nonce-bound result', async () => {
     let workCalls = 0;
     const repoFileProvider = {

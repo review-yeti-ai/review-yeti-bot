@@ -97,3 +97,37 @@ npm run test:unit
 # Run specific panel engine parallel tests
 npx vitest run tests/unit/panelEngineParallel.test.ts tests/unit/streamingWatchdog.test.ts
 ```
+
+---
+
+## 7. Running the Web Portal & Exposing via Cloudflare Tunnel
+
+To run the interactive management portal and analytics dashboard locally:
+
+```bash
+# 1. Build backend and frontend static assets
+npm run build
+
+# 2. Start the unified server on port 3000
+npm start
+```
+
+Access the dashboard locally:
+- **Overview**: `http://localhost:3000/`
+- **Live Review Inspector**: `http://localhost:3000/live`
+- **Analytics & Spend Intelligence**: `http://localhost:3000/analytics`
+- **Repository Management**: `http://localhost:3000/repos`
+
+### Exposing Locally via Cloudflare Tunnel (Quick Share)
+
+To instantly share your local portal over a secure public HTTPS URL using Cloudflare:
+
+```bash
+# Start an ephemeral quick tunnel (no account needed)
+npx cloudflared tunnel --url http://localhost:3000
+```
+
+Cloudflare will output a public `https://<random-subdomain>.trycloudflare.com` URL that tunnels directly to your local workstation.
+
+For permanent production domain deployment with Zero Trust Access, see the **[Cloudflare Portal Setup Guide](CLOUDFLARE_PORTAL_SETUP.md)**.
+

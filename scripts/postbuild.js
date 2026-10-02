@@ -109,6 +109,7 @@ if (fs.existsSync(nextAppDir)) {
 // 3. Guarantee main route .html AND .txt files exist in public/
 const routes = [
   { name: 'index', candidates: ['index.html', 'index/index.html'] },
+  { name: 'analytics', candidates: ['analytics.html', 'analytics/index.html', 'analytics/page.html'] },
   { name: 'onboarding', candidates: ['onboarding.html', 'onboarding/index.html', 'onboarding/page.html'] },
   { name: 'live', candidates: ['live.html', 'live/index.html', 'live/page.html'] },
   { name: 'memory', candidates: ['memory.html', 'memory/index.html', 'memory/page.html'] },
@@ -298,5 +299,28 @@ function toggleMonitoredRepo() {}`
 );
 
 ensureStaticAssets();
+
+// 6. Synchronize static export assets to dist/public for production packaging
+const distPublicDir = path.join(rootDir, 'dist', 'public');
+console.log('[Postbuild] Copying static export to dist/public...');
+ensureDirSync(distPublicDir);
+
+try {
+  if (fs.existsSync(publicDir)) {
+    fs.cpSync(publicDir, distPublicDir, { recursive: true, force: true });
+  } else if (fs.existsSync(outDir)) {
+    fs.cpSync(outDir, distPublicDir, { recursive: true, force: true });
+  }
+  console.log('[Postbuild] Successfully synced static export to dist/public');
+} catch (err) {
+  console.warn('[Postbuild] Notice syncing static export to dist/public:', err.message);
+}
+
+const lockFile = path.join(rootDir, '.frontend-build.lock');
+try {
+  if (fs.existsSync(lockFile)) {
+    fs.unlinkSync(lockFile);
+  }
+} catch (_) {}
 
 console.log('[Postbuild] Completed asset copying cleanly.');

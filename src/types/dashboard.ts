@@ -192,11 +192,79 @@ export interface ReviewJob {
 export interface RepositorySetting {
   owner: string;
   repo: string;
+  name?: string;
+  full_name?: string;
   automationEnabled: boolean;
   generateArchitecturalFlowchart?: boolean;
   customProfile?: 'chill' | 'balanced' | 'assertive';
+  strictnessProfile?: 'chill' | 'balanced' | 'assertive';
   modelOverrides?: Record<string, string>;
+  lastReviewAt?: string;
+  lastVerdict?: 'SHIP' | 'BLOCK' | 'NEUTRAL';
   updatedAt: string;
+}
+
+export interface GitHubOrganizationSummary {
+  id: number;
+  login: string;
+  name: string;
+  avatarUrl: string;
+  installationId?: number;
+  monitoredCount: number;
+  totalReposCount: number;
+}
+
+export interface ActivePullRequestSummary {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  draft: boolean;
+  author: { login: string; avatarUrl: string };
+  headSha: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  reviewStatus?: {
+    status: 'pending' | 'running' | 'completed' | 'failed';
+    verdict?: 'SHIP' | 'BLOCK' | 'NEUTRAL';
+    findingsCount: number;
+    durationMs?: number;
+    reviewedAt?: string;
+  };
+}
+
+export interface RepositoryReviewRules {
+  reviews: {
+    profile?: 'chill' | 'balanced' | 'assertive';
+    reviewer_effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+    default_max_turns?: number;
+    confidence_threshold?: number;
+    mascot?: boolean;
+    ticket_enforcement?: boolean;
+    request_changes_workflow?: boolean;
+    high_level_summary?: boolean;
+    poem?: boolean;
+    review_status?: boolean;
+    collapse_walkthrough?: boolean;
+    auto_title_instructions?: string;
+    sequence_diagrams?: boolean;
+    path_instructions?: Array<{ path: string; instructions: string }>;
+  };
+  auto_review: {
+    enabled?: boolean;
+    ignore_drafts?: boolean;
+    review_drafts?: boolean;
+    triggers?: string[];
+    labels?: string[];
+    ignore_patterns?: string[];
+    drafts?: boolean;
+  };
+  enforcement_policy: {
+    require_all_reviews?: boolean;
+    failure_action?: 'fail_closed' | 'fail_open' | 'quarantine';
+    require_ticket_link?: boolean;
+  };
 }
 
 export interface IntegrationItem {

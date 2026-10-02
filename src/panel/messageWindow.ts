@@ -10,7 +10,9 @@ import { OpenRouterMessage } from '../gateway/openRouterClient';
  * re-sent on every following turn for the rest of the session.
  *
  * `compactMessageWindow` collapses OLDER tool-result turns to a short receipt line while leaving
- * the most recent `activeTurns` turns, and the static system/user prefix, untouched. It is purely
+ * the most recent `activeTurns` turns, and the static system/user prefix, untouched.
+ * Production loops additionally retain small older reads within a fixed aggregate byte bound;
+ * evidence that fits this window remains byte-for-byte source, never a synthesized summary. It is purely
  * structural: it never reads, extracts, or synthesizes review findings from message content. The
  * receipt line is derived from the caller-supplied `toolCalls[]` record (tool name, scope,
  * exhaustive), never by re-parsing the `[PI_TOOL_RESULT]` string -- the string's format is free to
@@ -29,6 +31,11 @@ export const PI_TOOL_RESULT_MARKER = '[PI_TOOL_RESULT]';
 /** Number of most-recent assistant/user turn pairs kept at full fidelity. */
 export const DEFAULT_ACTIVE_TURNS = 2;
 
+// Keep small inspected source available across unrelated tool turns. This is
+// retained input context, not a limit on model generation or review coverage.
+export const SMALL_TOOL_RESULT_MAX_BYTES = 16 * 1024;
+export const RETAINED_TOOL_RESULTS_MAX_BYTES = 64 * 1024;
+
 /**
  * One entry per tool call the loop actually executed, in the same left-to-right order as the
  * `[PI_TOOL_RESULT]` user messages appear in `messages`. Mirrors the `toolCalls` array
@@ -43,6 +50,8 @@ export interface MessageWindowToolCall {
 }
 
 export interface MessageWindowPolicy {
+  /** Preserve newest small older tool results within the fixed aggregate byte bound. */
+  retainSmallToolResults?: boolean;
   /** Most-recent assistant/user pairs kept verbatim. Default `DEFAULT_ACTIVE_TURNS` (2). */
   activeTurns?: number;
   /**
@@ -116,6 +125,19 @@ export function compactMessageWindow(
   // `toolResultIndex` walks `toolCalls[]` in lockstep with encounter order of `[PI_TOOL_RESULT]`
   // messages, starting from the very first older turn -- the same order panelEngine.ts populated
   // both arrays in, so this stays aligned without needing to touch the active window.
+  const retained = new Set<OpenRouterMessage>();
+  if (policy.retainSmallToolResults === true) {
+    let retainedBytes = 0;
+    for (const message of olderTurns.flat().reverse()) {
+      if (!isToolResultMessage(message)) continue;
+      const bytes = Buffer.byteLength(message.content, 'utf8');
+      if (bytes <= SMALL_TOOL_RESULT_MAX_BYTES && retainedBytes + bytes <= RETAINED_TOOL_RESULTS_MAX_BYTES) {
+        retained.add(message);
+        retainedBytes += bytes;
+      }
+    }
+  }
+
   let toolResultIndex = 0;
   const compactedOlder: OpenRouterMessage[] = [];
   for (const turn of olderTurns) {
@@ -123,7 +145,7 @@ export function compactMessageWindow(
       if (isToolResultMessage(message)) {
         const call = toolCalls[toolResultIndex];
         toolResultIndex += 1;
-        compactedOlder.push({
+        compactedOlder.push(retained.has(message) ? message : {
           role: 'user',
           content: formatReceiptLine(call, Buffer.byteLength(message.content, 'utf8')),
         });

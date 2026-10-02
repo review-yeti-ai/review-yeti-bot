@@ -51,6 +51,12 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
       reqPath === '/api/auth/session' ||
       reqPath === '/auth/logout' ||
       reqPath === '/api/auth/logout' ||
+      reqPath === '/auth/github' ||
+      reqPath === '/api/auth/github' ||
+      rawOriginal.startsWith('/api/auth/github') ||
+      reqPath === '/auth/github/callback' ||
+      reqPath === '/api/auth/github/callback' ||
+      rawOriginal.startsWith('/api/auth/github/callback') ||
       reqPath === '/api/onboarding' ||
       reqPath.startsWith('/api/onboarding/') ||
       rawOriginal.startsWith('/api/onboarding') ||
@@ -73,6 +79,19 @@ export function requireAuth(req: AuthenticatedRequest, res: Response, next: Next
     if (session) {
       req.user = session.user;
       return next();
+    }
+  }
+
+  // 2. Cookie token: ct_session_token
+  if (req.headers.cookie) {
+    const match = req.headers.cookie.match(/(?:^|;\s*)ct_session_token=([^;]+)/);
+    if (match) {
+      const cookieToken = decodeURIComponent(match[1]);
+      const session = authService.validateSession(cookieToken);
+      if (session) {
+        req.user = session.user;
+        return next();
+      }
     }
   }
 

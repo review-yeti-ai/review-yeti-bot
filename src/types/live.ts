@@ -1,7 +1,13 @@
 export type LiveStreamEventType =
   | 'persona:start'
   | 'persona:chunk'
+  | 'persona:reasoning'
+  | 'reasoning:chunk'
+  | 'persona:finding'
   | 'persona:complete'
+  | 'tool:start'
+  | 'tool:result'
+  | 'tool:error'
   | 'llm:prompt'
   | 'llm:token'
   | 'llm:error'
@@ -62,6 +68,45 @@ export interface TokenMetrics {
   estimatedCostUSD?: number;
 }
 
+export interface ReasoningChunkPayload {
+  jobId: string;
+  personaId: string;
+  reasoning: string;
+  turn?: number;
+  accumulatedLength?: number;
+  timestamp: string;
+}
+
+export interface ToolExecutionPayload {
+  jobId: string;
+  personaId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  output?: string;
+  outputLength?: number;
+  error?: string;
+  scope?: string;
+  isExhaustive?: boolean;
+  durationMs?: number;
+  turn?: number;
+  timestamp: string;
+}
+
+export interface LiveFindingPayload {
+  jobId: string;
+  personaId: string;
+  findingId: string;
+  severity: 'P0' | 'P1' | 'P2';
+  path: string;
+  line: number;
+  startLine?: number;
+  title: string;
+  description: string;
+  suggestion?: string;
+  replacementCode?: string;
+  timestamp: string;
+}
+
 export interface LiveStreamEventData {
   personaId?: string;
   charter?: string;
@@ -104,6 +149,25 @@ export interface LiveStreamEventData {
   path?: string;
   isError?: boolean;
   stream?: 'stdout' | 'stderr';
+  reasoning?: string;
+  tool?: string;
+  toolName?: string;
+  args?: Record<string, unknown> | any;
+  output?: string;
+  outputLength?: number;
+  error?: string;
+  scope?: string;
+  isExhaustive?: boolean;
+  findingId?: string;
+  finding?: any;
+  turn?: number;
+  severity?: 'P0' | 'P1' | 'P2' | string;
+  line?: number;
+  startLine?: number;
+  title?: string;
+  description?: string;
+  suggestion?: string;
+  replacementCode?: string;
   [key: string]: any;
 }
 

@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { timeBudgetMs } from '../support/timeBudget';
 import { describe, expect, it } from 'vitest';
 import {
   ReviewEventRejection,
@@ -1519,7 +1520,7 @@ describe('progress event redaction boundary', () => {
 
     expect(probe.status).toBe(0);
     expect(probe.signal).toBeNull();
-    expect((JSON.parse(probe.stdout) as { elapsed: number }).elapsed).toBeLessThan(1_500);
+    expect((JSON.parse(probe.stdout) as { elapsed: number }).elapsed).toBeLessThan(timeBudgetMs(1_500));
   });
 
   it('bounds component scanning across repeated URL-path authority lookalikes', () => {
@@ -1566,7 +1567,7 @@ describe('progress event redaction boundary', () => {
     expect(probe.signal).toBeNull();
     const output = JSON.parse(probe.stdout) as { code: string; elapsed: number };
     expect(output.code).toBe('invalid_field');
-    expect(output.elapsed).toBeLessThan(1_500);
+    expect(output.elapsed).toBeLessThan(timeBudgetMs(1_500));
   });
 
   it('terminates credential scanning for an overlong assignment label', () => {

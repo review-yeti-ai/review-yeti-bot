@@ -52,7 +52,7 @@ function evaluateGuard(guard: string | undefined, event: Event, dependencies: Re
       head_commit: { message: event.subject }, pull_request: { draft: event.draft, state: event.state },
     } }, needs: dependencies, always: () => true,
     startsWith: (value: string, prefix: string) => value.toLowerCase().startsWith(prefix.toLowerCase()),
-  }, { timeout: 100 }));
+  }, { timeout: 2000 }));
 }
 
 function admitted(id: string, event: Event, workflow = ci, dependencies = needs()): boolean {

@@ -2,10 +2,47 @@ import { Router, Request, Response } from 'express';
 import { LiveStreamBus } from '../live/liveStreamBus';
 import { authService } from '../dashboard/authService';
 import { logger } from '../utils/logger';
+import { resolveReviewDiff } from '../review/diffService';
 
 export function createLiveRouter(): Router {
   const router = Router();
   const bus = LiveStreamBus.getInstance();
+
+  /**
+   * GET /api/live/diff?jobId=...&path=...
+   * Serves structured changed files and diff hunks for live/active review inspection.
+   */
+  router.get('/diff', async (req: Request, res: Response) => {
+    const jobId = req.query.jobId as string;
+    if (!jobId || !jobId.trim()) {
+      return res.status(400).json({ success: false, error: 'Missing required query parameter: jobId' });
+    }
+
+    try {
+      const diff = await resolveReviewDiff(jobId.trim());
+      if (!diff) {
+        return res.status(404).json({ success: false, error: `Review diff not found for job ${jobId}`, jobId });
+      }
+
+      const targetPath = (req.query.path || req.query.file) as string;
+      if (targetPath) {
+        const filtered = diff.files.filter((f) => f.path === targetPath);
+        if (filtered.length === 0) {
+          return res.status(404).json({ success: false, error: `File '${targetPath}' not found in diff for job ${jobId}` });
+        }
+        return res.status(200).json({
+          ...diff,
+          totalFiles: filtered.length,
+          files: filtered,
+        });
+      }
+
+      return res.status(200).json(diff);
+    } catch (err: any) {
+      logger.error('Error fetching live review diff', { jobId, error: err?.message || err });
+      return res.status(500).json({ success: false, error: 'Internal error resolving review diff' });
+    }
+  });
 
   /**
    * GET /api/live/stream?jobId=...&token=...
