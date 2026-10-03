@@ -10,6 +10,8 @@ import {
   comparisonFilePathSchema, type ComparisonFileEvidence,
 } from './comparisonFiles';
 import { mergeBaseFromComparison, verifyGitDerivedDiff, type GitDiffSource } from './gitDiffSource';
+import { readFindingThreads } from './findingThreads';
+import type { PriorFindingThread } from '../review/findingConvergence';
 export type { ImmutableReviewPolicyFile } from '../review/authoritativeReviewIdentity';
 
 const positive = z.number().int().positive().safe();
@@ -236,6 +238,15 @@ export class AuthoritativeReviewReader {
       ...target, prNumber, headSha: current.head.sha, baseSha: current.base.sha,
       open: current.state === 'open' && !current.merged, draft: current.draft,
     }, ...(current.changed_files === undefined ? {} : { expectedFileCount: current.changed_files }) };
+  }
+
+  /** ADR 0002: the bot's finding review threads on this pull request (`pull_requests: read`). */
+  async findingThreads(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<PriorFindingThread[]> {
+    const { target } = this.route(input);
+    return readFindingThreads({
+      token: this.options.token, baseUrl: this.api, fetchImplementation: this.fetcher, timeoutMs: this.timeoutMs,
+      ...(signal ? { signal } : {}),
+    }, { owner: target.owner, repo: target.repo, prNumber: input.prNumber });
   }
 
   async currentCandidate(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<CurrentReviewCandidate> {

@@ -32,6 +32,8 @@ import {
 import { WorkerStatusPoller } from './workerStatusPoller';
 import { recordSupersededWorkerExit } from './workerSupersededExit';
 import { isReviewSuperseded } from '../review/reviewSupersession';
+import { readFindingThreads, type PullRequestRef } from '../github/findingThreads';
+import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
@@ -1775,6 +1777,11 @@ export async function runWorker(
           signal: rootAbortController.signal,
           isCurrentHead: poller ? () => poller.isCurrentHead() : undefined,
           ...publishingWorkerAdapters(workerEnv, token),
+          // ADR 0002: the bot's finding threads, read with this run's repository read token.
+          ...(isGitHubInstallationToken(String(workerEnv.GH_TOKEN || '').trim()) ? {
+            findingThreadReader: (pr: PullRequestRef) => readFindingThreads(
+              { token: String(workerEnv.GH_TOKEN).trim(), signal: rootAbortController.signal }, pr),
+          } : {}),
         });
       } catch (error) {
         // REL-1057: a newer head superseded this run. That is a terminal

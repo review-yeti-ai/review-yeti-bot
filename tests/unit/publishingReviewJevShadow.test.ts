@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { findingFingerprint } from '../../src/review/findingConvergence';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import { JEV_TRIAGE_LOG, laneQuestionKey } from '../../src/review/jevTriageShadow';
 import type { JevAskRequest, JevAsker, JevOutcome } from '../../src/gateway/jevClient';
@@ -220,6 +221,11 @@ describe('REL-1081: Jev triage shadow never changes the review', () => {
     };
     const h = harness('advisory', {
       jevTriageShadow: { asker: slow },
+      // ADR 0002: the advisory P2 is satisfied by its resolved thread, so the check is green and
+      // the terminal-success callback (which releases the slow Jev) runs.
+      findingThreadReader: vi.fn(async () => [{ fingerprint: findingFingerprint(finding()), severity: 'P2',
+        path: finding().path, line: finding().line, title: finding().title, resolved: true, outdated: false,
+        resolution: { author: 'author1', reason: 'Accepted: documented trade-off in the module header.' } }]),
       checkClient: {
         createCheck: vi.fn(async () => 4242),
         completeCheck: vi.fn(async () => { order.push('check'); }),

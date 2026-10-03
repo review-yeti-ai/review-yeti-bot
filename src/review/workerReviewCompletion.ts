@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { evaluateFindingConvergence, type PriorFindingThread } from './findingConvergence';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
 import type { CanonicalArbitration, ReviewChangedFile, ReviewFinding, ReviewLane } from './reviewCore';
@@ -381,6 +382,11 @@ export interface TrustedReviewCoverageContract {
   composedMaxTasks?: number;
   /** Exact changed-file evidence already read by the service for the admitted head. */
   changedFiles: readonly ReviewChangedFile[];
+  /**
+   * ADR 0002: the bot's finding review threads, read by the service for this pull request. Absent
+   * means none could be read, which leaves every in-diff P2 required.
+   */
+  findingThreads?: readonly PriorFindingThread[];
   /** Trusted service-side coverage and quorum decisions. */
   coverageComplete: boolean;
   quorumSatisfied: boolean;
@@ -808,7 +814,8 @@ export function storedCompletionShipCompleteReason(
   if (evidence.completedLanes !== expectedLanes) return 'gate-lane-missing';
   if (evidence.coverageComplete !== true || evidence.quorumSatisfied !== true) return 'gate-incomplete';
   if (evidence.infrastructureFailure !== false) return 'gate-infrastructure-failure';
-  if (evidence.verdict !== SHIP_VERDICT || evidence.p0Count !== 0 || evidence.p1Count !== 0) return 'gate-not-ship';
+  if (evidence.verdict !== SHIP_VERDICT || evidence.p0Count !== 0 || evidence.p1Count !== 0
+    || (evidence.p2Count !== undefined && evidence.p2Count !== 0)) return 'gate-not-ship';
   return storedLanesRefusal(result, expectedLanes, evidence.reviewEngine === 'composed' ? 'composed' : undefined);
 }
 
@@ -951,6 +958,7 @@ export function deriveCanonicalWorkerReviewEvidence(
       infrastructureFailure: false,
       p0Count: 0,
       p1Count: 0,
+      p2Count: 0,
       exemption: {
         kind: 'no-reviewable-content',
         auditDigest: noReviewableContentAuditDigest(expectedCoordinates, changedFiles),
@@ -1006,6 +1014,11 @@ export function deriveCanonicalWorkerReviewEvidence(
     infrastructureFailure: completion.result.personas.some(hasInfrastructureFailure),
     p0Count: canonical.metrics.p0Count,
     p1Count: canonical.metrics.p1Count,
+    // ADR 0002: the same convergence the worker's raw check applies, on the service's own diff
+    // and thread read. Only canonical findings count; a satisfied or out-of-diff P2 does not.
+    p2Count: evaluateFindingConvergence({
+      findings: canonical.findings, changedFiles, priorThreads: contract.findingThreads ?? [],
+    }).counts.requiredP2,
     expectedLanes: requiredIds.length,
     completedLanes: canonical.completedPersonas,
   };

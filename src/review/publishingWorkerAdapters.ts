@@ -6,6 +6,21 @@ import { HttpVerdictCacheBaseSource } from './verdictCacheBaseHttp';
 import { verdictCacheEnabledFor } from './verdictCache';
 import { HttpIncompleteP2RecoverySource } from './incompleteP2RecoveryHttp';
 import { HttpReviewExecutionCheckpointAdapter } from './reviewExecutionCheckpointHttp';
+import { HttpFindingThreadsPublisher } from './findingThreadsHttp';
+
+/** ADR 0002: the finding-thread publisher. Fail-soft: a publisher that cannot be built leaves the
+ * run without new threads; the check's required-finding decision does not depend on it. */
+function findingThreadsFor(env: Readonly<Record<string, string | undefined>>, token: string, endpoint: string):
+  { findingThreads?: HttpFindingThreadsPublisher } {
+  try {
+    return { findingThreads: new HttpFindingThreadsPublisher({
+      token, completionEndpoint: endpoint, runId: String(env.REVIEW_RUN_ID || '').trim(),
+      executionAttempt: Number(String(env.REVIEW_EXECUTION_ATTEMPT || '1').trim()),
+    }) };
+  } catch {
+    return {};
+  }
+}
 
 /** REL-1084: the prior-review read for incremental planning, only when the flag is on for this
  * repository. Fail-soft: a source that cannot be built leaves the run on a full review. */
@@ -46,6 +61,7 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
   verdictCacheBase?: HttpVerdictCacheBaseSource;
   incompleteP2Recovery?: HttpIncompleteP2RecoverySource;
   reviewCheckpoint?: HttpReviewExecutionCheckpointAdapter;
+  findingThreads?: HttpFindingThreadsPublisher;
 } {
   const endpoint = String(env.REVIEW_COMPLETION_URL || '').trim();
   const flag = String(env.REVIEW_AUTHORITATIVE_GATE || '').trim();
@@ -62,7 +78,7 @@ export function publishingWorkerAdapters(env: Readonly<Record<string, string | u
         incompleteP2Recovery: new HttpIncompleteP2RecoverySource({ token, completionEndpoint: endpoint,
           runId: String(env.REVIEW_RUN_ID ?? ''), executionAttempt: Number(env.REVIEW_EXECUTION_ATTEMPT) }),
       } : {}),
-      ...verdictCacheBaseFor(env, token, endpoint) }
+      ...verdictCacheBaseFor(env, token, endpoint), ...findingThreadsFor(env, token, endpoint) }
     : { completion: new HttpWorkerCompletionAdapter({ token, endpoint }), ...incrementalBaseFor(env, token, endpoint),
-      ...verdictCacheBaseFor(env, token, endpoint) };
+      ...verdictCacheBaseFor(env, token, endpoint), ...findingThreadsFor(env, token, endpoint) };
 }

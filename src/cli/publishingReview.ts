@@ -133,6 +133,12 @@ import { omittedSourcePathsOf, unavailablePatchFilesOf } from '../review/patchAv
 import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
 import { createPublishingProgress, type PublishingProgressReporter } from '../telemetry/publishingProgress';
+import {
+  evaluateFindingConvergence, renderConvergenceSummary,
+  type ConvergenceResult, type PriorFindingThread,
+} from '../review/findingConvergence';
+import type { PullRequestRef } from '../github/findingThreads';
+import type { FindingThreadsPublisher } from '../review/findingThreadsHttp';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -391,7 +397,16 @@ export {
 };
 export type { OpenAITransportConfig };
 
-const BLOCKING_SEVERITIES = new Set(['P0', 'P1']);
+/**
+ * ADR 0002: P0, P1 and P2 findings all block a merge. Which findings still block on a given head
+ * is decided by `evaluateFindingConvergence` (fixed findings drop, known findings keep their
+ * identity, a P2 the author resolved with a stated reason is satisfied, a P2 outside the head's
+ * diff is advisory). There is deliberately no environment switch: the policy is not a deployment
+ * option.
+ */
+export const REQUIRED_SEVERITIES: ReadonlySet<string> = new Set(['P0', 'P1', 'P2']);
+/** P0/P1 only: kept for the per-lane metric and the historical summary wording. */
+const CRITICAL_SEVERITIES = new Set(['P0', 'P1']);
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
@@ -985,6 +1000,14 @@ export interface PublishingReviewDeps {
   verdictCacheBase?: VerdictCacheBaseSource;
   /** REL-1085 test seam; production compares with this run's `GH_TOKEN`. */
   verdictCacheCompareReader?: ComparisonContentReader;
+  /**
+   * ADR 0002: reads the bot's finding review threads on this pull request. The entrypoint wires it
+   * with this run's `GH_TOKEN` (`pull_requests: read`). Absent, or a failed read, never fails the
+   * review: no P2 is then treated as resolved, so the check can only be stricter.
+   */
+  findingThreadReader?: (pr: PullRequestRef) => Promise<PriorFindingThread[]>;
+  /** ADR 0002: asks the service to publish new required findings as review threads. Best effort. */
+  findingThreads?: FindingThreadsPublisher;
 }
 
 /**
@@ -992,7 +1015,8 @@ export interface PublishingReviewDeps {
  * severity so the blocking ones are read first, and every entry carries its
  * file and line so a reader can navigate without the annotation view.
  */
-export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number): string {
+export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount: number,
+  notes?: ReadonlyMap<ReviewFinding, string>): string {
   if (findings.length === 0) {
     return 'No findings survived canonical arbitration for this head.';
   }
@@ -1023,10 +1047,12 @@ export function renderFindingsMarkdown(findings: ReviewFinding[], blockingCount:
         reporters > 1 ? `reported by ${reporters} lanes` : '',
         adjusted ? `filed ${adjusted.from}, re-filed ${severity}: ${adjusted.reason}` : '',
       ].filter(Boolean);
+      const note = notes?.get(finding);
+      if (note) marks.push(note);
       return `- **${severity}**${downgradeMarker} ${where} — ${title}${marks.length ? ` _(${marks.join('; ')})_` : ''}${body ? `\n  ${body.replace(/\n/gu, '\n  ')}` : ''}`;
     });
   return [
-    `${findings.length} finding(s), ${blockingCount} blocking (P0/P1).`,
+    `${findings.length} finding(s), ${blockingCount} required (P0/P1/P2).`,
     '',
     ...lines,
   ].join('\n');
@@ -2315,9 +2341,37 @@ export async function runPublishingReviewWorker(
       // set the conclusion may be computed from.
       const findings = (canonical.findings || []) as ReviewFinding[];
       const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
-      const blocking = findings.filter(
-        (finding) => BLOCKING_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
-      );
+      const criticalCount = findings.filter(
+        (finding) => CRITICAL_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
+      ).length;
+      // ADR 0002: every severity is required; convergence decides which findings still block on
+      // this head. Thread state is read with this run's own read token; a failed read leaves no P2
+      // resolved, so the conclusion can only be stricter, never looser.
+      let priorFindingThreads: PriorFindingThread[] = [];
+      let findingThreadsRead = false;
+      if (deps.findingThreadReader) {
+        try {
+          const pr = { owner: identity.owner, repo: identity.repoName, prNumber: identity.prNumber };
+          priorFindingThreads = await deps.findingThreadReader(pr);
+          findingThreadsRead = true;
+        } catch (error) {
+          logger.warn('Finding review threads could not be read; no P2 is treated as resolved', {
+            runId: identity.runId,
+            reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          });
+        }
+      }
+      const convergence: ConvergenceResult<ReviewFinding> = evaluateFindingConvergence({
+        findings, changedFiles, priorThreads: priorFindingThreads,
+      });
+      const blocking = convergence.required;
+      const requiredFindings = new Set<ReviewFinding>(blocking);
+      const convergenceNotes = new Map<ReviewFinding, string>(convergence.entries.flatMap((entry) => {
+        if (entry.status === 'satisfied') return [[entry.finding, `satisfied: thread resolved by @${entry.resolution?.author ?? 'unknown'} with a stated reason`] as [ReviewFinding, string]];
+        if (entry.status === 'outside-diff') return [[entry.finding, 'advisory: outside this head\'s diff'] as [ReviewFinding, string]];
+        if (entry.status === 'carried') return [[entry.finding, `raised before (${entry.fingerprint})`] as [ReviewFinding, string]];
+        return [];
+      }));
       // A file whose header could not be read was never sent to the panel, so no
       // finding can exist for it and the verdict describes less than the diff. That
       // is the "absent capability, green check" shape: fail closed and name the
@@ -2394,7 +2448,7 @@ export async function runPublishingReviewWorker(
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
       const pBlocking = pFindings.filter((f: any) =>
-        BLOCKING_SEVERITIES.has(String(f?.severity || 'P2').toUpperCase())
+        CRITICAL_SEVERITIES.has(String(f?.severity || 'P2').toUpperCase())
       );
       return {
         id: p.id,
@@ -2477,6 +2531,11 @@ export async function runPublishingReviewWorker(
     const exemptionLabel = panelResult.noReviewableContentKind === 'lockfile-only'
       ? 'lockfile-only'
       : 'documentation-only';
+    // ADR 0002: a SHIP verdict that still carries a required P2 is not a SHIP. The canonical
+    // verdict (evidence for the service) stays SHIP; the published title and summary say why the
+    // check is red, so the two never read as "SHIP" next to a failure again.
+    const requiredP2Only = String(verdict).toUpperCase() === 'SHIP' && criticalCount === 0
+      && convergence.counts.requiredP2 > 0;
     const title = notApplicable
       ? 'Review Yeti: NO_REVIEW (not applicable)'
       : gracefulPartial
@@ -2487,7 +2546,9 @@ export async function runPublishingReviewWorker(
           ? `Review Yeti: SHIP (${exemptionLabel})`
           : fastShipApproved
             ? 'Review Yeti: SHIP (fast-ship)'
-            : `Review Yeti: ${verdict}`;
+            : requiredP2Only
+              ? `Review Yeti: FIX_FIRST (${convergence.counts.requiredP2} required P2)`
+              : `Review Yeti: ${verdict}`;
 
     const safeClassifierRationale = fastShipApproved && fastShipResult?.classifierRationale
       ? fastShipResult.classifierRationale.replace(/[`<>\r\n]/gu, ' ').trim().slice(0, 500)
@@ -2525,14 +2586,18 @@ export async function runPublishingReviewWorker(
             ? `Evidence collection reached its 20-minute cutoff at \`${identity.headSha}\`. The final closeout preserved and published ${findings.length} validated finding(s); ${panelResult.gracefulExit?.pendingTaskIds.length ?? 0} risk-ordered task(s) remain. This is fail-closed, not an approval. ${panelResult.gracefulExit?.checkpointPersistenceFailed ? 'Checkpoint persistence failed, so the rerun will safely revalidate work instead of trusting missing state.' : 'An exact-head rerun resumes the durable completed-task checkpoint.'}`
             : unreportedNoVerdict
             ? `No review verdict at \`${identity.headSha}\`: ${missingIds.size} configured task(s) ran without a valid result. This is not a finding about the diff; request an exact-head review after correcting the malformed output.`
-            : `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
+            : requiredP2Only
+              ? `Verdict \`FIX_FIRST\` at \`${identity.headSha}\`: the panel verdict is \`SHIP\`, but ${convergence.counts.requiredP2} required P2 finding(s) remain.`
+              : `Verdict \`${verdict}\` at \`${identity.headSha}\`.`,
           // REL-1139: the same shared decision the trusted completion side re-evaluates.
           ...(moderationSkipped ? [EMPTY_MODERATION_SKIP_REASON] : []),
           notApplicable
             ? 'Review not required: every changed path matches `auto_review.ignore_patterns` (repository-declared not-applicable). No panel ran; this check claims no verdict and is not review evidence.'
             : (panelResult as any).zeroLaneNonEvidence
               ? 'No persona paths matched changed files; zero-lane run is not review evidence.'
-            : `Findings: ${findings.length} (blocking P0/P1: ${blocking.length}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+            : `Findings: ${findings.length} (blocking P0/P1: ${criticalCount}; ${rawFindings.length} raw persona finding(s) before clustering).`,
+          ...(notApplicable || (panelResult as any).zeroLaneNonEvidence
+            ? [] : renderConvergenceSummary(convergence, { threadsRead: findingThreadsRead })),
           ...(discardedFindingCount > 0
             ? [`${discardedFindingCount} raw finding(s) were discarded as unanchorable and are not counted above.`]
             : []),
@@ -2569,7 +2634,7 @@ export async function runPublishingReviewWorker(
           `- Attempt ${source.executionAttempt}: ${source.rawFindingCount} raw P2 finding(s); [original App check](https://github.com/${identity.owner}/${identity.repoName}/pull/${identity.prNumber}/checks?check_run_id=${source.workerCheckId}); Gate \`${source.gateCheckId}\`; worker result \`${source.workerResultDigest}\`.`),
       ].join('\n'));
     }
-    const checkText = [renderFindingsMarkdown(findings, blocking.length),
+    const checkText = [renderFindingsMarkdown(findings, blocking.length, convergenceNotes),
       ...(p2RecoveryContext ? ['### Retained P2 observations (original evidence)',
         'These original observations remain advisory and were supplied to the full review above. Their source records are immutable; this section does not attribute them to a new reviewer.',
         ...p2RecoveryContext.findings.map((entry) =>
@@ -2858,12 +2923,44 @@ export async function runPublishingReviewWorker(
             path: String(finding.path),
             start_line: line,
             end_line: line,
-            annotation_level: BLOCKING_SEVERITIES.has(severity) ? 'failure' as const : 'warning' as const,
+            annotation_level: requiredFindings.has(finding) ? 'failure' as const
+              : REQUIRED_SEVERITIES.has(severity) ? 'notice' as const : 'warning' as const,
             title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
             message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
           };
         }),
     });
+      // ADR 0002: publish this head's new required findings as review threads (through the service,
+      // which holds the only `pull_requests: write` token) and let it resolve the bot's own outdated
+      // threads whose finding was not reported again. Strictly after the check is complete and best
+      // effort: the conclusion above never depends on it, and a failure here is only logged. Skipped
+      // when thread state could not be read, because every finding would then look new.
+      if (deps.findingThreads && findingThreadsRead && !notApplicable && !gracefulPartial && !unreportedNoVerdict) {
+        try {
+          const publish = convergence.entries
+            .filter((entry) => entry.status === 'new' && entry.blocking
+              && typeof entry.finding.path === 'string' && Number.isSafeInteger(Number(entry.finding.line))
+              && String(entry.finding.title || '').length > 0 && String(entry.finding.title).length <= 1_000
+              && String(entry.finding.body || '').length > 0)
+            .slice(0, 30)
+            .map((entry) => ({
+              fingerprint: entry.fingerprint,
+              severity: entry.severity,
+              path: String(entry.finding.path),
+              line: Number(entry.finding.line),
+              title: String(entry.finding.title),
+              body: String(entry.finding.body).slice(0, 16_000),
+            }));
+          const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, 400);
+          const published = await deps.findingThreads.publish({ headSha: identity.headSha, publish, reported }, deps.signal);
+          logger.info('Finding review threads published', { runId: identity.runId, ...published });
+        } catch (error) {
+          logger.warn('Finding review threads were not published', {
+            runId: identity.runId,
+            reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          });
+        }
+      }
     }
 
     // A not-applicable run claims no verdict, so there is no evidence to report:

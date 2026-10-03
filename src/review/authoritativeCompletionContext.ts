@@ -41,7 +41,7 @@ export interface AuthoritativeCompletionContextOptions {
   /** Mint only a repository-scoped read token. Neither credentials nor readers are cached. */
   readerFactory: (repository: ReviewRepositoryIdentity, signal: AbortSignal) =>
     Promise<Pick<AuthoritativeReviewReader, 'currentCandidate' | 'exactCurrentDiff'>
-      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'comparisonContent'>>>;
+      & Partial<Pick<AuthoritativeReviewReader, 'commitComparison' | 'comparisonContent' | 'findingThreads'>>>;
   /** Already configured with the service's trusted central policy/ref/transport. */
   publishingResolver: Pick<AuthoritativePublishingResolver, 'resolve'>;
   /** Whole operation, including storage, token mint, policy refresh and body reads. */
@@ -269,9 +269,18 @@ export function createAuthoritativeCompletionContext(options: AuthoritativeCompl
           signal: abort.signal,
         }))).verified : false;
       }
+      // ADR 0002: the bot's finding threads, so the Gate applies the same required-finding
+      // convergence as the raw check. A failed read is not an outage: it leaves no P2 resolved,
+      // which can only make the Gate stricter.
+      let findingThreads: Awaited<ReturnType<NonNullable<typeof reader.findingThreads>>> | undefined;
+      if (reader.findingThreads) {
+        try { findingThreads = await step(() => reader.findingThreads!({ ...target }, abort.signal)); }
+        catch { checkDeadline(); findingThreads = undefined; }
+      }
       checkDeadline();
       return { current: { ...final, policyDigest }, coverage: {
         expectedPersonaIds, changedFiles: files,
+        ...(findingThreads ? { findingThreads } : {}),
         ...(stored.config.review_engine === 'composed' ? {
           reviewEngine: 'composed' as const,
           composedChangedPaths: applicability.effectiveFiles.map((file) => file.path),
