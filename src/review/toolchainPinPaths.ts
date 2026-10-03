@@ -16,33 +16,6 @@
  * Lockfiles are not listed: the hunk filter owns them (`classifyLockfileOrGeneratedPath`),
  * and a lockfile that adds a package is routed by `newPackageLockfileReview`.
  */
-const TOOLCHAIN_PIN_OR_MANIFEST_BASENAMES = new Set([
-  // Toolchain / runtime version pins.
-  '.tool-versions',
-  '.nvmrc',
-  '.node-version',
-  '.python-version',
-  '.ruby-version',
-  '.java-version',
-  '.go-version',
-  '.bun-version',
-  '.terraform-version',
-  '.sdkmanrc',
-  'rust-toolchain',
-  'rust-toolchain.toml',
-  // Dependency manifests and pins without a data/config extension.
-  'go.mod',
-  'go.work',
-  'gemfile',
-  'pipfile',
-  '.terraform.lock.hcl',
-]);
-
-const REQUIREMENTS_MANIFEST = /^(?:requirements|constraints)(?:[._-][\w.-]*)?\.(?:txt|in)$/u;
-
-/** The file pins a toolchain version or declares dependencies (REL-1136). */
-export function isToolchainPinOrDependencyManifestPath(filePath: string): boolean {
-  if (typeof filePath !== 'string' || filePath.length === 0) return false;
-  const basename = (filePath.replace(/\\/g, '/').split('/').pop() || '').toLowerCase();
-  return TOOLCHAIN_PIN_OR_MANIFEST_BASENAMES.has(basename) || REQUIREMENTS_MANIFEST.test(basename);
-}
+// The basenames and the predicate live in `./pathRiskPolicy.js`, shared with the GitHub Action
+// pipeline's partition admission. Edit them there.
+export { isToolchainPinOrDependencyManifestPath } from './pathRiskPolicy';

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 namespace=ct-review-system
-host="${REVIEW_BOT_HOST:-https://review-bot.example.com}"
+host="${REVIEW_BOT_HOST:?set REVIEW_BOT_HOST to the service origin (https://...)}"
 
 echo "Verifying zero-downtime rolling update status on DOKS cluster cluster-ny1..."
 kubectl -n "$namespace" rollout status statefulset/omniroute --timeout=5m
