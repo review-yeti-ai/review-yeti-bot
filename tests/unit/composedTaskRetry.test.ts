@@ -79,12 +79,13 @@ function response(content: unknown) {
     usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
 }
 
-type Behaviour = (input: { taskId: string; nonce: string; attempt: number }) => unknown;
+type Behaviour = (input: { taskId: string; nonce: string; attempt: number; callInAttempt: number }) => unknown;
 
 /** A client that records provider calls and distinct attempts (nonces) per task. */
 function recordingClient(behaviour: Behaviour, onCall?: () => void) {
   const callsByTask = new Map<string, number>();
   const noncesByTask = new Map<string, string[]>();
+  const callsByNonce = new Map<string, number>();
   let planCalls = 0;
   const complete = vi.fn(async (request: any) => {
     onCall?.();
@@ -99,7 +100,8 @@ function recordingClient(behaviour: Behaviour, onCall?: () => void) {
     const nonces = noncesByTask.get(taskId) ?? [];
     if (!nonces.includes(nonce)) nonces.push(nonce);
     noncesByTask.set(taskId, nonces);
-    const outcome = behaviour({ taskId, nonce, attempt: nonces.indexOf(nonce) + 1 });
+    callsByNonce.set(nonce, (callsByNonce.get(nonce) ?? 0) + 1);
+    const outcome = behaviour({ taskId, nonce, attempt: nonces.indexOf(nonce) + 1, callInAttempt: callsByNonce.get(nonce)! });
     if (outcome instanceof Error) throw outcome;
     return response(outcome);
   });
@@ -241,6 +243,47 @@ describe('composed task-level retry', () => {
     expect(result.optionalFailures[0].error).toContain('[src/app.ts]');
     expect(result.quorum.satisfied).toBe(false);
   }, 30_000);
+
+  it('names the evidence cutoff when a stalled task cannot fit another attempt', async () => {
+    // The first stalled call jumps the injected clock to 15 minutes in, so the failed attempt
+    // (at least 15 minutes) cannot be repeated in the 5 minutes left before the 20-minute cutoff.
+    const startMs = 1_700_000_000_000;
+    let nowMs = startMs;
+    const harness = recordingClient(({ taskId, nonce }) => {
+      if (taskId !== 'task-2') return clean(taskId, nonce);
+      nowMs = Math.max(nowMs, startMs + 15 * 60_000);
+      return stall();
+    });
+    const result = await executeComposedReview({
+      config: configFor(), changedFiles, repository: 'acme/app', headSha: '2'.repeat(40), client: harness.client,
+      deadlineBudget: { deadlineAtMs: startMs + 20 * 60_000, timeoutMs: 20 * 60_000, terminalBound: true },
+      deadlineNow: () => nowMs,
+    });
+
+    expect(harness.attempts('task-2')).toBe(1);
+    expect(result.optionalFailures).toEqual([expect.objectContaining({ id: 'task-2', failureClass: 'timeout' })]);
+    expect(result.optionalFailures[0].error)
+      .toContain('stalled on a provider timeout in 1 fresh attempt(s) (no time left before the evidence cutoff for another attempt)');
+  }, 20_000);
+
+  it('names the turn budget when a stalled task cannot be funded for another attempt', async () => {
+    // A 7-turn review: plan (1) + task-1 (1) leaves task-2 a partial 5-turn tail. It spends two
+    // read-only turns and then stalls; the 3 turns left cannot fund a bound retry (4).
+    vi.stubEnv('COMPOSED_ENGINE_MAX_TURNS', '7');
+    const harness = recordingClient(({ taskId, nonce, callInAttempt }) => {
+      if (taskId !== 'task-2') return clean(taskId, nonce);
+      return callInAttempt <= 2 ? { tool: 'read_file', args: { path: 'src/app.ts' } } : stall();
+    });
+    const result = await executeComposedReview({
+      config: configFor(1_200, 6), changedFiles, repository: 'acme/app', headSha: '3'.repeat(40), client: harness.client,
+    });
+
+    expect(harness.attempts('task-2')).toBe(1);
+    expect(result.optionalFailures).toEqual([expect.objectContaining({ id: 'task-2', failureClass: 'timeout' })]);
+    expect(result.optionalFailures[0].error)
+      .toContain('stalled on a provider timeout in 1 fresh attempt(s) (no review turn budget left for another attempt)');
+    expect(result.personas.map((lane) => lane.id)).toEqual(['task-1', 'task-3']);
+  }, 20_000);
 
   it('starts no retry that cannot finish before the evidence cutoff', async () => {
     // The injected clock advances four minutes per task-2 call. One attempt (a final turn, one

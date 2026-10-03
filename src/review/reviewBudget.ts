@@ -167,6 +167,13 @@ const TEST_PATTERNS: readonly RegExp[] = [
   /[a-z0-9]Tests?\.[^/]+$/u,
 ];
 
+/**
+ * Read-only view of the rank tables. The Action pipeline's plain-JS copy (`admissionRiskRank` in
+ * `.github/workflows/pipelines/incremental-review-scope.js`) is asserted equal to these by
+ * `tests/unit/incrementalReviewScope.test.ts`; change both in the same change.
+ */
+export const REVIEW_BUDGET_RANK_TABLES = Object.freeze({ ciIac: CI_IAC_PATTERNS, tests: TEST_PATTERNS });
+
 export function classifyBudgetCategory(filePath: string): BudgetCategory {
   if (isSecuritySensitivePath(filePath)) return 'security-sensitive';
   const path = filePath.replace(/\\/gu, '/');
