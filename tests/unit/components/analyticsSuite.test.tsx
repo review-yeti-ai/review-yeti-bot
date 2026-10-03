@@ -90,7 +90,7 @@ describe('Analytics Dashboard Tremor Suite', () => {
     it('renders RepoSpendBarChart with USD ranking and repo bars', () => {
       const mockRepos = [
         { repo: 'reviewyeti-ai/review-yeti-bot', spendUsd: 14.2, reviewCount: 42, avgSpendPerPR: 0.33, totalTokens: 85000 },
-        { repo: 'exampleorg/example-api', spendUsd: 8.5, reviewCount: 20, avgSpendPerPR: 0.42, totalTokens: 45000 },
+        { repo: 'example/sample-cdr', spendUsd: 8.5, reviewCount: 20, avgSpendPerPR: 0.42, totalTokens: 45000 },
       ];
 
       render(<RepoSpendBarChart data={mockRepos} totalSpendUsd={22.7} monthlyBudgetUsd={500} />);
