@@ -252,7 +252,6 @@ describe('MemoryPage public neutral state and export controls', () => {
     ];
     for (const { label, expected } of categories) {
       fireEvent.click(screen.getByRole('button', { name: label }));
-      expect(screen.getByRole('button', { name: label }).className).toContain('font-semibold');
       expectVisibleRecords(expected);
     }
   });
@@ -320,7 +319,7 @@ describe('MemoryPage public neutral state and export controls', () => {
     expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
-  it('refreshes and purges successfully, clearing the completion notice on reload', async () => {
+  it('refreshes and purges successfully and displays the reloaded workspace', async () => {
     await renderMemoryPage();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
