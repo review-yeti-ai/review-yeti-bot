@@ -98,8 +98,7 @@ function AnalyticsDashboardContent() {
         setAvailableRepos(Array.from(new Set(repoNames)));
       })
       .catch(() => {
-        // Fallback default repos
-        setAvailableRepos(['reviewyeti-ai/review-yeti-bot', 'reviewyeti-ai/example-api', 'reviewyeti-ai/example-meta']);
+        setAvailableRepos([]);
       });
   }, []);
 

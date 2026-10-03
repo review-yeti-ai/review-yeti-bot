@@ -189,62 +189,60 @@ export function LiveSwarmTopologyCanvas({
     ];
 
     // 3. Tier 3: Autonomous Swarm Agents
-    const fallbackTasks: SwarmTaskItem[] = [
+    const fallbackTasks: LiveSwarmTask[] = [
       {
         id: 'task_sec_boundary',
         dimension: 'security',
-        description: 'Secret redaction & edge boundary fences',
         paths: ['src/gateway/edgeCompactionEngine.ts'],
         priority: 1,
-        status: 'IN_FLIGHT',
-        progress: 75,
+        status: 'COMPLETED',
+        progress: 100,
         findingsCount: 0,
-        tokensBurned: 3800,
+        tokensBurned: 6200,
         costUSD: 0.0025,
         budgetUSD: 0.0125,
-        turn: 1,
+        turn: 4,
         maxTurns: 20,
-        lastMessage: 'Validating secret scanning, token redaction, and boundary fences...',
-        durationMs: 1400,
+        lastMessage: 'Security perimeter clean. 0 secrets detected.',
+        durationMs: 4120,
       },
       {
         id: 'task_arch_compaction',
         dimension: 'architecture',
-        description: 'Context compaction audit & AST depth',
         paths: ['src/gateway/edgeCompactionEngine.ts', 'cf-orchestrator/src/worker.ts'],
         priority: 2,
         status: 'IN_FLIGHT',
-        progress: 90,
+        progress: 68,
         findingsCount: 1,
-        tokensBurned: 7600,
-        costUSD: 0.0052,
+        tokensBurned: 9320,
+        costUSD: 0.0058,
         budgetUSD: 0.0125,
-        turn: 3,
+        turn: 8,
         maxTurns: 20,
-        lastMessage: 'Context compaction: 4.2x ratio achieved on unified diff',
-        durationMs: 2800,
+        tokensPerSec: 142,
+        lastMessage: 'Inspecting AST outline compaction depth for large diffs',
+        durationMs: 8450,
       },
       {
         id: 'task_perf_worker_budget',
         dimension: 'performance',
-        description: 'Worker CPU execution time & memory limits',
         paths: ['cf-orchestrator/src/worker.ts'],
         priority: 3,
-        status: 'PENDING',
-        progress: 20,
+        status: 'IN_FLIGHT',
+        progress: 45,
         findingsCount: 0,
-        tokensBurned: 3200,
+        tokensBurned: 4100,
         costUSD: 0.0022,
         budgetUSD: 0.0125,
-        turn: 3,
+        turn: 5,
         maxTurns: 20,
-        lastMessage: 'Queued for Worker CPU/memory budget verification',
-        durationMs: 400,
+        tokensPerSec: 110,
+        lastMessage: 'Evaluating sub-50ms CPU execution budget on Cloudflare Edge',
+        durationMs: 3890,
       },
       {
         id: 'task_test_coverage',
         dimension: 'testing',
-        description: 'Route invariants & edge test contracts',
         paths: ['cf-orchestrator/test/dashboardRoutes.test.ts'],
         priority: 4,
         status: 'PENDING',
@@ -260,7 +258,7 @@ export function LiveSwarmTopologyCanvas({
       },
     ];
 
-    const activeTasks = swarmTasks.length > 0 ? swarmTasks : fallbackTasks;
+    const activeTasks = (swarmTasks && swarmTasks.length > 0) ? swarmTasks : fallbackTasks;
 
     const agentNodes: TopologyNodeData[] = activeTasks.map((t) => {
       const isSec = t.dimension === 'security';
@@ -268,10 +266,10 @@ export function LiveSwarmTopologyCanvas({
       const isPerf = t.dimension === 'performance';
       const isTest = t.dimension === 'testing';
 
-      const promptTok = t.promptTokens ?? (isSec ? 5900 : isArch ? 8400 : 3200);
-      const complTok = t.completionTokens ?? (isArch ? 920 : 450);
+      const promptTok = t.promptTokens ?? 0;
+      const complTok = t.completionTokens ?? 0;
       const totalTok = t.tokensBurned ?? (promptTok + complTok);
-      const taskCost = t.costUSD ?? (isArch ? 0.0058 : isSec ? 0.0025 : 0.0022);
+      const taskCost = t.costUSD ?? 0;
       const taskBudget = t.budgetUSD ?? 0.0125;
 
       return {
@@ -282,23 +280,25 @@ export function LiveSwarmTopologyCanvas({
           ? 'Architecture Auditor'
           : isPerf
           ? 'Budget Guardian'
-          : 'Contract Verifier',
+          : isTest
+          ? 'Contract Verifier'
+          : `Agent: ${t.dimension.toUpperCase()}`,
         subtitle: `Subagent: ${t.dimension.toUpperCase()}`,
         type: 'swarm_agent',
         tier: 3,
         status: t.status === 'COMPLETED' ? 'HEALTHY' : t.status === 'IN_FLIGHT' ? 'IN_FLIGHT' : 'PENDING',
-        health: t.status === 'COMPLETED' ? 100 : 98.5,
-        latencyMs: t.durationMs || 1200,
-        progress: t.progress ?? (t.status === 'COMPLETED' ? 100 : t.status === 'IN_FLIGHT' ? 60 : 0),
+        health: t.status === 'COMPLETED' ? 100 : t.status === 'IN_FLIGHT' ? 98.5 : 100,
+        latencyMs: t.durationMs || 0,
+        progress: t.progress ?? (t.status === 'COMPLETED' ? 100 : 0),
         tokensBurned: totalTok,
         budgetUsedUSD: taskCost,
         budgetMaxUSD: taskBudget,
-        activeTurn: t.turn ?? (isArch ? 3 : isSec ? 1 : 2),
+        activeTurn: t.turn ?? 0,
         maxTurns: t.maxTurns ?? 20,
         metrics: {
-          tokensPerSec: t.status === 'IN_FLIGHT' ? (t.tokensPerSec || 142) : 0,
-          turnsCount: t.turn ?? (isArch ? 3 : 2),
-          compactionRatio: isArch ? compaction?.compactionRatio || 4.2 : undefined,
+          tokensPerSec: t.status === 'IN_FLIGHT' ? (t.tokensPerSec || 0) : 0,
+          turnsCount: t.turn ?? 0,
+          compactionRatio: isArch ? compaction?.compactionRatio : undefined,
           activeFiles: t.paths,
           promptTokens: promptTok,
           completionTokens: complTok,

@@ -51,7 +51,9 @@ export function OverviewMetrics({ stats, onUpdateStats }: OverviewMetricsProps) 
                 {totalReviews.toLocaleString()}
               </Metric>
               <div className="flex items-center justify-between text-[11px] text-zinc-400 mt-1 font-mono">
-                <span className="text-emerald-400">100% automated enforcement</span>
+                <span className="text-emerald-400">
+                  {totalReviews > 0 ? '100% automated enforcement' : 'Enforcement Standby'}
+                </span>
                 <span className="text-zinc-500 text-[10px]">Today: {todaysReviews}</span>
               </div>
             </div>
@@ -182,23 +184,22 @@ export function OverviewMetrics({ stats, onUpdateStats }: OverviewMetricsProps) 
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <FindingsDeltaBadge
-            findingsDelta={
-              (stats as any)?.findingsDelta || {
-                initialFindings: 8,
-                latestFindings: 2,
-                resolvedFindings: 6,
-                newFindings: 0,
-                persistentFindings: 2,
-                netChange: -6,
-              }
-            }
-          />
-          <span className="linear-kbd text-[9px] font-mono text-indigo-300">
-            Moving 24h Window
-          </span>
-        </div>
+        {(stats as any)?.findingsDelta ? (
+          <div className="flex items-center gap-2">
+            <FindingsDeltaBadge
+              findingsDelta={(stats as any)?.findingsDelta}
+            />
+            <span className="linear-kbd text-[9px] font-mono text-indigo-300">
+              Moving 24h Window
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="linear-kbd text-[9px] font-mono text-zinc-500">
+              Moving 24h Window — Standby
+            </span>
+          </div>
+        )}
       </div>
 
       <SpendingCapModal

@@ -146,8 +146,8 @@ export async function resolveReviewDiff(jobId: string): Promise<ReviewDiffRespon
     if ((matchedLog as any).snapshot) {
       return parseSnapshotDiff(cleanJobId, (matchedLog as any).snapshot);
     }
-    // Synthetic or test review fallback
-    if (cleanJobId.startsWith('job-test-') || (matchedLog as any).isSynthetic) {
+    // Synthetic or test review fallback (strictly gated behind test environment)
+    if ((cleanJobId.startsWith('job-test-') || (matchedLog as any).isSynthetic) && process.env.NODE_ENV === 'test') {
       return generateSyntheticDiff(cleanJobId, matchedLog.repo || 'exampleorg/example-api', matchedLog.prNumber || 108, matchedLog.title);
     }
   }
@@ -189,8 +189,8 @@ export async function resolveReviewDiff(jobId: string): Promise<ReviewDiffRespon
     }
   }
 
-  // Tier 4: Synthetic generation if jobId indicates a test or demo job
-  if (cleanJobId.startsWith('job-test-') || cleanJobId.startsWith('synthetic-') || cleanJobId === 'default-job') {
+  // Tier 4: Synthetic generation if jobId indicates a test or demo job in test environments
+  if ((cleanJobId.startsWith('job-test-') || cleanJobId.startsWith('synthetic-') || cleanJobId === 'default-job') && process.env.NODE_ENV === 'test') {
     return generateSyntheticDiff(cleanJobId, 'reviewyeti-ai/yeti-pr-reviewer', 108, 'Synthetic PR Review Diff');
   }
 

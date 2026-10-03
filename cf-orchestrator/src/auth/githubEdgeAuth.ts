@@ -152,18 +152,7 @@ export async function fetchLivePullRequests(
     });
 
     if (!res.ok) {
-      // Return representative active PR for monitored repo if GitHub API is rate-limited or unconfigured
-      return [
-        {
-          number: 1282,
-          title: `PR #1282: Edge Swarm Context Compaction & Live Quality Gates`,
-          state: 'open',
-          headSha: '3a377ff1',
-          author: { login: 'reviewyeti-ai-bot', avatarUrl: 'https://avatars.githubusercontent.com/u/1000' },
-          updatedAt: new Date().toISOString(),
-          reviewStatus: { status: 'running', findingsCount: 0 },
-        },
-      ];
+      return [];
     }
 
     const pulls = (await res.json()) as any[];
@@ -183,3 +172,65 @@ export async function fetchLivePullRequests(
     return [];
   }
 }
+
+export async function fetchLivePullRequestDiff(
+  env: any,
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<{ success: boolean; jobId?: string; totalFiles: number; files: any[] } | null> {
+  const token = await getInstallationToken(env, owner, repo);
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github.v3+json',
+    'User-Agent': 'ReviewYeti-Edge/2.4',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/files`, {
+      headers,
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const filesData = (await res.json()) as any[];
+    const files = filesData.map((f: any) => {
+      const hunks: any[] = [];
+      if (f.patch) {
+        const patchLines = f.patch.split('\n');
+        let currentHunk: any = null;
+        for (const line of patchLines) {
+          if (line.startsWith('@@')) {
+            currentHunk = { header: line, lines: [] };
+            hunks.push(currentHunk);
+          } else if (currentHunk) {
+            currentHunk.lines.push(line);
+          }
+        }
+      }
+
+      return {
+        path: f.filename,
+        oldPath: f.previous_filename || f.filename,
+        changeType: f.status === 'added' ? 'added' : f.status === 'removed' ? 'deleted' : 'modified',
+        additions: f.additions || 0,
+        deletions: f.deletions || 0,
+        patch: f.patch,
+        hunks: hunks.length > 0 ? hunks : undefined,
+      };
+    });
+
+    return {
+      success: true,
+      totalFiles: files.length,
+      files,
+    };
+  } catch {
+    return null;
+  }
+}
+

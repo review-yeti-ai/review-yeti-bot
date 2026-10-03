@@ -176,34 +176,7 @@ export function FiveStepWizard() {
 
   // Step 5 actions
   const handleRunDiagnostic = async () => {
-    try {
-      const res = await runDiagnosticScan({ appId: appConfig.appId });
-      if (res && res.success) {
-        return res;
-      }
-    } catch {}
-
-    // Default simulation fallback
-    return {
-      success: true,
-      probe1_webhook: { status: 'accepted', deliveryId: `del_${Date.now()}`, latencyMs: 38 },
-      probe2_latency: {
-        activeProviders: 4,
-        avgLatencyMs: 110,
-        providers: [
-          { id: 'openai', latencyMs: 95, ttftMs: 42 },
-          { id: 'anthropic', latencyMs: 88, ttftMs: 35 },
-          { id: 'grok', latencyMs: 125, ttftMs: 50 },
-          { id: 'deepseek', latencyMs: 130, ttftMs: 55 },
-        ],
-      },
-      probe3_arbitration: {
-        personasEvaluated: 11,
-        distinctProvidersUsed: 4,
-        quorumPassed: true,
-        verdict: 'SHIP',
-      },
-    };
+    return await runDiagnosticScan({ appId: appConfig.appId });
   };
 
   // Navigation handlers
