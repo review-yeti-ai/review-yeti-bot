@@ -43,6 +43,7 @@ import { createIncompleteP2RecoveryHandler, type IncompleteP2RecoveryQueryable }
 import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
 import { createVerdictCacheBaseHandler } from './verdictCacheBaseRoute';
 import { createReviewExecutionCheckpointHandler, type CheckpointDatabase } from './reviewExecutionCheckpointRoute';
+import { createFindingThreadsHandler, type FindingThreadsRouteOptions } from './findingThreadsRoute';
 
 
 export interface ActionOidcVerifier {
@@ -79,6 +80,8 @@ export interface ActionDispatchRouterOptions {
   verdictCacheBase?: VerdictCacheBaseLookup;
   /** Durable exact-head task progress for graceful timeout/resume. */
   reviewCheckpoint?: CheckpointDatabase;
+  /** ADR 0002: publish/resolve the bot's finding review threads on a worker's behalf. */
+  findingThreads?: FindingThreadsRouteOptions;
   now?: () => number;
 }
 
@@ -479,6 +482,7 @@ export function createActionDispatchRouter(options: ActionDispatchRouterOptions)
   if (options.incompleteP2Recovery) router.post('/incomplete-p2-recovery', createIncompleteP2RecoveryHandler(options.incompleteP2Recovery));
   if (options.verdictCacheBase) router.post('/verdict-cache-base', createVerdictCacheBaseHandler(options.verdictCacheBase));
   if (options.reviewCheckpoint) router.post('/review-checkpoint', createReviewExecutionCheckpointHandler(options.reviewCheckpoint));
+  if (options.findingThreads) router.post('/finding-threads', createFindingThreadsHandler(options.findingThreads));
   router.get('/status', handleRunStatus);
 
   return router;

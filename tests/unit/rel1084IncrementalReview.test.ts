@@ -28,7 +28,7 @@ import {
   type PriorReviewRecord,
   type PriorReviewRows,
 } from '../../src/review/incrementalReview';
-import { gateRecordFor } from '../support/priorGateRecord';
+import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { logger } from '../../src/utils/logger';
 import { computeArbitration } from '../../src/review/reviewCore';
 import { buildEffectiveReviewFiles, resolveReviewApplicability } from '../../src/review/personaApplicability';
@@ -209,10 +209,11 @@ const PRIOR_LANES = ['sec-lane', 'arch-lane'];
  * (`gateRecordFor`) over the service's trusted lanes, unless a test overrides them.
  */
 function rows(payload: unknown, overrides: { status?: string; digest?: string; createdAt?: string; receivedAt?: string;
-  gate?: PriorReviewRows['gate']; expectedPersonaIds?: string[] } = {}) {
+  gate?: PriorReviewRows['gate']; expectedPersonaIds?: string[]; findingThreads?: ReturnType<typeof resolvedThreadsFor> } = {}) {
   const evidenceRecord = (payload as { version: string }).version === 'WorkerReviewEvidence.v1';
   const recorded = evidenceRecord ? null
-    : gateRecordFor(payload, { expectedPersonaIds: overrides.expectedPersonaIds ?? PRIOR_LANES, changedFiles: files(DIFF) });
+    : gateRecordFor(payload, { expectedPersonaIds: overrides.expectedPersonaIds ?? PRIOR_LANES, changedFiles: files(DIFF),
+      ...(overrides.findingThreads ? { findingThreads: overrides.findingThreads } : {}) });
   return {
     run: { run_id: PRIOR_RUN, repository_id: '42', pr_number: 7, head_sha: PREV_HEAD, base_sha: PREV_BASE,
       status: overrides.status ?? recorded?.status ?? 'succeeded' },
@@ -248,16 +249,22 @@ describe('prior review record', () => {
       status: 'COMPLETE', findings: [] }] }), { expectedPersonaIds: ['documentation-only'] }))?.shipComplete).toBe(false);
   });
 
-  it('retains advisory paths from a current-policy SHIP-complete P2 review', () => {
+  it('retains the path of a satisfied P2 from a SHIP-complete review (ADR 0002)', () => {
     const completion = priorCompletion({ personas: [
       { id: 'sec-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
       { id: 'arch-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
         { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
       ] },
     ] });
-    const recorded = gateRecordFor(completion, { expectedPersonaIds: PRIOR_LANES, changedFiles: files(DIFF) });
+    // An unresolved P2 is required: the gate fails and the record is not a clean prior.
+    expect(gateRecordFor(completion, { expectedPersonaIds: PRIOR_LANES, changedFiles: files(DIFF) }).decision)
+      .toMatchObject({ status: 'failure', reason: 'blocking-findings' });
+    expect(priorReviewRecordFromRows(rows(completion))?.shipComplete).toBe(false);
+    // Resolved with a stated reason, it is satisfied; its path still stays open for re-review.
+    const findingThreads = resolvedThreadsFor([{ path: 'src/open.ts', line: 11, title: 'naming' }]);
+    const recorded = gateRecordFor(completion, { expectedPersonaIds: PRIOR_LANES, changedFiles: files(DIFF), findingThreads });
     expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
-    expect(priorReviewRecordFromRows(rows(completion))).toMatchObject({
+    expect(priorReviewRecordFromRows(rows(completion, { findingThreads }))).toMatchObject({
       shipComplete: true, findingPaths: ['src/open.ts'],
     });
   });
@@ -336,7 +343,9 @@ describe('prior review record', () => {
         findings: [{ severity: 'P1', path: 'src/changed.ts', line: 11, title: 'Naming is inconsistent', body: 'b' }] },
       { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
     ] });
-    const calibratedRows = rows(calibrated);
+    // ADR 0002: the calibrated P2 is required unless its thread was resolved with a reason.
+    expect(rows(calibrated).run.status).toBe('failed');
+    const calibratedRows = rows(calibrated, { findingThreads: resolvedThreadsFor([{ path: 'src/changed.ts', line: 11, title: 'Naming is inconsistent' }]) });
     expect(calibratedRows.run.status).toBe('succeeded');
     const record = priorReviewRecordFromRows(calibratedRows);
     expect(record).toMatchObject({ shipComplete: true, findingPaths: ['src/changed.ts'] });
@@ -346,7 +355,8 @@ describe('prior review record', () => {
         title: 'Missing import', body: 'Repo tooling could not confirm the import exists.' }] },
       { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
     ] });
-    expect(priorReviewRecordFromRows(rows(hedged))).toMatchObject({ shipComplete: true, findingPaths: ['src/changed.ts'] });
+    expect(priorReviewRecordFromRows(rows(hedged, { findingThreads: resolvedThreadsFor([{ path: 'src/changed.ts', line: 11, title: 'Missing import' }]) })))
+      .toMatchObject({ shipComplete: true, findingPaths: ['src/changed.ts'] });
     // A P1 that survives calibration disqualifies even over a clean gate record copied onto it,
     // on a gating lane or a shadow lane.
     const good = rows(priorCompletion());

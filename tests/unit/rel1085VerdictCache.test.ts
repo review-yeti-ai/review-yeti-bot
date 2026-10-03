@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
-import { gateRecordFor } from '../support/priorGateRecord';
+import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import { logger } from '../../src/utils/logger';
 import { resolveWorkerConfig } from '../../src/config/publishingWorkerConfig';
 import { createDefaultV3Config } from '../../src/config/configLoader';
@@ -303,8 +303,9 @@ function sourceCompletion(overrides: { personas?: unknown[]; verdictCache?: unkn
 }
 
 /** Stored rows; the gate row and run status come from the real gate derivation (`gateRecordFor`). */
-function rows(payload: unknown, overrides: { status?: string; digest?: string; gate?: null } = {}) {
-  const recorded = gateRecordFor(payload, { expectedPersonaIds: ['sec-lane', 'arch-lane'], changedFiles: files(DIFF) });
+function rows(payload: unknown, overrides: { status?: string; digest?: string; gate?: null; findingThreads?: ReturnType<typeof resolvedThreadsFor> } = {}) {
+  const recorded = gateRecordFor(payload, { expectedPersonaIds: ['sec-lane', 'arch-lane'], changedFiles: files(DIFF),
+    ...(overrides.findingThreads ? { findingThreads: overrides.findingThreads } : {}) });
   return {
     run: { run_id: SOURCE_RUN, repository_id: String(REPO_ID), pr_number: 7, head_sha: SOURCE_HEAD, base_sha: SOURCE_BASE,
       status: overrides.status ?? recorded.status },
@@ -354,14 +355,15 @@ describe('verdict cache source record', () => {
     expect(verdictCacheSourceFromRows(rows(sourceCompletion(), { gate: null, status: 'succeeded' }))?.prior.shipComplete).toBe(false);
   });
 
-  it('retains P2 finding paths when current policy permits a SHIP verdict', () => {
+  it('retains the path of a satisfied P2 from a SHIP source (ADR 0002)', () => {
     const completion = sourceCompletion({ personas: [
       { id: 'sec-lane', decision: 'FINDINGS', status: 'COMPLETE', findings: [
         { severity: 'P2', path: 'src/open.ts', line: 11, title: 'naming', body: 'rename this' },
       ] },
       { id: 'arch-lane', decision: 'APPROVE', status: 'COMPLETE', findings: [] },
     ] });
-    const recorded = rows(completion);
+    expect(rows(completion).run.status).toBe('failed');
+    const recorded = rows(completion, { findingThreads: resolvedThreadsFor([{ path: 'src/open.ts', line: 11, title: 'naming' }]) });
     expect(recorded.run.status).toBe('succeeded');
     expect(verdictCacheSourceFromRows(recorded)?.prior).toMatchObject({
       shipComplete: true, findingPaths: ['src/open.ts'],

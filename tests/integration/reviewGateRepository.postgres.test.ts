@@ -1,4 +1,5 @@
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { resolvedThreadsFor } from '../support/priorGateRecord';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
@@ -1214,18 +1215,18 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       },
     );
 
-    it.each(['P1', 'P2'] as const)('publishes a fresh %s re-review under the normal P0/P1 policy', async (severity) => {
+    it.each(['P1', 'P2'] as const)('publishes a fresh %s re-review under the required P0/P1/P2 policy (ADR 0002)', async (severity) => {
       const { id, repository, event, resolve } = await disputedGateCompletionFixture(true, undefined, severity);
       expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
       expect(resolve).toHaveBeenCalledOnce();
       const state = await snapshot(id);
-      const blocking = severity === 'P1';
-      expect(state.run.status).toBe(blocking ? 'failed' : 'succeeded');
+      // Both severities are required. A P1 is FIX_FIRST; an unresolved P2 keeps the SHIP verdict as
+      // evidence but its required count blocks the Gate.
+      expect(state.run.status).toBe('failed');
       const current = state.gates.find((gate: any) => gate.current_attempt);
-      expect(current.decision).toMatchObject({ status: blocking ? 'failure' : 'success',
-        eligible: !blocking, reason: blocking ? 'blocking-findings' : 'clean-review' });
-      expect(current.evidence).toMatchObject({ verdict: blocking ? 'FIX_FIRST' : 'SHIP',
-        p0Count: 0, p1Count: blocking ? 1 : 0 });
+      expect(current.decision).toMatchObject({ status: 'failure', eligible: false, reason: 'blocking-findings' });
+      expect(current.evidence).toMatchObject({ verdict: severity === 'P1' ? 'FIX_FIRST' : 'SHIP',
+        p0Count: 0, p1Count: severity === 'P1' ? 1 : 0, p2Count: severity === 'P2' ? 1 : 0 });
       expect(event.result.personas[0].findings[0].severity).toBe(severity);
       expect(current.worker_result_digest).toBe(workerReviewCompletionDigest(event));
     });
@@ -1693,7 +1694,8 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       ['worker-coverage', 'incomplete-review'], ['worker-quorum', 'incomplete-review'],
       ['trusted-coverage', 'incomplete-review'], ['trusted-quorum', 'incomplete-review'],
       ['blocking-finding', 'blocking-findings'], ['invalid-finding', 'invalid-evidence'],
-      ['p2-finding', 'clean-review'],
+      // ADR 0002: an unresolved P2 is required; a P2 resolved with a stated reason is satisfied.
+      ['p2-finding', 'blocking-findings'], ['p2-finding-resolved', 'clean-review'],
       ['false-worker-verdict', 'invalid-evidence'], ['false-worker-count', 'invalid-evidence'],
       ['duplicate-lane', 'invalid-evidence'], ['unknown-lane', 'invalid-evidence'],
     ] as const)('records current-policy terminal intent for %s', async (scenario, reason) => {
@@ -1718,19 +1720,22 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         default:
           lane.decision = 'FINDINGS';
           lane.findings = [{
-            severity: scenario === 'p2-finding' ? 'P2' : 'P1',
+            severity: scenario === 'p2-finding' || scenario === 'p2-finding-resolved' ? 'P2' : 'P1',
             path: scenario === 'invalid-finding' ? 'src/unreviewed.ts' : 'src/example.ts',
             line: 1, title: 'Unsafe change', body: 'The changed code exposes private data.',
           }];
-          if (scenario === 'p2-finding') {
+          if (scenario === 'p2-finding' || scenario === 'p2-finding-resolved') {
             event.result.verdict = 'SHIP';
             event.result.blockingFindingCount = 0;
+          }
+          if (scenario === 'p2-finding-resolved') {
+            trusted.coverage.findingThreads = resolvedThreadsFor([{ path: 'src/example.ts', line: 1, title: 'Unsafe change' }]);
           }
           if (scenario === 'false-worker-verdict') event.result.verdict = 'SHIP';
       }
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       const state = await snapshot(id);
-      expectTerminalState(state, event, scenario === 'p2-finding' ? 'success' : 'failure', reason);
+      expectTerminalState(state, event, scenario === 'p2-finding-resolved' ? 'success' : 'failure', reason);
       if (scenario === 'provider-error') {
         expect(state.run.failure_diagnostics).toMatchObject({
           failureClass: 'timeout', reason: 'provider_rate_limited', providerStatus: 429,
@@ -1740,8 +1745,9 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       if (reason === 'invalid-evidence') expect(state.gates[0].evidence).toBeNull();
       else {
         expect(state.gates[0].evidence).not.toBeNull();
-        if (scenario === 'p2-finding') {
-          expect(state.gates[0].evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
+        if (scenario === 'p2-finding' || scenario === 'p2-finding-resolved') {
+          expect(state.gates[0].evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0,
+            p2Count: scenario === 'p2-finding' ? 1 : 0 });
         }
       }
     });

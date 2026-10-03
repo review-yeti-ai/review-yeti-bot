@@ -66,3 +66,19 @@ describe('service review eligibility policy', () => {
     expect(evaluate({ ...clean, ...patch })).toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
   });
 });
+
+describe('ADR 0002: a required P2 blocks the Gate exactly like a P0/P1', () => {
+  it('fails a SHIP review that still carries a required P2', () => {
+    expect(evaluate({ ...clean, p2Count: 1 })).toEqual({ status: 'failure', eligible: false, reason: 'blocking-findings' });
+  });
+  it('approves a SHIP review whose P2s were all fixed or satisfied, and reads a historical record without the field', () => {
+    expect(evaluate({ ...clean, p2Count: 0 })).toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
+    expect(evaluate(clean)).toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
+  });
+  it('rejects a malformed count and never lets an exemption carry a required P2', () => {
+    expect(evaluate({ ...clean, p2Count: -1 })).toMatchObject({ reason: 'invalid-evidence' });
+    expect(evaluate({ ...clean, p2Count: 1.5 })).toMatchObject({ reason: 'invalid-evidence' });
+    const exempt = { ...clean, expectedLanes: 0, completedLanes: 0, exemption: { kind: 'recap-only' as const, auditDigest: 'd'.repeat(64) } };
+    expect(evaluate({ ...exempt, p2Count: 1 })).toMatchObject({ reason: 'invalid-evidence' });
+  });
+});

@@ -1,6 +1,6 @@
 # Review publication policy
 
-Last updated: 2026-09-07
+Last updated: 2026-10-03
 
 ## Overview and findings
 
@@ -8,7 +8,18 @@ Each pull request has one bot-owned sticky overview. Each push or rerun replaces
 
 All validated file-specific findings, including P2, are published as deduplicated review conversations. Findings with exact diff anchors appear inline. When a changed file is known but its reported line cannot be anchored, the finding becomes a file-level conversation; the bot never guesses a nearby line. Invalid paths remain identified in the overview when no GitHub file conversation can represent them.
 
-There is no default thread-count cap. Callers may still request an explicit cap through the helper API. P2 findings do not change the bot's verdict; repository conversation-resolution requirements continue to apply to review threads at every severity.
+There is no default thread-count cap. Callers may still request an explicit cap through the helper API.
+
+## Required findings (ADR 0002)
+
+P0, P1 and P2 findings all block a merge. Which findings still block on a head is decided by one shared convergence decision (`src/review/findingConvergence.ts`) used by both the raw check and the Gate:
+
+- a finding that is no longer reported (fixed) drops;
+- a previously raised finding keeps its fingerprint across heads and is not raised again as new;
+- a P2 whose review thread the author resolved with a reply stating why it does not apply is satisfied, and the reason is shown in the check summary (this never clears a P0 or P1);
+- a P2 outside the head's diff is advisory.
+
+On the DOKS worker path, findings are published as review threads with a hidden fingerprint marker. The worker reads threads with its read token and asks the dispatch service (`POST /api/dispatch/finding-threads`) to publish new ones; only the service holds a `pull_requests: write` token, minted per call. The service also resolves the bot's own outdated threads whose finding was not reported again. When the canonical verdict is SHIP but a required P2 remains, the check title reads `Review Yeti: FIX_FIRST (N required P2)`.
 
 ## Apply suggestions
 
