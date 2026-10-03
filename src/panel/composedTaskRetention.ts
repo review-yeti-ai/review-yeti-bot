@@ -402,7 +402,24 @@ export function createComposedTaskOutcomeRetentionRequest(input: {
           || !FINISH_REASONS.has(diagnosticFields.finishReason)))
         || typeof diagnosticFields.lastToolOutcome !== 'string'
         || !LAST_TOOL_OUTCOMES.has(diagnosticFields.lastToolOutcome)
-        || diagnosticFields.turnsUsed !== usage.turnsUsed || diagnosticFields.correctionAttempts !== usage.correctionAttempts
+        // `turnsUsed` is deliberately NOT compared for equality here. The two
+        // values are produced from different expressions and mean different
+        // things:
+        //   usage.turnsUsed       = turnUsages.length                    (task TOTAL)
+        //   diagnostics.turnsUsed = turnUsages.length - attemptStartTurn (FINAL ATTEMPT)
+        // The engine keeps one shared usage array across a task's retry attempts
+        // ("A task-level retry reuses the shared usage array so every attempt's
+        // spend stays accounted"), so on any retried attempt the two differ. An
+        // equality check therefore threw on exactly the retry path this PR adds,
+        // and the ComposedTaskRetentionError propagated out of runReservedTask
+        // into Promise.all(cohortPromises), aborting the WHOLE composed review
+        // instead of recording one task outcome.
+        //
+        // The invariant that actually holds: this attempt cannot have spent more
+        // turns than the task has in total. correctionAttempts/toolTurns stay
+        // equal to usage because the engine passes those straight through.
+        || diagnosticFields.turnsUsed > usage.turnsUsed
+        || diagnosticFields.correctionAttempts !== usage.correctionAttempts
         || diagnosticFields.toolTurns !== usage.toolTurns) throw new Error();
       diagnostics = {
         reason: diagnosticFields.reason as ComposedTaskFailureDiagnostics['reason'],
