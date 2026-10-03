@@ -29,13 +29,33 @@ describe('sample repository identity is one contract, asserted across layers', (
     expect(orchestrator.SAMPLE_REPO_META).toBe(SAMPLE_REPO_META);
   });
 
-  it('the D1 migration seeds exactly these identities', () => {
-    // The seed cannot import the constant; this is the only thing binding it.
-    const sql = read('cf-orchestrator/migrations/0001_initial_schema.sql');
-    // Whitespace-tolerant: a benign reformat of the INSERT (extra spacing, line
-    // wrap between columns) must not fail a contract that still holds.
-    expect(sql).toMatch(new RegExp(`'${SAMPLE_REPO_CDR}'\\s*,\\s*'example'\\s*,\\s*'sample-cdr'`));
-    expect(sql).toMatch(new RegExp(`'${SAMPLE_REPO_META}'\\s*,\\s*'example'\\s*,\\s*'sample-meta'`));
+  it('0001 is left as shipped: it must not carry the neutralized identities', () => {
+    // 0001 has shipped and D1 does not re-run an applied migration, so renaming
+    // rows inside it changes nothing for a live database while the code starts
+    // querying the new names -- the overview then looks up a Durable Object that
+    // no longer matches the seed and renders zeroed state. Editing it also makes
+    // migration history mutable. The rename belongs in a forward migration.
+    const shipped = read('cf-orchestrator/migrations/0001_initial_schema.sql');
+    expect(shipped).not.toContain(SAMPLE_REPO_CDR);
+    expect(shipped).not.toContain(SAMPLE_REPO_META);
+    // It should still carry the ORIGINAL sample ids it was shipped with.
+    expect(shipped).toContain('reviewyeti-ai/example-api');
+    expect(shipped).toContain('reviewyeti-ai/example-meta');
+  });
+
+  it('a forward migration neutralizes the shipped sample rows', () => {
+    // The reconciliation the code now depends on, and the only place a live
+    // database can actually pick up the rename. Whitespace-tolerant so a benign
+    // reformat does not fail a contract that still holds.
+    const forward = read('cf-orchestrator/migrations/0002_neutralize_sample_repositories.sql');
+    expect(forward).toMatch(new RegExp(`'${SAMPLE_REPO_CDR}'`));
+    expect(forward).toMatch(new RegExp(`'${SAMPLE_REPO_META}'`));
+    // It must key on the OLD ids, or it is a no-op on a database that has them.
+    // Assert the WHERE clause specifically: a plain toContain is satisfied by the
+    // ids appearing in the explanatory COMMENT alone, so dropping them from the
+    // statement while leaving the prose would pass a broken migration.
+    expect(forward).toMatch(/WHERE\s+id\s*=\s*'reviewyeti-ai\/example-api'/);
+    expect(forward).toMatch(/WHERE\s+id\s*=\s*'reviewyeti-ai\/example-meta'/);
   });
 
   it('the Durable Object query layer imports the constant instead of repeating it', () => {
