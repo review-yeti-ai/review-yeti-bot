@@ -51,6 +51,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '@/lib/sampleRepositories';
 
 export type TimeHorizon = '24h' | '7d' | '30d' | '90d';
 export type MetricDimension = 'hit_rate' | 'compaction' | 'symbols' | 'velocity';
@@ -132,7 +133,7 @@ export const REPOSITORY_DATA: RepoMemoryStats[] = [
   },
   {
     id: 'sample-cdr',
-    name: 'example/sample-cdr',
+    name: SAMPLE_REPO_CDR,
     shortName: 'sample-cdr',
     defaultBranch: '0.8.4-release',
     language: 'Elixir',
@@ -179,7 +180,7 @@ export const REPOSITORY_DATA: RepoMemoryStats[] = [
   },
   {
     id: 'sample-meta',
-    name: 'example/sample-meta',
+    name: SAMPLE_REPO_META,
     shortName: 'sample-meta',
     defaultBranch: 'main',
     language: 'TypeScript / JSON',

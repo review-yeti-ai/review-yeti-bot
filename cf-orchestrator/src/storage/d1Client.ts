@@ -1,3 +1,4 @@
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../sampleRepositories.js';
 /**
  * Cloudflare D1 Client & Persistence Engine for Review Yeti
  * Provides relational persistence for reviews, findings, repositories, and analytics.
@@ -83,9 +84,9 @@ class InMemoryStore {
       },
     ],
     [
-      'example/sample-cdr',
+      SAMPLE_REPO_CDR,
       {
-        id: 'example/sample-cdr',
+        id: SAMPLE_REPO_CDR,
         owner: 'example',
         repo: 'sample-cdr',
         defaultBranch: 'main',
@@ -97,9 +98,9 @@ class InMemoryStore {
       },
     ],
     [
-      'example/sample-meta',
+      SAMPLE_REPO_META,
       {
-        id: 'example/sample-meta',
+        id: SAMPLE_REPO_META,
         owner: 'example',
         repo: 'sample-meta',
         defaultBranch: 'main',
