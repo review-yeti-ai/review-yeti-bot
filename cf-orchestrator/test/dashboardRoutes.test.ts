@@ -684,3 +684,39 @@ describe('Integrated public topology route boundaries', () => {
   });
 
 });
+
+
+describe('Bound gate read fallback regressions', () => {
+  it('keeps a healthy empty gate at zero active jobs without fabricating a pending review', async () => {
+    const queried: string[] = [];
+    const env = { ...createMockEnv(), REPO_GATE: {
+      idFromName: (name: string) => { queried.push(name); return name; },
+      get: () => ({ fetch: async () => Response.json({ activeCount: 0, queueLength: 0, activeRuns: [] }) }),
+    } } as unknown as Env;
+    const response = await worker.fetch(new Request('https://worker.dev/api/dashboard/overview'), env);
+    const data = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(data.overview.activeJobsCount, 0);
+    assert.equal(data.overview.liveDurableObjects['reviewyeti-ai/example-api'].activeCount, 0);
+    assert.ok(queried.includes('reviewyeti-ai/example-meta'));
+  });
+
+  it('retains a bound active review when optional elapsed and head metadata are absent', async () => {
+    const env = { ...createMockEnv(), REPO_GATE: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async () => Response.json({ activeCount: 1, activeRunsByPr: { '41': 'example-active-review' } }) }),
+    } } as unknown as Env;
+    const response = await worker.fetch(new Request('https://worker.dev/api/dashboard/logs'), env);
+    const data = await response.json() as any;
+    assert.equal(response.status, 200);
+    const active = data.logs.filter((row: any) => row.id === 'example-active-review');
+    assert.equal(active.length, 1);
+    assert.equal(active[0].prNumber, 41);
+    assert.equal(active[0].status, 'pending');
+    assert.equal(active[0].verdict, 'PENDING');
+    assert.equal(active[0].latencyMs, 12000);
+    assert.equal(active[0].headSha, '9b8a7c6d');
+    assert.equal(active[0].quorum, 'Swarm In-Flight');
+    assert.ok(Number.isFinite(Date.parse(active[0].timestamp)));
+  });
+});
