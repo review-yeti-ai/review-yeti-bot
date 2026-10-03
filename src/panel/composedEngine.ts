@@ -136,6 +136,13 @@ import type {
   PanelResult,
   PersonaLaneResult,
 } from './types';
+import {
+  persistComposedTaskOutcome,
+  persistComposedTaskPlan,
+  summarizeComposedTaskUsage,
+  type ComposedTaskRetention,
+  type ComposedTaskRetentionSelectors,
+} from './composedTaskRetention';
 import type { ReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
 import { remainingCheckpointTasksAfterRechecks, type DisputedFindingRecheck } from '../review/disputedFindingRecheck';
 import { canonicalJson, sha256 } from '../review/reviewCore';
@@ -184,6 +191,8 @@ export interface ComposedReviewOptions {
    * so it does not chunk; it makes the same shared decision and discloses a context over budget.
    */
   mapReduce?: MapReduceInput;
+  /** Internal service-owned write barrier. Absence preserves ordinary CLI behavior and is not a durable receipt. */
+  retention?: ComposedTaskRetention;
   /** Durable exact-head progress. Only validated COMPLETE task results are resumed. */
   checkpoint?: {
     resumed: ReviewExecutionCheckpoint | null;
@@ -1371,9 +1380,9 @@ async function runPlanPhase(input: {
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
-  | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; attempts?: number }
+  | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
+  | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; durationMs: number; attempts?: number }
   /** Every attempt stalled on a provider timeout; recorded as a named failed lane, never fatal. */
   | { type: 'stalled'; turnUsages: LaneTurnUsage[]; attempts: number; durationMs: number;
     stopReason: 'attempts_exhausted' | 'deadline' | 'turn_budget' };
@@ -1429,7 +1438,7 @@ async function runTaskWorkPhase(input: {
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
   const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
-    type: 'exhausted', turnUsages,
+    type: 'exhausted', turnUsages, durationMs: Date.now() - startedAt,
     diagnostics: { reason, turnsUsed: turnUsages.length - attemptStartTurn, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
   });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
@@ -1565,9 +1574,9 @@ async function runTaskWorkPhase(input: {
 
     const durationMs = Date.now() - startedAt;
     if (candidate.status === 'BLOCKED') {
-      return { type: 'blocked', turnUsages, toolCalls: toolCallsLog, toolTurns, durationMs };
+      return { type: 'blocked', turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
     }
-    return { type: 'complete', findings, turnUsages, toolCalls: toolCallsLog, toolTurns, durationMs };
+    return { type: 'complete', findings, turnUsages, toolCalls: toolCallsLog, correctionAttempts, toolTurns, durationMs };
   }
 
   return exhausted('task_turn_budget_exhausted');
@@ -1618,6 +1627,43 @@ export function unreportedLaneFailure(
       ? 'budget_exhausted' : 'malformed_output',
     ...(diagnostics ? { diagnostics } : {}),
   };
+}
+
+function composedRetentionSelectors(options: ComposedReviewOptions): ComposedTaskRetentionSelectors {
+  // These are selectors only. The authenticated adapter owns and resolves every
+  // trusted run/policy/build/context value independently of this engine payload.
+  return {
+    repository: options.repository,
+    prNumber: options.prNumber as number,
+    headSha: options.headSha,
+    baseSha: options.baseSha as string,
+  };
+}
+
+async function persistWithRunFences<T>(
+  options: ComposedReviewOptions,
+  deadline: ReturnType<typeof createPanelDeadlineSignal>,
+  write: () => Promise<T>,
+  signal: AbortSignal = deadline.signal,
+): Promise<T> {
+  deadline.check();
+  throwIfPanelAborted(signal);
+  // Defer invocation until after the cancellation listener is installed. The
+  // same admitted signal/cutoff used by provider calls races the write; no new
+  // persistence timeout is minted. `raceWithPanelAbort` removes its listener
+  // and consumes a late rejection, while this caller ignores any late ACK.
+  const pending = Promise.resolve().then(() => {
+    deadline.check();
+    throwIfPanelAborted(signal);
+    return write();
+  });
+  const result = await raceWithPanelAbort(pending, signal);
+  deadline.check();
+  throwIfPanelAborted(signal);
+  if (options.isCurrentHead && !options.isCurrentHead()) {
+    throw new PanelConfigurationError(`stale run aborted for ${options.repository}#${options.headSha}`);
+  }
+  return result;
 }
 
 /**
@@ -1698,6 +1744,13 @@ export function buildGracefulComposedPanelResult(input: {
 // ---------------------------------------------------------------------------
 
 export async function executeComposedReview(options: ComposedReviewOptions): Promise<PanelResult> {
+  // Legacy checkpoint capture/resume has not been qualified under the immutable retention
+  // authority. Reject the combination before planning, progress, or either persistence port.
+  if (options.retention && options.checkpoint !== undefined) {
+    throw new PanelConfigurationError('composed retention does not accept legacy checkpoints', {
+      failureClass: 'contract',
+    });
+  }
   const deadline = createPanelDeadlineSignal(options.config.reviewers.overall_timeout_s, options.signal,
     options.deadlineBudget, options.deadlineNow);
   // Absolute wall-clock bound for this run, taken from the admitted budget the abort signal uses.
@@ -1722,6 +1775,8 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
   let mapReducePlan: MapReducePlan | null = null;
   return runInSpan<PanelResult>('review_yeti_composed_panel', async (span) => {
     const { config, changedFiles, repository, headSha, client, jobId, requestPolicy, repoFileProvider } = options;
+    const retention = options.retention;
+    const retentionSelectors = retention ? composedRetentionSelectors(options) : null;
     const signal = deadline.signal;
     throwIfPanelAborted(signal);
     const repositoryVisibility = normalizeRepositoryVisibility(options.repositoryVisibility ?? 'UNKNOWN');
@@ -1869,6 +1924,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       provider: providerId, model, required: true,
     });
     let planOutcome: PlanPhaseOutcome;
+    let retainedPlanDigest: string | null = null;
     const resumedPlan = options.checkpoint?.resumed
       ? validateTaskPlan({ tasks: options.checkpoint.resumed.plan }, { changedFiles: effectiveFilePaths, maxTasks })
       : null;
@@ -1915,6 +1971,15 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           progress: options.progress,
         });
         planOutcome = { ...freshPlan, tasks: orderReviewTasksByRisk(freshPlan.tasks, deletionClassification) };
+      }
+      if (retention) {
+        const acknowledgement = await persistWithRunFences(options, deadline, () =>
+          persistComposedTaskPlan(retention, {
+            selectors: retentionSelectors!,
+            changedPaths: effectiveFilePaths,
+            tasks: planOutcome.tasks,
+          }));
+        retainedPlanDigest = acknowledgement.receiptDigest;
       }
     } catch (error) {
       options.progress?.emit({
@@ -2086,8 +2151,32 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     if (signal?.aborted) taskAbort.abort(signal.reason);
     else signal?.addEventListener('abort', onPanelAbort, { once: true });
 
-    const skipForBudget = (index: number) => {
-      const task = pendingTasks[index];
+    const checkRetentionRun = () => {
+      if (!retention) return;
+      deadline.check();
+      if (options.isCurrentHead && !options.isCurrentHead()) {
+        throw new PanelConfigurationError(`stale run aborted for ${repository}#${headSha}`);
+      }
+    };
+
+    const skipForBudget = async (index: number) => {
+      const task = retention ? planOutcome.tasks[index] : pendingTasks[index];
+      checkRetentionRun();
+      if (retention) {
+        await persistWithRunFences(options, deadline, () =>
+          persistComposedTaskOutcome(retention, {
+            selectors: retentionSelectors!,
+            planDigest: retainedPlanDigest!,
+            taskIndex: index,
+            taskId: task.id,
+            status: 'exhausted',
+            diagnostics: {
+              reason: 'total_turn_budget_exhausted', turnsUsed: 0, correctionAttempts: 0,
+              toolTurns: 0, finishReason: null, lastToolOutcome: 'none',
+            },
+            usage: summarizeComposedTaskUsage([], 0, 0, 0),
+          }));
+      }
       options.progress?.emit({
         task: 'composed_task', status: 'skipped', role: 'composed_task', lane: composedTaskDiagnosticLane(index),
         provider: providerId, model, required: true, rejectionCode: 'budget_exhausted',
@@ -2103,6 +2192,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
     const runReservedTask = async (reserved: ReservedTask, taskBaseMessages: OpenRouterMessage[], taskSignal: AbortSignal,
       taskTurnUsages: LaneTurnUsage[]): Promise<SettledTask> => {
       const { task, index } = reserved;
+      checkRetentionRun();
       const diagnosticLane = composedTaskDiagnosticLane(index);
       const taskStartedAt = Date.now();
       const taskClockStartedAt = clock();
@@ -2226,6 +2316,34 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
           diagnosticLane,
         });
+        if (retention) {
+          const diagnostics = outcome.type === 'exhausted' ? outcome.diagnostics : undefined;
+          const correctionAttempts = outcome.type === 'exhausted'
+            ? outcome.diagnostics.correctionAttempts
+            : outcome.type === 'stalled'
+            ? 0
+            : outcome.correctionAttempts;
+          const toolTurns = outcome.type === 'exhausted'
+            ? outcome.diagnostics.toolTurns
+            : outcome.type === 'stalled'
+            ? 0
+            : outcome.toolTurns;
+          // A branch does not emit terminal progress or release its cohort reservation until
+          // its own immutable outcome is acknowledged. Funded siblings remain independent.
+          await persistWithRunFences(options, deadline, () =>
+            persistComposedTaskOutcome(retention, {
+              selectors: retentionSelectors!,
+              planDigest: retainedPlanDigest!,
+              taskIndex: index,
+              taskId: task.id,
+              status: outcome.type === 'stalled' ? 'exhausted' : outcome.type,
+              ...(outcome.type === 'complete' ? { findings: outcome.findings } : {}),
+              ...(diagnostics ? { diagnostics } : {}),
+              usage: summarizeComposedTaskUsage(
+                outcome.turnUsages, correctionAttempts, toolTurns, outcome.durationMs,
+              ),
+            }), taskSignal);
+        }
         options.progress?.emit({
           task: 'composed_task',
           status: outcome.type === 'complete' ? 'completed' : outcome.type === 'blocked' ? 'blocked' : 'failed',
@@ -2544,7 +2662,81 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       );
     };
 
-    try {
+    const runRetainedCohorts = async () => {
+      while (nextTaskIndex < planOutcome.tasks.length) {
+        throwIfPanelAborted(signal);
+        checkRetentionRun();
+        let reservationBudget = remainingBudget();
+        if (reservationBudget <= 0) {
+          while (nextTaskIndex < planOutcome.tasks.length) await skipForBudget(nextTaskIndex++);
+          break;
+        }
+
+        // Freeze this funded cohort before dispatch. Its own ACKs can publish task progress
+        // independently, but no slot, reservation or context is released until all wrappers settle.
+        const cohort: ReservedTask[] = [];
+        while (cohort.length < taskConcurrency && nextTaskIndex < planOutcome.tasks.length && reservationBudget > 0) {
+          const task = planOutcome.tasks[nextTaskIndex];
+          const fullTaskCeiling = resolveTaskTurnCeiling(
+            config.composed?.max_turns_per_task,
+            COMPOSED_TASK_MAX_TURNS_HARD_CAP,
+            task.paths?.length || 1,
+          );
+          // A partial tail is eligible only with an empty cohort: an already-funded sibling
+          // must first settle and refund unused turns before a later full ceiling is considered.
+          if (fullTaskCeiling > reservationBudget && cohort.length > 0) break;
+          const reservation = fullTaskCeiling <= reservationBudget
+            ? fullTaskCeiling
+            : resolveTaskTurnCeiling(config.composed?.max_turns_per_task, reservationBudget, task.paths?.length || 1);
+          cohort.push({ task, index: nextTaskIndex, reservedTurns: reservation });
+          reservationBudget -= reservation;
+          nextTaskIndex += 1;
+        }
+        fundedTaskCount += cohort.length;
+
+        const cohortAbort = new AbortController();
+        const onCohortAbort = () => cohortAbort.abort(signal?.reason);
+        if (signal?.aborted) cohortAbort.abort(signal.reason);
+        else signal?.addEventListener('abort', onCohortAbort, { once: true });
+        // Start every member of the frozen funded cohort before awaiting any individual branch.
+        // Each funded branch owns its own turn-usage ledger: `runReservedTask`
+        // threads it through the progress callbacks and folds it into the
+        // SettledTask the retention ACK records. Sharing one array across the
+        // cohort would attribute every lane's turns to whichever task wrote last.
+        const cohortPromises = cohort.map((reserved) =>
+          runReservedTask(reserved, [...persistentMessages], cohortAbort.signal, []));
+        let settled: SettledTask[];
+        try {
+          settled = await Promise.all(cohortPromises);
+        } catch (error) {
+          cohortAbort.abort(error);
+          // Join abort-raced wrappers, not raw retention producers that may never acknowledge.
+          await Promise.allSettled(cohortPromises);
+          skipRemainingForAbort();
+          throw error;
+        } finally {
+          signal?.removeEventListener('abort', onCohortAbort);
+        }
+        throwIfPanelAborted(signal);
+        checkRetentionRun();
+
+        let cohortActualTurns = 0;
+        let cohortReservedTurns = cohort.reduce((sum, item) => sum + item.reservedTurns, 0);
+        for (const result of settled) {
+          const actualTurns = result.outcome.turnUsages.length;
+          cohortReservedTurns -= result.reservedTurns;
+          cohortActualTurns += actualTurns;
+          if (actualTurns > result.reservedTurns || totalTurnsUsed + cohortActualTurns + cohortReservedTurns > totalTurnBudget) {
+            throw new Error('composed task usage exceeded its reservation or the review turn budget');
+          }
+        }
+        // Charge actual usage exactly once, refund the whole cohort, then fold in plan order.
+        totalTurnsUsed += cohortActualTurns;
+        for (const result of settled) foldSettledTask(result);
+      }
+    };
+
+    const runWorkConservingTasks = async () => {
       while (nextTaskIndex < pendingTasks.length || activeTasks.size > 0) {
         throwIfPanelAborted(signal);
         await Promise.resolve();
@@ -2573,7 +2765,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           const remaining = remainingBudget();
           if (remaining <= 0) {
             if (activeTasks.size === 0) {
-              while (nextTaskIndex < pendingTasks.length) skipForBudget(nextTaskIndex++);
+              while (nextTaskIndex < pendingTasks.length) await skipForBudget(nextTaskIndex++);
             }
             break;
           }
@@ -2624,12 +2816,17 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         }
         await Promise.race([...activeTasks.values()].map((active) => active.settled));
       }
+    };
 
+    try {
+      if (retention) await runRetainedCohorts();
+      else await runWorkConservingTasks();
       throwIfPanelAborted(signal);
+      checkRetentionRun();
     } catch (error) {
       const deadlineAbort = error instanceof PanelDeadlineExceededError
         || signal?.reason instanceof PanelDeadlineExceededError;
-      if (deadlineAbort) await gracefulAbortAndWait(error);
+      if (!retention && deadlineAbort) await gracefulAbortAndWait(error);
       else await abortAndWait(error);
     } finally {
       signal?.removeEventListener('abort', onPanelAbort);
