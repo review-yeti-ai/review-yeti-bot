@@ -720,3 +720,18 @@ describe('Bound gate read fallback regressions', () => {
     assert.ok(Number.isFinite(Date.parse(active[0].timestamp)));
   });
 });
+
+
+it('rejects incomplete live event admission before calling a bound review run', async () => {
+  let calls = 0;
+  const env = { ...createMockEnv(), REVIEW_RUN: {
+    idFromName: () => { calls++; throw new Error('Incomplete event must never dispatch'); },
+    get: () => { calls++; throw new Error('Incomplete event must never dispatch'); },
+  } } as unknown as Env;
+  for (const body of ['not-json', JSON.stringify({ jobId: 'example-run' }), JSON.stringify({ event: { type: 'example-event' } })]) {
+    const response = await worker.fetch(new Request('https://worker.dev/api/live/publish', { method: 'POST', body }), env);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'jobId and event required' });
+  }
+  assert.equal(calls, 0);
+});
