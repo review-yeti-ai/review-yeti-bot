@@ -111,9 +111,11 @@ inputs:
     required: false
     default: 'local'
   doks-dispatch-url:
-    description: 'Fixed Review Yeti DOKS admission endpoint. Only the canonical HTTPS endpoint is accepted.'
+    description: >-
+      Review Yeti DOKS admission endpoint, supplied by the calling workflow (required when execution-backend is
+      doks or mars). It must be an https URL with a DNS hostname and the exact path /api/dispatch/action.
     required: false
-    default: 'https://review-bot.calltelemetry.com/api/dispatch/action'
+    default: ''
   doks-publish-mode:
     description: >-
       DOKS publication policy: app-gate is the standard gate-checked publication mode for

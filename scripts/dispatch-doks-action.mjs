@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const DOKS_OIDC_AUDIENCE = 'review-yeti-doks-dispatch';
-export const DOKS_DISPATCH_ENDPOINT = 'https://review-bot.calltelemetry.com/api/dispatch/action';
+export const DOKS_DISPATCH_PATH = '/api/dispatch/action';
 const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.actions\.githubusercontent\.com$/u;
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
@@ -44,6 +44,13 @@ function sha(environment, name) {
   return value;
 }
 
+/**
+ * The admission endpoint is deployment configuration supplied by the (trusted, base-owned) calling workflow;
+ * this repository names no hostname. It is validated structurally: HTTPS, a real DNS hostname (no IP
+ * literal, no single-label or localhost name), the exact admission path, and no credentials, query or fragment.
+ * Admission is separately bound by GitHub Actions OIDC to an allowlisted workflow identity on the service
+ * side, so pointing the Action at another host does not grant access to anything.
+ */
 export function validateDispatchEndpoint(raw) {
   let url;
   try {
@@ -51,15 +58,20 @@ export function validateDispatchEndpoint(raw) {
   } catch {
     throw new Error('DOKS dispatch endpoint is not a valid URL');
   }
-  const expected = new URL(DOKS_DISPATCH_ENDPOINT);
+  const host = url.hostname.toLowerCase();
+  const isIpLiteral = /^\d{1,3}(?:\.\d{1,3}){3}$/u.test(host) || host.startsWith('[');
   const valid = url.protocol === 'https:'
-    && url.origin === expected.origin
-    && url.pathname === expected.pathname
+    && url.port === ''
+    && host.includes('.')
+    && !isIpLiteral
+    && host !== 'localhost'
+    && !host.endsWith('.localhost')
+    && url.pathname === DOKS_DISPATCH_PATH
     && url.username === ''
     && url.password === ''
     && url.search === ''
     && url.hash === '';
-  if (!valid) throw new Error(`DOKS dispatch endpoint must be exactly ${DOKS_DISPATCH_ENDPOINT}`);
+  if (!valid) throw new Error(`DOKS dispatch endpoint must be an https URL with a DNS hostname and the exact path ${DOKS_DISPATCH_PATH}`);
   return url;
 }
 
