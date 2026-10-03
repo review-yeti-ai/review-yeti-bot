@@ -19,6 +19,19 @@ import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META, SAMPLE_REPO_ME
 const root = path.resolve(__dirname, '../..');
 const read = (rel: string) => fs.readFileSync(path.join(root, rel), 'utf8');
 
+/**
+ * Source with comments removed.
+ *
+ * The drift guards below must fail on a raw LITERAL, not on prose. A file that
+ * documents the identity in a comment ("renders the example/sample-cdr view")
+ * keeps the contract intact, so asserting on raw text made a doc edit fail the
+ * test. Stripping comments first is what separates the two.
+ */
+const stripComments = (src: string): string =>
+  src
+    .replace(/\/\*[\s\S]*?\*\//gu, '')   // block comments
+    .replace(/(^|[^:])\/\/[^\n]*/gu, '$1'); // line comments (not '://' in URLs)
+
 describe('sample repository identity is one contract, asserted across layers', () => {
   it('the app and orchestrator constants agree', async () => {
     // Compare VALUES by importing the orchestrator module, not by matching its
@@ -36,8 +49,8 @@ describe('sample repository identity is one contract, asserted across layers', (
     // no longer matches the seed and renders zeroed state. Editing it also makes
     // migration history mutable. The rename belongs in a forward migration.
     const shipped = read('cf-orchestrator/migrations/0001_initial_schema.sql');
-    expect(shipped).not.toContain(SAMPLE_REPO_CDR);
-    expect(shipped).not.toContain(SAMPLE_REPO_META);
+    expect(stripComments(shipped)).not.toContain(SAMPLE_REPO_CDR);
+    expect(stripComments(shipped)).not.toContain(SAMPLE_REPO_META);
     // It should still carry the ORIGINAL sample ids it was shipped with.
     expect(shipped).toContain('reviewyeti-ai/example-api');
     expect(shipped).toContain('reviewyeti-ai/example-meta');
@@ -129,14 +142,14 @@ describe('sample repository identity is one contract, asserted across layers', (
     // longer match the seeded repository and the dashboard would render zeroed
     // state rather than failing loudly.
     const routes = read('cf-orchestrator/src/api/dashboardRoutes.ts');
-    expect(routes).not.toContain(SAMPLE_REPO_CDR);
-    expect(routes).not.toContain(SAMPLE_REPO_META);
+    expect(stripComments(routes)).not.toContain(SAMPLE_REPO_CDR);
+    expect(stripComments(routes)).not.toContain(SAMPLE_REPO_META);
   });
 
   it('the in-memory store fallback imports the constant instead of repeating it', () => {
     const client = read('cf-orchestrator/src/storage/d1Client.ts');
-    expect(client).not.toContain(SAMPLE_REPO_CDR);
-    expect(client).not.toContain(SAMPLE_REPO_META);
+    expect(stripComments(client)).not.toContain(SAMPLE_REPO_CDR);
+    expect(stripComments(client)).not.toContain(SAMPLE_REPO_META);
   });
 
   it('the memory page imports the app constant for both label and option value', () => {
@@ -165,8 +178,8 @@ describe('sample repository identity is one contract, asserted across layers', (
     // required a surrounding quote character and therefore MISSED a raw literal
     // sitting in JSX text (`>example/sample-cdr<`), which is exactly the drift it
     // exists to catch. The identity must not appear in the file in ANY form.
-    expect(page).not.toContain(SAMPLE_REPO_CDR);
-    expect(page).not.toContain(SAMPLE_REPO_META);
+    expect(stripComments(page)).not.toContain(SAMPLE_REPO_CDR);
+    expect(stripComments(page)).not.toContain(SAMPLE_REPO_META);
     // The slugs themselves must still match the identities they are derived from.
     expect(SAMPLE_REPO_CDR.endsWith(SAMPLE_REPO_CDR_SLUG)).toBe(true);
     expect(SAMPLE_REPO_META.endsWith(SAMPLE_REPO_META_SLUG)).toBe(true);
@@ -174,8 +187,8 @@ describe('sample repository identity is one contract, asserted across layers', (
 
   it('the public UI imports the app constant instead of repeating it', () => {
     const ui = read('src/components/analytics/RepoMemoryPivotPlatform.tsx');
-    expect(ui).not.toContain(SAMPLE_REPO_CDR);
-    expect(ui).not.toContain(SAMPLE_REPO_META);
+    expect(stripComments(ui)).not.toContain(SAMPLE_REPO_CDR);
+    expect(stripComments(ui)).not.toContain(SAMPLE_REPO_META);
     // The component KEYS ON THE SLUG, not the full identity, and the memory page
     // submits the slug as its option value -- so the two layers must agree on the
     // slug. Guarding only the full identity let a raw 'sample-cdr' literal in the
