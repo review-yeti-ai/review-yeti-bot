@@ -40,6 +40,7 @@ const {
   isNonRetryableClientStatus,
   laneProviderStatus,
   renderIncompleteInfrastructureTitle,
+  planRateLimitRetry,
   TRANSPORT_MAX_RETRIES,
   TRANSPORT_RETRY_TERMINAL_MARGIN_MS,
   transportRetryDelayMs,
@@ -4509,6 +4510,10 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
 
       let fetchAttempts = 0;
       let maxFetchAttempts = 2;
+      // Rate-limit retries on the gateway path follow the shared deadline-bounded schedule
+      // (`planRateLimitRetry`), tracked apart from the fixed recovery envelope above.
+      let gatewayRateLimitRetries = 0;
+      let firstGatewayRateLimitAtMs = null;
       let nextAttemptTimeoutMs = transportTimeoutMs;
       let shortProviderRetryAttempted = false;
       let formatRecoveryAttempted = false;
@@ -4966,6 +4971,35 @@ async function reviewWithModel(persona, diffFiles, prContext, sessionContext, op
                 await sleep(retryAfterMs);
                 continue;
               }
+            }
+            // A gateway 429 ("Concurrent limit reached ... 15/15 slots in use") on the last
+            // candidate transport is the upstream asking this lane to wait for a slot, not an
+            // outage. Once the fixed recovery envelope above is spent, ride it out on the shared
+            // rate-limit schedule (`planRateLimitRetry`: full jitter, floored at Retry-After,
+            // bounded by the Action deadline minus the terminal margin) instead of tripping the
+            // breaker and failing the lane a few seconds after the first rejection. The breaker
+            // trips only when no further wait fits. A transport with another candidate after it
+            // keeps its fast failover.
+            if (isOpenRouterTransport && outcomeClass === 'http_429' && i === candidateTransports.length - 1) {
+              const nowMs = Date.now();
+              if (firstGatewayRateLimitAtMs === null) firstGatewayRateLimitAtMs = nowMs;
+              const plan = planRateLimitRetry({
+                retriesSoFar: gatewayRateLimitRetries,
+                firstFailureAtMs: firstGatewayRateLimitAtMs,
+                nowMs,
+                retryAfterFloorMs: parseRawRetryAfterMs(response),
+                budgetLeftMs: resolveActionDeadlineMs() - TRANSPORT_RETRY_TERMINAL_MARGIN_MS - nowMs,
+              });
+              if (plan.retry) {
+                gatewayRateLimitRetries = plan.retryNumber;
+                maxFetchAttempts = Math.max(maxFetchAttempts, fetchAttempts + 1);
+                recoveryAction = 'rate_limit_retry';
+                console.warn(`[Persona: ${persona.id}] Transport '${transportName}' returned HTTP 429; backing off ${plan.delayMs}ms before rate-limit retry ${plan.retryNumber}...`);
+                releaseCapacityLease();
+                await sleepWithCancellation(plan.delayMs, sleep, cancellationSignal);
+                continue;
+              }
+              console.warn(`[Persona: ${persona.id}] Transport '${transportName}' rate-limit budget exhausted after ${gatewayRateLimitRetries} retr${gatewayRateLimitRetries === 1 ? 'y' : 'ies'} (${plan.reason}).`);
             }
             circuitBreaker.trip(transport, errMsg, outcomeClass);
             if (i < candidateTransports.length - 1) {
