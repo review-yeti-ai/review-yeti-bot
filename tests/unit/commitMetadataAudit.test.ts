@@ -3,9 +3,8 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { findViolations, readRange } from '../../scripts/ci/audit-commit-metadata.mjs';
+import { findViolations, readRange, ORG } from '../../scripts/ci/audit-commit-metadata.mjs';
 
-const ORG = ['call', 'telemetry'].join('');
 const clean = { sha: 'a'.repeat(40), an: 'Review Yeti Maintainers', ae: 'maintainers@users.noreply.github.com',
   cn: 'GitHub', ce: 'noreply@github.com', body: 'fix: something neutral\n' };
 

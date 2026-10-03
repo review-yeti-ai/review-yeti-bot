@@ -62,7 +62,7 @@ export interface Env {
   PARALLEL_MODE: string;
   PARALLEL_CHECK_NAME: string;
   PILOT_REPOSITORIES: string;
-  DOKS_FALLBACK_URL: string;
+  DOKS_FALLBACK_URL?: string;
   /** Comma-separated browser origins allowed for the MCP endpoint (exact origin or `*.suffix`). */
   ALLOWED_ORIGINS?: string;
   DEFAULT_WORKER_IMAGE: string;
