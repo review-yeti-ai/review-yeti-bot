@@ -214,7 +214,7 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
       });
 
       it('echoes only exact matches and prefers the first exact entry as the fallback', async () => {
-        const env = { ALLOWED_ORIGINS: ' https://one.example.com , *.example.org ' };
+        const env = { ALLOWED_ORIGINS: ' *.example.org , https://one.example.com ' };
         assert.equal((await preflight('https://one.example.com', env)).headers.get('Access-Control-Allow-Origin'), 'https://one.example.com');
         assert.equal((await preflight('https://one.example.com.evil.test', env)).headers.get('Access-Control-Allow-Origin'), 'https://one.example.com');
         assert.equal((await preflight('https://two.example.org', env)).headers.get('Access-Control-Allow-Origin'), 'https://two.example.org');
