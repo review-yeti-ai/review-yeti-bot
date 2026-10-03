@@ -85,8 +85,12 @@ describe('sample repository identity is one contract, asserted across layers', (
     // toMatch(/SAMPLE_REPO_CDR_SLUG/) is satisfied by the import line alone, so
     // reverting the option to value="sample-cdr" would pass while reintroducing
     // the drift.
-    expect(page).toMatch(/<option value=\{SAMPLE_REPO_CDR_SLUG\}>/);
-    expect(page).toMatch(/<option value=\{SAMPLE_REPO_META_SLUG\}>/);
+    // Bind the constant to the option VALUE without pinning attribute adjacency:
+    // `<option key={...} value={X}>` or a SAMPLE_REPOS.map() render keeps the
+    // contract intact, and the not.toMatch guards below already catch a raw
+    // literal reverting the value.
+    expect(page).toMatch(/value=\{SAMPLE_REPO_CDR_SLUG\}/);
+    expect(page).toMatch(/value=\{SAMPLE_REPO_META_SLUG\}/);
     expect(page).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_CDR_SLUG}['"\`]`));
     expect(page).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_META_SLUG}['"\`]`));
     // Plain `toContain`, not a quote-wrapped regex: the first cut of this guard
