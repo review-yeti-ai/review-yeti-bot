@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-// @ts-expect-error plain ESM script without types
 import { findViolations } from '../../scripts/ci/audit-commit-metadata.mjs';
 
 const ORG = ['call', 'telemetry'].join('');
