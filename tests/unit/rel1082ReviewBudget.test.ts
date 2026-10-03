@@ -816,7 +816,7 @@ describe('persona panel wiring', () => {
       }),
     };
     const repoFileProvider = options.toolRead
-      ? { readFile: vi.fn(async () => options.toolRead!), findFiles: vi.fn(async () => []) }
+      ? { readFile: vi.fn(async () => options.toolRead!), findFiles: vi.fn<() => Promise<string[]>>().mockResolvedValue([]) }
       : undefined;
     const result = await executePersonaPanel({
       config: panelConfig(),
@@ -1015,6 +1015,9 @@ describe('composed engine wiring', () => {
     ]));
     expect(result.diffShrink?.notSentInFull).toEqual([]);
     const networkFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request in synthetic release fixture'));
+    const readFile = vi.fn<() => Promise<string | null>>().mockResolvedValue(null);
+    const findFiles = vi.fn<() => Promise<string[]>>().mockResolvedValue([]);
+    const repoFileProviderFactory = vi.fn(() => ({ readFile, findFiles }));
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker({ NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate',
       REVIEW_RUN_ID: 'run_' + 'c'.repeat(32), REVIEW_REPO: 'acme/release-fixture', REVIEW_REPOSITORY_ID: '1339040553',
@@ -1023,8 +1026,10 @@ describe('composed engine wiring', () => {
       REVIEW_MODEL: 'ollama/glm-5.3-flash', OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
       OPENAI_API_KEY: 'vk-test', GH_TOKEN: 'ghs_test', REVIEW_YETI_BUDGET: 'all', REVIEW_YETI_DIFF_SHRINK: 'all',
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }) },
-    { checkClient, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
+    { checkClient, repoFileProviderFactory, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const), composedReviewRunner: vi.fn(async () => result) as never, client: {} as never });
+    expect(readFile).toHaveBeenCalledExactlyOnceWith('.gitattributes');
+    expect(findFiles).not.toHaveBeenCalled();
     expect(networkFetch).not.toHaveBeenCalled();
     const summary = JSON.stringify((checkClient.completeCheck.mock.calls as unknown[][]).map(call => call[0]));
     expect(summary).toContain('4 in full (2 past the 20k per-file cut), 0 as signatures only, 0 not deeply reviewed');
@@ -1070,7 +1075,7 @@ describe('composed engine wiring', () => {
     cfg.composed = { max_tasks: 1, max_turns_total: 8, max_turns_per_task: 8 } as typeof cfg.composed;
     const result = await executeComposedReview({ config: cfg, changedFiles: files(BIG_DIFF),
       repository: 'acme/reviewer-fixture', headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
-      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never });
+      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn<() => Promise<string[]>>().mockResolvedValue([]) } as never });
     expect(workCalls).toBe(4);
     expect(requests.some((request) => request.includes('TASK_RESULT_FRESH_RECOVERY'))).toBe(true);
     for (const request of requests) expect(Buffer.byteLength(request)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
@@ -1109,7 +1114,7 @@ describe('composed engine wiring', () => {
       repository: 'acme/app',
       headSha: 'e'.repeat(40),
       client: client as never,
-      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never,
+      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn<() => Promise<string[]>>().mockResolvedValue([]) } as never,
       ...(reviewBudget ? { reviewBudget } : {}),
     }).catch(() => undefined);
     return requests;
