@@ -20,7 +20,7 @@ import {
 import { HttpProviderLeaseCoordinator, providerLeaseEndpointFor } from '../../src/review/providerLeaseHttp';
 import { providerPublishingModelClient } from '../../src/cli/publishingReview';
 import type { OpenRouterRequest, ReviewModelClient } from '../../src/gateway/openRouterClient';
-import type { ProviderLeaseCoordinator } from '../../src/review/providerLease';
+import type { ProviderLeaseCoordinator } from '../../src/gateway/providerLeaseCoordinator';
 import { MemoryLeaseBoard, rateLimitedProvider } from '../support/providerConcurrencyFixtures';
 
 const MODEL = 'pr-reviewer';
@@ -141,6 +141,50 @@ describe('cross-review provider concurrency (shared coordinator)', () => {
     await expect(client.complete(request())).rejects.toThrow('synthetic provider failure');
     expect(board.inUse(MODEL)).toBe(0);
     expect(board.releaseCalls).toBe(2);
+  });
+
+  it('a call cancelled while queued for the local slot leaves the queue and leaks no slot', async () => {
+    let finishFirst!: () => void;
+    const inner = vi.fn((req: OpenRouterRequest) => new Promise<any>((resolve) => {
+      const done = () => resolve({ model: req.model, content: 'ok', usage: null, costUSD: null, raw: {} });
+      if (inner.mock.calls.length === 1) finishFirst = done; else done();
+    }));
+    const client = createConcurrencyLimitedModelClient({ complete: inner }, { localConcurrency: 1 });
+    const first = client.complete(request());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const controller = new AbortController();
+    const queued = client.complete(request({ signal: controller.signal }));
+    controller.abort();
+    await expect(queued).rejects.toMatchObject({ name: 'OpenRouterTimeoutError' });
+    finishFirst();
+    await first;
+    // The cancelled waiter is gone: the slot returns to the pool and the next call gets it.
+    await expect(client.complete(request())).resolves.toMatchObject({ content: 'ok' });
+    await expect(client.complete(request())).resolves.toMatchObject({ content: 'ok' });
+    expect(inner).toHaveBeenCalledTimes(3);
+    expect(client.stats().inFlight).toBe(0);
+  });
+
+  it('a lease lost while its call runs stops the heartbeat and is not released afterwards', async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const renew = vi.fn(async () => ({ status: 'lost' as const }));
+    const release = vi.fn(async () => undefined);
+    const coordinator: ProviderLeaseCoordinator = {
+      acquire: vi.fn(async () => ({ status: 'granted' as const, leaseId: '33333333-3333-4333-8333-333333333333', ttlMs: 3_000, capacity: 1, inUse: 1 })),
+      renew, release,
+    };
+    const client = createConcurrencyLimitedModelClient({
+      complete: (req) => new Promise((resolve) => { finish = () => resolve({ model: req.model, content: 'ok', usage: null, costUSD: null, raw: {} }); }),
+    }, { coordinator });
+    const pending = client.complete(request());
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(client.stats().leasesLost).toBe(1);
+    finish();
+    await expect(pending).resolves.toMatchObject({ content: 'ok' });
+    // The call finished normally without the lease, and nothing was released on its behalf.
+    expect(release).not.toHaveBeenCalled();
   });
 
   it('a key the service does not manage proceeds under the local cap only', async () => {

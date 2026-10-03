@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
 import { capacityFor, type ProviderLeaseServiceConfig } from '../config/providerConcurrency';
 import { workerExecutionAuthorized, type Queryable } from './incrementalPriorReview';
 import { withReviewPrTransaction, type ReviewPrTransactionPool } from './reviewPrTransaction';
-import type { ProviderLeaseAcquireResult } from '../review/providerLease';
+import type { ProviderLeaseAcquireResult } from '../gateway/providerLeaseCoordinator';
 
 export const PROVIDER_CONCURRENCY_LEASE_SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS provider_concurrency_leases (

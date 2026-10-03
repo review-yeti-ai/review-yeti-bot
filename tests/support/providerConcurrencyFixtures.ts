@@ -11,7 +11,7 @@
  * "Concurrent limit reached for <model>: 15/15 slots in use ...".
  */
 import { OpenRouterResponseError, type OpenRouterRequest, type OpenRouterResponse, type ReviewModelClient } from '../../src/gateway/openRouterClient';
-import type { ProviderLeaseAcquireResult, ProviderLeaseCoordinator } from '../../src/review/providerLease';
+import type { ProviderLeaseAcquireResult, ProviderLeaseCoordinator } from '../../src/gateway/providerLeaseCoordinator';
 
 export class MemoryLeaseBoard {
   private readonly leases = new Map<string, { key: string; holder: string; expiresAt: number }>();

@@ -58,7 +58,7 @@ import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
 import { withProviderConcurrencyLimit } from '../gateway/concurrencyLimitedModelClient';
 import { providerConcurrencyWorkerConfigFromEnv } from '../config/providerConcurrency';
-import type { ProviderLeaseCoordinator } from '../review/providerLease';
+import type { ProviderLeaseCoordinator } from '../gateway/providerLeaseCoordinator';
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
 import {
   openaiTransport,
