@@ -5,6 +5,18 @@ import { dashboardStore } from '../../src/persistence/dashboardStore';
 import { authService } from '../../src/dashboard/authService';
 import { LiveStreamBus } from '../../src/live/liveStreamBus';
 import { Express } from 'express';
+import * as installationClient from '../../src/github/installationClient';
+
+const fixtureInstallation = {
+  id: 101,
+  appId: 123456,
+  account: {
+    login: 'exampleorg',
+    id: 201,
+    avatarUrl: 'https://avatars.fixture.invalid/exampleorg',
+    type: 'Organization',
+  },
+};
 
 describe('R4: GitHub Org, Repo & Active PR Discovery API Test Suite', () => {
   let app: Express;
@@ -14,6 +26,17 @@ describe('R4: GitHub Org, Repo & Active PR Discovery API Test Suite', () => {
     dashboardStore.reset();
     authService.reset();
     LiveStreamBus.getInstance().clearHistory();
+
+    // Choose the discovery organization explicitly, independent of ambient
+    // App credentials and the production brand-new-store default. Spy on the
+    // live module binding; resetting modules would split the store singleton.
+    dashboardStore.updateGitHubAppConfig({
+      appId: String(fixtureInstallation.appId),
+      installationId: String(fixtureInstallation.id),
+      privateKeyPem: 'fixture-private-key-not-valid',
+    });
+    vi.spyOn(installationClient, 'listGitHubAppInstallations')
+      .mockResolvedValue([fixtureInstallation]);
 
     // Clear any pre-existing default repositories so tests assert on exact fixture counts
     (dashboardStore as any).data.repositories = [];
@@ -71,15 +94,76 @@ describe('R4: GitHub Org, Repo & Active PR Discovery API Test Suite', () => {
       expect(acmeOrg.totalReposCount).toBe(1);
     });
 
-    it('falls back to default organization when store has zero repositories', async () => {
+    it('discovers the explicit fixture organization when store has zero repositories', async () => {
       (dashboardStore as any).data.repositories = [];
       const res = await request(app)
         .get('/api/github/orgs')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
       expect(res.body.organizations.length).toBe(1);
       expect(res.body.organizations[0].login).toBe('exampleorg');
+      expect(res.body.organizations[0]).toEqual({
+        id: 201,
+        login: 'exampleorg',
+        name: 'exampleorg',
+        avatarUrl: 'https://avatars.fixture.invalid/exampleorg',
+        installationId: 101,
+        monitoredCount: 0,
+        totalReposCount: 0,
+      });
+      expect(dashboardStore.getRepositories()).toEqual([]);
+      expect(installationClient.listGitHubAppInstallations).toHaveBeenCalledExactlyOnceWith({
+        appId: '123456',
+        privateKey: 'fixture-private-key-not-valid',
+        baseUrl: process.env.GITHUB_API_BASE_URL,
+      });
+    });
+
+    it('does not substitute a hardcoded organization for a different empty-store fixture', async () => {
+      (dashboardStore as any).data.repositories = [];
+      vi.mocked(installationClient.listGitHubAppInstallations).mockResolvedValue([{
+        ...fixtureInstallation,
+        account: { ...fixtureInstallation.account, login: 'discovery-fixture-other' },
+      }]);
+
+      const res = await request(app)
+        .get('/api/github/orgs')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.organizations).toEqual([{
+        id: 201,
+        login: 'discovery-fixture-other',
+        name: 'discovery-fixture-other',
+        avatarUrl: 'https://avatars.fixture.invalid/exampleorg',
+        installationId: 101,
+        monitoredCount: 0,
+        totalReposCount: 0,
+      }]);
+      expect(dashboardStore.getRepositories()).toEqual([]);
+      expect(installationClient.listGitHubAppInstallations).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls back to stored fixture owners when the installation lookup fails', async () => {
+      vi.mocked(installationClient.listGitHubAppInstallations)
+        .mockRejectedValue(new Error('fixture installation lookup unavailable'));
+
+      const res = await request(app)
+        .get('/api/github/orgs')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.organizations.map((org: any) => ({
+        login: org.login, monitored: org.monitoredCount, total: org.totalReposCount,
+      })).sort((a: any, b: any) => a.login.localeCompare(b.login))).toEqual([
+        { login: 'acme-corp', monitored: 1, total: 1 },
+        { login: 'exampleorg', monitored: 1, total: 2 },
+      ]);
+      expect(installationClient.listGitHubAppInstallations).toHaveBeenCalledTimes(1);
     });
   });
 
