@@ -13,13 +13,13 @@ import { classifyLockfileOrGeneratedPath } from '../pipeline/hunkFilter';
  * Instead of the raw patch the lanes now receive this summary: every package
  * entry the change adds, removes or re-versions (`name@version`), extracted
  * from the whole patch. It is built only for formats this module can read
- * structurally -- package-lock.json / npm-shrinkwrap-style JSON and yarn.lock
- * (v1 and berry) -- and it refuses rather than guess:
+ * structurally -- package-lock.json / npm-shrinkwrap-style JSON, yarn.lock
+ * (v1 and berry) and Elixir mix.lock -- and it refuses rather than guess:
  *
  * - every added or removed `version` line must belong to an entry whose header
  *   the patch shows (npm: by indentation, since npm writes two-space JSON;
- *   yarn: the nearest column-0 entry header), and every added or removed entry
- *   must show its version;
+ *   yarn: the nearest column-0 entry header; mix: the entry is the line itself),
+ *   and every added or removed entry must show its version;
  * - any other format (pnpm-lock.yaml, go.sum, Gemfile.lock, ...) is refused.
  *
  * Changed lines that are neither an entry header nor a `version` line
@@ -229,10 +229,92 @@ function collectYarn(lines: readonly string[]): Collected | string {
   return out;
 }
 
+/**
+ * The Hex package an added or removed mix.lock entry declares:
+ * `:name, "version"`, then Hex's positional repo field (the 7th element).
+ *
+ * The repo slot is captured deliberately. A mix.lock entry's own repository is
+ * a POSITIONAL field (`{:hex, :dep, "1.0.0", "aa", [:mix], [], "acme", "bb"}`),
+ * so it contains no `repo:` substring and `MIX_REPO` alone cannot see it. Without
+ * this capture an entry pinned to a private repository is summarized as if it
+ * came from hexpm, which is the exact claim the refusal is supposed to enforce.
+ * The installed-shape fields are `[hex: :x, repo: "acme"]`, matched by MIX_REPO.
+ */
+const MIX_HEX_ENTRY =
+  /^\s*"([^"]+)"\s*:\s*\{:hex,\s*:([^,\s]+),\s*"([^"]*)"[^\n]*?,\s*"([^"]*)"\s*,\s*"([^"]*)"/u;
+/** The repository an entry's dependencies name (`repo: "hexpm"`); `dependencies:` is Hex's own key. */
+const MIX_REPO = /\brepo:\s*"([^"]*)"/gu;
+/** The map literal a mix.lock opens and closes with. */
+const MIX_OPEN = /^%\{\s*$/u;
+const MIX_CLOSE = /^\}\s*$/u;
+
+/**
+ * mix.lock: an Elixir map literal, one self-contained entry per line
+ * (`"jason": {:hex, :jason, "1.4.1", "<sha>", [:mix], [...], "hexpm", "<sha>"},`),
+ * so there is no header/field structure to track across lines and the entry is
+ * the line. The package name is the map key; the version is the version the
+ * entry itself declares after its Hex package name.
+ *
+ * A changed entry is refused, never guessed, unless it is a Hex package from
+ * the default `hexpm` repository under its own name: a git or path dependency,
+ * a package from a private repository, a hand-written line, or an entry whose
+ * key and Hex package name disagree are all changes whose package or version
+ * this collector cannot state. Only a changed line that opens no entry at all
+ * (the map's own `%{` and `}`) is counted, so nothing in the patch goes
+ * unmentioned without making a mismatch silent.
+ */
+function collectMix(lines: readonly string[]): Collected | string {
+  const out: Collected = { instanceVersion: new Map(), changedHeaders: [], changedVersions: [], touched: new Set(), unattributed: 0 };
+  let instances = 0;
+  for (const line of lines) {
+    if (line.startsWith('@@')) continue;
+    if (line.startsWith('\\') || line.startsWith('+++') || line.startsWith('---')) continue;
+    const marker = line[0];
+    if (marker !== ' ' && marker !== '+' && marker !== '-' && line.length > 0) continue;
+    const body = line.slice(1);
+    const sides: Side[] = marker === '+' ? ['new'] : marker === '-' ? ['old'] : ['old', 'new'];
+    const changed = marker === '+' || marker === '-';
+    if (body.trim().length === 0 || MIX_OPEN.test(body) || MIX_CLOSE.test(body)) {
+      // The map's own delimiter carries no package. A changed one is counted.
+      if (changed && body.trim().length > 0) out.unattributed += 1;
+      continue;
+    }
+    const entry = MIX_HEX_ENTRY.exec(body);
+    if (!entry) {
+      // A map entry this collector cannot read is refused; anything else is counted.
+      if (changed && /^\s*"/u.test(body)) return 'changes an entry that is not a Hex package from the default repository';
+      if (changed) out.unattributed += 1;
+      continue;
+    }
+    if (entry[1] !== entry[2]) return 'changes an entry whose package name and declaration disagree';
+    // The entry's OWN repository is the positional field Hex writes (entry[4]);
+    // anything but hexpm means this package did not come from the default public
+    // registry, so the registry-vouched summary does not stand over it.
+    if (entry[4] !== 'hexpm') {
+      return 'changes an entry that is not a Hex package from the default repository';
+    }
+    // A dependency may independently name a private repository while the entry
+    // itself claims hexpm.
+    if ([...body.matchAll(MIX_REPO)].some((repo) => repo[1] !== 'hexpm')) {
+      return 'changes an entry that is not a Hex package from the default repository';
+    }
+    const name = entry[1];
+    const version = entry[3];
+    const ref = { name, instance: (instances += 1) };
+    for (const side of sides) {
+      // An entry is one line, so the version is visible on the side that shows it.
+      out.instanceVersion.set(`${side}:${ref.instance}`, version);
+      if (changed) out.changedVersions.push({ side, name, version });
+    }
+  }
+  return out;
+}
+
 const FORMATS: Record<string, (lines: readonly string[]) => Collected | string> = {
   'package-lock.json': collectNpm,
   'npm-shrinkwrap.json': collectNpm,
   'yarn.lock': collectYarn,
+  'mix.lock': collectMix,
 };
 
 /** The lockfile formats this module can summarize (by file name). */
