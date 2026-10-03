@@ -139,6 +139,62 @@ const RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES = new Set([
   'Review Yeti: review did not complete',
   'Review Yeti: NO VERDICT (no panel result for this head)',
 ]);
+
+// REL-1113 / review-yeti-bot#1320: the engine also publishes an
+// infrastructure-incomplete family whose title names the failed lanes and the
+// coded reason, e.g.
+//
+//   Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane panel failed: 429)
+//   Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502)
+//   Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502); retrying as attempt 2 of 3
+//
+// The engine already treats this family as recoverable
+// (`isRecoverableFailureTitle` in review-yeti-bot's `src/review/reviewCheckIdentity.ts`,
+// built from `INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX` in `src/review/laneInfrastructure.ts`).
+// This validator kept only the two legacy titles, so a provider-429 run produced
+// a permanently stuck check: the documented remedy ('retry after the provider
+// cools down') was unreachable, because `refresh_requested=true` failed closed
+// with 'refresh a1 worker is not a completed recoverable infrastructure failure'
+// and a plain dispatch failed with 'caller attempt 1 requires zero worker checks'.
+//
+// This repo deliberately does NOT import from the reviewer at runtime (it has no
+// dependency on that package), so the shape is mirrored here. The three numbers
+// below are copied from `src/review/laneInfrastructure.js`, which owns them:
+//
+//   INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX              = 'Review Yeti: INCOMPLETE — infrastructure ('
+//   MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS     = 120
+//   MAX_CHECK_RUN_TITLE_CHARACTERS                      = 140
+//
+// They must stay in sync with that file. `validate-review-generation.test.mjs`
+// pins the real published titles so a drift becomes a red test rather than a
+// silently unrecoverable review.
+const INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX = 'Review Yeti: INCOMPLETE — infrastructure (';
+const MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS = 120;
+const MAX_CHECK_RUN_TITLE_CHARACTERS = 140;
+const INCOMPLETE_INFRASTRUCTURE_TITLE = new RegExp(
+  `^${INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`
+  + `[^\\u0000-\\u001f\\u007f]{1,${MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS}}\\)`
+  + '(?:; retrying as attempt \\d{1,2} of \\d{1,2})?$',
+  'u',
+);
+
+/**
+ * True for a check-run title that names an INFRASTRUCTURE failure rather than a
+ * verdict about the diff. Deliberately exact: an unknown title is not
+ * recoverable, and neither `BLOCK` nor `SHIP` can match the prefix.
+ *
+ * `MAX_CHECK_RUN_TITLE_CHARACTERS` is part of the engine's predicate, not
+ * decoration: GitHub caps `output.title` at 140 characters and the engine
+ * refuses to treat an over-length title as recoverable. Without this bound the
+ * consumer would be strictly MORE permissive than the engine it mirrors, and
+ * would admit a 141-163 character title (detail 98-120) that the engine itself
+ * published as unrecoverable. Mirror the predicate, not just the prefix.
+ */
+function isRecoverableInfrastructureTitle(title) {
+  if (typeof title !== 'string') return false;
+  return RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(title)
+    || (title.length <= MAX_CHECK_RUN_TITLE_CHARACTERS && INCOMPLETE_INFRASTRUCTURE_TITLE.test(title));
+}
 // REL-940: conclusions that mark a prior attempt as a recoverable
 // INFRASTRUCTURE failure rather than a verdict about the diff.
 //
@@ -743,7 +799,13 @@ function isRecoverableInfrastructureAttempt(identity, expectedAttempt, headSha, 
   return identity.attempt === expectedAttempt
     && identity.row.status === 'completed'
     && RECOVERABLE_INFRASTRUCTURE_CONCLUSIONS.has(identity.row.conclusion)
-    && (RECOVERABLE_INFRASTRUCTURE_CHECK_TITLES.has(identity.row.output.title)
+    // A named infrastructure-incomplete title is recoverable on its own: the
+    // engine published it precisely because no lane produced a verdict, and the
+    // failure class (transport, provider_error, rate_limit, timeout) is recorded
+    // in the title. The other two branches additionally require an exact-head
+    // gate, which these runs also publish, but the title alone is already proof
+    // that this attempt is not a verdict about the diff.
+    && (isRecoverableInfrastructureTitle(identity.row.output.title)
       || (isFailedInfrastructurePanel(identity, headSha)
         && hasCurrentInfrastructureGate(identity, gateInventory, options))
       || isIncompleteRosterPanel(identity, headSha, gateInventory, options));

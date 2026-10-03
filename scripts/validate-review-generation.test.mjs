@@ -233,6 +233,126 @@ test('attempt 1 admits only when no worker generation exists', async () => {
   );
 });
 
+test('explicit refresh admits a persisted retry after a provider-429 INCOMPLETE-infrastructure a1 (REL-1113 / #1320)', async () => {
+  const result = await validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([workerCheck({
+      title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lane panel failed: 429)',
+    })])],
+  });
+  assert.equal(result.review_generation, 2);
+  assert.equal(result.refresh_execution_attempt, 1);
+  assert.equal(result.worker_check_count, 1);
+  assert.equal(result.latest_worker_check_id, 100);
+  assert.equal(result.refresh_requested, true);
+});
+
+test('explicit refresh admits the REL-1113 lane-failure and retry-suffixed title forms', async () => {
+  for (const title of [
+    'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502)',
+    'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502); retrying as attempt 2 of 3',
+    'Review Yeti: INCOMPLETE — infrastructure (lanes arch-lane 502, sec-lane 429 failed)',
+  ]) {
+    const result = await validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page([workerCheck({ title })])],
+    });
+    assert.equal(result.review_generation, 2, `title should be recoverable: ${title}`);
+  }
+});
+
+test('the INCOMPLETE-infrastructure family does NOT admit a verdict, a malformed title, or an oversized detail', async () => {
+  const notRecoverable = [
+    // A real verdict must never become refresheable by this rule.
+    'Review Yeti: BLOCK',
+    'Review Yeti: SHIP',
+    // The legacy fixed titles are still handled by the set, but an unrelated
+    // title must not slip through the regex.
+    'Review Yeti: INCOMPLETE',
+    'Review Yeti: something else entirely',
+    // Missing the closing paren.
+    'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502',
+    // Empty detail: the engine always names at least one lane.
+    'Review Yeti: INCOMPLETE — infrastructure ()',
+    // Control characters are excluded by the engine's own character class.
+    'Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed:\nfake)',
+    // Longer than MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS (120).
+    `Review Yeti: INCOMPLETE — infrastructure (${'x'.repeat(121)})`,
+    // Wrong prefix letter case and a different unicode dash.
+    'Review Yeti: INCOMPLETE - infrastructure (lane arch-lane failed: 502)',
+  ];
+  for (const title of notRecoverable) {
+    await assert.rejects(
+      validate({ attempt: 1, refreshRequested: true, pages: [page([workerCheck({ title })])] }),
+      /refresh a1 worker is not a completed recoverable infrastructure failure/u,
+      `title must NOT be recoverable: ${JSON.stringify(title)}`,
+    );
+  }
+});
+
+test('an INCOMPLETE-infrastructure a1 still needs a completed check with a recoverable conclusion', async () => {
+  const title = 'Review Yeti: INCOMPLETE — infrastructure (lane panel failed: 429)';
+  // `neutral` and `skipped` read as PASSING for a required check, so they must
+  // never be admitted as an infrastructure failure.
+  for (const conclusion of ['success', 'neutral', 'skipped', 'cancelled', 'timed_out']) {
+    await assert.rejects(
+      validate({
+        attempt: 1,
+        refreshRequested: true,
+        pages: [page([workerCheck({ title, conclusion })])],
+      }),
+      /refresh a1 worker is not a completed recoverable infrastructure failure/u,
+      `conclusion must NOT be recoverable: ${conclusion}`,
+    );
+  }
+  // And an in-progress run is not a completed attempt either.
+  await assert.rejects(
+    validate({
+      attempt: 1,
+      refreshRequested: true,
+      pages: [page([workerCheck({ title, status: 'in_progress', conclusion: null })])],
+    }),
+    /refresh a1 worker is not a completed recoverable infrastructure failure/u,
+  );
+});
+
+test('the INCOMPLETE-infrastructure family mirrors the engine \u0022140" check-run title cap', async () => {
+  // The engine's predicate is `title.length <= MAX_CHECK_RUN_TITLE_CHARACTERS`,
+  // not the prefix regex alone. GitHub caps output.title at 140 characters, and
+  // the engine's own detail bound (120) is wider than the room the prefix leaves
+  // (42 + detail + 1 = 140 => detail <= 97). So there is a real band of
+  // over-length titles -- detail 98..120, total 141..163 -- that the engine
+  // PUBLISHES as unrecoverable but that a prefix-only mirror would admit. The
+  // consumer must not be more permissive than the engine it mirrors.
+  const prefix = 'Review Yeti: INCOMPLETE — infrastructure (';
+  const detail = (length) => prefix + 'x'.repeat(length) + ')';
+
+  // At the boundary the engine accepts: total exactly 140 (detail 97).
+  const atCap = detail(97);
+  assert.equal(atCap.length, 140);
+  const admitted = await validate({
+    attempt: 1,
+    refreshRequested: true,
+    pages: [page([workerCheck({ title: atCap })])],
+  });
+  assert.equal(admitted.review_generation, 2);
+
+  // One character over: the engine's predicate rejects it, so this must too.
+  // 98..120 corresponds to the real over-length band; 121+ already fails the
+  // detail bound alone and is covered by the case above.
+  for (const length of [98, 120, 121]) {
+    const overCap = detail(length);
+    assert.ok(overCap.length > 140, `detail ${length} must exceed the cap`);
+    await assert.rejects(
+      validate({ attempt: 1, refreshRequested: true, pages: [page([workerCheck({ title: overCap })])] }),
+      /refresh a1 worker is not a completed recoverable infrastructure failure/u,
+      `a ${overCap.length}-character title must NOT be recoverable`,
+    );
+  }
+});
+
 test('explicit refresh admits a persisted retry from caller attempt 1 after a recoverable a1', async () => {
   const result = await validate({ attempt: 1, refreshRequested: true, pages: [page([workerCheck()])] });
   assert.equal(result.review_generation, 2);
