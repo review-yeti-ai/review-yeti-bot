@@ -61,9 +61,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function fixture(executionAttempt = '1') {
+function fixture(executionAttempt = '1', reviewEngine: 'panel' | 'composed' = 'panel') {
   const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
-    personas: 'security,testing', budget: { max_investigation_turns: 1 },
+    personas: 'security,testing', review_engine: reviewEngine, budget: { max_investigation_turns: 1 },
   } });
   const prepared = preparePublishingPolicy({ content, source: {
     repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
@@ -146,11 +146,12 @@ const SHAPES = [
     'provider_error', 'lane panel failed: 502'],
 ] as const;
 
-function trustedSide(f: ReturnType<typeof fixture>, completion: WorkerReviewCompletion) {
+function trustedSide(f: ReturnType<typeof fixture>, completion: WorkerReviewCompletion, reviewEngine: 'panel' | 'composed' = 'panel') {
   const { version: _version, result: _result, ...expectedCoordinates } = completion;
   const derived = deriveCanonicalWorkerReviewEvidence(completion, {
     expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
     changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
+    reviewEngine, composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
   });
   const candidate = { repositoryId: 123, prNumber: 42, headSha: HEAD, baseSha: BASE, policyDigest: f.prepared.policy.effectivePolicyDigest };
   const decision = derived.valid
@@ -159,7 +160,7 @@ function trustedSide(f: ReturnType<typeof fixture>, completion: WorkerReviewComp
   return { derived, decision };
 }
 
-async function serviceRequeue(completion: WorkerReviewCompletion) {
+async function serviceRequeue(completion: WorkerReviewCompletion, errorText = AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT) {
   const identity = buildReviewRunIdentity({ owner: 'example', repo: 'project', prNumber: 42, headSha: HEAD, baseSha: BASE });
   const admit = vi.fn(async () => ({}) as never);
   // The fixture's run id is a placeholder; the service derives the run id from the identity it
@@ -168,7 +169,7 @@ async function serviceRequeue(completion: WorkerReviewCompletion) {
     event: { ...completion, runId: deriveReviewRunId(identity) }, now: START,
     repository: { admit, readRunRetryContext: vi.fn(async () => ({ publicationMode: 'app-gate' as const,
       authoritativeGateAppId: 777, repositoryId: 123, installationId: 55, identity,
-      runStatus: 'failed', errorText: AUTHORITATIVE_INFRASTRUCTURE_FAILURE_ERROR_TEXT })) },
+      runStatus: 'failed', errorText })) },
     authoritative: { expectedAppId: 777, repositoryIds: [123],
       resolver: { resolve: vi.fn(async () => ({ identity, prepared: { policy: { effectivePolicyDigest: 'd'.repeat(64) } } })) } as never },
     logger: { error: vi.fn(), info: vi.fn() },
@@ -177,6 +178,32 @@ async function serviceRequeue(completion: WorkerReviewCompletion) {
 }
 
 describe('REL-1124: thrown panel infrastructure failures are INCOMPLETE (authoritative)', () => {
+  it.each(['1', '2', '3'])('classifies thrown composed HTTP 429 for bounded retry on attempt %s without inventing a task plan', async (attempt) => {
+    const f = fixture(attempt, 'composed');
+    const composedReviewRunner = vi.fn<NonNullable<PublishingReviewDeps['composedReviewRunner']>>()
+      .mockRejectedValue(new OpenRouterResponseError(`gateway HTTP 429 ${PRIVATE_DETAIL}`, 429));
+
+    await expect(runPublishingReviewWorker(f.env, { ...f.deps, composedReviewRunner }))
+      .resolves.toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', failureClass: 'rate_limit' });
+    expect(composedReviewRunner).toHaveBeenCalledOnce();
+    expect(f.panelRunner).not.toHaveBeenCalled();
+    const completion = parseWorkerReviewCompletion(f.reportReviewResult.mock.calls[0]?.[0]);
+    expect(completion.result.taskPlan).toBeUndefined();
+    expect(completion.result.personas.map((persona) => persona.id)).toEqual(f.prepared.expectedPersonaIds);
+    const { derived, decision } = trustedSide(f, completion, 'composed');
+    expect(derived).toMatchObject({ valid: true, evidence: {
+      infrastructureFailure: true, verdict: 'BLOCK', completedLanes: 0, quorumSatisfied: false,
+    } });
+    expect(decision).toEqual({ status: 'failure', eligible: false, reason: 'infrastructure-failure' });
+    const { outcome, admit } = await serviceRequeue(completion, `review gate: ${decision?.reason}`);
+    expect(outcome).toBe(attempt === '3' ? 'attempts-exhausted' : 'requeued');
+    if (attempt === '3') expect(admit).not.toHaveBeenCalled();
+    else expect(admit).toHaveBeenCalledWith(expect.objectContaining({
+      retryRequested: true, retryAfterExecutionAttempt: Number(attempt),
+    }));
+    expect(JSON.stringify(f.reportReviewResult.mock.calls)).not.toContain(PRIVATE_DETAIL);
+  });
+
   it('does not treat a delivered completion ACK as confirmation that attempt 2 was scheduled', async () => {
     const f = fixture('1');
     const metric = vi.spyOn(getMetrics().reviewIncompleteInfra, 'add');
