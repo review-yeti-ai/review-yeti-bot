@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.118.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.2...v1.118.0) (2026-10-03)
+
+
+### Features
+
+* **live:** progressive streaming swarm dataviz with per-task tokens and budget tracking (Refs: REL-1287) ([cb6cbde](https://github.com/review-yeti-ai/review-yeti-bot/commit/cb6cbdef281f0ada5f2e7a57bf6058647b061fbe))
+
+
+### Bug Fixes
+
+* keep the pinned deployment endpoints and record the remaining references ([eff1ec4](https://github.com/review-yeti-ai/review-yeti-bot/commit/eff1ec4d1327e57314f7b9401863dab5cdaad6bf))
+
 ## [1.117.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.1...v1.117.2) (2026-10-02)
 
 
