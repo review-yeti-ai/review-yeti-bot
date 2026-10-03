@@ -62,8 +62,14 @@ describe('sample repository identity is one contract, asserted across layers', (
     // to nothing, silently.
     const page = read('src/app/memory/page.tsx');
     expect(page).toContain("from '@/lib/sampleRepositories'");
-    expect(page).toMatch(/SAMPLE_REPO_CDR_SLUG/);
-    expect(page).toMatch(/SAMPLE_REPO_META_SLUG/);
+    // Assert the slugs are used as the option VALUE, not merely imported: a bare
+    // toMatch(/SAMPLE_REPO_CDR_SLUG/) is satisfied by the import line alone, so
+    // reverting the option to value="sample-cdr" would pass while reintroducing
+    // the drift.
+    expect(page).toMatch(/<option value=\{SAMPLE_REPO_CDR_SLUG\}>/);
+    expect(page).toMatch(/<option value=\{SAMPLE_REPO_META_SLUG\}>/);
+    expect(page).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_CDR_SLUG}['"\`]`));
+    expect(page).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_META_SLUG}['"\`]`));
     // Plain `toContain`, not a quote-wrapped regex: the first cut of this guard
     // required a surrounding quote character and therefore MISSED a raw literal
     // sitting in JSX text (`>example/sample-cdr<`), which is exactly the drift it
@@ -80,5 +86,12 @@ describe('sample repository identity is one contract, asserted across layers', (
     expect(ui).toContain("from '@/lib/sampleRepositories'");
     expect(ui).not.toContain(SAMPLE_REPO_CDR);
     expect(ui).not.toContain(SAMPLE_REPO_META);
+    // The component KEYS ON THE SLUG, not the full identity, and the memory page
+    // submits the slug as its option value -- so the two layers must agree on the
+    // slug. Guarding only the full identity let a raw 'sample-cdr' literal in the
+    // chart conditions survive a rename of the identity, silently rendering an
+    // empty matrix because the page submitted the new slug.
+    expect(ui).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_CDR_SLUG}['"\`]`));
+    expect(ui).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_META_SLUG}['"\`]`));
   });
 });
