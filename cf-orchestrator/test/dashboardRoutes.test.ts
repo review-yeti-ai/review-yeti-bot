@@ -735,3 +735,20 @@ it('rejects incomplete live event admission before calling a bound review run', 
   }
   assert.equal(calls, 0);
 });
+
+
+it('forwards an accepted live event unchanged to its bound run', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const event = { type: 'example-event', jobId: 'example-run', progress: 25 };
+  const env = { ...createMockEnv(), REVIEW_RUN: {
+    idFromName: (name: string) => { assert.equal(name, 'example-run'); return name; },
+    get: () => ({ fetch: async (url: string, init: RequestInit) => { calls.push({ url, init }); return Response.json({ success: true }); } }),
+  } } as unknown as Env;
+  const response = await worker.fetch(new Request('https://worker.dev/api/live/publish', { method: 'POST', body: JSON.stringify({ jobId: 'example-run', event }) }), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'http://do/events');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].init.body as string), event);
+});
