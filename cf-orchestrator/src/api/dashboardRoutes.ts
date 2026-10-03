@@ -454,7 +454,7 @@ export async function handleDashboardApi(
         lastHydratedAt: '2026-10-02T12:45:00Z',
       },
       {
-        key: 'example/sample-cdr/pr-142.tar.zst',
+        key: `${SAMPLE_REPO_CDR}/pr-142.tar.zst`,
         repository: SAMPLE_REPO_CDR,
         prNumber: 142,
         symbolCount: 1840,
@@ -467,7 +467,7 @@ export async function handleDashboardApi(
         lastHydratedAt: '2026-10-02T12:30:00Z',
       },
       {
-        key: 'example/sample-meta/pr-19.tar.zst',
+        key: `${SAMPLE_REPO_META}/pr-19.tar.zst`,
         repository: SAMPLE_REPO_META,
         prNumber: 19,
         symbolCount: 610,
