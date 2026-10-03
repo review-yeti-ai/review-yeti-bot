@@ -3,7 +3,7 @@ import { READINESS_CONTRACTS, readinessBody, readinessStatus } from './health/re
 import { createActionDispatchRouter, type ActionDispatchRouterOptions } from './api/actionDispatchApi';
 import { MAX_COMPLETION_BYTES } from './review/workerReviewCompletion';
 import { MAX_REVIEW_CHECKPOINT_BYTES } from './review/reviewExecutionCheckpoint';
-import { MAX_FINDING_THREADS_REQUEST_BYTES } from './api/findingThreadsRoute';
+import { MAX_FINDING_THREADS_REQUEST_BYTES } from './review/findingThreadsContract';
 import { createRateLimiter } from './security/rateLimiter';
 import { createWebhookRouter, type RequestWithRawBody } from './github/webhookServer';
 import type { GitHubWebhookAdmissionEvent } from './review/githubWebhookAdmission';

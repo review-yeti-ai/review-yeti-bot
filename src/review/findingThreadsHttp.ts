@@ -3,23 +3,14 @@
  * endpoint authenticated with the same per-run bearer. Best effort by contract: a failure here is
  * logged by the caller and never changes the published check.
  */
-import { z } from 'zod';
 import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { validateWorkerCompletionEndpoint } from './workerCompletion';
-import type { FindingThreadsRequest } from '../api/findingThreadsRoute';
+import { findingThreadsResultSchema, type FindingThreadsRequest } from './findingThreadsContract';
 
 export interface FindingThreadsPublisher {
   publish(request: Omit<FindingThreadsRequest, 'version' | 'runId' | 'executionAttempt'>, signal?: AbortSignal):
     Promise<{ created: number; skipped: number; resolved: number }>;
 }
-
-const resultSchema = z.object({
-  version: z.literal('FindingThreadsResult.v1'),
-  runId: z.string().regex(/^run_[a-f0-9]{32}$/u),
-  created: z.number().int().nonnegative().safe(),
-  skipped: z.number().int().nonnegative().safe(),
-  resolved: z.number().int().nonnegative().safe(),
-}).strict();
 
 function unavailable(): Error { return new Error('Finding threads could not be published'); }
 
@@ -73,7 +64,7 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
         void response.body?.cancel().catch(() => undefined);
         throw unavailable();
       }
-      const parsed = resultSchema.parse(await response.json());
+      const parsed = findingThreadsResultSchema.parse(await response.json());
       if (parsed.runId !== this.options.runId) throw unavailable();
       return { created: parsed.created, skipped: parsed.skipped, resolved: parsed.resolved };
     } catch {
