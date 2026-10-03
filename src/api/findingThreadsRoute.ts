@@ -11,7 +11,7 @@ import type { Request, Response } from 'express';
 import { sha256 } from '../review/reviewCore';
 import { findingFingerprint } from '../review/findingConvergence';
 import { workerExecutionAuthorized, type Queryable } from '../persistence/incrementalPriorReview';
-import { findingThreadsRequestSchema } from '../review/findingThreadsContract';
+import { findingThreadsReadRequestSchema, findingThreadsRequestSchema } from '../review/findingThreadsContract';
 import {
   publishFindingThreads,
   readFindingThreads,
@@ -28,7 +28,10 @@ const RESOLVE_CONCURRENCY = 4;
 
 export interface FindingThreadsRouteOptions {
   db: Queryable;
-  /** Mints a `pull_requests: write` token for exactly this repository. */
+  /**
+   * Mints a `pull_requests: write` token for exactly this repository, with the review App's bot
+   * login so only the App's own threads are trusted.
+   */
   transportFor(owner: string, repo: string): Promise<FindingThreadTransport>;
 }
 
@@ -41,9 +44,10 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
   return async (request: Request, response: Response) => {
     const token = bearer(request);
     if (!token) return response.status(401).json({ error: 'Worker installation bearer token is required' });
-    const parsed = findingThreadsRequestSchema.safeParse(request.body);
-    if (!parsed.success) return response.status(400).json({ error: 'Invalid finding-threads request' });
-    const input = parsed.data;
+    const read = findingThreadsReadRequestSchema.safeParse(request.body);
+    const parsed = read.success ? undefined : findingThreadsRequestSchema.safeParse(request.body);
+    if (!read.success && !parsed?.success) return response.status(400).json({ error: 'Invalid finding-threads request' });
+    const input = read.success ? { ...read.data, publish: [], reported: [] } : parsed!.data!;
     if (input.publish.some((finding) => findingFingerprint(finding) !== finding.fingerprint)) {
       return response.status(400).json({ error: 'Finding fingerprint does not match its content' });
     }
@@ -64,13 +68,19 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
       const transport = await options.transportFor(run.owner, run.repo);
       const pr = { owner: run.owner, repo: run.repo, prNumber: run.prNumber, headSha: run.headSha };
       const existing = await readFindingThreads(transport, pr);
+      if (read.success) {
+        return response.status(200).json({ version: 'FindingThreadsReadResult.v1', runId: input.runId,
+          threads: existing.slice(0, 500) });
+      }
       const published = await publishFindingThreads(transport, pr, input.publish, existing);
       // Resolve only the bot's own threads GitHub already marks outdated whose finding this head did
       // not report: the anchored code changed and the defect is gone. A current-line thread stays
       // open even when a run did not report it, so model variance can never hide a real finding.
       const reported = new Set(input.reported);
       const stale = existing
-        .filter((thread) => !thread.resolved && thread.outdated && !reported.has(thread.fingerprint) && thread.threadId)
+        // Never resolve a thread whose author could not be verified as the review App.
+        .filter((thread) => Boolean(transport.botLogin)
+          && !thread.resolved && thread.outdated && !reported.has(thread.fingerprint) && thread.threadId)
         .slice(0, MAX_RESOLVED_PER_RUN);
       let resolved = 0;
       for (let offset = 0; offset < stale.length; offset += RESOLVE_CONCURRENCY) {

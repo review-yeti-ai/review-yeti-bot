@@ -5,11 +5,17 @@
  */
 import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { validateWorkerCompletionEndpoint } from './workerCompletion';
-import { findingThreadsResultSchema, type FindingThreadsRequest } from './findingThreadsContract';
+import {
+  findingThreadsReadResultSchema, findingThreadsResultSchema, type FindingThreadsRequest,
+} from './findingThreadsContract';
+import type { PriorFindingThread } from './findingConvergence';
 
 export interface FindingThreadsPublisher {
   publish(request: Omit<FindingThreadsRequest, 'version' | 'runId' | 'executionAttempt'>, signal?: AbortSignal):
     Promise<{ created: number; skipped: number; resolved: number }>;
+  /** The review App's own finding threads, author-verified by the service (the only source whose
+   * resolutions may satisfy a P2). Optional so a test double may implement publication only. */
+  read?(headSha: string, signal?: AbortSignal): Promise<PriorFindingThread[]>;
 }
 
 function unavailable(): Error { return new Error('Finding threads could not be published'); }
@@ -44,8 +50,23 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
     this.fetchImplementation = options.fetchImplementation ?? globalThis.fetch;
   }
 
+  async read(headSha: string, signal?: AbortSignal): Promise<PriorFindingThread[]> {
+    const body = await this.post({ version: 'FindingThreadsRead.v1', runId: this.options.runId,
+      executionAttempt: this.options.executionAttempt, headSha }, signal);
+    const parsed = findingThreadsReadResultSchema.parse(body);
+    if (parsed.runId !== this.options.runId) throw unavailable();
+    return parsed.threads as PriorFindingThread[];
+  }
+
   async publish(request: Omit<FindingThreadsRequest, 'version' | 'runId' | 'executionAttempt'>, signal?: AbortSignal):
     Promise<{ created: number; skipped: number; resolved: number }> {
+    const parsed = findingThreadsResultSchema.parse(await this.post({ version: 'FindingThreadsRequest.v1',
+      runId: this.options.runId, executionAttempt: this.options.executionAttempt, ...request }, signal));
+    if (parsed.runId !== this.options.runId) throw unavailable();
+    return { created: parsed.created, skipped: parsed.skipped, resolved: parsed.resolved };
+  }
+
+  private async post(payload: unknown, signal?: AbortSignal): Promise<unknown> {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
@@ -55,8 +76,7 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
       const response = await this.fetchImplementation(this.endpoint, {
         method: 'POST',
         headers: { Accept: 'application/json', Authorization: `Bearer ${this.options.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version: 'FindingThreadsRequest.v1', runId: this.options.runId,
-          executionAttempt: this.options.executionAttempt, ...request }),
+        body: JSON.stringify(payload),
         redirect: 'error',
         signal: controller.signal,
       });
@@ -64,9 +84,7 @@ export class HttpFindingThreadsPublisher implements FindingThreadsPublisher {
         void response.body?.cancel().catch(() => undefined);
         throw unavailable();
       }
-      const parsed = findingThreadsResultSchema.parse(await response.json());
-      if (parsed.runId !== this.options.runId) throw unavailable();
-      return { created: parsed.created, skipped: parsed.skipped, resolved: parsed.resolved };
+      return await response.json();
     } catch {
       throw unavailable();
     } finally {

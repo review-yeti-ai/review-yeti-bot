@@ -113,10 +113,21 @@ export interface ConvergenceResult<F extends ConvergenceFinding = ConvergenceFin
   };
 }
 
-function severityOf(finding: ConvergenceFinding): FindingSeverity {
+/**
+ * The one severity ladder (ADR 0002): any value normalizes to P0, P1 or P2, and all three are
+ * required. Callers that render or count severities use these helpers instead of their own sets.
+ */
+export function normalizeFindingSeverity(finding: { severity?: unknown } | null | undefined): FindingSeverity {
   const value = String(finding?.severity || 'P2').toUpperCase();
   return value === 'P0' || value === 'P1' ? value : 'P2';
 }
+
+/** P0/P1: the subset the historical summary wording and per-lane metric count. */
+export function isCriticalSeverity(finding: { severity?: unknown } | null | undefined): boolean {
+  return normalizeFindingSeverity(finding) !== 'P2';
+}
+
+const severityOf = normalizeFindingSeverity;
 
 function normalizedPath(value: unknown): string {
   return typeof value === 'string' ? value.replace(/\\/g, '/').replace(/^\.\//, '').trim() : '';

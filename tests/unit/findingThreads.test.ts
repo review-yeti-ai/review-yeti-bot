@@ -21,6 +21,7 @@ const finding = { severity: 'P2' as const, path: 'src/mod.ts', line: 3, title: '
   body: 'Rename the helper so the retry behaviour is obvious.' };
 const fingerprint = findingFingerprint(finding);
 const botBody = renderFindingThreadBody({ ...finding, fingerprint });
+const APP = 'review-app[bot]';
 
 const node = (overrides: Record<string, unknown> = {}, comments?: unknown[]) => ({
   id: 'T_1', isResolved: false, isOutdated: false, path: 'src/mod.ts', line: 3, originalLine: 3,
@@ -54,13 +55,27 @@ describe('parseFindingThreadNode', () => {
   it('records a resolution only for a resolved thread with a human reply that states a reason', () => {
     const bot = { author: { login: 'review-app[bot]', __typename: 'Bot' }, body: botBody };
     const reason = { author: { login: 'author1', __typename: 'User' }, body: 'Intentional: the name mirrors the public API.', createdAt: '2026-10-02T00:00:00Z' };
-    expect(parseFindingThreadNode(node({ isResolved: true }, [bot, reason]))?.resolution)
+    expect(parseFindingThreadNode(node({ isResolved: true }, [bot, reason]), APP)?.resolution)
       .toEqual({ author: 'author1', reason: 'Intentional: the name mirrors the public API.', at: '2026-10-02T00:00:00Z' });
     // Open thread: the reason is not yet a resolution.
-    expect(parseFindingThreadNode(node({ isResolved: false }, [bot, reason]))?.resolution).toBeUndefined();
+    expect(parseFindingThreadNode(node({ isResolved: false }, [bot, reason]), APP)?.resolution).toBeUndefined();
     // Resolved with only an acknowledgement, or only a bot reply: no stated reason.
-    expect(parseFindingThreadNode(node({ isResolved: true }, [bot, { author: { login: 'author1', __typename: 'User' }, body: 'done' }]))?.resolution).toBeUndefined();
-    expect(parseFindingThreadNode(node({ isResolved: true }, [bot, { author: { login: 'other[bot]', __typename: 'Bot' }, body: 'Automated reply with plenty of words.' }]))?.resolution).toBeUndefined();
+    expect(parseFindingThreadNode(node({ isResolved: true }, [bot, { author: { login: 'author1', __typename: 'User' }, body: 'done' }]), APP)?.resolution).toBeUndefined();
+    expect(parseFindingThreadNode(node({ isResolved: true }, [bot, { author: { login: 'other[bot]', __typename: 'Bot' }, body: 'Automated reply with plenty of words.' }]), APP)?.resolution).toBeUndefined();
+  });
+
+  it('trusts only the review App as the thread author for resolutions', () => {
+    const reason = { author: { login: 'author1', __typename: 'User' }, body: 'Intentional: the name mirrors the public API.' };
+    const otherBot = { author: { login: 'other-app', __typename: 'Bot' }, body: botBody };
+    // Another App posting a marker is not a finding thread at all.
+    expect(parseFindingThreadNode(node({ isResolved: true }, [otherBot, reason]), APP)).toBeNull();
+    // GraphQL reports the slug, REST the [bot] suffix: both forms of the App's own login match.
+    expect(parseFindingThreadNode(node({ isResolved: true }, [{ ...otherBot, author: { login: 'review-app', __typename: 'Bot' } }, reason]), APP)?.resolution)
+      .toMatchObject({ author: 'author1' });
+    // With the App login unknown, a thread is recognised for identity but never satisfies a P2.
+    const unverified = parseFindingThreadNode(node({ isResolved: true }, [otherBot, reason]));
+    expect(unverified).toMatchObject({ fingerprint, resolved: true });
+    expect(unverified?.resolution).toBeUndefined();
   });
 });
 
@@ -145,7 +160,7 @@ describe('POST /finding-threads (service)', () => {
     });
     const transportFor = vi.fn(async (owner: string, repo: string) => {
       expect([owner, repo]).toEqual(['o', 'r']);
-      return { token: 'ghs_servicewrite', fetchImplementation };
+      return { token: 'ghs_servicewrite', fetchImplementation, botLogin: APP };
     });
     const server = express();
     server.use(express.json());
@@ -187,6 +202,22 @@ describe('POST /finding-threads (service)', () => {
     const resolved = fixture.calls.filter((call) => String(call.body.query).includes('resolveReviewThread'));
     expect(resolved.map((call) => call.body.variables.threadId)).toEqual(['T_stale']);
     expect(fixture.calls.filter((call) => call.url.endsWith('/pulls/7/comments'))).toHaveLength(1);
+  });
+
+  it('reads the App\'s own threads for the worker, author-verified, on the run\'s exact head', async () => {
+    const resolvedNode = node({ isResolved: true }, [
+      { author: { login: 'review-app[bot]', __typename: 'Bot' }, body: botBody },
+      { author: { login: 'author1', __typename: 'User' }, body: 'Intentional: mirrors the public API naming.' },
+    ]);
+    const spoofed = node({ id: 'T_spoof' }, [{ author: { login: 'other-app', __typename: 'Bot' }, body: botBody }]);
+    const fixture = app({ existing: [resolvedNode, spoofed] });
+    const response = await request(fixture.server).post('/finding-threads').set('Authorization', `Bearer ${TOKEN}`)
+      .send({ version: 'FindingThreadsRead.v1', runId: RUN, executionAttempt: 1, headSha: HEAD });
+    expect(response.status).toBe(200);
+    expect(response.body.version).toBe('FindingThreadsReadResult.v1');
+    expect(response.body.threads.map((thread: any) => thread.threadId)).toEqual(['T_1']);
+    expect(response.body.threads[0].resolution).toMatchObject({ author: 'author1' });
+    expect(fixture.calls.filter((call) => call.url.endsWith('/pulls/7/comments'))).toHaveLength(0);
   });
 
   it('the worker client targets the sibling route with its run identity', async () => {

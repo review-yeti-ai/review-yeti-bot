@@ -10,6 +10,7 @@ import {
   getBoundedRepositoryInstallationId, getBoundedRepositoryToken, validateGitHubAppApiBaseUrl,
 } from './github/boundedAppToken';
 import { GitHubInstallationClient } from './github/installationClient';
+import { getGitHubAppBotLogin } from './github/appAuth';
 import { AuthoritativeReviewReader } from './github/authoritativeReviewReader';
 import { PostgresReviewDispatchRepository } from './persistence/reviewDispatchRepository';
 import { PostgresReviewGateRepository } from './persistence/reviewGateRepository';
@@ -53,6 +54,24 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const appId = required(environment, 'GITHUB_APP_ID');
   const privateKey = required(environment, 'GITHUB_APP_PRIVATE_KEY').replace(/\\n/g, '\n');
   const baseUrl = validateGitHubAppApiBaseUrl(environment.GITHUB_API_BASE_URL);
+  // ADR 0002: the review App's bot login, read once per App from GitHub's authenticated /app
+  // endpoint, so only the App's own finding threads are trusted.
+  const botLogins = new Map<string, Promise<string>>();
+  const findingThreadBotLogin = (credentials: { appId: string; privateKey: string; baseUrl?: string }): Promise<string> => {
+    let login = botLogins.get(credentials.appId);
+    if (!login) {
+      login = getGitHubAppBotLogin({ appId: credentials.appId, privateKey: credentials.privateKey, baseUrl: credentials.baseUrl });
+      login.catch(() => botLogins.delete(credentials.appId));
+      botLogins.set(credentials.appId, login);
+    }
+    return login;
+  };
+  /** The Gate's completion context has a fixed budget: an unavailable lookup leaves resolutions untrusted. */
+  const boundedBotLogin = (credentials: { appId: string; privateKey: string; baseUrl?: string }): Promise<string | undefined> =>
+    Promise.race([
+      findingThreadBotLogin(credentials).catch(() => undefined),
+      new Promise<undefined>((resolve) => { setTimeout(() => resolve(undefined), 3_000).unref?.(); }),
+    ]);
   // External dispatch needs only an App installation lookup. Token minting for
   // publishing, merge groups, and MCP remains bound to the primary service App.
   const installationCredentialsForRepository = (owner: string, repo: string) => {
@@ -73,6 +92,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const pool = store.getPool();
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
+    findingThreadAuthor: () => boundedBotLogin({ appId, privateKey, baseUrl }),
     repository: new PostgresReviewGateRepository(pool, { lifecycleEvents: 'enabled', completionResolutionTimeoutMs: 15_000,
       incrementalMaxAgeMs, verdictCacheMaxAgeMs,
       ...(ciConfig ? { onEligibleCompletion: async (client, gate, now) => {
@@ -208,10 +228,15 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
     reviewCheckpoint: pool,
     findingThreads: {
       db: pool,
-      transportFor: async (owner, repo) => ({
-        token: (await getBoundedRepositoryToken(installationCredentialsForRepository(owner, repo), 'review-threads')).token,
-        baseUrl,
-      }),
+      transportFor: async (owner, repo) => {
+        // The primary service App publishes the raw check, so it also owns the finding threads.
+        const credentials = { appId, privateKey, owner, repo, baseUrl };
+        const [minted, botLogin] = await Promise.all([
+          getBoundedRepositoryToken(credentials, 'review-threads'),
+          findingThreadBotLogin(credentials),
+        ]);
+        return { token: minted.token, baseUrl, botLogin };
+      },
     },
     verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,

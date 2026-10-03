@@ -814,8 +814,12 @@ export function storedCompletionShipCompleteReason(
   if (evidence.completedLanes !== expectedLanes) return 'gate-lane-missing';
   if (evidence.coverageComplete !== true || evidence.quorumSatisfied !== true) return 'gate-incomplete';
   if (evidence.infrastructureFailure !== false) return 'gate-infrastructure-failure';
+  // ADR 0002: the one read-time normalization of a historical record. A gate row written before
+  // the required-P2 policy has no p2Count; its decision (above) already encodes what that policy
+  // allowed, so absent reads as zero here and nowhere else.
+  const p2Count = evidence.p2Count === undefined ? 0 : evidence.p2Count;
   if (evidence.verdict !== SHIP_VERDICT || evidence.p0Count !== 0 || evidence.p1Count !== 0
-    || (evidence.p2Count !== undefined && evidence.p2Count !== 0)) return 'gate-not-ship';
+    || p2Count !== 0) return 'gate-not-ship';
   return storedLanesRefusal(result, expectedLanes, evidence.reviewEngine === 'composed' ? 'composed' : undefined);
 }
 

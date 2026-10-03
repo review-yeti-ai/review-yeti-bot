@@ -20,10 +20,10 @@ export interface ReviewGateEvidence {
   p1Count: number;
   /**
    * ADR 0002: P2 findings still required after convergence (not fixed, not resolved with a stated
-   * reason, inside the head's diff). Optional so a record written before the policy still reads;
-   * absent counts as zero for those historical records only.
+   * reason, inside the head's diff). Required: a producer that omits it fails to compile, and
+   * evidence without it is invalid. Historical stored records are normalized where they are read.
    */
-  p2Count?: number;
+  p2Count: number;
   /** Only a centrally verified exemption may replace a completed panel. */
   exemption?: { kind: 'recap-only' | 'no-reviewable-content'; auditDigest: string };
   expectedLanes: number;
@@ -149,9 +149,8 @@ export function evaluateReviewGate(input: {
   if (!evidence) return { status: 'pending', eligible: false, reason: 'review-pending' };
   const reviewedAt = timestamp(evidence.completedAt);
   if (reviewedAt === null || !['SHIP', 'FIX_FIRST', 'BLOCK'].includes(evidence.verdict)
-    || [evidence.p0Count, evidence.p1Count, evidence.expectedLanes, evidence.completedLanes]
+    || [evidence.p0Count, evidence.p1Count, evidence.p2Count, evidence.expectedLanes, evidence.completedLanes]
       .some((count) => !Number.isSafeInteger(count) || count < 0)
-    || (evidence.p2Count !== undefined && (!Number.isSafeInteger(evidence.p2Count) || evidence.p2Count < 0))
     || [evidence.coverageComplete, evidence.quorumSatisfied, evidence.infrastructureFailure]
       .some((value) => typeof value !== 'boolean')) return invalid;
   if (evidence.infrastructureFailure) return { status: 'failure', eligible: false, reason: 'infrastructure-failure' };
@@ -162,7 +161,7 @@ export function evaluateReviewGate(input: {
     // A provider-failed or findings-bearing review cannot be recast as exempt.
     if (!['recap-only', 'no-reviewable-content'].includes(evidence.exemption.kind)
       || !/^[a-f0-9]{64}$/u.test(evidence.exemption.auditDigest)
-      || evidence.verdict !== 'SHIP' || evidence.p0Count !== 0 || evidence.p1Count !== 0 || (evidence.p2Count ?? 0) !== 0
+      || evidence.verdict !== 'SHIP' || evidence.p0Count !== 0 || evidence.p1Count !== 0 || evidence.p2Count !== 0
       || evidence.expectedLanes !== 0 || evidence.completedLanes !== 0) return invalid;
     return { status: 'success', eligible: true, reason: 'central-exemption' };
   }
@@ -170,7 +169,7 @@ export function evaluateReviewGate(input: {
     return { status: 'failure', eligible: false, reason: 'incomplete-review' };
   }
   // ADR 0002: a required P2 blocks exactly like a P0/P1.
-  if (evidence.verdict === 'SHIP' && evidence.p0Count === 0 && evidence.p1Count === 0 && (evidence.p2Count ?? 0) === 0) {
+  if (evidence.verdict === 'SHIP' && evidence.p0Count === 0 && evidence.p1Count === 0 && evidence.p2Count === 0) {
     // Eligibility is separate from author readiness. A reviewed draft remains
     // a draft; the CI admission transaction additionally requires !draft.
     return { status: 'success', eligible: true, reason: 'clean-review' };
