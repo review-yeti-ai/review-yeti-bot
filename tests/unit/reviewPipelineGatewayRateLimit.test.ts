@@ -93,6 +93,25 @@ describe('Action pipeline gateway rate-limit ladder', () => {
     expect(calls).toBe(2);
   });
 
+  it('leaves a non-gateway last transport on its existing handling: no ladder waits, immediate trip', async () => {
+    const backup = { name: 'backup', baseUrl: 'https://backup.example/v1', apiKey: 'backup-key', model: 'backup-model', stream: false };
+    const breaker = new pipeline.RunTransportCircuitBreaker();
+    const sleeps: number[] = [];
+    let calls = 0;
+    const result = await pipeline.reviewWithModel(persona, diffFiles, { repo: 'fixture/repository', prNumber: '5' }, null, {
+      transports: [backup],
+      fetchImplementation: async () => { calls += 1; return rejected(); },
+      sleepImplementation: async (milliseconds: number) => { sleeps.push(milliseconds); },
+      circuitBreaker: breaker,
+      capacityManager: new pipeline.ProviderCapacityManager(),
+    });
+    expect(result.decision).toBe('ERROR');
+    expect(result.failureClass).toBe('http_429');
+    expect(breaker.isTripped(backup)).toBe(true);
+    expect(sleeps).toEqual([]);
+    expect(calls).toBe(1);
+  });
+
   it('keeps fast failover when another transport is configured after the gateway', async () => {
     const calls: string[] = [];
     const sleeps: number[] = [];
