@@ -52,6 +52,25 @@ export const TRANSPORT_RETRY_MAX_DELAY_MS: number;
 export const TRANSPORT_RETRY_WINDOW_MS: number;
 export const TRANSPORT_RETRY_TERMINAL_MARGIN_MS: number;
 export function transportRetryDelayMs(attempt: number, random?: () => number): number;
+
+/** The rate-limit retry ladder for an observed provider 429 (see laneInfrastructure.js). */
+export const RATE_LIMIT_RETRY_BASE_DELAY_MS: number;
+export const RATE_LIMIT_RETRY_FACTOR: number;
+export const RATE_LIMIT_RETRY_MAX_DELAY_MS: number;
+export const RATE_LIMIT_RETRY_WINDOW_MS: number;
+export const RATE_LIMIT_MAX_RETRIES: number;
+export function rateLimitRetryDelayMs(retry: number, retryAfterFloorMs?: number, random?: () => number): number;
+export type RateLimitRetryPlan =
+  | { retry: true; delayMs: number; retryNumber: number }
+  | { retry: false; reason: 'budget' | 'window' | 'max_retries' | 'cooldown_exceeds_bound' };
+export function planRateLimitRetry(input: {
+  retriesSoFar: number;
+  firstFailureAtMs: number;
+  nowMs: number;
+  retryAfterFloorMs: number;
+  budgetLeftMs: number;
+  random?: () => number;
+}): RateLimitRetryPlan;
 export const TRANSIENT_GATEWAY_STATUSES: ReadonlySet<number>;
 export function isTransientGatewayMessage(message: unknown): boolean;
 export function isNonRetryableClientStatus(statusOrMessage: unknown): boolean;

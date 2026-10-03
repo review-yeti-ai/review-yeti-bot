@@ -295,6 +295,18 @@ type PublishingConfig struct {
 	// on/off switch). Empty keeps both calls, byte-identical to before this
 	// field existed.
 	SkipEmptyModeration string
+	// Cross-review provider concurrency (src/config/providerConcurrency.ts).
+	// ProviderLeases is forwarded as ProviderLeasesEnv, ProviderLeaseKey as
+	// ProviderLeaseKeyEnv and ProviderLocalConcurrency as
+	// ProviderLocalConcurrencyEnv, each only when non-empty; the worker owns
+	// their interpretation and fails open on anything it cannot use. A value
+	// carrying whitespace or a control character is dropped at projection
+	// time rather than refusing the Job: concurrency coordination must never
+	// be the reason a review does not run. Empty keeps the worker
+	// byte-identical to before these fields existed.
+	ProviderLeases           string
+	ProviderLeaseKey         string
+	ProviderLocalConcurrency string
 	// REL-1104: where the worker pushes its metrics at exit (OTLP/protobuf,
 	// delta temporality -- VictoriaMetrics' /opentelemetry/v1/metrics). Worker
 	// pods are too short-lived to scrape, so this push is the only way their
@@ -374,6 +386,33 @@ const MapReduceMinCharsEnv = "REVIEW_YETI_MAP_REDUCE_MIN_CHARS"
 // The operator forwards the deployment value verbatim; the worker owns its
 // interpretation.
 const SkipEmptyModerationEnv = "REVIEW_YETI_SKIP_EMPTY_MODERATION"
+
+// ProviderLeasesEnv enables the worker's cross-review provider concurrency
+// leases (src/config/providerConcurrency.ts PROVIDER_LEASES_ENV).
+const ProviderLeasesEnv = "REVIEW_YETI_PROVIDER_LEASES"
+
+// ProviderLeaseKeyEnv is the worker's optional fixed capacity key
+// (src/config/providerConcurrency.ts PROVIDER_LEASE_KEY_ENV).
+const ProviderLeaseKeyEnv = "REVIEW_YETI_PROVIDER_LEASE_KEY"
+
+// ProviderLocalConcurrencyEnv is the worker's per-pod cap on concurrent
+// provider calls (src/config/providerConcurrency.ts
+// PROVIDER_LOCAL_CONCURRENCY_ENV).
+const ProviderLocalConcurrencyEnv = "REVIEW_YETI_PROVIDER_LOCAL_CONCURRENCY"
+
+// providerConcurrencyValue returns value when it is a single printable token,
+// otherwise "" so the entry is not projected.
+func providerConcurrencyValue(value string) string {
+	if value == "" || len(value) > 256 {
+		return ""
+	}
+	for _, r := range value {
+		if r <= ' ' || r == 0x7f {
+			return ""
+		}
+	}
+	return value
+}
 
 // TerminalDeadlineEnv carries every publishing review's terminal deadline (RFC 3339, UTC)
 // to the app-gate worker, independently of map-reduce (REL-1198).
@@ -682,6 +721,15 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		}
 		if input.Publishing.SkipEmptyModeration != "" {
 			env = append(env, corev1.EnvVar{Name: SkipEmptyModerationEnv, Value: input.Publishing.SkipEmptyModeration})
+		}
+		for _, entry := range []struct{ name, value string }{
+			{ProviderLeasesEnv, input.Publishing.ProviderLeases},
+			{ProviderLeaseKeyEnv, input.Publishing.ProviderLeaseKey},
+			{ProviderLocalConcurrencyEnv, input.Publishing.ProviderLocalConcurrency},
+		} {
+			if value := providerConcurrencyValue(entry.value); value != "" {
+				env = append(env, corev1.EnvVar{Name: entry.name, Value: value})
+			}
 		}
 		if endpoint := WorkerMetricsEndpoint(input.Publishing.WorkerMetricsEndpoint); endpoint != "" {
 			env = append(env, corev1.EnvVar{Name: WorkerMetricsEndpointEnv, Value: endpoint})

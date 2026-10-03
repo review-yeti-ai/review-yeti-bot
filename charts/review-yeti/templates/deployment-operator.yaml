@@ -100,6 +100,18 @@ spec:
             - name: REVIEW_YETI_MAP_REDUCE_MIN_CHARS
               value: {{ .Values.publishing.mapReduceMinChars | quote }}
             {{- end }}
+            {{- if .Values.publishing.providerLeases }}
+            - name: REVIEW_YETI_PROVIDER_LEASES
+              value: {{ .Values.publishing.providerLeases | quote }}
+            {{- end }}
+            {{- if .Values.publishing.providerLeaseKey }}
+            - name: REVIEW_YETI_PROVIDER_LEASE_KEY
+              value: {{ .Values.publishing.providerLeaseKey | quote }}
+            {{- end }}
+            {{- if .Values.publishing.providerLocalConcurrency }}
+            - name: REVIEW_YETI_PROVIDER_LOCAL_CONCURRENCY
+              value: {{ .Values.publishing.providerLocalConcurrency | quote }}
+            {{- end }}
             {{- if .Values.publishing.enableContinuations }}
             - name: REVIEW_YETI_ENABLE_CONTINUATIONS
               value: {{ .Values.publishing.enableContinuations | quote }}
