@@ -1380,18 +1380,12 @@ async function runPlanPhase(input: {
 // ---------------------------------------------------------------------------
 
 type TaskOutcome =
-<<<<<<< HEAD
   | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
   | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; correctionAttempts: number; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; durationMs: number };
-=======
-  | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; attempts?: number }
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; durationMs: number; attempts?: number }
   /** Every attempt stalled on a provider timeout; recorded as a named failed lane, never fatal. */
   | { type: 'stalled'; turnUsages: LaneTurnUsage[]; attempts: number; durationMs: number;
     stopReason: 'attempts_exhausted' | 'deadline' | 'turn_budget' };
->>>>>>> upstream/main
 
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
@@ -1444,13 +1438,8 @@ async function runTaskWorkPhase(input: {
   let finishReason: ComposedTaskFailureDiagnostics['finishReason'] = null;
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
   const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
-<<<<<<< HEAD
     type: 'exhausted', turnUsages, durationMs: Date.now() - startedAt,
-    diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
-=======
-    type: 'exhausted', turnUsages,
     diagnostics: { reason, turnsUsed: turnUsages.length - attemptStartTurn, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
->>>>>>> upstream/main
   });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
