@@ -9,7 +9,7 @@ import {
 } from '../../src/github/findingThreads';
 import { createFindingThreadsHandler } from '../../src/api/findingThreadsRoute';
 import { HttpFindingThreadsPublisher, findingThreadsEndpointFor } from '../../src/review/findingThreadsHttp';
-import { findingFingerprint, parseFindingMarker, renderFindingMarker } from '../../src/review/findingConvergence';
+import { findingFingerprint, isResolutionSatisfiable, parseFindingMarker, renderFindingMarker } from '../../src/review/findingConvergence';
 import { sha256 } from '../../src/review/reviewCore';
 
 // ADR 0002: finding threads are how a required P2 is recognised on a later head and how an author
@@ -126,6 +126,20 @@ describe('readFindingThreads / publishFindingThreads', () => {
     expect(posts[1]).toMatchObject({ commit_id: HEAD, path: 'src/mod.ts', subject_type: 'file' });
     expect(posts[1].body).toContain(renderFindingMarker({ fingerprint: findingFingerprint(other), severity: 'P2', title: other.title }));
     expect(posts[1].body).toContain('reply here with the reason it does not apply and resolve this conversation');
+  });
+
+  it('derives the thread guidance from the same resolvability predicate the convergence decision enforces', () => {
+    const satisfiable = { ...finding, severity: 'P2' as const, fingerprint };
+    const unsatisfiable = { ...finding, severity: 'P1' as const, fingerprint };
+    expect(isResolutionSatisfiable('P2')).toBe(true);
+    expect(isResolutionSatisfiable('P1')).toBe(false);
+    expect(isResolutionSatisfiable('P0')).toBe(false);
+    expect(renderFindingThreadBody(satisfiable))
+      .toContain('reply here with the reason it does not apply and resolve this conversation');
+    expect(renderFindingThreadBody(unsatisfiable))
+      .toContain('a resolved conversation does not clear a P0 or P1');
+    expect(renderFindingThreadBody(unsatisfiable))
+      .not.toContain('reply here with the reason it does not apply');
   });
 });
 

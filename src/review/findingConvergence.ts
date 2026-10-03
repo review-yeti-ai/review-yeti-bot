@@ -34,6 +34,17 @@ const MAX_MARKER_TITLE_CHARS = 300;
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
+/**
+ * The single statement of which severities a resolved thread can satisfy.
+ * `evaluateFindingConvergence` enforces this predicate when deciding whether a
+ * resolution can carry a finding, and `renderFindingThreadBody` derives the
+ * guidance copy it publishes on every new thread from the same predicate, so
+ * the enforcement and the published rule cannot disagree.
+ */
+export function isResolutionSatisfiable(severity: FindingSeverity): boolean {
+  return severity === 'P2';
+}
+
 export interface ConvergenceFinding {
   severity?: string;
   path?: string;
@@ -245,7 +256,7 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
     const fingerprint = matchedThread?.fingerprint ?? own;
     let status: ConvergenceStatus = matchedThread ? 'carried' : 'new';
     let resolution: FindingThreadResolution | undefined;
-    if (severity === 'P2') {
+    if (isResolutionSatisfiable(severity)) {
       if (matchedThread?.resolved === true && matchedThread.resolution
         && statedResolutionReason(matchedThread.resolution.reason) !== null) {
         status = 'satisfied';
