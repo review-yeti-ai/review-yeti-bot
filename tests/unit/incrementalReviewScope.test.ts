@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
+import { budgetCategoryRank, classifyBudgetCategory } from '../../src/review/reviewBudget';
 
 const root = path.resolve(__dirname, '../..');
 const scope = require(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'));
@@ -871,6 +872,33 @@ describe('trusted incremental review scope', () => {
       const split = scope.planReviewAssignmentAdmission([partition('src/big.ts'), partition('src/big.ts')], 2, 2);
       expect(split).toMatchObject({ mode: 'degraded', admittedIndexes: [0], deferredPaths: ['src/big.ts'], partialPaths: ['src/big.ts'] });
       expect(split.message).toContain('(1 of them only partly reviewed)');
+    });
+
+    it('ranks partitions exactly as the review budget packs them (one risk policy, pinned)', () => {
+      const corpus = [
+        'src/auth/session.ts', 'src/security/policy.ts', 'lib/crypto/keys.ts', 'src/permissions.ts', 'src/oauth/client.ts',
+        'src/tokens.ts', 'config/secrets.yml', 'src/session.ts', 'src/middleware/csrf.ts', 'src/login.ts', 'src/password.ts',
+        'src/sandbox/run.ts', 'src/acl.ts', 'src/userSession.ts', 'src/AuthGuard.tsx', 'src/author.ts', 'src/authoring/page.ts',
+        'src/webhooks/handler.go', 'certs/server.pem', '.env.example', '.env', '.npmrc', 'id_rsa.pub',
+        '.github/workflows/ci.yml', '.gitlab-ci.yml', 'Jenkinsfile', 'action.yml', 'tools/action.yaml',
+        'Dockerfile', 'build/app.dockerfile', 'docker-compose.prod.yml', 'Procfile',
+        'infra/main.tf', 'stack.bicep', 'helm/values.yaml', 'k8s/deploy.yaml', 'deploy/run.yaml', 'kustomization.yaml', 'Chart.yaml',
+        '.gitmodules', 'CODEOWNERS', 'Makefile', 'scripts/deploy.sh', 'bin/run', 'hooks/pre-commit', 'tools/run.ps1',
+        'db/migrations/001.sql', 'migrations/002_add.py', 'schema.prisma', 'db/schema.rb',
+        'yarn.lock', 'package-lock.json', 'go.sum', 'Cargo.lock', '.nvmrc', 'rust-toolchain.toml', 'go.work',
+        'package.json', 'requirements-dev.txt', 'requirements/base.in', 'pyproject.toml', 'go.mod', 'app.csproj', 'mix.exs',
+        'src/db/schema.ts', 'src/sql/query.ts', 'src/feature.ts', 'lib/app.py', 'src/store.ts', 'examples/demo.ts', 'cmd/main.go',
+        'tests/a.test.ts', 'src/a.spec.ts', '__tests__/x.ts', 'e2e/flow.ts', 'test_utils.py', 'src/FooTests.cs', 'fixtures/data.json',
+        'docs/guide.md', 'README.md', 'assets/logo.png', 'docs/diagram.drawio', 'CHANGELOG.rst',
+        'tsconfig.json', 'config/app.yaml', 'settings.toml', 'data/rows.csv', 'app.properties', 'config/app.ini',
+      ];
+      const mismatches = corpus
+        .map((filePath) => ({ filePath, admission: scope.admissionRiskRank(filePath),
+          budget: budgetCategoryRank(classifyBudgetCategory(filePath)) }))
+        .filter((entry) => entry.admission !== entry.budget);
+      expect(mismatches).toEqual([]);
+      // Every rank is exercised, so a collapsed classifier cannot pass vacuously.
+      expect(new Set(corpus.map((filePath) => scope.admissionRiskRank(filePath)))).toEqual(new Set([0, 1, 2]));
     });
 
     it('still refuses before dispatch when the roster alone exceeds the cap, and says how to fix it', () => {

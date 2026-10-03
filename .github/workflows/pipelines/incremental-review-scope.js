@@ -327,21 +327,62 @@ function assessReviewAssignmentBudget(partitionCount, personaCount, maxAssignmen
   return { planned, maximum, admitted: planned <= maximum };
 }
 
-// Coarse, content-independent risk rank for partition admission when the assignment cap binds.
-// It mirrors the review budget's packing order (security-sensitive and CI/IaC first, then source,
-// then tests/docs/config) closely enough to keep the riskiest slices reviewed; it never decides
-// coverage on its own -- every deferred path is reported as not reviewed.
-const ADMISSION_RISK_PATTERNS = [
-  /(?:^|\/)(?:auth|authn|authz|security|crypto|secrets?|permissions?|acl|rbac|oauth|session|tokens?|credentials?|keys?|sandbox|policy|policies)(?:[/._-]|$)/iu,
-  /(?:^|\/)(?:\.github\/workflows|\.circleci|infra|terraform|helm|charts|k8s|kubernetes|deploy|docker)(?:\/|$)|(?:^|\/)(?:Dockerfile[^/]*|[^/]*\.tf|action\.ya?ml)$/iu,
-  /(?:^|\/)(?:migrations?|schema|db|database|sql)(?:[/._-]|$)|\.sql$/iu,
+// Risk rank for partition admission when the assignment cap binds: the review budget's packing
+// rank (`budgetCategoryRank(classifyBudgetCategory(path))` in src/review/reviewBudget.ts), ported
+// to plain JS because this Action pipeline cannot load that TypeScript module at run time.
+//   0 -- security-sensitive (src/review/securitySensitivePaths.ts) or CI/IaC
+//   1 -- other source
+//   2 -- tests, documentation/assets, data/config
+// The two MUST agree. tests/unit/incrementalReviewScope.test.ts compares this function with the
+// TypeScript classifier over a representative corpus, so a change to the budget's risk policy
+// that is not mirrored here fails that test instead of silently deferring the wrong partitions.
+// The rank never decides coverage: every deferred path is reported as not reviewed.
+const ADMISSION_SENSITIVE_SEGMENT = /(^|[/._-])(auth|authn|authz|oauth2?|oidc|saml|sso|login|logout|session|sessions|passw(or)?d|passwd|credentials?|secrets?|tokens?|jwt|jwks|crypto|cryptography|cipher|encrypt|encryption|decrypt|signing|signature|signer|certs?|certificates?|tls|ssl|x509|keys?|keystore|keychain|permissions?|rbac|acl|policy|policies|sandbox|csrf|cors|security|sanitize|sanitizer|webhook|webhooks)([/._-]|$)/iu;
+const ADMISSION_SENSITIVE_STEM = /(^|[/._-])(auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|oauth|passw|credential|secret|crypt|encrypt|decrypt|cipher|certif|permission|privilege|session|login|logout|signin|signon|sso|saml|oidc|jwt|token|csrf|xsrf|sanitiz|security|secure|policy|policies|rbac|acl|keystore|keychain|sandbox)/iu;
+const ADMISSION_SENSITIVE_CAMEL_STEM = /[a-z0-9](Auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|OAuth|Passw|Credential|Secret|Crypt|Encrypt|Decrypt|Cipher|Certif|Permission|Privilege|Session|Login|Logout|SignIn|Signin|Token|Csrf|Sanitiz|Security|Secure|Policy|Policies|Rbac|Acl|Keystore|Keychain|Sandbox)/u;
+const ADMISSION_RANK_ZERO_PATTERNS = [
+  // CI
+  /(^|\/)\.github\//iu, /(^|\/)\.gitlab-ci[^/]*$/iu, /(^|\/)\.gitlab\//iu, /(^|\/)\.(circleci|buildkite)\//iu,
+  /(^|\/)jenkinsfile[^/]*$/iu, /(^|\/)azure-pipelines[^/]*$/iu, /(^|\/)bitbucket-pipelines\.ya?ml$/iu,
+  /(^|\/)\.drone\.ya?ml$/iu, /(^|\/)cloudbuild[^/]*\.(ya?ml|json)$/iu, /(^|\/)action\.ya?ml$/iu,
+  // containers
+  /(^|\/)(docker|container)file[^/]*$/iu, /\.(docker|container)file$/iu, /(^|\/)(docker-)?compose[^/]*\.ya?ml$/iu,
+  /(^|\/)\.dockerignore$/iu, /(^|\/)procfile$/iu,
+  // infrastructure as code
+  /\.(tf|tfvars|hcl|bicep|nix)$/iu,
+  /(^|\/)(terraform|infra|infrastructure|k8s|kubernetes|helm|charts|clusters|deploy|deployment|deployments|manifests|kustomize|ansible|cloudformation|pulumi)\//iu,
+  /(^|\/)kustomization\.ya?ml$/iu, /(^|\/)chart\.ya?ml$/iu,
+  // repository control and secret material
+  /(^|\/)\.gitattributes$/iu, /(^|\/)\.gitmodules$/iu, /(^|\/)codeowners$/iu,
+  /(^|\/)\.env(\.[^/]*)?$/iu, /(^|\/)\.(npmrc|yarnrc|yarnrc\.yml|pypirc|netrc)$/iu,
+  /\.(pem|key|crt|cer|p12|pfx|jks|keystore)$/iu, /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/iu,
+  // build scripts
+  /(^|\/)(makefile|gnumakefile|justfile|rakefile|taskfile\.ya?ml|cmakelists\.txt)$/iu,
+  /(^|\/)(scripts?|bin|hooks|\.husky)\//iu, /\.(sh|bash|zsh|ps1|bat|cmd)$/iu, /(^|\/)\.pnpmfile\.c?js$/iu,
+  // migrations
+  /\.sql$/iu, /(^|\/)migrations?\//iu, /\.prisma$/iu, /(^|\/)db\/schema\.rb$/iu,
+  // lockfiles, toolchain pins and dependency manifests
+  /(^|\/)[^/]*(\.lock|\.lockb|-lock\.json|-lock\.ya?ml|\.sum|\.lockfile)$/iu,
+  /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|package\.resolved|packages\.lock\.json|vcpkg-lock\.json)$/iu,
+  /(^|\/)(\.tool-versions|\.nvmrc|\.node-version|\.python-version|\.ruby-version|\.java-version|\.go-version|\.bun-version|\.terraform-version|\.sdkmanrc|rust-toolchain(\.toml)?|\.?mise\.toml|global\.json|go\.work)$/iu,
+  /(^|\/)(package\.json|requirements(-dev)?\.txt|constraints\.txt|pyproject\.toml|setup\.py|setup\.cfg|pipfile|go\.mod|cargo\.toml|gemfile|mix\.exs|composer\.json|pom\.xml|build\.gradle(\.kts)?|settings\.gradle(\.kts)?|package\.swift|podfile|pubspec\.yaml|deno\.json|bunfig\.toml|vcpkg\.json|conanfile\.(txt|py)|packages\.config)$/iu,
+  /(^|\/)requirements[^/]*\.(txt|in)$/iu, /(^|\/)constraints[^/]*\.txt$/iu,
+  /\.(csproj|fsproj|vbproj|gemspec|nuspec|cabal)$/iu, /(^|\/)directory\.packages\.props$/iu,
 ];
-const ADMISSION_LOW_RISK_PATTERN = /(?:^|\/)(?:tests?|__tests__|spec|fixtures?|docs?|examples?)\/|\.(?:test|spec)\.[^/]+$|\.(?:md|mdx|txt|rst|png|jpe?g|gif|svg|lock)$/iu;
+const ADMISSION_RANK_TWO_PATTERNS = [
+  /(^|\/)(tests?|__tests__|spec|specs|e2e|testdata|fixtures)\//iu, /[._](test|spec)\.[^/]+$/iu,
+  /(^|\/)test_[^/]+\.py$/iu, /[a-z0-9]Tests?\.[^/]+$/u,
+  /\.(md|markdown|txt|rst|adoc|asciidoc|png|jpg|jpeg|gif|svg|ico|webp|avif|pdf|drawio)$/iu,
+  /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties|env)$/iu,
+];
 
 function admissionRiskRank(filePath) {
-  const value = String(filePath || '');
-  if (ADMISSION_RISK_PATTERNS.some((pattern) => pattern.test(value))) return 0;
-  if (ADMISSION_LOW_RISK_PATTERN.test(value)) return 2;
+  const value = String(filePath || '').replace(/\\/gu, '/').replace(/^\.\//u, '');
+  if (!value.trim()) return 0;
+  if (ADMISSION_RANK_ZERO_PATTERNS.some((pattern) => pattern.test(value))
+    || ADMISSION_SENSITIVE_SEGMENT.test(value) || ADMISSION_SENSITIVE_STEM.test(value)
+    || ADMISSION_SENSITIVE_CAMEL_STEM.test(value)) return 0;
+  if (ADMISSION_RANK_TWO_PATTERNS.some((pattern) => pattern.test(value))) return 2;
   return 1;
 }
 
@@ -626,6 +667,7 @@ module.exports = {
   mergeIncrementalPersonaResults,
   assessReviewAssignmentBudget,
   planReviewAssignmentAdmission,
+  admissionRiskRank,
   extractReportFromArtifact,
   resolveIncrementalReviewScope,
 };
