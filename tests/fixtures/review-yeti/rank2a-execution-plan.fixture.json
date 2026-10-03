@@ -1,6 +1,6 @@
 {
   "schema": "exampleorg.review-execution-plan-fixture.v1",
-  "normalized_plan_sha256": "5ab2aab69d774c057c05e01c192a6d9a489622f6071742bbcec18321d2ffdbb2",
+  "normalized_plan_sha256": "0e90d4d8df1948e3aef44eb059f4f8f4fa8f72f0a06602b1e1659d01816e0154",
   "plan": {
     "schema": "exampleorg.review-execution-plan.v1",
     "policy_schema": "exampleorg.review-policy.v1",
