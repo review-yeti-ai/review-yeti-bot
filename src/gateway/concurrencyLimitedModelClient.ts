@@ -18,7 +18,7 @@
  * skipped for a cool-down so a dead service is not asked once per call). Waiting that runs out of
  * budget proceeds without a lease. Coordination is never the reason a review fails; at worst the
  * provider rejects the overflow with a 429 and the engines' rate-limit ladder
- * (`./rateLimitBackoff`) rides it out.
+ * (`planRateLimitRetry` in `../review/laneInfrastructure`) rides it out.
  */
 import { normalizeCapacityKey } from '../config/providerConcurrency';
 import type { ProviderLeaseCoordinator } from './providerLeaseCoordinator';

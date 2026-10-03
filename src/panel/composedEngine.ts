@@ -41,7 +41,7 @@ import {
   retryAfterFloorMs,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
-import { planRateLimitRetry } from '../gateway/rateLimitBackoff';
+import { planRateLimitRetry } from '../review/laneInfrastructure';
 import {
   DOCUMENTATION_ONLY_RATIONALE, attachReviewDepthDisclosure, reviewDepthDisclosureOf, type ReviewDepthDisclosure,
 } from '../review/personaApplicability';
@@ -520,7 +520,7 @@ async function callTurn(params: {
       }
 
       // A capacity rejection (429) rides the rate-limit ladder shared with `runPersona`
-      // (`../gateway/rateLimitBackoff`): full jitter, floored at Retry-After, bounded by this run's
+      // (`planRateLimitRetry` in `../review/laneInfrastructure`): full jitter, floored at Retry-After, bounded by this run's
       // deadline. When no further wait fits, fail now with the 429 (classified `rate_limit`);
       // never hand it to the transport or generic ladders for more retries.
       if (isProviderRateLimitError(error)) {
