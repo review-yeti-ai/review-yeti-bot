@@ -332,110 +332,38 @@ function assessReviewAssignmentBudget(partitionCount, personaCount, maxAssignmen
 //   0 -- security-sensitive (src/review/securitySensitivePaths.ts) or CI/IaC
 //   1 -- other source
 //   2 -- tests, documentation/assets, data/config
-// This Action pipeline cannot load that TypeScript at run time, so the tables below are a copy of
-// SECURITY_SENSITIVE_PATH_TABLES, REVIEW_BUDGET_RANK_TABLES and REVIEWABLE_CONTENT_TABLES, applied
-// in the same order. tests/unit/incrementalReviewScope.test.ts asserts the copy is EXACT -- every
-// pattern's source and flags and every name, table by table -- and also compares ranks over a
-// corpus, so adding, removing or editing a rule on either side fails the suite. The rank never
-// decides coverage: every deferred path is reported as not reviewed.
-const ADMISSION_RISK_TABLES = Object.freeze({
-  sensitive: {
-    segment: /(^|[/._-])(auth|authn|authz|oauth2?|oidc|saml|sso|login|logout|session|sessions|passw(or)?d|passwd|credentials?|secrets?|tokens?|jwt|jwks|crypto|cryptography|cipher|encrypt|encryption|decrypt|signing|signature|signer|certs?|certificates?|tls|ssl|x509|keys?|keystore|keychain|permissions?|rbac|acl|policy|policies|sandbox|csrf|cors|security|sanitize|sanitizer|webhook|webhooks)([/._-]|$)/iu,
-    stem: /(^|[/._-])(auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|oauth|passw|credential|secret|crypt|encrypt|decrypt|cipher|certif|permission|privilege|session|login|logout|signin|signon|sso|saml|oidc|jwt|token|csrf|xsrf|sanitiz|security|secure|policy|policies|rbac|acl|keystore|keychain|sandbox)/iu,
-    camelStem: /[a-z0-9](Auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|OAuth|Passw|Credential|Secret|Crypt|Encrypt|Decrypt|Cipher|Certif|Permission|Privilege|Session|Login|Logout|SignIn|Signin|Token|Csrf|Sanitiz|Security|Secure|Policy|Policies|Rbac|Acl|Keystore|Keychain|Sandbox)/u,
-    classed: [
-      ['ci', [
-        /^\.github\//iu, /(^|\/)\.github\/(workflows|actions)\//iu, /(^|\/)\.gitlab-ci[^/]*$/iu, /(^|\/)\.gitlab\//iu,
-        /(^|\/)\.circleci\//iu, /(^|\/)\.buildkite\//iu, /(^|\/)jenkinsfile[^/]*$/iu, /(^|\/)azure-pipelines[^/]*$/iu,
-        /(^|\/)bitbucket-pipelines\.ya?ml$/iu, /(^|\/)\.drone\.ya?ml$/iu, /(^|\/)cloudbuild[^/]*\.(ya?ml|json)$/iu,
-        /(^|\/)action\.ya?ml$/iu,
-      ]],
-      ['container', [
-        /(^|\/)(docker|container)file[^/]*$/iu, /\.(docker|container)file$/iu, /(^|\/)(docker-)?compose[^/]*\.ya?ml$/iu,
-        /(^|\/)\.dockerignore$/iu, /(^|\/)procfile$/iu,
-      ]],
-      ['iac', [
-        /\.(tf|tfvars|hcl|bicep|nix)$/iu,
-        /(^|\/)(terraform|infra|infrastructure|k8s|kubernetes|helm|charts|clusters|deploy|deployment|deployments|manifests|kustomize|ansible|cloudformation|pulumi)\//iu,
-        /(^|\/)kustomization\.ya?ml$/iu, /(^|\/)chart\.ya?ml$/iu,
-      ]],
-      ['repo_control', [/(^|\/)\.gitattributes$/iu, /(^|\/)\.gitmodules$/iu, /(^|\/)codeowners$/iu]],
-      ['secret_material', [
-        /(^|\/)\.env(\.[^/]*)?$/iu, /(^|\/)\.(npmrc|yarnrc|yarnrc\.yml|pypirc|netrc)$/iu,
-        /\.(pem|key|crt|cer|p12|pfx|jks|keystore)$/iu, /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/iu,
-      ]],
-      ['build_script', [
-        /(^|\/)(makefile|gnumakefile|justfile|rakefile|taskfile\.ya?ml|cmakelists\.txt)$/iu,
-        /(^|\/)(scripts?|bin|hooks|\.husky)\//iu, /\.(sh|bash|zsh|ps1|bat|cmd)$/iu, /(^|\/)\.pnpmfile\.c?js$/iu,
-      ]],
-      ['migration', [/\.sql$/iu, /(^|\/)migrations?\//iu, /\.prisma$/iu, /(^|\/)db\/schema\.rb$/iu]],
-    ],
-    lockfileNames: new Set([
-      'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb', 'deno.lock',
-      'go.sum', 'go.work.sum', 'cargo.lock', 'poetry.lock', 'pipfile.lock', 'pdm.lock', 'uv.lock', 'gemfile.lock',
-      'mix.lock', 'composer.lock', 'podfile.lock', 'pubspec.lock', 'package.resolved', 'packages.lock.json',
-      'gradle.lockfile', 'flake.lock', 'conan.lock', 'vcpkg-lock.json',
-    ]),
-    lockfilePatterns: [/(^|\/)[^/]*(\.lock|\.lockb|-lock\.json|-lock\.ya?ml|\.sum|\.lockfile)$/iu],
-    toolchainPinNames: new Set([
-      '.tool-versions', '.nvmrc', '.node-version', '.python-version', '.ruby-version', '.java-version', '.go-version',
-      '.bun-version', '.terraform-version', '.sdkmanrc', 'rust-toolchain', 'rust-toolchain.toml', 'mise.toml',
-      '.mise.toml', 'global.json', 'go.work',
-    ]),
-    dependencyManifests: new Set([
-      'package.json', 'requirements.txt', 'requirements-dev.txt', 'constraints.txt', 'pyproject.toml', 'setup.py',
-      'setup.cfg', 'pipfile', 'go.mod', 'cargo.toml', 'gemfile', 'mix.exs', 'composer.json', 'pom.xml', 'build.gradle',
-      'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts', 'package.swift', 'podfile', 'pubspec.yaml',
-      'deno.json', 'bunfig.toml', 'vcpkg.json', 'conanfile.txt', 'conanfile.py', 'packages.config',
-    ]),
-    dependencyManifestPatterns: [
-      /(^|\/)requirements[^/]*\.(txt|in)$/iu, /(^|\/)constraints[^/]*\.txt$/iu,
-      /\.(csproj|fsproj|vbproj|gemspec|nuspec|cabal)$/iu, /(^|\/)directory\.packages\.props$/iu,
-    ],
-  },
-  budget: {
-    ciIac: [
-      /(^|\/)\.github\//iu, /(^|\/)\.gitlab-ci[^/]*$/iu, /(^|\/)jenkinsfile[^/]*$/iu, /(^|\/)\.(circleci|buildkite)\//iu,
-      /\.(tf|tfvars|hcl)$/iu, /(^|\/)(helm|charts|k8s|kustomize|clusters|manifests|deploy|infra|terraform)\//iu,
-      /(^|\/)chart\.ya?ml$/iu, /(^|\/)kustomization\.ya?ml$/iu, /(^|\/)dockerfile[^/]*$/iu,
-      /(^|\/)docker-compose[^/]*\.ya?ml$/iu,
-      /^ova\/versions\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.(?:env|ya?ml|changelog\.json)$/iu,
-      /^release-notes\/internal\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.md$/iu,
-    ],
-    tests: [
-      /(^|\/)(tests?|__tests__|spec|specs|e2e|testdata|fixtures)\//iu, /[._](test|spec)\.[^/]+$/iu,
-      /(^|\/)test_[^/]+\.py$/iu, /[a-z0-9]Tests?\.[^/]+$/u,
-    ],
-  },
-  content: {
-    documentationOrAsset: /\.(md|markdown|txt|rst|adoc|asciidoc|png|jpg|jpeg|gif|svg|ico|webp|avif|pdf|drawio)$/i,
-    dataOrConfig: /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties|env)$/i,
-    dotenvConfig: /(?:^|\/)\.env(?:\.[^/]+)?$/i,
-  },
-});
+// The tables are not copied: they are required from src/review/pathRiskTables.js, the one
+// definition the TypeScript classifiers import too. Only the short classification order below is
+// restated (this CommonJS pipeline cannot load the TypeScript predicates); a corpus test in
+// tests/unit/incrementalReviewScope.test.ts pins it to the TypeScript ranks. The rank never decides
+// coverage: every deferred path is reported as not reviewed.
+const PATH_RISK_TABLES = require('../../../src/review/pathRiskTables');
+const ADMISSION_SENSITIVE_PATTERN_GROUPS = [
+  PATH_RISK_TABLES.CI_PATTERNS, PATH_RISK_TABLES.CONTAINER_PATTERNS, PATH_RISK_TABLES.IAC_PATTERNS,
+  PATH_RISK_TABLES.REPO_CONTROL_PATTERNS, PATH_RISK_TABLES.SECRET_MATERIAL_PATTERNS,
+  PATH_RISK_TABLES.BUILD_SCRIPT_PATTERNS, PATH_RISK_TABLES.MIGRATION_PATTERNS,
+  PATH_RISK_TABLES.LOCKFILE_PATTERNS, PATH_RISK_TABLES.DEPENDENCY_MANIFEST_PATTERNS,
+];
 
 function isAdmissionSecuritySensitive(normalized) {
-  const tables = ADMISSION_RISK_TABLES.sensitive;
-  if (tables.classed.some(([, patterns]) => patterns.some((pattern) => pattern.test(normalized)))) return true;
+  const tables = PATH_RISK_TABLES;
+  if (ADMISSION_SENSITIVE_PATTERN_GROUPS.some((patterns) => patterns.some((pattern) => pattern.test(normalized)))) return true;
   const baseName = (normalized.split('/').pop() || normalized).toLowerCase();
-  if (tables.lockfileNames.has(baseName) || tables.lockfilePatterns.some((pattern) => pattern.test(normalized))) return true;
-  if (tables.toolchainPinNames.has(baseName)) return true;
-  if (tables.dependencyManifests.has(baseName) || tables.dependencyManifestPatterns.some((pattern) => pattern.test(normalized))) return true;
-  return tables.segment.test(normalized) || tables.stem.test(normalized) || tables.camelStem.test(normalized);
+  if (tables.LOCKFILE_NAMES.has(baseName) || tables.TOOLCHAIN_PIN_NAMES.has(baseName) || tables.DEPENDENCY_MANIFESTS.has(baseName)) return true;
+  return tables.SENSITIVE_SEGMENT.test(normalized) || tables.SENSITIVE_STEM.test(normalized)
+    || tables.SENSITIVE_CAMEL_STEM.test(normalized);
 }
 
 function admissionRiskRank(filePath) {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) return 0;
   if (isAdmissionSecuritySensitive(filePath.replace(/\\/gu, '/').replace(/^\.\//u, ''))) return 0;
   const value = filePath.replace(/\\/gu, '/');
-  const { budget, content } = ADMISSION_RISK_TABLES;
-  if (budget.ciIac.some((pattern) => pattern.test(value))) return 0;
-  if (budget.tests.some((pattern) => pattern.test(value))) return 2;
+  if (PATH_RISK_TABLES.CI_IAC_PATTERNS.some((pattern) => pattern.test(value))) return 0;
+  if (PATH_RISK_TABLES.TEST_PATTERNS.some((pattern) => pattern.test(value))) return 2;
   const lower = value.toLowerCase();
-  const runArtifact = (lower.startsWith('runs/') || lower.includes('/runs/') || /^(evidence|artifacts)\//.test(lower)
-    || /\/(evidence|artifacts)\//.test(lower)) && /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/i.test(lower);
-  if (runArtifact || content.documentationOrAsset.test(lower)) return 2;
-  if (content.dataOrConfig.test(value) || content.dotenvConfig.test(value)) return 2;
+  const runArtifact = PATH_RISK_TABLES.RUN_ARTIFACT_DIRECTORY.test(lower) && PATH_RISK_TABLES.RUN_ARTIFACT_EXTENSION.test(lower);
+  if (runArtifact || PATH_RISK_TABLES.DOCUMENTATION_OR_ASSET_EXTENSION.test(lower)) return 2;
+  if (PATH_RISK_TABLES.DATA_OR_CONFIG_EXTENSION.test(value) || PATH_RISK_TABLES.DOTENV_CONFIG_FILE.test(value)) return 2;
   return 1;
 }
 
@@ -721,7 +649,6 @@ module.exports = {
   assessReviewAssignmentBudget,
   planReviewAssignmentAdmission,
   admissionRiskRank,
-  ADMISSION_RISK_TABLES,
   extractReportFromArtifact,
   resolveIncrementalReviewScope,
 };

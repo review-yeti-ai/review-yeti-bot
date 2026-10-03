@@ -66,6 +66,7 @@ import type { DiffShrinkDisclosure, NotSentInFullReason } from '../types/diffShr
 import { scopeFilesForPersona, type EffectiveReviewFile, type ReviewApplicability } from './personaApplicability';
 import { isDataOrConfigPath, isDocumentationOrAssetPath } from './reviewableContent';
 import { isSecuritySensitivePath } from './securitySensitivePaths';
+import { CI_IAC_PATTERNS, TEST_PATTERNS } from './pathRiskTables';
 
 export type {
   BudgetCategory,
@@ -141,39 +142,7 @@ export function loadReviewBudgetInput(options: {
 // Category and rank (deterministic, path only)
 // ---------------------------------------------------------------------------
 
-/** CI and infrastructure-as-code paths (W1 section 7.6) that the security list does not already name. */
-const CI_IAC_PATTERNS: readonly RegExp[] = [
-  /(^|\/)\.github\//iu,
-  /(^|\/)\.gitlab-ci[^/]*$/iu,
-  /(^|\/)jenkinsfile[^/]*$/iu,
-  /(^|\/)\.(circleci|buildkite)\//iu,
-  /\.(tf|tfvars|hcl)$/iu,
-  /(^|\/)(helm|charts|k8s|kustomize|clusters|manifests|deploy|infra|terraform)\//iu,
-  /(^|\/)chart\.ya?ml$/iu,
-  /(^|\/)kustomization\.ya?ml$/iu,
-  /(^|\/)dockerfile[^/]*$/iu,
-  /(^|\/)docker-compose[^/]*\.ya?ml$/iu,
-  // Versioned deployment records are packaging/compose provenance, not generic data config.
-  // Anchor the exact repository-root layout and basename; nested/arbitrary config stays rank 2.
-  /^ova\/versions\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.(?:env|ya?ml|changelog\.json)$/iu,
-  // Internal versioned release notes complete the same root-owned deployment record.
-  /^release-notes\/internal\/[0-9]+(?:\.[0-9]+){2,}(?:-[a-z0-9]+(?:[.-][a-z0-9]+)*)?\.md$/iu,
-];
-
-const TEST_PATTERNS: readonly RegExp[] = [
-  /(^|\/)(tests?|__tests__|spec|specs|e2e|testdata|fixtures)\//iu,
-  /[._](test|spec)\.[^/]+$/iu,
-  /(^|\/)test_[^/]+\.py$/iu,
-  /[a-z0-9]Tests?\.[^/]+$/u,
-];
-
-/**
- * Read-only view of the rank tables. The Action pipeline's plain-JS copy (`admissionRiskRank` in
- * `.github/workflows/pipelines/incremental-review-scope.js`) is asserted equal to these by
- * `tests/unit/incrementalReviewScope.test.ts`; change both in the same change.
- */
-export const REVIEW_BUDGET_RANK_TABLES = Object.freeze({ ciIac: CI_IAC_PATTERNS, tests: TEST_PATTERNS });
-
+// CI/IaC and test rank tables live in `./pathRiskTables.js`, shared with the GitHub Action pipeline.
 export function classifyBudgetCategory(filePath: string): BudgetCategory {
   if (isSecuritySensitivePath(filePath)) return 'security-sensitive';
   const path = filePath.replace(/\\/gu, '/');
