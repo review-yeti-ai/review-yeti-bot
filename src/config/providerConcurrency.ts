@@ -43,7 +43,14 @@ export const MAX_PROVIDER_LOCAL_CONCURRENCY = 64;
  */
 export const DEFAULT_LEASED_LOCAL_CONCURRENCY = 8;
 
-const CAPACITY_KEY = /^[a-z0-9][a-z0-9._:/@-]{0,127}$/u;
+/**
+ * The one capacity-key rule. The worker normalizes with it and the service's wire schema
+ * (`../review/providerLease`) validates with it, so they cannot drift apart; a drift would make the
+ * service answer 400 and every worker silently fall back to its local cap. The SQL CHECK in
+ * `../persistence/providerConcurrencyLeaseRepository` mirrors it.
+ */
+export const CAPACITY_KEY_PATTERN = /^[a-z0-9][a-z0-9._:/@-]{0,127}$/u;
+const CAPACITY_KEY = CAPACITY_KEY_PATTERN;
 
 /** A lower-cased capacity key, or undefined when the value cannot be one. */
 export function normalizeCapacityKey(raw: unknown): string | undefined {
