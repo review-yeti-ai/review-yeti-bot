@@ -1014,6 +1014,7 @@ describe('composed engine wiring', () => {
       expect.objectContaining({ path: envPath, category: 'ci-iac', depth: 'full' }),
     ]));
     expect(result.diffShrink?.notSentInFull).toEqual([]);
+    const networkFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request in synthetic release fixture'));
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker({ NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate',
       REVIEW_RUN_ID: 'run_' + 'c'.repeat(32), REVIEW_REPO: 'acme/release-fixture', REVIEW_REPOSITORY_ID: '1339040553',
@@ -1024,6 +1025,7 @@ describe('composed engine wiring', () => {
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }) },
     { checkClient, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const), composedReviewRunner: vi.fn(async () => result) as never, client: {} as never });
+    expect(networkFetch).not.toHaveBeenCalled();
     const summary = JSON.stringify((checkClient.completeCheck.mock.calls as unknown[][]).map(call => call[0]));
     expect(summary).toContain('4 in full (2 past the 20k per-file cut), 0 as signatures only, 0 not deeply reviewed');
     expect(summary).toContain('No file was shrunk; every change was sent in full.');
