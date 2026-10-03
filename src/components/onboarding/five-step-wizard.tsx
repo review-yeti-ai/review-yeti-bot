@@ -44,7 +44,7 @@ export function FiveStepWizard() {
     webhookSecretConfigured: true,
     webhookSecretRaw: 'whsec_test_secret_key_12345',
     privateKeyConfigured: true,
-    privateKeyPemRaw: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0M...\n-----END RSA PRIVATE KEY-----',
+    privateKeyPemRaw: '-----BEGIN [REDACTED_KEY]-----\nMIIEowIBAAKCAQEA0M...\n-----END [REDACTED_KEY]-----',
     status: 'configured',
   });
 
@@ -167,7 +167,7 @@ export function FiveStepWizard() {
     setPersonas((prev) => ({
       ...prev,
       [personaId]: {
-        ...(prev[personaId] || { id: personaId, displayName: personaId, model: 'claude-haiku-4.5', effort: 'low', confidenceThreshold: 75, enabled: true }),
+        ...(prev[personaId] || { id: personaId, displayName: personaId, model: 'reviewyeti-ai/yeti-pr-reviewer', effort: 'low', confidenceThreshold: 75, enabled: true }),
         ...patch,
       },
     }));

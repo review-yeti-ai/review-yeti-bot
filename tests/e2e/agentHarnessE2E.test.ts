@@ -218,7 +218,7 @@ export interface GoPRReviewJobStatus {
 }
 
 export interface GoPRReviewJob {
-  apiVersion: 'review.example.com/v1alpha2';
+  apiVersion: 'review-yeti.ai/v1alpha2';
   kind: 'PRReviewJob';
   metadata: {
     name: string;
@@ -238,7 +238,7 @@ export function makeValidGoPRReviewJob(overrides?: Partial<GoPRReviewJobSpec>): 
   const now = new Date('2026-09-27T18:00:00.000Z');
   const deadline = new Date(now.getTime() + 900 * 1000); // 15-minute default end-to-end budget
   return {
-    apiVersion: 'review.example.com/v1alpha2',
+    apiVersion: 'review-yeti.ai/v1alpha2',
     kind: 'PRReviewJob',
     metadata: {
       name: 'prj-test-run-402',
@@ -740,7 +740,7 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
         expect(cmdStr).toContain('.ct-harness');
       });
 
-      it('TEST_T1_F3_04: Job Metadata Labels & Annotations — Confirms Job and Pod templates inject ct.example.com/logical-child-id, ct.example.com/fencing-epoch, and ct.example.com/request-digest', () => {
+      it('TEST_T1_F3_04: Job Metadata Labels & Annotations — Confirms Job and Pod templates inject review-yeti.ai/logical-child-id, review-yeti.ai/fencing-epoch, and review-yeti.ai/request-digest', () => {
         const runner = new K8sJobRunner();
         const manifest = runner.generateJobManifest({
           persona: 'security',
@@ -750,12 +750,12 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
           fencingEpoch: 7,
           logicalChildId: 'sec-child-07',
         });
-        expect(manifest.metadata.labels['ct.example.com/logical-child-id']).toBe(
+        expect(manifest.metadata.labels['review-yeti.ai/logical-child-id']).toBe(
           'sec-child-07'
         );
-        expect(manifest.metadata.labels['ct.example.com/fencing-epoch']).toBe('7');
+        expect(manifest.metadata.labels['review-yeti.ai/fencing-epoch']).toBe('7');
         expect(
-          manifest.metadata.annotations?.['ct.example.com/request-digest']
+          manifest.metadata.annotations?.['review-yeti.ai/request-digest']
         ).toMatch(/^sha256:[a-f0-9]{64}$/);
       });
 
@@ -1269,8 +1269,8 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
         };
         const m1 = runner.generateJobManifest(spec);
         const m2 = runner.generateJobManifest(spec);
-        expect(m1.metadata.labels['ct.example.com/fencing-epoch']).toBe(
-          m2.metadata.labels['ct.example.com/fencing-epoch']
+        expect(m1.metadata.labels['review-yeti.ai/fencing-epoch']).toBe(
+          m2.metadata.labels['review-yeti.ai/fencing-epoch']
         );
       });
     });
@@ -1529,7 +1529,7 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
           commitSha: 'abc',
           logicalChildId: longId,
         });
-        const labelVal = manifest.metadata.labels['ct.example.com/logical-child-id'];
+        const labelVal = manifest.metadata.labels['review-yeti.ai/logical-child-id'];
         expect(labelVal.length).toBeLessThanOrEqual(63);
       });
 
@@ -2035,7 +2035,7 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
       });
 
       const epochInjected = parseInt(
-        manifest.metadata.labels['ct.example.com/fencing-epoch'],
+        manifest.metadata.labels['review-yeti.ai/fencing-epoch'],
         10
       );
       expect(epochInjected).toBe(2);
@@ -2204,7 +2204,7 @@ describe('DOKS Runner Agentic Harness Improvements E2E Test Suite (Tiers 1-4)', 
           .trim();
 
       const manifestDigest =
-        manifest.metadata.annotations!['ct.example.com/request-digest'];
+        manifest.metadata.annotations!['review-yeti.ai/request-digest'];
       expect(manifestDigest).toBe(pyDigest);
     });
   });

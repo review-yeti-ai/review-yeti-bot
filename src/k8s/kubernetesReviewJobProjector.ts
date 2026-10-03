@@ -8,6 +8,9 @@ const VERSION = 'v1alpha2';
 const PLURAL = 'prreviewjobs';
 /** Mirrors spec.cancelReason maxLength in the v1alpha2 CRD. */
 export const CANCEL_REASON_MAX_LENGTH = 256;
+
+/** PRReviewJob phases that no worker can leave; a cancel request is moot. */
+const TERMINAL_PHASES: ReadonlySet<string> = new Set(['Succeeded', 'Failed', 'Expired', 'Cancelled']);
 const projectionConflictMessage = 'existing PRReviewJob conflicts with the durable projection';
 const projectionTerminalMessage = 'existing PRReviewJob is terminal; fresh admission is required';
 
@@ -219,20 +222,33 @@ export class KubernetesReviewJobProjector implements ReviewJobProjector {
       // to that flip. A CR already cancelled (e.g. with a different reason)
       // rejects this patch with 422 forever; re-read it so an existing cancel
       // converges instead of retrying on every sweep.
-      if (statusCode === 422 && await this.storedCancelRequested(name, namespace) === true) {
-        return { status: 'already-cancelled' };
+      if (statusCode === 422) {
+        const stored = await this.storedCancellationState(name, namespace);
+        if (stored.cancelRequested === true) return { status: 'already-cancelled' };
+        // A terminal CR has nothing left to cancel. Legacy CRs admitted under an
+        // earlier CRD generation reject every update with a whole-object 422, so
+        // without this the sweep re-patches them on every cycle indefinitely.
+        if (typeof stored.phase === 'string' && TERMINAL_PHASES.has(stored.phase)) {
+          return { status: 'already-terminal' };
+        }
       }
       throw apiFailure('patch', error);
     }
     return { status: 'patched', cancelRequested: record(record(patched)?.spec)?.cancelRequested };
   }
 
-  private async storedCancelRequested(name: string, namespace: string): Promise<unknown> {
+  private async storedCancellationState(
+    name: string,
+    namespace: string,
+  ): Promise<{ cancelRequested?: unknown; phase?: unknown }> {
     try {
       const stored = await this.client.getNamespacedCustomObject({ group: GROUP, version: VERSION, namespace, plural: PLURAL, name });
-      return record(record(stored)?.spec)?.cancelRequested;
+      return {
+        cancelRequested: record(record(stored)?.spec)?.cancelRequested,
+        phase: record(record(stored)?.status)?.phase,
+      };
     } catch {
-      return undefined;
+      return {};
     }
   }
 }

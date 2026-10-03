@@ -1,0 +1,41 @@
+{
+  "corpus": "example-meta-3715-original",
+  "variant": "deterministic-plus-advisory-jev",
+  "headSha": "45b2df19d13420a9dc0aea5154295c3e7852c8ce",
+  "oldSha": "2c53cb32eb9e28a1a87aebb7f3384ab0778e62eb",
+  "oldSide": "parent-commit-replay-not-original-admitted-base-proof",
+  "files": 64,
+  "diffChars": 852061,
+  "deletionPaths": 62,
+  "verifiedGroups": 44,
+  "obligations": 310,
+  "allObligationsReviewRequired": true,
+  "astAvailablePaths": 7,
+  "sensitivePaths": 43,
+  "originalSourceBytes": 1611382,
+  "maxPacketChars": 11127,
+  "classifierOutcomes": {
+    "ok": 32,
+    "question_budget_exhausted": 30
+  },
+  "categoryAnswers": {
+    "sensitive": 21,
+    "docs": 8,
+    "source": 1,
+    "tests": 1,
+    "unknown": 1
+  },
+  "contractAnswers": {
+    "unknown": 32
+  },
+  "inputTokens": 88951,
+  "outputTokens": 4981,
+  "reportedCostUsd": 0.003735942,
+  "classifierLatencyMs": {
+    "min": 184,
+    "max": 662
+  },
+  "wallMs": 11739,
+  "headSearch": "disabled-in-local-replay",
+  "qualityCalibration": "not-human-adjudicated; no-safety-or-main-review-savings-claim"
+}

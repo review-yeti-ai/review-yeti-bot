@@ -1,0 +1,81 @@
+# mcp-tooling-tunnel-config.yaml
+# Declarative Tool & MCP Server Configuration with Per-Tool Tunnel Definitions
+# Compatible with Review Yeti Cloudflare Orchestrator and Container Worker.
+
+version: 1
+
+tools:
+  # =========================================================================
+  # 1. Direct Public Tool / MCP Server (No tunnel overhead)
+  # =========================================================================
+  - name: "openrouter-llm"
+    type: "inference"
+    url: "https://openrouter.ai/api/v1"
+    enabled: true
+    tunnel:
+      mode: "direct" # or "none"
+      timeout_ms: 120000
+
+  - name: "public-weather-mcp"
+    type: "mcp"
+    url: "https://mcp.weather.example.com/sse"
+    enabled: true
+    tunnel:
+      mode: "direct"
+
+  # =========================================================================
+  # 2. Private In-Cluster / On-Prem Service via Cloudflare Tunnel (Recommended)
+  # =========================================================================
+  - name: "bifrost-llm-gateway"
+    type: "inference"
+    url: "https://gateway-internal.example.com/v1"
+    enabled: true
+    tunnel:
+      mode: "cloudflare"
+      cloudflare:
+        # Interpolated from environment variables or secrets
+        access_client_id: "${CF_ACCESS_CLIENT_ID}"
+        access_client_secret: "${CF_ACCESS_CLIENT_SECRET}"
+        tunnel_token: "${CLOUDFLARE_TUNNEL_TOKEN}"
+      timeout_ms: 180000
+      headers:
+        X-Consumer-Service: "review-yeti-cf"
+
+  - name: "cisco-axl-mcp"
+    type: "mcp"
+    url: "https://axl-mcp.internal.example.com/sse"
+    enabled: true
+    tunnel:
+      mode: "cloudflare"
+      cloudflare:
+        access_client_id: "${CF_ACCESS_CLIENT_ID}"
+        access_client_secret: "${CF_ACCESS_CLIENT_SECRET}"
+      timeout_ms: 15000
+      headers:
+        X-Cluster-Namespace: "ct-review-system"
+
+  # =========================================================================
+  # 3. Private Tailnet Service via Tailscale (Fallback)
+  # =========================================================================
+  - name: "honcho-memory-mcp"
+    type: "mcp"
+    url: "https://honcho.tailebe851.ts.net/sse"
+    enabled: true
+    tunnel:
+      mode: "tailscale"
+      tailscale:
+        auth_key: "${TAILSCALE_AUTH_KEY}"
+        hostname: "review-yeti-worker"
+        accept_routes: true
+      timeout_ms: 20000
+
+  # =========================================================================
+  # 4. Automated Detection (Inspects URL and credentials automatically)
+  # =========================================================================
+  - name: "auto-resolved-sast-mcp"
+    type: "mcp"
+    url: "https://sast-scanner.internal.corp:8443/sse"
+    enabled: true
+    tunnel:
+      mode: "auto" # Auto-selects Cloudflare Tunnel or Tailscale based on URL and active credentials
+      timeout_ms: 30000

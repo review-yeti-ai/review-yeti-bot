@@ -366,15 +366,15 @@ describe('SSE terminal choice reduction', () => {
       expect(calls).toHaveLength(outcome === 'malformed' ? 2 : 1);
       if (!providerError) {
         expect(res.responseAttempts).toHaveLength(calls.length);
-        for (const attempt of res.responseAttempts) {
+        for (const [index, attempt] of res.responseAttempts.entries()) {
           expect(attempt).toMatchObject({
             outcome: outcome === 'parsed' ? 'parsed' : 'malformed_output',
-            finishReason, outputTokens: 13, maxOutputTokens: 24_576,
+            finishReason, outputTokens: 13, maxOutputTokens: index > 0 && finishReason === 'length' ? 49_152 : 24_576,
             responseMode: 'stream', contentPresent: true, reasoningPresent: true,
           });
         }
       }
-      expect(calls.every((body) => body.max_tokens === 24_576)).toBe(true);
+      expect(calls.map((body) => body.max_tokens)).toEqual(outcome === 'malformed' ? [24_576, 49_152] : [24_576]);
       expect(JSON.stringify(res.responseAttempts)).not.toContain(reasoning);
       expect(JSON.stringify(res.responseAttempts)).not.toContain(output);
       expect(pipeline.buildProviderTelemetryReceipt([res], { repo: 'o/r', prNumber: 1, headSha: 'a'.repeat(40) }).lanes[0].failureClass)
@@ -454,6 +454,77 @@ describe('resolveModelConfig', () => {
     });
     expect(calls[0].body.model).toBe(pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS);
     expect(calls[0].body.max_tokens).toBe(24_576);
+  });
+
+  it.each([
+    ['length', 24_576, 49_152, undefined],
+    ['length', 24_576, 49_152, 'none'],
+    ['length', 24_576, 49_152, 'high'],
+    ['stop', 24_576, 24_576, undefined],
+    ['length', 8_192, 8_192, undefined],
+  ])('recovers gateway %s output at %i tokens with one %i-token retry', async (finishReason, initial, recovery, effort) => {
+    const gateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-test-key',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+    const requests: any[] = [];
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...gateway,
+      transports: gateway.transports.map((transport: any) => ({ ...transport, stream: false, maxTokens: initial, reasoningEffort: effort })),
+      fetchImplementation: async (_url: string, options: any) => {
+        requests.push(JSON.parse(options.body));
+        return { ok: true, status: 200, json: async () => ({
+          choices: [{ finish_reason: requests.length === 1 ? finishReason : 'stop',
+            message: { content: requests.length === 1 ? '' : '{"findings":[]}', reasoning: 'Incomplete analysis' } }],
+          usage: { completion_tokens: requests.length === 1 ? initial : 30 },
+        }) };
+      },
+    });
+    expect(result.decision).toBe('APPROVE');
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.max_tokens)).toEqual([initial, recovery]);
+    expect(requests.map((request) => request.model)).toEqual([
+      pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
+    ]);
+    expect(requests[0].thinking).toBeUndefined();
+    const disablesOptionalThinking = finishReason === 'length' && initial === 24_576 && (!effort || effort === 'none');
+    expect(requests[1].thinking).toEqual(disablesOptionalThinking ? { type: 'disabled' } : undefined);
+    if (effort) expect(requests[0].reasoning_effort).toBe(effort);
+    if (effort && !disablesOptionalThinking) expect(requests[1].reasoning_effort).toBe(effort);
+    if (disablesOptionalThinking) expect(requests[1]).not.toHaveProperty('reasoning_effort');
+    expect(result.responseAttempts.map((attempt: any) => attempt.outcome)).toEqual(['malformed_output', 'parsed']);
+  });
+
+  it.each([
+    [false, pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS],
+    [true, 'caller-specified-model'],
+  ])('preserves format recovery outside the guarded alias (guard=%s, model=%s)', async (guarded, model) => {
+    const gateway = resolveModelConfig({
+      OPENROUTER_API_KEY: 'gateway-test-key',
+      OPENROUTER_BASE_URL: 'https://llm-gateway.example.ts.net/v1',
+      REVIEW_TRANSPORT_DESTINATION: 'gateway',
+    });
+    const requests: any[] = [];
+    const result = await reviewWithModel(securityPersona, diffFiles, { repo: 'o/r' }, null, {
+      ...gateway,
+      guardedGatewayDestination: guarded,
+      transports: gateway.transports.map((transport: any) => ({ ...transport, model, stream: false, maxTokens: 24_576 })),
+      fetchImplementation: async (_url: string, options: any) => {
+        requests.push(JSON.parse(options.body));
+        return { ok: true, status: 200, json: async () => ({
+          choices: [{ finish_reason: requests.length === 1 ? 'length' : 'stop',
+            message: { content: requests.length === 1 ? '' : '{"findings":[]}' } }],
+        }) };
+      },
+    });
+    expect(result.decision).toBe('APPROVE');
+    expect(requests).toHaveLength(2);
+    expect(requests.map((request) => request.model)).toEqual([model, model]);
+    // The recovery floor raises smaller reserves and preserves larger ones.
+    expect(requests.map((request) => request.max_tokens)).toEqual([24_576, 24_576]);
+    expect(requests[1]).not.toHaveProperty('thinking');
+    expect(requests[1].reasoning_effort).toBe('low');
   });
 
   it('clamps an oversized transport plan only for the guarded gateway alias', async () => {

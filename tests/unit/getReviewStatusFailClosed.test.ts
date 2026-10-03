@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import {
   createGetReviewStatusTool,
   type ReviewStatusDbClient,
@@ -443,4 +444,28 @@ describe('MCP status validation uses the native policy vocabulary', () => {
       expect(reviewGateStatusForReason(reason)).toBeUndefined();
     },
   );
+});
+
+describe('operational enrichment privacy and unknown compatibility',()=>{
+  it.each(['old','unsafe','unavailable','stale','running','no-gate'])('keeps %s observations absent without changing native status',async(scenario)=>{
+    const row=baseRow({run_status:scenario==='running'?'running':'failed',desired_state:scenario==='running'?'in_progress':'failure',...(scenario==='no-gate'?{attempt_id:undefined}:{})});
+    const safe=createPublishingProgress({runId:'run-safe',executionAttempt:1},{sink:()=>{}}).snapshot!()!;
+    let reads=0;
+    const db:ReviewStatusDbClient={async query(sql){
+      if(sql.includes("failure_diagnostics->'operationalTelemetry'")){reads++;if(scenario==='unavailable')throw new Error('SECRET DB');
+        return {rows:scenario==='unsafe'?[{operational_telemetry:{...safe,prompt:'SECRET'}}]:[]};}
+      if(sql.includes('review_event_outbox')||sql.includes('review_dispatch_outbox'))return {rows:[]};return {rows:[row]};
+    }};
+    const result=await createGetReviewStatusTool(db).execute({owner:row.owner,repo:row.repo,pull_number:row.pr_number});const data=JSON.parse((result.content[0] as any).text);
+    expect(data).not.toHaveProperty('operational_telemetry'); expect(JSON.stringify(data)).not.toContain('SECRET');
+    expect(data.verdict).toBe(scenario==='running'?'RUNNING':'FAILED'); if(scenario==='running'||scenario==='no-gate')expect(reads).toBe(0);
+  });
+});
+
+
+it('rejects invalid status coordinates before any database or metadata read',async()=>{
+  const query=vi.fn();
+  await expect(createGetReviewStatusTool({query}).execute({owner:'example',repo:'repo',pull_number:42,head_sha:'SECRET invalid head'}))
+    .rejects.toThrow('Invalid arguments:');
+  expect(query).not.toHaveBeenCalled();
 });

@@ -65,7 +65,7 @@ function ensureStaticAssets() {
     htmlTemplate = `<!doctype html><html lang="en"><head><title>CT Review Bot</title><link rel="stylesheet" href="/css/theme.css"/><link rel="stylesheet" href="/css/components.css"/></head><body><div id="mobile-toggle"></div><div id="sidebar-backdrop"></div><div id="inspector-prompt"></div><div id="terminal-feed"></div><div id="connection-status"></div><div id="persona-settings-grid"></div><div id="save-all-btn"></div><div id="active-personas-badge"></div><div class="sidebar"></div><script src="/js/app.js"></script><script src="/js/settings.js"></script></body></html>`;
   }
 
-  const htmlFiles = ['index.html', 'settings.html', 'live.html', 'repos.html', 'onboarding.html', 'integrations.html', 'github-app.html', '404.html'];
+  const htmlFiles = ['index.html', 'analytics.html', 'settings.html', 'live.html', 'repos.html', 'onboarding.html', 'integrations.html', 'github-app.html', '404.html'];
   for (const htmlFile of htmlFiles) {
     const dest = path.join(publicDir, htmlFile);
     if (!fs.existsSync(dest)) {

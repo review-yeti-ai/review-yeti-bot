@@ -72,6 +72,12 @@ export interface McpStaticAdminRecoveryOrigin {
   authorizedRepo: string;
 }
 
+/** Trusted webhook provenance for the exact signed PR action that can resume
+ * a retained composed review. Set by GitHub webhook routing, never by a body. */
+export interface GitHubReadyForReviewContinuationOrigin {
+  kind: 'github_pull_request_ready_for_review';
+}
+
 export interface ReviewAdmissionInput {
   deliveryId: string;
   eventName: string;
@@ -92,6 +98,10 @@ export interface ReviewAdmissionInput {
   retryRequested?: boolean;
   /** Explicit incomplete-P2 candidate; durable service-owned provenance remains mandatory. */
   incompleteP2Recovery?: true;
+  /** Service-derived, one-generation continuation of a validated composed closeout. */
+  gracefulComposedContinuation?: true;
+  /** Verified GitHub webhook provenance; accepted only for ready_for_review. */
+  gracefulComposedContinuationOrigin?: GitHubReadyForReviewContinuationOrigin;
   /** Trusted router provenance for the protected static-admin MCP bootstrap. */
   incompleteP2RecoveryOrigin?: McpStaticAdminRecoveryOrigin;
   /**

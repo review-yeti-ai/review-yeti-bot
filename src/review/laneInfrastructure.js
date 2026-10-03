@@ -142,18 +142,22 @@ function laneReason(lane) {
   return lane.providerStatus !== undefined ? String(lane.providerStatus) : lane.failureClass;
 }
 
+/** Structured lane detail, before any title framing or truncation. */
+function formatIncompleteInfrastructureDetail(lanes) {
+  const shown = lanes.slice(0, 3);
+  return shown.length === 0
+    ? 'lane failed'
+    : shown.length === 1
+      ? `lane ${shown[0].id} failed: ${laneReason(shown[0])}`
+      : `lanes ${shown.map((lane) => `${lane.id} ${laneReason(lane)}`).join(', ')}${lanes.length > shown.length ? ', …' : ''} failed`;
+}
+
 /**
  * REL-1113: the title for an infrastructure-incomplete run. Always "INCOMPLETE", never a verdict
  * word, e.g. `Review Yeti: INCOMPLETE — infrastructure (lane arch-lane failed: 502)`.
  */
 function renderIncompleteInfrastructureTitle(lanes, retry) {
-  const shown = lanes.slice(0, 3);
-  const detail = shown.length === 0
-    ? 'lane failed'
-    : shown.length === 1
-      ? `lane ${shown[0].id} failed: ${laneReason(shown[0])}`
-      : `lanes ${shown.map((lane) => `${lane.id} ${laneReason(lane)}`).join(', ')}${lanes.length > shown.length ? ', …' : ''} failed`;
-  return formatIncompleteInfrastructureTitle(detail, retry);
+  return formatIncompleteInfrastructureTitle(formatIncompleteInfrastructureDetail(lanes), retry);
 }
 
 /** REL-940: RETRIES allotted to a lane for a provider TRANSPORT failure. See `panelEngine.ts`
@@ -216,6 +220,7 @@ module.exports = {
   MAX_CHECK_RUN_TITLE_CHARACTERS,
   INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX,
   MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS,
+  formatIncompleteInfrastructureDetail,
   formatIncompleteInfrastructureTitle,
   renderIncompleteInfrastructureTitle,
   TRANSPORT_MAX_RETRIES,

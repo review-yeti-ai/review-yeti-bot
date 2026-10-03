@@ -101,7 +101,7 @@ digest, stored in the `ct-review-job-dispatcher` ConfigMap's
 `REVIEW_JOB_WORKER_IMAGE` key. A merge to `main` does not, by itself, reach
 production: it only makes a new commit's image available to pull. Advancing
 the live dispatcher to that commit is a separate, explicit operational step.
-In the exampleorg production cluster, Flux owns this key from
+In the Exampleorg production cluster, Flux owns this key from
 `exampleorg/example-infra` on `main`, at
 `clusters/doks-nyc1/apps/ct-review-system/cm-ct-review-job-dispatcher.yaml`.
 The runtime helper discovers that ownership; it does not compete with the
@@ -159,7 +159,7 @@ image already includes Node, used for the fixed non-secret running attestation.
 
 The existing source-tag resolver verifies the exact full-SHA tag against the
 caller-supplied digest, then reads that immutable index and requires Linux
-amd64 and arm64 entries. The worker GHCR and exampleorg DOCR repositories
+amd64 and arm64 entries. The worker GHCR and Exampleorg DOCR repositories
 are allowlisted; moving tags, platform digests and registry fallbacks are not.
 This proves registry source-tag matching, not a cryptographic build attestation.
 The caller supplies independently reviewed source.
@@ -557,3 +557,11 @@ To ensure cluster resources are conserved and review integrity is preserved:
 
 3. **Retro Feedback Loop**:
    Review failures and turn-budget exhaustions feed into retrospective analysis tools to fine-tune `max_investigation_turns`, recalibrate persona token budgets, and improve static path instructions.
+
+## Retry-reporting consumer migration
+
+Before activating truthful worker retry reporting, migrate dashboard, alert and
+saved-log consumers using [Retry-reporting observability migration](RETRY_REPORTING_OBSERVABILITY_MIGRATION.md).
+The counter name is unchanged, but outcome values and the structured retry field
+change. A worker completion ACK is not a scheduling receipt; mixed-version
+queries must retain that distinction. Source landing is not live consumer proof.

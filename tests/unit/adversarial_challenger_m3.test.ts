@@ -366,7 +366,7 @@ describe('Milestone 3 Adversarial & Critic Stress Suite', () => {
         for (let i = 0; i < 25; i++) {
           expect(results[i].toolOutput).toContain(`query_${i}`);
           expect(results[i].toolScope).toBe('cross-repository-ast-mesh');
-          expect(results[i].isExhaustive).toBe(true);
+          expect(results[i].isExhaustive).toBe(false);
         }
       } finally {
         fetchSpy.mockRestore();

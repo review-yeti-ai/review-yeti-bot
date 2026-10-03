@@ -7,16 +7,17 @@ Kubernetes Mode moves multi-persona review off billable runner minutes: the Acti
 dispatches and exits in seconds, and worker pods do the model work.
 
 > [!IMPORTANT]
-> **The dispatch endpoint is fixed, so this is not self-hosting today.**
-> `validateDispatchEndpoint` in `scripts/dispatch-doks-action.mjs` requires the
-> endpoint to be exactly the hosted Review Yeti queue — origin, path, and all —
-> and dispatch is additionally bound by GitHub Actions OIDC to an allowlisted
-> repository. Deploying `charts/review-yeti/` into your own cluster will not
-> receive reviews, because the Action cannot be pointed at it.
+> **Dispatch is admitted only for allowlisted callers, so this is not self-hosting today.**
+> The Action sends the admission request to the endpoint its calling workflow supplies;
+> `validateDispatchEndpoint` in `scripts/dispatch-doks-action.mjs` checks only its shape
+> (https, a DNS hostname, the exact path, no credentials). The hosted Review Yeti queue
+> admits a request only when its GitHub Actions OIDC token proves an allowlisted
+> repository and workflow identity. Deploying `charts/review-yeti/` into your own
+> cluster will not receive reviews, because nothing there trusts your workflows.
 >
 > The chart and operator in this repository are the components the hosted queue
-> runs. Kubernetes Mode cannot be pointed at a cluster you operate until the
-> endpoint becomes configurable, which is a change to the Action, not a setting.
+> runs. Kubernetes Mode cannot be pointed at a cluster you operate until the service
+> side can trust a caller you control, which is a change to the service, not a setting.
 
 ---
 

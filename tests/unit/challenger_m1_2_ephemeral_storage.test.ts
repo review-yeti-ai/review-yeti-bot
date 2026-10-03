@@ -197,13 +197,14 @@ describe('Challenger 2: Ephemeral Storage Isolation & Universal emptyDir Suite',
           await execFileAsync('git', ['init', '--quiet', '--bare', gitDir]);
 
           // 2. git remote add origin
-          await execFileAsync('git', ['--git-dir', gitDir, 'remote', 'add', 'origin', process.cwd()]);
+          await execFileAsync('git', ['--git-dir', gitDir, 'remote', 'add', 'origin', `file://${process.cwd()}`]);
 
           // 3. git fetch --depth=1 --filter=blob:none
           await execFileAsync('git', [
             '--git-dir',
             gitDir,
             'fetch',
+            '--upload-pack=git -c uploadpack.allowFilter=true upload-pack',
             '--quiet',
             '--no-tags',
             '--no-write-fetch-head',

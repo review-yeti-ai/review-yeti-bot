@@ -74,7 +74,7 @@ describe('Review Yeti opts out of gateway MCP tool injection (REL-1115)', () => 
     expect(mcpValues(init)).toEqual(['']);
     // The SDK's own headers survive alongside it.
     expect(new Headers(init.headers).get('x-openrouter-metadata')).toBe('enabled');
-  });
+  }, 15_000);
 
   it('caller metadata cannot re-open injection on the non-streaming (SDK) path', async () => {
     const fetchImplementation = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => chatJson());

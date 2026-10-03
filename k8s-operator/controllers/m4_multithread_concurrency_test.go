@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -59,28 +59,21 @@ import (
 func makeM4OCCConcurrencyInterceptor(monitor *ConcurrencyMonitor) interceptor.Funcs {
 	var leaseMu sync.Mutex
 	funcs := monitor.InterceptorFuncs()
-	origUpdate := funcs.Update
+	update := funcs.Update
 	funcs.Update = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 		if _, ok := obj.(*coordinationv1.Lease); ok {
 			leaseMu.Lock()
 			defer leaseMu.Unlock()
 		}
-		if origUpdate != nil {
-			return origUpdate(ctx, c, obj, opts...)
-		}
-		return c.Update(ctx, obj, opts...)
-	}
-	origDelete := funcs.Delete
-	funcs.Delete = func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
-		if _, ok := obj.(*batchv1.Job); ok {
-			atomic.AddInt32(&monitor.activeJobs, -1)
-		}
-		if origDelete != nil {
-			return origDelete(ctx, c, obj, opts...)
-		}
-		return c.Delete(ctx, obj, opts...)
+		return update(ctx, c, obj, opts...)
 	}
 	return funcs
+}
+
+type fixtureReconcileOutcome struct {
+	request types.NamespacedName
+	result  ctrl.Result
+	err     error
 }
 
 // reconcileM4Batch executes one concurrent round of Reconcile across all provided reviews
@@ -90,12 +83,13 @@ func reconcileM4Batch(
 	reconciler *controllers.PRReviewJobV1Alpha2Reconciler,
 	reviews []*reviewv1alpha2.PRReviewJob,
 	threads int,
-) {
+) []fixtureReconcileOutcome {
+	outcomes := make([]fixtureReconcileOutcome, len(reviews))
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	ch := make(chan *reviewv1alpha2.PRReviewJob, len(reviews))
-	for _, r := range reviews {
-		ch <- r
+	ch := make(chan int, len(reviews))
+	for i := range reviews {
+		ch <- i
 	}
 	close(ch)
 
@@ -104,14 +98,25 @@ func reconcileM4Batch(
 		go func() {
 			defer wg.Done()
 			<-start
-			for rev := range ch {
+			for index := range ch {
+				rev := reviews[index]
 				req := ctrl.Request{NamespacedName: types.NamespacedName{Namespace: rev.Namespace, Name: rev.Name}}
-				_, _ = reconciler.Reconcile(ctx, req)
+				result, err := reconciler.Reconcile(ctx, req)
+				outcomes[index] = fixtureReconcileOutcome{request: req.NamespacedName, result: result, err: err}
 			}
 		}()
 	}
 	close(start)
 	wg.Wait()
+	logger := logr.FromContextOrDiscard(ctx)
+	for _, outcome := range outcomes {
+		if outcome.err != nil {
+			logger.Error(outcome.err, "fixture reconcile failed", "request", outcome.request, "result", outcome.result)
+		} else if outcome.result.Requeue || outcome.result.RequeueAfter > 0 {
+			logger.Info("fixture reconcile requeued", "request", outcome.request, "result", outcome.result)
+		}
+	}
+	return outcomes
 }
 
 // -----------------------------------------------------------------------------
@@ -164,7 +169,9 @@ func TestM4_Integration_ConcurrencyMatrix_BurstAdmission(t *testing.T) {
 
 			ctx := context.Background()
 			t0 := time.Now()
-			reconcileUntilSettled(ctx, reconciler, reviews, tc.threads)
+			if err := reconcileUntilSettled(ctx, reconciler, reviews, tc.threads); err != nil {
+				t.Fatalf("settle fixture: %v", err)
+			}
 			elapsed := time.Since(t0)
 
 			if elapsed > 30*time.Second {
@@ -253,7 +260,9 @@ func TestM4_Integration_DynamicLifecycle_SlotRecycling_AcrossThreads(t *testing.
 			ctx := context.Background()
 
 			// Step 1: Initial burst admission. Exactly 4 must be Running, 12 Queued.
-			reconcileUntilSettled(ctx, reconciler, reviews, threads)
+			if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+				t.Fatalf("settle fixture: %v", err)
+			}
 
 			var runningReviews []*reviewv1alpha2.PRReviewJob
 			for _, r := range reviews {
@@ -322,11 +331,15 @@ func TestM4_Integration_DynamicLifecycle_SlotRecycling_AcrossThreads(t *testing.
 
 			// Step 3: Reconcile terminal reviews across parallel threads to transition and release slots
 			terminalBatch := []*reviewv1alpha2.PRReviewJob{runningReviews[0], runningReviews[1], runningReviews[2]}
-			reconcileM4Batch(ctx, reconciler, terminalBatch, threads)
+			for _, outcome := range reconcileM4Batch(ctx, reconciler, terminalBatch, threads) {
+				if outcome.err != nil {
+					t.Fatalf("reconcile %s: %v", outcome.request, outcome.err)
+				}
+			}
 
 			// Step 4: Reconcile all reviews to promote the next queued reviews into the 3 freed slots
-			for round := 0; round < 3; round++ {
-				reconcileM4Batch(ctx, reconciler, reviews, threads)
+			if err := reconcileUntilSettled(ctx, reconciler, reviews, threads); err != nil {
+				t.Fatalf("recycle fixture: %v", err)
 			}
 
 			// Step 5: Assert invariants
@@ -567,7 +580,10 @@ func TestM4_Integration_ErrorHandling_TransientAPI500_SlotRelease(t *testing.T) 
 	// Verify slot was released: Lease active slots should be empty
 	var lease coordinationv1.Lease
 	if err := kube.Get(ctx, types.NamespacedName{Namespace: review.Namespace, Name: controllers.CapacityLedgerLeaseName}, &lease); err == nil {
-		slotsJson := lease.Annotations["ct.review.example.com/active-slots"]
+		if controllers.CapacityLedgerActiveSlotsAnnotation != "review-yeti.ai/active-slots" {
+			t.Fatalf("capacity ledger annotation key drifted: %s", controllers.CapacityLedgerActiveSlotsAnnotation)
+		}
+		slotsJson := lease.Annotations[controllers.CapacityLedgerActiveSlotsAnnotation]
 		if slotsJson != "" && slotsJson != "[]" {
 			t.Fatalf("expected active slots to be released after API failure, got: %s", slotsJson)
 		}
@@ -595,7 +611,7 @@ func TestM4_Integration_ErrorHandling_CorruptedLeaseRecovery_16Threads(t *testin
 			Name:      controllers.CapacityLedgerLeaseName,
 			Namespace: "ct-review-system",
 			Annotations: map[string]string{
-				"ct.review.example.com/active-slots": "{corrupted-json-payload",
+				"review-yeti.ai/active-slots": "{corrupted-json-payload",
 			},
 		},
 	}
@@ -626,7 +642,9 @@ func TestM4_Integration_ErrorHandling_CorruptedLeaseRecovery_16Threads(t *testin
 		}
 	}()
 
-	reconcileUntilSettled(ctx, reconciler, reviews, 16)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, 16); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	running := 0
 	for _, r := range reviews {
@@ -729,7 +747,11 @@ func TestM4_Integration_DecoupledReceipt_ZeroWorkerContention(t *testing.T) {
 			t0 := time.Now()
 
 			allReviews := append([]*reviewv1alpha2.PRReviewJob{slowReview}, fastReviews...)
-			reconcileM4Batch(ctx, reconciler, allReviews, threads)
+			for _, outcome := range reconcileM4Batch(ctx, reconciler, allReviews, threads) {
+				if outcome.err != nil {
+					t.Fatalf("reconcile %s: %v", outcome.request, outcome.err)
+				}
+			}
 			elapsed := time.Since(t0)
 
 			// Invariant: Entire burst settles in < 500ms despite the 3000ms slow server
@@ -779,7 +801,9 @@ func TestM4_Integration_ConcurrentCancellation_AtomicSlotReclamation(t *testing.
 	ctx := context.Background()
 
 	// Initial admission: 4 running, 12 queued
-	reconcileUntilSettled(ctx, reconciler, reviews, 16)
+	if err := reconcileUntilSettled(ctx, reconciler, reviews, 16); err != nil {
+		t.Fatalf("settle fixture: %v", err)
+	}
 
 	// Identify running reviews vs queued reviews
 	var runningIndices []int
@@ -819,7 +843,11 @@ func TestM4_Integration_ConcurrentCancellation_AtomicSlotReclamation(t *testing.
 
 	// Reconcile across 16 threads until freed slots are reclaimed and saturated
 	for round := 0; round < 10; round++ {
-		reconcileM4Batch(ctx, reconciler, reviews, 16)
+		for _, outcome := range reconcileM4Batch(ctx, reconciler, reviews, 16) {
+			if outcome.err != nil {
+				t.Fatalf("reconcile %s: %v", outcome.request, outcome.err)
+			}
+		}
 		runningCount := 0
 		for _, r := range reviews {
 			var rev reviewv1alpha2.PRReviewJob
@@ -956,4 +984,249 @@ func TestM4_Integration_SetupWithManager_ConcurrencyWiring(t *testing.T) {
 			}
 		})
 	}
+}
+
+// This context logger observes real returned outcomes after a closed batch.
+// It does not call the controller or manufacture success, errors, or requeues.
+type fixtureLogEntry struct {
+	err    error
+	values map[string]any
+}
+
+type fixtureLogState struct {
+	mu      sync.Mutex
+	entries []fixtureLogEntry
+}
+
+type fixtureLogSink struct {
+	state  *fixtureLogState
+	values []any
+}
+
+func (s *fixtureLogSink) Init(logr.RuntimeInfo) {}
+func (s *fixtureLogSink) Enabled(int) bool     { return true }
+func (s *fixtureLogSink) WithName(string) logr.LogSink {
+	return &fixtureLogSink{state: s.state, values: append([]any(nil), s.values...)}
+}
+func (s *fixtureLogSink) WithValues(values ...any) logr.LogSink {
+	return &fixtureLogSink{state: s.state, values: append(append([]any(nil), s.values...), values...)}
+}
+func (s *fixtureLogSink) Info(_ int, _ string, values ...any) { s.record(nil, values) }
+func (s *fixtureLogSink) Error(err error, _ string, values ...any) {
+	s.record(err, values)
+}
+func (s *fixtureLogSink) record(err error, values []any) {
+	all := append(append([]any(nil), s.values...), values...)
+	entry := fixtureLogEntry{err: err, values: make(map[string]any)}
+	for i := 0; i+1 < len(all); i += 2 {
+		if key, ok := all[i].(string); ok {
+			entry.values[key] = all[i+1]
+		}
+	}
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	s.state.entries = append(s.state.entries, entry)
+}
+func (s *fixtureLogSink) snapshot() []fixtureLogEntry {
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	return append([]fixtureLogEntry(nil), s.state.entries...)
+}
+
+func newConvergenceFixture(t *testing.T, threads, count int, prefix string, configure func(interceptor.Funcs, []*reviewv1alpha2.PRReviewJob) interceptor.Funcs) (context.Context, *controllers.PRReviewJobV1Alpha2Reconciler, []*reviewv1alpha2.PRReviewJob, *ConcurrencyMonitor, *fixtureLogSink) {
+	t.Helper()
+	now := time.Date(2026, 10, 2, 5, 0, 0, 0, time.UTC)
+	scheme := v1alpha2Scheme(t)
+	reviews := makeBurstReviews(now, count, prefix)
+	objects := make([]client.Object, len(reviews))
+	for i, review := range reviews {
+		objects[i] = review
+	}
+	monitor := NewConcurrencyMonitor(4)
+	funcs := makeM4OCCConcurrencyInterceptor(monitor)
+	if configure != nil {
+		funcs = configure(funcs, reviews)
+	}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
+		WithStatusSubresource(&reviewv1alpha2.PRReviewJob{}, &batchv1.Job{}).
+		WithInterceptorFuncs(funcs).Build()
+	r := &controllers.PRReviewJobV1Alpha2Reconciler{
+		Client: kube, Scheme: scheme, Now: func() time.Time { return now },
+		MaxConcurrentJobs: 4, MaxConcurrentReconciles: threads,
+	}
+	sink := &fixtureLogSink{state: &fixtureLogState{}}
+	return logr.NewContext(context.Background(), logr.New(sink)), r, reviews, monitor, sink
+}
+
+func assertFixtureAdmission(t *testing.T, ctx context.Context, kube client.Client, reviews []*reviewv1alpha2.PRReviewJob, monitor *ConcurrencyMonitor, succeeded, failed, firstRunning int) {
+	t.Helper()
+	var jobs batchv1.JobList
+	if err := kube.List(ctx, &jobs); err != nil {
+		t.Fatal(err)
+	}
+	active := make(map[types.NamespacedName]bool)
+	for i := range jobs.Items {
+		if committedWorkerConsumesCapacity(&jobs.Items[i]) {
+			active[client.ObjectKeyFromObject(&jobs.Items[i])] = true
+		}
+	}
+	seen := make(map[types.NamespacedName]bool)
+	for i, review := range reviews {
+		var stored reviewv1alpha2.PRReviewJob
+		if err := kube.Get(ctx, client.ObjectKeyFromObject(review), &stored); err != nil {
+			t.Fatal(err)
+		}
+		want := reviewv1alpha2.PhaseQueued
+		switch {
+		case i < succeeded:
+			want = reviewv1alpha2.PhaseSucceeded
+		case i < succeeded+failed:
+			want = reviewv1alpha2.PhaseFailed
+		case i >= firstRunning && i < firstRunning+4:
+			want = reviewv1alpha2.PhaseRunning
+		}
+		if stored.Status.Phase != want {
+			t.Fatalf("FIFO review %d (%s) phase: got %s, want %s", i, review.Name, stored.Status.Phase, want)
+		}
+		if want == reviewv1alpha2.PhaseRunning {
+			key := types.NamespacedName{Namespace: stored.Namespace, Name: stored.Status.JobName}
+			if stored.Status.JobName == "" || seen[key] || !active[key] {
+				t.Fatalf("running review %s lacks a distinct active stored worker: %v", stored.Name, key)
+			}
+			seen[key] = true
+		}
+	}
+	if len(active) != 4 || len(seen) != 4 {
+		t.Fatalf("active worker identity count: got %d active/%d associated, want 4/4", len(active), len(seen))
+	}
+	if monitor.MaxObservedActive() > 4 || len(monitor.Violations()) != 0 {
+		t.Fatalf("hard capacity invariant: maximum %d, violations %v", monitor.MaxObservedActive(), monitor.Violations())
+	}
+}
+
+func assertFixtureKeyedErrors(t *testing.T, sink *fixtureLogSink, reviews []*reviewv1alpha2.PRReviewJob, sentinel error) {
+	t.Helper()
+	observed := make(map[types.NamespacedName]bool)
+	for _, entry := range sink.snapshot() {
+		if key, ok := entry.values["request"].(types.NamespacedName); ok && errors.Is(entry.err, sentinel) {
+			observed[key] = true
+		}
+	}
+	for _, review := range reviews {
+		if !observed[client.ObjectKeyFromObject(review)] {
+			t.Errorf("closed batch lost the actual error identity/request key for %s", review.Name)
+		}
+	}
+}
+
+func TestM4FixtureBatchSurfacesReconcileErrors(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			sentinel := errors.New("fixture initial review read failed")
+			ctx, r, reviews, _, sink := newConvergenceFixture(t, threads, 8, "batch-error", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.Get = func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*reviewv1alpha2.PRReviewJob); ok {
+						calls.Add(1)
+						return sentinel
+					}
+					return c.Get(ctx, key, obj, opts...)
+				}
+				return f
+			})
+			reconcileM4Batch(ctx, r, reviews, threads)
+			if got := calls.Load(); got != 8 {
+				t.Fatalf("batch must visit each request once: got %d calls, want 8", got)
+			}
+			assertFixtureKeyedErrors(t, sink, reviews, sentinel)
+		})
+	}
+}
+
+func TestM4FixtureBatchRetainsQuietRequeueOutcomes(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var calls atomic.Int32
+			ctx, r, reviews, _, sink := newConvergenceFixture(t, threads, 8, "batch-requeue", func(f interceptor.Funcs, _ []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				f.Get = func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*reviewv1alpha2.PRReviewJob); ok {
+						calls.Add(1)
+						return apierrors.NewConflict(schema.GroupResource{Group: "review-yeti.ai", Resource: "prreviewjobs"}, key.Name, fmt.Errorf("fixture conflict"))
+					}
+					return c.Get(ctx, key, obj, opts...)
+				}
+				return f
+			})
+			reconcileM4Batch(ctx, r, reviews, threads)
+			if got := calls.Load(); got != 8 {
+				t.Fatalf("batch implicitly retried: got %d reads, want 8", got)
+			}
+			observed := make(map[types.NamespacedName]int)
+			for _, entry := range sink.snapshot() {
+				key, keyed := entry.values["request"].(types.NamespacedName)
+				result, actual := entry.values["result"].(ctrl.Result)
+				if keyed && actual && entry.err == nil && result == (ctrl.Result{RequeueAfter: 2 * time.Second}) {
+					observed[key]++
+				}
+			}
+			for _, review := range reviews {
+				if got := observed[client.ObjectKeyFromObject(review)]; got != 1 {
+					t.Errorf("actual quiet2s result for %s: observed %d times, want 1", review.Name, got)
+				}
+			}
+		})
+	}
+}
+
+func TestM4FixtureSettleWaitsForTerminalProjectionBeforeRecycledCapacity(t *testing.T) {
+	for _, threads := range []int{1, 4, 16} {
+		t.Run(fmt.Sprintf("%dThreads", threads), func(t *testing.T) {
+			var enabled atomic.Bool
+			var conflicts atomic.Int32
+			ctx, r, reviews, monitor, _ := newConvergenceFixture(t, threads, 16, "recycle", func(f interceptor.Funcs, reviews []*reviewv1alpha2.PRReviewJob) interceptor.Funcs {
+				next := f.SubResourceUpdate
+				f.SubResourceUpdate = func(ctx context.Context, c client.Client, subresource string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+					if review, ok := obj.(*reviewv1alpha2.PRReviewJob); ok && enabled.Load() && review.Name == reviews[0].Name && review.Status.Phase == reviewv1alpha2.PhaseSucceeded && conflicts.Add(1) <= 5 {
+						return apierrors.NewConflict(schema.GroupResource{Group: "review-yeti.ai", Resource: "prreviewjobs"}, review.Name, fmt.Errorf("fixture terminal projection conflict"))
+					}
+					return next(ctx, c, subresource, obj, opts...)
+				}
+				return f
+			})
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 0, 0, 0)
+			for i := 0; i < 3; i++ {
+				var worker batchv1.Job
+				if err := r.Client.Get(ctx, types.NamespacedName{Namespace: reviews[i].Namespace, Name: reviews[i].Name + "-worker"}, &worker); err != nil {
+					t.Fatal(err)
+				}
+				if i < 2 {
+					attachReceiptAnnotations(&worker)
+					if err := r.Client.Update(ctx, &worker); err != nil {
+						t.Fatal(err)
+					}
+					worker.Status.Succeeded = 1
+					worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+				} else {
+					worker.Status.Failed = 1
+					worker.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: corev1.ConditionTrue}}
+				}
+				if err := r.Client.Status().Update(ctx, &worker); err != nil {
+					t.Fatal(err)
+				}
+			}
+			enabled.Store(true)
+			reconcileUntilSettled(ctx, r, reviews, threads)
+			assertFixtureAdmission(t, ctx, r.Client, reviews, monitor, 2, 1, 3)
+		})
+	}
+}
+
+// Select the real admission list seam; an unfiltered oracle inventory read
+// must not consume an injected admission failure or inflate its count.
+func fixtureAdmissionList(list client.ObjectList, opts []client.ListOption) bool {
+	if _, ok := list.(*batchv1.JobList); !ok {
+		return false
+	}
+	return (&client.ListOptions{}).ApplyOptions(opts).LabelSelector != nil
 }

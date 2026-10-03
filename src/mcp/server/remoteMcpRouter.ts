@@ -39,6 +39,12 @@ import {
   createDisputeFindingTool,
   createAttestPrGateTool,
   createReplyReviewThreadTool,
+  createQueryActiveJobsTool,
+  createGetCloudflareStatusTool,
+  createGetBillableRuntimeReportTool,
+  createGetRuntimeMetricsTool,
+  createGetAnalyticsDashboardTool,
+  createPurgeCacheTool,
   type PreflightDiffReviewDependencies,
   type ExplainFindingDependencies,
   type GenerateFixDiffDependencies,
@@ -131,6 +137,7 @@ export interface RemoteMcpRouterOptions {
   disputeFindingDeps?: DisputeFindingDependencies;
   attestPrGateDeps?: any;
   replyReviewThreadDeps?: any;
+  cfOrchestratorUrl?: string;
 }
 
 export type RemoteMcpRouter = Router & {
@@ -159,6 +166,7 @@ export function createDefaultToolRegistry(options?: {
   disputeFindingDeps?: DisputeFindingDependencies;
   attestPrGateDeps?: any;
   replyReviewThreadDeps?: any;
+  cfOrchestratorUrl?: string;
   notifyResourceUpdated?: (uri: string, payload?: any) => number;
 }): McpToolRegistry {
   const registry = new DefaultMcpToolRegistry();
@@ -194,12 +202,20 @@ export function createDefaultToolRegistry(options?: {
   }));
   registry.registerTool(createDisputeFindingTool({
     queryableDatabase: db,
+    transactionPool: db && typeof db.connect === 'function' ? db : undefined,
+    authoritativePublishing: options?.triggerDeps?.authoritativePublishing,
     notifyResourceUpdated: options?.notifyResourceUpdated,
     ...(modelClient ? { modelClient } : {}),
     ...options?.disputeFindingDeps,
   }));
   registry.registerTool(createAttestPrGateTool({ queryableDatabase: db, ...options?.attestPrGateDeps }));
   registry.registerTool(createReplyReviewThreadTool(options?.replyReviewThreadDeps));
+  registry.registerTool(createQueryActiveJobsTool(db));
+  registry.registerTool(createGetCloudflareStatusTool({ cfOrchestratorUrl: options?.cfOrchestratorUrl }));
+  registry.registerTool(createGetBillableRuntimeReportTool(db));
+  registry.registerTool(createGetRuntimeMetricsTool());
+  registry.registerTool(createGetAnalyticsDashboardTool());
+  registry.registerTool(createPurgeCacheTool({ cfOrchestratorUrl: options?.cfOrchestratorUrl }));
 
   return registry;
 }

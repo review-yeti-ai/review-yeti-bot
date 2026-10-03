@@ -33,7 +33,7 @@ export function getSystemVersionInfo(): VersionInfo {
     buildTimestamp: process.env.BUILD_TIMESTAMP || '2026-07-26T08:51:00Z',
     environment: process.env.NODE_ENV || 'production',
     cluster: 'DigitalOcean Kubernetes (DOKS ny1)',
-    runner: 'Blacksmith GHA Runners',
+    runner: 'GitHub Actions Runners',
     memoryEngine: 'Tree-sitter SQLite AST Graph v2',
   };
 }

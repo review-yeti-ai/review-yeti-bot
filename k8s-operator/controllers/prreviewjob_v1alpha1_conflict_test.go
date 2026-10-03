@@ -33,7 +33,7 @@ func TestPRReviewJobV1Alpha1ReconcilerConvertsConflictIntoQuietRequeue(t *testin
 			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 				if _, isReview := obj.(*reviewv1alpha1.PRReviewJob); isReview {
 					return errors.NewConflict(
-						schema.GroupResource{Group: "review.example.com", Resource: "prreviewjobs"},
+						schema.GroupResource{Group: "legacy.review-yeti.ai", Resource: "prreviewjobs"},
 						key.Name, nil)
 				}
 				return c.Get(ctx, key, obj, opts...)

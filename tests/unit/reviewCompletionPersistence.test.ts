@@ -189,6 +189,7 @@ describe('worker completion persistence diagnostics', () => {
         if (sql.startsWith('SELECT repository_id, pr_number')) return { rows: [{ repository_id: 123, pr_number: 42 }] };
         if (sql.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] };
         if (sql.startsWith('SELECT gate.*, runs.status')) return { rows: [state] };
+        if (sql.includes('FROM review_finding_rechecks request')) return { rows: [] };
         // Ordinary attempt 2 has no retained-finding archive or incomplete Gate.
         if (sql.includes('FROM review_runs') && (sql.includes('SELECT repository_id, owner')
           || sql.includes('SELECT run_id, repository_id'))) {

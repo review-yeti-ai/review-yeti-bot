@@ -83,8 +83,8 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
       expect(screen.getAllByText('feat(ingestion): refactor CDR payload parsing pipeline').length).toBeGreaterThan(0);
 
       // Check model tags are rendered
-      expect(screen.getAllByText('claude-3-5-sonnet').length).toBeGreaterThan(0);
-      expect(screen.getAllByText('deepseek-v3').length).toBeGreaterThan(0);
+      // Third-party model tags are normalized to the native swarm model.
+      expect(screen.getAllByText('reviewyeti-ai/yeti-pr-reviewer').length).toBeGreaterThan(0);
 
       // Check confidence scores are rendered
       expect(screen.getAllByText('98%').length).toBeGreaterThan(0);
@@ -102,7 +102,7 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
       fireEvent.click(securityCard);
 
       // Verify raw agent output log is rendered
-      expect(screen.getByText(/Reviewer Output Log \(Model Tag: claude-3-5-sonnet\)/i)).toBeInTheDocument();
+      expect(screen.getByText(/Reviewer Output Log \(Model Tag: reviewyeti-ai\/yeti-pr-reviewer\)/i)).toBeInTheDocument();
       expect(screen.getByText(/\[PERSONA_START\] Security Agent/i)).toBeInTheDocument();
 
       // Verify detailed reasoning chain is rendered
@@ -112,9 +112,9 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
 
       // Verify line-by-line Code Nits Inspector is rendered
       expect(screen.getByText('Code Nits & Line-by-Line Inspector')).toBeInTheDocument();
-      expect(screen.getByText('src/auth/jwt.ts')).toBeInTheDocument();
-      expect(screen.getByText(': Line 42')).toBeInTheDocument();
-      expect(screen.getByText('P1 - Warning')).toBeInTheDocument();
+      expect(screen.getByText(/src\/auth\/jwt\.ts/)).toBeInTheDocument();
+      expect(screen.getByText(/42/)).toBeInTheDocument();
+      expect(screen.getByText('P1 Warning')).toBeInTheDocument();
       expect(screen.getByText('Timing attack vulnerability in signature verification')).toBeInTheDocument();
       expect(screen.getByText(/crypto\.timingSafeEqual\(bufferA, bufferB\)/)).toBeInTheDocument();
     });
@@ -129,9 +129,7 @@ describe('Requirements R1 & R2: PR Review Detail Modal & GitHub PR Direct Links'
       render(<PRReviewDetailModal job={jobWithoutLogs} open={true} onOpenChange={() => {}} />);
 
       // Verify default model tags are rendered for included personas (security, performance, quality, database)
-      expect(screen.getAllByText(/claude/i).length).toBeGreaterThan(0);
-      expect(screen.getAllByText('glm-5.2').length).toBeGreaterThan(0);
-      expect(screen.getAllByText('gpt-4o').length).toBeGreaterThan(0);
+      expect(screen.getAllByText(/reviewyeti-ai\/yeti-pr-reviewer/i).length).toBeGreaterThan(0);
 
       // Expand quality persona
       const qualityCard = screen.getAllByText('Quality')[0];

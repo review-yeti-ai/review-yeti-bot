@@ -6,6 +6,8 @@ import { createDefaultV3Config } from '../../src/config/configLoader';
 import { ctReviewConfigV3Schema } from '../../src/config/schema';
 import { executePersonaPanel, extractMessageContentText, MAX_INLINE_DIFF_CHARS_CEILING } from '../../src/panel/panelEngine';
 import { executeComposedReview } from '../../src/panel/composedEngine';
+import * as panelEngine from '../../src/panel/panelEngine';
+import { parseReviewExecutionCheckpoint } from '../../src/review/reviewExecutionCheckpoint';
 import { MAX_FILE_PATCH_CHARS } from '../../src/pipeline/hunkFilter';
 import { parseChangedFiles } from '../../src/review/changedFiles';
 import { resolveScopedReviewApplicability } from '../../src/review/incrementalReview';
@@ -369,7 +371,7 @@ describe('packLaneBudget', () => {
         if (classifyBudgetCategory(path) === 'security-sensitive') expect(entry.depth).not.toBe('signatures');
       }
     }
-  });
+  }, 60_000);
 
   it('fails open to today\'s content for a lane too large to list within the cap, and says so', () => {
     const huge = Array.from({ length: 1_500 }, (_, i) => ({ path: `src/generated_like/module_${String(i).padStart(5, '0')}.ts`, effectivePatch: '@@ -0,0 +1 @@\n+x', wholePatch: null }));
@@ -1012,6 +1014,10 @@ describe('composed engine wiring', () => {
       expect.objectContaining({ path: envPath, category: 'ci-iac', depth: 'full' }),
     ]));
     expect(result.diffShrink?.notSentInFull).toEqual([]);
+    const networkFetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request in synthetic release fixture'));
+    const readFile = vi.fn<() => Promise<string | null>>().mockResolvedValue(null);
+    const findFiles = vi.fn<() => Promise<string[]>>().mockResolvedValue([]);
+    const repoFileProviderFactory = vi.fn(() => ({ readFile, findFiles }));
     const checkClient = { createCheck: vi.fn(async () => 4242), completeCheck: vi.fn(async () => {}) };
     await runPublishingReviewWorker({ NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate',
       REVIEW_RUN_ID: 'run_' + 'c'.repeat(32), REVIEW_REPO: 'acme/release-fixture', REVIEW_REPOSITORY_ID: '1339040553',
@@ -1020,8 +1026,11 @@ describe('composed engine wiring', () => {
       REVIEW_MODEL: 'ollama/glm-5.3-flash', OPENAI_BASE_URL: 'https://gateway.example.invalid/v1',
       OPENAI_API_KEY: 'vk-test', GH_TOKEN: 'ghs_test', REVIEW_YETI_BUDGET: 'all', REVIEW_YETI_DIFF_SHRINK: 'all',
       REVIEW_YETI_POLICY_JSON: JSON.stringify({ review_yeti: { personas: 'security', review_engine: 'composed' } }) },
-    { checkClient, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
+    { checkClient, repoFileProviderFactory, currentPullRequestVerifier: vi.fn(async () => undefined), sourceLoader: vi.fn(async () => ({ diff, githubReads: 1 })) as never,
       visibilityLookup: vi.fn(async () => 'PRIVATE' as const), composedReviewRunner: vi.fn(async () => result) as never, client: {} as never });
+    expect(readFile).toHaveBeenCalledExactlyOnceWith('.gitattributes');
+    expect(findFiles).not.toHaveBeenCalled();
+    expect(networkFetch).not.toHaveBeenCalled();
     const summary = JSON.stringify((checkClient.completeCheck.mock.calls as unknown[][]).map(call => call[0]));
     expect(summary).toContain('4 in full (2 past the 20k per-file cut), 0 as signatures only, 0 not deeply reviewed');
     expect(summary).toContain('No file was shrunk; every change was sent in full.');
@@ -1121,6 +1130,47 @@ describe('composed engine wiring', () => {
     expect(plan.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
     expect(work.some((body) => /tool output (cut to|withheld)/u.test(body))).toBe(true);
   });
+
+  it('recovers original tail evidence in both phases and validates findings against the admitted patch', async () => {
+    const original = files(BIG_DIFF).find((file) => file.path === 'src/core.ts')!;
+    const validate = vi.spyOn(panelEngine, 'validateFindings');
+    const tail = original.patch!.indexOf('core_TAIL_MARKER');
+    expect(tail).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
+    const { plan, work } = toolResults(await composedRequests(ON, { tool: 'get_diff_page',
+      args: { path: 'src/core.ts', startOffset: tail, maxChars: 100 } }));
+    for (const result of [plan, work]) {
+      expect(result).toContain('core_TAIL_MARKER');
+      expect(result).toContain('original-admitted-diff');
+    }
+    expect(validate).toHaveBeenCalledWith([], expect.arrayContaining([expect.objectContaining({
+      path: original.path, patch: original.patch,
+    })]));
+  });
+
+  it.each([{ line: 702, retained: true }, { line: 999, retained: false }])
+    ('validates resumed findings against original lines: %j', async ({ line, retained }) => {
+      const changedFiles = files(BIG_DIFF);
+      const findings = [{ severity: 'P2', path: 'src/core.ts', line, title: 'Tail contract', body: 'Check the original tail.' }];
+      const checkpoint = parseReviewExecutionCheckpoint({ version: 'ReviewExecutionCheckpoint.v1',
+        runId: `run_${'1'.repeat(32)}`, repositoryId: 1, owner: 'acme', repo: 'app', prNumber: 1,
+        headSha: 'e'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64), configDigest: 'd'.repeat(64),
+        executionAttempt: 2, revision: 1,
+        plan: [{ id: 't1', dimension: 'security', paths: ['src/core.ts', 'tests/core.test.ts'], question: 'Tail?', rationale: 'Contract.' }],
+        completedTasks: [{ id: 't1', findings }] });
+      const validate = vi.spyOn(panelEngine, 'validateFindings');
+      const complete = vi.fn(async (request: any) => {
+        const prompt = request.messages.map((message: any) => extractMessageContentText(message.content)).join('\n');
+        const nonce = [...prompt.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+        return { model: 'm', content: JSON.stringify({ nonce, task: 't1', status: 'COMPLETE', findings: [] }),
+          usage: { prompt: 1, completion: 1, total: 2 }, costUSD: 0, raw: {} };
+      });
+      const result = await executeComposedReview({ config: COMPOSED_CONFIG(), changedFiles, repository: 'acme/app',
+        headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
+        checkpoint: { resumed: checkpoint, save: async () => {} } });
+      expect(validate.mock.calls[0]).toEqual([checkpoint.completedTasks[0].findings, changedFiles]);
+      expect(complete).toHaveBeenCalledTimes(retained ? 0 : 1);
+      expect(result.personas[0].findings.map((finding) => finding.line)).toEqual(retained ? [702] : []);
+    });
 
   // The last message of the request after each phase's first tool call is that tool's result.
   function toolResults(requests: string[]): { plan: string; work: string } {

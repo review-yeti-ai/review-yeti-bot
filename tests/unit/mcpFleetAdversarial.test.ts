@@ -528,7 +528,7 @@ describe('Adversarial MCP Fleet & Engine Integration Challenge', () => {
         // Fulfilled calls should have correct scope envelope
         for (const item of fulfilled) {
           expect(item.value.toolScope).toBe('cross-repository-ast-mesh');
-          expect(item.value.isExhaustive).toBe(true);
+          expect(item.value.isExhaustive).toBe(false);
         }
 
         // Rejected calls should be aborted errors
@@ -546,7 +546,7 @@ describe('Adversarial MCP Fleet & Engine Integration Challenge', () => {
   });
 
   describe('4. Scope Envelopes & Degradation Hints via toolRuntime', () => {
-    it('sets exhaustive: true and correct scope on successful fleet tool execution', async () => {
+    it('preserves scope and keeps unverified mesh coverage non-exhaustive', async () => {
       const fleetTests = [
         { tool: 'ct_impact', args: { target: 'routes' }, expectedScope: 'cross-repository-ast-mesh' },
         { tool: 'ct_mesh_query', args: { query: 'CoreRouter' }, expectedScope: 'cross-repository-ast-mesh' },
@@ -574,7 +574,7 @@ describe('Adversarial MCP Fleet & Engine Integration Challenge', () => {
         try {
           const res = await runReadOnlyTool(tool, args, baseContext());
           expect(res.toolScope).toBe(expectedScope);
-          expect(res.isExhaustive).toBe(true);
+          expect(res.isExhaustive).toBe(expectedScope !== 'cross-repository-ast-mesh');
           expect(res.toolOutput).toContain("execution result:");
           expect(res.toolOutput).toContain(tool);
         } finally {

@@ -176,7 +176,7 @@ export function createTriggerReviewTool(deps: TriggerReviewDependencies = {}) {
             effectiveConfig: { config: resolved.prepared.config, transport: resolved.prepared.transport },
             effectivePolicy: {
               central: {
-                schema: 'exampleorg.review-policy.v1',
+                schema: 'review-yeti.review-policy.v1',
                 review_yeti: {
                   personas: (resolved.prepared.expectedPersonaIds || []).join(','),
                   budget: { max_investigation_turns: resolved.prepared.config?.default_max_turns || 15 },

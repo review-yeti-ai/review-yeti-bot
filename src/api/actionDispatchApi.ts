@@ -42,8 +42,7 @@ import { createIncrementalBaseHandler } from './incrementalBaseRoute';
 import { createIncompleteP2RecoveryHandler, type IncompleteP2RecoveryQueryable } from './incompleteP2RecoveryRoute';
 import type { VerdictCacheBaseLookup } from '../persistence/verdictCacheSource';
 import { createVerdictCacheBaseHandler } from './verdictCacheBaseRoute';
-import { createReviewExecutionCheckpointHandler } from './reviewExecutionCheckpointRoute';
-import type { Queryable as ReviewCheckpointQueryable } from '../persistence/incrementalPriorReview';
+import { createReviewExecutionCheckpointHandler, type CheckpointDatabase } from './reviewExecutionCheckpointRoute';
 
 
 export interface ActionOidcVerifier {
@@ -79,7 +78,7 @@ export interface ActionDispatchRouterOptions {
   /** REL-1085: the stored record a worker's verdict cache may plan from. */
   verdictCacheBase?: VerdictCacheBaseLookup;
   /** Durable exact-head task progress for graceful timeout/resume. */
-  reviewCheckpoint?: ReviewCheckpointQueryable;
+  reviewCheckpoint?: CheckpointDatabase;
   now?: () => number;
 }
 

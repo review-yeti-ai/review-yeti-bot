@@ -1,5 +1,6 @@
 import { constantTimeDigestEqual } from '../utils/constantTimeDigest';
 import { deriveReviewGateExternalId, REVIEW_GATE_CHECK_NAME } from '../review/reviewCheckIdentity';
+import { canonicalJson, sha256 } from '../review/reviewCore';
 import {
   MAX_INCOMPLETE_P2_RECOVERY_BYTES,
   MAX_INCOMPLETE_P2_RECOVERY_FINDINGS,
@@ -14,7 +15,11 @@ import {
 import {
   MAX_INCOMPLETE_P2_RECOVERY_EXECUTION_ATTEMPT,
 } from '../review/incompleteP2RecoveryLimits';
-import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from '../review/incompleteRosterSummary';
+import {
+  formatIncompleteRosterGateSummary,
+  parseGracefulComposedSummary,
+  parseIncompleteRosterSummary,
+} from '../review/incompleteRosterSummary';
 import {
   REVIEW_WORKER_APP_SLUG,
   validatePersistedLegacyIncompleteP2RecoveryEvidence,
@@ -29,6 +34,7 @@ import {
   parseWorkerReviewCompletion,
   workerReviewCompletionDigest,
 } from '../review/workerReviewCompletion';
+import { parseReviewExecutionCheckpoint } from '../review/reviewExecutionCheckpoint';
 
 export interface IncompleteP2RecoveryQueryable {
   query(sql: string, values?: unknown[]): Promise<{ rows: any[] }>;
@@ -47,6 +53,8 @@ export interface IncompleteP2RecoveryLookupInput {
   recoveryEvidence?: ReviewGenerationRecoveryEvidence[];
   /** Distinguishes an explicit candidate from ordinary fail-closed probing. */
   incompleteP2Recovery?: true;
+  /** Internal service mode derived from the immutable graceful-composed marker. */
+  gracefulComposedContinuation?: true;
   /** Stored admission marker. Required only for the narrowly scoped persisted
    * legacy receipt path when the latest P2 proof lacks workerStartedAt. */
   expectedContextDigest?: string;
@@ -82,7 +90,11 @@ function isFailedGatePublicationState(row: Record<string, any>, allowHistoricalC
       && row.gate_current_attempt === false);
 }
 
-function recoveryRequest(input: IncompleteP2RecoveryLookupInput, candidate: boolean): ReviewGenerationRecoveryRequest {
+function recoveryRequest(
+  input: IncompleteP2RecoveryLookupInput,
+  candidate: boolean,
+  gracefulComposedContinuation = false,
+): ReviewGenerationRecoveryRequest {
   return {
     owner: input.identity.owner,
     repo: input.identity.repo,
@@ -91,19 +103,48 @@ function recoveryRequest(input: IncompleteP2RecoveryLookupInput, candidate: bool
     expectedGeneration: input.executionAttempt,
     expectedAppId: input.expectedAppId,
     ...(candidate ? { incompleteP2Recovery: true } : {}),
+    ...(gracefulComposedContinuation ? { gracefulComposedContinuation: true as const } : {}),
   };
 }
 
-interface WorkerSummaryCounts { canonical: number; raw: number; expected: number; completed: number }
+interface WorkerSummaryCounts {
+  canonical: number;
+  raw: number;
+  expected: number;
+  completed: number;
+  archivedBlockingCount: number;
+  validationSummary: string;
+}
+
+/** Recognize an archive candidate, not an admission. Historical P2-inclusive
+ * wording is accepted only by this reader; the original completion and Gate
+ * must authenticate its counts before the projected summary is validated. */
+function archivedSummaryCandidate(summary: unknown, headSha: string) {
+  if (typeof summary !== 'string') return null;
+  const historical = /^Findings: ([0-9]+) \(blocking P0\/P1\/P2: ([0-9]+); ([0-9]+) raw persona finding\(s\) before clustering\)\.$/mu.exec(summary);
+  let validationSummary = summary;
+  let archivedBlockingCount = 0;
+  if (historical) {
+    const canonical = Number(historical[1]);
+    archivedBlockingCount = Number(historical[2]);
+    if (!Number.isSafeInteger(archivedBlockingCount) || archivedBlockingCount !== canonical) return null;
+    validationSummary = summary.replace(historical[0],
+      `Findings: ${historical[1]} (blocking P0/P1: 0; ${historical[3]} raw persona finding(s) before clustering).`);
+  }
+  const counts = parseIncompleteRosterSummary(validationSummary, headSha)
+    ?? parseGracefulComposedSummary(validationSummary, headSha);
+  return counts ? { counts, archivedBlockingCount, validationSummary } : null;
+}
 
 function workerSummaryCounts(summary: unknown, headSha: string): WorkerSummaryCounts | null {
-  const counts = parseIncompleteRosterSummary(summary, headSha);
-  if (!counts) return null;
+  const candidate = archivedSummaryCandidate(summary, headSha);
+  if (!candidate) return null;
+  const { counts, archivedBlockingCount, validationSummary } = candidate;
   const { canonicalFindingCount: canonical, rawFindingCount: raw,
     expectedLanes: expected, completedLanes: completed } = counts;
   if (![canonical, raw].every(Number.isSafeInteger)
     || canonical < 0 || raw < canonical || raw > MAX_INCOMPLETE_P2_RECOVERY_FINDINGS) return null;
-  return { canonical, raw, expected, completed };
+  return { canonical, raw, expected, completed, archivedBlockingCount, validationSummary };
 }
 
 function isZeroFindingIncompleteSummary(summary: unknown, headSha: string): boolean {
@@ -310,7 +351,8 @@ function selectedGateCheck(
 ): Record<string, any> {
   const source = proof.legacyIncompleteRoster;
   if (!source) refuse();
-  const request = recoveryRequest(input, true);
+  const graceful = proof.title === 'Review Yeti: INCOMPLETE (partial evidence published)';
+  const request = recoveryRequest(input, !graceful, graceful);
   const selected = selectIncompleteRecoveryGate(request, source);
   if (!isRecord(selected)) refuse();
   return selected;
@@ -460,21 +502,37 @@ export async function loadIncompleteP2RecoveryContext(
   const run = runResult.rows[0];
   if (!run) refuse();
   const identity = validateRunIdentity(run, input);
+  const runArtifacts = jsonValue(run.artifacts);
+  const gracefulMarker = isRecord(runArtifacts) ? runArtifacts.graceful_composed_p2_recovery_digest : undefined;
+  const persistedGracefulContinuation = input.expectedContextDigest !== undefined
+    && typeof gracefulMarker === 'string' && DIGEST.test(gracefulMarker)
+    && constantTimeDigestEqual(gracefulMarker, input.expectedContextDigest);
+  const gracefulComposedContinuation = input.gracefulComposedContinuation === true || persistedGracefulContinuation;
+  if (input.gracefulComposedContinuation === true && input.incompleteP2Recovery === true) refuse();
+  if (gracefulComposedContinuation
+    && (!isRecord(runArtifacts) || runArtifacts.review_engine !== 'composed')) refuse();
 
   const recoveryEvidence = input.recoveryEvidence
     ? input.recoveryEvidence
     : await readPersistedRecoveryEvidence(queryable, input);
   if (!recoveryEvidence) {
-    if (input.incompleteP2Recovery === true) refuse();
+    if (input.incompleteP2Recovery === true || gracefulComposedContinuation) refuse();
     return null;
   }
   if (!Array.isArray(recoveryEvidence) || recoveryEvidence.length !== input.executionAttempt - 1) refuse();
   const p2ProofFlags = recoveryEvidence.map((proof) => proofHasP2(proof.legacyIncompleteRoster, identity.headSha));
+  if (gracefulComposedContinuation) {
+    if (input.executionAttempt !== 2 || recoveryEvidence.length !== 1
+      || recoveryEvidence[0].title !== 'Review Yeti: INCOMPLETE (partial evidence published)'
+      || recoveryEvidence[0].legacyIncompleteRoster?.gracefulComposedPartial !== true
+      || !p2ProofFlags[0]) refuse();
+  }
   if (!p2ProofFlags.some(Boolean)) {
     if (input.incompleteP2Recovery === true) refuse();
     // Ordinary no-findings incomplete retries remain on the existing path.
     if (recoveryEvidence.some((proof) => proof.title === 'Review Yeti: BLOCK'
       && !isZeroFindingIncompleteSummary(proof.legacyIncompleteRoster?.workerSummary, identity.headSha))) refuse();
+    if (gracefulComposedContinuation) refuse();
     try {
       validateReviewGenerationRecoveryEvidence(recoveryRequest(input, false), recoveryEvidence);
     } catch { refuse(); }
@@ -504,7 +562,9 @@ export async function loadIncompleteP2RecoveryContext(
   // A P2 recovery chain may carry a zero-finding incomplete generation, but
   // every generation must be a validated incomplete-panel BLOCK so no other
   // failure class is accidentally folded into this context.
-  if (recoveryEvidenceForValidation.some((proof, index) => !p2ProofFlags[index]
+  if (gracefulComposedContinuation) {
+    if (recoveryEvidenceForValidation.some((proof) => proof.title !== 'Review Yeti: INCOMPLETE (partial evidence published)')) refuse();
+  } else if (recoveryEvidenceForValidation.some((proof, index) => !p2ProofFlags[index]
     && (proof.title !== 'Review Yeti: BLOCK'
       || !isZeroFindingIncompleteSummary(proof.legacyIncompleteRoster?.workerSummary, identity.headSha)))) refuse();
   const latestProofIndex = recoveryEvidenceForValidation.length - 1;
@@ -522,16 +582,26 @@ export async function loadIncompleteP2RecoveryContext(
     if (typeof storedMarker !== 'string' || !DIGEST.test(storedMarker)
       || !constantTimeDigestEqual(storedMarker, input.expectedContextDigest!)) refuse();
   }
-  try {
-    const request = recoveryRequest(input, true);
-    if (markerBoundLegacyStartOmission) {
-      validatePersistedLegacyIncompleteP2RecoveryEvidence(
-        request, recoveryEvidenceForValidation, input.expectedContextDigest!,
-      );
-    } else {
-      validateReviewGenerationRecoveryEvidence(request, recoveryEvidenceForValidation);
+
+
+  // Reject malformed App identity or lifetime boundaries before querying any
+  // completion archive. This is structural only: historical summary counts
+  // still gain authority exclusively from the source-bound checks below.
+  for (const [index, proof] of recoveryEvidenceForValidation.entries()) {
+    const roster = proof.legacyIncompleteRoster;
+    if (!roster) refuse();
+    selectedGateCheck(input, proof);
+    if (roster.workerStartedAt !== undefined) {
+      const started = Date.parse(roster.workerStartedAt);
+      const completed = Date.parse(roster.workerCompletedAt);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(roster.workerStartedAt)
+        || !Number.isFinite(started)
+        || new Date(started).toISOString().replace('.000Z', 'Z') !== roster.workerStartedAt
+        || started > completed) refuse();
+    } else if (index === latestProofIndex && !markerBoundLegacyStartOmission) {
+      refuse();
     }
-  } catch { refuse(); }
+  }
 
   const sourceRows = await queryable.query(`
     SELECT runs.run_id, runs.repository_id, runs.owner, runs.repo, runs.pr_number,
@@ -545,9 +615,16 @@ export async function loadIncompleteP2RecoveryContext(
            gate.desired_state AS gate_desired_state, gate.current_attempt AS gate_current_attempt,
            gate.coordinates AS gate_coordinates,
            gate.evidence AS gate_evidence, gate.decision AS gate_decision,
-           gate.worker_result_digest AS gate_worker_result_digest
+           gate.worker_result_digest AS gate_worker_result_digest,
+           checkpoints.execution_attempt AS checkpoint_execution_attempt,
+           checkpoints.revision AS checkpoint_revision,
+           checkpoints.head_sha AS checkpoint_head_sha,
+           checkpoints.config_digest AS checkpoint_config_digest,
+           checkpoints.payload AS checkpoint_payload,
+           checkpoints.byte_length AS checkpoint_byte_length
       FROM review_runs runs
       JOIN review_worker_completions completions ON completions.run_id = runs.run_id
+      LEFT JOIN review_execution_checkpoints checkpoints ON checkpoints.run_id = runs.run_id
       LEFT JOIN LATERAL (
         SELECT attempts.*
           FROM review_gate_attempts attempts
@@ -567,8 +644,10 @@ export async function loadIncompleteP2RecoveryContext(
     const row = sourceRows.rows[index];
     const sourceAttempt = index + 1;
     const proof = recoveryEvidenceForValidation[index];
+    const expectedSourceTitle = gracefulComposedContinuation
+      ? 'Review Yeti: INCOMPLETE (partial evidence published)' : 'Review Yeti: BLOCK';
     if (Number(row.source_execution_attempt) !== sourceAttempt
-      || proof.generation !== sourceAttempt || proof.title !== 'Review Yeti: BLOCK'
+      || proof.generation !== sourceAttempt || proof.title !== expectedSourceTitle
       || proof.conclusion !== 'failure' || proof.externalId !== `${input.runId}:a${sourceAttempt}`) refuse();
     const completion = parseWorkerReviewCompletion(jsonValue(row.payload));
     const completionDigest = workerReviewCompletionDigest(completion);
@@ -584,6 +663,87 @@ export async function loadIncompleteP2RecoveryContext(
     if (!counts) refuse();
     const gate = gateRecordForSource(row, input, proof, counts);
     if (completion.result.coverageComplete !== gate.evidence.coverageComplete) refuse();
+    if (gracefulComposedContinuation) {
+      const diagnostics = completion.result.failureDiagnostics;
+      if (proof.legacyIncompleteRoster?.gracefulComposedPartial !== true
+        || diagnostics?.reason !== 'review_evidence_deadline'
+        || diagnostics.recoverableIncompletePanel !== false
+        || completion.result.coverageComplete !== false || completion.result.quorumSatisfied !== false
+        || gate.evidence.reviewEngine !== 'composed'
+        || !Array.isArray(completion.result.taskPlan) || completion.result.taskPlan.length !== counts.expected
+        || completion.result.personas.length !== counts.completed) refuse();
+      const storedCheckpointReceipt = proof.legacyIncompleteRoster.gracefulCheckpointReceipt;
+      let checkpointReceipt: { revision: number; digest: string };
+      const checkpointShape = {
+        version: 'ReviewExecutionCheckpoint.v1' as const,
+        runId: input.runId,
+        repositoryId: input.repositoryId,
+        owner: identity.owner,
+        repo: identity.repo,
+        prNumber: identity.prNumber,
+        headSha: identity.headSha,
+        baseSha: identity.baseSha,
+        policyDigest: identity.policyDigest,
+        configDigest: identity.configDigest,
+        executionAttempt: sourceAttempt,
+        plan: completion.result.taskPlan,
+        completedTasks: completion.result.personas.map((persona) => ({ id: persona.id, findings: persona.findings })),
+      };
+      if (input.recoveryEvidence !== undefined) {
+        // First admission: prove the immutable completion is exactly the
+        // current durable checkpoint before the retry can be allocated.
+        const checkpoint = parseReviewExecutionCheckpoint(jsonValue(row.checkpoint_payload));
+        if (Number(row.checkpoint_execution_attempt) !== sourceAttempt
+          || Number(row.checkpoint_revision) <= 0
+          || row.checkpoint_head_sha !== identity.headSha
+          || row.checkpoint_config_digest !== identity.configDigest
+          || !Number.isSafeInteger(Number(row.checkpoint_byte_length))
+          || Number(row.checkpoint_byte_length) <= 0
+          || checkpoint.runId !== input.runId || checkpoint.executionAttempt !== sourceAttempt
+          || checkpoint.repositoryId !== input.repositoryId || checkpoint.owner !== identity.owner
+          || checkpoint.repo !== identity.repo || checkpoint.prNumber !== identity.prNumber
+          || checkpoint.headSha !== identity.headSha || checkpoint.baseSha !== identity.baseSha
+          || checkpoint.policyDigest !== identity.policyDigest || checkpoint.configDigest !== identity.configDigest
+          || canonicalJson(checkpoint.plan) !== canonicalJson(completion.result.taskPlan)
+          || checkpoint.completedTasks.length !== counts.completed
+          || (checkpoint.satisfiedFindingRecheckIds?.length ?? 0) !== 0) refuse();
+        // Concurrent tasks enter the checkpoint in completion order; immutable
+        // closeout personas use plan order. Bind the same task evidence by id,
+        // retaining exact findings and rejecting duplicate or missing members.
+        const completionOrder = new Map(checkpointShape.completedTasks.map((task, index) => [task.id, index]));
+        if (completionOrder.size !== counts.completed
+          || checkpoint.completedTasks.some((task) => !completionOrder.has(task.id))) refuse();
+        const completedTasks = [...checkpoint.completedTasks].sort((left, right) =>
+          completionOrder.get(left.id)! - completionOrder.get(right.id)!);
+        if (canonicalJson(completedTasks) !== canonicalJson(checkpointShape.completedTasks)) refuse();
+        // Receipt reconstruction must use the same order, while preserving the
+        // deployed checkpoint's optional explicit empty recheck-receipt field.
+        checkpointReceipt = { revision: checkpoint.revision,
+          digest: sha256(canonicalJson({ ...checkpoint, completedTasks })) };
+      } else {
+        // The attempt-2 worker legitimately replaces the single latest-checkpoint
+        // row. Reconstruct the admitted a1 checkpoint from its immutable
+        // completion and compare it with the receipt committed atomically with
+        // the context marker at admission.
+        if (!isRecord(storedCheckpointReceipt)
+          || !Number.isSafeInteger(storedCheckpointReceipt.revision) || Number(storedCheckpointReceipt.revision) <= 0
+          || typeof storedCheckpointReceipt.digest !== 'string' || !DIGEST.test(storedCheckpointReceipt.digest)) refuse();
+        const checkpoint = parseReviewExecutionCheckpoint({
+          ...checkpointShape, revision: Number(storedCheckpointReceipt.revision),
+        });
+        let digest = sha256(canonicalJson(checkpoint));
+        if (!constantTimeDigestEqual(digest, storedCheckpointReceipt.digest)) {
+          // Older checkpoints omit this optional field; deployed workers also
+          // emit an explicit empty list. Both forms remain hash-bound. No
+          // nonempty receipt is invented from the immutable completion.
+          digest = sha256(canonicalJson({ ...checkpoint, satisfiedFindingRecheckIds: [] }));
+          if (!constantTimeDigestEqual(digest, storedCheckpointReceipt.digest)) refuse();
+        }
+        checkpointReceipt = { revision: checkpoint.revision, digest };
+      }
+      (proof.legacyIncompleteRoster as NonNullable<typeof proof.legacyIncompleteRoster>)
+        .gracefulCheckpointReceipt = checkpointReceipt;
+    }
     const canonical = deriveStoredCompletionVerdict(completion.result, {
       expectedLanes: counts.expected,
       coverageComplete: gate.evidence.coverageComplete,
@@ -595,7 +755,7 @@ export async function loadIncompleteP2RecoveryContext(
       || canonical.metrics.totalFindings !== counts.canonical
       || canonical.metrics.rawFindingCount !== counts.raw
       || (completion.result.findingCount !== undefined && completion.result.findingCount !== counts.canonical)
-      || (completion.result.blockingFindingCount !== undefined && completion.result.blockingFindingCount !== 0)) refuse();
+      || (completion.result.blockingFindingCount !== undefined && completion.result.blockingFindingCount !== counts.archivedBlockingCount)) refuse();
     const source: IncompleteP2RecoverySource = {
       executionAttempt: sourceAttempt,
       workerResultDigest: completionDigest,
@@ -603,6 +763,8 @@ export async function loadIncompleteP2RecoveryContext(
       gateCheckId: gate.checkId,
       rawFindingCount: counts.raw,
       canonicalFindingCount: counts.canonical,
+      ...(gracefulComposedContinuation
+        ? { gracefulCheckpointReceipt: proof.legacyIncompleteRoster?.gracefulCheckpointReceipt } : {}),
     };
     sources.push(source);
     findings.push(...preservedFindingsForSource(completion, canonical, source));
@@ -610,10 +772,31 @@ export async function loadIncompleteP2RecoveryContext(
   }
   if (findings.length === 0) refuse();
 
+  // Only after authenticating every original payload, digest, failed Gate and
+  // P2-only count do we project historical wording for the current validator.
+  // This copy is never stored, hashed as source evidence, or returned as archive.
+  const authenticatedValidationEvidence = recoveryEvidenceForValidation.map((proof) => {
+    const archived = proof.legacyIncompleteRoster;
+    const counts = workerSummaryCounts(archived?.workerSummary, identity.headSha);
+    if (!archived || !counts) refuse();
+    return { ...proof, legacyIncompleteRoster: { ...archived, workerSummary: counts.validationSummary } };
+  });
+  try {
+    const request = recoveryRequest(input, !gracefulComposedContinuation, gracefulComposedContinuation);
+    if (markerBoundLegacyStartOmission) {
+      validatePersistedLegacyIncompleteP2RecoveryEvidence(
+        request, authenticatedValidationEvidence, input.expectedContextDigest!,
+      );
+    } else {
+      validateReviewGenerationRecoveryEvidence(request, authenticatedValidationEvidence);
+    }
+  } catch { refuse(); }
+
   try {
     const context = createIncompleteP2RecoveryContext({
       version: 'IncompleteP2RecoveryContext.v1',
       ...identity,
+      ...(gracefulComposedContinuation ? { gracefulComposedContinuation: true as const } : {}),
       sources,
       findings,
     });
@@ -636,7 +819,11 @@ export async function requiredIncompleteP2RecoveryDigest(
   if (executionAttempt === 1) return null;
   if (!Number.isSafeInteger(executionAttempt) || executionAttempt < 1) refuse();
   const value = jsonValue(artifacts);
-  const marker = isRecord(value) ? value.incomplete_p2_recovery_digest : undefined;
+  const p2Marker = isRecord(value) ? value.incomplete_p2_recovery_digest : undefined;
+  const gracefulMarker = isRecord(value) ? value.graceful_composed_p2_recovery_digest : undefined;
+  if (p2Marker !== undefined && gracefulMarker !== undefined) refuse();
+  const marker = p2Marker ?? gracefulMarker;
+  const gracefulComposedContinuation = gracefulMarker !== undefined;
   const row = (await queryable.query(`
     SELECT repository_id, owner, repo, pr_number, head_sha, base_sha,
            effective_policy_digest, effective_config_digest, authoritative_gate_app_id
@@ -661,6 +848,7 @@ export async function requiredIncompleteP2RecoveryDigest(
     },
     policyDigest: row.effective_policy_digest,
     expectedAppId: Number(row.authoritative_gate_app_id),
+    ...(gracefulComposedContinuation ? { gracefulComposedContinuation: true as const } : {}),
     ...(typeof marker === 'string' && DIGEST.test(marker) ? { expectedContextDigest: marker } : {}),
   });
   if (!context) {

@@ -21,8 +21,19 @@ export const REVIEW_REFRESH_ACTION = Object.freeze({
   identifier: 'review-yeti/refresh',
 });
 
-/** Exact reusable workflow identity authorized to forward a persisted refresh. */
-export const CENTRAL_REVIEW_REPOSITORY = 'exampleorg/example-review-actions';
+/**
+ * Exact reusable workflow identity authorized to forward a persisted refresh.
+ *
+ * Deployment configuration, not code: REVIEW_YETI_CENTRAL_REPOSITORY is the `owner/repo` of the central
+ * review-actions repository this deployment trusts. There is deliberately no default; when it is unset
+ * the value is the empty string, which no GitHub claim can equal, so every central admission path fails
+ * closed. Read once at import, like every other deployment setting.
+ */
+export const CENTRAL_REVIEW_REPOSITORY = (process.env.REVIEW_YETI_CENTRAL_REPOSITORY ?? '').trim();
+/** Owner of the central repository; targets owned by it are central targets. Empty when unconfigured. */
+export const CENTRAL_REVIEW_OWNER = CENTRAL_REVIEW_REPOSITORY.split('/')[0] ?? '';
+/** True only when a central repository is configured. */
+export const CENTRAL_REVIEW_CONFIGURED = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(CENTRAL_REVIEW_REPOSITORY);
 /** Exact top-level receiver authorized to originate central review requests. */
 export const CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF =
   `${CENTRAL_REVIEW_REPOSITORY}/.github/workflows/repository-dispatch.yml@refs/heads/main`;
@@ -34,7 +45,8 @@ export function isCentralReviewDispatchIdentity(
   caller: { workflowRef?: string },
   claims: { workflow_ref?: string; job_workflow_ref?: string },
 ): boolean {
-  return claims.workflow_ref === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
+  return CENTRAL_REVIEW_CONFIGURED
+    && claims.workflow_ref === CENTRAL_REVIEW_DISPATCH_WORKFLOW_REF
     && claims.job_workflow_ref === CENTRAL_REVIEW_WORKFLOW_REF
     && caller.workflowRef === claims.workflow_ref;
 }

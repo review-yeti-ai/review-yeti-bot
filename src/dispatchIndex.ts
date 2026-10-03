@@ -106,6 +106,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
         expectedGeneration: input.expectedGeneration,
         expectedAppId: input.authoritativeGate.expectedAppId,
         ...(input.incompleteP2Recovery === true ? { incompleteP2Recovery: true as const } : {}),
+        ...(input.gracefulComposedContinuation === true ? { gracefulComposedContinuation: true as const } : {}),
       });
     } } : {}),
     requireExpectedGeneration: dispatchConfig.requireExpectedGeneration,

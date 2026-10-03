@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Adversarial empirical tests for operator emptyDir storage volume builder and input validation.
 */

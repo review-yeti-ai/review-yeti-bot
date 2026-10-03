@@ -53,11 +53,11 @@ describe('Shadcn & Layout Component Primitives (Milestone 1)', () => {
 
   it('renders Sidebar with full navigation links', () => {
     render(<Sidebar />);
-    expect(screen.getByText('ct-review-bot')).toBeDefined();
+    expect(screen.getByText('Review Yeti AI')).toBeDefined();
     expect(screen.getByText('Overview')).toBeDefined();
     expect(screen.getByText('Live Stream')).toBeDefined();
     expect(screen.getByText('Repositories')).toBeDefined();
-    expect(screen.getByText('Persona Editor')).toBeDefined();
+    expect(screen.getByText('Swarm Tasks & Policies')).toBeDefined();
     expect(screen.getByText('Integrations')).toBeDefined();
     expect(screen.getByText('GitHub App')).toBeDefined();
   });

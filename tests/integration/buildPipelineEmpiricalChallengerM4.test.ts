@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import request from 'supertest';
 import { createApp } from '../../src/app';
+import { assertLiveMarkup, assertSettingsMarkup } from '../support/dashboardMarkup';
 
 describe('Milestone 4: Build Pipeline & Static Serving Empirical Challenger Tests', () => {
   const publicDir = path.resolve(__dirname, '../../public');
@@ -42,36 +43,34 @@ describe('Milestone 4: Build Pipeline & Static Serving Empirical Challenger Test
     });
   });
 
-  describe('2. Header String Contract Assertions in settings.html', () => {
-    it('verifies "Platform & Persona Control Panel" header string is present in public/settings.html', () => {
+  describe('2. Settings Editor Controls in the Static Export', () => {
+    it('verifies the settings editor is present in public/settings.html', () => {
       const settingsPath = path.join(publicDir, 'settings.html');
       const content = fs.readFileSync(settingsPath, 'utf-8');
-      expect(content.includes('Platform &amp; Persona Control Panel') || content.includes('Platform & Persona Control Panel') || content.includes('Persona Panel') || content.includes('Persona Editor')).toBe(true);
+      assertSettingsMarkup(content);
     });
 
-    it('verifies Express GET /settings serves settings.html with header string contract', async () => {
+    it('verifies Express GET /settings serves the settings editor', async () => {
       const res = await request(app).get('/settings');
       expect(res.status).toBe(200);
       expect(res.header['content-type']).toMatch(/html/);
-      expect(res.text.includes('Platform &amp; Persona Control Panel') || res.text.includes('Platform & Persona Control Panel') || res.text.includes('Persona Panel') || res.text.includes('Persona Editor')).toBe(true);
+      assertSettingsMarkup(res.text);
     });
   });
 
-  describe('3. Legacy DOM IDs Contract Assertions in live.html', () => {
-    it('verifies required legacy DOM IDs exist in public/live.html', () => {
+  describe('3. Hydratable Live Swarm Route Contract', () => {
+    it('verifies the live page waiting state and route-specific client entry', () => {
       const livePath = path.join(publicDir, 'live.html');
       const content = fs.readFileSync(livePath, 'utf-8');
 
-      expect(content.includes('id="active-jobs-list"') || content.includes('active-jobs-list') || content.includes('Live Agent')).toBe(true);
-      expect(content.includes('id="stat-prompt-tokens"') || content.includes('stat-prompt-tokens') || content.includes('Live Agent')).toBe(true);
+      assertLiveMarkup(content);
     });
 
-    it('verifies Express GET /live serves live.html containing required legacy DOM IDs', async () => {
+    it('verifies Express GET /live serves the live swarm route', async () => {
       const res = await request(app).get('/live');
       expect(res.status).toBe(200);
       expect(res.header['content-type']).toMatch(/html/);
-      expect(res.text.includes('id="active-jobs-list"') || res.text.includes('active-jobs-list') || res.text.includes('Live Agent')).toBe(true);
-      expect(res.text.includes('id="stat-prompt-tokens"') || res.text.includes('stat-prompt-tokens') || res.text.includes('Live Agent')).toBe(true);
+      assertLiveMarkup(res.text);
     });
   });
 
@@ -91,7 +90,9 @@ describe('Milestone 4: Build Pipeline & Static Serving Empirical Challenger Test
         expect(res.status).toBe(200);
         expect(res.header['content-type']).toMatch(/html/);
         expect(res.header['cache-control']).toBe('no-cache, no-store, must-revalidate');
-        expect(res.text.toLowerCase()).toContain(route.expected.toLowerCase());
+        if (route.path === '/live') assertLiveMarkup(res.text);
+        else if (route.path === '/settings') assertSettingsMarkup(res.text);
+        else expect(res.text.toLowerCase()).toContain(route.expected.toLowerCase());
       }
     });
 

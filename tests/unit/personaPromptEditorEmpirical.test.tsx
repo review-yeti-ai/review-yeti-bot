@@ -245,10 +245,10 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
       render(<SettingsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/Control Panel/)).toBeDefined();
+        expect(screen.getByText(/Swarm Policies/)).toBeDefined();
       });
 
-      // Default selected persona is 'security'. The "Control Panel" heading above is
+      // Default selected persona is 'security'. The "Swarm Policies" heading above is
       // static JSX and is present on SettingsContent's very first synchronous render,
       // before the useEffect-driven loadPersonasData() -> fetchPersonas() promise has
       // settled. It is therefore not a reliable proxy for "the async persona fetch has
@@ -291,7 +291,7 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
       render(<SettingsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/Control Panel/)).toBeDefined();
+        expect(screen.getByText(/Swarm Policies/)).toBeDefined();
       });
 
       const personaIds: PersonaId[] = ['security', 'architecture', 'performance', 'quality', 'database'];
@@ -349,7 +349,7 @@ describe('Empirical Challenger 2 — Persona Prompt Editor Edge Cases & Stress H
       render(<SettingsPage />);
 
       await waitFor(() => {
-        expect(screen.getByText(/Control Panel/)).toBeDefined();
+        expect(screen.getByText(/Swarm Policies/)).toBeDefined();
       });
 
       const resetHeaderBtn = screen.getByRole('button', { name: /reset defaults/i });

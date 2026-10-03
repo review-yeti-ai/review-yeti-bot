@@ -1,3 +1,4 @@
+import { MAX_PINNED_SOURCE_BYTES } from '../utils/sourceLimits';
 import { CommentPublisher, FetchImplementation, PublishReviewRequest, PublishResult } from './commentPublisher';
 import { logger } from '../utils/logger';
 import { repositoryVisibilityFrom, RepositoryVisibility } from '../review/repositoryVisibility';
@@ -16,7 +17,7 @@ import type { DelegatedFailureReason } from '../review/workerCompletion';
 import { createBoundedGitHubJsonClient } from './boundedGitHubJson';
 import { withGitHubRetry, type GitHubRetryOptions } from './githubRetry';
 import {
-  evaluateReviewGenerationRecoveryLedger,
+  evaluateFetchedReviewGenerationRecoveryLedger,
   REVIEW_WORKER_CHECK_NAME,
   ReviewGenerationRecoveryLedgerError,
   validateReviewGenerationRecoveryRequest,
@@ -66,10 +67,8 @@ export {
  * cannot become a generic legacy fallback. Additional historical rows require
  * their own independently reviewed immutable receipt.
  */
-const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT = {
+const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT_FIELDS = {
   runId: 'run_b7c5c8f6d4e2fdfaa52f27d3f96bb5ce',
-  owner: 'exampleorg',
-  repo: 'example-api',
   prNumber: 4972,
   headSha: '01cc3c3070ae025c9a9bb8176c92106c30488151',
   executionAttempt: 1,
@@ -83,11 +82,22 @@ const HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT = {
   completedAt: '2026-09-10T03:38:15Z',
 } as const;
 
+/**
+ * The receipt's `owner/repo` is deployment configuration (REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY),
+ * not code: it is the identity of one durable production row. When unset the owner and repo are empty,
+ * no persisted run can equal them, and the receipt can never match (an exact-ID check without an exact
+ * run still fails closed below).
+ */
+function historicalEmptyExternalIdReceipt() {
+  const [owner = '', repo = ''] = (process.env.REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY ?? '').trim().split('/');
+  return { ...HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT_FIELDS, owner, repo };
+}
+
 function matchesHistoricalEmptyIdentityRun(
   run: AbandonedPublishingRun,
   publisherAppId: number,
 ): boolean {
-  const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+  const receipt = historicalEmptyExternalIdReceipt();
   return run.runId === receipt.runId
     && run.owner === receipt.owner
     && run.repo === receipt.repo
@@ -101,7 +111,7 @@ function matchesHistoricalEmptyIdentityRun(
 }
 
 function matchesHistoricalEmptyIdentityCheck(check: any): boolean {
-  const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+  const receipt = historicalEmptyExternalIdReceipt();
   return check?.id === receipt.checkId
     && check.name === receipt.checkName
     && check.head_sha === receipt.headSha
@@ -240,6 +250,46 @@ export interface CompleteCheckOptions {
   annotations?: CheckRunAnnotation[];
 }
 
+export interface GitHubPullRequestItem {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  draft: boolean;
+  author: {
+    login: string;
+    avatarUrl: string;
+  };
+  headSha: string;
+  headBranch: string;
+  baseBranch: string;
+  createdAt: string;
+  updatedAt: string;
+  body?: string;
+  repositoryId?: number;
+}
+
+export interface ListPullRequestsOptions {
+  state?: 'open' | 'closed' | 'all';
+  per_page?: number;
+  page?: number;
+  sort?: 'created' | 'updated' | 'popularity' | 'long-running';
+  direction?: 'asc' | 'desc';
+}
+
+export interface GitHubInstallationRepositoryItem {
+  id: number;
+  name: string;
+  full_name: string;
+  owner: {
+    login: string;
+    id: number;
+    avatar_url: string;
+  };
+  private: boolean;
+  default_branch: string;
+  description?: string;
+}
+
 class GitHubApiResponseError extends Error {
   readonly name = 'GitHubApiResponseError';
 
@@ -353,10 +403,11 @@ export class GitHubInstallationClient {
       const output = row !== null && typeof row === 'object'
         ? (row as Record<string, unknown>).output : undefined;
       return output !== null && typeof output === 'object'
-        && (output as Record<string, unknown>).title === 'Review Yeti: BLOCK';
+        && ['Review Yeti: BLOCK', 'Review Yeti: INCOMPLETE (partial evidence published)']
+          .includes(String((output as Record<string, unknown>).title));
     })
       ? await this.readRecoveryCheckInventory(input, REVIEW_GATE_CHECK_NAME) : [];
-    return evaluateReviewGenerationRecoveryLedger(input, rows, gateChecks);
+    return evaluateFetchedReviewGenerationRecoveryLedger(input, rows, gateChecks);
   }
 
   private async readRecoveryCheckInventory(
@@ -420,6 +471,81 @@ export class GitHubInstallationClient {
       title: String(data.title || ''),
       body: String(data.body || ''),
       ...(Number.isSafeInteger(repositoryId) && repositoryId > 0 ? { repositoryId } : {}),
+    };
+  }
+
+  /**
+   * Queries pull requests for a repository with bounded pagination.
+   */
+  async listPullRequests(
+    owner: string,
+    repo: string,
+    options: ListPullRequestsOptions = {}
+  ): Promise<GitHubPullRequestItem[]> {
+    const query = new URLSearchParams({
+      state: options.state || 'open',
+      per_page: String(Math.min(options.per_page || 30, 100)),
+      page: String(options.page || 1),
+      ...(options.sort ? { sort: options.sort } : {}),
+      ...(options.direction ? { direction: options.direction } : {}),
+    });
+
+    const data = await this.request(
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?${query}`
+    );
+
+    if (!Array.isArray(data)) {
+      throw new Error('GitHub API pulls response is not an array');
+    }
+
+    return data.map((pr: any) => ({
+      number: Number(pr.number),
+      title: String(pr.title || ''),
+      state: pr.state === 'closed' ? 'closed' : 'open',
+      draft: Boolean(pr.draft),
+      author: {
+        login: String(pr.user?.login || 'unknown'),
+        avatarUrl: String(pr.user?.avatar_url || ''),
+      },
+      headSha: String(pr.head?.sha || ''),
+      headBranch: String(pr.head?.ref || ''),
+      baseBranch: String(pr.base?.ref || ''),
+      createdAt: String(pr.created_at || ''),
+      updatedAt: String(pr.updated_at || ''),
+      body: typeof pr.body === 'string' ? pr.body : undefined,
+      repositoryId: Number(pr.base?.repo?.id) || undefined,
+    }));
+  }
+
+  /**
+   * Lists repositories accessible to this GitHub App installation.
+   */
+  async listInstallationRepositories(
+    options: { per_page?: number; page?: number } = {}
+  ): Promise<{ total_count: number; repositories: GitHubInstallationRepositoryItem[] }> {
+    const query = new URLSearchParams({
+      per_page: String(Math.min(options.per_page || 100, 100)),
+      page: String(options.page || 1),
+    });
+
+    const data = await this.request(`/installation/repositories?${query}`);
+    const repos = Array.isArray(data?.repositories) ? data.repositories : [];
+
+    return {
+      total_count: Number(data?.total_count || repos.length),
+      repositories: repos.map((repo: any) => ({
+        id: Number(repo.id),
+        name: String(repo.name || ''),
+        full_name: String(repo.full_name || ''),
+        owner: {
+          login: String(repo.owner?.login || ''),
+          id: Number(repo.owner?.id),
+          avatar_url: String(repo.owner?.avatar_url || ''),
+        },
+        private: Boolean(repo.private),
+        default_branch: String(repo.default_branch || 'main'),
+        description: typeof repo.description === 'string' ? repo.description : undefined,
+      })),
     };
   }
 
@@ -766,7 +892,7 @@ export class GitHubInstallationClient {
         const candidates = checks.filter(exactAttempt);
         if (candidates.length > 1) throw new Error('ambiguous abandoned check');
         if (candidates.length === 1) return reconcileCandidate(candidates[0]);
-        const receipt = HISTORICAL_EMPTY_EXTERNAL_ID_RECEIPT;
+        const receipt = historicalEmptyExternalIdReceipt();
         const exactHistoricalRun = matchesHistoricalEmptyIdentityRun(run, publisherAppId);
         const historicalReceiptIdMatches = checks.filter((check) => check?.id === receipt.checkId);
         // The live head contains several publisher-owned checks from before
@@ -969,13 +1095,40 @@ export class GitHubInstallationClient {
     return files;
   }
 
+  /** Resolve the old side of a three-dot PR diff; the branch tip is not its old side. */
+  async getMergeBase(owner: string, repo: string, baseSha: string, headSha: string): Promise<string> {
+    if (![baseSha, headSha].every((sha) => /^[0-9a-f]{40}$/u.test(sha))) throw new Error('Invalid source identity');
+    const comparison = await this.request(`/repos/${owner}/${repo}/compare/${baseSha}...${headSha}?per_page=1`);
+    if (comparison?.base_commit?.sha !== baseSha || !/^[0-9a-f]{40}$/u.test(comparison?.merge_base_commit?.sha || '')) {
+      throw new Error('Merge-base source identity mismatch');
+    }
+    return comparison.merge_base_commit.sha;
+  }
+
   async getFileContent(owner: string, repo: string, path: string, ref?: string, options: { notFoundIsEmpty?: boolean } = {}): Promise<string | null> {
     try {
-      const url = `/repos/${owner}/${repo}/contents/${path}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
+      // A repository filename may contain query or fragment characters. It
+      // must never reinterpret the pinned ref or truncate the contents path.
+      const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+      const url = `/repos/${owner}/${repo}/contents/${encodedPath}` + (ref ? `?ref=${encodeURIComponent(ref)}` : '');
       const data = await this.request(url);
       if (data.encoding === 'base64' && typeof data.content === 'string') {
         return Buffer.from(data.content.replace(/\n/g, ''), 'base64').toString('utf8');
       }
+      // The contents endpoint omits inline bytes above 1 MiB. Fetch the exact
+      // blob it names, within the same admitted source bound, rather than return
+      // its empty placeholder as verified source.
+      if (data.encoding === 'none' && /^[0-9a-f]{40}$/u.test(data.sha || '')
+        && Number.isSafeInteger(data.size) && data.size <= MAX_PINNED_SOURCE_BYTES) {
+        const blob = await this.request(`/repos/${owner}/${repo}/git/blobs/${data.sha}`);
+        if (blob.sha !== data.sha || blob.encoding !== 'base64' || typeof blob.content !== 'string') {
+          throw new Error('Source blob identity mismatch');
+        }
+        const bytes = Buffer.from(blob.content.replace(/\n/g, ''), 'base64');
+        if (bytes.length !== data.size || bytes.length > MAX_PINNED_SOURCE_BYTES) throw new Error('Source blob size mismatch');
+        return bytes.toString('utf8');
+      }
+      if (data.encoding === 'none') return null;
       if (typeof data.content === 'string') {
         return data.content;
       }
@@ -1064,4 +1217,45 @@ export class GitHubInstallationClient {
     });
     return { number: data.number, html_url: data.html_url || `https://github.com/${options.owner}/${options.repo}/pull/${data.number}` };
   }
+}
+
+/**
+ * Top-level helper to list GitHub App installations using an App RS256 JWT.
+ */
+export async function listGitHubAppInstallations(
+  config: { appId: string; privateKey: string; baseUrl?: string },
+  fetchFn: typeof fetch = globalThis.fetch
+): Promise<Array<{ id: number; account: { login: string; id: number; avatarUrl: string; type: string }; appId: number }>> {
+  const { generateGitHubAppJwt } = await import('./appAuth');
+  const jwt = generateGitHubAppJwt(config.appId, config.privateKey);
+  const baseUrl = (config.baseUrl || 'https://api.github.com').replace(/\/+$/, '');
+
+  const response = await fetchFn(`${baseUrl}/app/installations?per_page=100`, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${jwt}`,
+      'User-Agent': 'ct-review-bot[bot]',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub App installations lookup failed HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  if (!Array.isArray(data)) {
+    throw new Error('GitHub App installations response is not an array');
+  }
+
+  return data.map((inst: any) => ({
+    id: Number(inst.id),
+    account: {
+      login: String(inst.account?.login || ''),
+      id: Number(inst.account?.id),
+      avatarUrl: String(inst.account?.avatar_url || ''),
+      type: String(inst.account?.type || 'Organization'),
+    },
+    appId: Number(inst.app_id),
+  }));
 }

@@ -19,7 +19,9 @@ import { REVIEW_CI_SCHEMA_SQL } from './reviewCiSchema';
 import { REVIEW_CI_CHECK_SCHEMA_SQL } from './reviewCiCheckSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from './reviewEventRepository';
 import { REVIEW_EVENT_V2_SCHEMA_SQL } from './reviewEventV2Repository';
-import { applySchemaOnce, withSchemaLockRetry } from './schemaMigrationGate';
+import { REVIEW_HITL_SCHEMA_SQL } from './reviewHitlSchema';
+import { REVIEW_ANALYTICS_SCHEMA_SQL } from './reviewAnalyticsSchema';
+import { applySchemaOnce, SCHEMA_DDL_LOCK_TIMEOUT, withSchemaLockRetry } from './schemaMigrationGate';
 import { LEGACY_APP_GATE_RECEIPT_BACKFILL_SQL } from './legacyAppGateReceiptPolicy';
 
 export const ADVISORY_LOCK_ID = 1029384;
@@ -110,7 +112,11 @@ export class PostgresStore {
     try {
       client = await pool.connect();
       await client.query('BEGIN');
-      
+
+      // Bound bootstrap serialization as well as DDL. The advisory lock can
+      // otherwise wait indefinitely before applySchemaOnce sets its timeout.
+      await client.query(`SET LOCAL lock_timeout = '${SCHEMA_DDL_LOCK_TIMEOUT}'`);
+
       // Acquire multi-pod advisory lock for schema migration and initialization
       await client.query('SELECT pg_advisory_xact_lock($1)', [ADVISORY_LOCK_ID]);
 
@@ -441,6 +447,8 @@ export class PostgresStore {
         REVIEW_CI_CHECK_SCHEMA_SQL,
         REVIEW_EVENT_SCHEMA_SQL,
         REVIEW_EVENT_V2_SCHEMA_SQL,
+        REVIEW_HITL_SCHEMA_SQL,
+        REVIEW_ANALYTICS_SCHEMA_SQL,
       ]);
 
       // 2. Check if database tables are empty and seed if initial startup

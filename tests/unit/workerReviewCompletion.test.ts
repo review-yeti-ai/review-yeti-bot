@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
   MAX_COMPLETION_BYTES,
@@ -74,6 +75,22 @@ function expectInvalid(result: ReturnType<typeof derive>, message: RegExp): void
 }
 
 describe('WorkerReviewCompletion.v1', () => {
+  it('accepts optional classification accounting without treating it as coverage or verdict authority', () => {
+    const input = completion();
+    input.result.deletionClassification = { version: 'deletion-classification.v1', digest: 'f'.repeat(64),
+      status: 'partial', totalFiles: 64, classifiedFiles: 40, unresolvedFiles: 24, totalGroups: 8 };
+    const parsed = parseWorkerReviewCompletion(input);
+    expect(derive(parsed)).toEqual(derive(completion()));
+    const incomplete = completion({ result: { ...input.result, coverageComplete: false, verdict: undefined } });
+    expect(derive(incomplete)).toMatchObject({ valid: true, evidence: { coverageComplete: false } });
+    expect(() => parseWorkerReviewCompletion({ ...input, result: { ...input.result, deletionClassification: {
+      ...input.result.deletionClassification, unresolvedFiles: 0,
+    } } })).toThrow();
+    expect(() => parseWorkerReviewCompletion({ ...input, result: { ...input.result, deletionClassification: {
+      ...input.result.deletionClassification, totalGroups: 65,
+    } } })).toThrow();
+  });
+
   it('validates composed task coverage and IDs from the trusted diff', () => {
     const taskPlan = [{ id: 'task-a', dimension: 'architecture' as const, paths: ['src/example.ts'],
       question: 'Could this change regress behavior?', rationale: 'The source changed.' }];
@@ -616,4 +633,19 @@ describe('WorkerReviewCompletion.v1', () => {
       }))).toThrow(/invalid WorkerReviewCompletion/u);
     });
   });
+});
+
+it('native completion parsing forwards optional observations without approving prepared ERROR personas',()=>{
+  const operationalTelemetry=createPublishingProgress({runId:'run-native',executionAttempt:2},{sink:()=>{}}).snapshot!()!;
+  const body=completion({result:{version:'WorkerReviewResult.v1',completedAt:'2026-09-09T12:00:00.000Z',
+    personas:[{id:'security',decision:'ERROR',status:'ERROR',errorClass:'timeout',findings:[]}],coverageComplete:false,quorumSatisfied:false,
+    failureDiagnostics:{reason:'worker_terminal_deadline_exceeded',logTail:'timeout',operationalTelemetry}}});
+  const parsed=parseWorkerReviewCompletion(body);
+  expect(parsed.result.failureDiagnostics?.operationalTelemetry).toEqual(operationalTelemetry);
+  expect(parsed.result.coverageComplete).toBe(false); expect(parsed.result.quorumSatisfied).toBe(false);
+  expect(parsed.result.failureDiagnostics).not.toHaveProperty('recoverableIncompletePanel');
+  expect(parsed.result.failureDiagnostics?.operationalTelemetry?.providerCalls.started).toBe(0);
+  const derived=derive(parsed);expect(derived.valid).toBe(true);
+  if(derived.valid){expect(derived.evidence.verdict).not.toBe('SHIP');expect(derived.evidence.quorumSatisfied).toBe(false);}
+  expect(()=>parseWorkerReviewCompletion({...body,result:{...body.result,failureDiagnostics:{...body.result.failureDiagnostics,operationalTelemetry:{...operationalTelemetry,prompt:'SECRET'}}}})).toThrow();
 });

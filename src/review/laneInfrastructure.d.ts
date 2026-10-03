@@ -35,6 +35,7 @@ export function laneProviderStatus(error: unknown): number | undefined;
 export const MAX_CHECK_RUN_TITLE_CHARACTERS: number;
 export const INCOMPLETE_INFRASTRUCTURE_TITLE_PREFIX: 'Review Yeti: INCOMPLETE — infrastructure (';
 export const MAX_INCOMPLETE_INFRASTRUCTURE_DETAIL_CHARACTERS: number;
+export function formatIncompleteInfrastructureDetail(lanes: readonly IncompleteLaneDescription[]): string;
 export function formatIncompleteInfrastructureTitle(
   detail: string,
   retry?: { nextAttempt: number; maxAttempts: number },

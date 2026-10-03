@@ -1,12 +1,14 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
-import type { WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
+import { WORKER_PANEL_RESERVE_MS, type WorkerPanelDeadlineBudget } from '../../src/config/workerTerminalDeadline';
+import * as publishingProgress from '../../src/telemetry/publishingProgress';
 import { preparePublishingPolicy } from '../../src/review/preparedPublishingPolicy';
 import { HttpWorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import type { JevAskRequest, JevOutcome } from '../../src/gateway/jevClient';
-import { MAX_PERSONAS, MAX_TEXT_CHARACTERS } from '../../src/review/workerReviewCompletion';
+import { MAX_PERSONAS, MAX_TEXT_CHARACTERS, deriveCanonicalWorkerReviewEvidence } from '../../src/review/workerReviewCompletion';
+import { evaluateReviewGate } from '../../src/review/reviewGatePolicy';
 import {
   classifyFailure,
   createOpenAIPublishingConfig,
@@ -634,7 +636,7 @@ describe('runPublishingReviewWorker', () => {
     expect(order).toEqual(['check', 'callback']);
     expect(cc.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       checkId: 4242, conclusion: 'failure',
-      title: 'Review Yeti: INCOMPLETE — infrastructure (lanes arch-lane 502, test-lane 502 failed); retrying as attempt 3 of 3',
+      title: 'Review Yeti: INCOMPLETE — infrastructure (automatic retry NOT CONFIRMED; lanes arch-lane 502, test-lane 502 failed)',
       summary: expect.stringContaining('expected lanes=3; completed lanes=1; failed lanes=2'),
     }));
     expect(completion.reportTerminalFailure).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
@@ -650,9 +652,18 @@ describe('runPublishingReviewWorker', () => {
     // Pin the publish call first so the negative assertion below cannot pass
     // vacuously against an absent summary.
     expect(cc.completeCheck).toHaveBeenCalledTimes(1);
-    const publishedSummary = ((cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>).summary;
+    const publishedCheck = (cc.completeCheck.mock.calls[0] as unknown as unknown[])[0] as Record<string, unknown>;
+    const publishedSummary = publishedCheck.summary;
     expect(typeof publishedSummary).toBe('string');
+    expect(publishedSummary).toContain('Automatic retry is NOT CONFIRMED for execution attempt 2.');
+    expect(publishedSummary).toContain('The completion API acknowledgement confirms delivery only');
+    expect(publishedSummary).toContain('No next attempt or supersession is promised.');
     expect(publishedSummary as string).not.toContain('no further automatic retry');
+    expect(publishedSummary as string).not.toContain('retrying as attempt');
+    expect(publishedSummary as string).not.toContain('A retry has been scheduled');
+    expect(publishedSummary as string).not.toContain('The next attempt is scheduled');
+    expect(JSON.stringify([publishedCheck, completion.reportTerminalFailure.mock.calls[0]]))
+      .not.toMatch(/"(?:retryScheduled|retryAfterExecutionAttempt|nextAttempt)"\s*:/);
     expect(JSON.stringify([receipt, cc.completeCheck.mock.calls, completion.reportTerminalFailure.mock.calls]))
       .not.toContain('do-not-publish');
   });
@@ -1457,10 +1468,14 @@ describe('runPublishingReviewWorker', () => {
     });
   });
 
-  it('reports the findings behind a self-published check as evidence, before the terminal callback, for both conclusions', async () => {
-    for (const [finding, conclusion] of [
-      [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }, 'failure'],
-      [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }, 'success'],
+  it('reports lane evidence before the terminal callback for blocking findings and clean success', async () => {
+    for (const { findings, conclusion, expectedDecision } of [
+      { findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }],
+        conclusion: 'failure', expectedDecision: 'FINDINGS' },
+      // P2 is advisory: it is reported as evidence but never fails the check.
+      { findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }],
+        conclusion: 'success', expectedDecision: 'FINDINGS' },
+      { findings: [], conclusion: 'success', expectedDecision: 'APPROVE' },
     ] as const) {
       const order: string[] = [];
       const completion = {
@@ -1474,7 +1489,7 @@ describe('runPublishingReviewWorker', () => {
         completion, checkClient: cc,
         panelRunner: vi.fn(async () => ({
           applicablePersonaIds: ['sec-lane'],
-          personas: [{ id: 'sec-lane', findings: [finding] }],
+          personas: [{ id: 'sec-lane', findings: [...findings] }],
           optionalFailures: [],
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict: 'SHIP' },
@@ -1487,8 +1502,8 @@ describe('runPublishingReviewWorker', () => {
       const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as Record<string, any>;
       expect(event).toMatchObject({
         version: 'WorkerReviewEvidence.v1', runId: env().REVIEW_RUN_ID, executionAttempt: 2, checkId: 4242, conclusion,
-        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: 'FINDINGS',
-          findings: [expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })] }] },
+        result: { version: 'WorkerReviewResult.v1', personas: [{ id: 'sec-lane', decision: expectedDecision,
+          findings: findings.map((finding) => expect.objectContaining({ severity: finding.severity, path: 'src/a.ts' })) }] },
       });
       if (conclusion === 'success') {
         expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
@@ -1547,7 +1562,9 @@ describe('runPublishingReviewWorker', () => {
         personas: [
           { id: 'found', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy this' }] },
           { id: 'clean', findings: [] },
-          { id: 'stated', decision: 'APPROVE', findings: [{ severity: 'P2', path: 'src/a.ts', line: 2, title: 'Nit', body: 'Also' }] },
+          // The fixture diff changes only line 1. Use a distinct, anchored
+          // contribution; an out-of-diff line 2 is correctly discarded.
+          { id: 'stated', decision: 'APPROVE', findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Distinct finding', body: 'Also' }] },
         ],
         optionalFailures: [],
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
@@ -1556,12 +1573,47 @@ describe('runPublishingReviewWorker', () => {
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');
-    const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as { result?: { personas: Array<{ id: string; decision: string }> } } | undefined;
-    expect(event?.result?.personas.map((p) => [p.id, p.decision])).toEqual([
-      ['found', 'FINDINGS'],   // no stated decision, findings present
-      ['clean', 'APPROVE'],    // no stated decision, no findings
-      ['stated', 'APPROVE'],   // a stated decision is preserved even with findings
+    const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as {
+      result?: { personas: Array<{ id: string; decision: string; findings: Array<{ severity: string }> }> };
+    } | undefined;
+    expect(event?.result?.personas.map((p) => [p.id, p.decision, p.findings.map((finding) => finding.severity)])).toEqual([
+      ['found', 'FINDINGS', ['P2']], // no stated decision: preserve the finding and infer FINDINGS
+      ['clean', 'APPROVE', []], // no stated decision and no findings
+      ['stated', 'APPROVE', ['P2']], // a stated decision is preserved even with findings
     ]);
+    expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.findingCount).toBe(2);
+  });
+
+  it('still reports a clean terminal success, and no evidence, when the lane decision fails the evidence contract', async () => {
+    // The green check is already published by the time evidence is built. A
+    // result the service would refuse (here: an invalid lane decision) must be
+    // dropped, not allowed to abort the report. Keep this success fixture clean:
+    // under strict/default policy even one P2 finding makes the check fail.
+    const completion = {
+      reportTerminalFailure: vi.fn(async (_event: unknown) => {}),
+      reportTerminalSuccess: vi.fn(async (_event: unknown) => {}),
+      reportReviewEvidence: vi.fn(async (_event: unknown) => {}),
+    };
+    const d = deps({
+      completion,
+      panelRunner: vi.fn(async () => ({
+        applicablePersonaIds: ['sec-lane'],
+        personas: [{ id: 'sec-lane', decision: 'SHIP', findings: [] }],
+        optionalFailures: [],
+        quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+        arbiter: { verdict: 'SHIP' },
+      })) as never,
+    });
+    const receipt = await runPublishingReviewWorker(env(), d as never);
+    expect(receipt.conclusion).toBe('success');
+    expect(receipt.blockingFindingCount).toBe(0);
+    expect(completion.reportTerminalSuccess).toHaveBeenCalledOnce();
+    const event = completion.reportTerminalSuccess.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(event.version).toBe('WorkerTerminalSuccess.v1');
+    expect(event).not.toHaveProperty('result');
+    expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
+    expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
   });
 
   it('still reports the terminal success, and no evidence, when the result fails the contract', async () => {
@@ -1591,6 +1643,7 @@ describe('runPublishingReviewWorker', () => {
     expect(event).not.toHaveProperty('result');
     expect(completion.reportReviewEvidence).not.toHaveBeenCalled();
     expect(completion.reportTerminalFailure).not.toHaveBeenCalled();
+
   });
 
   it('does not publish contradictory failure evidence when the success acknowledgement is uncertain', async () => {
@@ -1955,6 +2008,88 @@ describe('real composed plan rejection reaches fail-closed publication', () => {
           failureClass: expected, diagnostics: expect.not.objectContaining({ recoverableIncompletePanel: true }),
         }));
         expect(reportReviewResult).not.toHaveBeenCalled();
+      }
+    });
+  }
+});
+
+describe('real composed findings-stop reaches canonical fail-closed publication', () => {
+  for (const authoritative of [false, true]) {
+    it.each(['P0', 'P2'] as const)('never publishes incomplete %s finding-stop as SHIP (authoritative=' + authoritative + ')', async (severity) => {
+      const policy = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+        personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 3 },
+      } });
+      const input = env({ REVIEW_YETI_POLICY_JSON: policy });
+      const serviceDecisions: Array<ReturnType<typeof evaluateReviewGate>> = [];
+      const reportReviewResult = vi.fn(async (event: unknown) => {
+        // Exercise the existing service's pure re-derivation/Gate policy, not a DB or live App.
+        const derived = deriveCanonicalWorkerReviewEvidence(event, {
+          expectedCoordinates: { runId: input.REVIEW_RUN_ID!, repositoryId: Number(input.REVIEW_REPOSITORY_ID),
+            owner: 'exampleorg', repo: 'example-meta', prNumber: 2795, headSha: HEAD, baseSha: BASE,
+            policyDigest: input.REVIEW_POLICY_DIGEST!, configDigest: input.REVIEW_CONFIG_DIGEST!, executionAttempt: 1 },
+          expectedPersonaIds: ['sec-lane', 'qual-lane'], changedFiles: parseChangedFiles(DIFF).files,
+          coverageComplete: true, quorumSatisfied: true, reviewEngine: 'composed', composedChangedPaths: ['src/a.ts'], composedMaxTasks: 8,
+        });
+        expect(derived.valid).toBe(true);
+        if (!derived.valid) throw new Error('Unexpected invalid local completion fixture');
+        const candidate = { repositoryId: Number(input.REVIEW_REPOSITORY_ID), prNumber: 2795,
+          headSha: HEAD, baseSha: BASE, policyDigest: input.REVIEW_POLICY_DIGEST! };
+        serviceDecisions.push(evaluateReviewGate({ candidate, current: { ...candidate, open: true, draft: false }, evidence: derived.evidence }));
+      });
+      const reportTerminalSuccess = vi.fn(async () => undefined);
+      if (authoritative) {
+        const transport = { baseUrl: input.OPENAI_BASE_URL!, model: input.REVIEW_MODEL! };
+        const prepared = preparePublishingPolicy({ content: policy, source: {
+          repositoryId: 987, repository: 'example/policy', sha: 'e'.repeat(40), path: 'policy/review.json',
+          contentDigest: createHash('sha256').update(policy).digest('hex'),
+        } }, transport);
+        Object.assign(input, { REVIEW_AUTHORITATIVE_GATE: 'true',
+          REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+          REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/completion',
+          REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest });
+      }
+      const tasks = ['contract', 'architecture', 'testing', 'performance'].map((dimension, index) => ({
+        id: `task-${index + 1}`, dimension, paths: ['src/a.ts'], question: `Review ${dimension}?`, rationale: 'Changed source.',
+      }));
+      const complete = vi.fn(async (request: { messages: Array<{ content: unknown }> }) => {
+        const text = JSON.stringify(request.messages);
+        const nonce = [...text.matchAll(/CT_REVIEW_NONCE:([a-f0-9-]+)/gu)].at(-1)?.[1];
+        expect(nonce).toBeTruthy();
+        if (text.includes('PLAN TURN')) return { model: 'fixture', content: JSON.stringify({ nonce, tasks }),
+          usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0.001, raw: {} };
+        expect(text).toContain('Task id: task-1');
+        return { model: 'fixture', content: JSON.stringify({ nonce, task: 'task-1', status: 'COMPLETE',
+          findings: Array.from({ length: severity === 'P2' ? 25 : 1 }, (_, index) => ({ severity, path: 'src/a.ts', line: 1,
+            title: `Finding ${index}`, body: `Local fixture ${index}.` })) }),
+          usage: { prompt: 10, completion: 10, total: 20 }, costUSD: 0.001, raw: {} };
+      });
+      const d = deps({ client: { complete }, zoektGrounding: vi.fn(async () => ({})),
+        ...(authoritative ? { reviewCompletion: { reportReviewResult } } : { completion: { reportTerminalSuccess } }) });
+      const fetch = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Unexpected external request'));
+      try {
+        // Real executeComposedReview and real computeArbitration; only I/O/publication seams are local fixtures.
+        const receipt = await runPublishingReviewWorker(input, d);
+        expect(receipt).toMatchObject({ verdict: 'BLOCK', conclusion: 'failure', findingCount: severity === 'P2' ? 25 : 1,
+          coverage: { expectedLaneCount: 4, completedLaneCount: 1, rosterValid: false, quorumSatisfied: false, fullPanelComplete: false } });
+        expect(receipt.personas?.map((lane) => lane.id)).toEqual(['task-1']);
+        expect(receipt.metrics?.tokenAccounting?.total).toMatchObject({ calls: 2, totalTokens: 40 });
+        expect(complete).toHaveBeenCalledTimes(2);
+        expect(d.panelRunner).not.toHaveBeenCalled();
+        expect(fetch).not.toHaveBeenCalled();
+        expect(reportTerminalSuccess).not.toHaveBeenCalled();
+        if (authoritative) {
+          expect(serviceDecisions).toEqual([{ status: 'failure', eligible: false, reason: 'incomplete-review' }]);
+          expect(reportReviewResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ result: expect.objectContaining({
+            // This field is path/evidence coverage, not task completion. The unchanged service
+            // contract also receives the whole plan, missing task lanes, and false quorum.
+            coverageComplete: true, quorumSatisfied: false, taskPlan: expect.arrayContaining(tasks),
+            personas: [expect.objectContaining({ id: 'task-1' })],
+          }) }));
+          expect(reportReviewResult.mock.invocationCallOrder[0]).toBeLessThan(d.checkClient.completeCheck.mock.invocationCallOrder[0]);
+        }
+        expect(d.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conclusion: 'failure', title: 'Review Yeti: BLOCK' }));
+      } finally {
+        fetch.mockRestore();
       }
     });
   }
@@ -3024,5 +3159,211 @@ describe('REL-1211 absolute publishing budget', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(Date.now()).toBe(start);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('operational telemetry terminal callback counterfactual',()=>{
+  it('preserves completed calls and the actual inflight cutoff through a healthy legacy completion adapter',async()=>{
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-01T08:00:00Z'));
+    const completion={reportTerminalFailure:vi.fn(async()=>{}),reportTerminalSuccess:vi.fn(async()=>{}),reportReviewEvidence:vi.fn(async()=>{})};
+    let count=0;
+    const client={complete:vi.fn(async()=>{if(++count===1)return {model:'safe',content:'SECRET response',usage:{prompt:11,completion:7,total:18,cached:2},costUSD:0.004,raw:{}};
+      return new Promise(()=>{});})};
+    const panelRunner=vi.fn(async(input:any)=>{await input.client.complete({model:'safe',messages:[{role:'user',content:'SECRET prompt'}],timeoutMs:1000,signal:input.signal});
+      return input.client.complete({model:'safe',messages:[],timeoutMs:1000,signal:input.signal});});
+    const input=env({REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/completion',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+WORKER_PANEL_RESERVE_MS+50).toISOString()});
+    const task=runPublishingReviewWorker(input,deps({completion,client,panelRunner,zoektGrounding:vi.fn(async()=>({}))}) as never);
+    const rejected=expect(task).rejects.toBeInstanceOf(PanelDeadlineExceededError);
+    await vi.advanceTimersByTimeAsync(100); await rejected;
+    expect(client.complete).toHaveBeenCalledTimes(2);
+    const event=(completion.reportTerminalFailure.mock.calls as unknown as any[][])[0]![0] as any;
+    expect(event).toMatchObject({runId:input.REVIEW_RUN_ID,headSha:HEAD,executionAttempt:1,failureClass:'timeout',diagnostics:{reason:'worker_terminal_deadline_exceeded'}});
+    expect(event.diagnostics).not.toHaveProperty('recoverableIncompletePanel');
+    expect(event.diagnostics.operationalTelemetry).toMatchObject({cause:'unknown',providerCalls:{started:2,completed:1,aborted:1,inflight:0},responseUsage:{availability:'known',responses:1,totals:{totalTokens:18}},panel:{invoked:true},ledger:{basis:'returned_responses_including_shadow',availability:'partial',calls:1,totalTokens:18}});
+    expect(JSON.stringify(event.diagnostics.operationalTelemetry)).not.toContain('SECRET');
+    expect(vi.getTimerCount()).toBe(0); vi.useRealTimers();
+  });
+});
+
+
+it('keeps configured-deadline panel failure telemetry before any provider call and leaves unobserved legacy diagnostics optional', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-01T08:00:00Z'));
+  try {
+    for (const deadlineConfigured of [true, false]) {
+      const original = new Error('fixture pre-provider panel failure');
+      const completion = { reportTerminalFailure: vi.fn(async (_event: Parameters<HttpWorkerCompletionAdapter['reportTerminalFailure']>[0]) => undefined) };
+      const client = { complete: vi.fn(async () => { throw new Error('unexpected provider invocation'); }) };
+      const panelRunner = vi.fn(async () => { throw original; });
+      const input = env(deadlineConfigured ? { REVIEW_TERMINAL_DEADLINE: new Date(Date.now() + 900_000).toISOString() } : {});
+      await expect(runPublishingReviewWorker(input, deps({ client, panelRunner, completion,
+        zoektGrounding: vi.fn(async () => ({})) }) as never)).rejects.toBe(original);
+      expect(panelRunner).toHaveBeenCalledOnce();
+      expect(client.complete).not.toHaveBeenCalled();
+      expect(completion.reportTerminalFailure).toHaveBeenCalledOnce();
+      const event = completion.reportTerminalFailure.mock.calls[0]![0];
+      expect(event).toMatchObject({ runId: input.REVIEW_RUN_ID, headSha: HEAD, executionAttempt: 1, failureClass: 'provider_error' });
+      if (deadlineConfigured) {
+        expect(event.diagnostics).toMatchObject({ operationalTelemetry: {
+          panel: { invoked: true },
+          providerCalls: { started: 0, completed: 0, failed: 0, aborted: 0, inflight: 0 },
+          responseUsage: { availability: 'unknown', responses: 0, totals: {} },
+          phaseCounts: { panel: { started: 1, completed: 0, failed: 1, aborted: 0 } },
+        } });
+      } else {
+        expect(event.diagnostics).not.toHaveProperty('operationalTelemetry');
+      }
+      await vi.advanceTimersByTimeAsync(0);
+      expect(Date.now()).toBe(Date.parse('2026-10-01T08:00:00Z'));
+      expect(vi.getTimerCount()).toBe(0);
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('keeps content-free answered-call observations in the native thrown-infrastructure receipt',async()=>{
+  const content=JSON.stringify({schema:'exampleorg.review-policy.v1',review_yeti:{personas:'security,testing',budget:{max_investigation_turns:1}}});
+  const transport={baseUrl:'https://gateway.example.invalid/v1',model:'prepared-review-model'};
+  const prepared=preparePublishingPolicy({content,source:{repositoryId:987,repository:'example/policy',sha:'e'.repeat(40),path:'policy/review.json',contentDigest:createHash('sha256').update(content).digest('hex')}},transport);
+  const input=env({REVIEW_AUTHORITATIVE_GATE:'true',REVIEW_EXECUTION_ATTEMPT:'3',REVIEW_POLICY_DIGEST:prepared.policy.effectivePolicyDigest,
+    REVIEW_CONFIG_DIGEST:prepared.policy.effectiveConfigDigest,REVIEW_PREPARED_CONFIG_JSON:JSON.stringify({version:'PreparedReviewExecution.v1',config:prepared.config,transport}),
+    REVIEW_COMPLETION_URL:'https://dispatch.example.invalid/api/dispatch/completion',REVIEW_MODEL:transport.model,OPENAI_BASE_URL:transport.baseUrl,
+    GITHUB_PUBLISH_TOKEN:'ghs_fake',REVIEW_REPOSITORY_VISIBILITY:'PRIVATE',REVIEW_YETI_SKIP_EMPTY_MODERATION:'true',REVIEW_TERMINAL_DEADLINE:new Date(Date.now()+900_000).toISOString()});
+  const reportReviewResult=vi.fn(async(_event: Parameters<HttpWorkerReviewCompletionAdapter['reportReviewResult']>[0])=>{});
+  const client={complete:vi.fn(async()=>({model:transport.model,content:'SECRET response',usage:{prompt:11,completion:7,total:18},costUSD:null,raw:{}}))};
+  const original=new OpenRouterConnectionError('fetch failed: SECRET transport detail');
+  const panelRunner=vi.fn(async(input:any)=>{expect(input.skipEmptyModeration).toBe(true);await input.client.complete({model:transport.model,messages:[],timeoutMs:1000});throw original;});
+  const result=await runPublishingReviewWorker(input,deps({client,panelRunner,reviewCompletion:{reportReviewResult},zoektGrounding:vi.fn(async()=>({})),
+    sourceLoader:vi.fn(async()=>({baseSha:BASE,headSha:HEAD,diff:DIFF,diffDigest:createHash('sha256').update(DIFF).digest('hex'),githubReads:3}))}) as never);
+  expect(result).toMatchObject({verdict:'INCOMPLETE',conclusion:'failure',failureClass:'transport'});
+  expect(reportReviewResult).toHaveBeenCalledOnce();
+  const event=reportReviewResult.mock.calls[0][0] as any;
+  expect(event).toMatchObject({runId:input.REVIEW_RUN_ID,headSha:HEAD,executionAttempt:3,result:{coverageComplete:true,quorumSatisfied:false,
+    failureDiagnostics:{operationalTelemetry:{cause:'unknown',providerCalls:{started:1,completed:1,failed:0,aborted:0,inflight:0},responseUsage:{availability:'partial',totals:{totalTokens:18}},panel:{invoked:true}}}}});
+  expect(event.result.failureDiagnostics.operationalTelemetry.phaseCounts.persona_lane.started).toBe(0);
+  expect(event.result.failureDiagnostics.operationalTelemetry.phaseCounts.panel).toMatchObject({started:1,failed:1,aborted:0});
+  expect(event.result.personas.every((persona:any)=>persona.status==='ERROR'&&persona.errorClass==='transport')).toBe(true);
+  expect(JSON.stringify(event.result.failureDiagnostics.operationalTelemetry)).not.toContain('SECRET');
+});
+
+
+describe('telemetry integration with protected composed closeout', () => {
+  const fixture = () => {
+    const content = JSON.stringify({ schema: 'exampleorg.review-policy.v1', review_yeti: {
+      personas: 'security,testing', review_engine: 'composed', budget: { max_investigation_turns: 1 },
+    } });
+    const transport = { baseUrl: 'https://gateway.example.invalid/v1', model: 'prepared-review-model' };
+    const prepared = preparePublishingPolicy({ content, source: { repositoryId: 987, repository: 'example/policy',
+      sha: 'e'.repeat(40), path: 'policy/review.json', contentDigest: createHash('sha256').update(content).digest('hex') } }, transport);
+    const input = env({ REVIEW_AUTHORITATIVE_GATE: 'true', REVIEW_EXECUTION_ATTEMPT: '3',
+      REVIEW_POLICY_DIGEST: prepared.policy.effectivePolicyDigest, REVIEW_CONFIG_DIGEST: prepared.policy.effectiveConfigDigest,
+      REVIEW_PREPARED_CONFIG_JSON: JSON.stringify({ version: 'PreparedReviewExecution.v1', config: prepared.config, transport }),
+      REVIEW_COMPLETION_URL: 'https://dispatch.example.invalid/api/dispatch/completion', REVIEW_MODEL: transport.model,
+      OPENAI_BASE_URL: transport.baseUrl, GITHUB_PUBLISH_TOKEN: 'ghs_fake', REVIEW_REPOSITORY_VISIBILITY: 'PRIVATE',
+      REVIEW_TERMINAL_DEADLINE: new Date(Date.now() + WORKER_PANEL_RESERVE_MS + 50).toISOString() });
+    const reportReviewResult = vi.fn(async (_event: Parameters<HttpWorkerReviewCompletionAdapter['reportReviewResult']>[0]) => {});
+    const plan = [{ id: 'security-auth', dimension: 'security', paths: ['src/a.ts'], question: 'Safe?', rationale: 'Risk.' },
+      { id: 'testing', dimension: 'testing', paths: ['src/a.ts'], question: 'Covered?', rationale: 'Tests.' }];
+    const finding = { severity: 'P1', path: 'src/a.ts', line: 1, title: 'Preserved checkpoint finding', body: 'Validated defect.' };
+    const partial = { taskPlan: plan, applicablePersonaIds: ['security-auth', 'testing'],
+      personas: [{ id: 'security-auth', findings: [finding] }], optionalFailures: [],
+      unreportedLanes: [{ id: 'testing', error: 'evidence cutoff', failureClass: 'timeout' }],
+      gracefulExit: { reason: 'evidence_deadline', completedTaskIds: ['security-auth'], pendingTaskIds: ['testing'], checkpointRevision: 2 },
+      quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: false }, arbiter: { verdict: 'SHIP' } };
+    return { input, transport, reportReviewResult, plan, finding, partial };
+  };
+
+  it('forwards satisfied disputed-finding receipt ids to the durable checkpoint adapter', async () => {
+    const f = fixture();
+    const requestId = randomUUID();
+    const write = vi.fn(async (_checkpoint: any) => 3);
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      await options.checkpoint.save({ revision: 1, plan: f.plan,
+        completedTasks: [{ id: 'security-auth', findings: [f.finding] }],
+        satisfiedFindingRecheckIds: [requestId] });
+      return f.partial;
+    });
+
+    await runPublishingReviewWorker(f.input, deps({ composedReviewRunner, reviewCheckpoint: {
+      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
+    }, reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+    sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF,
+      diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+
+    expect(write).toHaveBeenCalledOnce();
+    expect(write.mock.calls[0]?.[0]).toMatchObject({ executionAttempt: 3,
+      satisfiedFindingRecheckIds: [requestId] });
+  });
+
+  it.each(['resolved', 'rejected'] as const)('captures native timeout observations once and preserves the validated finding after late %s cancellation', async (settlement) => {
+    vi.useFakeTimers(); vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
+    const f = fixture(); const factory = publishingProgress.createPublishingProgress;
+    let reporter!: ReturnType<typeof factory>;
+    const spy = vi.spyOn(publishingProgress, 'createPublishingProgress').mockImplementation((...args) => { reporter = factory(...args); return reporter; });
+    let answer!: (value: any) => void; let rejectLate!: (error: Error) => void; let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const response = { model: f.transport.model, content: 'SECRET response', usage: { prompt: 11, completion: 7, total: 18, cache_read_input_tokens: 6 }, costUSD: 0.004, raw: {} };
+    const client = { complete: vi.fn(async () => client.complete.mock.calls.length === 1 ? response : new Promise<any>((resolve, reject) => { answer = resolve; rejectLate = reject; })) };
+    const write = vi.fn(async () => 2);
+    const composedReviewRunner = vi.fn(async (options: any) => {
+      options.progress.emit({ task: 'panel', status: 'started' });
+      await options.client.complete({ model: f.transport.model, messages: [{ role: 'user', content: 'SECRET prompt' }], signal: options.signal, timeoutMs: 1_000 });
+      await options.checkpoint.save({ revision: 2, plan: f.plan, completedTasks: [{ id: 'security-auth', findings: [f.finding] }] });
+      const late = options.client.complete({ model: f.transport.model, messages: [], signal: options.signal, timeoutMs: 1_000 });
+      entered(); await late;
+      options.progress.emit({ task: 'panel', status: 'completed' });
+      return f.partial;
+    });
+    const task = runPublishingReviewWorker(f.input, deps({ client, composedReviewRunner, reviewCheckpoint: {
+      read: vi.fn(async () => ({ checkpoint: null, disputedFindingRechecks: [] })), write,
+    },
+      reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+      sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+    try {
+      await started; await vi.advanceTimersByTimeAsync(100);
+      expect(await task).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+      expect(write).toHaveBeenCalledOnce(); expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      const event = f.reportReviewResult.mock.calls[0][0];
+      expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
+        personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+        failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false,
+          operationalTelemetry: { cause: 'unknown', providerCalls: { started: 2, completed: 1, aborted: 1, inflight: 0 },
+            responseUsage: { availability: 'known', responses: 1, totals: { totalTokens: 18, cachedTokens: 6 } },
+            phaseCounts: { panel: { started: 1, completed: 0, failed: 0, aborted: 1 }, persona_lane: { started: 0 }, composed_task: { started: 0 } } } } });
+      const saved = JSON.stringify(event);
+      if (settlement === 'rejected') rejectLate(new Error('late canceled model failure'));
+      else answer(response);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(write).toHaveBeenCalledOnce(); expect(f.reportReviewResult).toHaveBeenCalledOnce();
+      expect(JSON.stringify(event)).toBe(saved);
+      expect(reporter.snapshot?.()?.phaseCounts.panel).toMatchObject({ started: 1, completed: 0, failed: 0, aborted: 1 });
+      expect(JSON.stringify(event.result.failureDiagnostics?.operationalTelemetry)).not.toContain('SECRET');
+    } finally { spy.mockRestore(); vi.useRealTimers(); }
+  });
+
+  it.each(['missing', 'malformed', 'throwing'] as const)('omits %s optional observations without changing graceful findings or INCOMPLETE', async (kind) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.parse('2026-10-01T00:00:00Z'));
+    try {
+      const f = fixture(); const factory = publishingProgress.createPublishingProgress;
+      expect(Date.parse(f.input.REVIEW_TERMINAL_DEADLINE!) - Date.now()).toBe(WORKER_PANEL_RESERVE_MS + 50);
+      const spy = vi.spyOn(publishingProgress, 'createPublishingProgress').mockImplementation((...args) => ({ ...factory(...args),
+        snapshot: () => { if (kind === 'throwing') throw new Error('SECRET optional diagnostics'); return kind === 'malformed' ? { rawPrompt: 'SECRET' } as never : undefined; } }));
+      try {
+        const result = await runPublishingReviewWorker(f.input, deps({ composedReviewRunner: vi.fn(async () => f.partial),
+          reviewCompletion: { reportReviewResult: f.reportReviewResult }, zoektGrounding: vi.fn(async () => ({})),
+          sourceLoader: vi.fn(async () => ({ baseSha: BASE, headSha: HEAD, diff: DIFF, diffDigest: createHash('sha256').update(DIFF).digest('hex'), githubReads: 3 })) }) as never);
+        expect(result).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure', findingCount: 1, failureClass: 'timeout' });
+        expect(f.reportReviewResult).toHaveBeenCalledOnce();
+        const event = f.reportReviewResult.mock.calls[0][0];
+        expect(event.result).toMatchObject({ coverageComplete: false, quorumSatisfied: false,
+          personas: [expect.objectContaining({ id: 'security-auth', findings: [expect.objectContaining({ title: f.finding.title })] })],
+          failureDiagnostics: { reason: 'review_evidence_deadline', recoverableIncompletePanel: false } });
+        expect(event.result.failureDiagnostics).not.toHaveProperty('operationalTelemetry');
+      } finally { spy.mockRestore(); }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

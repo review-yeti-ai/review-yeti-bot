@@ -28,6 +28,13 @@ vi.mock('@/lib/api-client', () => ({
   updateDashboardConfig: vi.fn(),
   fetchPersonas: vi.fn().mockResolvedValue({}),
   updatePersona: vi.fn(),
+  fetchGitHubOrgs: vi.fn().mockResolvedValue([]),
+  fetchGitHubRepos: vi.fn().mockResolvedValue({ repositories: [], totalCount: 0, activeCount: 0 }),
+  fetchRepoPullRequests: vi.fn().mockResolvedValue([]),
+  fetchRepositoryPullRequests: vi.fn().mockResolvedValue([]),
+  triggerPullRequestReview: vi.fn().mockResolvedValue({ success: true, message: 'Queued' }),
+  fetchRepositoryReviewRules: vi.fn().mockResolvedValue({}),
+  updateRepositoryReviewRules: vi.fn().mockResolvedValue({}),
 }));
 
 describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () => {
@@ -296,7 +303,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       });
 
       const searchInput = screen.getByPlaceholderText('Filter repositories...');
-      fireEvent.change(searchInput, { target: { value: 'cisco' } });
+      fireEvent.change(searchInput, { target: { value: 'example-api' } });
 
       expect(screen.getByText('example-api')).toBeInTheDocument();
       expect(screen.queryByText('api-gateway')).not.toBeInTheDocument();
@@ -353,7 +360,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
 
       await waitFor(() => {
         expect(apiClient.createRepository).toHaveBeenCalledWith({
-          owner: 'exampleorg',
+          owner: 'reviewyeti-ai',
           repo: 'new-microservice',
           automationEnabled: true,
           customProfile: 'balanced',

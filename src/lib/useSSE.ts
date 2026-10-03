@@ -8,7 +8,56 @@ import {
   TokenMetricHistoryPoint,
   LiveJobSummary,
   PersonaStatus,
+  ReviewStage,
+  StageState,
+  TurnStepRecord,
 } from '@/types/live';
+import { AnchoredFinding } from '@/types/diff';
+
+export interface ToolExecutionRecord {
+  id: string;
+  jobId: string;
+  personaId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  output?: string;
+  outputLength?: number;
+  error?: string;
+  status: 'running' | 'completed' | 'error';
+  durationMs?: number;
+  turn?: number;
+  timestamp: string;
+}
+
+export interface SwarmTaskItem {
+  id: string;
+  dimension: 'security' | 'architecture' | 'performance' | 'testing' | 'dependencies' | 'contract' | 'licensing' | string;
+  description: string;
+  paths?: string[];
+  priority: number;
+  status: 'PENDING' | 'PLANNING' | 'IN_FLIGHT' | 'RUNNING' | 'COMPACTING' | 'VERIFYING' | 'COMPLETED' | 'FAILED';
+  progress: number;
+  findingsCount: number;
+  lastMessage?: string;
+  durationMs?: number;
+  tokensBurned?: number;
+  promptTokens?: number;
+  completionTokens?: number;
+  tokensPerSec?: number;
+  costUSD?: number | null;
+  budgetUSD?: number | null;
+  turn?: number;
+  maxTurns?: number;
+}
+
+export interface ContextCompactionMetrics {
+  rawDiffTokens: number;
+  compactedTokens: number;
+  compactionRatio: number;
+  boundsReductionLines: number;
+  lockfilesBypassed: number;
+  astOutlineNodes: number;
+}
 
 export const DEFAULT_PERSONAS = [
   'security',
@@ -48,6 +97,15 @@ export function createInitialPersonaProgress(): Record<string, PersonaProgressSt
   return initial;
 }
 
+export const DEFAULT_REVIEW_STAGES: StageState[] = [
+  { stage: 'admission', label: '1. Ingress Gate', description: 'Validate payload, acquire RepoGate concurrency slot & epoch fence', status: 'pending', progress: 0 },
+  { stage: 'compaction', label: '2. Context Compaction', description: 'Fetch diff, extract AST outlines, evict raw hunks & bypass lockfiles', status: 'pending', progress: 0 },
+  { stage: 'planning', label: '3. Swarm Planning', description: 'Decompose changes into bounded subagent ReviewTask[] roster', status: 'pending', progress: 0 },
+  { stage: 'execution', label: '4. Subagent Turns', description: 'Subagents execute isolated turns, tool calls, and finding drafts', status: 'pending', progress: 0 },
+  { stage: 'arbitration', label: '5. Arbitration', description: 'Deduplicate findings, enforce P0 blocker rules & auto-approval gate', status: 'pending', progress: 0 },
+  { stage: 'publication', label: '6. Publish & Attest', description: 'Persist review to Cloudflare D1 SQL, emit check-run & release slot', status: 'pending', progress: 0 },
+];
+
 export function useSSE(options: UseSSEOptions = {}) {
   const {
     jobId: initialJobId = null,
@@ -65,6 +123,11 @@ export function useSSE(options: UseSSEOptions = {}) {
   const [personaProgress, setPersonaProgress] = useState<Record<string, PersonaProgressState>>(
     createInitialPersonaProgress
   );
+  const [currentStage, setCurrentStage] = useState<ReviewStage>('admission');
+  const [stageHistory, setStageHistory] = useState<StageState[]>(DEFAULT_REVIEW_STAGES);
+  const [overallProgress, setOverallProgress] = useState<number>(0);
+  const [turns, setTurns] = useState<TurnStepRecord[]>([]);
+  const [activeTurnByTask, setActiveTurnByTask] = useState<Record<string, { current: number; max: number }>>({});
   const [tokenMetrics, setTokenMetrics] = useState<StreamingTokenMetrics>({
     promptTokens: 0,
     completionTokens: 0,
@@ -77,6 +140,18 @@ export function useSSE(options: UseSSEOptions = {}) {
   });
   const [tokenHistory, setTokenHistory] = useState<TokenMetricHistoryPoint[]>([]);
   const [activeJobs, setActiveJobs] = useState<LiveJobSummary[]>([]);
+  const [reasoning, setReasoning] = useState<Record<string, string>>({});
+  const [toolExecutions, setToolExecutions] = useState<ToolExecutionRecord[]>([]);
+  const [anchoredFindings, setAnchoredFindings] = useState<AnchoredFinding[]>([]);
+  const [swarmTasks, setSwarmTasks] = useState<SwarmTaskItem[]>([]);
+  const [contextCompaction, setContextCompaction] = useState<ContextCompactionMetrics>({
+    rawDiffTokens: 0,
+    compactedTokens: 0,
+    compactionRatio: 1.0,
+    boundsReductionLines: 0,
+    lockfilesBypassed: 0,
+    astOutlineNodes: 0,
+  });
 
   // Refs for double-buffered batching queue
   const incomingQueueRef = useRef<LiveStreamEvent[]>([]);
@@ -110,6 +185,13 @@ export function useSSE(options: UseSSEOptions = {}) {
         const data = await res.json();
         if (data.jobs && Array.isArray(data.jobs)) {
           setActiveJobs(data.jobs);
+          const currentJob = data.jobs.find((j: any) => j.jobId === (jobId || data.jobs[0]?.jobId)) || data.jobs[0];
+          if (currentJob?.tasks && Array.isArray(currentJob.tasks)) {
+            setSwarmTasks(currentJob.tasks);
+          }
+          if (currentJob?.contextCompaction) {
+            setContextCompaction(currentJob.contextCompaction);
+          }
           if (data.jobs.length > 0) {
             setJobId((prevJobId) => {
               if (!prevJobId || prevJobId === 'default-job') {
@@ -129,11 +211,28 @@ export function useSSE(options: UseSSEOptions = {}) {
     } catch {
       // Ignore network errors in polling/fetching active jobs
     }
-  }, []);
+  }, [jobId]);
 
   const clearEvents = useCallback(() => {
     setEvents([]);
+    setReasoning({});
+    setToolExecutions([]);
+    setAnchoredFindings([]);
+    setSwarmTasks([]);
+    setContextCompaction({
+      rawDiffTokens: 0,
+      compactedTokens: 0,
+      compactionRatio: 1.0,
+      boundsReductionLines: 0,
+      lockfilesBypassed: 0,
+      astOutlineNodes: 0,
+    });
     setPersonaProgress(createInitialPersonaProgress());
+    setCurrentStage('admission');
+    setStageHistory(DEFAULT_REVIEW_STAGES);
+    setOverallProgress(0);
+    setTurns([]);
+    setActiveTurnByTask({});
     setTokenMetrics({
       promptTokens: 0,
       completionTokens: 0,
@@ -156,6 +255,7 @@ export function useSSE(options: UseSSEOptions = {}) {
     let latestLatency = metricsRef.current.latencyMs;
     let astNodesDelta = 0;
     let nitsDelta = 0;
+    let absoluteMetrics: Partial<StreamingTokenMetrics> | null = null;
 
     const nextPersonaProgress = { ...personaProgressRef.current };
 
@@ -176,6 +276,117 @@ export function useSSE(options: UseSSEOptions = {}) {
       }
 
       const currentPersona = nextPersonaProgress[canonicalPersona];
+
+      // Handle modern swarm events
+      if (type === 'task:plan') {
+        const taskList = data?.tasks || (Array.isArray(data) ? data : []);
+        if (Array.isArray(taskList) && taskList.length > 0) {
+          setSwarmTasks(
+            taskList.map((t: any) => ({
+              id: t.id || `task_${t.dimension}`,
+              dimension: t.dimension || 'general',
+              description: t.description || `${t.dimension} analysis`,
+              paths: t.paths || [],
+              priority: t.priority ?? 1,
+              status: t.status || 'PENDING',
+              progress: t.progress ?? 0,
+              findingsCount: t.findingsCount ?? 0,
+              lastMessage: t.lastMessage || 'Queued for subagent execution',
+              durationMs: t.durationMs ?? 0,
+              tokensBurned: t.tokensBurned ?? 0,
+              promptTokens: t.promptTokens ?? 0,
+              completionTokens: t.completionTokens ?? 0,
+              tokensPerSec: t.tokensPerSec ?? 0,
+              costUSD: t.costUSD ?? 0,
+              budgetUSD: t.budgetUSD ?? 0.0125,
+              turn: t.turn ?? 0,
+              maxTurns: t.maxTurns ?? 20,
+            }))
+          );
+        }
+      } else if (type === 'task:progress') {
+        const taskId = data?.taskId || (data?.dimension ? `task_${data.dimension}` : null) || data?.id;
+        if (taskId) {
+          setSwarmTasks((prev) =>
+            prev.map((t) => {
+              if (t.id === taskId || t.dimension === data?.dimension) {
+                return {
+                  ...t,
+                  status: data.status || t.status,
+                  progress: data.progress !== undefined ? data.progress : t.progress,
+                  findingsCount: data.findingsCount !== undefined ? data.findingsCount : t.findingsCount,
+                  lastMessage: data.lastMessage || t.lastMessage,
+                  durationMs: data.durationMs !== undefined ? data.durationMs : t.durationMs,
+                  tokensBurned: data.tokensBurned !== undefined ? data.tokensBurned : t.tokensBurned,
+                  promptTokens: data.promptTokens !== undefined ? data.promptTokens : t.promptTokens,
+                  completionTokens: data.completionTokens !== undefined ? data.completionTokens : t.completionTokens,
+                  tokensPerSec: data.tokensPerSec !== undefined ? data.tokensPerSec : t.tokensPerSec,
+                  costUSD: data.costUSD !== undefined ? data.costUSD : t.costUSD,
+                  budgetUSD: data.budgetUSD !== undefined ? data.budgetUSD : t.budgetUSD,
+                  turn: data.turn !== undefined ? data.turn : t.turn,
+                  maxTurns: data.maxTurns !== undefined ? data.maxTurns : t.maxTurns,
+                };
+              }
+              return t;
+            })
+          );
+        }
+      } else if (type === 'task:complete') {
+        const taskId = data?.taskId || (data?.dimension ? `task_${data.dimension}` : null) || data?.id;
+        if (taskId) {
+          setSwarmTasks((prev) =>
+            prev.map((t) => {
+              if (t.id === taskId || t.dimension === data?.dimension) {
+                return {
+                  ...t,
+                  status: 'COMPLETED',
+                  progress: 100,
+                  findingsCount: data.findingsCount !== undefined ? data.findingsCount : t.findingsCount,
+                  lastMessage: data.lastMessage || 'Task completed successfully',
+                  durationMs: data.durationMs !== undefined ? data.durationMs : t.durationMs,
+                  tokensBurned: data.tokensBurned !== undefined ? data.tokensBurned : t.tokensBurned,
+                  promptTokens: data.promptTokens !== undefined ? data.promptTokens : t.promptTokens,
+                  completionTokens: data.completionTokens !== undefined ? data.completionTokens : t.completionTokens,
+                  tokensPerSec: 0,
+                  costUSD: data.costUSD !== undefined ? data.costUSD : t.costUSD,
+                  budgetUSD: data.budgetUSD !== undefined ? data.budgetUSD : t.budgetUSD,
+                };
+              }
+              return t;
+            })
+          );
+        }
+      } else if (type === 'context:compaction') {
+        setContextCompaction({
+          rawDiffTokens: data?.rawDiffTokens ?? 0,
+          compactedTokens: data?.compactedTokens ?? 0,
+          compactionRatio: data?.compactionRatio ?? 1.0,
+          boundsReductionLines: data?.boundsReductionLines ?? 0,
+          lockfilesBypassed: data?.lockfilesBypassed ?? 0,
+          astOutlineNodes: data?.astOutlineNodes ?? 0,
+        });
+      } else if (type === 'finding:anchored') {
+        const findingData = data?.finding || data || {};
+        const fId = data?.id || findingData.id || `f_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const anchoredFinding: AnchoredFinding = {
+          id: fId,
+          severity: (findingData.severity || data?.severity || 'P1') as 'P0' | 'P1' | 'P2',
+          file: findingData.path || findingData.file || data?.file || data?.path || '',
+          line: findingData.line ?? data?.line ?? 1,
+          startLine: findingData.startLine ?? data?.startLine,
+          title: findingData.title || data?.title || 'Review Finding',
+          description: findingData.description || findingData.body || data?.description || '',
+          suggestion: findingData.suggestion || data?.suggestion || findingData.replacementCode || data?.replacementCode,
+          suggestedPatch: findingData.suggestedPatch || data?.suggestedPatch,
+          status: 'active',
+          persona: findingData.persona || data?.persona || canonicalPersona,
+        };
+
+        setAnchoredFindings((prev) => {
+          if (prev.some((f) => f.id === anchoredFinding.id)) return prev;
+          return [...prev, anchoredFinding];
+        });
+      }
 
       // Update persona progress based on event type
       if (type === 'persona:start' || type === 'agent_start') {
@@ -199,6 +410,155 @@ export function useSSE(options: UseSSEOptions = {}) {
             progress: newProgress,
             chunkCount: newChunkCount,
             lastMessage: chunkMsg.length > 80 ? chunkMsg.slice(0, 77) + '...' : chunkMsg,
+          };
+        }
+      } else if (type === 'reasoning:chunk' || type === 'persona:reasoning') {
+        const text = data?.reasoning || data?.chunk || data?.message || '';
+        if (text && canonicalPersona) {
+          setReasoning((prev) => ({
+            ...prev,
+            [canonicalPersona]: (prev[canonicalPersona] || '') + text,
+          }));
+        }
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            progress: Math.min(95, Math.max(currentPersona.progress, 20)),
+            lastMessage: 'Deliberating reasoning trace...',
+          };
+        }
+      } else if (type === 'tool:start') {
+        const toolName = data?.tool || data?.toolName || 'tool';
+        const toolId = `${evt.jobId}_${canonicalPersona}_${toolName}_${evt.timestamp}`;
+        const newTool: ToolExecutionRecord = {
+          id: toolId,
+          jobId: evt.jobId,
+          personaId: canonicalPersona,
+          tool: toolName,
+          args: data?.args || {},
+          status: 'running',
+          turn: data?.turn,
+          timestamp: evt.timestamp,
+        };
+        setToolExecutions((prev) => [...prev, newTool]);
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            lastMessage: data?.message || `Executing tool ${toolName}...`,
+          };
+        }
+      } else if (type === 'tool:result') {
+        const toolName = data?.tool || data?.toolName || 'tool';
+        setToolExecutions((prev) => {
+          const idx = [...prev].reverse().findIndex(
+            (t) => t.tool === toolName && t.personaId === canonicalPersona && t.status === 'running'
+          );
+          if (idx !== -1) {
+            const actualIdx = prev.length - 1 - idx;
+            const updated = [...prev];
+            updated[actualIdx] = {
+              ...updated[actualIdx],
+              output: data?.output,
+              outputLength: data?.outputLength ?? data?.output?.length,
+              durationMs: data?.durationMs,
+              status: 'completed',
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: `${evt.jobId}_${canonicalPersona}_${toolName}_${evt.timestamp}`,
+              jobId: evt.jobId,
+              personaId: canonicalPersona,
+              tool: toolName,
+              args: data?.args || {},
+              output: data?.output,
+              outputLength: data?.outputLength ?? data?.output?.length,
+              durationMs: data?.durationMs,
+              status: 'completed',
+              turn: data?.turn,
+              timestamp: evt.timestamp,
+            },
+          ];
+        });
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            lastMessage: data?.message || `Tool ${toolName} completed in ${data?.durationMs || 0}ms`,
+          };
+        }
+      } else if (type === 'tool:error') {
+        const toolName = data?.tool || data?.toolName || 'tool';
+        setToolExecutions((prev) => {
+          const idx = [...prev].reverse().findIndex(
+            (t) => t.tool === toolName && t.personaId === canonicalPersona && t.status === 'running'
+          );
+          if (idx !== -1) {
+            const actualIdx = prev.length - 1 - idx;
+            const updated = [...prev];
+            updated[actualIdx] = {
+              ...updated[actualIdx],
+              error: data?.error,
+              durationMs: data?.durationMs,
+              status: 'error',
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: `${evt.jobId}_${canonicalPersona}_${toolName}_${evt.timestamp}`,
+              jobId: evt.jobId,
+              personaId: canonicalPersona,
+              tool: toolName,
+              args: data?.args || {},
+              error: data?.error,
+              durationMs: data?.durationMs,
+              status: 'error',
+              turn: data?.turn,
+              timestamp: evt.timestamp,
+            },
+          ];
+        });
+        if (currentPersona) {
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            status: 'IN PROGRESS',
+            lastMessage: data?.message || `Tool ${toolName} failed: ${data?.error || ''}`,
+          };
+        }
+      } else if (type === 'persona:finding') {
+        const findingData = data?.finding || data || {};
+        const fId = data?.findingId || findingData.id || `f_${canonicalPersona}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+        const finding: AnchoredFinding = {
+          id: fId,
+          severity: (findingData.severity || data?.severity || 'P1') as 'P0' | 'P1' | 'P2',
+          file: findingData.path || findingData.file || data?.path || data?.filePath || '',
+          line: findingData.line ?? data?.line ?? 1,
+          startLine: findingData.startLine ?? data?.startLine,
+          title: findingData.title || data?.title || data?.findingTitle || 'Review Finding',
+          description: findingData.description || findingData.body || data?.description || '',
+          suggestion: findingData.suggestion || data?.suggestion || findingData.replacementCode || data?.replacementCode,
+          suggestedPatch: findingData.suggestedPatch || data?.suggestedPatch,
+          status: 'active',
+          persona: canonicalPersona,
+        };
+
+        setAnchoredFindings((prev) => {
+          if (prev.some((f) => f.id === finding.id)) return prev;
+          return [...prev, finding];
+        });
+
+        if (currentPersona) {
+          const currentCount = currentPersona.findingsCount || 0;
+          nextPersonaProgress[canonicalPersona] = {
+            ...currentPersona,
+            findingsCount: currentCount + 1,
+            lastMessage: `[${finding.severity}] ${finding.title}`,
           };
         }
       } else if (type === 'persona:complete' || type === 'agent_done') {
@@ -242,13 +602,119 @@ export function useSSE(options: UseSSEOptions = {}) {
             };
           }
         }
+      } else if (type === 'stage:transition') {
+        const nextStage = (data?.stage || data?.to || 'admission') as ReviewStage;
+        const stageStatus = data?.status || 'running';
+        const stageProgress = typeof data?.progress === 'number' ? data.progress : 100;
+        const msg = data?.message || data?.description;
+        const duration = data?.durationMs;
+
+        setCurrentStage(nextStage);
+
+        setStageHistory((prevStages) => {
+          const STAGE_ORDER: ReviewStage[] = [
+            'admission',
+            'compaction',
+            'planning',
+            'execution',
+            'arbitration',
+            'publication',
+            'complete',
+          ];
+          const targetIdx = STAGE_ORDER.indexOf(nextStage);
+
+          return prevStages.map((s) => {
+            const sIdx = STAGE_ORDER.indexOf(s.stage);
+            if (s.stage === nextStage) {
+              return {
+                ...s,
+                status: stageStatus,
+                progress: stageProgress,
+                description: msg || s.description,
+                startedAt: s.startedAt || evt.timestamp,
+                completedAt: stageStatus === 'completed' ? evt.timestamp : s.completedAt,
+                durationMs: duration ?? s.durationMs,
+              };
+            }
+            if (targetIdx !== -1 && sIdx < targetIdx) {
+              return {
+                ...s,
+                status: 'completed',
+                progress: 100,
+                completedAt: s.completedAt || evt.timestamp,
+              };
+            }
+            return s;
+          });
+        });
+
+        if (typeof data?.overallProgress === 'number') {
+          setOverallProgress(data.overallProgress);
+        } else {
+          const STAGE_WEIGHTS: Record<ReviewStage, number> = {
+            admission: 10,
+            compaction: 25,
+            planning: 40,
+            execution: 75,
+            arbitration: 90,
+            publication: 98,
+            complete: 100,
+          };
+          setOverallProgress(STAGE_WEIGHTS[nextStage] ?? 50);
+        }
+      } else if (type === 'turn:step') {
+        const turnNum = typeof data?.turn === 'number' ? data.turn : 1;
+        const maxTurnsVal = typeof data?.maxTurns === 'number' ? data.maxTurns : 20;
+        const pId = data?.personaId || data?.persona || canonicalPersona;
+        const tId = data?.taskId || pId;
+
+        const turnRecord: TurnStepRecord = {
+          id: data?.id || `turn_${tId}_${turnNum}_${evt.timestamp}`,
+          jobId: evt.jobId,
+          personaId: pId,
+          taskId: tId,
+          turn: turnNum,
+          maxTurns: maxTurnsVal,
+          action: data?.action || 'reasoning',
+          tool: data?.tool || data?.toolName,
+          input: data?.input || data?.args,
+          output: data?.output || data?.result,
+          tokensBurned: data?.tokensBurned || data?.tokensUsed,
+          latencyMs: data?.latencyMs || data?.durationMs,
+          timestamp: data?.timestamp || evt.timestamp,
+        };
+
+        setTurns((prev) => [...prev, turnRecord]);
+
+        setActiveTurnByTask((prev) => ({
+          ...prev,
+          [tId]: { current: turnNum, max: maxTurnsVal },
+          [pId]: { current: turnNum, max: maxTurnsVal },
+        }));
       }
 
-      // Token and cost extraction
-      if (data) {
-        if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
-        if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
-        if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
+      // Absolute vs Delta Token and Cost Extraction
+      if (type === 'token:metrics' || (type === 'token:update' && data?.isAbsolute)) {
+        absoluteMetrics = {
+          promptTokens: typeof data?.promptTokens === 'number' ? data.promptTokens : undefined,
+          completionTokens: typeof data?.completionTokens === 'number' ? data.completionTokens : undefined,
+          totalTokens: typeof data?.totalTokens === 'number' ? data.totalTokens : undefined,
+          estimatedCostUSD: typeof data?.costUSD === 'number' ? data.costUSD : typeof data?.estimatedCostUSD === 'number' ? data.estimatedCostUSD : undefined,
+          tokensPerSec: typeof data?.tokensPerSec === 'number' ? data.tokensPerSec : undefined,
+          latencyMs: typeof data?.latencyMs === 'number' ? data.latencyMs : undefined,
+        };
+      } else if (data) {
+        if (type === 'token:update') {
+          if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
+          if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
+          if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
+          if (typeof data.costUSD === 'number') costDelta += data.costUSD;
+          else if (typeof data.estimatedCostUSD === 'number') costDelta += data.estimatedCostUSD;
+        } else {
+          if (typeof data.promptTokens === 'number') pTokensDelta += data.promptTokens;
+          if (typeof data.completionTokens === 'number') cTokensDelta += data.completionTokens;
+          if (typeof data.totalTokens === 'number') tTokensDelta += data.totalTokens;
+        }
 
         if (typeof data.tokensUsed === 'object' && data.tokensUsed !== null) {
           if (typeof data.tokensUsed.prompt === 'number') pTokensDelta += data.tokensUsed.prompt;
@@ -284,15 +750,25 @@ export function useSSE(options: UseSSEOptions = {}) {
 
     // Calculate new metrics totals
     setTokenMetrics((prev) => {
-      const newPrompt = prev.promptTokens + pTokensDelta;
-      const newCompletion = prev.completionTokens + cTokensDelta;
-      const newTotal = prev.totalTokens + (tTokensDelta || pTokensDelta + cTokensDelta);
-      const newCost = prev.estimatedCostUSD + costDelta;
-      const newAst = prev.astNodes + astNodesDelta;
-      const newNits = prev.nitsFound + nitsDelta;
+      let newPrompt = prev.promptTokens + pTokensDelta;
+      let newCompletion = prev.completionTokens + cTokensDelta;
+      let newTotal = prev.totalTokens + (tTokensDelta || pTokensDelta + cTokensDelta);
+      let newCost = prev.estimatedCostUSD + costDelta;
+      let newAst = prev.astNodes + astNodesDelta;
+      let newNits = prev.nitsFound + nitsDelta;
+
+      if (absoluteMetrics) {
+        if (typeof absoluteMetrics.promptTokens === 'number') newPrompt = absoluteMetrics.promptTokens;
+        if (typeof absoluteMetrics.completionTokens === 'number') newCompletion = absoluteMetrics.completionTokens;
+        if (typeof absoluteMetrics.totalTokens === 'number') newTotal = absoluteMetrics.totalTokens;
+        if (typeof absoluteMetrics.estimatedCostUSD === 'number') newCost = absoluteMetrics.estimatedCostUSD;
+        if (typeof absoluteMetrics.latencyMs === 'number') latestLatency = absoluteMetrics.latencyMs;
+      }
 
       // Approximate tokens per sec based on latency or batch size
-      const tps = latestLatency > 0 ? Math.round(((cTokensDelta || 1) / (latestLatency / 1000)) * 10) / 10 : prev.tokensPerSec;
+      const tps = absoluteMetrics && typeof absoluteMetrics.tokensPerSec === 'number'
+        ? absoluteMetrics.tokensPerSec
+        : latestLatency > 0 ? Math.round(((cTokensDelta || 1) / (latestLatency / 1000)) * 10) / 10 : prev.tokensPerSec;
 
       const newMetrics: StreamingTokenMetrics = {
         promptTokens: newPrompt,
@@ -405,24 +881,73 @@ export function useSSE(options: UseSSEOptions = {}) {
         lastActivityRef.current = Date.now();
       };
 
-      es.onmessage = (event: MessageEvent) => {
+      const handleRawData = (eventType: string, rawData: string) => {
         lastActivityRef.current = Date.now();
         if (connectionStatus !== 'connected') {
           setConnectionStatus('connected');
         }
 
-        if (!event.data) return;
+        if (!rawData) return;
         try {
-          const parsed: LiveStreamEvent = JSON.parse(event.data);
-          incomingQueueRef.current.push(parsed);
+          const parsed = JSON.parse(rawData);
+          const evtType = parsed.type || eventType;
+          if (evtType === 'ping') return;
+
+          const eventObj: LiveStreamEvent = {
+            type: evtType as any,
+            jobId: parsed.jobId || jobId || 'default-job',
+            timestamp: parsed.timestamp || new Date().toISOString(),
+            persona: parsed.persona || parsed.dimension,
+            data: parsed.data !== undefined ? parsed.data : parsed,
+          };
+          incomingQueueRef.current.push(eventObj);
           scheduleFlush();
         } catch {
           // Ignore invalid JSON payloads or comment pings
         }
       };
 
+      es.onmessage = (event: MessageEvent) => {
+        handleRawData('message', event.data);
+      };
+
+      if (typeof es.addEventListener === 'function') {
+        const knownEvents = [
+          'connection:open',
+          'stage:transition',
+          'turn:step',
+          'token:update',
+          'task:plan',
+          'task:progress',
+          'task:complete',
+          'context:compaction',
+          'finding:anchored',
+          'persona:start',
+          'persona:progress',
+          'persona:chunk',
+          'persona:reasoning',
+          'reasoning:chunk',
+          'persona:finding',
+          'persona:complete',
+          'tool:start',
+          'tool:result',
+          'tool:error',
+          'log:chunk',
+          'token:metrics',
+          'llm:token',
+          'llm:chunk',
+          'job:complete',
+          'ping',
+        ];
+        for (const evtName of knownEvents) {
+          es.addEventListener(evtName, (event: any) => {
+            handleRawData(evtName, event.data);
+          });
+        }
+      }
+
       es.onerror = () => {
-        if (es.readyState === EventSource.CLOSED || es.readyState === EventSource.CONNECTING) {
+        if (es.readyState === EventSource.CLOSED) {
           es.close();
           eventSourceRef.current = null;
           handleReconnect();
@@ -522,8 +1047,24 @@ export function useSSE(options: UseSSEOptions = {}) {
     tokenMetrics,
     tokenHistory,
     clearEvents,
+    connect,
+    disconnect,
     reconnect,
     activeJobs,
     fetchActiveJobs,
+    reasoning,
+    toolExecutions,
+    anchoredFindings,
+    // Modern Composed Swarm Task State
+    swarmTasks,
+    setSwarmTasks,
+    contextCompaction,
+    setContextCompaction,
+    // Live Review Stages & Turns State
+    currentStage,
+    stageHistory,
+    overallProgress,
+    turns,
+    activeTurnByTask,
   };
 }

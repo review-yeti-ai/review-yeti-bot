@@ -47,6 +47,86 @@ export const delegatedFailureReasons = [
 
 export type DelegatedFailureReason = typeof delegatedFailureReasons[number];
 
+const operationalStatusCountsSchema = z.object({
+  started:z.number().int().nonnegative().safe(), completed:z.number().int().nonnegative().safe(),
+  failed:z.number().int().nonnegative().safe(), aborted:z.number().int().nonnegative().safe(),
+  skipped:z.number().int().nonnegative().safe(), blocked:z.number().int().nonnegative().safe(), rejected:z.number().int().nonnegative().safe(),
+}).strict();
+export const operationalTelemetryEventSchema = z.object({
+    task: z.enum(['panel', 'persona_lane', 'composed_plan', 'composed_task', 'provider_call', 'provider_output']),
+    status: z.enum(['started', 'completed', 'failed', 'aborted', 'skipped', 'blocked', 'rejected']),
+    role: z.enum(['persona', 'moderator', 'arbiter', 'classifier', 'map_reduce_reduce', 'composed_plan', 'composed_task', 'other']).optional(),
+    turn: z.number().int().nonnegative().safe().optional(),
+    callSequence: z.number().int().nonnegative().safe().optional(),
+    durationMs: z.number().int().min(0).max(86_400_000).optional(),
+    /** Numeric upstream response status only; never retain provider text or response bodies. */
+    responseStatus: z.number().int().min(400).max(599).optional(),
+    rejectionCode: z.enum(['aborted', 'timeout', 'rate_limit', 'transport', 'provider_error', 'malformed_output',
+      'configuration', 'budget_exhausted', 'internal_error', 'contract', 'auth', 'unknown', 'invalid_task_output',
+      'findings_contract_invalid', 'finding_path_invalid', 'finding_path_not_changed', 'finding_line_invalid',
+      'finding_line_not_added', 'finding_line_unanchorable', 'finding_severity_invalid']).optional(),
+  }).strict();
+
+/** Derive availability from observed per-field sample counts, including observed zeros. */
+export function deriveResponseUsageAvailability(
+  responses: number,
+  samples: readonly number[],
+): 'known' | 'partial' | 'unknown' {
+  return responses > 0 && samples.every(n => n === responses)
+    ? 'known'
+    : samples.some(n => n > 0) ? 'partial' : 'unknown';
+}
+
+/** Content-free observations, never an inferred provider cause or retry decision. */
+export const operationalTelemetrySchema = z.object({
+  version: z.literal('OperationalTelemetry.v1'),
+  basis: z.literal('observed_worker_client'),
+  cause: z.literal('unknown'),
+  eventCount: z.number().int().nonnegative().safe(),
+  eventsDropped: z.number().int().nonnegative().safe(),
+  recentEvents: z.array(operationalTelemetryEventSchema).max(16),
+  phaseCounts:z.object({panel:operationalStatusCountsSchema,persona_lane:operationalStatusCountsSchema,
+    composed_plan:operationalStatusCountsSchema,composed_task:operationalStatusCountsSchema,
+    provider_call:operationalStatusCountsSchema,provider_output:operationalStatusCountsSchema}).strict(),
+  providerCalls: z.object({
+    started: z.number().int().nonnegative().safe(), completed: z.number().int().nonnegative().safe(),
+    failed: z.number().int().nonnegative().safe(), aborted: z.number().int().nonnegative().safe(),
+    inflight: z.number().int().nonnegative().safe(),
+  }).strict(),
+  responseUsage: z.object({
+    availability: z.enum(['unknown', 'partial', 'known']),
+    responses: z.number().int().nonnegative().safe(),
+    samples: z.object({promptTokens:z.number().int().nonnegative().safe(), completionTokens:z.number().int().nonnegative().safe(),
+      totalTokens:z.number().int().nonnegative().safe(), cachedTokens:z.number().int().nonnegative().safe(), costUSD:z.number().int().nonnegative().safe()}).strict(),
+    totals: z.object({promptTokens:z.number().int().nonnegative().safe().optional(), completionTokens:z.number().int().nonnegative().safe().optional(),
+      totalTokens:z.number().int().nonnegative().safe().optional(), cachedTokens:z.number().int().nonnegative().safe().optional(), costUSD:z.number().min(0).max(1_000_000_000).optional()}).strict(),
+  }).strict(),
+  panel: z.object({invoked:z.boolean(), wallClockMs:z.number().int().min(0).max(86_400_000).optional()}).strict(),
+  ledger: z.object({basis:z.literal('returned_responses_including_shadow'), availability:z.literal('partial'),
+    calls:z.number().int().nonnegative().safe(), promptTokens:z.number().int().nonnegative().safe(),
+    completionTokens:z.number().int().nonnegative().safe(), totalTokens:z.number().int().nonnegative().safe(),
+    cachedTokens:z.number().int().nonnegative().safe(), costUSD:z.number().min(0).max(1_000_000_000)}).strict().optional(),
+}).strict().superRefine((value, ctx) => {
+  const calls=value.providerCalls;
+  const samples=Object.values(value.responseUsage.samples);
+  const availability=deriveResponseUsageAvailability(value.responseUsage.responses,samples);
+  if (calls.started !== calls.completed + calls.failed + calls.aborted + calls.inflight
+    || value.responseUsage.responses !== calls.completed
+    || value.responseUsage.availability !== availability
+    || Object.values(value.phaseCounts).flatMap(x=>Object.values(x)).reduce((a,b)=>a+b,0)!==value.eventCount
+    || Object.entries(value.responseUsage.samples).some(([key,n])=>(n>0)!==Object.hasOwn(value.responseUsage.totals,key))
+    || value.eventCount !== value.eventsDropped + value.recentEvents.length
+    || Object.values(value.responseUsage.samples).some(n=>n>value.responseUsage.responses)
+    || Buffer.byteLength(JSON.stringify(value),'utf8')>8192) ctx.addIssue({code:z.ZodIssueCode.custom,message:'inconsistent or oversized operational telemetry'});
+});
+export type OperationalTelemetry = z.infer<typeof operationalTelemetrySchema>;
+
+/** Optional enrichment fails soft at producers/storage/getters; raw wire parsing stays strict. */
+export function normalizeOperationalTelemetry(value: unknown): OperationalTelemetry | undefined {
+  try { const parsed=operationalTelemetrySchema.safeParse(value); return parsed.success ? parsed.data : undefined; }
+  catch { return undefined; }
+}
+
 export const workerFailureDiagnosticsSchema = z.object({
   /** Stable, non-secret category for operators and recovery automation. */
   reason: z.string().regex(/^[a-z][a-z0-9_.:-]{0,127}$/u),
@@ -67,6 +147,7 @@ export const workerFailureDiagnosticsSchema = z.object({
    * the bounded automatic retry, regardless of `failureClass`.
    */
   recoverableIncompletePanel: z.boolean().optional(),
+  operationalTelemetry: operationalTelemetrySchema.optional(),
 }).strict();
 
 export type WorkerFailureDiagnostics = z.infer<typeof workerFailureDiagnosticsSchema>;
@@ -203,9 +284,11 @@ export function buildDurableWorkerFailureDiagnostics(
     && /^[a-z][a-z0-9_.:-]{0,127}$/u.test(diagnostics.reason)
     ? diagnostics.reason : workerFailureReason(failureClass);
   const logTail = redactWorkerFailureLogTail(diagnostics?.logTail) || workerFailureReason(failureClass);
+  const operationalTelemetry = normalizeOperationalTelemetry(diagnostics?.operationalTelemetry);
   return {
     failureClass,
     reason,
+    ...(operationalTelemetry ? { operationalTelemetry } : {}),
     ...(safeProviderStatus === undefined ? {} : { providerStatus: safeProviderStatus }),
     logTail,
     ...(executionAttempt === undefined ? {} : { executionAttempt }),
