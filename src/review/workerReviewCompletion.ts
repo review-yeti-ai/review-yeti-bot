@@ -12,6 +12,7 @@ import { incrementalReviewClaimSchema } from './incrementalReviewClaim';
 import { verdictCacheClaimSchema } from './verdictCacheClaim';
 import { incompleteP2RecoveryClaimSchema } from './incompleteP2RecoveryClaim';
 import { EMPTY_MODERATION_SKIPPED, decideEmptyModeration } from './emptyModeration';
+import { isInfrastructureIncompleteResult } from './laneInfrastructure';
 import { getMetrics } from '../telemetry';
 import { logger } from '../utils/logger';
 import { MAX_TASKS_HARD_CAP, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATTERN, validateTaskPlan, type ReviewTask } from '../reviewTaskContract';
@@ -975,7 +976,20 @@ export function deriveCanonicalWorkerReviewEvidence(
     return { valid: true, canonical, evidence };
   }
   let requiredIds = expectedPersonaIds;
-  if (contract.reviewEngine === 'composed') {
+  // A thrown infrastructure failure can precede a composed plan (or prevent its return).
+  // The publisher reports the configured roster as all ERROR, not fabricated task evidence.
+  // Admit only that exact failure envelope so the service can record infrastructure-failure
+  // and apply its existing bounded retry. Mixed results/findings still require a real plan;
+  // identity, roster membership, raw verdict and cached-success checks remain fail-closed.
+  const composedInfrastructureFailure = contract.reviewEngine === 'composed'
+    && completion.result.taskPlan === undefined
+    && contract.coverageComplete
+    && Boolean(contract.composedChangedPaths?.length)
+    && isInfrastructureIncompleteResult(completion.result)
+    && completion.result.personas.length === expectedPersonaIds.length
+    && completion.result.personas.every((persona) => persona.decision === 'ERROR'
+      && persona.status === 'ERROR' && persona.evidenceSource !== 'shadow' && persona.findings.length === 0);
+  if (contract.reviewEngine === 'composed' && !composedInfrastructureFailure) {
     if (!completion.result.taskPlan || !contract.composedChangedPaths?.length) {
       return invalidEvidence('composed completion is missing its trusted task plan or effective paths');
     }

@@ -75,6 +75,78 @@ function expectInvalid(result: ReturnType<typeof derive>, message: RegExp): void
   expect(result.message).toMatch(message);
 }
 
+function thrownComposedFailure(): WorkerReviewCompletion {
+  return completion({ result: {
+    version: 'WorkerReviewResult.v1', completedAt: completion().result.completedAt,
+    personas: contract.expectedPersonaIds.map((id) => lane(id, {
+      decision: 'ERROR', status: 'ERROR', errorClass: 'rate_limit',
+    })),
+    coverageComplete: true, quorumSatisfied: false,
+    failureDiagnostics: { reason: 'lane_infrastructure_incomplete', recoverableIncompletePanel: true,
+      logTail: 'lane panel failed: 429' },
+  } });
+}
+
+const composedContract: TrustedReviewCoverageContract = {
+  ...contract, reviewEngine: 'composed', composedChangedPaths: ['src/example.ts'], composedMaxTasks: 8,
+};
+
+describe('composed infrastructure failure without a returned task plan', () => {
+  it.each(['rate_limit', 'transport', 'provider_error', 'timeout'] as const)(
+    'accepts only failing %s evidence and cannot reuse it as a stored successful review', (errorClass) => {
+      const input = thrownComposedFailure();
+      for (const persona of input.result.personas) persona.errorClass = errorClass;
+      expect(derive(input, composedContract)).toMatchObject({ valid: true, evidence: {
+        verdict: 'BLOCK', infrastructureFailure: true, completedLanes: 0, quorumSatisfied: false,
+        p0Count: 0, p1Count: 0, p2Count: 0,
+      } });
+      expect(deriveStoredCompletionVerdict(input.result, {
+        expectedLanes: 2, coverageComplete: true, reviewEngine: 'composed',
+      })).toBeNull();
+    },
+  );
+
+  it.each([
+    ['missing lane', (input: WorkerReviewCompletion) => { input.result.personas.pop(); }],
+    ['duplicate lane', (input: WorkerReviewCompletion) => { input.result.personas[1].id = 'security'; }],
+    ['unknown lane', (input: WorkerReviewCompletion) => { input.result.personas[1].id = 'unknown'; }],
+    ['approval', (input: WorkerReviewCompletion) => { input.result.personas[0].decision = 'APPROVE'; }],
+    ['missing error status', (input: WorkerReviewCompletion) => { input.result.personas[0].status = undefined; }],
+    ['shadow lane', (input: WorkerReviewCompletion) => { input.result.personas[0].evidenceSource = 'shadow'; }],
+    ['finding', (input: WorkerReviewCompletion) => { input.result.personas[0].findings.push({
+      severity: 'P1', path: 'src/example.ts', line: 1, title: 'Defect', body: 'Must remain blocking.',
+    }); }],
+    ['missing diagnostics', (input: WorkerReviewCompletion) => { input.result.failureDiagnostics = undefined; }],
+    ['non-recoverable diagnostics', (input: WorkerReviewCompletion) => {
+      input.result.failureDiagnostics!.recoverableIncompletePanel = false;
+    }],
+    ['unreadable coverage', (input: WorkerReviewCompletion) => { input.result.coverageComplete = false; }],
+    ['claimed quorum', (input: WorkerReviewCompletion) => { input.result.quorumSatisfied = true; }],
+    ['claimed SHIP', (input: WorkerReviewCompletion) => { input.result.verdict = 'SHIP'; }],
+    ['wrong identity', (input: WorkerReviewCompletion) => { input.headSha = 'f'.repeat(40); }],
+    ['invalid supplied plan', (input: WorkerReviewCompletion) => { input.result.taskPlan = [{
+      id: 'task-a', dimension: 'architecture', paths: ['unrelated.ts'], question: 'Question?', rationale: 'Reason.',
+    }]; }],
+  ] as const)('refuses %s rather than treating it as a planless infrastructure failure', (_label, mutate) => {
+    const input = thrownComposedFailure();
+    mutate(input);
+    expectInvalid(derive(input, composedContract), /./u);
+  });
+
+  it.each(['auth', 'contract', 'internal_error', 'malformed_output', 'budget_exhausted'] as const)(
+    'refuses non-infrastructure class %s', (errorClass) => {
+      const input = thrownComposedFailure();
+      input.result.personas[0].errorClass = errorClass;
+      expectInvalid(derive(input, composedContract), /missing its trusted task plan/u);
+    },
+  );
+
+  it('retains trusted coverage and effective-path requirements', () => {
+    expectInvalid(derive(thrownComposedFailure(), { ...composedContract, coverageComplete: false }), /missing/u);
+    expectInvalid(derive(thrownComposedFailure(), { ...composedContract, composedChangedPaths: [] }), /missing/u);
+  });
+});
+
 describe('WorkerReviewCompletion.v1', () => {
   it('accepts optional classification accounting without treating it as coverage or verdict authority', () => {
     const input = completion();
