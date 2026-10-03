@@ -816,7 +816,7 @@ describe('persona panel wiring', () => {
       }),
     };
     const repoFileProvider = options.toolRead
-      ? { readFile: vi.fn(async () => options.toolRead!), findFiles: vi.fn<() => Promise<string[]>>().mockResolvedValue([]) }
+      ? { readFile: vi.fn(async () => options.toolRead!), findFiles: vi.fn(async () => []) }
       : undefined;
     const result = await executePersonaPanel({
       config: panelConfig(),
@@ -1075,7 +1075,7 @@ describe('composed engine wiring', () => {
     cfg.composed = { max_tasks: 1, max_turns_total: 8, max_turns_per_task: 8 } as typeof cfg.composed;
     const result = await executeComposedReview({ config: cfg, changedFiles: files(BIG_DIFF),
       repository: 'acme/reviewer-fixture', headSha: 'e'.repeat(40), client: { complete } as never, reviewBudget: ON,
-      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn<() => Promise<string[]>>().mockResolvedValue([]) } as never });
+      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never });
     expect(workCalls).toBe(4);
     expect(requests.some((request) => request.includes('TASK_RESULT_FRESH_RECOVERY'))).toBe(true);
     for (const request of requests) expect(Buffer.byteLength(request)).toBeLessThanOrEqual(MAX_BUDGETED_REQUEST_BYTES);
@@ -1114,7 +1114,7 @@ describe('composed engine wiring', () => {
       repository: 'acme/app',
       headSha: 'e'.repeat(40),
       client: client as never,
-      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn<() => Promise<string[]>>().mockResolvedValue([]) } as never,
+      repoFileProvider: { readFile: vi.fn(async () => 'q'.repeat(900_000)), findFiles: vi.fn(async () => []) } as never,
       ...(reviewBudget ? { reviewBudget } : {}),
     }).catch(() => undefined);
     return requests;
