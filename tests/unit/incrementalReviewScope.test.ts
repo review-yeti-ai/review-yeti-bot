@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
+import { budgetCategoryRank, classifyBudgetCategory } from '../../src/review/reviewBudget';
 
 const root = path.resolve(__dirname, '../..');
 const scope = require(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'));
@@ -828,6 +829,135 @@ describe('trusted incremental review scope', () => {
       admitted: false,
     });
     expect(scope.assessReviewAssignmentBudget(1, 4, 24)).toMatchObject({ planned: 4, admitted: true });
+  });
+
+  describe('planReviewAssignmentAdmission', () => {
+    const partition = (...paths: string[]) => ({ files: paths.map((path) => ({ path })) });
+
+    it('admits every partition when the fan-out fits the cap', () => {
+      expect(scope.planReviewAssignmentAdmission([partition('src/a.ts'), partition('src/b.ts')], 6, 24)).toMatchObject({
+        mode: 'full', planned: 12, admittedIndexes: [0, 1], deferredIndexes: [], deferredPaths: [], message: '',
+      });
+    });
+
+    it('admits a fan-out that exactly fills the cap', () => {
+      const partitions = Array.from({ length: 4 }, (_, index) => partition(`src/module-${index}.ts`));
+      expect(scope.planReviewAssignmentAdmission(partitions, 6, 24)).toMatchObject({
+        mode: 'full', planned: 24, admittedIndexes: [0, 1, 2, 3], deferredIndexes: [], deferredPaths: [], message: '',
+      });
+      expect(scope.planReviewAssignmentAdmission([...partitions, partition('src/extra.ts')], 6, 24))
+        .toMatchObject({ mode: 'degraded', planned: 30, admittedIndexes: [0, 1, 2, 3], deferredPaths: ['src/extra.ts'] });
+    });
+
+    it('degrades the 96-assignment shape to the highest-risk partitions in plan order and names every deferred path', () => {
+      const partitions = [
+        partition('docs/guide.md'), partition('src/feature.ts'), partition('src/auth/session.ts'),
+        partition('tests/feature.test.ts'), partition('.github/workflows/ci.yml'), partition('src/store.ts', 'src/split.ts'),
+        partition('src/split.ts'), partition('db/migrations/001.sql'),
+        ...Array.from({ length: 8 }, (_, index) => partition(`src/module-${index}.ts`)),
+      ];
+      const plan = scope.planReviewAssignmentAdmission(partitions, 6, 24);
+      expect(plan).toMatchObject({ mode: 'degraded', planned: 96, maximum: 24, admitted: false });
+      // 24 / 6 = 4 partitions: the three rank-0 slices (auth, CI, migration) first, then the
+      // earliest source slice in plan order.
+      expect(plan.admittedIndexes).toEqual([1, 2, 4, 7]);
+      expect(plan.deferredIndexes).toHaveLength(12);
+      expect(plan.deferredPaths).toContain('src/split.ts');
+      expect(plan.deferredPaths).not.toContain('src/auth/session.ts');
+      expect(plan.partialPaths).toEqual([]);
+      expect(plan.message).toContain('6 persona(s) x 16 diff partitions = 96 model assignments exceeds `max-review-assignments` (24).');
+      expect(plan.message).toContain('Every persona reviewed the 4 highest-risk partition(s); 12 partition(s) were NOT reviewed');
+      expect(plan.message).toContain('`docs/guide.md`');
+      expect(plan.message).toContain('fail-closed and cannot merge-qualify');
+      expect(plan.message).toContain('split this pull request so each part needs at most 4 partition(s), or raise `max-review-assignments` to at least 96');
+      // Deterministic: the same plan always admits the same partitions.
+      expect(scope.planReviewAssignmentAdmission(partitions, 6, 24)).toEqual(plan);
+    });
+
+    it('lists the first 15 deferred paths and counts the rest', () => {
+      const partitions = Array.from({ length: 20 }, (_, index) => partition(`src/module-${String(index).padStart(2, '0')}.ts`));
+      const plan = scope.planReviewAssignmentAdmission(partitions, 6, 18);
+      expect(plan).toMatchObject({ mode: 'degraded', admittedIndexes: [0, 1, 2] });
+      expect(plan.deferredPaths).toHaveLength(17);
+      const listed = plan.message.match(/covering 17 file\(s\): (.*?) and 2 more\. /u)?.[1];
+      expect(listed?.split(', ')).toEqual(plan.deferredPaths.slice(0, 15).map((filePath: string) => `\`${filePath}\``));
+      expect(scope.planReviewAssignmentAdmission(partitions.slice(0, 18), 6, 18).message).not.toContain(' more.');
+    });
+
+    it('reports a file split across admitted and deferred partitions as only partly reviewed', () => {
+      const plan = scope.planReviewAssignmentAdmission(
+        [partition('src/big.ts'), partition('src/big.ts', 'src/other.ts'), partition('src/third.ts')], 2, 4);
+      expect(plan).toMatchObject({ mode: 'degraded', admittedIndexes: [0, 1], deferredPaths: ['src/third.ts'], partialPaths: [] });
+      const split = scope.planReviewAssignmentAdmission([partition('src/big.ts'), partition('src/big.ts')], 2, 2);
+      expect(split).toMatchObject({ mode: 'degraded', admittedIndexes: [0], deferredPaths: ['src/big.ts'], partialPaths: ['src/big.ts'] });
+      expect(split.message).toContain('(1 of them only partly reviewed)');
+    });
+
+    it('ranks with the one shared path-risk policy the TypeScript budget re-exports (no copy)', () => {
+      const pipelineSource = fs.readFileSync(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'), 'utf8');
+      expect(pipelineSource).toContain("require('../../../src/review/pathRiskPolicy')");
+      // No table literal or classification order is restated in the pipeline.
+      expect(pipelineSource).not.toMatch(/auth\|authn\|authz|package-lock\.json|jenkinsfile|\(md\|markdown|'security-sensitive'|'ci-iac'/u);
+      const policy = require(path.join(root, 'src/review/pathRiskPolicy.js'));
+      expect(scope.admissionRiskRank).toBe(policy.pathRiskRank);
+      for (const consumer of ['securitySensitivePaths.ts', 'reviewBudget.ts', 'reviewableContent.ts', 'toolchainPinPaths.ts']) {
+        expect(fs.readFileSync(path.join(root, 'src/review', consumer), 'utf8')).toContain("from './pathRiskPolicy'");
+      }
+    });
+
+    it('declares exactly the shared policy module exports, with the value ranges the declaration claims', () => {
+      const policy = require(path.join(root, 'src/review/pathRiskPolicy.js'));
+      const declaration = fs.readFileSync(path.join(root, 'src/review/pathRiskPolicy.d.ts'), 'utf8');
+      const declared = [...declaration.matchAll(/^export function (\w+)\(/gmu)].map((match) => match[1]).sort();
+      expect(Object.keys(policy).sort()).toEqual(declared);
+      expect(Object.values(policy).every((value) => typeof value === 'function')).toBe(true);
+      const categories = [...(declaration.match(/PathBudgetCategory = ([^;]+);/u)?.[1] ?? '').matchAll(/'([a-z-]+)'/gu)].map((m) => m[1]);
+      const classes = [...(declaration.match(/SecuritySensitivePathClass =([^;]+);/u)?.[1] ?? '').matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]);
+      for (const filePath of ['src/auth.ts', '.github/workflows/ci.yml', 'Dockerfile', 'yarn.lock', '.nvmrc', 'go.mod', 'infra/main.tf',
+        'src/x.ts', 'tests/a.test.ts', 'docs/a.md', 'config/a.yaml', 'db/schema.rb', '.gitmodules', '.env', 'scripts/a.sh', '']) {
+        expect(categories).toContain(policy.classifyBudgetCategory(filePath));
+        expect([0, 1, 2]).toContain(policy.pathRiskRank(filePath));
+        const pathClass = policy.securitySensitivePathClass(filePath);
+        if (pathClass !== null) expect(classes).toContain(pathClass);
+      }
+    });
+
+    it('ranks partitions exactly as the review budget packs them (one risk policy, pinned)', () => {
+      const corpus = [
+        'src/auth/session.ts', 'src/security/policy.ts', 'lib/crypto/keys.ts', 'src/permissions.ts', 'src/oauth/client.ts',
+        'src/tokens.ts', 'config/secrets.yml', 'src/session.ts', 'src/middleware/csrf.ts', 'src/login.ts', 'src/password.ts',
+        'src/sandbox/run.ts', 'src/acl.ts', 'src/userSession.ts', 'src/AuthGuard.tsx', 'src/author.ts', 'src/authoring/page.ts',
+        'src/webhooks/handler.go', 'certs/server.pem', '.env.example', '.env', '.npmrc', 'id_rsa.pub',
+        '.github/workflows/ci.yml', '.gitlab-ci.yml', 'Jenkinsfile', 'action.yml', 'tools/action.yaml',
+        'Dockerfile', 'build/app.dockerfile', 'docker-compose.prod.yml', 'Procfile',
+        'infra/main.tf', 'stack.bicep', 'helm/values.yaml', 'k8s/deploy.yaml', 'deploy/run.yaml', 'kustomization.yaml', 'Chart.yaml',
+        '.gitmodules', 'CODEOWNERS', 'Makefile', 'scripts/deploy.sh', 'bin/run', 'hooks/pre-commit', 'tools/run.ps1',
+        'db/migrations/001.sql', 'migrations/002_add.py', 'schema.prisma', 'db/schema.rb',
+        'yarn.lock', 'package-lock.json', 'go.sum', 'Cargo.lock', '.nvmrc', 'rust-toolchain.toml', 'go.work',
+        'package.json', 'requirements-dev.txt', 'requirements/base.in', 'pyproject.toml', 'go.mod', 'app.csproj', 'mix.exs',
+        'src/db/schema.ts', 'src/sql/query.ts', 'src/feature.ts', 'lib/app.py', 'src/store.ts', 'examples/demo.ts', 'cmd/main.go',
+        'tests/a.test.ts', 'src/a.spec.ts', '__tests__/x.ts', 'e2e/flow.ts', 'test_utils.py', 'src/FooTests.cs', 'fixtures/data.json',
+        'docs/guide.md', 'README.md', 'assets/logo.png', 'docs/diagram.drawio', 'CHANGELOG.rst',
+        'tsconfig.json', 'config/app.yaml', 'settings.toml', 'data/rows.csv', 'app.properties', 'config/app.ini',
+        'runs/2026/output.log', 'evidence/trace.log', 'src/evidence/collector.ts', 'artifacts/report.xml', 'ova/versions/1.2.3.yaml',
+        'release-notes/internal/1.2.3.md', 'release-notes/public.md', '', './src/auth.ts',
+      ];
+      const mismatches = corpus
+        .map((filePath) => ({ filePath, admission: scope.admissionRiskRank(filePath),
+          budget: budgetCategoryRank(classifyBudgetCategory(filePath)) }))
+        .filter((entry) => entry.admission !== entry.budget);
+      expect(mismatches).toEqual([]);
+      // Every rank is exercised, so a collapsed classifier cannot pass vacuously.
+      expect(new Set(corpus.map((filePath) => scope.admissionRiskRank(filePath)))).toEqual(new Set([0, 1, 2]));
+    });
+
+    it('still refuses before dispatch when the roster alone exceeds the cap, and says how to fix it', () => {
+      const plan = scope.planReviewAssignmentAdmission([partition('src/a.ts')], 30, 24);
+      expect(plan).toMatchObject({ mode: 'refused', admittedIndexes: [], planned: 30 });
+      expect(plan.message).toContain('30 reviewer persona(s) exceed `max-review-assignments` (24) even for a single diff partition');
+      expect(plan.message).toContain('Reduce the persona roster to at most 24 or raise `max-review-assignments` to at least 30');
+      expect(scope.planReviewAssignmentAdmission(undefined, 3, 24)).toMatchObject({ mode: 'full', planned: 3 });
+    });
   });
 
   describe('resolveArbitrationDiffFiles (REL-552 Review Yeti PR #444 finding 6)', () => {
