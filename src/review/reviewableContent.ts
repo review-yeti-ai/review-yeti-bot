@@ -54,6 +54,13 @@ const DATA_OR_CONFIG_EXTENSION =
   /\.(json|jsonc|json5|jsonl|ndjson|ya?ml|toml|csv|tsv|xml|ini|cfg|conf|properties|env)$/i;
 const DOTENV_CONFIG_FILE = /(?:^|\/)\.env(?:\.[^/]+)?$/i;
 
+/** Read-only view for the Action pipeline's plain-JS rank copy; see `REVIEW_BUDGET_RANK_TABLES`. */
+export const REVIEWABLE_CONTENT_TABLES = Object.freeze({
+  documentationOrAsset: DOCUMENTATION_OR_ASSET_EXTENSION,
+  dataOrConfig: DATA_OR_CONFIG_EXTENSION,
+  dotenvConfig: DOTENV_CONFIG_FILE,
+});
+
 export function isDataOrConfigPath(filePath: string): boolean {
   return DATA_OR_CONFIG_EXTENSION.test(filePath) || DOTENV_CONFIG_FILE.test(filePath.replace(/\\/g, '/'));
 }

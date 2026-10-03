@@ -253,6 +253,25 @@ const CLASSED_PATTERNS: ReadonlyArray<readonly [SecuritySensitivePathClass, read
  * First match wins, so the answer is stable; being sensitive at all does not
  * depend on the order.
  */
+/**
+ * Read-only view of this policy's tables. The GitHub Action pipeline cannot load TypeScript at run
+ * time, so `admissionRiskRank` in `.github/workflows/pipelines/incremental-review-scope.js` carries a
+ * plain-JS copy. `tests/unit/incrementalReviewScope.test.ts` asserts that copy holds exactly these
+ * tables (every pattern source/flags and every name), so a change here fails that test until the
+ * copy is updated in the same change.
+ */
+export const SECURITY_SENSITIVE_PATH_TABLES = Object.freeze({
+  segment: SENSITIVE_SEGMENT,
+  stem: SENSITIVE_STEM,
+  camelStem: SENSITIVE_CAMEL_STEM,
+  classed: CLASSED_PATTERNS,
+  lockfileNames: LOCKFILE_NAMES as ReadonlySet<string>,
+  lockfilePatterns: LOCKFILE_PATTERNS,
+  toolchainPinNames: TOOLCHAIN_PIN_NAMES as ReadonlySet<string>,
+  dependencyManifests: DEPENDENCY_MANIFESTS as ReadonlySet<string>,
+  dependencyManifestPatterns: DEPENDENCY_MANIFEST_PATTERNS,
+});
+
 export function securitySensitivePathClass(filePath: unknown): SecuritySensitivePathClass | null {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) return 'malformed';
   const normalized = normalizePath(filePath);
