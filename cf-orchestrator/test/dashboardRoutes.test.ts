@@ -595,7 +595,7 @@ describe('Dashboard trigger and gate public fallback boundaries', () => {
 
   it('uses documented trigger defaults for malformed JSON and untyped pull request numbers', async () => {
     for (const [body, expectedRepo] of [
-      ['not-json', 'reviewyeti-ai/review-yeti-bot'],
+      ['not-json', 'reviewyeti-ai/yeti-pr-reviewer'],
       [JSON.stringify({ jobId: 'example-trigger', repo: 'exampleorg/example-api', prNumber: 'untyped' }), 'exampleorg/example-api'],
     ]) {
       const res = await worker.fetch(new Request('https://worker.dev/api/live/trigger', { method: 'POST', body }), createMockEnv());
