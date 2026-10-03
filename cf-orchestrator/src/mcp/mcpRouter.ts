@@ -326,11 +326,11 @@ export class McpRouter {
     const reqOrigin = request.headers.get('Origin') || '';
     const isAllowedOrigin =
       !reqOrigin ||
-      reqOrigin === 'https://review-bot.example.com' ||
-      reqOrigin.endsWith('.example.com') ||
+      reqOrigin === 'https://review-bot.calltelemetry.com' ||
+      reqOrigin.endsWith('.calltelemetry.com') ||
       reqOrigin.startsWith('http://localhost:') ||
       reqOrigin.startsWith('http://127.0.0.1:');
-    const allowedOrigin = isAllowedOrigin && reqOrigin ? reqOrigin : 'https://review-bot.example.com';
+    const allowedOrigin = isAllowedOrigin && reqOrigin ? reqOrigin : 'https://review-bot.calltelemetry.com';
 
     const corsHeaders: Record<string, string> = {
       'Access-Control-Allow-Origin': allowedOrigin,

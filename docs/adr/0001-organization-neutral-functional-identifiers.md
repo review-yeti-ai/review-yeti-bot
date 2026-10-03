@@ -1,6 +1,6 @@
 # 0001. Organization-neutral functional identifiers
 
-Status: proposed (REL-1282). Nothing in this ADR has been executed.
+Status: accepted and executed (REL-1282). See Outcome.
 
 ## Context
 
@@ -47,3 +47,25 @@ deployed code.
 
 If an external consumer of the Go module or the action default is discovered, keep a compatibility alias for one
 release before removing it.
+
+## Outcome
+
+Executed in this order: Go module path (step 1), legacy CRD group and capacity-ledger annotation (step 2), the
+central review repository and the historical receipt repository as deployment configuration
+(`REVIEW_YETI_CENTRAL_REPOSITORY`, `REVIEW_YETI_HISTORICAL_RECEIPT_REPOSITORY`; both fail closed when unset), the
+policy schema id as a version marker, and the trusted worker registry list. The remaining text-only references,
+including tests and fixtures, were removed from the tree and from history by a one-time history rewrite
+(`git filter-repo`) with deterministic replacement rules; digests, cassette cache keys and fixtures that depend on the
+rewritten text were re-derived and committed on top.
+
+Deliberately left, with the reason:
+
+- The pinned dispatch endpoint (`action.yml` default, `scripts/dispatch-doks-action.mjs`) and the files that assert it.
+  The pin is a security control (the action refuses any other endpoint) and the documented hosted-only contract; the
+  endpoint is the public service hostname, which cannot be replaced without a new hostname, DNS and certificate.
+- The edge worker deployment configuration (`cf-orchestrator/wrangler.toml` custom domain and fallback URL, and the
+  MCP origin allowlist in `cf-orchestrator/src/mcp/mcpRouter.ts`) and its tests, for the same reason.
+
+Both sets are public hostnames only and are recorded in `tests/fixtures/public-anonymity-allowlist.json` with a
+digest, so they can only shrink. Retire them by moving the hostname into deployment configuration once a neutral
+service hostname exists.

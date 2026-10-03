@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export const DOKS_OIDC_AUDIENCE = 'review-yeti-doks-dispatch';
-export const DOKS_DISPATCH_ENDPOINT = 'https://review-bot.example.com/api/dispatch/action';
+export const DOKS_DISPATCH_ENDPOINT = 'https://review-bot.calltelemetry.com/api/dispatch/action';
 const GITHUB_ACTIONS_OIDC_REQUEST_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.actions\.githubusercontent\.com$/u;
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;

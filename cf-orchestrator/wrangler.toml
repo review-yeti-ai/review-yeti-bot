@@ -4,9 +4,9 @@ compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
-# 🌐 Custom Domain in example.com
+# 🌐 Custom Domain in calltelemetry.com
 routes = [
-  { pattern = "review-yeti.example.com", custom_domain = true }
+  { pattern = "review-yeti.calltelemetry.com", custom_domain = true }
 ]
 
 # 🎨 Serve the Next.js Portal directly from Cloudflare Edge
@@ -75,7 +75,7 @@ ENVIRONMENT = "production"
 PARALLEL_MODE = "true"
 PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
 PILOT_REPOSITORIES = "all"
-DOKS_FALLBACK_URL = "https://review-bot.example.com/api/webhooks/github"
+DOKS_FALLBACK_URL = "https://review-bot.calltelemetry.com/api/webhooks/github"
 DEFAULT_WORKER_IMAGE = "ghcr.io/review-yeti-ai/review-yeti-worker:latest"
 MAX_CONCURRENT_JOBS = "5"
 DEBOUNCE_WINDOW_SECONDS = "60"

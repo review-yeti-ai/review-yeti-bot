@@ -997,7 +997,7 @@ describe('POST /api/dispatch/action', () => {
     const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs'));
 
     const result = await dispatchAction({
-      DOKS_DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
+      DOKS_DISPATCH_URL: 'https://review-bot.calltelemetry.com/api/dispatch/action',
       DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch',
       DOKS_PUBLISH_MODE: 'disabled',
       ACTION_SHA: body.actionSha,
@@ -1062,7 +1062,7 @@ describe('POST /api/dispatch/action', () => {
     const { dispatchAction } = await import(path.resolve(__dirname, '../../scripts/dispatch-doks-action.mjs'));
 
     const result = await dispatchAction({
-      DOKS_DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
+      DOKS_DISPATCH_URL: 'https://review-bot.calltelemetry.com/api/dispatch/action',
       DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch', DOKS_PUBLISH_MODE: 'app-gate',
       EXPECTED_GENERATION: '3', ACTION_SHA: body.actionSha,
       REPOSITORY_ID: String(body.repositoryId), REPOSITORY: `${body.owner}/${body.repo}`,

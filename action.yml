@@ -113,7 +113,7 @@ inputs:
   doks-dispatch-url:
     description: 'Fixed Review Yeti DOKS admission endpoint. Only the canonical HTTPS endpoint is accepted.'
     required: false
-    default: 'https://review-bot.example.com/api/dispatch/action'
+    default: 'https://review-bot.calltelemetry.com/api/dispatch/action'
   doks-publish-mode:
     description: >-
       DOKS publication policy: app-gate is the standard gate-checked publication mode for

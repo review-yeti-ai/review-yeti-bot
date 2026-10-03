@@ -20,12 +20,12 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
   it('OPTIONS /api/mcp returns 204 with CORS preflight headers', async () => {
     const req = new Request('https://review-yeti.test/api/mcp', {
       method: 'OPTIONS',
-      headers: { Origin: 'https://review-bot.example.com' },
+      headers: { Origin: 'https://review-bot.calltelemetry.com' },
     });
     const res = await worker.fetch(req, {} as any);
 
     assert.equal(res.status, 204);
-    assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://review-bot.example.com');
+    assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://review-bot.calltelemetry.com');
     assert.ok(res.headers.get('Access-Control-Allow-Methods')?.includes('POST'));
   });
 
