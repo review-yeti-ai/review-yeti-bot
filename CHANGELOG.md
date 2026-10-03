@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.118.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.118.0...v1.118.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **action:** fail with a clear error when the dispatch endpoint is not supplied ([#1357](https://github.com/review-yeti-ai/review-yeti-bot/issues/1357)) ([aa903da](https://github.com/review-yeti-ai/review-yeti-bot/commit/aa903da2565ba7ed4032d1bdfd05d265253376f1))
+
 ## [1.118.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.2...v1.118.0) (2026-10-03)
 
 
