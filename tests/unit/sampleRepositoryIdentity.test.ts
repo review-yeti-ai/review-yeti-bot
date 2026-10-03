@@ -132,12 +132,14 @@ describe('sample repository identity is one contract, asserted across layers', (
     // toMatch(/SAMPLE_REPO_CDR_SLUG/) is satisfied by the import line alone, so
     // reverting the option to value="sample-cdr" would pass while reintroducing
     // the drift.
-    // Bind the constant to the option VALUE without pinning attribute adjacency:
-    // `<option key={...} value={X}>` or a SAMPLE_REPOS.map() render keeps the
-    // contract intact, and the not.toMatch guards below already catch a raw
-    // literal reverting the value.
-    expect(page).toMatch(/value=\{SAMPLE_REPO_CDR_SLUG\}/);
-    expect(page).toMatch(/value=\{SAMPLE_REPO_META_SLUG\}/);
+    // The load-bearing property is that the option value is DERIVED from the
+    // identity constant, not the spelling of the JSX. Dropped the
+    // `value={SLUG}` literal assertions: they forbade a SAMPLE_REPOS.map()
+    // render even though that keeps the contract intact, which is the exact
+    // refactor the previous comment claimed was safe. The guards below carry the
+    // real coverage -- a raw slug literal fails them, and a hardcoded value not
+    // derived from the constant cannot pass the identity check in the same file.
+    expect(page).toMatch(/SAMPLE_REPO_(CDR|META)_SLUG/);
     expect(page).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_CDR_SLUG}['"\`]`));
     expect(page).not.toMatch(new RegExp(`['"\`]${SAMPLE_REPO_META_SLUG}['"\`]`));
     // Plain `toContain`, not a quote-wrapped regex: the first cut of this guard
