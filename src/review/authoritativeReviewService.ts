@@ -25,6 +25,8 @@ export interface AuthoritativeReviewServiceOptions {
   workerId: string;
   /** Transport seam only. No candidate request can supply it. */
   fetchImplementation?: typeof fetch;
+  /** ADR 0002: resolves the review App's bot login for finding-thread author verification. */
+  findingThreadAuthor?: () => Promise<string | undefined>;
 }
 
 /** Additive control-plane wiring. Merely constructing this object does not
@@ -52,7 +54,8 @@ export function createAuthoritativeReviewService(options: AuthoritativeReviewSer
       signal, fetchImplementation: options.fetchImplementation,
     });
     return new AuthoritativeReviewReader({ token: minted.token, baseUrl: options.baseUrl,
-      fetchImplementation: options.fetchImplementation, ...(gitDiffSource ? { gitDiffSource } : {}) });
+      fetchImplementation: options.fetchImplementation, ...(gitDiffSource ? { gitDiffSource } : {}),
+      ...(options.findingThreadAuthor ? { findingThreadAuthor: options.findingThreadAuthor } : {}) });
   };
   const resolver = new AuthoritativePublishingResolver({
     policyRepository: config.policyRepository, policyRef: config.policyRef, policyPath: config.policyPath,

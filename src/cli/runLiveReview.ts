@@ -32,6 +32,8 @@ import {
 import { WorkerStatusPoller } from './workerStatusPoller';
 import { recordSupersededWorkerExit } from './workerSupersededExit';
 import { isReviewSuperseded } from '../review/reviewSupersession';
+import { readFindingThreads, type PullRequestRef } from '../github/findingThreads';
+import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { publishingWorkerAdapters } from '../review/publishingWorkerAdapters';
 import { flushMetrics } from '../telemetry/metrics';
 import { logger } from '../utils/logger';
@@ -1769,12 +1771,25 @@ export async function runWorker(
       // strict adapter, so malformed configuration fails closed rather than opting
       // out silently.
       let receipt: Awaited<ReturnType<typeof runPublishingReviewWorker>>;
+      const adapters = publishingWorkerAdapters(workerEnv, token);
+      // ADR 0002: finding threads come from the service, which verifies the review App as their
+      // author. Without the service route, the run's own read token can still recognise threads
+      // for identity, but those are never trusted to satisfy a P2 (no author verification).
+      const readToken = String(workerEnv.GH_TOKEN || '').trim();
+      const headSha = String(workerEnv.REVIEW_HEAD_SHA || '').trim();
+      const serviceThreads = adapters.findingThreads;
+      const findingThreadReader = serviceThreads
+        ? (_pr: PullRequestRef) => serviceThreads.read(headSha, rootAbortController.signal)
+        : isGitHubInstallationToken(readToken)
+          ? (pr: PullRequestRef) => readFindingThreads({ token: readToken, signal: rootAbortController.signal }, pr)
+          : undefined;
       try {
         receipt = await runPublishingReviewWorker(workerEnv, {
           checkClient,
           signal: rootAbortController.signal,
           isCurrentHead: poller ? () => poller.isCurrentHead() : undefined,
-          ...publishingWorkerAdapters(workerEnv, token),
+          ...adapters,
+          ...(findingThreadReader ? { findingThreadReader } : {}),
         });
       } catch (error) {
         // REL-1057: a newer head superseded this run. That is a terminal
