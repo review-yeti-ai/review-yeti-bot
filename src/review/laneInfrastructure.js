@@ -190,6 +190,60 @@ function transportRetryDelayMs(attempt, random = Math.random) {
   return Math.floor(unit * ceiling);
 }
 
+/**
+ * The rate-limit retry ladder: what a lane does with an observed provider 429 ("Concurrent limit
+ * reached ... 15/15 slots in use", "rate limit exceeded"). Owned here, beside the transport
+ * schedule, so every review runtime rides out rate limiting on the same schedule.
+ *
+ * A 429 is not an outage: the upstream is healthy and tells this caller to wait for a slot. The
+ * transport schedule above (five retries in about a minute) was built for outages and gave up while
+ * other reviews still held the slots. This ladder is bounded by the caller's remaining budget, not
+ * by a small attempt count:
+ * - exponential backoff with FULL jitter (base 2s, factor 2, at most 30s per sleep) so lanes from
+ *   many runs do not re-ask in one synchronized burst;
+ * - floored at the rejection's sanitized Retry-After, even above the per-sleep cap -- a declared
+ *   cooldown is never cut short;
+ * - a sleep is taken only when it ends before the caller's budget does; otherwise the caller fails
+ *   now with the accurate rate_limit class instead of a generic timeout;
+ * - the window and retry count are safety bounds for callers with no deadline at all.
+ */
+const RATE_LIMIT_RETRY_BASE_DELAY_MS = 2_000;
+const RATE_LIMIT_RETRY_FACTOR = 2;
+/** Ceiling of the jittered part of any single rate-limit sleep. */
+const RATE_LIMIT_RETRY_MAX_DELAY_MS = 30_000;
+/** Total wall-clock a single call may spend riding out rate limiting, from its first 429. */
+const RATE_LIMIT_RETRY_WINDOW_MS = 900_000;
+/** Safety bound on retries of one call; the budget normally stops the ladder first. */
+const RATE_LIMIT_MAX_RETRIES = 60;
+
+/** Full-jitter delay for rate-limit retry `retry` (1-based), floored at `retryAfterFloorMs`. */
+function rateLimitRetryDelayMs(retry, retryAfterFloorMs = 0, random = Math.random) {
+  const ceiling = Math.min(
+    RATE_LIMIT_RETRY_BASE_DELAY_MS * Math.pow(RATE_LIMIT_RETRY_FACTOR, Math.max(0, retry - 1)),
+    RATE_LIMIT_RETRY_MAX_DELAY_MS,
+  );
+  const unit = Math.min(Math.max(random(), 0), 1);
+  const jittered = Math.floor(unit * ceiling);
+  const floor = Number.isFinite(retryAfterFloorMs) ? Math.max(0, Math.ceil(retryAfterFloorMs)) : Infinity;
+  return Math.max(jittered, floor);
+}
+
+/**
+ * Whether to retry a rate-limited call, and after how long. `retryAfterFloorMs` is the rejection's
+ * remaining sanitized Retry-After (Infinity when it declared a cooldown beyond the accepted bound);
+ * `budgetLeftMs` is the caller's remaining budget.
+ */
+function planRateLimitRetry({ retriesSoFar, firstFailureAtMs, nowMs, retryAfterFloorMs, budgetLeftMs, random }) {
+  if (!Number.isFinite(retryAfterFloorMs)) return { retry: false, reason: 'cooldown_exceeds_bound' };
+  if (retriesSoFar >= RATE_LIMIT_MAX_RETRIES) return { retry: false, reason: 'max_retries' };
+  const retryNumber = retriesSoFar + 1;
+  const delayMs = rateLimitRetryDelayMs(retryNumber, retryAfterFloorMs, random);
+  const windowLeftMs = RATE_LIMIT_RETRY_WINDOW_MS - (nowMs - firstFailureAtMs);
+  if (!(delayMs < windowLeftMs)) return { retry: false, reason: 'window' };
+  if (!(delayMs < budgetLeftMs)) return { retry: false, reason: 'budget' };
+  return { retry: true, delayMs, retryNumber };
+}
+
 /** Gateway/proxy statuses that describe the path to the model, not an answer from it. */
 const TRANSIENT_GATEWAY_STATUSES = Object.freeze(new Set([429, 502, 503, 504]));
 const TRANSIENT_GATEWAY_MESSAGE = /\bHTTP (?:429|502|503|504)\b|\bBad Gateway\b|\bService Unavailable\b|\bGateway Time-?out\b/iu;
@@ -230,6 +284,13 @@ module.exports = {
   TRANSPORT_RETRY_WINDOW_MS,
   TRANSPORT_RETRY_TERMINAL_MARGIN_MS,
   transportRetryDelayMs,
+  RATE_LIMIT_RETRY_BASE_DELAY_MS,
+  RATE_LIMIT_RETRY_FACTOR,
+  RATE_LIMIT_RETRY_MAX_DELAY_MS,
+  RATE_LIMIT_RETRY_WINDOW_MS,
+  RATE_LIMIT_MAX_RETRIES,
+  rateLimitRetryDelayMs,
+  planRateLimitRetry,
   TRANSIENT_GATEWAY_STATUSES,
   isTransientGatewayMessage,
   isNonRetryableClientStatus,
