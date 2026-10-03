@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { resolvedThreadsFor } from '../support/priorGateRecord';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
 import express from 'express';
@@ -169,7 +170,9 @@ describeWithPostgres('completed finding task admission (real SQL + native dispat
       coverage: { expectedPersonaIds: tasks.map((task) => task.id), reviewEngine: 'composed' as const,
         composedChangedPaths: tasks.flatMap((task) => task.paths),
         changedFiles: tasks.map((task) => ({ path: task.paths[0]!, patch: '@@ -1,0 +1,3 @@\n+one\n+two\n+three\n' })),
-        coverageComplete: true, quorumSatisfied: true },
+        coverageComplete: true, quorumSatisfied: true,
+        // ADR 0002: the remaining P2 is required unless its thread was resolved with a stated reason.
+        findingThreads: resolvedThreadsFor([{ path: findings[2]!.path, line: findings[2]!.line, title: findings[2]!.title }]) },
     }), now)).toBe('recorded');
     expect((await pool.query('SELECT status FROM review_runs')).rows[0].status).toBe('succeeded');
     await publishFreshGate();

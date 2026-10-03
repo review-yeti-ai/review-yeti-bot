@@ -1,3 +1,4 @@
+import { findingFingerprint, type PriorFindingThread } from '../../src/review/findingConvergence';
 import type { ReviewChangedFile } from '../../src/review/reviewCore';
 import { evaluateReviewGate, type ReviewRiskAcceptance } from '../../src/review/reviewGatePolicy';
 import {
@@ -22,6 +23,8 @@ export function gateRecordFor(completionInput: unknown, trusted: {
   coverageComplete?: boolean;
   quorumSatisfied?: boolean;
   acceptance?: ReviewRiskAcceptance;
+  /** ADR 0002: the bot's finding threads the service read; a resolved-with-reason P2 is satisfied. */
+  findingThreads?: readonly PriorFindingThread[];
 }) {
   const completion = parseWorkerReviewCompletion(completionInput);
   const { version: _version, result: _result, ...expectedCoordinates } = completion;
@@ -31,6 +34,7 @@ export function gateRecordFor(completionInput: unknown, trusted: {
     changedFiles: trusted.changedFiles,
     coverageComplete: trusted.coverageComplete ?? true,
     quorumSatisfied: trusted.quorumSatisfied ?? true,
+    ...(trusted.findingThreads ? { findingThreads: trusted.findingThreads } : {}),
   });
   const candidate = {
     repositoryId: completion.repositoryId, prNumber: completion.prNumber,
@@ -51,4 +55,13 @@ export function gateRecordFor(completionInput: unknown, trusted: {
       decision: JSON.stringify(decision),
     },
   };
+}
+
+/** ADR 0002: threads in which the author resolved each given P2 with a stated reason. */
+export function resolvedThreadsFor(findings: ReadonlyArray<{ path: string; line: number; title: string }>): PriorFindingThread[] {
+  return findings.map((finding) => ({
+    fingerprint: findingFingerprint(finding), severity: 'P2', path: finding.path, line: finding.line, title: finding.title,
+    resolved: true, outdated: false,
+    resolution: { author: 'author1', reason: 'Intentional; documented in the module header and covered by a test.' },
+  }));
 }

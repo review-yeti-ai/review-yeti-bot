@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { findingFingerprint } from '../../src/review/findingConvergence';
 import { runPublishingReviewWorker } from '../../src/cli/publishingReview';
 import type { PanelResult } from '../../src/panel/types';
 import {
@@ -75,7 +76,7 @@ type LaneFinding = PanelResult['personas'][number]['findings'][number];
 
 /** The WorkerReviewEvidence the real non-authoritative worker reports for the PRIOR head. */
 async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
-  override?: { diff?: string; panel?: PanelResult }): Promise<WorkerReviewEvidence> {
+  override?: { diff?: string; panel?: PanelResult; resolvedThreads?: Array<{ path: string; title: string; line: number }> }): Promise<WorkerReviewEvidence> {
   const env: NodeJS.ProcessEnv = {
     NODE_ENV: 'test', REVIEW_PUBLICATION_MODE: 'app-gate', REVIEW_RUN_ID: PRIOR_RUN, REVIEW_REPO: 'acme/app',
     REVIEW_REPOSITORY_ID: String(REPO_ID), REVIEW_POLICY_DIGEST: POLICY, REVIEW_CONFIG_DIGEST: CONFIG,
@@ -116,6 +117,11 @@ async function realPriorEvidence(findings: Record<string, LaneFinding[]> = {},
     incrementalCompareReader: { compare: vi.fn(async () => { throw new Error('first review compares nothing'); }) },
     verdictCacheBase: { read: vi.fn(async () => ({ source: null, maxAgeMs: DEFAULT_INCREMENTAL_MAX_AGE_MS })) },
     verdictCacheCompareReader: contentReader(),
+    // ADR 0002: a P2 the author resolved with a stated reason no longer blocks the check.
+    ...(override?.resolvedThreads ? { findingThreadReader: vi.fn(async () => override.resolvedThreads!.map((thread) => ({
+      ...thread, fingerprint: findingFingerprint(thread), severity: 'P2' as const, resolved: true, outdated: false,
+      resolution: { author: 'author1', reason: 'Naming follows the existing public API; renaming would break callers.' },
+    }))) } : {}),
   });
   expect(reportReviewEvidence).toHaveBeenCalledTimes(1);
   return parseWorkerReviewEvidence((reportReviewEvidence.mock.calls as unknown[][])[0][0]);
@@ -185,7 +191,7 @@ describe('a non-authoritative prior built by the real worker', () => {
   it('#1034 shape: a raw P1 published as P2 qualifies; its file is re-reviewed, the rest carried forward', async () => {
     const evidence = await realPriorEvidence({ 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
-    ] });
+    ] }, { resolvedThreads: [{ path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module' }] });
     expect(evidence.conclusion).toBe('success');
     const rows = storedRows(evidence);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });

@@ -13,6 +13,7 @@ import { CommunityPersonaLoader } from '../../src/personas/communityPersonaLoade
 import { Context7Adapter } from '../../src/mcp/context7Adapter';
 import { PRMemoryStore } from '../../src/memory/prMemoryStore';
 import { SQLiteMemoryAdapter } from '../../src/memory/adapters/sqliteAdapter';
+import { findingFingerprint } from '../../src/review/findingConvergence';
 
 // This suite keeps the default process policy intact: P2 can leave the raw
 // arbiter at SHIP while the publisher's independent strict conclusion fails.
@@ -235,7 +236,7 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     );
   });
 
-  it('Scenario 7: Only P2 (advisory) findings present -> conclusion remains success', async () => {
+  it('Scenario 7: Only P2 findings present -> the check fails because P2 is required (ADR 0002)', async () => {
     const { deps, publishGateCheck, completeCheck } = mockDeps({
       panelRunner: vi.fn(async () => ({
         applicablePersonaIds: ['style'],
@@ -261,23 +262,26 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 
     const result = await runPublishingReviewWorker(testEnv(), deps as any);
 
+    // The canonical verdict is evidence for the service and stays SHIP; the published check is red
+    // and says why, so it never reads "SHIP" next to a failure.
     expect(result.verdict).toBe('SHIP');
-    expect(result.conclusion).toBe('success');
-    expect(result.blockingFindingCount).toBe(0);
+    expect(result.conclusion).toBe('failure');
+    expect(result.blockingFindingCount).toBe(1);
     expect(result.findingCount).toBe(1);
     expect(publishGateCheck).not.toHaveBeenCalled();
     expect(completeCheck).toHaveBeenCalledWith(
       expect.objectContaining({
-        conclusion: 'success',
-        title: 'Review Yeti: SHIP',
+        conclusion: 'failure',
+        title: 'Review Yeti: FIX_FIRST (1 required P2)',
       }),
     );
   });
 
-  // The check conclusion, annotation level and summary count must all agree: only P0/P1 block.
-  describe('P2 is advisory; only P0/P1 block (REL-1282)', () => {
-    const finding = (severity: 'P0' | 'P1' | 'P2', line: number) => ({
-      severity, path: 'src/index.ts', line, title: `${severity} finding ${line}`, body: `Body ${line}.`,
+  // The check conclusion, annotation level and summary counts must all agree: P0, P1 and P2 block,
+  // and convergence decides which of them still block on this head.
+  describe('P2 is required; convergence decides what still blocks (ADR 0002)', () => {
+    const finding = (severity: 'P0' | 'P1' | 'P2', line: number, title = `${severity} finding ${line}`) => ({
+      severity, path: 'src/index.ts', line, title, body: `Body ${line}.`,
     });
     const THREE_LINE_DIFF = `diff --git a/src/index.ts b/src/index.ts
 --- a/src/index.ts
@@ -288,7 +292,8 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
 +// three
  export const foo = 1;
 `;
-    const run = async (findings: ReturnType<typeof finding>[], verdict: 'SHIP' | 'FIX_FIRST' = 'SHIP') => {
+    const run = async (findings: ReturnType<typeof finding>[], verdict: 'SHIP' | 'FIX_FIRST' = 'SHIP',
+      extra: Record<string, unknown> = {}) => {
       const { deps, completeCheck } = mockDeps({
         sourceLoader: vi.fn(async () => ({ diff: THREE_LINE_DIFF, githubReads: 1 })),
         panelRunner: vi.fn(async () => ({
@@ -297,48 +302,132 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
           quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
           arbiter: { verdict },
         })),
+        ...extra,
       });
       const result = await runPublishingReviewWorker(testEnv(), deps as any);
       const completed = (completeCheck.mock.calls as unknown as Array<[Record<string, any>]>).at(-1)![0];
-      return { result, completed };
+      return { result, completed, summary: String(completed.summary ?? completed.output?.summary ?? '') };
     };
-
-    it('a P2-only SHIP review concludes success and reports zero blocking findings', async () => {
-      const { result, completed } = await run([finding('P2', 1)]);
-      expect(result.conclusion).toBe('success');
-      expect(result.blockingFindingCount).toBe(0);
-      expect(completed.conclusion).toBe('success');
-      expect(completed.summary ?? completed.output?.summary).toContain('blocking P0/P1: 0');
+    const thread = (title: string, overrides: Record<string, unknown> = {}) => ({
+      threadId: 'T_1', fingerprint: findingFingerprint({ path: 'src/index.ts', title }), severity: 'P2' as const,
+      path: 'src/index.ts', line: 1, title, body: 'Body 1.', resolved: false, outdated: false, ...overrides,
     });
 
-    it('a P1 review concludes failure and reports exactly one blocking finding', async () => {
-      const { result, completed } = await run([finding('P1', 1)], 'FIX_FIRST');
+    it('a P2-only SHIP review concludes failure with one required finding', async () => {
+      const { result, completed, summary } = await run([finding('P2', 1)]);
       expect(result.conclusion).toBe('failure');
       expect(result.blockingFindingCount).toBe(1);
       expect(completed.conclusion).toBe('failure');
-      expect(completed.summary ?? completed.output?.summary).toContain('blocking P0/P1: 1');
+      expect(completed.annotations[0].annotation_level).toBe('failure');
+      expect(summary).toContain('Required findings: 1 (P0: 0, P1: 0, P2: 1)');
+      expect(summary).toContain('blocking P0/P1: 0');
     });
 
-    it('a mixed review counts only the real P0/P1 findings as blocking', async () => {
+    it('a P1 review concludes failure and reports exactly one blocking P0/P1 finding', async () => {
+      const { result, completed, summary } = await run([finding('P1', 1)], 'FIX_FIRST');
+      expect(result.conclusion).toBe('failure');
+      expect(result.blockingFindingCount).toBe(1);
+      expect(completed.conclusion).toBe('failure');
+      expect(summary).toContain('blocking P0/P1: 1');
+    });
+
+    it('a mixed review counts every P0/P1/P2 finding as required', async () => {
       const { result, completed } = await run([finding('P1', 1), finding('P2', 2), finding('P2', 3)], 'FIX_FIRST');
       expect(result.conclusion).toBe('failure');
-      // Nearby findings may cluster, but at least one advisory P2 must remain beside the one blocker.
       expect(result.findingCount).toBeGreaterThan(1);
-      expect(result.blockingFindingCount).toBe(1);
-      expect(completed.summary ?? completed.output?.summary).toContain('blocking P0/P1: 1');
+      expect(result.blockingFindingCount).toBe(result.findingCount);
+      expect(completed.conclusion).toBe('failure');
     });
 
-    it('the opt-in advisory-required environment switch no longer changes the conclusion', async () => {
+    it('no environment switch makes P2 advisory again', async () => {
       const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'true';
+      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
       try {
         const { result } = await run([finding('P2', 1)]);
-        expect(result.conclusion).toBe('success');
-        expect(result.blockingFindingCount).toBe(0);
+        expect(result.conclusion).toBe('failure');
+        expect(result.blockingFindingCount).toBe(1);
       } finally {
         if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
         else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
       }
+    });
+
+    it('a P2 whose thread the author resolved with a stated reason is satisfied and the check turns green', async () => {
+      const title = 'P2 finding 1';
+      const reader = vi.fn(async () => [thread(title, { resolved: true,
+        resolution: { author: 'author1', reason: 'The fallback is intentional; covered by the retry contract test.' } })]);
+      const { result, completed, summary } = await run([finding('P2', 1, title)], 'SHIP', { findingThreadReader: reader });
+      expect(reader).toHaveBeenCalledWith({ owner: 'exampleorg', repo: 'example-meta', prNumber: 2795 });
+      expect(result.conclusion).toBe('success');
+      expect(result.blockingFindingCount).toBe(0);
+      expect(completed.title).toBe('Review Yeti: SHIP');
+      expect(completed.annotations[0].annotation_level).toBe('notice');
+      expect(summary).toContain('Satisfied by a resolved thread with a stated reason (1)');
+      expect(summary).toContain('resolved by @author1');
+    });
+
+    it('a reworded, re-anchored P2 keeps its prior identity and is not published as new', async () => {
+      const publish = vi.fn(async () => ({ created: 0, skipped: 0, resolved: 0 }));
+      const reader = vi.fn(async () => [thread('Variable name shadows the outer config value', { line: 3 })]);
+      const { result } = await run([finding('P2', 1, 'Variable name shadows outer config values')], 'SHIP',
+        { findingThreadReader: reader, findingThreads: { publish } });
+      expect(result.conclusion).toBe('failure');
+      expect(publish).toHaveBeenCalledTimes(1);
+      const request = (publish.mock.calls as unknown as Array<[any]>)[0][0];
+      expect(request.publish).toEqual([]);
+      expect(request.reported).toEqual([findingFingerprint({ path: 'src/index.ts', title: 'Variable name shadows the outer config value' })]);
+    });
+
+    it('a resolved thread without a stated reason does not satisfy the P2', async () => {
+      const title = 'P2 finding 1';
+      const { result } = await run([finding('P2', 1, title)], 'SHIP',
+        { findingThreadReader: vi.fn(async () => [thread(title, { resolved: true })]) });
+      expect(result.conclusion).toBe('failure');
+    });
+
+    it('a fixed finding is dropped: a prior thread with no current finding does not block', async () => {
+      const { result, summary } = await run([], 'SHIP',
+        { findingThreadReader: vi.fn(async () => [thread('Old nit that was fixed')]) });
+      expect(result.conclusion).toBe('success');
+      expect(summary).toContain('1 previously raised finding(s) were not reported at this head');
+    });
+
+    it('an unreadable thread state is stricter, never looser, and publishes nothing', async () => {
+      const publish = vi.fn(async () => ({ created: 0, skipped: 0, resolved: 0 }));
+      const title = 'P2 finding 1';
+      const { result, summary } = await run([finding('P2', 1, title)], 'SHIP', {
+        findingThreadReader: vi.fn(async () => { throw new Error('graphql unavailable'); }),
+        findingThreads: { publish },
+      });
+      expect(result.conclusion).toBe('failure');
+      expect(summary).toContain('Review thread state could not be read');
+      expect(publish).not.toHaveBeenCalled();
+    });
+
+    it('publishes only new required findings, after the check is complete, and never fails on publication', async () => {
+      const order: string[] = [];
+      const publish = vi.fn(async () => { order.push('publish'); throw new Error('service unavailable'); });
+      const { deps, completeCheck } = mockDeps({
+        sourceLoader: vi.fn(async () => ({ diff: THREE_LINE_DIFF, githubReads: 1 })),
+        panelRunner: vi.fn(async () => ({
+          applicablePersonaIds: ['style'],
+          personas: [{ id: 'style', decision: 'FIX_FIRST', findings: [finding('P1', 1, 'Unchecked null dereference'), finding('P2', 3, 'Rename helper for clarity')] }],
+          quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
+          arbiter: { verdict: 'FIX_FIRST' },
+        })),
+        findingThreadReader: vi.fn(async () => []),
+        findingThreads: { publish },
+      });
+      completeCheck.mockImplementation(async () => { order.push('complete'); });
+      const result = await runPublishingReviewWorker(testEnv(), deps as any);
+      expect(result.conclusion).toBe('failure');
+      expect(order).toEqual(['complete', 'publish']);
+      const request = (publish.mock.calls as unknown as Array<[any]>)[0][0];
+      expect(request.headSha).toBe(HEAD);
+      expect(request.publish.map((entry: any) => [entry.severity, entry.title])).toEqual([
+        ['P1', 'Unchecked null dereference'], ['P2', 'Rename helper for clarity'],
+      ]);
+      for (const entry of request.publish) expect(entry.fingerprint).toBe(findingFingerprint(entry));
     });
   });
 

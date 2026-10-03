@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { findingFingerprint } from '../../src/review/findingConvergence';
 import { createHash, randomUUID } from 'node:crypto';
 import { createPanelDeadlineSignal, PanelConfigurationError, PanelDeadlineExceededError } from '../../src/panel/panelEngine';
 import { workerFailureClasses } from '../../src/types/workerFailure';
@@ -1472,9 +1473,9 @@ describe('runPublishingReviewWorker', () => {
     for (const { findings, conclusion, expectedDecision } of [
       { findings: [{ severity: 'P1', path: 'src/a.ts', line: 1, title: 'Blocking', body: 'Must fix' }],
         conclusion: 'failure', expectedDecision: 'FINDINGS' },
-      // P2 is advisory: it is reported as evidence but never fails the check.
+      // ADR 0002: P2 is required. It is reported as evidence and fails the check like a P1.
       { findings: [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Tidy' }],
-        conclusion: 'success', expectedDecision: 'FINDINGS' },
+        conclusion: 'failure', expectedDecision: 'FINDINGS' },
       { findings: [], conclusion: 'success', expectedDecision: 'APPROVE' },
     ] as const) {
       const order: string[] = [];
@@ -1572,7 +1573,8 @@ describe('runPublishingReviewWorker', () => {
       })) as never,
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
-    expect(receipt.conclusion).toBe('success');
+    // ADR 0002: both P2 findings are required, so the check fails; evidence is still reported.
+    expect(receipt.conclusion).toBe('failure');
     const event = completion.reportReviewEvidence.mock.calls[0]?.[0] as {
       result?: { personas: Array<{ id: string; decision: string; findings: Array<{ severity: string }> }> };
     } | undefined;
@@ -1581,7 +1583,7 @@ describe('runPublishingReviewWorker', () => {
       ['clean', 'APPROVE', []], // no stated decision and no findings
       ['stated', 'APPROVE', ['P2']], // a stated decision is preserved even with findings
     ]);
-    expect(receipt.blockingFindingCount).toBe(0);
+    expect(receipt.blockingFindingCount).toBe(2);
     expect(receipt.findingCount).toBe(2);
   });
 
@@ -1634,6 +1636,11 @@ describe('runPublishingReviewWorker', () => {
         quorum: { required: 1, distinctProviders: ['bifrost'], satisfied: true },
         arbiter: { verdict: 'SHIP' },
       })) as never,
+      // ADR 0002: the P2 is satisfied by its resolved thread, so the check is green and the
+      // terminal success path (the subject of this test) runs.
+      findingThreadReader: vi.fn(async () => [{ fingerprint: findingFingerprint({ path: 'src/a.ts', title: 'Nit' }),
+        severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', resolved: true, outdated: false,
+        resolution: { author: 'author1', reason: 'Intentional; the length is bounded upstream by the contract.' } }]),
     });
     const receipt = await runPublishingReviewWorker(env(), d as never);
     expect(receipt.conclusion).toBe('success');

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { findingFingerprint } from '../../src/review/findingConvergence';
 import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
 import { MAX_CHANGED_FILE_PATCH_BYTES } from '../../src/review/reviewEvidenceLimits';
 import {
@@ -648,4 +649,30 @@ it('native completion parsing forwards optional observations without approving p
   const derived=derive(parsed);expect(derived.valid).toBe(true);
   if(derived.valid){expect(derived.evidence.verdict).not.toBe('SHIP');expect(derived.evidence.quorumSatisfied).toBe(false);}
   expect(()=>parseWorkerReviewCompletion({...body,result:{...body.result,failureDiagnostics:{...body.result.failureDiagnostics,operationalTelemetry:{...operationalTelemetry,prompt:'SECRET'}}}})).toThrow();
+});
+
+describe('ADR 0002: the Gate derives required P2s with the same convergence as the raw check', () => {
+  const p2 = { severity: 'P2', path: 'src/example.ts', line: 1, title: 'Constant name hides its unit', body: 'Name the unit in the identifier.' };
+  const withP2 = () => completion({ result: { ...completion().result, findingCount: 1,
+    personas: [lane('security', { decision: 'FINDINGS', findings: [p2] }), lane('architecture')] } });
+  const thread = (overrides: Record<string, unknown> = {}) => ({
+    fingerprint: findingFingerprint(p2), severity: 'P2' as const, path: p2.path, line: 1, title: p2.title,
+    resolved: false, outdated: false, ...overrides,
+  });
+
+  it('counts an in-diff P2 as required when no thread satisfies it', () => {
+    const result = derive(withP2());
+    expect(result.valid).toBe(true);
+    expect(result.evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0, p2Count: 1 });
+  });
+
+  it('does not count a P2 whose thread was resolved with a stated reason', () => {
+    const result = derive(withP2(), { ...contract, findingThreads: [thread({ resolved: true,
+      resolution: { author: 'author1', reason: 'The unit is fixed by the protocol and documented above.' } })] });
+    expect(result.evidence).toMatchObject({ p2Count: 0 });
+  });
+
+  it('still counts it when the thread is only resolved, without a reason', () => {
+    expect(derive(withP2(), { ...contract, findingThreads: [thread({ resolved: true })] }).evidence).toMatchObject({ p2Count: 1 });
+  });
 });

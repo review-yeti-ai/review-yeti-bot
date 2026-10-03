@@ -393,7 +393,7 @@ describe('MCP status validation uses the native policy vocabulary', () => {
   const current = { ...candidate, open: true, draft: false };
   const clean: ReviewGateEvidence = {
     verdict: 'SHIP', completedAt: '2026-09-29T12:00:00Z', coverageComplete: true,
-    quorumSatisfied: true, infrastructureFailure: false, p0Count: 0, p1Count: 0,
+    quorumSatisfied: true, infrastructureFailure: false, p0Count: 0, p1Count: 0, p2Count: 0,
     expectedLanes: 4, completedLanes: 4,
   };
   const acceptance: ReviewRiskAcceptance = {

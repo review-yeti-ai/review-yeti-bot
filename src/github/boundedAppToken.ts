@@ -1,6 +1,6 @@
 import {
   getGitHubAppRepositoryReadToken, getGitHubAppRepositoryPublishToken,
-  getGitHubAppRepositoryMergeGroupToken,
+  getGitHubAppRepositoryMergeGroupToken, getGitHubAppRepositoryReviewThreadToken,
   getGitHubAppInstallationIdForRepository,
   type GitHubRepositoryInstallationConfig, type InstallationTokenResult,
 } from './appAuth';
@@ -39,13 +39,14 @@ function cancel(body: { cancel(): Promise<unknown> } | null): void {
  * (e.g. an enterprise /api/v3) is pinned for every request. timeoutMs is 1..10000. */
 export async function getBoundedRepositoryToken(
   config: GitHubRepositoryInstallationConfig,
-  mode: 'read' | 'publish' | 'merge-group',
+  mode: 'read' | 'publish' | 'merge-group' | 'review-threads',
   options: BoundedAppTransportOptions = {},
 ): Promise<InstallationTokenResult> {
-  if (mode !== 'read' && mode !== 'publish' && mode !== 'merge-group') throw unavailable();
+  if (mode !== 'read' && mode !== 'publish' && mode !== 'merge-group' && mode !== 'review-threads') throw unavailable();
   return withBoundedRepositoryTransport(config, options, true, async (selected, boundedFetch) => {
     const minter = mode === 'read' ? getGitHubAppRepositoryReadToken
-      : mode === 'publish' ? getGitHubAppRepositoryPublishToken : getGitHubAppRepositoryMergeGroupToken;
+      : mode === 'publish' ? getGitHubAppRepositoryPublishToken
+        : mode === 'review-threads' ? getGitHubAppRepositoryReviewThreadToken : getGitHubAppRepositoryMergeGroupToken;
     const result = await minter(selected, boundedFetch);
     if (!isGitHubInstallationToken(result.token)) throw unavailable();
     return result;

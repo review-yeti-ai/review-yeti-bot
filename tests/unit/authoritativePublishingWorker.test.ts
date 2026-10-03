@@ -1885,6 +1885,7 @@ describe('authoritative prepared publishing worker', () => {
     const completeCheck = vi.spyOn(GitHubInstallationClient.prototype, 'completeCheck');
     const rawEndpoint = 'https://api.github.com/repos/example/project/check-runs';
     let callbackAttempts = 0;
+    const threadRequests: any[] = [];
     const derivations: ReturnType<typeof deriveCanonicalWorkerReviewEvidence>[] = [];
     f.fetch.mockImplementation(async (input, init) => {
       if (String(input) === ENDPOINT.replace(/\/completion$/u, '/incomplete-p2-recovery') && init?.method === 'POST') {
@@ -1899,6 +1900,18 @@ describe('authoritative prepared publishing worker', () => {
       }
       if (String(input) === rawEndpoint && init?.method === 'POST') {
         return new Response(JSON.stringify({ id: 4242 }), { status: 200 });
+      }
+      // ADR 0002: the entrypoint reads the App's finding threads through the service (none yet)
+      // and then asks it to publish the new required P2 as a thread.
+      if (String(input) === ENDPOINT.replace(/\/completion$/u, '/finding-threads') && init?.method === 'POST') {
+        const request = JSON.parse(String(init.body));
+        threadRequests.push(request);
+        if (request.version === 'FindingThreadsRead.v1') {
+          return new Response(JSON.stringify({ version: 'FindingThreadsReadResult.v1', runId: f.env.REVIEW_RUN_ID,
+            threads: [] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ version: 'FindingThreadsResult.v1', runId: f.env.REVIEW_RUN_ID,
+          created: request.publish.length, skipped: 0, resolved: 0 }), { status: 200 });
       }
       if (String(input) === `${rawEndpoint}/4242` && init?.method === 'PATCH') {
         return new Response('{}', { status: 200 });
@@ -1937,7 +1950,7 @@ describe('authoritative prepared publishing worker', () => {
     expect(legacy).not.toHaveBeenCalled();
     const retry = delivery === '503 then recorded' || delivery === 'lost acknowledgement then duplicate';
     expect(derivations).toHaveLength(retry ? 2 : 1);
-    expect(f.fetch).toHaveBeenCalledTimes(retry ? 6 : 5);
+    expect(f.fetch).toHaveBeenCalledTimes(retry ? 8 : 7);
     const rawCalls = f.fetch.mock.calls.filter(([url]) => String(url).startsWith(rawEndpoint));
     expect(rawCalls.map(([url, init]) => [String(url), init?.method])).toEqual([
       [rawEndpoint, 'POST'], [`${rawEndpoint}/4242`, 'PATCH'],
@@ -1948,15 +1961,21 @@ describe('authoritative prepared publishing worker', () => {
       external_id: `${f.env.REVIEW_RUN_ID}:a${f.env.REVIEW_EXECUTION_ATTEMPT}` });
     expect(created.name).not.toBe('Review Yeti Gate');
     expect(completed).not.toHaveProperty('name');
-    // An advisory P2 SHIP stays advisory: the finding is visible as a warning annotation and the
-    // raw check concludes success. Only P0/P1 block.
-    expect(completed).toMatchObject({ status: 'completed', conclusion: 'success', output: {
+    // ADR 0002: a P2 is required. The canonical verdict the service derives stays SHIP (above),
+    // but the raw check fails, says why, and the finding is a failure-level annotation.
+    expect(completed).toMatchObject({ status: 'completed', conclusion: 'failure', output: {
       text: expect.stringContaining(finding.title),
       annotations: [{ path: finding.path, start_line: 1, end_line: 1,
-        annotation_level: 'warning', title: `P2: ${finding.title}`, message: finding.body }],
+        annotation_level: 'failure', title: `P2: ${finding.title}`, message: finding.body }],
     } });
     expect(completed.output.text).toContain(finding.body);
-    expect(completed.output.title).toBe('Review Yeti: SHIP');
+    expect(completed.output.title).toBe('Review Yeti: FIX_FIRST (1 required P2)');
+    expect(completed.output.summary).toContain('Required findings: 1 (P0: 0, P1: 0, P2: 1)');
+    expect(threadRequests).toHaveLength(2);
+    expect(threadRequests[0]).toEqual({ version: 'FindingThreadsRead.v1', runId: f.env.REVIEW_RUN_ID,
+      executionAttempt: Number(f.env.REVIEW_EXECUTION_ATTEMPT), headSha: HEAD });
+    expect(threadRequests[1]).toMatchObject({ version: 'FindingThreadsRequest.v1', headSha: HEAD,
+      publish: [{ severity: 'P2', path: finding.path, line: 1, title: finding.title, body: finding.body }] });
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');
       expect(completed.output.text).not.toContain('Discard unanchorable raw finding');
