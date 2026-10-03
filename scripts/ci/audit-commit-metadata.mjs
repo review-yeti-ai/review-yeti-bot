@@ -7,14 +7,16 @@
 import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-const ORG = ['call', 'telemetry'].join('');
+export const ORG = ['call', 'telemetry'].join('');
 const PRIVATE_REPOS = ['cisco-' + 'cdr', 'ct-' + 'meta', 'ct-' + 'release', 'ct-' + 'infrastructure', 'ct-' + 'quasar',
   'ct-' + 'uat', 'ct-' + 'dashboard', 'ct-' + 'lab', 'ai-' + 'workspace', 'pr-manager-' + 'mcp', 'ct-review-' + 'actions'];
 
-export const FORBIDDEN = new RegExp([
+/** Single source of the forbidden-term policy; the whole-tree audit test builds its regex from this too. */
+export const FORBIDDEN_PATTERN = [
   ORG, `call-${'telemetry'}`, `call_${'telemetry'}`, `call[ \\t]+${'telemetry'}`,
   ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name.split('-').join('[-_ ]')}(?![a-z0-9])`),
-].join('|'), 'iu');
+].join('|');
+export const FORBIDDEN = new RegExp(FORBIDDEN_PATTERN, 'iu');
 
 /** Returns one finding per offending commit. `records` are {sha, an, ae, cn, ce, body}. */
 export function findViolations(records) {
@@ -27,10 +29,10 @@ export function findViolations(records) {
   return findings;
 }
 
-export function readRange(range) {
+export function readRange(range, cwd = process.cwd()) {
   const sep = '\u001e';
   const raw = execFileSync('git', ['log', '--no-merges', `--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B${sep}`, range],
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   return raw.split(sep).map((chunk) => chunk.replace(/^\n/u, '')).filter((chunk) => chunk.trim() !== '').map((chunk) => {
     const [sha, an, ae, cn, ce, body] = chunk.split('\u001f');
     return { sha, an, ae, cn, ce, body: body ?? '' };

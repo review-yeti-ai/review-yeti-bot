@@ -196,6 +196,39 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
       assert.ok(res.headers.get('Access-Control-Allow-Methods')?.includes('POST'));
     });
 
+    describe('configured origin allowlist (ALLOWED_ORIGINS)', () => {
+      const preflight = (origin: string | null, env: Record<string, unknown>) => defaultMcpRouter.handleHttpRequest(
+        new Request('https://review-yeti.test/api/mcp', { method: 'OPTIONS', headers: origin ? { Origin: origin } : {} }),
+        env,
+      );
+
+      it('allows an https subdomain of a *.suffix entry and nothing else', async () => {
+        const env = { ALLOWED_ORIGINS: '*.example.com' };
+        assert.equal((await preflight('https://dash.example.com', env)).headers.get('Access-Control-Allow-Origin'), 'https://dash.example.com');
+        assert.equal((await preflight('https://a.b.example.com', env)).headers.get('Access-Control-Allow-Origin'), 'https://a.b.example.com');
+        // Not https, the bare apex, a suffix lookalike and a malformed origin are all rejected: the response falls back to the
+        // request's own origin rather than echoing the caller.
+        for (const rejected of ['http://dash.example.com', 'https://example.com', 'https://evilexample.com', 'https://dash.example.com.evil.test', 'not a url']) {
+          assert.equal((await preflight(rejected, env)).headers.get('Access-Control-Allow-Origin'), 'https://review-yeti.test', rejected);
+        }
+      });
+
+      it('echoes only exact matches and prefers the first exact entry as the fallback', async () => {
+        const env = { ALLOWED_ORIGINS: ' https://one.example.com , *.example.org ' };
+        assert.equal((await preflight('https://one.example.com', env)).headers.get('Access-Control-Allow-Origin'), 'https://one.example.com');
+        assert.equal((await preflight('https://one.example.com.evil.test', env)).headers.get('Access-Control-Allow-Origin'), 'https://one.example.com');
+        assert.equal((await preflight('https://two.example.org', env)).headers.get('Access-Control-Allow-Origin'), 'https://two.example.org');
+      });
+
+      it('with nothing configured allows only loopback and no-origin callers, falling back to the request origin', async () => {
+        for (const env of [{}, { ALLOWED_ORIGINS: '' }, { ALLOWED_ORIGINS: ' , ' }]) {
+          assert.equal((await preflight('https://dash.example.com', env)).headers.get('Access-Control-Allow-Origin'), 'https://review-yeti.test');
+          assert.equal((await preflight('http://localhost:3000', env)).headers.get('Access-Control-Allow-Origin'), 'http://localhost:3000');
+          assert.equal((await preflight(null, env)).headers.get('Access-Control-Allow-Origin'), 'https://review-yeti.test');
+        }
+      });
+    });
+
     it('handles GET discovery request with tool list', async () => {
       const req = new Request('https://review-yeti.test/api/mcp', { method: 'GET' });
       const res = await defaultMcpRouter.handleHttpRequest(req, {});
