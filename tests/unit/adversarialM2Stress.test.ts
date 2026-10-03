@@ -340,15 +340,20 @@ describe('Adversarial Stress Test: App Gate Fail-Closed Behavior', () => {
     });
 
     it('no environment switch makes P2 advisory again', async () => {
-      const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-      process.env.REVIEW_YETI_REQUIRE_ADVISORY = 'false';
-      try {
-        const { result } = await run([finding('P2', 1)]);
-        expect(result.conclusion).toBe('failure');
-        expect(result.blockingFindingCount).toBe(1);
-      } finally {
-        if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
-        else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+      // 'true' was the value the retired REVIEW_YETI_REQUIRE_ADVISORY switch used
+      // to enable the advisory path, so a regression that re-reads the variable
+      // must fail here too; 'false' alone cannot catch a reintroduced switch.
+      for (const value of ['true', 'false'] as const) {
+        const previous = process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+        process.env.REVIEW_YETI_REQUIRE_ADVISORY = value;
+        try {
+          const { result } = await run([finding('P2', 1)]);
+          expect(result.conclusion).toBe('failure');
+          expect(result.blockingFindingCount).toBe(1);
+        } finally {
+          if (previous === undefined) delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
+          else process.env.REVIEW_YETI_REQUIRE_ADVISORY = previous;
+        }
       }
     });
 
