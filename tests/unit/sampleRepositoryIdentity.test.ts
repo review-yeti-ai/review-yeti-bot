@@ -79,13 +79,19 @@ describe('sample repository identity is one contract, asserted across layers', (
       VALUES ('reviewyeti-ai/example-api','reviewyeti-ai','example-api','main',1,1,'assertive',1,1),
              ('reviewyeti-ai/example-meta','reviewyeti-ai','example-meta','main',1,1,'balanced',1,1);`);
     applyMigration(upgraded, '0002_neutralize_sample_repositories.sql');
-    const upgradedIds = (upgraded.prepare('SELECT id FROM repositories ORDER BY id').all() as any[]).map((r) => r.id);
-    expect(upgradedIds).toContain(SAMPLE_REPO_CDR);
-    expect(upgradedIds).toContain(SAMPLE_REPO_META);
-    // The old rows must be gone, not merely joined by new ones -- a leftover old
-    // row is exactly what makes the overview query a DO that does not match.
-    expect(upgradedIds).not.toContain('reviewyeti-ai/example-api');
-    expect(upgradedIds).not.toContain('reviewyeti-ai/example-meta');
+    // Assert the FULL row, not just `id`. The migration's SET clause also
+    // neutralizes owner/repo, and those are the columns the dashboard's
+    // repository listing surfaces. Dropping them from the SET would rename the
+    // id while leaving the real organization string in owner/repo -- the exact
+    // privacy failure this PR exists to remove, with CI green.
+    const upgradedRows = upgraded.prepare('SELECT id, owner, repo FROM repositories ORDER BY id').all() as any[];
+    expect(upgradedRows.map((r) => r.id)).toEqual([SAMPLE_REPO_CDR, SAMPLE_REPO_META].sort());
+    for (const row of upgradedRows) {
+      expect(row.owner).toBe('example');
+      expect(['sample-cdr', 'sample-meta']).toContain(row.repo);
+      // No surviving fragment of the deploying organization anywhere in the row.
+      expect(JSON.stringify(row)).not.toContain('reviewyeti-ai');
+    }
 
     // Path 2: idempotence -- re-applying must not duplicate or fail.
     applyMigration(upgraded, '0002_neutralize_sample_repositories.sql');
