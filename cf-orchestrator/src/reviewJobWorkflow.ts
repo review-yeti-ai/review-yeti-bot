@@ -5,6 +5,7 @@ import { type ContainerRunner, CloudflareContainerRunner } from './runners/conta
 import { DigitalOceanAgentRunner } from './runners/digitalOceanAgentRunner.js';
 import type { RunnerCostDetails } from './runners/runnerCost.js';
 import { buildGitHubReviewPayload } from './reviewPublisher.js';
+import { signGitHubAppJwt } from './auth/githubEdgeAuth.js';
 
 export interface ReceiptAuditRecord {
   runId: string;
@@ -28,18 +29,48 @@ export async function mintScopedGitHubToken(
   env: Env,
   spec: ReviewRunSpec
 ): Promise<{ token: string; digest: string; expiresAt: number }> {
-  const { runId, installationId } = spec;
+  const { runId, installationId, owner, repo } = spec;
 
-  // If real GitHub App credentials are configured, mint RS256 JWT & token
-  if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY && installationId) {
+  // If real GitHub App credentials are configured, mint RS256 JWT & authentic token
+  if (env.GITHUB_APP_ID && env.GITHUB_APP_PRIVATE_KEY) {
     try {
-      // In production, mint real installation token scoped to checks:write
-      const dummyToken = `ghs_live_${runId.slice(0, 16)}`;
-      return {
-        token: dummyToken,
-        digest: `sha256:token_${runId}`,
-        expiresAt: Date.now() + 3600_000,
-      };
+      let instId = installationId;
+      if (!instId && owner && repo) {
+        const jwt = await signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+        const installRes = await fetch(`https://api.github.com/repos/${owner}/${repo}/installation`, {
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'ReviewYeti-Edge/2.4',
+          },
+        });
+        if (installRes.ok) {
+          const installData = (await installRes.json()) as any;
+          instId = installData?.id;
+        }
+      }
+
+      if (instId) {
+        const jwt = await signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+        const tokenRes = await fetch(`https://api.github.com/app/installations/${instId}/access_tokens`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            Accept: 'application/vnd.github.v3+json',
+            'User-Agent': 'ReviewYeti-Edge/2.4',
+          },
+        });
+        if (tokenRes.ok) {
+          const tokenData = (await tokenRes.json()) as any;
+          if (tokenData?.token) {
+            return {
+              token: tokenData.token,
+              digest: `sha256:token_${runId}`,
+              expiresAt: tokenData.expires_at ? new Date(tokenData.expires_at).getTime() : Date.now() + 3600_000,
+            };
+          }
+        }
+      }
     } catch (err) {
       console.warn('GitHub App token minting error, falling back to ephemeral token:', err);
     }
@@ -285,7 +316,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           { timeout: '25 minutes', retries: { limit: 0 } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
-            const statusUrl = `https://operator.example.internal/api/dispatch/runs/${runId}/status`;
+            const statusUrl = `https://operator.calltelemetry.internal/api/dispatch/runs/${runId}/status`;
 
             const result = await this.getRunner(spec.runner).dispatchJob({
               jobId: `job-${runId}`,

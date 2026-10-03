@@ -51,7 +51,6 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META, SAMPLE_REPO_META_SLUG } from '@/lib/sampleRepositories';
 
 export type TimeHorizon = '24h' | '7d' | '30d' | '90d';
 export type MetricDimension = 'hit_rate' | 'compaction' | 'symbols' | 'velocity';
@@ -132,9 +131,9 @@ export const REPOSITORY_DATA: RepoMemoryStats[] = [
     ],
   },
   {
-    id: SAMPLE_REPO_CDR_SLUG,
-    name: SAMPLE_REPO_CDR,
-    shortName: SAMPLE_REPO_CDR_SLUG,
+    id: 'cisco-cdr',
+    name: 'calltelemetry/cisco-cdr',
+    shortName: 'cisco-cdr',
     defaultBranch: '0.8.4-release',
     language: 'Elixir',
     languageColor: '#6e4a7e',
@@ -150,21 +149,21 @@ export const REPOSITORY_DATA: RepoMemoryStats[] = [
     r2KeysCount: 11,
     cacheKeys: [
       {
-        key: `ast-outline-${SAMPLE_REPO_CDR_SLUG}-pr890.tar.zst`,
+        key: 'ast-outline-cisco-cdr-pr890.tar.zst',
         type: 'ast-outline',
         sizeKb: 420,
         ttlMinutes: 35,
         sha256: 'e81a3371cd30',
       },
       {
-        key: `zoekt-symbols-${SAMPLE_REPO_CDR_SLUG}-release.idx`,
+        key: 'zoekt-symbols-cisco-cdr-release.idx',
         type: 'zoekt-index',
         sizeKb: 580,
         ttlMinutes: 210,
         sha256: '1a2b3c4d5e6f',
       },
       {
-        key: `subagent-manifest-${SAMPLE_REPO_CDR_SLUG}.json`,
+        key: 'subagent-manifest-cisco-cdr.json',
         type: 'subagent-manifest',
         sizeKb: 120,
         ttlMinutes: 20,
@@ -179,9 +178,9 @@ export const REPOSITORY_DATA: RepoMemoryStats[] = [
     ],
   },
   {
-    id: SAMPLE_REPO_META_SLUG,
-    name: SAMPLE_REPO_META,
-    shortName: SAMPLE_REPO_META_SLUG,
+    id: 'ct-meta',
+    name: 'reviewyeti-ai/ct-meta',
+    shortName: 'ct-meta',
     defaultBranch: 'main',
     language: 'TypeScript / JSON',
     languageColor: '#eab308',
@@ -197,21 +196,21 @@ export const REPOSITORY_DATA: RepoMemoryStats[] = [
     r2KeysCount: 4,
     cacheKeys: [
       {
-        key: `ast-outline-${SAMPLE_REPO_META_SLUG}-pr55.tar.zst`,
+        key: 'ast-outline-ct-meta-pr55.tar.zst',
         type: 'ast-outline',
         sizeKb: 110,
         ttlMinutes: 18,
         sha256: '6789abcdef01',
       },
       {
-        key: `zoekt-symbols-${SAMPLE_REPO_META_SLUG}-main.idx`,
+        key: 'zoekt-symbols-ct-meta-main.idx',
         type: 'zoekt-index',
         sizeKb: 130,
         ttlMinutes: 120,
         sha256: '23456789abcd',
       },
       {
-        key: `subagent-manifest-${SAMPLE_REPO_META_SLUG}.json`,
+        key: 'subagent-manifest-ct-meta.json',
         type: 'subagent-manifest',
         sizeKb: 20,
         ttlMinutes: 10,
@@ -611,9 +610,9 @@ export function RepoMemoryPivotPlatform({
     initialRepo.includes('bot')
       ? 'review-yeti-bot'
       : initialRepo.includes('cdr')
-      ? SAMPLE_REPO_CDR_SLUG
+      ? 'cisco-cdr'
       : initialRepo.includes('meta')
-      ? SAMPLE_REPO_META_SLUG
+      ? 'ct-meta'
       : 'all'
   );
   const [selectedHorizon, setSelectedHorizon] = useState<TimeHorizon>(initialWindow);
@@ -625,8 +624,8 @@ export function RepoMemoryPivotPlatform({
   React.useEffect(() => {
     if (initialRepo) {
       if (initialRepo.includes('bot')) setSelectedRepo('review-yeti-bot');
-      else if (initialRepo.includes('cdr')) setSelectedRepo(SAMPLE_REPO_CDR_SLUG);
-      else if (initialRepo.includes('meta')) setSelectedRepo(SAMPLE_REPO_META_SLUG);
+      else if (initialRepo.includes('cdr')) setSelectedRepo('cisco-cdr');
+      else if (initialRepo.includes('meta')) setSelectedRepo('ct-meta');
       else if (initialRepo === 'all') setSelectedRepo('all');
     }
   }, [initialRepo]);
@@ -888,11 +887,11 @@ export function RepoMemoryPivotPlatform({
                   {(selectedRepo === 'all' || selectedRepo === 'review-yeti-bot') && (
                     <Bar dataKey="botSymbols" name="review-yeti-bot" fill="#6366f1" radius={[3, 3, 0, 0]} />
                   )}
-                  {(selectedRepo === 'all' || selectedRepo === SAMPLE_REPO_CDR_SLUG) && (
-                    <Bar dataKey="cdrSymbols" name={SAMPLE_REPO_CDR_SLUG} fill="#10b981" radius={[3, 3, 0, 0]} />
+                  {(selectedRepo === 'all' || selectedRepo === 'cisco-cdr') && (
+                    <Bar dataKey="cdrSymbols" name="cisco-cdr" fill="#10b981" radius={[3, 3, 0, 0]} />
                   )}
-                  {(selectedRepo === 'all' || selectedRepo === SAMPLE_REPO_META_SLUG) && (
-                    <Bar dataKey="metaSymbols" name={SAMPLE_REPO_META_SLUG} fill="#f59e0b" radius={[3, 3, 0, 0]} />
+                  {(selectedRepo === 'all' || selectedRepo === 'ct-meta') && (
+                    <Bar dataKey="metaSymbols" name="ct-meta" fill="#f59e0b" radius={[3, 3, 0, 0]} />
                   )}
                 </BarChart>
               ) : (
@@ -961,7 +960,7 @@ export function RepoMemoryPivotPlatform({
                       fill="url(#repoBotGrad)"
                     />
                   )}
-                  {(selectedRepo === 'all' || selectedRepo === SAMPLE_REPO_CDR_SLUG) && (
+                  {(selectedRepo === 'all' || selectedRepo === 'cisco-cdr') && (
                     <Area
                       type="monotone"
                       dataKey={
@@ -971,14 +970,14 @@ export function RepoMemoryPivotPlatform({
                           ? 'cdrCompaction'
                           : 'cdrVelocity'
                       }
-                      name={SAMPLE_REPO_CDR_SLUG}
+                      name="cisco-cdr"
                       stroke="#10b981"
                       strokeWidth={2}
                       fillOpacity={1}
                       fill="url(#repoCdrGrad)"
                     />
                   )}
-                  {(selectedRepo === 'all' || selectedRepo === SAMPLE_REPO_META_SLUG) && (
+                  {(selectedRepo === 'all' || selectedRepo === 'ct-meta') && (
                     <Area
                       type="monotone"
                       dataKey={
@@ -988,7 +987,7 @@ export function RepoMemoryPivotPlatform({
                           ? 'metaCompaction'
                           : 'metaVelocity'
                       }
-                      name={SAMPLE_REPO_META_SLUG}
+                      name="ct-meta"
                       stroke="#f59e0b"
                       strokeWidth={2}
                       fillOpacity={1}

@@ -132,56 +132,7 @@ function LiveStreamContent() {
     if ((currentActiveJob as any)?.tasks && Array.isArray((currentActiveJob as any).tasks)) {
       return (currentActiveJob as any).tasks;
     }
-    return [
-      {
-        id: 'task_sec_boundary',
-        dimension: 'security',
-        description: 'Enforce security floor: secret redaction, credential scanning, and edge boundary fences',
-        paths: ['src/gateway/edgeCompactionEngine.ts'],
-        priority: 1,
-        status: 'IN_FLIGHT',
-        progress: 60,
-        findingsCount: 0,
-        lastMessage: 'Validating secret scanning, token redaction, and boundary fences...',
-        durationMs: 1400,
-      },
-      {
-        id: 'task_arch_compaction',
-        dimension: 'architecture',
-        description: 'Context compaction audit: verify AST outline depth and eliminate diff leakage across turns',
-        paths: ['src/gateway/edgeCompactionEngine.ts', 'cf-orchestrator/src/worker.ts'],
-        priority: 2,
-        status: 'IN_FLIGHT',
-        progress: 80,
-        findingsCount: 1,
-        lastMessage: 'Context compaction: 4.2x ratio achieved on unified diff',
-        durationMs: 2800,
-      },
-      {
-        id: 'task_perf_worker_budget',
-        dimension: 'performance',
-        description: 'Cloudflare Worker budget: CPU execution time and memory limits validation',
-        paths: ['cf-orchestrator/src/worker.ts'],
-        priority: 3,
-        status: 'PENDING',
-        progress: 0,
-        findingsCount: 0,
-        lastMessage: 'Queued for Worker CPU/memory budget verification',
-        durationMs: 0,
-      },
-      {
-        id: 'task_test_coverage',
-        dimension: 'testing',
-        description: 'Test coverage & invariant verification across Edge orchestrator routes',
-        paths: ['cf-orchestrator/test/dashboardRoutes.test.ts'],
-        priority: 4,
-        status: 'PENDING',
-        progress: 0,
-        findingsCount: 0,
-        lastMessage: 'Queued for route invariant verification',
-        durationMs: 0,
-      },
-    ];
+    return [];
   }, [liveSwarmTasks, currentActiveJob]);
 
   const compactionMetrics: ContextCompactionMetrics = useMemo(() => {
@@ -192,12 +143,12 @@ function LiveStreamContent() {
       return (currentActiveJob as any).contextCompaction;
     }
     return {
-      rawDiffTokens: 24800,
-      compactedTokens: 5900,
-      compactionRatio: 4.2,
-      boundsReductionLines: 1420,
-      lockfilesBypassed: 1,
-      astOutlineNodes: 18,
+      rawDiffTokens: 0,
+      compactedTokens: 0,
+      compactionRatio: 0,
+      boundsReductionLines: 0,
+      lockfilesBypassed: 0,
+      astOutlineNodes: 0,
     };
   }, [liveCompaction, currentActiveJob]);
 

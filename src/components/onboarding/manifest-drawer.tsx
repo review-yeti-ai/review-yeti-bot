@@ -37,9 +37,9 @@ export function ManifestDrawer({
   open: controlledOpen,
   onOpenChange: setControlledOpen,
   trigger,
-  orgName: initialOrg = 'exampleorg',
+  orgName: initialOrg = 'calltelemetry',
   appName: initialApp = 'ct-review-bot-app',
-  webhookUrl: initialWebhook = 'https://api.example.com/api/webhooks/github',
+  webhookUrl: initialWebhook = 'https://api.calltelemetry.com/api/webhooks/github',
   providers,
   personas,
 }: ManifestDrawerProps) {
@@ -89,8 +89,8 @@ export function ManifestDrawer({
         url: webhookUrl,
         active: true,
       },
-      redirect_url: `https://${org}.example.com/api/github/manifest-callback`,
-      callback_urls: [`https://${org}.example.com/api/github/manifest-callback`],
+      redirect_url: `https://${org}.calltelemetry.com/api/github/manifest-callback`,
+      callback_urls: [`https://${org}.calltelemetry.com/api/github/manifest-callback`],
       public: false,
       default_events: [
         'pull_request',
@@ -244,7 +244,7 @@ ${providerPriorityYamlLines}
               <Input
                 value={org}
                 onChange={(e) => setOrg(e.target.value)}
-                placeholder="exampleorg"
+                placeholder="calltelemetry"
                 className="bg-background/80 h-8 text-xs font-mono"
               />
             </div>

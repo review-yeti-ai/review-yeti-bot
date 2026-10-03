@@ -103,7 +103,7 @@ export function createLiveRouter(): Router {
               },
               startTime: log.timestamp || new Date().toISOString(),
               endTime: log.timestamp || new Date().toISOString(),
-              eventCount: log.personaLogs ? Object.keys(log.personaLogs).length * 3 : 12,
+              eventCount: log.personaLogs ? (Array.isArray(log.personaLogs) ? log.personaLogs.length : Object.keys(log.personaLogs).length) : 0,
               lastEventTime: log.timestamp || new Date().toISOString(),
             };
           });

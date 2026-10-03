@@ -12,21 +12,27 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
   const promptTokens =
     stats?.totalTokens?.prompt ??
     (stats as any)?.totalPromptTokens ??
-    1189000;
+    0;
   const completionTokens =
     stats?.totalTokens?.completion ??
     (stats as any)?.totalCompletionTokens ??
-    261200;
+    0;
   const totalTokens = stats?.totalTokens?.total ?? promptTokens + completionTokens;
-  const totalSpend = stats?.totalCostUSD ?? 2.148;
-  const passRate = (stats as any)?.passRatePercent ?? 88.1;
-  const r2HitRate = (stats as any)?.r2CacheHitRatePercent ?? 94.2;
+  const totalSpend = stats?.totalCostUSD ?? 0;
+  const passRate = (stats as any)?.passRatePercent ?? 0;
+  const r2HitRate = (stats as any)?.r2CacheHitRatePercent ?? 0;
   const p95Latency = (stats as any)?.p95DurationMs
     ? `${((stats as any).p95DurationMs / 1000).toFixed(1)}s`
-    : '28.5s';
+    : 'Idle';
 
-  const promptPct = totalTokens > 0 ? Math.round((promptTokens / totalTokens) * 100) : 82;
-  const completionPct = 100 - promptPct;
+  const promptPct = totalTokens > 0 ? Math.round((promptTokens / totalTokens) * 100) : 0;
+  const completionPct = totalTokens > 0 ? 100 - promptPct : 0;
+  const budgetUSD = stats?.monthlyCostCapUSD && stats.monthlyCostCapUSD > 0 ? stats.monthlyCostCapUSD : 100;
+  const remainingPct = Math.max(0, 100 - (totalSpend / budgetUSD) * 100).toFixed(1);
+  const compactionRatio = (stats as any)?.compactionSavings?.compactionRatio
+    ? `${(stats as any).compactionSavings.compactionRatio.toFixed(1)}x`
+    : (totalTokens > 0 ? '1.0x' : 'Standby');
+  const symbolNodes = stats?.memoryGraph?.symbolNodesCount ?? 0;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -61,7 +67,7 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
         </div>
 
         <p className="text-[10px] text-zinc-500 font-mono flex items-center justify-between pt-2 border-t border-white/[0.06]">
-          <span>Compaction Ratio: 3.8x</span>
+          <span>Compaction Ratio: {compactionRatio}</span>
           <span className="text-emerald-400 font-medium">SLA: {p95Latency} p95</span>
         </p>
       </div>
@@ -94,8 +100,8 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
         </div>
 
         <p className="text-[10px] text-zinc-500 font-mono flex items-center justify-between pt-2 border-t border-white/[0.06]">
-          <span>Budget: $100.00</span>
-          <span className="text-indigo-400 font-medium">97.8% Remaining</span>
+          <span>Budget: ${budgetUSD.toFixed(2)}</span>
+          <span className="text-indigo-400 font-medium">{remainingPct}% Remaining</span>
         </p>
       </div>
 
@@ -141,7 +147,7 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
             R2 Workspace Cache
           </span>
           <span className="linear-kbd text-[9px] font-mono text-purple-300">
-            Ready
+            {symbolNodes > 0 || r2HitRate > 0 ? 'Ready' : 'Standby'}
           </span>
         </div>
 
@@ -152,11 +158,11 @@ export function TelemetryChartsGrid({ stats }: TelemetryChartsGridProps) {
           </div>
           <div className="flex items-center justify-between">
             <span className="text-zinc-500 text-[11px]">Symbol Nodes</span>
-            <span className="font-semibold text-zinc-200 tabular-nums">1,420</span>
+            <span className="font-semibold text-zinc-200 tabular-nums">{symbolNodes.toLocaleString()}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-zinc-500 text-[11px]">Unpack Time</span>
-            <span className="font-semibold text-emerald-400 tabular-nums">&lt; 1.2s avg</span>
+            <span className="font-semibold text-emerald-400 tabular-nums">{totalTokens > 0 ? '< 1.2s avg' : 'Standby'}</span>
           </div>
         </div>
 

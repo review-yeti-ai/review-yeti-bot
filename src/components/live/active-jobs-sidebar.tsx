@@ -69,7 +69,7 @@ export function ActiveJobsSidebar({
         ) : (
           activeJobs.map((job) => {
             const isSelected = currentJobId === job.jobId;
-            const repoDisplay = job.repo || 'exampleorg/example-api';
+            const repoDisplay = job.repo || 'Active Repository';
             const prTitle = job.title || (job.prNumber ? `PR #${job.prNumber}` : job.jobId);
             const startTimeStr = job.startTime
               ? new Date(job.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
