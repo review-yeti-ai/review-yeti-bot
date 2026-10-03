@@ -43,19 +43,66 @@ describe('sample repository identity is one contract, asserted across layers', (
     expect(shipped).toContain('reviewyeti-ai/example-meta');
   });
 
-  it('a forward migration neutralizes the shipped sample rows', () => {
-    // The reconciliation the code now depends on, and the only place a live
-    // database can actually pick up the rename. Whitespace-tolerant so a benign
-    // reformat does not fail a contract that still holds.
-    const forward = read('cf-orchestrator/migrations/0002_neutralize_sample_repositories.sql');
-    expect(forward).toMatch(new RegExp(`'${SAMPLE_REPO_CDR}'`));
-    expect(forward).toMatch(new RegExp(`'${SAMPLE_REPO_META}'`));
-    // It must key on the OLD ids, or it is a no-op on a database that has them.
-    // Assert the WHERE clause specifically: a plain toContain is satisfied by the
-    // ids appearing in the explanatory COMMENT alone, so dropping them from the
-    // statement while leaving the prose would pass a broken migration.
-    expect(forward).toMatch(/WHERE\s+id\s*=\s*'reviewyeti-ai\/example-api'/);
-    expect(forward).toMatch(/WHERE\s+id\s*=\s*'reviewyeti-ai\/example-meta'/);
+  it('the migrations actually rename the shipped sample rows when executed', () => {
+    // Review Yeti: the forward migration is the SOLE place a live database picks
+    // up the rename, and text-matching cannot tell whether it executes. A typo'd
+    // table name (`UPDATE repositorie ...`) or a commented-out statement still
+    // satisfies a regex over the file. So execute the SQL for real.
+    //
+    // `node:sqlite` ships with Node 24 (the CI toolchain), and D1 is SQLite, so
+    // this runs the actual migration text against an in-memory database.
+    const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
+    const applyMigration = (db: any, file: string) => {
+      const sql = read(`cf-orchestrator/migrations/${file}`);
+      // Split on statement boundaries; node:sqlite's exec handles multi-statement
+      // input, so pass it through rather than hand-splitting (a naive ';' split
+      // would break on the inline comments the migration carries).
+      db.exec(sql);
+    };
+    const createTable = `
+      CREATE TABLE IF NOT EXISTS repositories (
+        id TEXT PRIMARY KEY,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        default_branch TEXT NOT NULL DEFAULT 'main',
+        automation_enabled INTEGER NOT NULL DEFAULT 1,
+        generate_flowchart INTEGER NOT NULL DEFAULT 1,
+        custom_profile TEXT NOT NULL DEFAULT 'assertive',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );`;
+
+    // Path 1: a database that already applied the SHIPPED 0001, then gets 0002.
+    const upgraded = new DatabaseSync(':memory:');
+    upgraded.exec(createTable);
+    upgraded.exec(`INSERT OR IGNORE INTO repositories (id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at)
+      VALUES ('reviewyeti-ai/example-api','reviewyeti-ai','example-api','main',1,1,'assertive',1,1),
+             ('reviewyeti-ai/example-meta','reviewyeti-ai','example-meta','main',1,1,'balanced',1,1);`);
+    applyMigration(upgraded, '0002_neutralize_sample_repositories.sql');
+    const upgradedIds = (upgraded.prepare('SELECT id FROM repositories ORDER BY id').all() as any[]).map((r) => r.id);
+    expect(upgradedIds).toContain(SAMPLE_REPO_CDR);
+    expect(upgradedIds).toContain(SAMPLE_REPO_META);
+    // The old rows must be gone, not merely joined by new ones -- a leftover old
+    // row is exactly what makes the overview query a DO that does not match.
+    expect(upgradedIds).not.toContain('reviewyeti-ai/example-api');
+    expect(upgradedIds).not.toContain('reviewyeti-ai/example-meta');
+
+    // Path 2: idempotence -- re-applying must not duplicate or fail.
+    applyMigration(upgraded, '0002_neutralize_sample_repositories.sql');
+    expect((upgraded.prepare('SELECT count(*) c FROM repositories').get() as any).c).toBe(2);
+
+    // Path 3: a fresh database applying the shipped 0001 seed then 0002 converges.
+    const fresh = new DatabaseSync(':memory:');
+    fresh.exec(createTable);
+    fresh.exec(`INSERT OR IGNORE INTO repositories (id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at)
+      VALUES ('reviewyeti-ai/example-api','reviewyeti-ai','example-api','main',1,1,'assertive',1,1),
+             ('reviewyeti-ai/example-meta','reviewyeti-ai','example-meta','main',1,1,'balanced',1,1);`);
+    applyMigration(fresh, '0002_neutralize_sample_repositories.sql');
+    const freshIds = (fresh.prepare('SELECT id FROM repositories ORDER BY id').all() as any[]).map((r) => r.id);
+    expect(freshIds).toEqual([SAMPLE_REPO_CDR, SAMPLE_REPO_META].sort());
+
+    upgraded.close();
+    fresh.close();
   });
 
   it('the Durable Object query layer imports the constant instead of repeating it', () => {
