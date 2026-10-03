@@ -1,5 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, BillableRuntimeReport } from '../types.js';
 import { calculateRunnerCost, formatCostUsd, formatDuration } from '../../runners/runnerCost.js';
+import { fetchReviewsFromDb } from '../../storage/d1Client.js';
 
 export const getBillableRuntimeReportTool: McpToolHandler = {
   definition: {
@@ -11,7 +12,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name filter (e.g. "example-api")',
+          description: 'Repository name filter (e.g. "cisco-cdr")',
         },
         prNumber: {
           type: 'number',
@@ -42,54 +43,74 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
     const startDate = new Date(now - days * 86400 * 1000).toISOString();
     const endDate = new Date(now).toISOString();
 
-    // Standard run sample dataset reflecting production telemetry
-    const rawRuns = [
-      {
-        runId: 'run_cf_bd36035bf508024da7457527fa0fa4f5',
-        repo: 'example-api',
-        prNumber: 5290,
-        runner: 'digitalocean',
-        durationMs: 18450,
-        tokenCostUSD: 0.0032,
-        createdAt: new Date(now - 1200000).toISOString(),
-      },
-      {
-        runId: 'run_cf_45ca09576fc84c3f1a9627354e341121',
-        repo: 'example-api',
-        prNumber: 5262,
-        runner: 'digitalocean',
-        durationMs: 248100,
-        tokenCostUSD: 0.0415,
-        createdAt: new Date(now - 86400000).toISOString(),
-      },
-      {
-        runId: 'run_cf_692b3bb536',
-        repo: 'example-api',
-        prNumber: 5288,
-        runner: 'cloudflare',
-        durationMs: 22400,
-        tokenCostUSD: 0.0041,
-        createdAt: new Date(now - 172800000).toISOString(),
-      },
-      {
-        runId: 'run_cf_d94fde4fe8',
-        repo: 'example-api',
-        prNumber: 5294,
-        runner: 'digitalocean',
-        durationMs: 28450,
-        tokenCostUSD: 0.0051,
-        createdAt: new Date(now - 3600000).toISOString(),
-      },
-      {
-        runId: 'run_cf_d57c419e2a',
-        repo: 'example-api',
-        prNumber: 5275,
-        runner: 'cloudflare',
-        durationMs: 19800,
-        tokenCostUSD: 0.0038,
-        createdAt: new Date(now - 259200000).toISOString(),
-      },
-    ];
+    let rawRuns: any[] = [];
+    const hasDb = Boolean(context.env?.DB);
+
+    if (hasDb) {
+      try {
+        const d1Reviews = await fetchReviewsFromDb(context.env.DB, { limit: 100, repo: repo || undefined });
+        rawRuns = d1Reviews.map((r: any) => ({
+          runId: r.id,
+          repo: r.repo,
+          prNumber: r.prNumber,
+          runner: r.model?.includes('cloud') ? 'cloudflare' : 'digitalocean',
+          durationMs: r.durationMs || 0,
+          tokenCostUSD: r.spendUsd || 0,
+          createdAt: new Date(r.createdAt).toISOString(),
+        }));
+      } catch {
+        rawRuns = [];
+      }
+    } else {
+      // Standard run sample dataset reflecting production telemetry
+      rawRuns = [
+        {
+          runId: 'run_cf_bd36035bf508024da7457527fa0fa4f5',
+          repo: 'cisco-cdr',
+          prNumber: 5290,
+          runner: 'digitalocean',
+          durationMs: 18450,
+          tokenCostUSD: 0.0032,
+          createdAt: new Date(now - 1200000).toISOString(),
+        },
+        {
+          runId: 'run_cf_45ca09576fc84c3f1a9627354e341121',
+          repo: 'cisco-cdr',
+          prNumber: 5262,
+          runner: 'digitalocean',
+          durationMs: 248100,
+          tokenCostUSD: 0.0415,
+          createdAt: new Date(now - 86400000).toISOString(),
+        },
+        {
+          runId: 'run_cf_692b3bb536',
+          repo: 'cisco-cdr',
+          prNumber: 5288,
+          runner: 'cloudflare',
+          durationMs: 22400,
+          tokenCostUSD: 0.0041,
+          createdAt: new Date(now - 172800000).toISOString(),
+        },
+        {
+          runId: 'run_cf_d94fde4fe8',
+          repo: 'cisco-cdr',
+          prNumber: 5294,
+          runner: 'digitalocean',
+          durationMs: 28450,
+          tokenCostUSD: 0.0051,
+          createdAt: new Date(now - 3600000).toISOString(),
+        },
+        {
+          runId: 'run_cf_d57c419e2a',
+          repo: 'cisco-cdr',
+          prNumber: 5275,
+          runner: 'cloudflare',
+          durationMs: 19800,
+          tokenCostUSD: 0.0038,
+          createdAt: new Date(now - 259200000).toISOString(),
+        },
+      ];
+    }
 
     const filteredRuns = rawRuns.filter((r) => {
       if (repo && r.repo !== repo) return false;
@@ -192,7 +213,7 @@ export const getBillableRuntimeReportTool: McpToolHandler = {
       },
       breakdownByRunner,
       items,
-      dataSource: 'baseline_sample_telemetry',
+      dataSource: hasDb ? 'live_telemetry' : 'baseline_sample_telemetry',
     };
 
     const summaryText =

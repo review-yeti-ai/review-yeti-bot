@@ -33,7 +33,7 @@ export function Step2ReposPicker({
   const handleCreateRepo = () => {
     if (!newRepoInput.trim()) return;
     const parts = newRepoInput.trim().split('/');
-    const owner = parts.length > 1 ? parts[0] : 'exampleorg';
+    const owner = parts.length > 1 ? parts[0] : 'calltelemetry';
     const repo = parts.length > 1 ? parts[1] : parts[0];
     if (onAddRepo) {
       onAddRepo(owner, repo);

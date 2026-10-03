@@ -46,7 +46,7 @@ export function Step1GitHubApp({
   const defaultWebhookUrl =
     typeof window !== 'undefined'
       ? `${window.location.origin}/api/webhooks/github`
-      : 'https://api.example.com/api/webhooks/github';
+      : 'https://api.calltelemetry.com/api/webhooks/github';
 
   const webhookUrl = config.webhookSecretConfigured ? (config as any).webhookUrl || defaultWebhookUrl : defaultWebhookUrl;
 

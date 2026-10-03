@@ -24,11 +24,11 @@ export function DeveloperRoiCard({ summary, isLoading = false }: DeveloperRoiCar
     );
   }
 
-  const reviews = summary.totalReviews || summary.totalPrs || 48;
+  const reviews = summary.totalReviews ?? summary.totalPrs ?? 0;
   // Baseline: 45 min (0.75h) per manual review vs 18.5s automated review
-  const hoursSaved = Math.max(1, Math.round(reviews * 0.75 * 10) / 10);
-  const p95Sec = Math.max(1, Math.round((summary.p95DurationMs || 18450) / 1000));
-  const autoApprovalRate = summary.acceptanceRate ?? 96.4;
+  const hoursSaved = reviews > 0 ? Math.round(reviews * 0.75 * 10) / 10 : 0;
+  const p95Sec = reviews > 0 ? Math.max(1, Math.round((summary.p95DurationMs || 18450) / 1000)) : 0;
+  const autoApprovalRate = reviews > 0 ? (summary.acceptanceRate ?? 96.4) : 0;
   const devValueUsd = Math.round(hoursSaved * 125); // $125/hr blended dev engineering rate
 
   return (
@@ -48,7 +48,7 @@ export function DeveloperRoiCard({ summary, isLoading = false }: DeveloperRoiCar
                 Developer Velocity &amp; ROI
               </h3>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
-                146x Turnaround Multiple
+                {reviews > 0 && p95Sec > 0 ? `${Math.round(2700 / p95Sec)}x Turnaround Multiple` : 'Standby'}
               </span>
             </div>
             <p className="text-xs text-zinc-400 font-sans mt-0.5">
@@ -90,10 +90,10 @@ export function DeveloperRoiCard({ summary, isLoading = false }: DeveloperRoiCar
           <div className="flex-1">
             <div className="text-[11px] font-mono uppercase text-zinc-400">p95 Review Latency</div>
             <div className="text-xl font-bold font-mono text-cyan-300 tracking-tight">
-              {p95Sec}s
+              {reviews > 0 ? `${p95Sec}s` : 'Idle'}
             </div>
             <div className="text-[10px] text-emerald-400 font-mono">
-              ~146x faster than human turnaround
+              {reviews > 0 && p95Sec > 0 ? `~${Math.round(2700 / p95Sec)}x faster than human turnaround` : 'Waiting for active reviews'}
             </div>
           </div>
         </div>
@@ -108,14 +108,14 @@ export function DeveloperRoiCard({ summary, isLoading = false }: DeveloperRoiCar
               <span className="text-[11px] font-mono uppercase text-zinc-400">First-Pass Yield</span>
             </div>
             <span className="text-sm font-bold font-mono text-emerald-300">
-              {autoApprovalRate}%
+              {autoApprovalRate.toFixed(1)}%
             </span>
           </div>
           <div className="mt-2">
             <ProgressBar value={autoApprovalRate} color="emerald" className="mt-1" />
           </div>
           <div className="text-[10px] text-zinc-500 font-mono mt-1">
-            Clean passes with zero P0 blockers
+            {reviews > 0 ? 'Clean passes with zero P0 blockers' : '0 reviews recorded'}
           </div>
         </div>
       </div>

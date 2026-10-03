@@ -10,6 +10,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/comp
 
 export interface DiagnosticResult {
   success: boolean;
+  error?: string;
   probe1_webhook?: {
     status: string;
     deliveryId: string;
@@ -60,26 +61,24 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
       setCurrentStage('Scan Complete');
       setResult(scanRes);
     } catch (err: any) {
-      // Fallback result for offline or missing endpoint mock
       setResult({
-        success: true,
-        probe1_webhook: { status: 'accepted', deliveryId: `del_${Date.now()}`, latencyMs: 38 },
+        success: false,
+        error: err?.message || 'Diagnostic scan failed. Check provider credentials and connectivity.',
+        probe1_webhook: { status: 'failed', deliveryId: 'None', latencyMs: 0 },
         probe2_latency: {
-          activeProviders: 1,
-          avgLatencyMs: 42,
-          providers: [
-            { id: 'reviewyeti-ai', latencyMs: 42, ttftMs: 18 },
-          ],
+          activeProviders: 0,
+          avgLatencyMs: 0,
+          providers: [],
         },
         probe3_arbitration: {
-          personasEvaluated: 4,
-          distinctProvidersUsed: 1,
-          quorumPassed: true,
-          verdict: 'SHIP',
+          personasEvaluated: 0,
+          distinctProvidersUsed: 0,
+          quorumPassed: false,
+          verdict: 'BLOCKED',
         },
       });
       setProgress(100);
-      setCurrentStage('Scan Complete (Simulated)');
+      setCurrentStage('Scan Failed');
     } finally {
       setRunning(false);
     }
@@ -217,19 +216,19 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
                   <div className="flex justify-between text-muted-foreground">
                     <span>Delivery Status:</span>
                     <strong className="text-foreground font-mono">
-                      {result.probe1_webhook?.status || 'accepted'}
+                      {result.probe1_webhook?.status || 'unknown'}
                     </strong>
                   </div>
                   <div className="flex justify-between text-muted-foreground">
                     <span>Latency:</span>
                     <strong className="text-foreground font-mono">
-                      {result.probe1_webhook?.latencyMs || 38} ms
+                      {result.probe1_webhook?.latencyMs ?? 0} ms
                     </strong>
                   </div>
                   <div className="flex justify-between text-muted-foreground truncate">
                     <span>Delivery ID:</span>
                     <strong className="text-foreground font-mono text-[10px] truncate max-w-[120px]">
-                      {result.probe1_webhook?.deliveryId || 'del_12345'}
+                      {result.probe1_webhook?.deliveryId || 'None'}
                     </strong>
                   </div>
                 </CardContent>
@@ -267,19 +266,19 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
                   <div className="flex justify-between text-muted-foreground">
                     <span>Active Providers:</span>
                     <strong className="text-foreground font-mono">
-                      {result.probe2_latency?.activeProviders || 4}
+                      {result.probe2_latency?.activeProviders ?? 0}
                     </strong>
                   </div>
                   <div className="flex justify-between text-muted-foreground">
                     <span>Avg Latency:</span>
                     <strong className="text-foreground font-mono">
-                      {result.probe2_latency?.avgLatencyMs || 110} ms
+                      {result.probe2_latency?.avgLatencyMs ?? 0} ms
                     </strong>
                   </div>
                   <div className="flex justify-between text-muted-foreground">
                     <span>Fastest TTFT:</span>
                     <strong className="text-emerald-400 font-mono">
-                      {result.probe2_latency?.providers?.[0]?.ttftMs || 35} ms
+                      {result.probe2_latency?.providers?.[0]?.ttftMs ?? 0} ms
                     </strong>
                   </div>
                 </CardContent>
@@ -317,13 +316,13 @@ export function Step5DiagnosticScan({ onRunDiagnostic }: Step5DiagnosticScanProp
                   <div className="flex justify-between text-muted-foreground">
                     <span>Personas Evaluated:</span>
                     <strong className="text-foreground font-mono">
-                      {result.probe3_arbitration?.personasEvaluated || 11} / 11
+                      {result.probe3_arbitration?.personasEvaluated ?? 0} / 11
                     </strong>
                   </div>
                   <div className="flex justify-between text-muted-foreground">
                     <span>Distinct Providers:</span>
                     <strong className="text-foreground font-mono">
-                      {result.probe3_arbitration?.distinctProvidersUsed || 4} (Min: 3)
+                      {result.probe3_arbitration?.distinctProvidersUsed ?? 0} (Min: 3)
                     </strong>
                   </div>
                   <div className="flex justify-between text-muted-foreground">

@@ -125,17 +125,17 @@ export const PROVIDER_GUIDES = [
   {
     id: 'codex',
     name: 'Codex AI Engine',
-    url: 'https://codex.example.com',
+    url: 'https://codex.calltelemetry.com',
     keyFormat: 'cx-...',
     steps: [
-      'exampleorg internal high-throughput code review engine.',
-      'Obtain API credentials from exampleorg Enterprise Portal.',
+      'CallTelemetry internal high-throughput code review engine.',
+      'Obtain API credentials from CallTelemetry Enterprise Portal.',
     ],
   },
   {
     id: 'agy_thinking',
     name: 'AGY Thinking Engine',
-    url: 'https://agy.example.com',
+    url: 'https://agy.calltelemetry.com',
     keyFormat: 'agy-...',
     steps: [
       'Antigravity deep reasoning cluster for complex architectural arbitration.',
@@ -153,9 +153,9 @@ export function HowToGuideCard() {
 
   const sampleManifestSnippet = `{
   "name": "ct-review-bot-app",
-  "url": "https://github.com/exampleorg",
+  "url": "https://github.com/calltelemetry",
   "hook_attributes": {
-    "url": "https://api.example.com/api/webhooks/github",
+    "url": "https://api.calltelemetry.com/api/webhooks/github",
     "active": true
   },
   "default_permissions": {
@@ -238,7 +238,7 @@ export function HowToGuideCard() {
                 <div className="flex items-start gap-2">
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-indigo-500/20 text-[11px] font-bold text-indigo-400">2</span>
                   <span>
-                    Fill in GitHub App Name (e.g. <code>ct-review-bot-app</code>) and set Webhook Target URL to <code>https://api.example.com/api/webhooks/github</code>.
+                    Fill in GitHub App Name (e.g. <code>ct-review-bot-app</code>) and set Webhook Target URL to <code>https://api.calltelemetry.com/api/webhooks/github</code>.
                   </span>
                 </div>
                 <div className="flex items-start gap-2">

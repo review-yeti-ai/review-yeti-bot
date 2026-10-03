@@ -1,4 +1,5 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, RuntimeMetricsReport } from '../types.js';
+import { fetchReviewsFromDb } from '../../storage/d1Client.js';
 
 function computePercentile(sortedValues: number[], percentile: number): number {
   if (sortedValues.length === 0) return 0;
@@ -20,7 +21,7 @@ export const getRuntimeMetricsTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name to filter metrics (e.g. "example-api")',
+          description: 'Repository name to filter metrics (e.g. "cisco-cdr")',
         },
         windowHours: {
           type: 'number',
@@ -41,52 +42,66 @@ export const getRuntimeMetricsTool: McpToolHandler = {
     const windowHours = typeof args.windowHours === 'number' ? args.windowHours : 24;
     const comparisonMode = args.comparisonMode !== false;
 
-    // Production wall-clock sample observations with age in hours:
-    const samplePool = [
-      { latencyMs: 14200, ageHours: 0.5 },
-      { latencyMs: 16500, ageHours: 1.0 },
-      { latencyMs: 18450, ageHours: 2.0 },
-      { latencyMs: 19800, ageHours: 3.5 },
-      { latencyMs: 21200, ageHours: 5.0 },
-      { latencyMs: 22400, ageHours: 8.0 },
-      { latencyMs: 24800, ageHours: 11.0 },
-      { latencyMs: 28450, ageHours: 14.0 },
-      { latencyMs: 31000, ageHours: 18.0 },
-      { latencyMs: 34500, ageHours: 22.0 },
-      { latencyMs: 42000, ageHours: 26.0 },
-      { latencyMs: 48000, ageHours: 32.0 },
-      { latencyMs: 56000, ageHours: 40.0 },
-      { latencyMs: 68000, ageHours: 52.0 },
-      { latencyMs: 84000, ageHours: 68.0 },
-      { latencyMs: 112000, ageHours: 80.0 },
-      { latencyMs: 145000, ageHours: 100.0 },
-      { latencyMs: 198000, ageHours: 120.0 },
-      { latencyMs: 248100, ageHours: 160.0 },
-    ];
+    let latenciesMs: number[] = [];
+    const hasDb = Boolean(context.env?.DB);
 
-    const windowFiltered = samplePool
-      .filter((s) => s.ageHours <= windowHours)
-      .map((s) => s.latencyMs);
+    if (hasDb) {
+      try {
+        const reviews = await fetchReviewsFromDb(context.env.DB, { limit: 100, repo: repo || undefined });
+        latenciesMs = reviews
+          .map((r: any) => r.durationMs)
+          .filter((d: any) => typeof d === 'number' && d > 0);
+      } catch {
+        latenciesMs = [];
+      }
+    } else {
+      // Production wall-clock sample observations with age in hours:
+      const samplePool = [
+        { latencyMs: 14200, ageHours: 0.5 },
+        { latencyMs: 16500, ageHours: 1.0 },
+        { latencyMs: 18450, ageHours: 2.0 },
+        { latencyMs: 19800, ageHours: 3.5 },
+        { latencyMs: 21200, ageHours: 5.0 },
+        { latencyMs: 22400, ageHours: 8.0 },
+        { latencyMs: 24800, ageHours: 11.0 },
+        { latencyMs: 28450, ageHours: 14.0 },
+        { latencyMs: 31000, ageHours: 18.0 },
+        { latencyMs: 34500, ageHours: 22.0 },
+        { latencyMs: 42000, ageHours: 26.0 },
+        { latencyMs: 48000, ageHours: 32.0 },
+        { latencyMs: 56000, ageHours: 40.0 },
+        { latencyMs: 68000, ageHours: 52.0 },
+        { latencyMs: 84000, ageHours: 68.0 },
+        { latencyMs: 112000, ageHours: 80.0 },
+        { latencyMs: 145000, ageHours: 100.0 },
+        { latencyMs: 198000, ageHours: 120.0 },
+        { latencyMs: 248100, ageHours: 160.0 },
+      ];
 
-    const latenciesMs = windowFiltered.length > 0 ? windowFiltered : [samplePool[0].latencyMs];
+      const windowFiltered = samplePool
+        .filter((s) => s.ageHours <= windowHours)
+        .map((s) => s.latencyMs);
+
+      latenciesMs = windowFiltered.length > 0 ? windowFiltered : [samplePool[0].latencyMs];
+    }
 
     const sorted = [...latenciesMs].sort((a, b) => a - b);
     const sum = sorted.reduce((acc, val) => acc + val, 0);
-    const avg = Math.round(sum / sorted.length);
+    const avg = sorted.length > 0 ? Math.round(sum / sorted.length) : 0;
 
     const report: RuntimeMetricsReport = {
       repo: repo || undefined,
       windowHours,
       sampleCount: sorted.length,
-      dataSource: 'baseline_sample_telemetry',
+      dataSource: hasDb ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
       percentilesWallLatencyMs: {
-        min: sorted[0],
+        min: sorted[0] || 0,
         p50: computePercentile(sorted, 50),
         p75: computePercentile(sorted, 75),
         p90: computePercentile(sorted, 90),
         p95: computePercentile(sorted, 95),
         p99: computePercentile(sorted, 99),
-        max: sorted[sorted.length - 1],
+        max: sorted[sorted.length - 1] || 0,
         avg,
       },
       stageBreakdownMs: {
