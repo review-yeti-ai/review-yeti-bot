@@ -34,6 +34,7 @@ const { applyFalsificationOutcomes, runFindingFalsification } = require('../../.
 // title -- the same module the TypeScript worker/panel re-export. Never fork these here.
 const {
   classifyLaneFailure,
+  INFRASTRUCTURE_LANE_FAILURE_CLASSES: SHARED_INFRASTRUCTURE_LANE_FAILURE_CLASSES,
   INCOMPLETE_INFRASTRUCTURE_REASON,
   isInfrastructureIncompleteResult,
   isNonRetryableClientStatus,
@@ -6339,11 +6340,36 @@ function resolveInfrastructureIncomplete(laneResults, { coverageComplete } = {})
 }
 
 /**
+ * Lane-level re-run shape: one or more lanes were lost on infrastructure (transport, provider
+ * error, rate limit, timeout) while their siblings completed with only non-blocking (P2) findings.
+ * The shared decision above deliberately refuses to call such a run INCOMPLETE -- a finding is
+ * evidence about the code -- but the BLOCK it then publishes comes only from the missing lanes
+ * ("N persona lane(s) failed"). Re-running just the lost lanes never re-rolls a sibling's findings
+ * and is the only way the published verdict can describe the whole change. A P0/P1 elsewhere is
+ * already a blocking finding about the code, and an omitted file is a deterministic coverage gap,
+ * so neither shape is re-run (no spend for no change).
+ */
+function resolveLaneLevelInfrastructureRetry(laneResults, { coverageComplete } = {}) {
+  if (coverageComplete !== true) return null;
+  if (!Array.isArray(laneResults) || laneResults.length === 0) return null;
+  const failed = laneResults.filter((lane) => lane?.decision === 'ERROR');
+  if (failed.length === 0) return null;
+  const described = failed.map(describeFailedLane);
+  if (!described.every((lane) => SHARED_INFRASTRUCTURE_LANE_FAILURE_CLASSES.includes(lane.failureClass))) return null;
+  const blockingFindingObserved = laneResults.some((lane) => lane?.decision !== 'ERROR'
+    && (Array.isArray(lane?.findings) ? lane.findings : [])
+      .some((finding) => ['P0', 'P1'].includes(String(finding?.severity || '').toUpperCase())));
+  if (blockingFindingObserved) return null;
+  return { lanes: described, title: renderIncompleteInfrastructureTitle(described) };
+}
+
+/**
  * REL-1113 (Action pipeline): re-attempt the lanes that failed on infrastructure, within the
  * Action's budget, on the shared lane transport-retry schedule (`transportRetryDelayMs` full-jitter
  * backoff, at most `TRANSPORT_MAX_RETRIES`, never inside `TRANSPORT_RETRY_TERMINAL_MARGIN_MS` of
- * the deadline). Runs only while the shared decision says the result is infrastructure-incomplete,
- * so a findings result is never re-rolled. A 4xx other than 429 is not re-attempted (the same
+ * the deadline). Runs while the shared decision says the result is infrastructure-incomplete, or
+ * while the lane-level shape above holds (lost lanes beside non-P0 findings). Only failed lanes are
+ * re-run, so a completed lane's findings are never re-rolled. A 4xx other than 429 is not re-attempted (the same
  * request fails the same way). A re-attempt starts only when a full lane (`laneTimeoutMs`) still
  * fits; the re-attempt is aborted at the deadline, and a lane the deadline cut keeps its original
  * infrastructure failure. A lane a re-attempt completes -- clean or with findings -- replaces its
@@ -6366,7 +6392,8 @@ async function retryInfrastructureFailedLanes(laneResults, rerunLane, options = 
   let results = Array.isArray(laneResults) ? [...laneResults] : [];
   let retries = 0;
   for (let attempt = 1; attempt <= TRANSPORT_MAX_RETRIES; attempt += 1) {
-    const incomplete = resolveInfrastructureIncomplete(results, { coverageComplete });
+    const incomplete = resolveInfrastructureIncomplete(results, { coverageComplete })
+      ?? resolveLaneLevelInfrastructureRetry(results, { coverageComplete });
     if (!incomplete) return { results, retries, stopReason: 'resolved' };
     const retryable = results
       .map((lane, index) => ({ lane, index }))
@@ -9042,6 +9069,7 @@ module.exports = {
   resolveActionDeadlineMs,
   resolveLaneCoverageComplete,
   resolveInfrastructureIncomplete,
+  resolveLaneLevelInfrastructureRetry,
   retryInfrastructureFailedLanes,
   aggregatePartitionPersonaResults,
   toInfrastructureIncompleteArbitration,
