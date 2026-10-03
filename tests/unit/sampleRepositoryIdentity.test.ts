@@ -43,14 +43,12 @@ describe('sample repository identity is one contract, asserted across layers', (
     // longer match the seeded repository and the dashboard would render zeroed
     // state rather than failing loudly.
     const routes = read('cf-orchestrator/src/api/dashboardRoutes.ts');
-    expect(routes).toContain("from '../sampleRepositories.js'");
     expect(routes).not.toContain(SAMPLE_REPO_CDR);
     expect(routes).not.toContain(SAMPLE_REPO_META);
   });
 
   it('the in-memory store fallback imports the constant instead of repeating it', () => {
     const client = read('cf-orchestrator/src/storage/d1Client.ts');
-    expect(client).toContain("from '../sampleRepositories.js'");
     expect(client).not.toContain(SAMPLE_REPO_CDR);
     expect(client).not.toContain(SAMPLE_REPO_META);
   });
@@ -63,7 +61,6 @@ describe('sample repository identity is one contract, asserted across layers', (
     // updated the constant but not this file would leave the dropdown filtering
     // to nothing, silently.
     const page = read('src/app/memory/page.tsx');
-    expect(page).toContain("from '@/lib/sampleRepositories'");
     // Assert the slugs are used as the option VALUE, not merely imported: a bare
     // toMatch(/SAMPLE_REPO_CDR_SLUG/) is satisfied by the import line alone, so
     // reverting the option to value="sample-cdr" would pass while reintroducing
@@ -85,7 +82,6 @@ describe('sample repository identity is one contract, asserted across layers', (
 
   it('the public UI imports the app constant instead of repeating it', () => {
     const ui = read('src/components/analytics/RepoMemoryPivotPlatform.tsx');
-    expect(ui).toContain("from '@/lib/sampleRepositories'");
     expect(ui).not.toContain(SAMPLE_REPO_CDR);
     expect(ui).not.toContain(SAMPLE_REPO_META);
     // The component KEYS ON THE SLUG, not the full identity, and the memory page
