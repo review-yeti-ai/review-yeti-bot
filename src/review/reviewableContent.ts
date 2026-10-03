@@ -1,26 +1,15 @@
 import { isRegularFileMode, verifyLockfileOnlyChange } from './lockfileChangeVerification';
-import { isToolchainPinOrDependencyManifestPath } from './toolchainPinPaths';
-import {
-  DATA_OR_CONFIG_EXTENSION, DOCUMENTATION_OR_ASSET_EXTENSION, DOTENV_CONFIG_FILE, RUN_ARTIFACT_DIRECTORY, RUN_ARTIFACT_EXTENSION,
-} from './pathRiskTables';
+import { isDataOrConfigPath, isDocumentationOrAssetPath } from './pathRiskPolicy';
 
-// Documentation/asset and data/config formats live in `./pathRiskTables.js` (shared with the
-// GitHub Action pipeline); their rationale is documented there.
+// The documentation/asset and data/config predicates (and their format tables) live in
+// `./pathRiskPolicy.js`, shared with the GitHub Action pipeline; edit them there.
 /**
  * Returns true only for paths the review policy treats as non-analyzable content.
  *
  * Keep this classification service-safe: executable content under evidence and
  * artifact directories remains analyzable, as do manifests and dependency files.
  */
-export function isDocumentationOrAssetPath(filePath: string): boolean {
-  // REL-1136: a dependency manifest such as requirements.txt is never prose.
-  if (isToolchainPinOrDependencyManifestPath(filePath)) return false;
-  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
-  return (
-    (RUN_ARTIFACT_DIRECTORY.test(normalized) && RUN_ARTIFACT_EXTENSION.test(normalized)) ||
-    DOCUMENTATION_OR_ASSET_EXTENSION.test(normalized)
-  );
-}
+export { isDocumentationOrAssetPath };
 
 /**
  * Structured data and configuration formats (REL-972): JSON, YAML, TOML, CSV,
@@ -34,9 +23,7 @@ export function isDocumentationOrAssetPath(filePath: string): boolean {
  * documentation exemption they already were (`isDocumentationOrAssetPath` is
  * checked first by every caller).
  */
-export function isDataOrConfigPath(filePath: string): boolean {
-  return DATA_OR_CONFIG_EXTENSION.test(filePath) || DOTENV_CONFIG_FILE.test(filePath.replace(/\\/g, '/'));
-}
+export { isDataOrConfigPath };
 
 /**
  * A changed file the service accepts inside a no-reviewable-content completion:

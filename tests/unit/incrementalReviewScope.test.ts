@@ -883,18 +883,15 @@ describe('trusted incremental review scope', () => {
       expect(split.message).toContain('(1 of them only partly reviewed)');
     });
 
-    it('reads the one shared path-risk table module the TypeScript classifiers import (no copy)', () => {
+    it('ranks with the one shared path-risk policy the TypeScript budget re-exports (no copy)', () => {
       const pipelineSource = fs.readFileSync(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'), 'utf8');
-      expect(pipelineSource).toContain("require('../../../src/review/pathRiskTables')");
-      // No regex table literal is restated in the pipeline: the tables have exactly one definition.
-      expect(pipelineSource).not.toMatch(/auth\|authn\|authz|package-lock\.json|jenkinsfile|\(md\|markdown/u);
-      for (const consumer of ['securitySensitivePaths.ts', 'reviewBudget.ts', 'reviewableContent.ts']) {
-        expect(fs.readFileSync(path.join(root, 'src/review', consumer), 'utf8')).toContain("from './pathRiskTables'");
-      }
-      // Every listed name ranks 0 through both the pipeline order and the TypeScript classifier.
-      const tables = require(path.join(root, 'src/review/pathRiskTables.js'));
-      for (const name of [...tables.LOCKFILE_NAMES, ...tables.TOOLCHAIN_PIN_NAMES, ...tables.DEPENDENCY_MANIFESTS]) {
-        expect([name, scope.admissionRiskRank(name)]).toEqual([name, budgetCategoryRank(classifyBudgetCategory(name))]);
+      expect(pipelineSource).toContain("require('../../../src/review/pathRiskPolicy')");
+      // No table literal or classification order is restated in the pipeline.
+      expect(pipelineSource).not.toMatch(/auth\|authn\|authz|package-lock\.json|jenkinsfile|\(md\|markdown|'security-sensitive'|'ci-iac'/u);
+      const policy = require(path.join(root, 'src/review/pathRiskPolicy.js'));
+      expect(scope.admissionRiskRank).toBe(policy.pathRiskRank);
+      for (const consumer of ['securitySensitivePaths.ts', 'reviewBudget.ts', 'reviewableContent.ts', 'toolchainPinPaths.ts']) {
+        expect(fs.readFileSync(path.join(root, 'src/review', consumer), 'utf8')).toContain("from './pathRiskPolicy'");
       }
     });
 

@@ -1,16 +1,18 @@
 'use strict';
 
 /**
- * The ONE definition of the path tables that decide how risky a changed path is: the
- * security-sensitive path policy (REL-1135, consumed through `securitySensitivePaths.ts`), the
- * review budget's CI/IaC and test ranks (`reviewBudget.ts`) and the documentation/asset and
- * data/config formats (`reviewableContent.ts`).
+ * The ONE definition of how risky a changed path is: the security-sensitive path predicate
+ * (REL-1135, re-exported by `securitySensitivePaths.ts`), the toolchain-pin / dependency-manifest
+ * predicate (`toolchainPinPaths.ts`), the documentation/asset and data/config predicates
+ * (`reviewableContent.ts`) and the review budget's category and packing rank (`reviewBudget.ts`) --
+ * the tables AND the classification order.
  *
  * Plain CommonJS with a sibling `.d.ts` (the same pattern as `laneInfrastructure.js` and
- * `reviewCore.js`) so BOTH review runtimes read these exact tables: the TypeScript worker/panel
- * modules above import them, and the composite GitHub Action's legacy pipeline
+ * `reviewCore.js`) so BOTH review runtimes run this exact code: the TypeScript worker/panel
+ * modules above re-export it, and the composite GitHub Action's legacy pipeline
  * (`.github/workflows/pipelines/incremental-review-scope.js`, partition admission under the
- * assignment cap) requires this file directly. Never fork a table into either runtime; edit it here.
+ * assignment cap) requires this file directly. Never fork a table or a predicate into either
+ * runtime; edit it here.
  */
 
 /** Directory or file-name segments that name security-relevant code. */
@@ -246,6 +248,157 @@ const DOTENV_CONFIG_FILE = /(?:^|\/)\.env(?:\.[^/]+)?$/i;
 const RUN_ARTIFACT_DIRECTORY = /(^|\/)runs\/|^(evidence|artifacts)\/|\/(evidence|artifacts)\//;
 const RUN_ARTIFACT_EXTENSION = /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/i;
 
+// ---------------------------------------------------------------------------
+// Toolchain pins and dependency manifests without a data/config extension (REL-1136).
+// They are never documentation: `isDocumentationOrAssetPath` checks this first.
+// ---------------------------------------------------------------------------
+
+const TOOLCHAIN_PIN_OR_MANIFEST_BASENAMES = new Set([
+  // Toolchain / runtime version pins.
+  '.tool-versions',
+  '.nvmrc',
+  '.node-version',
+  '.python-version',
+  '.ruby-version',
+  '.java-version',
+  '.go-version',
+  '.bun-version',
+  '.terraform-version',
+  '.sdkmanrc',
+  'rust-toolchain',
+  'rust-toolchain.toml',
+  // Dependency manifests and pins without a data/config extension.
+  'go.mod',
+  'go.work',
+  'gemfile',
+  'pipfile',
+  '.terraform.lock.hcl',
+]);
+
+const REQUIREMENTS_MANIFEST = /^(?:requirements|constraints)(?:[._-][\w.-]*)?\.(?:txt|in)$/u;
+
+/** The file pins a toolchain version or declares dependencies (REL-1136). */
+function isToolchainPinOrDependencyManifestPath(filePath) {
+  if (typeof filePath !== 'string' || filePath.length === 0) return false;
+  const basename = (filePath.replace(/\\/g, '/').split('/').pop() || '').toLowerCase();
+  return TOOLCHAIN_PIN_OR_MANIFEST_BASENAMES.has(basename) || REQUIREMENTS_MANIFEST.test(basename);
+}
+
+// ---------------------------------------------------------------------------
+// The security-sensitive path predicate (REL-1135).
+// ---------------------------------------------------------------------------
+
+function normalizePath(filePath) {
+  return filePath.replace(/\\/gu, '/').replace(/^\.\//u, '');
+}
+
+function baseNameOf(normalized) {
+  return (normalized.split('/').pop() || normalized).toLowerCase();
+}
+
+function isLockfilePath(filePath) {
+  const normalized = normalizePath(String(filePath || ''));
+  return LOCKFILE_NAMES.has(baseNameOf(normalized)) || LOCKFILE_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function isToolchainPinPath(filePath) {
+  return TOOLCHAIN_PIN_NAMES.has(baseNameOf(normalizePath(String(filePath || ''))));
+}
+
+function isDependencyManifestPath(filePath) {
+  const normalized = normalizePath(String(filePath || ''));
+  return DEPENDENCY_MANIFESTS.has(baseNameOf(normalized))
+    || DEPENDENCY_MANIFEST_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+const CLASSED_PATTERNS = Object.freeze([
+  ['ci', CI_PATTERNS],
+  ['container', CONTAINER_PATTERNS],
+  ['iac', IAC_PATTERNS],
+  ['repo_control', REPO_CONTROL_PATTERNS],
+  ['secret_material', SECRET_MATERIAL_PATTERNS],
+  ['build_script', BUILD_SCRIPT_PATTERNS],
+  ['migration', MIGRATION_PATTERNS],
+]);
+
+/**
+ * Which arm of the predicate a path matches, or null when it is not sensitive.
+ * First match wins, so the answer is stable; being sensitive at all does not
+ * depend on the order.
+ */
+function securitySensitivePathClass(filePath) {
+  if (typeof filePath !== 'string' || filePath.trim().length === 0) return 'malformed';
+  const normalized = normalizePath(filePath);
+  for (const [pathClass, patterns] of CLASSED_PATTERNS) {
+    if (patterns.some((pattern) => pattern.test(normalized))) return pathClass;
+  }
+  if (isLockfilePath(normalized)) return 'lockfile';
+  if (isToolchainPinPath(normalized)) return 'toolchain_pin';
+  if (isDependencyManifestPath(normalized)) return 'dependency_manifest';
+  if (SENSITIVE_SEGMENT.test(normalized) || SENSITIVE_STEM.test(normalized) || SENSITIVE_CAMEL_STEM.test(normalized)) {
+    return 'auth_crypto_secrets';
+  }
+  return null;
+}
+
+/**
+ * True when a path must always be reviewed at full depth. Case-insensitive,
+ * separator-normalized, and conservative: an empty or non-string path is
+ * treated as sensitive so that malformed input never unlocks a reduction.
+ */
+function isSecuritySensitivePath(filePath) {
+  return securitySensitivePathClass(filePath) !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Documentation/asset and data/config predicates (REL-972).
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true only for paths the review policy treats as non-analyzable content.
+ *
+ * Keep this classification service-safe: executable content under evidence and
+ * artifact directories remains analyzable, as do manifests and dependency files.
+ */
+function isDocumentationOrAssetPath(filePath) {
+  // REL-1136: a dependency manifest such as requirements.txt is never prose.
+  if (isToolchainPinOrDependencyManifestPath(filePath)) return false;
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  return (RUN_ARTIFACT_DIRECTORY.test(normalized) && RUN_ARTIFACT_EXTENSION.test(normalized))
+    || DOCUMENTATION_OR_ASSET_EXTENSION.test(normalized);
+}
+
+/** Structured data and configuration formats (see `reviewableContent.ts`). */
+function isDataOrConfigPath(filePath) {
+  return DATA_OR_CONFIG_EXTENSION.test(filePath) || DOTENV_CONFIG_FILE.test(filePath.replace(/\\/g, '/'));
+}
+
+// ---------------------------------------------------------------------------
+// The review budget's category and packing rank (W5).
+// ---------------------------------------------------------------------------
+
+function classifyBudgetCategory(filePath) {
+  if (isSecuritySensitivePath(filePath)) return 'security-sensitive';
+  const path = filePath.replace(/\\/gu, '/');
+  if (CI_IAC_PATTERNS.some((pattern) => pattern.test(path))) return 'ci-iac';
+  if (TEST_PATTERNS.some((pattern) => pattern.test(path))) return 'test';
+  if (isDocumentationOrAssetPath(path)) return 'docs';
+  if (isDataOrConfigPath(path)) return 'config';
+  return 'source';
+}
+
+/** Packing rank: 0 is always full depth; 1 and 2 may be summarized, 1 before 2. */
+function budgetCategoryRank(category) {
+  if (category === 'security-sensitive' || category === 'ci-iac') return 0;
+  if (category === 'source') return 1;
+  return 2;
+}
+
+/** `budgetCategoryRank(classifyBudgetCategory(path))`, for callers that only need the rank. */
+function pathRiskRank(filePath) {
+  return budgetCategoryRank(classifyBudgetCategory(filePath));
+}
+
 module.exports = {
   SENSITIVE_SEGMENT,
   SENSITIVE_STEM,
@@ -269,4 +422,15 @@ module.exports = {
   DOTENV_CONFIG_FILE,
   RUN_ARTIFACT_DIRECTORY,
   RUN_ARTIFACT_EXTENSION,
+  isToolchainPinOrDependencyManifestPath,
+  isLockfilePath,
+  isToolchainPinPath,
+  isDependencyManifestPath,
+  securitySensitivePathClass,
+  isSecuritySensitivePath,
+  isDocumentationOrAssetPath,
+  isDataOrConfigPath,
+  classifyBudgetCategory,
+  budgetCategoryRank,
+  pathRiskRank,
 };
