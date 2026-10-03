@@ -2276,6 +2276,9 @@ describe('public compatibility transports and SDK fallback', () => {
     };
     const fetchImplementation = vi.fn(async () => new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } }));
     const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    // Characterize the pinned SDK 1.2.80 contract: non-stream parsing wraps raw strings as
+    // UNKNOWN content items, which the adapter omits while preserving valid text whitespace.
+    // The stream-request JSON compatibility path instead joins raw parts and trims the result.
     await expect(client.complete({ ...request, stream })).resolves.toMatchObject({ content: stream ? 'FIRST SECOND' : 'SECOND ' });
     expect(fetchImplementation).toHaveBeenCalledOnce();
   });
