@@ -1,0 +1,78 @@
+name: Prune pre-rewrite container versions (one-off)
+
+# REL-1282: after the history rewrite, container versions built from the pre-rewrite tree still carry the
+# removed text. Delete every version created before the cutoff, except the closure (the index, its per-platform
+# manifests and attestations) of the digests that are currently deployed. Dry-run by default.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted without deleting"
+        type: boolean
+        default: true
+      cutoff:
+        description: "Delete only versions created before this UTC timestamp"
+        type: string
+        required: true
+      keep_digests:
+        description: "Comma-separated sha256 digests (indexes) that are deployed and must be kept"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ORG: ${{ github.repository_owner }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      CUTOFF: ${{ inputs.cutoff }}
+      KEEP: ${{ inputs.keep_digests }}
+    steps:
+      - name: Prune
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin >/dev/null
+          for pkg in review-yeti-bot review-yeti-worker review-yeti-operator; do
+            echo "== ${pkg}"
+            gh api --paginate "orgs/${ORG}/packages/container/${pkg}/versions?per_page=100" \
+              --jq '.[]|[.id,.name,.created_at]|@tsv' > "versions-${pkg}.tsv"
+            echo "versions: $(wc -l < "versions-${pkg}.tsv")"
+            : > "keep-${pkg}.txt"
+            IFS=',' read -ra digests <<< "${KEEP}"
+            for d in "${digests[@]}"; do
+              d="$(echo "$d" | tr -d '[:space:]')"
+              [[ -z "$d" ]] && continue
+              if docker buildx imagetools inspect "ghcr.io/${ORG}/${pkg}@${d}" >/dev/null 2>&1; then
+                echo "$d" >> "keep-${pkg}.txt"
+                crane manifest "ghcr.io/${ORG}/${pkg}@${d}" 2>/dev/null | jq -r '.manifests[]?.digest' >> "keep-${pkg}.txt" || true
+              fi
+            done
+            # Children of every kept index (attestation manifests are indexes' children too).
+            for d in $(sort -u "keep-${pkg}.txt"); do
+              crane manifest "ghcr.io/${ORG}/${pkg}@${d}" 2>/dev/null | jq -r '.manifests[]?.digest' >> "keep-${pkg}.txt" || true
+            done
+            # Everything created at or after the cutoff is post-rewrite and is kept (with its children).
+            awk -F'\t' -v c="${CUTOFF}" '$3 >= c {print $2}' "versions-${pkg}.tsv" >> "keep-${pkg}.txt"
+            sort -u "keep-${pkg}.txt" -o "keep-${pkg}.txt"
+            echo "kept digests: $(wc -l < "keep-${pkg}.txt")"
+            deleted=0
+            while IFS=$'\t' read -r id name created; do
+              [[ "${created}" < "${CUTOFF}" ]] || continue
+              grep -qx "${name}" "keep-${pkg}.txt" && continue
+              if [[ "${DRY_RUN}" == "true" ]]; then
+                echo "would delete ${pkg} ${id} ${name:0:19} ${created}"
+              else
+                gh api -X DELETE "orgs/${ORG}/packages/container/${pkg}/versions/${id}" >/dev/null
+              fi
+              deleted=$((deleted + 1))
+            done < "versions-${pkg}.tsv"
+            echo "${pkg}: ${deleted} version(s) $([[ "${DRY_RUN}" == "true" ]] && echo 'would be deleted' || echo 'deleted')"
+          done
