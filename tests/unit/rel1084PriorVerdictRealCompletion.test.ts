@@ -25,7 +25,7 @@ import {
 import { parseWorkerReviewCompletion, workerReviewCompletionDigest, type WorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
 import type { WorkerReviewCompletionAdapter } from '../../src/review/workerReviewCompletionHttp';
 import { logger } from '../../src/utils/logger';
-import { gateRecordFor } from '../support/priorGateRecord';
+import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 
 /**
  * REL-1084 / REL-1085 production finding: the authoritative worker's completion never sets the
@@ -267,10 +267,13 @@ describe('a prior built by the real completion builder and the real gate', () =>
     const completion = await realPriorCompletion({ findings: { 'sec-lane': [
       { severity: 'P1', path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module', body: 'Rename it.' },
     ] } });
-    // The worker reports raw P1; current policy publishes calibrated P2 as
-    // advisory, while preserving the open path for the next review.
+    // The worker reports raw P1; it is published as a calibrated P2, which is required (ADR 0002)
+    // until the author resolves its thread with a reason. The open path is preserved either way.
     expect(completion.result.personas.flatMap((lane) => lane.findings.map((finding) => finding.severity))).toEqual(['P1']);
-    const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() });
+    expect(gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles() }).decision)
+      .toMatchObject({ status: 'failure', reason: 'blocking-findings' });
+    const recorded = gateRecordFor(completion, { expectedPersonaIds: prepared().expectedPersonaIds, changedFiles: changedFiles(),
+      findingThreads: resolvedThreadsFor([{ path: 'src/stable.ts', line: 11, title: 'Naming is inconsistent with the module' }]) });
     expect(recorded.decision).toMatchObject({ status: 'success', reason: 'clean-review' });
     const rows = storedRows(completion, recorded);
     expect(priorReviewRecordFromRows(rows)).toMatchObject({ shipComplete: true, findingPaths: ['src/stable.ts'] });

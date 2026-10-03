@@ -15,7 +15,7 @@ import { REVIEW_GATE_SCHEMA_SQL } from '../../src/persistence/reviewGateSchema';
 import { REVIEW_EVENT_SCHEMA_SQL } from '../../src/persistence/reviewEventRepository';
 import type { IncrementalVerificationInput } from '../../src/review/incrementalReview';
 import { sha256 } from '../../src/review/reviewCore';
-import { gateRecordFor } from '../support/priorGateRecord';
+import { gateRecordFor, resolvedThreadsFor } from '../support/priorGateRecord';
 import {
   workerReviewCompletionDigest,
   workerReviewEvidenceDigest,
@@ -89,13 +89,17 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     `, [id, options.executionAttempt ?? 0, TOKEN_DIGEST]);
   }
 
-  async function insertCompletion(event: WorkerReviewCompletion, createdAt: number, options: { gate?: boolean } = {}): Promise<void> {
+  async function insertCompletion(event: WorkerReviewCompletion, createdAt: number,
+    options: { gate?: boolean; findingThreads?: ReturnType<typeof resolvedThreadsFor> } = {}): Promise<void> {
     const json = JSON.stringify(event);
     await pool!.query(`
       INSERT INTO review_worker_completions (run_id, execution_attempt, content_digest, payload, byte_length, created_at)
       VALUES ($1, $2, $3, $4::jsonb, $5, to_timestamp($6/1000.0))
     `, [event.runId, event.executionAttempt, workerReviewCompletionDigest(event), json, Buffer.byteLength(json, 'utf8'), createdAt]);
-    if (options.gate !== false) await insertGate(event);
+    if (options.gate !== false) {
+      await insertGate(event, options.findingThreads ? { recorded: gateRecordFor(event, {
+        expectedPersonaIds: ['sec-lane'], changedFiles: CHANGED, findingThreads: options.findingThreads }) } : {});
+    }
   }
 
   /** The gate attempt row the trusted transaction writes for this completion (`gateRecordFor`). */
@@ -155,7 +159,7 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     try { await pool?.query(`DROP SCHEMA "${schemaName}" CASCADE`); } finally { await pool?.end(); pool = undefined; }
   });
 
-  it('selects the latest terminal completion and preserves its advisory P2 path', async () => {
+  it('selects the latest terminal completion and preserves the path of its satisfied P2 (ADR 0002)', async () => {
     const current = runId(100);
     await insertRun(current);
     const older = runId(1);
@@ -164,7 +168,8 @@ describeWithPostgres('incremental prior review selection (real SQL)', () => {
     await insertCompletion(completionFor(older, '5'.repeat(40), PREV_BASE, 1), RECEIVED_AT - 7_200_000);
     await insertRun(newest, { status: 'succeeded', headSha: PREV_HEAD, baseSha: PREV_BASE });
     await insertCompletion(completionFor(newest, PREV_HEAD, PREV_BASE, 1, 42,
-      [{ severity: 'P2', path: 'src/open.ts', line: 3, title: 't', body: 'b' }]), RECEIVED_AT - 3_600_000);
+      [{ severity: 'P2', path: 'src/open.ts', line: 3, title: 't', body: 'b' }]), RECEIVED_AT - 3_600_000,
+    { findingThreads: resolvedThreadsFor([{ path: 'src/open.ts', line: 3, title: 't' }]) });
     // Ignored: another PR, and a record stored after this run's admission.
     const otherPr = runId(3);
     await insertRun(otherPr, { status: 'succeeded', prNumber: 43 });

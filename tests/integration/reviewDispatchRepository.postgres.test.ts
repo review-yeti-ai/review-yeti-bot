@@ -948,16 +948,18 @@ describeWithPostgres('PostgresReviewDispatchRepository real SQL lifecycle', () =
     };
     await expect(gateRepository.recordWorkerResult(workerResult, { workerTokenDigest },
       async () => trusted, workerStartedAt + 2_000)).resolves.toBe('recorded');
-    // Authenticated continuation preserves P2 evidence under the established
-    // P0/P1-only blocking policy.
+    // Authenticated continuation preserves P2 evidence. Under ADR 0002 the retained P2s are
+    // required (no thread resolved them), so the canonical SHIP verdict is recorded with its
+    // required P2 count and the Gate blocks.
     expect((await client.query('SELECT status FROM review_runs WHERE run_id = $1', [seeded.run.runId])).rows[0].status)
-      .toBe('succeeded');
+      .toBe('failed');
     expect((await client.query(`SELECT desired_state, decision FROM review_gate_attempts
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0])
-      .toMatchObject({ desired_state: 'success', decision: { status: 'success', reason: 'clean-review' } });
+      .toMatchObject({ desired_state: 'failure', decision: { status: 'failure', reason: 'blocking-findings' } });
     const gateEvidence = (await client.query(`SELECT evidence FROM review_gate_attempts
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].evidence;
     expect(gateEvidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
+    expect(gateEvidence.p2Count).toBeGreaterThan(0);
     const storedCompletion = (await client.query(`SELECT payload FROM review_worker_completions
       WHERE run_id = $1 AND execution_attempt = 2`, [seeded.run.runId])).rows[0].payload;
     expect(storedCompletion.result).toMatchObject({ findingCount: 4, blockingFindingCount: 0 });
