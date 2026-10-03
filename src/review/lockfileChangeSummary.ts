@@ -229,8 +229,19 @@ function collectYarn(lines: readonly string[]): Collected | string {
   return out;
 }
 
-/** The Hex package an added or removed mix.lock entry declares: `:name, "version"`. */
-const MIX_HEX_ENTRY = /^\s*"([^"]+)"\s*:\s*\{:hex,\s*:([^,\s]+),\s*"([^"]*)"/u;
+/**
+ * The Hex package an added or removed mix.lock entry declares:
+ * `:name, "version"`, then Hex's positional repo field (the 7th element).
+ *
+ * The repo slot is captured deliberately. A mix.lock entry's own repository is
+ * a POSITIONAL field (`{:hex, :dep, "1.0.0", "aa", [:mix], [], "acme", "bb"}`),
+ * so it contains no `repo:` substring and `MIX_REPO` alone cannot see it. Without
+ * this capture an entry pinned to a private repository is summarized as if it
+ * came from hexpm, which is the exact claim the refusal is supposed to enforce.
+ * The installed-shape fields are `[hex: :x, repo: "acme"]`, matched by MIX_REPO.
+ */
+const MIX_HEX_ENTRY =
+  /^\s*"([^"]+)"\s*:\s*\{:hex,\s*:([^,\s]+),\s*"([^"]*)"[^\n]*?,\s*"([^"]*)"\s*,\s*"([^"]*)"/u;
 /** The repository an entry's dependencies name (`repo: "hexpm"`); `dependencies:` is Hex's own key. */
 const MIX_REPO = /\brepo:\s*"([^"]*)"/gu;
 /** The map literal a mix.lock opens and closes with. */
@@ -276,7 +287,14 @@ function collectMix(lines: readonly string[]): Collected | string {
       continue;
     }
     if (entry[1] !== entry[2]) return 'changes an entry whose package name and declaration disagree';
-    // A dependency may name a private repository while the entry claims hexpm.
+    // The entry's OWN repository is the positional field Hex writes (entry[4]);
+    // anything but hexpm means this package did not come from the default public
+    // registry, so the registry-vouched summary does not stand over it.
+    if (entry[4] !== 'hexpm') {
+      return 'changes an entry that is not a Hex package from the default repository';
+    }
+    // A dependency may independently name a private repository while the entry
+    // itself claims hexpm.
     if ([...body.matchAll(MIX_REPO)].some((repo) => repo[1] !== 'hexpm')) {
       return 'changes an entry that is not a Hex package from the default repository';
     }
