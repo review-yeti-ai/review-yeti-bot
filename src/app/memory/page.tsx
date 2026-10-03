@@ -58,6 +58,7 @@ import {
   exportMemorySnapshot,
 } from '@/lib/api-client';
 import { RepoMemoryPivotPlatform } from '@/components/analytics/RepoMemoryPivotPlatform';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META, SAMPLE_REPO_META_SLUG } from '@/lib/sampleRepositories';
 
 interface WorkspaceCacheEntry {
   key: string;
@@ -575,8 +576,8 @@ export default function MemoryPage() {
             >
               <option value="all">All Workspaces (3)</option>
               <option value="review-yeti-bot">reviewyeti-ai/review-yeti-bot</option>
-              <option value="sample-cdr">example/sample-cdr</option>
-              <option value="sample-meta">example/sample-meta</option>
+              <option value={SAMPLE_REPO_CDR_SLUG}>{SAMPLE_REPO_CDR}</option>
+              <option value={SAMPLE_REPO_META_SLUG}>{SAMPLE_REPO_META}</option>
             </select>
 
             {/* Category Filter Chips */}
