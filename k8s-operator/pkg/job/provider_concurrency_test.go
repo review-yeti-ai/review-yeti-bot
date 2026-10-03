@@ -1,6 +1,7 @@
 package job_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -70,6 +71,37 @@ func TestBuildWorkerJobForwardsProviderConcurrencyOnlyWhenSet(t *testing.T) {
 	}
 	if envValue(droppedContainer, job.ProviderLeasesEnv) != "true" {
 		t.Fatalf("a well-formed sibling value must still be forwarded")
+	}
+
+	// Every drop condition, each next to a well-formed sibling that must
+	// still be forwarded: over-long (257 bytes), a DEL byte, a tab, a NUL.
+	// The 256-byte boundary itself is accepted.
+	for _, tc := range []struct {
+		name, key, local   string
+		dropKey, dropLocal bool
+	}{
+		{name: "257-byte key", key: strings.Repeat("a", 257), local: "6", dropKey: true},
+		{name: "256-byte key", key: strings.Repeat("a", 256), local: "6"},
+		{name: "DEL in local cap", key: "pr-reviewer", local: "6\x7f", dropLocal: true},
+		{name: "tab in key", key: "pr\treviewer", local: "6", dropKey: true},
+		{name: "NUL in local cap", key: "pr-reviewer", local: "6\x00", dropLocal: true},
+	} {
+		input.Publishing.ProviderLeaseKey = tc.key
+		input.Publishing.ProviderLocalConcurrency = tc.local
+		built, err := job.BuildWorkerJob(input)
+		if err != nil {
+			t.Fatalf("%s: a malformed provider concurrency value must not refuse the Job: %v", tc.name, err)
+		}
+		c := built.Spec.Template.Spec.Containers[0]
+		if hasEnv(c, job.ProviderLeaseKeyEnv) == tc.dropKey {
+			t.Fatalf("%s: key projected=%v, want %v", tc.name, hasEnv(c, job.ProviderLeaseKeyEnv), !tc.dropKey)
+		}
+		if hasEnv(c, job.ProviderLocalConcurrencyEnv) == tc.dropLocal {
+			t.Fatalf("%s: local cap projected=%v, want %v", tc.name, hasEnv(c, job.ProviderLocalConcurrencyEnv), !tc.dropLocal)
+		}
+		if envValue(c, job.ProviderLeasesEnv) != "true" {
+			t.Fatalf("%s: a well-formed sibling value must still be forwarded", tc.name)
+		}
 	}
 
 	input.Review.Spec.PublicationMode = "disabled"

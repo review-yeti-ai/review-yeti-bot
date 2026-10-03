@@ -21,7 +21,7 @@
  * (`./rateLimitBackoff`) rides it out.
  */
 import { normalizeCapacityKey } from '../config/providerConcurrency';
-import type { ProviderLeaseCoordinator } from '../review/providerLease';
+import type { ProviderLeaseCoordinator } from './providerLeaseCoordinator';
 import { logger } from '../utils/logger';
 import { OpenRouterTimeoutError, type OpenRouterRequest, type OpenRouterResponse, type ReviewModelClient } from './openRouterClient';
 

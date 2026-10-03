@@ -48,18 +48,3 @@ export const providerLeaseResponseSchema = z.discriminatedUnion('status', [
 ]);
 
 export type ProviderLeaseResponse = z.infer<typeof providerLeaseResponseSchema>;
-
-export type ProviderLeaseAcquireResult =
-  | { status: 'granted'; leaseId: string; ttlMs: number; capacity: number; inUse: number }
-  | { status: 'denied'; retryAfterMs: number; capacity: number; inUse: number }
-  | { status: 'unmanaged' };
-
-/**
- * The worker's view of the coordinator. Any rejection means "coordinator unavailable": the caller
- * fails open to its local cap.
- */
-export interface ProviderLeaseCoordinator {
-  acquire(capacityKey: string, signal?: AbortSignal): Promise<ProviderLeaseAcquireResult>;
-  renew(leaseId: string, signal?: AbortSignal): Promise<{ status: 'renewed'; ttlMs: number } | { status: 'lost' }>;
-  release(leaseId: string, signal?: AbortSignal): Promise<void>;
-}

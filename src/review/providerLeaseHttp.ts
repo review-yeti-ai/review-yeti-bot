@@ -12,10 +12,13 @@ import {
   PROVIDER_LEASE_RELEASE_VERSION,
   PROVIDER_LEASE_RENEW_VERSION,
   providerLeaseResponseSchema,
-  type ProviderLeaseAcquireResult,
-  type ProviderLeaseCoordinator,
   type ProviderLeaseResponse,
 } from './providerLease';
+import type {
+  ProviderLeaseAcquireResult,
+  ProviderLeaseCoordinator,
+  ProviderLeaseRenewResult,
+} from '../gateway/providerLeaseCoordinator';
 
 /** Short on purpose: a slow coordinator must not eat into the review's model-call budget. */
 export const DEFAULT_PROVIDER_LEASE_TIMEOUT_MS = 3_000;
@@ -60,7 +63,7 @@ export class HttpProviderLeaseCoordinator implements ProviderLeaseCoordinator {
     throw unavailable();
   }
 
-  async renew(leaseId: string, signal?: AbortSignal): Promise<{ status: 'renewed'; ttlMs: number } | { status: 'lost' }> {
+  async renew(leaseId: string, signal?: AbortSignal): Promise<ProviderLeaseRenewResult> {
     const response = await this.post({ version: PROVIDER_LEASE_RENEW_VERSION, leaseId }, signal);
     if (response.status === 'renewed') return { status: 'renewed', ttlMs: response.ttlMs };
     if (response.status === 'lost') return { status: 'lost' };
