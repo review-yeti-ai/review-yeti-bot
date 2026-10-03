@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createConcurrencyLimitedModelClient,
+  type ConcurrencyLimitedModelClient,
   leaseWaitDelayMs,
   PROVIDER_LEASE_WAIT_MAX_DELAY_MS,
   withProviderConcurrencyLimit,
@@ -303,6 +304,30 @@ describe('coordinator unavailable: fail open to the local cap', () => {
     // A coordinator without the worker flag is ignored, so an unconfigured worker is unchanged.
     expect(providerPublishingModelClient(client, {}, coordinator)).toBe(client);
     expect(providerPublishingModelClient(client, { REVIEW_YETI_PROVIDER_LEASES: 'true' }, coordinator)).not.toBe(client);
+  });
+});
+
+describe('publishing worker wiring', () => {
+  it('bounds lease waits by the terminal deadline minus the closeout reserve', async () => {
+    const start = Date.UTC(2026, 9, 2, 20);
+    vi.useFakeTimers({ now: start });
+    // Terminal deadline 340s away; the five-minute closeout reserve leaves a 40s work cutoff.
+    const env = { REVIEW_YETI_PROVIDER_LEASES: 'true', REVIEW_TERMINAL_DEADLINE: new Date(start + 340_000).toISOString() };
+    const coordinator: ProviderLeaseCoordinator = {
+      acquire: vi.fn(async () => ({ status: 'denied' as const, retryAfterMs: 2_000, capacity: 1, inUse: 1 })),
+      renew: vi.fn(), release: vi.fn(),
+    };
+    const startedAt: number[] = [];
+    const client = providerPublishingModelClient({
+      complete: async (req) => { startedAt.push(Date.now() - start); return { model: req.model, content: 'ok', usage: null, costUSD: null, raw: {} }; },
+    }, env, coordinator, () => Date.now()) as ConcurrencyLimitedModelClient;
+    const pending = client.complete(request({ timeoutMs: 600_000 }));
+    await vi.advanceTimersByTimeAsync(25_000);
+    await pending;
+    // Waiting stopped within half of the 40s cutoff, not within the 340s terminal deadline.
+    expect(startedAt).toHaveLength(1);
+    expect(startedAt[0]).toBeLessThanOrEqual(20_000);
+    expect(client.stats().waitExhausted).toBe(1);
   });
 });
 
