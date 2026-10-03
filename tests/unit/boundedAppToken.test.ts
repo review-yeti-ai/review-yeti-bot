@@ -14,14 +14,16 @@ const token = 'ghs_modern-header.payload_segment.signature-with-dash';
 const expiresAt = '2099-01-01T00:00:00.000Z';
 const failureMessage = 'Repository App token is unavailable';
 
-function tokenBody(mode: 'read' | 'publish' | 'merge-group' = 'read') {
+type Mode = 'read' | 'publish' | 'merge-group' | 'review-threads';
+function tokenBody(mode: Mode = 'read') {
   return { token, expires_at: expiresAt, permissions: mode === 'read'
     ? { contents: 'read', pull_requests: 'read', metadata: 'read' }
     : mode === 'publish' ? { checks: 'write', metadata: 'read' }
-      : { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read', metadata: 'read' } };
+      : mode === 'review-threads' ? { pull_requests: 'write', metadata: 'read' }
+        : { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read', metadata: 'read' } };
 }
 
-function fetchStub(mode: 'read' | 'publish' | 'merge-group' = 'read') {
+function fetchStub(mode: Mode = 'read') {
   return vi.fn(async (input: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
     new Response(JSON.stringify(String(input).endsWith('/installation') ? { id: 987 } : tokenBody(mode)), { status: 200 }));
 }
@@ -54,7 +56,7 @@ describe('getBoundedRepositoryToken', () => {
     try { expect(vi.getTimerCount()).toBe(0); } finally { vi.useRealTimers(); vi.restoreAllMocks(); }
   });
 
-  it.each(['read', 'publish', 'merge-group'] as const)('reuses actual %s minter with exact repo grants and bounded HTTPS requests', async (mode) => {
+  it.each(['read', 'publish', 'merge-group', 'review-threads'] as const)('reuses actual %s minter with exact repo grants and bounded HTTPS requests', async (mode) => {
     const fetchImplementation = fetchStub(mode);
     const before = { ...config };
     const result = await getBoundedRepositoryToken(Object.freeze({ ...config }), mode, { fetchImplementation });
@@ -76,7 +78,15 @@ describe('getBoundedRepositoryToken', () => {
     expect(JSON.parse(String(fetchImplementation.mock.calls[1][1]?.body))).toEqual({ repositories: [config.repo],
       permissions: mode === 'read' ? { contents: 'read', pull_requests: 'read' }
         : mode === 'publish' ? { checks: 'write' }
-          : { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read' } });
+          : mode === 'review-threads' ? { pull_requests: 'write' }
+            : { checks: 'write', contents: 'read', pull_requests: 'read', merge_queues: 'read' } });
+  });
+
+  it('refuses a review-thread token broader than pull_requests: write (ADR 0002)', async () => {
+    const fetchImplementation = vi.fn(async (input: RequestInfo | URL): Promise<Response> =>
+      new Response(JSON.stringify(String(input).endsWith('/installation') ? { id: 987 }
+        : { token, expires_at: expiresAt, permissions: { pull_requests: 'write', contents: 'write', metadata: 'read' } }), { status: 200 }));
+    await redacted(getBoundedRepositoryToken({ ...config }, 'review-threads', { fetchImplementation }));
   });
 
   it('retains the explicit standard GitHub default without caching across calls', async () => {

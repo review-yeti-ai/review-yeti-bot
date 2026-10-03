@@ -339,6 +339,8 @@ describe('Action dispatch startup transport and admission wiring', () => {
       config, repository: mocks.gateStorage, getStoredPrepared: expect.any(Function), appId: '4385771',
       privateKey: 'synthetic-startup-private-key', baseUrl: 'https://api.github.com',
       workerId: 'authoritative-review-startup-test',
+      // ADR 0002: resolves the review App's bot login for finding-thread author verification.
+      findingThreadAuthor: expect.any(Function),
     });
     const options = mocks.authoritative.mock.calls[0][0];
     expect(options.repository).toBe(mocks.gateStorage);
