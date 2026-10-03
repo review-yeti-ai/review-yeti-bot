@@ -153,7 +153,7 @@ describe('public Retry-After parsing boundaries', () => {
     const metadata = parseRetryAfter(' 3 ', epoch);
     expect(metadata).toEqual({ notBeforeMs: epoch + 3000, format: 'delta_seconds' });
     expect(Object.isFrozen(metadata)).toBe(true);
-    expect(Object.keys(metadata!)).toEqual(['notBeforeMs', 'format']);
+    expect(Object.keys(metadata!).sort()).toEqual(['format', 'notBeforeMs']);
   });
   it('keeps future, exact-expiry, elapsed and refused cooldowns distinct', () => {
     const metadata = parseRetryAfter('3', epoch);
