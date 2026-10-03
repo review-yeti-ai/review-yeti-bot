@@ -160,7 +160,7 @@ describe('REL-1334: Elixir mix.lock', () => {
   });
 
   it('reads the real serialization Hex writes, dependencies and all', () => {
-    // cisco-cdr/mix.lock, verbatim shape: a rebar3 build tool and a hexpm-pinned
+    // A mix.lock, verbatim shape: a rebar3 build tool and a hexpm-pinned
     // dependency list between the version and the repository.
     const text = ok(summarizeLockfileChange('mix.lock', [
       '@@ -1,2 +1,2 @@',
