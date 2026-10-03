@@ -136,7 +136,9 @@ function runPartitionedReview(failPartition: 'first' | 'last' | 'none', recovery
     expect(telemetryPaths).toHaveLength(1);
     const telemetry = JSON.parse(fs.readFileSync(path.join(scratch.path, telemetryPaths[0]), 'utf8'));
     const summary = fs.readFileSync(path.join(scratch.path, 'summary.md'), 'utf8');
-    return { calls, outputs, telemetry, summary, stdout };
+    const commentPath = path.join(scratch.path, 'review-comment.md');
+    const comment = fs.existsSync(commentPath) ? fs.readFileSync(commentPath, 'utf8') : '';
+    return { calls, outputs, telemetry, summary, stdout, comment };
   } finally {
     // spawnSync has returned and the exact child is closed before fixture cleanup.
     scratch.cleanup();
@@ -234,7 +236,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
 describe('the partition-by-persona assignment cap degrades instead of refusing the run', () => {
   it('reviews the admitted partition, names the deferred file and fails closed', () => {
     // Two personas x two partitions = 4 assignments against a cap of 2: one partition fits.
-    const { calls, outputs, summary, stdout } = runPartitionedReview('none', undefined, { MAX_REVIEW_ASSIGNMENTS: '2' });
+    const { calls, outputs, summary, stdout, comment } = runPartitionedReview('none', undefined, { MAX_REVIEW_ASSIGNMENTS: '2' });
     expect(stdout).toContain('Partitioned into 2');
     expect(stdout).toContain('Review assignment cap: 2 persona(s) x 2 diff partitions = 4 model assignments exceeds `max-review-assignments` (2).');
     expect(stdout).toContain('1 partition(s) were NOT reviewed, covering 1 file(s): `src/b.ts`');
@@ -247,6 +249,13 @@ describe('the partition-by-persona assignment cap degrades instead of refusing t
     expect(outputs.verdict).not.toBe('SHIP');
     expect(summary).toContain('1 file(s) NOT reviewed');
     expect(summary).toContain('Review assignment cap');
+    // The rendered PR comment reports partial coverage and omits the partition manifest, which
+    // would otherwise claim every partition was reviewed.
+    expect(comment).toContain('1/2 files fully reviewed across 1 of 2 partitions, 1 not reviewed: assignment cap');
+    expect(comment).toContain('**1 file(s) were not reviewed** — `src/b.ts`.');
+    expect(comment).toContain('> Review assignment cap: 2 persona(s) x 2 diff partitions');
+    expect(comment).not.toContain('**Review Partitions**');
+    expect(comment).not.toMatch(/Coverage: 100% \(\d+\/\d+ files reviewed across/u);
   }, 15000);
 });
 
