@@ -22,7 +22,7 @@
  *
  * The TypeScript layers import this module. The SQL seed cannot import it, so
  * its rows are asserted against these values by
- * `cf-orchestrator/test/sampleRepositoryIdentity.test.ts` — that test is what
+ * `tests/unit/sampleRepositoryIdentity.test.ts` — that test is what
  * makes the contract enforced rather than documented.
  */
 
