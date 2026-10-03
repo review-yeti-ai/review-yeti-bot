@@ -136,6 +136,17 @@ describe('evaluateFindingConvergence', () => {
     }
   });
 
+  it('keeps a P2 required when a resolved thread only carries an acknowledgement, not a reason', () => {
+    // The thread reader drops weak replies (statedResolutionReason); a resolution object that still
+    // carries one must not satisfy the P2 either, so the gate holds end to end.
+    for (const reason of ['done', 'ok', '+1', 'fixed']) {
+      const result = evaluateFindingConvergence({
+        findings: [finding()], changedFiles, priorThreads: [thread({ resolved: true, resolution: { author: 'author1', reason } })],
+      });
+      expect(result.entries[0]).toMatchObject({ status: 'carried', blocking: true });
+    }
+  });
+
   it('never lets a resolved thread satisfy a P0 or P1', () => {
     const resolution = { author: 'author1', reason: 'We think this is fine for now honestly.' };
     for (const severity of ['P0', 'P1']) {

@@ -86,16 +86,21 @@ P0/P1; auto-resolving a current-line thread because one run did not report it.
   reason; the next head turns green when nothing else is required.
 - A review that still carries a required P2 is not a clean prior for incremental re-review or the
   verdict cache, so those reuse less until the P2s are cleared.
-- The legacy GitHub Action pipeline (`.github/workflows/pipelines/review-pipeline.js`, the `local`
-  execution backend) is not changed by this decision; it still gates on the arbitration verdict.
-  The DOKS worker's raw check is the production merge contract.
+- Scope: the DOKS worker's raw check and the service Gate, which are the production merge contract.
+  Two other runtimes have no access to the bot's thread state and are deliberately not changed,
+  because blocking on P2 there without convergence is exactly the alternative rejected above: the
+  legacy GitHub Action pipeline (`.github/workflows/pipelines/review-pipeline.js`, the `local`
+  execution backend), which still gates on the arbitration verdict, and the Cloudflare edge
+  orchestrator's PR review payload (`cf-orchestrator/src/reviewPublisher.ts`), which still treats
+  P2 as advisory in its review event. Neither publishes the required check.
 - Model variance can still raise a new P2 on code the author just changed. That is a real new
   finding under this policy; the author resolves it with a reason if it does not apply.
 
 ## Revisit when
 
 - The deployer changes the severity policy.
-- The `local` Action backend becomes a primary path again: port the convergence decision to it.
+- The `local` Action backend or the edge orchestrator becomes a primary path again: port the
+  convergence decision to it (it needs the thread read), rather than blocking on raw severity.
 - Satisfied-by-resolution is abused (for example, resolutions with boilerplate reasons): tighten
   `statedResolutionReason` or require a maintainer reply.
 - Fingerprint matching shows false merges (two real defects treated as one) or misses (the same

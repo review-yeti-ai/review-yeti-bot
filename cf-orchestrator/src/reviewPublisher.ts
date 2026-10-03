@@ -42,12 +42,9 @@ export interface GitHubReviewPayload {
  * Formats a single finding with optional ```suggestion markdown block.
  */
 export function formatSuggestionBody(finding: InlineFindingSuggestion): string {
-  // ADR 0002: P0, P1 and P2 are all required before merge.
   const badge = finding.severity === 'P0' || finding.severity === 'P1'
     ? `🚨 **[${finding.severity}]**`
-    : finding.severity === 'P2'
-      ? `⚠️ **[${finding.severity} - Required to address]**`
-      : `💡 **[${finding.severity}]**`;
+    : `💡 **[${finding.severity}]**`;
 
   let body = `${badge} **${finding.title}**\n\n${finding.description.trim()}`;
 
@@ -72,8 +69,6 @@ export function buildGitHubReviewPayload(params: {
   summaryMarkdown: string;
   findings: InlineFindingSuggestion[];
   runnerCost?: RunnerCostDetails;
-  /** ADR 0002: findings still required after convergence; defaults to every finding. */
-  requiredFindings?: InlineFindingSuggestion[];
 }): GitHubReviewPayload {
   const { commitId, verdict, summaryMarkdown, findings, runnerCost } = params;
 
@@ -84,12 +79,9 @@ export function buildGitHubReviewPayload(params: {
     body = `${body.trim()}\n\n---\n\n${costSection}`;
   }
 
-  // Map verdict to GitHub PR review event. P0, P1 and P2 all block (ADR 0002). When the caller has
-  // the convergence result (findings still required after fixed / resolved-with-reason / outside
-  // the diff), the event follows it, so this payload cannot request changes on a PR whose required
-  // check is green. Without it, every P0/P1/P2 counts. A blocking finding is never approved.
-  const blockingSet = params.requiredFindings ?? findings;
-  const hasBlockers = blockingSet.some(f => f.severity === 'P0' || f.severity === 'P1' || f.severity === 'P2');
+  // Map verdict to GitHub PR review event. Only P0/P1 block; P2 is advisory. A blocking finding
+  // is never approved, even if the upstream verdict and the finding list disagree.
+  const hasBlockers = findings.some(f => f.severity === 'P0' || f.severity === 'P1');
   let event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT' = 'COMMENT';
   if (verdict === 'success') {
     event = hasBlockers ? 'REQUEST_CHANGES' : 'APPROVE';
