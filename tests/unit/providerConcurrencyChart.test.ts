@@ -79,11 +79,14 @@ describe.skipIf(!helmAvailable())('rendered provider concurrency contract', () =
       publishing: { providerLeases: 'true', providerLeaseKey: 'pr-reviewer', providerLocalConcurrency: '6' },
       dispatcher: { config: { providerConcurrency: 'pr-reviewer=12', providerLeaseTtlMs: '60000' } },
     });
-    expect(operatorEnv(documents).filter((entry) => entry.name.startsWith('REVIEW_YETI_PROVIDER_'))).toEqual([
+    // Container env order carries no meaning: pin the exact set, not its order.
+    const providerEnv = operatorEnv(documents).filter((entry) => entry.name.startsWith('REVIEW_YETI_PROVIDER_'));
+    expect(providerEnv).toHaveLength(3);
+    expect(providerEnv).toEqual(expect.arrayContaining([
       { name: 'REVIEW_YETI_PROVIDER_LEASES', value: 'true' },
       { name: 'REVIEW_YETI_PROVIDER_LEASE_KEY', value: 'pr-reviewer' },
       { name: 'REVIEW_YETI_PROVIDER_LOCAL_CONCURRENCY', value: '6' },
-    ]);
+    ]));
     expect(dispatcherConfig(documents)).toMatchObject({
       REVIEW_YETI_PROVIDER_CONCURRENCY: 'pr-reviewer=12', REVIEW_YETI_PROVIDER_LEASE_TTL_MS: '60000',
     });

@@ -93,9 +93,22 @@ export class HttpProviderLeaseCoordinator implements ProviderLeaseCoordinator {
         void response.body?.cancel().catch(() => undefined);
         throw unavailable();
       }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > MAX_PROVIDER_LEASE_RESPONSE_BYTES) throw unavailable();
-      return providerLeaseResponseSchema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)));
+      // Bound memory while reading: an oversized body is cancelled, never fully buffered.
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > MAX_PROVIDER_LEASE_RESPONSE_BYTES) throw unavailable();
+          chunks.push(value);
+        }
+      } finally {
+        void reader.cancel().catch(() => undefined);
+      }
+      return providerLeaseResponseSchema.parse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))));
     } catch {
       throw unavailable();
     } finally {

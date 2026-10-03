@@ -5,6 +5,7 @@
  * attempt and authenticated with its per-run bearer (the same as the checkpoint route).
  */
 import { z } from 'zod';
+import { CAPACITY_KEY_PATTERN } from '../config/providerConcurrency';
 
 export const PROVIDER_LEASE_ACQUIRE_VERSION = 'ProviderLeaseAcquire.v1' as const;
 export const PROVIDER_LEASE_RENEW_VERSION = 'ProviderLeaseRenew.v1' as const;
@@ -19,7 +20,7 @@ export const MAX_PROVIDER_LEASE_RESPONSE_BYTES = 4_096;
 const runId = z.string().regex(/^run_[a-f0-9]{32}$/u);
 const executionAttempt = z.number().int().positive().safe();
 const leaseId = z.string().uuid();
-const capacityKey = z.string().regex(/^[a-z0-9][a-z0-9._:/@-]{0,127}$/u);
+const capacityKey = z.string().regex(CAPACITY_KEY_PATTERN);
 
 export const providerLeaseRequestSchema = z.discriminatedUnion('version', [
   z.object({ version: z.literal(PROVIDER_LEASE_ACQUIRE_VERSION), runId, executionAttempt, capacityKey }).strict(),

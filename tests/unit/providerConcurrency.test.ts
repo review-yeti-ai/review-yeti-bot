@@ -203,6 +203,36 @@ describe('cross-review provider concurrency (shared coordinator)', () => {
     expect(release).not.toHaveBeenCalled();
   });
 
+  it('a renew or release that rejects is contained: the call completes and renewal keeps trying', async () => {
+    vi.useFakeTimers();
+    let finish!: () => void;
+    const renew = vi.fn(async () => { throw new Error('HTTP 503'); });
+    const release = vi.fn(async () => { throw new Error('connect ECONNRESET'); });
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      const coordinator: ProviderLeaseCoordinator = {
+        acquire: vi.fn(async () => ({ status: 'granted' as const, leaseId: '44444444-4444-4444-8444-444444444444', ttlMs: 3_000, capacity: 1, inUse: 1 })),
+        renew, release,
+      };
+      const client = createConcurrencyLimitedModelClient({
+        complete: (req) => new Promise((resolve) => { finish = () => resolve({ model: req.model, content: 'ok', usage: null, costUSD: null, raw: {} }); }),
+      }, { coordinator });
+      const pending = client.complete(request());
+      await vi.advanceTimersByTimeAsync(3_500);
+      // A failed renewal is retried on the next beat; it neither throws nor drops the lease.
+      expect(renew.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(client.stats().leasesLost).toBe(0);
+      finish();
+      await expect(pending).resolves.toMatchObject({ content: 'ok' });
+      expect(release).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
+  });
+
   it('a key the service does not manage proceeds under the local cap only', async () => {
     const board = new MemoryLeaseBoard({ capacity: { 'other-model': 1 } });
     const provider = rateLimitedProvider({ slots: 50, durationMs: 5 });
@@ -304,6 +334,18 @@ describe('provider concurrency configuration', () => {
     expect(providerConcurrencyWorkerConfigFromEnv({ REVIEW_YETI_PROVIDER_LOCAL_CONCURRENCY: '6', REVIEW_YETI_PROVIDER_LEASE_KEY: 'Bifrost/PR-Reviewer' }))
       .toEqual({ leasesEnabled: false, localConcurrency: 6, fixedKey: 'bifrost/pr-reviewer' });
     expect(providerConcurrencyWorkerConfigFromEnv({ REVIEW_YETI_PROVIDER_LOCAL_CONCURRENCY: '9999' }).localConcurrency).toBe(64);
+  });
+});
+
+describe('capacity key rule', () => {
+  it('the wire schema accepts exactly the keys the worker normalizer produces', async () => {
+    const { normalizeCapacityKey } = await import('../../src/config/providerConcurrency');
+    const { providerLeaseRequestSchema } = await import('../../src/review/providerLease');
+    for (const raw of ['PR-Reviewer', 'bifrost/pr-reviewer', 'a'.repeat(128), 'a'.repeat(129), 'bad key', 'model+plus', '-leading', 'x@y:z.1']) {
+      const key = normalizeCapacityKey(raw);
+      const accepted = providerLeaseRequestSchema.safeParse({ version: 'ProviderLeaseAcquire.v1', runId: RUN_ID, executionAttempt: 1, capacityKey: key ?? raw }).success;
+      expect(accepted, raw).toBe(key !== undefined);
+    }
   });
 });
 
