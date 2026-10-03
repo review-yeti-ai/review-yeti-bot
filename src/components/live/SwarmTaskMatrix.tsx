@@ -202,15 +202,22 @@ const DEFAULT_COMPACTION: ContextCompactionMetrics = {
 };
 
 export function SwarmTaskMatrix({
-  tasks = DEFAULT_SWARM_TASKS,
-  compaction = DEFAULT_COMPACTION,
+  tasks = [],
+  compaction,
   selectedTaskId,
   onSelectTask,
   activeTurnByTask = {},
   className = '',
 }: SwarmTaskMatrixProps) {
-  const activeTasks = tasks && tasks.length > 0 ? tasks : DEFAULT_SWARM_TASKS;
-  const metrics = compaction || DEFAULT_COMPACTION;
+  const activeTasks = tasks || [];
+  const metrics = compaction || {
+    rawDiffTokens: 0,
+    compactedTokens: 0,
+    compactionRatio: 0,
+    boundsReductionLines: 0,
+    lockfilesBypassed: 0,
+    astOutlineNodes: 0,
+  };
 
   const completedCount = activeTasks.filter(
     (t) => t.status === 'COMPLETED' || t.progress >= 100
@@ -237,21 +244,34 @@ export function SwarmTaskMatrix({
           <div className="flex items-center gap-1 px-2 py-0.5 rounded border border-indigo-500/30 bg-indigo-500/10 text-indigo-300">
             <Scissors className="h-3 w-3 text-indigo-400" />
             <span>AST Compaction:</span>
-            <strong className="text-white font-bold">{metrics.compactionRatio.toFixed(1)}x</strong>
+            <strong className="text-white font-bold">{metrics.compactionRatio > 0 ? `${metrics.compactionRatio.toFixed(1)}x` : 'Idle'}</strong>
           </div>
           <div className="flex items-center gap-1 px-2 py-0.5 rounded border border-white/[0.08] bg-white/[0.02] text-zinc-400">
             <span>Raw: {metrics.rawDiffTokens.toLocaleString()} tok</span>
             <ArrowRight className="h-2.5 w-2.5 text-zinc-600" />
             <span className="text-emerald-400 font-medium">{metrics.compactedTokens.toLocaleString()} tok</span>
           </div>
-          <div className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-500/20 bg-emerald-500/5 text-emerald-400">
-            <Check className="h-2.5 w-2.5" />
-            <span>±3 line bounds clamped</span>
-          </div>
+          {metrics.boundsReductionLines > 0 && (
+            <div className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded border border-emerald-500/20 bg-emerald-500/5 text-emerald-400">
+              <Check className="h-2.5 w-2.5" />
+              <span>±3 line bounds clamped</span>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* 2. Swarm Task Cards Grid */}
+      {/* 2. Swarm Task Cards Grid or Standby Zero State */}
+      {activeTasks.length === 0 ? (
+        <div className="p-8 rounded-lg border border-dashed border-white/[0.08] bg-[#08090d] text-center space-y-2">
+          <div className="p-2.5 rounded-full bg-white/[0.03] border border-white/[0.06] w-fit mx-auto text-zinc-500">
+            <Cpu className="h-5 w-5" />
+          </div>
+          <div className="text-xs font-mono text-zinc-300 font-medium">Swarm Standby — 0 Tasks In Flight</div>
+          <p className="text-[11px] text-zinc-500 max-w-sm mx-auto">
+            Subagents are idle. Trigger a pull request review or open a PR webhook to activate real-time parallel execution.
+          </p>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
         {activeTasks.map((task) => {
           const dim = DIMENSION_CONFIG[task.dimension] || {
@@ -382,6 +402,7 @@ export function SwarmTaskMatrix({
           );
         })}
       </div>
+      )}
     </div>
   );
 }

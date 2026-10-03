@@ -46,12 +46,12 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
   const avg = summary.avgDurationMs || summary.avgLatencyMs || 0;
   const spend = summary.totalSpendUsd || 0;
   const tokens = summary.totalTokens || 0;
-  const acceptance = summary.acceptanceRate ?? 100;
-  const dismissal = summary.dismissalRate ?? 0;
-  const totalFindings = summary.totalFindings ?? 0;
   const reviews = summary.totalReviews || 0;
+  const acceptance = reviews > 0 ? (summary.acceptanceRate ?? 100) : 0;
+  const dismissal = reviews > 0 ? (summary.dismissalRate ?? 0) : 0;
+  const totalFindings = summary.totalFindings ?? 0;
   const prs = summary.totalPrs ?? reviews;
-  const successRate = summary.successRate ?? 100;
+  const successRate = reviews > 0 ? (summary.successRate ?? 100) : 0;
 
   // Comparison deltas against previous period if available
   const prev = summary.previousPeriod;
@@ -210,7 +210,7 @@ export function ExecutiveKpiCards({ summary, isLoading = false }: ExecutiveKpiCa
           </span>
         </div>
         <div className="mt-1 text-xs text-zinc-400 font-mono">
-          Consensus: <span className="text-emerald-400 font-bold">{successRate.toFixed(1)}% SHIP</span>
+          Consensus: <span className="text-emerald-400 font-bold">{reviews > 0 ? `${successRate.toFixed(1)}% SHIP` : 'Standby (0 reviews)'}</span>
         </div>
       </Card>
     </div>

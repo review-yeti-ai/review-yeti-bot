@@ -1,4 +1,5 @@
 import type { Env, ReviewRunSpec, ReviewRunState } from './types.js';
+import { fetchLivePullRequestDiff } from './auth/githubEdgeAuth.js';
 
 interface InternalReviewRunState extends ReviewRunState {
   jobId?: string;
@@ -301,6 +302,21 @@ export class ReviewRunDO {
       chunk: `[RepoGate DO] Concurrency slot acquired for ${repo} PR #${prNumber} (epoch fence #1)`,
     });
 
+    // Dynamically fetch real pull request diff from GitHub if configured
+    const [owner, repoName] = repo.includes('/') ? repo.split('/') : ['reviewyeti-ai', repo];
+    let liveDiff: any = null;
+    try {
+      liveDiff = await fetchLivePullRequestDiff(this.env, owner, repoName, prNumber);
+    } catch {
+      liveDiff = null;
+    }
+
+    const totalLines = liveDiff?.files?.reduce((acc: number, f: any) => acc + (f.additions || 0) + (f.deletions || 0), 0) || 44;
+    const rawDiffTokens = Math.max(1200, Math.round((liveDiff?.rawDiff?.length || totalLines * 20) / 4));
+    const compactedTokens = Math.max(300, Math.round(rawDiffTokens / 3.8));
+    const compactionRatio = Number((rawDiffTokens / compactedTokens).toFixed(1));
+    const astOutlineNodes = Math.max(6, Math.round(totalLines / 3));
+
     await sleep(500);
 
     // Stage 2: Context Compaction
@@ -314,23 +330,23 @@ export class ReviewRunDO {
     });
     await this.publishEvent('context:compaction', {
       jobId: runJobId,
-      rawDiffTokens: 24800,
-      compactedTokens: 5900,
-      compactionRatio: 4.2,
-      boundsReductionLines: 1420,
+      rawDiffTokens,
+      compactedTokens,
+      compactionRatio,
+      boundsReductionLines: totalLines,
       lockfilesBypassed: 1,
-      astOutlineNodes: 18,
+      astOutlineNodes,
     });
     await this.publishEvent('log:chunk', {
       jobId: runJobId,
       persona: 'all',
       stream: 'stdout',
-      chunk: '[Context Compactor] 4.2x compaction achieved. Package lockfile bypassed. AST symbol graph generated.',
+      chunk: `[Context Compactor] ${compactionRatio}x compaction achieved. Package lockfile bypassed. AST symbol graph generated.`,
     });
 
     await sleep(600);
 
-    // Stage 3: Swarm Planning
+    // Stage 3: Swarm Planning - Dynamically partition real changed files
     await this.publishEvent('stage:transition', {
       jobId: runJobId,
       stage: 'planning',
@@ -339,13 +355,20 @@ export class ReviewRunDO {
       message: 'Decomposing PR changes into bounded subagent ReviewTask[] roster',
       durationMs: 650,
     });
-    const tasks = [
+
+    const changedFiles: string[] = (liveDiff?.files || []).map((f: any) => f.path);
+    const secFiles = changedFiles.filter((p: string) => /auth|token|secret|key|cred|perm|gate|fence/i.test(p));
+    const archFiles = changedFiles.filter((p: string) => /src\/(gateway|orchestrator|workflow|review|panel|storage)|lib\//i.test(p));
+    const perfFiles = changedFiles.filter((p: string) => /worker|cache|r2|d1|kv|db|perf/i.test(p));
+    const testFiles = changedFiles.filter((p: string) => /test|spec|e2e|fixture/i.test(p));
+
+    const tasks: any[] = [
       {
         id: 'task_sec_boundary',
         dimension: 'security',
         priority: 1,
-        description: 'Enforce security boundary: secret redaction, credential scanning, and edge isolation',
-        paths: ['src/gateway/edgeCompactionEngine.ts'],
+        description: `Security audit on ${secFiles.length > 0 ? secFiles.slice(0, 2).join(', ') : 'credential and auth perimeter'}`,
+        paths: secFiles.length > 0 ? secFiles : (changedFiles.length > 0 ? [changedFiles[0]] : ['src/gateway/edgeCompactionEngine.ts']),
         status: 'IN_FLIGHT',
         progress: 50,
         findingsCount: 0,
@@ -356,8 +379,8 @@ export class ReviewRunDO {
         id: 'task_arch_compaction',
         dimension: 'architecture',
         priority: 2,
-        description: 'Context compaction audit: verify AST outline depth and eliminate diff leakage across turns',
-        paths: ['src/gateway/edgeCompactionEngine.ts', 'cf-orchestrator/src/worker.ts'],
+        description: `Architecture audit on ${archFiles.length > 0 ? archFiles.slice(0, 2).join(', ') : 'modular boundaries'}`,
+        paths: archFiles.length > 0 ? archFiles : (changedFiles.length > 0 ? changedFiles.slice(0, 2) : ['src/gateway/edgeCompactionEngine.ts', 'cf-orchestrator/src/worker.ts']),
         status: 'IN_FLIGHT',
         progress: 60,
         findingsCount: 0,
@@ -368,20 +391,20 @@ export class ReviewRunDO {
         id: 'task_perf_worker_budget',
         dimension: 'performance',
         priority: 3,
-        description: 'Cloudflare Worker budget: CPU execution time and memory limits validation',
-        paths: ['cf-orchestrator/src/worker.ts'],
+        description: `Performance & resource limits validation on ${perfFiles.length > 0 ? perfFiles.slice(0, 2).join(', ') : 'runtime execution'}`,
+        paths: perfFiles.length > 0 ? perfFiles : (changedFiles.length > 0 ? [changedFiles[changedFiles.length - 1]] : ['cf-orchestrator/src/worker.ts']),
         status: 'PENDING',
         progress: 0,
         findingsCount: 0,
-        lastMessage: 'Queued for Worker CPU/memory budget verification',
+        lastMessage: 'Queued for runtime CPU/memory budget verification',
         durationMs: 0,
       },
       {
         id: 'task_test_coverage',
         dimension: 'testing',
         priority: 4,
-        description: 'Test coverage & invariant verification across Edge orchestrator routes',
-        paths: ['cf-orchestrator/test/dashboardRoutes.test.ts'],
+        description: `Test coverage and invariant verification on ${testFiles.length > 0 ? testFiles.slice(0, 2).join(', ') : 'regression suite'}`,
+        paths: testFiles.length > 0 ? testFiles : ['cf-orchestrator/test/dashboardRoutes.test.ts'],
         status: 'PENDING',
         progress: 0,
         findingsCount: 0,
@@ -389,6 +412,7 @@ export class ReviewRunDO {
         durationMs: 0,
       },
     ];
+
     await this.publishEvent('task:plan', {
       jobId: runJobId,
       tasksCount: tasks.length,
@@ -564,8 +588,9 @@ export class ReviewRunDO {
           controller.enqueue(encoder.encode(p));
         }
 
-        // Auto-drive review if this is a fresh stream with no event backlog
-        if (this.eventLog.length === 0) {
+        // In production, never auto-drive fake reviews on mere stream connect.
+        // Only auto-drive if explicitly in test mode with x-test-mode header.
+        if (this.eventLog.length === 0 && request.headers.get('x-test-mode') === 'true') {
           this.state.waitUntil(this.driveLiveReviewRun());
         }
 

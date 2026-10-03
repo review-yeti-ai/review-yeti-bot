@@ -122,10 +122,7 @@ export function createGitHubAppApiRouter(): Router {
       generateGitHubAppJwt(appId, privateKeyPem);
 
       // Step 2: Test installation token exchange if installationId is provided
-      let tokenResult = {
-        token: `ghs_mock_${Math.random().toString(36).substring(2, 14)}`,
-        expiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
-      };
+      let tokenResult: { token?: string; expiresAt?: string } = {};
 
       if (installationId && String(installationId).trim() !== '') {
         try {
@@ -159,13 +156,20 @@ export function createGitHubAppApiRouter(): Router {
         }
       }
 
+      if (!tokenResult.token && process.env.NODE_ENV === 'test') {
+        tokenResult = {
+          token: 'ghs_test_fixture',
+          expiresAt: new Date(Date.now() + 3600 * 1000).toISOString(),
+        };
+      }
+
       logger.info('Successfully verified GitHub App RS256 JWT generation', { appId });
 
       res.status(200).json({
         success: true,
         verified: true,
         jwtGenerated: true,
-        tokenPrefix: tokenResult.token.substring(0, 4),
+        tokenPrefix: tokenResult.token ? tokenResult.token.substring(0, 4) : undefined,
         expiresAt: tokenResult.expiresAt,
         appId: appId || appConfig.appId,
         webhookSecret: req.body?.webhookSecret || appConfig.webhookSecret,
@@ -799,6 +803,13 @@ export function createGitHubAppApiRouter(): Router {
         const body = req.body || {};
         const appConfig = dashboardStore.getGitHubAppConfig();
 
+        if ((!appConfig.appId || appConfig.status === 'unconfigured') && process.env.NODE_ENV !== 'test') {
+          return res.status(400).json({
+            success: false,
+            error: 'GitHub App is not configured. Please configure GitHub App credentials before triggering on-demand reviews.',
+          });
+        }
+
         let headSha = body.headSha;
         let baseSha = body.baseSha || 'main';
         let title = body.title;
@@ -832,10 +843,7 @@ export function createGitHubAppApiRouter(): Router {
           },
         });
 
-        const isMock =
-          process.env.NODE_ENV === 'test' ||
-          !appConfig.appId ||
-          appConfig.status === 'unconfigured';
+        const isMock = process.env.NODE_ENV === 'test';
 
         if (isMock) {
           setTimeout(() => {

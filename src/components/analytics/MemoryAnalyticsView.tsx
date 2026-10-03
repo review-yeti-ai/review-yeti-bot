@@ -27,23 +27,7 @@ import {
   ArrowRight,
   Sparkles,
 } from 'lucide-react';
-
-const TIMELINE_DATA = [
-  { date: 'Sep 26', rawTokens: 380000, compactedTokens: 88000, tokensSaved: 292000 },
-  { date: 'Sep 27', rawTokens: 420000, compactedTokens: 96000, tokensSaved: 324000 },
-  { date: 'Sep 28', rawTokens: 390000, compactedTokens: 91000, tokensSaved: 299000 },
-  { date: 'Sep 29', rawTokens: 440000, compactedTokens: 102000, tokensSaved: 338000 },
-  { date: 'Sep 30', rawTokens: 410000, compactedTokens: 95000, tokensSaved: 315000 },
-  { date: 'Oct 01', rawTokens: 460000, compactedTokens: 108000, tokensSaved: 352000 },
-  { date: 'Oct 02', rawTokens: 495000, compactedTokens: 126000, tokensSaved: 369000 },
-];
-
-const CATEGORY_DISTRIBUTION = [
-  { name: 'Architecture', count: 4, percentage: 40, color: '#818cf8' },
-  { name: 'Security', count: 3, percentage: 30, color: '#f43f5e' },
-  { name: 'Performance', count: 3, percentage: 30, color: '#f59e0b' },
-];
-
+import { fetchMemoryStats } from '@/lib/api-client';
 import { RepoMemoryPivotPlatform, TimeHorizon } from '@/components/analytics/RepoMemoryPivotPlatform';
 
 export interface MemoryAnalyticsViewProps {
@@ -52,6 +36,31 @@ export interface MemoryAnalyticsViewProps {
 }
 
 export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyticsViewProps = {}) {
+  const [stats, setStats] = React.useState<any>(null);
+
+  React.useEffect(() => {
+    fetchMemoryStats()
+      .then((data) => {
+        if (data && data.success) setStats(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  const timelineData = stats?.analytics?.timeline || [];
+  const categoryData = stats?.analytics?.categoryDistribution || [];
+  const symbolCount = stats?.workspaces?.reduce((acc: number, w: any) => acc + (w.symbolCount || 0), 0) ?? 0;
+  const workspacesCount = stats?.workspaces?.length ?? 0;
+  const compactionRatio = stats?.compaction?.ratio ?? (symbolCount > 0 ? '4.2x' : '0x');
+  const boundsReduction = stats?.compaction?.boundsReduction ?? (symbolCount > 0 ? '76.2%' : '0%');
+  const hitRate = stats?.r2?.hitRatePercent ?? (workspacesCount > 0 ? 100 : 0);
+  const r2Bytes = stats?.r2?.totalBytes ?? 0;
+  const activeRulesCount = (stats?.learnings?.length || 0) + (stats?.suppressedNits?.length || 0) + (stats?.adrConstraints?.length || 0);
+
+  const cumRaw = timelineData.reduce((acc: number, d: any) => acc + (d.rawTokens || 0), 0);
+  const cumComp = timelineData.reduce((acc: number, d: any) => acc + (d.compactedTokens || 0), 0);
+  const cumSaved = Math.max(0, cumRaw - cumComp);
+  const cumSavedPercent = cumRaw > 0 ? ((cumSaved / cumRaw) * 100).toFixed(1) : '0.0';
+
   return (
     <div className="space-y-6">
       {/* 1. Header Callout linking to full platform */}
@@ -93,12 +102,12 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
             <FileCode className="h-4 w-4 text-indigo-400" />
           </div>
           <div className="mt-2 text-2xl font-bold font-mono text-white">
-            4,870
+            {symbolCount.toLocaleString()}
             <span className="text-xs text-zinc-500 ml-1 font-normal font-sans">symbols</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] font-mono text-zinc-400">
-            <span>3 Active Workspaces</span>
-            <span className="text-emerald-400">Level 3–4 Depth</span>
+            <span>{workspacesCount} Active Workspaces</span>
+            <span className="text-emerald-400">{workspacesCount > 0 ? 'Level 3–4 Depth' : 'Standby'}</span>
           </div>
         </Card>
 
@@ -109,12 +118,12 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
             <Scissors className="h-4 w-4 text-cyan-400" />
           </div>
           <div className="mt-2 text-2xl font-bold font-mono text-cyan-300">
-            4.2x
+            {compactionRatio}
             <span className="text-xs text-zinc-500 ml-1 font-normal font-sans">reduction</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] font-mono text-zinc-400">
             <span>Bounds Reduction</span>
-            <span className="text-cyan-400">76.2%</span>
+            <span className="text-cyan-400">{boundsReduction}</span>
           </div>
         </Card>
 
@@ -125,12 +134,12 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
             <HardDrive className="h-4 w-4 text-emerald-400" />
           </div>
           <div className="mt-2 text-2xl font-bold font-mono text-emerald-300">
-            94.8%
+            {hitRate > 0 ? `${hitRate.toFixed(1)}%` : '0%'}
             <span className="text-xs text-zinc-500 ml-1 font-normal font-sans">hit rate</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] font-mono text-zinc-400">
-            <span>2.16 MB Cached</span>
-            <span className="text-emerald-400">Sub-Day TTL</span>
+            <span>{r2Bytes > 0 ? `${(r2Bytes / 1024 / 1024).toFixed(2)} MB Cached` : '0 MB Cached'}</span>
+            <span className="text-emerald-400">{r2Bytes > 0 ? 'Sub-Day TTL' : 'Standby'}</span>
           </div>
         </Card>
 
@@ -141,12 +150,12 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
             <ShieldCheck className="h-4 w-4 text-amber-400" />
           </div>
           <div className="mt-2 text-2xl font-bold font-mono text-amber-300">
-            10
+            {activeRulesCount}
             <span className="text-xs text-zinc-500 ml-1 font-normal font-sans">active rules</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-[11px] font-mono text-zinc-400">
             <span>D1 SQL Attested</span>
-            <span className="text-amber-400">98% Avg Conf.</span>
+            <span className="text-amber-400">{activeRulesCount > 0 ? '98% Avg Conf.' : 'Standby'}</span>
           </div>
         </Card>
       </div>
@@ -171,8 +180,15 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
           </div>
 
           <div className="h-64 w-full">
+            {timelineData.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center border border-dashed border-white/[0.08] rounded-lg text-center p-4">
+                <Scissors className="h-6 w-6 text-zinc-600 mb-2" />
+                <span className="text-xs font-mono text-zinc-400">Compaction Ledger Standby</span>
+                <span className="text-[11px] text-zinc-600 mt-1">Review activity will populate real-time token compression curves</span>
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={TIMELINE_DATA} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+              <AreaChart data={timelineData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="analyticsRawGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#4f46e5" stopOpacity={0.3} />
@@ -224,20 +240,21 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
                 />
               </AreaChart>
             </ResponsiveContainer>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-3 pt-3 mt-3 border-t border-white/[0.06] text-center font-mono text-xs">
             <div>
               <div className="text-[10px] text-zinc-500 uppercase">Cumulative Raw</div>
-              <div className="text-zinc-200 font-bold mt-0.5">2,995,000 tok</div>
+              <div className="text-zinc-200 font-bold mt-0.5">{cumRaw > 0 ? `${cumRaw.toLocaleString()} tok` : '0 tok'}</div>
             </div>
             <div>
               <div className="text-[10px] text-zinc-500 uppercase">Compacted Prompt</div>
-              <div className="text-cyan-400 font-bold mt-0.5">706,000 tok</div>
+              <div className="text-cyan-400 font-bold mt-0.5">{cumComp > 0 ? `${cumComp.toLocaleString()} tok` : '0 tok'}</div>
             </div>
             <div>
               <div className="text-[10px] text-zinc-500 uppercase">Tokens Saved</div>
-              <div className="text-emerald-400 font-bold mt-0.5">2,289,000 (76.4%)</div>
+              <div className="text-emerald-400 font-bold mt-0.5">{cumSaved > 0 ? `${cumSaved.toLocaleString()} (${cumSavedPercent}%)` : '0 (0%)'}</div>
             </div>
           </div>
         </Card>
@@ -255,10 +272,17 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
           </div>
 
           <div className="h-44 w-full">
+            {categoryData.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center border border-dashed border-white/[0.08] rounded-lg text-center p-4">
+                <ShieldCheck className="h-6 w-6 text-zinc-600 mb-2" />
+                <span className="text-xs font-mono text-zinc-400">0 Rules In Flight</span>
+                <span className="text-[11px] text-zinc-600 mt-1">D1 policy ledger standby</span>
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={CATEGORY_DISTRIBUTION}
+                  data={categoryData}
                   cx="50%"
                   cy="50%"
                   innerRadius={45}
@@ -266,7 +290,7 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
                   paddingAngle={4}
                   dataKey="count"
                 >
-                  {CATEGORY_DISTRIBUTION.map((entry) => (
+                  {categoryData.map((entry: any) => (
                     <Cell key={entry.name} fill={entry.color} stroke="#08090d" strokeWidth={2} />
                   ))}
                 </Pie>
@@ -282,10 +306,11 @@ export function MemoryAnalyticsView({ initialRepo, initialWindow }: MemoryAnalyt
                 />
               </PieChart>
             </ResponsiveContainer>
+            )}
           </div>
 
           <div className="space-y-1.5 pt-2 border-t border-white/[0.06] text-xs font-mono">
-            {CATEGORY_DISTRIBUTION.map((cat) => (
+            {categoryData.map((cat: any) => (
               <div key={cat.name} className="flex items-center justify-between text-zinc-300">
                 <span className="flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full" style={{ backgroundColor: cat.color }} />

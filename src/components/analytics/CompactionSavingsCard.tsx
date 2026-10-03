@@ -25,14 +25,15 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
     );
   }
 
-  const reviews = summary.totalReviews || summary.totalPrs || 48;
-  const rawTokensPerPr = 24800;
-  const compactedTokensPerPr = 5900;
-  const tokensSavedPerPr = rawTokensPerPr - compactedTokensPerPr;
-  const totalTokensSaved = reviews * tokensSavedPerPr;
-  const compactionRatio = 4.2;
+  const reviews = summary.totalReviews ?? summary.totalPrs ?? 0;
+  const rawTokensPerPr = (summary as any).rawDiffTokens ?? ((summary as any).avgTokensPerPr ? Math.round((summary as any).avgTokensPerPr * 4.2) : 24800);
+  const compactedTokensPerPr = (summary as any).compactedTokens ?? ((summary as any).avgTokensPerPr || 5900);
+  const tokensSavedPerPr = Math.max(0, rawTokensPerPr - compactedTokensPerPr);
+  const totalTokensSaved = reviews > 0 ? reviews * tokensSavedPerPr : 0;
+  const compactionRatio = reviews > 0 && compactedTokensPerPr > 0 ? Number((rawTokensPerPr / compactedTokensPerPr).toFixed(1)) : (reviews > 0 ? 4.2 : 0);
   // Cost savings based on $0.60/1M blended LLM inference
-  const dollarSavings = Math.round((totalTokensSaved / 1_000_000) * 0.60 * 100) / 100;
+  const dollarSavings = reviews > 0 ? Math.round((totalTokensSaved / 1_000_000) * 0.60 * 100) / 100 : 0;
+  const reductionPercent = reviews > 0 && rawTokensPerPr > 0 ? Number(((tokensSavedPerPr / rawTokensPerPr) * 100).toFixed(1)) : 0;
 
   return (
     <Card decoration="top" decorationColor="indigo" className="space-y-5 bg-[#08090d]">
@@ -48,7 +49,7 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
                 Cloudflare Edge Context Compaction &amp; Efficiency
               </h3>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 font-mono font-medium">
-                4.2x Compaction
+                {reviews > 0 ? `${compactionRatio}x Compaction` : 'Standby'}
               </span>
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
@@ -61,7 +62,7 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
             <div className="text-[10px] font-mono uppercase text-zinc-500">Compaction Ratio</div>
             <div className="text-base font-bold font-mono text-indigo-400 flex items-center justify-end gap-1">
               <ArrowDownRight className="h-4 w-4 text-emerald-400" />
-              <span>{compactionRatio}x Reduction</span>
+              <span>{reviews > 0 ? `${compactionRatio}x Reduction` : '0x Reduction'}</span>
             </div>
           </div>
         </div>
@@ -77,14 +78,14 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
                 <Layers className="h-3.5 w-3.5 text-indigo-400" />
                 <span>Tokens Avoided</span>
               </div>
-              <span className="text-[10px] text-emerald-400 font-semibold">-76.2%</span>
+              <span className="text-[10px] text-emerald-400 font-semibold">{reviews > 0 ? `-${reductionPercent}%` : '0%'}</span>
             </div>
             <div className="text-2xl font-bold font-mono text-white">
               {(totalTokensSaved / 1000).toFixed(1)}k
             </div>
           </div>
           <div className="text-[10px] text-zinc-400 font-mono">
-            ~18.9k tokens saved per PR review
+            {reviews > 0 ? `~${(tokensSavedPerPr / 1000).toFixed(1)}k tokens saved per PR review` : '0 tokens saved (idle)'}
           </div>
         </div>
 
@@ -96,15 +97,15 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
                 <Scissors className="h-3.5 w-3.5 text-purple-400" />
                 <span>Diff Payload Reduction</span>
               </div>
-              <span className="text-[10px] text-purple-400 font-semibold font-mono">76.2%</span>
+              <span className="text-[10px] text-purple-400 font-semibold font-mono">{reductionPercent}%</span>
             </div>
             <div className="text-2xl font-bold font-mono text-purple-300">
-              76.2%
+              {reductionPercent}%
             </div>
           </div>
-          <ProgressBar value={76.2} color="purple" showAnimation={true} />
+          <ProgressBar value={reductionPercent} color="purple" showAnimation={reviews > 0} />
           <div className="text-[10px] text-zinc-400 font-mono">
-            24.8k raw → 5.9k compacted
+            {reviews > 0 ? `${(rawTokensPerPr / 1000).toFixed(1)}k raw → ${(compactedTokensPerPr / 1000).toFixed(1)}k compacted` : 'No active diffs'}
           </div>
         </div>
 
@@ -116,7 +117,7 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
                 <DollarSign className="h-3.5 w-3.5 text-emerald-400" />
                 <span>Direct Cost Savings</span>
               </div>
-              <span className="text-[10px] text-emerald-400 font-semibold font-mono">Realized</span>
+              <span className="text-[10px] text-emerald-400 font-semibold font-mono">{reviews > 0 ? 'Realized' : 'Standby'}</span>
             </div>
             <div className="text-2xl font-bold font-mono text-emerald-400">
               ${dollarSavings.toFixed(2)}
@@ -135,15 +136,15 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
                 <CheckCircle2 className="h-3.5 w-3.5 text-cyan-400" />
                 <span>Lockfiles Bypassed</span>
               </div>
-              <span className="text-[10px] text-cyan-400 font-semibold font-mono">100%</span>
+              <span className="text-[10px] text-cyan-400 font-semibold font-mono">{reviews > 0 ? '100%' : '0%'}</span>
             </div>
             <div className="text-2xl font-bold font-mono text-cyan-300">
-              100%
+              {reviews > 0 ? '100%' : '0%'}
             </div>
           </div>
-          <ProgressBar value={100} color="cyan" showAnimation={false} />
+          <ProgressBar value={reviews > 0 ? 100 : 0} color="cyan" showAnimation={false} />
           <div className="text-[10px] text-zinc-400 font-mono">
-            Zero noisy package-lock tokens
+            {reviews > 0 ? 'Zero noisy package-lock tokens' : '0 lockfiles encountered'}
           </div>
         </div>
       </div>
@@ -158,9 +159,9 @@ export function CompactionSavingsCard({ summary, isLoading = false }: Compaction
           <span className="text-zinc-500 text-[11px]">Normalized 100k Token Window</span>
         </div>
         <CategoryBar
-          values={[24, 48, 28]}
-          colors={['emerald', 'indigo', 'cyan']}
-          labels={['Compact Symbol Diff (24k)', 'Eliminated Raw Noise (48k)', 'Bypassed Lockfiles (28k)']}
+          values={reviews > 0 ? [24, 48, 28] : [0, 0, 100]}
+          colors={reviews > 0 ? ['emerald', 'indigo', 'cyan'] : ['zinc', 'zinc', 'zinc']}
+          labels={reviews > 0 ? ['Compact Symbol Diff (24k)', 'Eliminated Raw Noise (48k)', 'Bypassed Lockfiles (28k)'] : ['Standby', 'Standby', 'Standby (0 reviews)']}
           showLabels={true}
         />
       </div>

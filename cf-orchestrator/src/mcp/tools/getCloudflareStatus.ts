@@ -105,7 +105,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
         status: 'MATCHING',
         consecutiveMatches: 100,
         doksFallbackConfigured: Boolean(env.DOKS_FALLBACK_URL),
-        dataSource: 'baseline_sample_telemetry',
+        dataSource: hasLiveTelemetry ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
       },
       computePlane: {
         activeRunner: (env.RUNNER_TYPE || 'cloudflare').toLowerCase(),

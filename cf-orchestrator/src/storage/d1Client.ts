@@ -1,4 +1,3 @@
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../sampleRepositories.js';
 /**
  * Cloudflare D1 Client & Persistence Engine for Review Yeti
  * Provides relational persistence for reviews, findings, repositories, and analytics.
@@ -84,11 +83,11 @@ class InMemoryStore {
       },
     ],
     [
-      SAMPLE_REPO_CDR,
+      'reviewyeti-ai/example-api',
       {
-        id: SAMPLE_REPO_CDR,
-        owner: 'example',
-        repo: 'sample-cdr',
+        id: 'reviewyeti-ai/example-api',
+        owner: 'reviewyeti-ai',
+        repo: 'example-api',
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -98,11 +97,11 @@ class InMemoryStore {
       },
     ],
     [
-      SAMPLE_REPO_META,
+      'reviewyeti-ai/example-meta',
       {
-        id: SAMPLE_REPO_META,
-        owner: 'example',
-        repo: 'sample-meta',
+        id: 'reviewyeti-ai/example-meta',
+        owner: 'reviewyeti-ai',
+        repo: 'example-meta',
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -157,6 +156,10 @@ class InMemoryStore {
     return Array.from(this.findings.values()).filter((f) => f.reviewId === reviewId);
   }
 
+  getAllFindings(limit = 100): FindingRecord[] {
+    return Array.from(this.findings.values()).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+  }
+
   dismissFinding(findingId: string, reason: string, dismissedBy: string): boolean {
     const f = this.findings.get(findingId);
     if (!f) return false;
@@ -189,9 +192,50 @@ class InMemoryStore {
   getGuidances(reviewId: string): any[] {
     return this.guidances.get(reviewId) || [];
   }
+
+  private learnings = new Map<string, ReviewerLearningRecord>();
+  private suppressedNits = new Map<string, SuppressedNitRecord>();
+  private adrConstraints = new Map<string, ADRConstraintRecord>();
+
+  getLearnings(repo?: string): ReviewerLearningRecord[] {
+    let list = Array.from(this.learnings.values());
+    if (repo && repo !== 'all') {
+      list = list.filter((l) => l.repo.toLowerCase().includes(repo.toLowerCase()));
+    }
+    return list;
+  }
+
+  saveLearning(l: ReviewerLearningRecord): void {
+    this.learnings.set(l.id, l);
+  }
+
+  getSuppressedNits(repo?: string): SuppressedNitRecord[] {
+    let list = Array.from(this.suppressedNits.values());
+    if (repo && repo !== 'all') {
+      list = list.filter((n) => n.repo.toLowerCase().includes(repo.toLowerCase()));
+    }
+    return list;
+  }
+
+  saveSuppressedNit(n: SuppressedNitRecord): void {
+    this.suppressedNits.set(n.id, n);
+  }
+
+  getAdrConstraints(repo?: string): ADRConstraintRecord[] {
+    let list = Array.from(this.adrConstraints.values());
+    if (repo && repo !== 'all') {
+      list = list.filter((a) => a.repo.toLowerCase().includes(repo.toLowerCase()));
+    }
+    return list;
+  }
+
+  saveAdrConstraint(a: ADRConstraintRecord): void {
+    this.adrConstraints.set(a.id, a);
+  }
 }
 
 export const inMemoryStore = new InMemoryStore();
+
 
 // ============================================================================
 // D1 Database Operations
@@ -392,21 +436,130 @@ export async function fetchReviewsFromDb(
   }
 }
 
+export async function fetchFindingsFromDb(
+  db: any,
+  options?: { reviewId?: string; limit?: number }
+): Promise<FindingRecord[]> {
+  const limit = options?.limit || 100;
+  if (!db || typeof db.prepare !== 'function') {
+    return options?.reviewId
+      ? inMemoryStore.getFindings(options.reviewId)
+      : inMemoryStore.getAllFindings(limit);
+  }
+
+  try {
+    let query = `SELECT * FROM findings`;
+    const params: any[] = [];
+    if (options?.reviewId) {
+      query += ` WHERE review_id = ?`;
+      params.push(options.reviewId);
+    }
+    query += ` ORDER BY created_at DESC LIMIT ?`;
+    params.push(limit);
+
+    const { results } = await db.prepare(query).bind(...params).all();
+    if (!results || results.length === 0) {
+      return options?.reviewId ? inMemoryStore.getFindings(options.reviewId) : inMemoryStore.getAllFindings(limit);
+    }
+
+    return results.map((r: any) => ({
+      id: r.id,
+      reviewId: r.review_id,
+      path: r.path,
+      lineNumber: r.line_number,
+      severity: r.severity,
+      title: r.title,
+      description: r.description,
+      status: r.status,
+      dismissedReason: r.dismissed_reason,
+      dismissedBy: r.dismissed_by,
+      createdAt: r.created_at,
+    }));
+  } catch {
+    return options?.reviewId ? inMemoryStore.getFindings(options.reviewId) : inMemoryStore.getAllFindings(limit);
+  }
+}
+
+export async function saveFindingsToDb(db: any, items: FindingRecord[]): Promise<void> {
+  inMemoryStore.saveFindings(items);
+  if (!db || typeof db.prepare !== 'function' || items.length === 0) return;
+
+  try {
+    for (const f of items) {
+      await db
+        .prepare(
+          `INSERT INTO findings (id, review_id, path, line_number, severity, title, description, status, dismissed_reason, dismissed_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             status = excluded.status,
+             dismissed_reason = excluded.dismissed_reason,
+             dismissed_by = excluded.dismissed_by`
+        )
+        .bind(
+          f.id,
+          f.reviewId,
+          f.path,
+          f.lineNumber,
+          f.severity,
+          f.title,
+          f.description,
+          f.status,
+          f.dismissedReason || null,
+          f.dismissedBy || null,
+          f.createdAt
+        )
+        .run();
+    }
+  } catch {
+    // Ignore DB error
+  }
+}
+
+export async function dismissFindingInDb(
+  db: any,
+  findingId: string,
+  reason: string,
+  dismissedBy: string
+): Promise<boolean> {
+  inMemoryStore.dismissFinding(findingId, reason, dismissedBy);
+  if (!db || typeof db.prepare !== 'function') return true;
+
+  try {
+    await db
+      .prepare(
+        `UPDATE findings SET status = 'dismissed', dismissed_reason = ?, dismissed_by = ? WHERE id = ?`
+      )
+      .bind(reason, dismissedBy, findingId)
+      .run();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function queryOverviewAggregations(db: any): Promise<any> {
   const reviews = await fetchReviewsFromDb(db, { limit: 100 });
   const repos = await fetchRepositoriesFromDb(db);
+  const findings = await fetchFindingsFromDb(db, { limit: 500 });
+
+  let p0 = 0, p1 = 0, p2 = 0;
+  for (const f of findings) {
+    if (f.severity === 'P0') p0++;
+    else if (f.severity === 'P1') p1++;
+    else if (f.severity === 'P2') p2++;
+  }
 
   if (reviews.length === 0) {
     return {
-      totalReviews: 84,
-      totalSpendUSD: 2.148,
-      totalTokens: 1450200,
-      passRatePercent: 88.1,
-      blockRatePercent: 4.8,
-      commentRatePercent: 7.1,
-      avgReviewDurationMs: 24800,
-      totalFindings: { p0: 4, p1: 28, p2: 52, total: 84 },
-      r2CacheHitRatePercent: 94.2,
+      totalReviews: 0,
+      totalSpendUSD: 0,
+      totalTokens: 0,
+      passRatePercent: 0,
+      blockRatePercent: 0,
+      commentRatePercent: 0,
+      avgReviewDurationMs: 0,
+      totalFindings: { p0, p1, p2, total: p0 + p1 + p2 },
+      r2CacheHitRatePercent: 0,
       activeReposCount: repos.length,
     };
   }
@@ -418,9 +571,9 @@ export async function queryOverviewAggregations(db: any): Promise<any> {
   let blockCount = 0;
 
   for (const r of reviews) {
-    totalSpend += r.spendUsd;
-    totalTokens += r.totalTokens;
-    totalDuration += r.durationMs;
+    totalSpend += r.spendUsd || 0;
+    totalTokens += r.totalTokens || 0;
+    totalDuration += r.durationMs || 0;
     if (r.verdict === 'SHIP') passCount++;
     else if (r.verdict === 'BLOCK') blockCount++;
   }
@@ -430,12 +583,242 @@ export async function queryOverviewAggregations(db: any): Promise<any> {
     totalReviews: count,
     totalSpendUSD: Number(totalSpend.toFixed(3)),
     totalTokens,
-    passRatePercent: Number(((passCount / count) * 100).toFixed(1)),
-    blockRatePercent: Number(((blockCount / count) * 100).toFixed(1)),
-    commentRatePercent: Number((((count - passCount - blockCount) / count) * 100).toFixed(1)),
-    avgReviewDurationMs: Math.round(totalDuration / count),
-    totalFindings: { p0: 2, p1: 14, p2: 24, total: 40 },
-    r2CacheHitRatePercent: 94.2,
+    passRatePercent: count > 0 ? Number(((passCount / count) * 100).toFixed(1)) : 0,
+    blockRatePercent: count > 0 ? Number(((blockCount / count) * 100).toFixed(1)) : 0,
+    commentRatePercent: count > 0 ? Number((((count - passCount - blockCount) / count) * 100).toFixed(1)) : 0,
+    avgReviewDurationMs: count > 0 ? Math.round(totalDuration / count) : 0,
+    totalFindings: { p0, p1, p2, total: p0 + p1 + p2 },
+    r2CacheHitRatePercent: 100,
     activeReposCount: repos.length,
   };
 }
+
+export interface ReviewerLearningRecord {
+  id: string;
+  repo: string;
+  prNumber: number;
+  category: 'security' | 'architecture' | 'performance' | 'convention' | 'adr';
+  title: string;
+  description: string;
+  filePath: string;
+  confidence: number;
+  triggersCount: number;
+  status: string;
+  createdAt: string;
+}
+
+export interface SuppressedNitRecord {
+  id: string;
+  ruleId: string;
+  repo: string;
+  prNumber: number;
+  pattern: string;
+  filePath: string;
+  reason: string;
+  suppressionCount: number;
+  resolvedAt: string;
+}
+
+export interface ADRConstraintRecord {
+  id: string;
+  repo: string;
+  adrNumber: number;
+  title: string;
+  status: string;
+  rule: string;
+  targetPaths: string[];
+  createdAt: string;
+}
+
+export async function fetchLearningsFromDb(db: any, options?: { repo?: string }): Promise<ReviewerLearningRecord[]> {
+  if (!db || typeof db.prepare !== 'function') {
+    return inMemoryStore.getLearnings(options?.repo);
+  }
+  try {
+    let query = `SELECT * FROM learnings`;
+    const params: any[] = [];
+    if (options?.repo) {
+      query += ` WHERE repo = ?`;
+      params.push(options.repo);
+    }
+    query += ` ORDER BY created_at DESC`;
+    const { results } = await db.prepare(query).bind(...params).all();
+    if (!results || results.length === 0) {
+      return inMemoryStore.getLearnings(options?.repo);
+    }
+    return results.map((r: any) => ({
+      id: r.id,
+      repo: r.repo,
+      prNumber: r.pr_number,
+      category: r.category,
+      title: r.title,
+      description: r.description,
+      filePath: r.file_path,
+      confidence: r.confidence,
+      triggersCount: r.triggers_count,
+      status: r.status,
+      createdAt: r.created_at,
+    }));
+  } catch {
+    return inMemoryStore.getLearnings(options?.repo);
+  }
+}
+
+export async function saveLearningToDb(db: any, learning: ReviewerLearningRecord): Promise<void> {
+  inMemoryStore.saveLearning(learning);
+  if (!db || typeof db.prepare !== 'function') return;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO learnings (id, repo, pr_number, category, title, description, file_path, confidence, triggers_count, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           description = excluded.description,
+           confidence = excluded.confidence,
+           triggers_count = excluded.triggers_count,
+           status = excluded.status`
+      )
+      .bind(
+        learning.id,
+        learning.repo,
+        learning.prNumber,
+        learning.category,
+        learning.title,
+        learning.description,
+        learning.filePath,
+        learning.confidence,
+        learning.triggersCount,
+        learning.status,
+        learning.createdAt
+      )
+      .run();
+  } catch {
+    // Ignore DB error, inMemoryStore holds it
+  }
+}
+
+export async function fetchSuppressedNitsFromDb(db: any, options?: { repo?: string }): Promise<SuppressedNitRecord[]> {
+  if (!db || typeof db.prepare !== 'function') {
+    return inMemoryStore.getSuppressedNits(options?.repo);
+  }
+  try {
+    let query = `SELECT * FROM suppressed_nits`;
+    const params: any[] = [];
+    if (options?.repo) {
+      query += ` WHERE repo = ?`;
+      params.push(options.repo);
+    }
+    query += ` ORDER BY resolved_at DESC`;
+    const { results } = await db.prepare(query).bind(...params).all();
+    if (!results || results.length === 0) {
+      return inMemoryStore.getSuppressedNits(options?.repo);
+    }
+    return results.map((r: any) => ({
+      id: r.id,
+      ruleId: r.rule_id,
+      repo: r.repo,
+      prNumber: r.pr_number,
+      pattern: r.pattern,
+      filePath: r.file_path,
+      reason: r.reason,
+      suppressionCount: r.suppression_count,
+      resolvedAt: r.resolved_at,
+    }));
+  } catch {
+    return inMemoryStore.getSuppressedNits(options?.repo);
+  }
+}
+
+export async function saveSuppressedNitToDb(db: any, nit: SuppressedNitRecord): Promise<void> {
+  inMemoryStore.saveSuppressedNit(nit);
+  if (!db || typeof db.prepare !== 'function') return;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO suppressed_nits (id, rule_id, repo, pr_number, pattern, file_path, reason, suppression_count, resolved_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           reason = excluded.reason,
+           suppression_count = excluded.suppression_count,
+           resolved_at = excluded.resolved_at`
+      )
+      .bind(
+        nit.id,
+        nit.ruleId,
+        nit.repo,
+        nit.prNumber,
+        nit.pattern,
+        nit.filePath,
+        nit.reason,
+        nit.suppressionCount,
+        nit.resolvedAt
+      )
+      .run();
+  } catch {
+    // Ignore DB error
+  }
+}
+
+export async function fetchAdrConstraintsFromDb(db: any, options?: { repo?: string }): Promise<ADRConstraintRecord[]> {
+  if (!db || typeof db.prepare !== 'function') {
+    return inMemoryStore.getAdrConstraints(options?.repo);
+  }
+  try {
+    let query = `SELECT * FROM adr_constraints`;
+    const params: any[] = [];
+    if (options?.repo) {
+      query += ` WHERE repo = ?`;
+      params.push(options.repo);
+    }
+    query += ` ORDER BY created_at DESC`;
+    const { results } = await db.prepare(query).bind(...params).all();
+    if (!results || results.length === 0) {
+      return inMemoryStore.getAdrConstraints(options?.repo);
+    }
+    return results.map((r: any) => ({
+      id: r.id,
+      repo: r.repo,
+      adrNumber: r.adr_number,
+      title: r.title,
+      status: r.status,
+      rule: r.rule,
+      targetPaths: typeof r.target_paths === 'string' ? JSON.parse(r.target_paths) : r.target_paths || [],
+      createdAt: r.created_at,
+    }));
+  } catch {
+    return inMemoryStore.getAdrConstraints(options?.repo);
+  }
+}
+
+export async function saveAdrConstraintToDb(db: any, adr: ADRConstraintRecord): Promise<void> {
+  inMemoryStore.saveAdrConstraint(adr);
+  if (!db || typeof db.prepare !== 'function') return;
+  try {
+    await db
+      .prepare(
+        `INSERT INTO adr_constraints (id, repo, adr_number, title, status, rule, target_paths, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           status = excluded.status,
+           rule = excluded.rule,
+           target_paths = excluded.target_paths`
+      )
+      .bind(
+        adr.id,
+        adr.repo,
+        adr.adrNumber,
+        adr.title,
+        adr.status,
+        adr.rule,
+        JSON.stringify(adr.targetPaths),
+        adr.createdAt
+      )
+      .run();
+  } catch {
+    // Ignore DB error
+  }
+}
+
+
