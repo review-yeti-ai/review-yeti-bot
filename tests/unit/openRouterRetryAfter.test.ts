@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OpenRouterClient, OpenRouterResponseError } from '../../src/gateway/openRouterClient';
+import { OpenRouterClient, OpenRouterResponseError, retryAfterFloorMs } from '../../src/gateway/openRouterClient';
+import { parseRetryAfter, retryAfterRemainingMs } from '../../src/gateway/retryAfter';
 import { executeComposedReview } from '../../src/panel/composedEngine';
 import { parseAndValidateConfig } from '../../src/config/configLoader';
 
@@ -127,5 +128,49 @@ describe('429 Retry-After', () => {
     await vi.advanceTimersByTimeAsync(10_001);
     await pending;
     expect(complete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('public Retry-After parsing boundaries', () => {
+  it.each([null, undefined])('ignores an absent header (%s)', header => {
+    expect(parseRetryAfter(header, epoch)).toBeUndefined();
+  });
+  it.each([Number.NaN, Infinity, epoch + 0.5])('refuses a cooldown when the observation clock is not a safe integer (%s)', now => {
+    expect(parseRetryAfter('3', now)).toBeUndefined();
+  });
+  it.each(['', 'not an HTTP date', 'Fri, 02 Oct 2026 99:00:00 GMT'])('does not coerce malformed date input (%s)', header => {
+    expect(parseRetryAfter(header, epoch)).toBeUndefined();
+  });
+  it('accepts the exact one-day bound and refuses unsafe absolute addition', () => {
+    expect(parseRetryAfter('86400', epoch)).toEqual({ notBeforeMs: epoch + 86_400_000, format: 'delta_seconds' });
+    expect(parseRetryAfter('1', Number.MAX_SAFE_INTEGER)).toEqual({ exceedsBound: true });
+    expect(parseRetryAfter('9007199254740991', epoch)).toEqual({ exceedsBound: true });
+  });
+  it('accepts an in-century RFC850 date before enforcing the absolute cooldown bound', () => {
+    expect(parseRetryAfter('Thursday, 02-Oct-36 20:00:05 GMT', epoch)).toEqual({ exceedsBound: true });
+  });
+  it('returns immutable sanitized metadata rather than retaining the header', () => {
+    const metadata = parseRetryAfter(' 3 ', epoch);
+    expect(metadata).toEqual({ notBeforeMs: epoch + 3000, format: 'delta_seconds' });
+    expect(Object.isFrozen(metadata)).toBe(true);
+    expect(Object.keys(metadata!)).toEqual(['notBeforeMs', 'format']);
+  });
+  it('keeps future, exact-expiry, elapsed and refused cooldowns distinct', () => {
+    const metadata = parseRetryAfter('3', epoch);
+    expect(retryAfterRemainingMs(metadata, epoch)).toBe(3000);
+    expect(retryAfterRemainingMs(metadata, epoch + 3000)).toBe(0);
+    expect(retryAfterRemainingMs(metadata, epoch + 3001)).toBe(0);
+    expect(retryAfterRemainingMs(undefined, epoch)).toBe(0);
+    expect(retryAfterRemainingMs({ exceedsBound: true }, epoch)).toBe(Infinity);
+    expect(retryAfterFloorMs(new Error('ordinary failure'), epoch)).toBe(0);
+  });
+  it.each([true, false])('does not invent cooldown metadata for a429 without a header on stream=%s', async stream => {
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify({ error: { message: 'synthetic throttle' } }), { status: 429, headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({ apiKey: 'synthetic', fetchImplementation, now: () => epoch });
+    const failure = await client.complete({ ...request, stream }).catch(error => error);
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect(failure.status).toBe(429);
+    expect(failure.retryAfter).toBeUndefined();
+    expect(fetchImplementation).toHaveBeenCalledOnce();
   });
 });
