@@ -196,7 +196,12 @@ const DEPENDENCY_MANIFEST_PATTERNS = [
   /(^|\/)directory\.packages\.props$/iu,
 ];
 
-/** CI and infrastructure-as-code paths (W1 section 7.6) that the security list does not already name. */
+/**
+ * CI and infrastructure-as-code paths (W1 section 7.6) for the budget's rank-0 category. Some arms
+ * overlap the security list's CI/IaC tables; the budget checks the security predicate first, so an
+ * overlap only re-confirms rank 0. Kept as its own list (moved verbatim) because it also carries
+ * arms the security list does not name.
+ */
 const CI_IAC_PATTERNS = [
   /(^|\/)\.github\//iu,
   /(^|\/)\.gitlab-ci[^/]*$/iu,
@@ -253,6 +258,11 @@ const RUN_ARTIFACT_EXTENSION = /\.(json|jsonl|ndjson|csv|tsv|log|xml|yaml|yml)$/
 // They are never documentation: `isDocumentationOrAssetPath` checks this first.
 // ---------------------------------------------------------------------------
 
+// Deliberately NOT derived from TOOLCHAIN_PIN_NAMES: this set answers a different question (is a
+// file without a data/config extension a pin or manifest, so never prose?), and the two have
+// always differed (`mise.toml`/`global.json` there are config by extension already; `go.mod`,
+// `gemfile`, `pipfile` and `.terraform.lock.hcl` here are manifests). Both moved here verbatim from
+// their former TypeScript modules; reconciling them is a classification change of its own.
 const TOOLCHAIN_PIN_OR_MANIFEST_BASENAMES = new Set([
   // Toolchain / runtime version pins.
   '.tool-versions',
@@ -399,29 +409,10 @@ function pathRiskRank(filePath) {
   return budgetCategoryRank(classifyBudgetCategory(filePath));
 }
 
+// Only the predicates and the rank are the module's contract; the tables above stay private so
+// they can be reorganized without an interface change. `pathRiskPolicy.d.ts` declares exactly
+// these names (enforced by tests/unit/incrementalReviewScope.test.ts).
 module.exports = {
-  SENSITIVE_SEGMENT,
-  SENSITIVE_STEM,
-  SENSITIVE_CAMEL_STEM,
-  CI_PATTERNS,
-  CONTAINER_PATTERNS,
-  IAC_PATTERNS,
-  REPO_CONTROL_PATTERNS,
-  SECRET_MATERIAL_PATTERNS,
-  BUILD_SCRIPT_PATTERNS,
-  MIGRATION_PATTERNS,
-  LOCKFILE_NAMES,
-  LOCKFILE_PATTERNS,
-  TOOLCHAIN_PIN_NAMES,
-  DEPENDENCY_MANIFESTS,
-  DEPENDENCY_MANIFEST_PATTERNS,
-  CI_IAC_PATTERNS,
-  TEST_PATTERNS,
-  DOCUMENTATION_OR_ASSET_EXTENSION,
-  DATA_OR_CONFIG_EXTENSION,
-  DOTENV_CONFIG_FILE,
-  RUN_ARTIFACT_DIRECTORY,
-  RUN_ARTIFACT_EXTENSION,
   isToolchainPinOrDependencyManifestPath,
   isLockfilePath,
   isToolchainPinPath,

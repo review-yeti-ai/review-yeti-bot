@@ -874,6 +874,16 @@ describe('trusted incremental review scope', () => {
       expect(scope.planReviewAssignmentAdmission(partitions, 6, 24)).toEqual(plan);
     });
 
+    it('lists the first 15 deferred paths and counts the rest', () => {
+      const partitions = Array.from({ length: 20 }, (_, index) => partition(`src/module-${String(index).padStart(2, '0')}.ts`));
+      const plan = scope.planReviewAssignmentAdmission(partitions, 6, 18);
+      expect(plan).toMatchObject({ mode: 'degraded', admittedIndexes: [0, 1, 2] });
+      expect(plan.deferredPaths).toHaveLength(17);
+      const listed = plan.message.match(/covering 17 file\(s\): (.*?) and 2 more\. /u)?.[1];
+      expect(listed?.split(', ')).toEqual(plan.deferredPaths.slice(0, 15).map((filePath: string) => `\`${filePath}\``));
+      expect(scope.planReviewAssignmentAdmission(partitions.slice(0, 18), 6, 18).message).not.toContain(' more.');
+    });
+
     it('reports a file split across admitted and deferred partitions as only partly reviewed', () => {
       const plan = scope.planReviewAssignmentAdmission(
         [partition('src/big.ts'), partition('src/big.ts', 'src/other.ts'), partition('src/third.ts')], 2, 4);
@@ -892,6 +902,23 @@ describe('trusted incremental review scope', () => {
       expect(scope.admissionRiskRank).toBe(policy.pathRiskRank);
       for (const consumer of ['securitySensitivePaths.ts', 'reviewBudget.ts', 'reviewableContent.ts', 'toolchainPinPaths.ts']) {
         expect(fs.readFileSync(path.join(root, 'src/review', consumer), 'utf8')).toContain("from './pathRiskPolicy'");
+      }
+    });
+
+    it('declares exactly the shared policy module exports, with the value ranges the declaration claims', () => {
+      const policy = require(path.join(root, 'src/review/pathRiskPolicy.js'));
+      const declaration = fs.readFileSync(path.join(root, 'src/review/pathRiskPolicy.d.ts'), 'utf8');
+      const declared = [...declaration.matchAll(/^export function (\w+)\(/gmu)].map((match) => match[1]).sort();
+      expect(Object.keys(policy).sort()).toEqual(declared);
+      expect(Object.values(policy).every((value) => typeof value === 'function')).toBe(true);
+      const categories = [...(declaration.match(/PathBudgetCategory = ([^;]+);/u)?.[1] ?? '').matchAll(/'([a-z-]+)'/gu)].map((m) => m[1]);
+      const classes = [...(declaration.match(/SecuritySensitivePathClass =([^;]+);/u)?.[1] ?? '').matchAll(/'([a-z_]+)'/gu)].map((m) => m[1]);
+      for (const filePath of ['src/auth.ts', '.github/workflows/ci.yml', 'Dockerfile', 'yarn.lock', '.nvmrc', 'go.mod', 'infra/main.tf',
+        'src/x.ts', 'tests/a.test.ts', 'docs/a.md', 'config/a.yaml', 'db/schema.rb', '.gitmodules', '.env', 'scripts/a.sh', '']) {
+        expect(categories).toContain(policy.classifyBudgetCategory(filePath));
+        expect([0, 1, 2]).toContain(policy.pathRiskRank(filePath));
+        const pathClass = policy.securitySensitivePathClass(filePath);
+        if (pathClass !== null) expect(classes).toContain(pathClass);
       }
     });
 
