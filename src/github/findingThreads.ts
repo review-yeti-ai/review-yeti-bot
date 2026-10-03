@@ -18,9 +18,11 @@ import {
   type PriorFindingThread,
 } from '../review/findingConvergence';
 import { PUBLIC_GITHUB_API_BASE_URL } from './githubTransportPolicy';
+import { MAX_FINDING_THREADS_PER_REQUEST } from '../review/findingThreadsContract';
 
 export const MAX_FINDING_THREAD_PAGES = 5;
-export const MAX_FINDING_THREADS_PUBLISHED_PER_RUN = 30;
+/** One bound for the worker request, the service schema and publication (ADR 0002). */
+export const MAX_FINDING_THREADS_PUBLISHED_PER_RUN = MAX_FINDING_THREADS_PER_REQUEST;
 export const MAX_FINDING_THREAD_BODY_CHARS = 4_000;
 
 export interface FindingThreadTransport {

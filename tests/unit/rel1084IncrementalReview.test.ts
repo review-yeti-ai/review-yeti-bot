@@ -305,6 +305,18 @@ describe('prior review record', () => {
       evidence: JSON.stringify({ ...evidence, expectedLanes: 3, completedLanes: 3 }) } })?.shipComplete).toBe(false);
   });
 
+  it('normalizes a gate row written before the required-P2 policy (no p2Count) once, at read (ADR 0002)', () => {
+    const good = rows(priorCompletion());
+    const evidence = JSON.parse(String(good.gate!.evidence));
+    expect(evidence.p2Count).toBe(0);
+    const { p2Count: _absent, ...historical } = evidence;
+    // A historical SHIP row stays a clean prior; a row that records a required P2 does not.
+    expect(priorReviewRecordFromRows({ ...good, gate: { ...good.gate!, evidence: JSON.stringify(historical) } }))
+      .toMatchObject({ shipComplete: true });
+    expect(priorReviewRecordFromRows({ ...good, gate: { ...good.gate!, evidence: JSON.stringify({ ...evidence, p2Count: 1 }) } }))
+      .toMatchObject({ shipComplete: false, shipIncompleteReason: 'gate-not-ship' });
+  });
+
   it('refuses each single violation of an otherwise SHIP-complete record (negative proof, one guard each)', () => {
     const completion = priorCompletion();
     const good = rows(completion);
