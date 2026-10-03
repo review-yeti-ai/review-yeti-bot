@@ -4,9 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { loadCompiledIndex, resolveFileDomains } from '../../src/pipeline/domainIndex';
-import { budgetCategoryRank, classifyBudgetCategory, REVIEW_BUDGET_RANK_TABLES } from '../../src/review/reviewBudget';
-import { SECURITY_SENSITIVE_PATH_TABLES } from '../../src/review/securitySensitivePaths';
-import { REVIEWABLE_CONTENT_TABLES } from '../../src/review/reviewableContent';
+import { budgetCategoryRank, classifyBudgetCategory } from '../../src/review/reviewBudget';
 
 const root = path.resolve(__dirname, '../..');
 const scope = require(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'));
@@ -842,6 +840,15 @@ describe('trusted incremental review scope', () => {
       });
     });
 
+    it('admits a fan-out that exactly fills the cap', () => {
+      const partitions = Array.from({ length: 4 }, (_, index) => partition(`src/module-${index}.ts`));
+      expect(scope.planReviewAssignmentAdmission(partitions, 6, 24)).toMatchObject({
+        mode: 'full', planned: 24, admittedIndexes: [0, 1, 2, 3], deferredIndexes: [], deferredPaths: [], message: '',
+      });
+      expect(scope.planReviewAssignmentAdmission([...partitions, partition('src/extra.ts')], 6, 24))
+        .toMatchObject({ mode: 'degraded', planned: 30, admittedIndexes: [0, 1, 2, 3], deferredPaths: ['src/extra.ts'] });
+    });
+
     it('degrades the 96-assignment shape to the highest-risk partitions in plan order and names every deferred path', () => {
       const partitions = [
         partition('docs/guide.md'), partition('src/feature.ts'), partition('src/auth/session.ts'),
@@ -876,28 +883,17 @@ describe('trusted incremental review scope', () => {
       expect(split.message).toContain('(1 of them only partly reviewed)');
     });
 
-    it('carries an exact copy of every review-budget and security-sensitive path table (no drift possible)', () => {
-      const key = (pattern: RegExp) => `${pattern.source}/${pattern.flags}`;
-      const keys = (patterns: readonly RegExp[]) => [...patterns].map(key).sort();
-      const copy = scope.ADMISSION_RISK_TABLES;
-      const source = SECURITY_SENSITIVE_PATH_TABLES;
-      expect(key(copy.sensitive.segment)).toBe(key(source.segment));
-      expect(key(copy.sensitive.stem)).toBe(key(source.stem));
-      expect(key(copy.sensitive.camelStem)).toBe(key(source.camelStem));
-      expect(copy.sensitive.classed.map(([pathClass, patterns]: [string, RegExp[]]) => [pathClass, keys(patterns)]))
-        .toEqual(source.classed.map(([pathClass, patterns]) => [pathClass, keys(patterns)]));
-      expect([...copy.sensitive.lockfileNames].sort()).toEqual([...source.lockfileNames].sort());
-      expect(keys(copy.sensitive.lockfilePatterns)).toEqual(keys(source.lockfilePatterns));
-      expect([...copy.sensitive.toolchainPinNames].sort()).toEqual([...source.toolchainPinNames].sort());
-      expect([...copy.sensitive.dependencyManifests].sort()).toEqual([...source.dependencyManifests].sort());
-      expect(keys(copy.sensitive.dependencyManifestPatterns)).toEqual(keys(source.dependencyManifestPatterns));
-      expect(keys(copy.budget.ciIac)).toEqual(keys(REVIEW_BUDGET_RANK_TABLES.ciIac));
-      expect(keys(copy.budget.tests)).toEqual(keys(REVIEW_BUDGET_RANK_TABLES.tests));
-      expect(key(copy.content.documentationOrAsset)).toBe(key(REVIEWABLE_CONTENT_TABLES.documentationOrAsset));
-      expect(key(copy.content.dataOrConfig)).toBe(key(REVIEWABLE_CONTENT_TABLES.dataOrConfig));
-      expect(key(copy.content.dotenvConfig)).toBe(key(REVIEWABLE_CONTENT_TABLES.dotenvConfig));
-      // Every listed name ranks 0 in both, so the name tables are exercised, not just compared.
-      for (const name of [...source.lockfileNames, ...source.toolchainPinNames, ...source.dependencyManifests]) {
+    it('reads the one shared path-risk table module the TypeScript classifiers import (no copy)', () => {
+      const pipelineSource = fs.readFileSync(path.join(root, '.github/workflows/pipelines/incremental-review-scope.js'), 'utf8');
+      expect(pipelineSource).toContain("require('../../../src/review/pathRiskTables')");
+      // No regex table literal is restated in the pipeline: the tables have exactly one definition.
+      expect(pipelineSource).not.toMatch(/auth\|authn\|authz|package-lock\.json|jenkinsfile|\(md\|markdown/u);
+      for (const consumer of ['securitySensitivePaths.ts', 'reviewBudget.ts', 'reviewableContent.ts']) {
+        expect(fs.readFileSync(path.join(root, 'src/review', consumer), 'utf8')).toContain("from './pathRiskTables'");
+      }
+      // Every listed name ranks 0 through both the pipeline order and the TypeScript classifier.
+      const tables = require(path.join(root, 'src/review/pathRiskTables.js'));
+      for (const name of [...tables.LOCKFILE_NAMES, ...tables.TOOLCHAIN_PIN_NAMES, ...tables.DEPENDENCY_MANIFESTS]) {
         expect([name, scope.admissionRiskRank(name)]).toEqual([name, budgetCategoryRank(classifyBudgetCategory(name))]);
       }
     });

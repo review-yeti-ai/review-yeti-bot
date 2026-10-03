@@ -19,6 +19,24 @@
  * consulted here.
  */
 
+import {
+  BUILD_SCRIPT_PATTERNS,
+  CI_PATTERNS,
+  CONTAINER_PATTERNS,
+  DEPENDENCY_MANIFEST_PATTERNS,
+  DEPENDENCY_MANIFESTS,
+  IAC_PATTERNS,
+  LOCKFILE_NAMES,
+  LOCKFILE_PATTERNS,
+  MIGRATION_PATTERNS,
+  REPO_CONTROL_PATTERNS,
+  SECRET_MATERIAL_PATTERNS,
+  SENSITIVE_CAMEL_STEM,
+  SENSITIVE_SEGMENT,
+  SENSITIVE_STEM,
+  TOOLCHAIN_PIN_NAMES,
+} from './pathRiskTables';
+
 /** Which arm of the predicate matched, for logs and disclosure. */
 export type SecuritySensitivePathClass =
   | 'malformed'
@@ -34,187 +52,8 @@ export type SecuritySensitivePathClass =
   | 'dependency_manifest'
   | 'auth_crypto_secrets';
 
-/** Directory or file-name segments that name security-relevant code. */
-const SENSITIVE_SEGMENT =
-  /(^|[/._-])(auth|authn|authz|oauth2?|oidc|saml|sso|login|logout|session|sessions|passw(or)?d|passwd|credentials?|secrets?|tokens?|jwt|jwks|crypto|cryptography|cipher|encrypt|encryption|decrypt|signing|signature|signer|certs?|certificates?|tls|ssl|x509|keys?|keystore|keychain|permissions?|rbac|acl|policy|policies|sandbox|csrf|cors|security|sanitize|sanitizer|webhook|webhooks)([/._-]|$)/iu;
-
-/**
- * Stems that name security code as a prefix of a longer word: `authentication`,
- * `authorize`, `passwords`, `encryption`, `credentialStore`. Matched at the
- * start of a path segment or name part, with any continuation (`author` is the
- * one common non-security word excluded).
- */
-const SENSITIVE_STEM =
-  /(^|[/._-])(auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|oauth|passw|credential|secret|crypt|encrypt|decrypt|cipher|certif|permission|privilege|session|login|logout|signin|signon|sso|saml|oidc|jwt|token|csrf|xsrf|sanitiz|security|secure|policy|policies|rbac|acl|keystore|keychain|sandbox)/iu;
-
-/** The same stems at a camelCase boundary: `userAuthService.ts`, `loadSecrets.go`. */
-const SENSITIVE_CAMEL_STEM =
-  /[a-z0-9](Auth(?!or(?:s|ed|ing|ship)?(?![a-z]))|OAuth|Passw|Credential|Secret|Crypt|Encrypt|Decrypt|Cipher|Certif|Permission|Privilege|Session|Login|Logout|SignIn|Signin|Token|Csrf|Sanitiz|Security|Secure|Policy|Policies|Rbac|Acl|Keystore|Keychain|Sandbox)/u;
-
-/** CI/CD pipelines and reusable actions. */
-const CI_PATTERNS: readonly RegExp[] = [
-  /^\.github\//iu,
-  /(^|\/)\.github\/(workflows|actions)\//iu,
-  /(^|\/)\.gitlab-ci[^/]*$/iu,
-  /(^|\/)\.gitlab\//iu,
-  /(^|\/)\.circleci\//iu,
-  /(^|\/)\.buildkite\//iu,
-  /(^|\/)jenkinsfile[^/]*$/iu,
-  /(^|\/)azure-pipelines[^/]*$/iu,
-  /(^|\/)bitbucket-pipelines\.ya?ml$/iu,
-  /(^|\/)\.drone\.ya?ml$/iu,
-  /(^|\/)cloudbuild[^/]*\.(ya?ml|json)$/iu,
-  // A composite or JavaScript action anywhere in the tree (not only under .github/).
-  /(^|\/)action\.ya?ml$/iu,
-];
-
-/** Container definitions. */
-const CONTAINER_PATTERNS: readonly RegExp[] = [
-  /(^|\/)(docker|container)file[^/]*$/iu,
-  /\.(docker|container)file$/iu,
-  /(^|\/)(docker-)?compose[^/]*\.ya?ml$/iu,
-  /(^|\/)\.dockerignore$/iu,
-  /(^|\/)procfile$/iu,
-];
-
-/** Infrastructure as code, Kubernetes, Helm, deploy manifests. */
-const IAC_PATTERNS: readonly RegExp[] = [
-  /\.(tf|tfvars|hcl|bicep|nix)$/iu,
-  /(^|\/)(terraform|infra|infrastructure|k8s|kubernetes|helm|charts|clusters|deploy|deployment|deployments|manifests|kustomize|ansible|cloudformation|pulumi)\//iu,
-  /(^|\/)kustomization\.ya?ml$/iu,
-  /(^|\/)chart\.ya?ml$/iu,
-];
-
-/** Files that control how the repository itself is read, owned and fetched. */
-const REPO_CONTROL_PATTERNS: readonly RegExp[] = [
-  /(^|\/)\.gitattributes$/iu,
-  /(^|\/)\.gitmodules$/iu,
-  /(^|\/)codeowners$/iu,
-];
-
-/** Secret material and credential-bearing configuration. */
-const SECRET_MATERIAL_PATTERNS: readonly RegExp[] = [
-  /(^|\/)\.env(\.[^/]*)?$/iu,
-  /(^|\/)\.(npmrc|yarnrc|yarnrc\.yml|pypirc|netrc)$/iu,
-  /\.(pem|key|crt|cer|p12|pfx|jks|keystore)$/iu,
-  /(^|\/)id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/iu,
-];
-
-/** Build scripts and anything executed by tooling. */
-const BUILD_SCRIPT_PATTERNS: readonly RegExp[] = [
-  /(^|\/)(makefile|gnumakefile|justfile|rakefile|taskfile\.ya?ml|cmakelists\.txt)$/iu,
-  /(^|\/)(scripts?|bin|hooks|\.husky)\//iu,
-  /\.(sh|bash|zsh|ps1|bat|cmd)$/iu,
-  /(^|\/)\.pnpmfile\.c?js$/iu,
-];
-
-/** Database migrations and schemas. */
-const MIGRATION_PATTERNS: readonly RegExp[] = [
-  /\.sql$/iu,
-  /(^|\/)migrations?\//iu,
-  /\.prisma$/iu,
-  /(^|\/)db\/schema\.rb$/iu,
-];
-
-/**
- * Lockfiles: the exact third-party code a build installs. A lockfile change can
- * swap a registry, a tarball URL or an integrity hash without touching a
- * manifest, so it is never shrunk, summarized or collapsed (ADR 0685).
- */
-const LOCKFILE_NAMES = new Set([
-  'package-lock.json',
-  'npm-shrinkwrap.json',
-  'yarn.lock',
-  'pnpm-lock.yaml',
-  'bun.lock',
-  'bun.lockb',
-  'deno.lock',
-  'go.sum',
-  'go.work.sum',
-  'cargo.lock',
-  'poetry.lock',
-  'pipfile.lock',
-  'pdm.lock',
-  'uv.lock',
-  'gemfile.lock',
-  'mix.lock',
-  'composer.lock',
-  'podfile.lock',
-  'pubspec.lock',
-  'package.resolved',
-  'packages.lock.json',
-  'gradle.lockfile',
-  'flake.lock',
-  'conan.lock',
-  'vcpkg-lock.json',
-]);
-
-/** Any other `*.lock`, `*-lock.json`, `*-lock.yaml` or `*.sum` (the ADR 0685/0688 union arm). */
-const LOCKFILE_PATTERNS: readonly RegExp[] = [
-  /(^|\/)[^/]*(\.lock|\.lockb|-lock\.json|-lock\.ya?ml|\.sum|\.lockfile)$/iu,
-];
-
-/**
- * Toolchain pins: which compiler, runtime or package manager builds the code.
- * Changing one changes what executes as surely as a dependency bump does.
- */
-const TOOLCHAIN_PIN_NAMES = new Set([
-  '.tool-versions',
-  '.nvmrc',
-  '.node-version',
-  '.python-version',
-  '.ruby-version',
-  '.java-version',
-  '.go-version',
-  '.bun-version',
-  '.terraform-version',
-  '.sdkmanrc',
-  'rust-toolchain',
-  'rust-toolchain.toml',
-  'mise.toml',
-  '.mise.toml',
-  'global.json',
-  'go.work',
-]);
-
-/** Dependency manifests: the file that decides what third-party code runs. */
-const DEPENDENCY_MANIFESTS = new Set([
-  'package.json',
-  'requirements.txt',
-  'requirements-dev.txt',
-  'constraints.txt',
-  'pyproject.toml',
-  'setup.py',
-  'setup.cfg',
-  'pipfile',
-  'go.mod',
-  'cargo.toml',
-  'gemfile',
-  'mix.exs',
-  'composer.json',
-  'pom.xml',
-  'build.gradle',
-  'build.gradle.kts',
-  'settings.gradle',
-  'settings.gradle.kts',
-  'package.swift',
-  'podfile',
-  'pubspec.yaml',
-  'deno.json',
-  'bunfig.toml',
-  'vcpkg.json',
-  'conanfile.txt',
-  'conanfile.py',
-  'packages.config',
-]);
-
-const DEPENDENCY_MANIFEST_PATTERNS: readonly RegExp[] = [
-  /(^|\/)requirements[^/]*\.(txt|in)$/iu,
-  /(^|\/)constraints[^/]*\.txt$/iu,
-  /\.(csproj|fsproj|vbproj|gemspec|nuspec|cabal)$/iu,
-  /(^|\/)directory\.packages\.props$/iu,
-];
-
+// The tables themselves live in `./pathRiskTables.js`, shared with the GitHub Action pipeline.
+// Edit them there; this module owns the predicate and its classification order.
 function normalizePath(filePath: string): string {
   return filePath.replace(/\\/gu, '/').replace(/^\.\//u, '');
 }
@@ -253,25 +92,6 @@ const CLASSED_PATTERNS: ReadonlyArray<readonly [SecuritySensitivePathClass, read
  * First match wins, so the answer is stable; being sensitive at all does not
  * depend on the order.
  */
-/**
- * Read-only view of this policy's tables. The GitHub Action pipeline cannot load TypeScript at run
- * time, so `admissionRiskRank` in `.github/workflows/pipelines/incremental-review-scope.js` carries a
- * plain-JS copy. `tests/unit/incrementalReviewScope.test.ts` asserts that copy holds exactly these
- * tables (every pattern source/flags and every name), so a change here fails that test until the
- * copy is updated in the same change.
- */
-export const SECURITY_SENSITIVE_PATH_TABLES = Object.freeze({
-  segment: SENSITIVE_SEGMENT,
-  stem: SENSITIVE_STEM,
-  camelStem: SENSITIVE_CAMEL_STEM,
-  classed: CLASSED_PATTERNS,
-  lockfileNames: LOCKFILE_NAMES as ReadonlySet<string>,
-  lockfilePatterns: LOCKFILE_PATTERNS,
-  toolchainPinNames: TOOLCHAIN_PIN_NAMES as ReadonlySet<string>,
-  dependencyManifests: DEPENDENCY_MANIFESTS as ReadonlySet<string>,
-  dependencyManifestPatterns: DEPENDENCY_MANIFEST_PATTERNS,
-});
-
 export function securitySensitivePathClass(filePath: unknown): SecuritySensitivePathClass | null {
   if (typeof filePath !== 'string' || filePath.trim().length === 0) return 'malformed';
   const normalized = normalizePath(filePath);
