@@ -34,6 +34,7 @@ const { applyFalsificationOutcomes, runFindingFalsification } = require('../../.
 // title -- the same module the TypeScript worker/panel re-export. Never fork these here.
 const {
   classifyLaneFailure,
+  INFRASTRUCTURE_LANE_FAILURE_CLASSES: SHARED_INFRASTRUCTURE_LANE_FAILURE_CLASSES,
   INCOMPLETE_INFRASTRUCTURE_REASON,
   isInfrastructureIncompleteResult,
   isNonRetryableClientStatus,
@@ -56,7 +57,7 @@ const {
   createFullReviewScope,
   mergeIncrementalPersonaResults,
   resolveIncrementalReviewScope,
-  assessReviewAssignmentBudget,
+  planReviewAssignmentAdmission,
 } = require('./incremental-review-scope');
 
 let mcpFleetManager = null;
@@ -6339,11 +6340,36 @@ function resolveInfrastructureIncomplete(laneResults, { coverageComplete } = {})
 }
 
 /**
+ * Lane-level re-run shape: one or more lanes were lost on infrastructure (transport, provider
+ * error, rate limit, timeout) while their siblings completed with only non-blocking (P2) findings.
+ * The shared decision above deliberately refuses to call such a run INCOMPLETE -- a finding is
+ * evidence about the code -- but the BLOCK it then publishes comes only from the missing lanes
+ * ("N persona lane(s) failed"). Re-running just the lost lanes never re-rolls a sibling's findings
+ * and is the only way the published verdict can describe the whole change. A P0/P1 elsewhere is
+ * already a blocking finding about the code, and an omitted file is a deterministic coverage gap,
+ * so neither shape is re-run (no spend for no change).
+ */
+function resolveLaneLevelInfrastructureRetry(laneResults, { coverageComplete } = {}) {
+  if (coverageComplete !== true) return null;
+  if (!Array.isArray(laneResults) || laneResults.length === 0) return null;
+  const failed = laneResults.filter((lane) => lane?.decision === 'ERROR');
+  if (failed.length === 0) return null;
+  const described = failed.map(describeFailedLane);
+  if (!described.every((lane) => SHARED_INFRASTRUCTURE_LANE_FAILURE_CLASSES.includes(lane.failureClass))) return null;
+  const blockingFindingObserved = laneResults.some((lane) => lane?.decision !== 'ERROR'
+    && (Array.isArray(lane?.findings) ? lane.findings : [])
+      .some((finding) => ['P0', 'P1'].includes(String(finding?.severity || '').toUpperCase())));
+  if (blockingFindingObserved) return null;
+  return { lanes: described, title: renderIncompleteInfrastructureTitle(described) };
+}
+
+/**
  * REL-1113 (Action pipeline): re-attempt the lanes that failed on infrastructure, within the
  * Action's budget, on the shared lane transport-retry schedule (`transportRetryDelayMs` full-jitter
  * backoff, at most `TRANSPORT_MAX_RETRIES`, never inside `TRANSPORT_RETRY_TERMINAL_MARGIN_MS` of
- * the deadline). Runs only while the shared decision says the result is infrastructure-incomplete,
- * so a findings result is never re-rolled. A 4xx other than 429 is not re-attempted (the same
+ * the deadline). Runs while the shared decision says the result is infrastructure-incomplete, or
+ * while the lane-level shape above holds (lost lanes beside non-P0 findings). Only failed lanes are
+ * re-run, so a completed lane's findings are never re-rolled. A 4xx other than 429 is not re-attempted (the same
  * request fails the same way). A re-attempt starts only when a full lane (`laneTimeoutMs`) still
  * fits; the re-attempt is aborted at the deadline, and a lane the deadline cut keeps its original
  * infrastructure failure. A lane a re-attempt completes -- clean or with findings -- replaces its
@@ -6366,7 +6392,8 @@ async function retryInfrastructureFailedLanes(laneResults, rerunLane, options = 
   let results = Array.isArray(laneResults) ? [...laneResults] : [];
   let retries = 0;
   for (let attempt = 1; attempt <= TRANSPORT_MAX_RETRIES; attempt += 1) {
-    const incomplete = resolveInfrastructureIncomplete(results, { coverageComplete });
+    const incomplete = resolveInfrastructureIncomplete(results, { coverageComplete })
+      ?? resolveLaneLevelInfrastructureRetry(results, { coverageComplete });
     if (!incomplete) return { results, retries, stopReason: 'resolved' };
     const retryable = results
       .map((lane, index) => ({ lane, index }))
@@ -6614,7 +6641,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
     coverageParts.push(`${coverage.truncated.length} file(s) were truncated and reviewed only in part.`);
   }
   const coverageNote = coverageParts.length > 0
-    ? `\n\n> ⚠️ **This verdict covers part of the change.** ${coverageParts.join(' ')}\n> The diff exceeded the per-reviewer budget of ${modelConfig.maxDiffChars || DEFAULT_MAX_DIFF_CHARS} characters.`
+    ? `\n\n> ⚠️ **This verdict covers part of the change.** ${coverageParts.join(' ')}\n> ${coverage?.assignmentCap
+      ? coverage.assignmentCap.message
+      : `The diff exceeded the per-reviewer budget of ${modelConfig.maxDiffChars || DEFAULT_MAX_DIFF_CHARS} characters.`}`
     : '';
 
   const commitRangeLine = prContext.baseSha && prContext.headSha
@@ -6633,6 +6662,10 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
       ? `full diff (blocking owner rerun) · ${carriedCount} carried`
       : `${liveCount} live · ${carriedCount} carried (${reassertedCount} re-asserted) · delta ${(coverage.scope.parentHeadSha || '').slice(0, 7)}..${(prContext.headSha || '').slice(0, 7)}`;
     coverageBadge = `\n- **Review Scope**: 🟢 **Trusted repair delta** (${scopeDescription})`;
+  } else if (coverage?.assignmentCap) {
+    const totalFiles = coverage.totalFiles || 0;
+    const omittedFiles = coverage.omitted?.length || 0;
+    coverageBadge = `\n- **Coverage**: 🔴 **${coverage.coveragePercent}%** (${totalFiles - omittedFiles}/${totalFiles} files fully reviewed across ${coverage.assignmentCap.admittedPartitions} of ${coverage.assignmentCap.admittedPartitions + coverage.assignmentCap.deferredPartitions} partitions, ${omittedFiles} not reviewed: assignment cap)`;
   } else if (coverage?.partitionPlan || (coverage?.partitionsCount && coverage.partitionsCount > 0)) {
     const totalFiles = coverage.totalFiles || (coverage.reviewed ? coverage.reviewed.length : 0);
     const partitionsCount = coverage.partitionsCount || (coverage.partitionPlan ? coverage.partitionPlan.partitions.length : 1);
@@ -6640,7 +6673,9 @@ function formatPRComment(arbitration, personaResults, prContext, mcpTelemetry = 
   }
 
   let partitionManifestSection = '';
-  if (coverage?.partitionPlan && coverage.partitionsCount > 1 && shaPartitionManager && typeof shaPartitionManager.formatCoverageComment === 'function') {
+  // The manifest claims every partition was reviewed; a binding assignment cap deferred some.
+  if (coverage?.partitionPlan && coverage.partitionsCount > 1 && !coverage.assignmentCap
+    && shaPartitionManager && typeof shaPartitionManager.formatCoverageComment === 'function') {
     partitionManifestSection = `\n\n${shaPartitionManager.formatCoverageComment(coverage.partitionPlan)}`;
   }
 
@@ -6706,13 +6741,18 @@ function writeStepSummary(arbitration, personaResults, prContext, coverage) {
         : arbitration.verdict === 'INCOMPLETE' ? '⚪ INCOMPLETE — infrastructure (not a verdict)'
           : '🔴 BLOCK';
     const totalFiles = coverage?.reviewed?.length || 'all';
+    const omittedFiles = coverage?.omitted?.length || 0;
+    const coverageCell = omittedFiles > 0
+      ? `${coverage.coveragePercent ?? '<100'}% (${omittedFiles} file(s) NOT reviewed)`
+      : `100% (${totalFiles} files audited)`;
     const summaryMd = `### 🏔️ Review Yeti Executive Summary\n\n` +
       `| Metric | Value |\n|---|---|\n` +
       `| **Arbitration Verdict** | **${badge}** |\n` +
-      `| **Review Coverage** | 100% (${totalFiles} files audited) |\n` +
+      `| **Review Coverage** | ${coverageCell} |\n` +
       `| **Quorum** | ${arbitration.quorumSatisfied ? '✅ Satisfied' : '⚠️ Degraded'} (${arbitration.completedPersonas}/${arbitration.totalPersonas} personas) |\n` +
       `| **Total Findings** | 🔴 P0: ${arbitration.metrics?.p0Count || 0} \\| 🟠 P1: ${arbitration.metrics?.p1Count || 0} \\| 🟡 P2: ${arbitration.metrics?.p2Count || 0} |\n\n` +
-      `*Rationale: ${arbitration.rationale}*\n`;
+      `*Rationale: ${arbitration.rationale}*\n` +
+      (coverage?.assignmentCap ? `\n> ⚠️ ${coverage.assignmentCap.message}\n` : '');
     fs.appendFileSync(summaryPath, summaryMd);
   } catch (err) {
     console.warn('Could not write GITHUB_STEP_SUMMARY:', err.message);
@@ -8612,7 +8652,9 @@ async function main() {
   // REL-1113: inputs to the shared infrastructure-incomplete decision. A file the diff budget or
   // the submodule policy left unreviewed is a deterministic property of this head, so it is never
   // the re-attempt shape; the deadline bounds every lane re-attempt.
-  const laneCoverageComplete = resolveLaneCoverageComplete(submoduleReview, coverage);
+  let laneCoverageComplete = resolveLaneCoverageComplete(submoduleReview, coverage);
+  // Paths a binding assignment cap left unreviewed; arbitration treats them as coverage gaps.
+  let assignmentCapGaps = [];
   const actionDeadlineMs = resolveActionDeadlineMs();
   const reviewedPersonaIds = reviewScope.mode === 'delta'
     ? new Set(reviewScope.reviewedPersonaIds)
@@ -8636,15 +8678,37 @@ async function main() {
       const dispatchMode = resolveDispatchMode(modelConfig.dispatchMode);
       const dispatchSeed = [prContext.repo, prContext.prNumber, prContext.headSha].filter(Boolean).join(':');
       const maxReviewAssignments = Math.max(1, Number.parseInt(process.env.MAX_REVIEW_ASSIGNMENTS || '24', 10) || 24);
-      const assignmentBudget = assessReviewAssignmentBudget(partitionPlan?.partitions?.length || 1, reviewPersonas.length, maxReviewAssignments);
-      if (!assignmentBudget.admitted) {
-        console.error(`[Bounded Evaluation] Refusing to dispatch ${assignmentBudget.planned} model assignments; the hard run cap is ${assignmentBudget.maximum}. Narrow or semantically group the change before retrying.`);
+      const assignmentBudget = planReviewAssignmentAdmission(partitionPlan?.partitions, reviewPersonas.length, maxReviewAssignments);
+      if (assignmentBudget.mode === 'refused') {
+        console.error(`[Bounded Evaluation] ${assignmentBudget.message}`);
         process.exitCode = 1;
         return;
       }
-      if (partitionPlan && partitionPlan.partitions.length > 1) {
-        console.log(`[Bounded Evaluation] Dispatching ${reviewPersonas.length} live persona lane(s) across ${partitionPlan.partitions.length} partitions (${assignmentBudget.planned}/${assignmentBudget.maximum} assignment cap) to ${modelConfig.model} with concurrency ${personaConcurrency}...`);
-        const reviewJobs = partitionPlan.partitions.flatMap((partition) =>
+      // The partitions this run dispatches: all of them, or -- when the cap binds -- the
+      // highest-risk subset. Deferred paths are reported as not reviewed and fail closed.
+      const dispatchPartitions = partitionPlan
+        ? assignmentBudget.admittedIndexes.map((index) => partitionPlan.partitions[index])
+        : [];
+      if (assignmentBudget.mode === 'degraded') {
+        console.warn(`[Bounded Evaluation] ${assignmentBudget.message}`);
+        const totalFiles = coverage.totalFiles || reviewDiffFiles.length;
+        coverage = {
+          ...coverage,
+          reviewed: (coverage.reviewed || []).filter((filePath) => !assignmentBudget.deferredPaths.includes(filePath)),
+          omitted: assignmentBudget.deferredPaths,
+          omittedFilesCount: assignmentBudget.deferredPaths.length,
+          coveragePercent: Math.floor(((totalFiles - assignmentBudget.deferredPaths.length) / Math.max(1, totalFiles)) * 100),
+          assignmentCap: { planned: assignmentBudget.planned, maximum: assignmentBudget.maximum,
+            admittedPartitions: assignmentBudget.admittedIndexes.length, deferredPartitions: assignmentBudget.deferredIndexes.length,
+            message: assignmentBudget.message },
+        };
+        laneCoverageComplete = false;
+        assignmentCapGaps = assignmentBudget.deferredPaths.map((filePath) => ({ path: filePath, reason: 'review_assignment_cap' }));
+      }
+      if (partitionPlan && (dispatchPartitions.length > 1 || assignmentBudget.mode === 'degraded')) {
+        const admittedAssignments = dispatchPartitions.length * reviewPersonas.length;
+        console.log(`[Bounded Evaluation] Dispatching ${reviewPersonas.length} live persona lane(s) across ${dispatchPartitions.length} of ${partitionPlan.partitions.length} partitions (${admittedAssignments}/${assignmentBudget.maximum} assignment cap) to ${modelConfig.model} with concurrency ${personaConcurrency}...`);
+        const reviewJobs = dispatchPartitions.flatMap((partition) =>
           reviewPersonas.map((persona) => ({ partition, persona }))
         );
         const transportPlans = buildTransportDispatchPlans(
@@ -8679,7 +8743,7 @@ async function main() {
           (jobIndex, signal) => runPartitionJob(reviewJobs[jobIndex], jobIndex, signal),
           { coverageComplete: laneCoverageComplete, deadlineMs: actionDeadlineMs, concurrency: personaConcurrency },
         );
-        const partitionRuns = partitionPlan.partitions.map((_, partitionIndex) =>
+        const partitionRuns = dispatchPartitions.map((_, partitionIndex) =>
           reviewPersonas.map((_, personaIndex) =>
             reviewResults[(partitionIndex * reviewPersonas.length) + personaIndex]
           )
@@ -8803,8 +8867,8 @@ async function main() {
     console.log('[Arbitration] Computing binding arbitration quorum...');
     arbitration = computeArbitrationQuorum(personaResults, enabledPersonas.length, {
       changedFiles: arbitrationDiffFiles,
-      coverageComplete: submoduleReview.coverageComplete,
-      coverageGaps: submoduleReview.coverageGaps,
+      coverageComplete: submoduleReview.coverageComplete !== false && assignmentCapGaps.length === 0,
+      coverageGaps: [...(submoduleReview.coverageGaps || []), ...assignmentCapGaps],
     });
     // REL-1113: lanes still lost to transport/provider/deadline after the in-budget re-attempts,
     // with no finding anywhere, is INCOMPLETE -- never the BLOCK/FIX_FIRST arbitration derives
@@ -9005,6 +9069,7 @@ module.exports = {
   resolveActionDeadlineMs,
   resolveLaneCoverageComplete,
   resolveInfrastructureIncomplete,
+  resolveLaneLevelInfrastructureRetry,
   retryInfrastructureFailedLanes,
   aggregatePartitionPersonaResults,
   toInfrastructureIncompleteArbitration,
