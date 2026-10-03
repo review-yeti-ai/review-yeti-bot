@@ -622,3 +622,130 @@ describe('Dashboard trigger and gate public fallback boundaries', () => {
     assert.ok(data.overview.activeJobsCount >= 6);
   });
 });
+
+describe('Integrated public topology route boundaries', () => {
+  it('returns all four public tiers and stable telemetry for the default or empty job identifier', async () => {
+    for (const query of ['', '?jobId=']) {
+      const response = await worker.fetch(new Request('https://worker.dev/api/live/topology' + query), createMockEnv());
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('Content-Type'), 'application/json');
+      assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
+      const topology = await response.json() as any;
+      assert.equal(topology.success, true);
+      assert.equal(topology.jobId, 'run_live_reviewyeti_pr1282');
+      assert.ok(Number.isFinite(Date.parse(topology.timestamp)));
+      assert.equal(topology.healthScore, 99.9);
+      assert.equal(topology.activeWorkers, 4);
+      assert.deepEqual(topology.tiers, [
+        { tier: 1, name: 'Edge Ingress', nodesCount: 2, status: 'HEALTHY' },
+        { tier: 2, name: 'State & Storage Mesh', nodesCount: 4, status: 'HEALTHY' },
+        { tier: 3, name: 'Autonomous Swarm Agents', nodesCount: 5, status: 'IN_FLIGHT' },
+        { tier: 4, name: 'Inference Fleet', nodesCount: 4, status: 'HEALTHY' },
+      ]);
+    }
+  });
+
+  it('retains an explicit job identifier without invoking mutable review or storage bindings', async () => {
+    let bindingCalls = 0;
+    const env = { ...createMockEnv(), REVIEW_RUN: { idFromName: () => { bindingCalls++; throw new Error('Unexpected review mutation'); } }, DB: { prepare: () => { bindingCalls++; throw new Error('Unexpected database mutation'); } } } as unknown as Env;
+    const response = await worker.fetch(new Request('https://worker.dev/api/live/topology?jobId=example-topology-run'), env);
+    assert.equal(response.status, 200);
+    const topology = await response.json() as any;
+    assert.equal(topology.jobId, 'example-topology-run');
+    assert.equal(topology.globalThroughputTokSec, 384);
+    assert.equal(topology.edgeP95RttMs, 14.2);
+    assert.equal(topology.r2CacheHitRate, 95.8);
+    assert.equal(bindingCalls, 0);
+  });
+
+  it('preserves topology CORS preflight without returning a topology payload', async () => {
+    const response = await worker.fetch(new Request('https://worker.dev/api/live/topology', { method: 'OPTIONS' }), createMockEnv());
+    assert.equal(response.status, 204);
+    assert.equal(await response.text(), '');
+    assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
+    assert.ok(response.headers.get('Access-Control-Allow-Methods')?.includes('GET'));
+  });
+
+  it('keeps the public read available while rejecting an unauthorized adjacent cache mutation', async () => {
+    const env = { ...createMockEnv(), REVIEW_YETI_MCP_AUTH_TOKEN: 'example-authorized-token' } as Env;
+    const read = await worker.fetch(new Request('https://worker.dev/api/live/topology', { headers: { Authorization: 'Bearer example-invalid-token' } }), env);
+    assert.equal(read.status, 200);
+    assert.equal((await read.json() as any).success, true);
+    const mutation = await worker.fetch(new Request('https://worker.dev/api/cache/purge-expired', { method: 'POST', headers: { Authorization: 'Bearer example-invalid-token' } }), env);
+    assert.equal(mutation.status, 401);
+    assert.match(await mutation.text(), /requires valid authorization token/);
+  });
+
+  it('returns the existing not-found error for an unknown adjacent topology path', async () => {
+    const response = await worker.fetch(new Request('https://worker.dev/api/live/topology-unknown'), createMockEnv());
+    assert.equal(response.status, 404);
+    assert.match(await response.text(), /Not Found/i);
+  });
+
+});
+
+
+describe('Bound gate read fallback regressions', () => {
+  it('keeps a healthy empty gate at zero active jobs without fabricating a pending review', async () => {
+    const queried: string[] = [];
+    const env = { ...createMockEnv(), REPO_GATE: {
+      idFromName: (name: string) => { queried.push(name); return name; },
+      get: () => ({ fetch: async () => Response.json({ activeCount: 0, queueLength: 0, activeRuns: [] }) }),
+    } } as unknown as Env;
+    const response = await worker.fetch(new Request('https://worker.dev/api/dashboard/overview'), env);
+    const data = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(data.overview.activeJobsCount, 0);
+    assert.equal(data.overview.liveDurableObjects['example/sample-cdr'].activeCount, 0);
+    assert.ok(queried.includes('example/sample-meta'));
+  });
+
+  it('retains a bound active review when optional elapsed and head metadata are absent', async () => {
+    const env = { ...createMockEnv(), REPO_GATE: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async () => Response.json({ activeCount: 1, activeRunsByPr: { '41': 'example-active-review' } }) }),
+    } } as unknown as Env;
+    const response = await worker.fetch(new Request('https://worker.dev/api/dashboard/logs'), env);
+    const data = await response.json() as any;
+    assert.equal(response.status, 200);
+    const active = data.logs.filter((row: any) => row.id === 'example-active-review');
+    assert.equal(active.length, 1);
+    assert.equal(active[0].prNumber, 41);
+    assert.equal(active[0].status, 'pending');
+    assert.equal(active[0].verdict, 'PENDING');
+    assert.equal(active[0].latencyMs, 12000);
+    assert.equal(active[0].headSha, '9b8a7c6d');
+    assert.equal(active[0].quorum, 'Swarm In-Flight');
+    assert.ok(Number.isFinite(Date.parse(active[0].timestamp)));
+  });
+});
+
+it('rejects incomplete live event admission before calling a bound review run', async () => {
+  let calls = 0;
+  const env = { ...createMockEnv(), REVIEW_RUN: {
+    idFromName: () => { calls++; throw new Error('Incomplete event must never dispatch'); },
+    get: () => { calls++; throw new Error('Incomplete event must never dispatch'); },
+  } } as unknown as Env;
+  for (const body of ['not-json', JSON.stringify({ jobId: 'example-run' }), JSON.stringify({ event: { type: 'example-event' } })]) {
+    const response = await worker.fetch(new Request('https://worker.dev/api/live/publish', { method: 'POST', body }), env);
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { error: 'jobId and event required' });
+  }
+  assert.equal(calls, 0);
+});
+
+it('forwards an accepted live event unchanged to its bound run', async () => {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const event = { type: 'example-event', jobId: 'example-run', progress: 25 };
+  const env = { ...createMockEnv(), REVIEW_RUN: {
+    idFromName: (name: string) => { assert.equal(name, 'example-run'); return name; },
+    get: () => ({ fetch: async (url: string, init: RequestInit) => { calls.push({ url, init }); return Response.json({ success: true }); } }),
+  } } as unknown as Env;
+  const response = await worker.fetch(new Request('https://worker.dev/api/live/publish', { method: 'POST', body: JSON.stringify({ jobId: 'example-run', event }) }), env);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { success: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'http://do/events');
+  assert.equal(calls[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].init.body as string), event);
+});
