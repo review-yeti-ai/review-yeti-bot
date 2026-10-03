@@ -32,8 +32,10 @@ describe('sample repository identity is one contract, asserted across layers', (
   it('the D1 migration seeds exactly these identities', () => {
     // The seed cannot import the constant; this is the only thing binding it.
     const sql = read('cf-orchestrator/migrations/0001_initial_schema.sql');
-    expect(sql).toContain(`'${SAMPLE_REPO_CDR}', 'example', 'sample-cdr'`);
-    expect(sql).toContain(`'${SAMPLE_REPO_META}', 'example', 'sample-meta'`);
+    // Whitespace-tolerant: a benign reformat of the INSERT (extra spacing, line
+    // wrap between columns) must not fail a contract that still holds.
+    expect(sql).toMatch(new RegExp(`'${SAMPLE_REPO_CDR}'\\s*,\\s*'example'\\s*,\\s*'sample-cdr'`));
+    expect(sql).toMatch(new RegExp(`'${SAMPLE_REPO_META}'\\s*,\\s*'example'\\s*,\\s*'sample-meta'`));
   });
 
   it('the Durable Object query layer imports the constant instead of repeating it', () => {
