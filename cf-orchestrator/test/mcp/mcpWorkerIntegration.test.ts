@@ -22,7 +22,7 @@ describe('Review Yeti MCP Worker Route Integration (/api/mcp)', () => {
       method: 'OPTIONS',
       headers: { Origin: 'https://review-bot.example.com' },
     });
-    const res = await worker.fetch(req, {} as any);
+    const res = await worker.fetch(req, { ALLOWED_ORIGINS: 'https://review-bot.example.com' } as any);
 
     assert.equal(res.status, 204);
     assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://review-bot.example.com');

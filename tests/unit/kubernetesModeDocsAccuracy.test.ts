@@ -67,17 +67,15 @@ function promisingBlocks(markdown: string): string[] {
 }
 
 describe('Kubernetes Mode documentation matches enforced behaviour', () => {
-  it('rejects an endpoint the reader operates — the premise for every claim below', () => {
-    // Calls the real validator rather than grepping its source. Matching source
-    // text duplicated the constraint in a second place and would fail on a
-    // behaviour-preserving refactor, training maintainers to re-pin the strings
-    // instead of checking the behaviour.
-    expect(() => validateDispatchEndpoint('https://review.example.invalid/api/dispatch/action'))
-      .toThrow(/must be exactly/u);
-    expect(() => validateDispatchEndpoint('http://review-bot.example.com/api/dispatch/action'))
-      .toThrow(/must be exactly/u);
-    // If this ever stops throwing, self-hosting became real and these docs
-    // assertions should be revisited rather than mechanically satisfied.
+  it('validates the shape of the endpoint it is given — the premise for every claim below', () => {
+    // Calls the real validator rather than grepping its source. The endpoint is supplied by the caller; the
+    // service side (OIDC identity allowlist), not this check, decides who is admitted.
+    expect(() => validateDispatchEndpoint('http://review.example.invalid/api/dispatch/action'))
+      .toThrow(/dispatch endpoint/u);
+    expect(() => validateDispatchEndpoint('https://review.example.invalid/api/dispatch/other'))
+      .toThrow(/dispatch endpoint/u);
+    expect(validateDispatchEndpoint('https://review.example.invalid/api/dispatch/action').pathname)
+      .toBe('/api/dispatch/action');
   });
 
   it.each([
@@ -100,17 +98,15 @@ describe('Kubernetes Mode documentation matches enforced behaviour', () => {
     expect(promisingBlocks(read(file))).toEqual([]);
   });
 
-  it('states plainly that the endpoint is fixed, naming what enforces it', () => {
-    // A reader must be able to verify the constraint without reading the dispatch
-    // script to discover it exists.
+  it('states plainly that admission is allowlist-bound, naming what checks the endpoint', () => {
+    // A reader must be able to verify the constraint without reading the dispatch script to discover it.
     const doc = read('docs/KUBERNETES_MODE.md');
-    expect(doc).toMatch(/dispatch endpoint is fixed/iu);
+    expect(doc).toMatch(/admitted only for allowlisted callers/iu);
     expect(doc).toContain('validateDispatchEndpoint');
   });
 
   it('links the README chart section to the constraint', () => {
-    // Semantic anchor, not exact prose: "...until the dispatch endpoint is
-    // configurable" is a correct edit and must not fail the suite.
+    // Semantic anchor, not exact prose.
     const readme = read('README.md');
     expect(readme).toMatch(/will not receive reviews/iu);
     expect(readme).toContain('docs/KUBERNETES_MODE.md');

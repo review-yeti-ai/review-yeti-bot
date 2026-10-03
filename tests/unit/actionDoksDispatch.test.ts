@@ -173,18 +173,29 @@ describe('DOKS Action dispatch client', () => {
     expect(request.refreshExecutionAttempt).toBeUndefined();
   });
 
-  it('accepts only the fixed HTTPS dispatch origin and exact path', async () => {
+  it('accepts only an https DNS endpoint with the exact admission path and no credentials', async () => {
     const { validateDispatchEndpoint } = await import(modulePath);
-    expect(validateDispatchEndpoint('https://review-bot.example.com/api/dispatch/action').href)
-      .toBe('https://review-bot.example.com/api/dispatch/action');
+    for (const ok of [
+      'https://review-bot.example.com/api/dispatch/action',
+      'https://dispatch.internal.example.org/api/dispatch/action',
+    ]) {
+      expect(validateDispatchEndpoint(ok).href).toBe(ok);
+    }
 
     for (const unsafe of [
       'http://review-bot.example.com/api/dispatch/action',
-      'https://attacker.example/api/dispatch/action',
       'https://user:pass@review-bot.example.com/api/dispatch/action',
       'https://review-bot.example.com/api/dispatch/action?next=evil',
       'https://review-bot.example.com/api/dispatch/action#fragment',
       'https://review-bot.example.com/api/dispatch/other',
+      'https://review-bot.example.com:8443/api/dispatch/action',
+      'https://localhost/api/dispatch/action',
+      'https://app.localhost/api/dispatch/action',
+      'https://intranet/api/dispatch/action',
+      'https://127.0.0.1/api/dispatch/action',
+      'https://[::1]/api/dispatch/action',
+      '',
+      'not a url',
     ]) {
       expect(() => validateDispatchEndpoint(unsafe), unsafe).toThrow(/dispatch endpoint/i);
     }
