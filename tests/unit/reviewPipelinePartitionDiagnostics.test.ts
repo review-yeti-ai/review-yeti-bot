@@ -76,7 +76,8 @@ pipeline.main().then(() => console.log('FIXTURE_CALLS ' + JSON.stringify({
 }))).catch(() => { process.exitCode = 1; });
 `;
 
-function runPartitionedReview(failPartition: 'first' | 'last' | 'none', recoveryFixture?: 'present' | 'absent') {
+function runPartitionedReview(failPartition: 'first' | 'last' | 'none', recoveryFixture?: 'present' | 'absent',
+  extraEnv: Record<string, string> = {}) {
   const scratch = createScratchOwner({
     parentDir: requiredSuiteScratchRoot(),
     prefix: 'partition-diagnostics-',
@@ -116,6 +117,7 @@ function runPartitionedReview(failPartition: 'first' | 'last' | 'none', recovery
         RUNNER_TEMP: scratch.path,
         CT_REVIEW_CONFIG_DIR: scratch.path,
         CT_REVIEW_DATA_DIR: scratch.path,
+        ...extraEnv,
       },
     });
     expect(result.error).toBeUndefined();
@@ -226,6 +228,25 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
     expect(testing.responseAttempts).toHaveLength(2);
     expect(testing.responseAttempts.at(-1)).toMatchObject({ outcome: 'malformed_output', provider: 'anthropic' });
     expect(JSON.stringify(telemetry)).not.toContain('synthetic non-JSON reasoning');
+  }, 15000);
+});
+
+describe('the partition-by-persona assignment cap degrades instead of refusing the run', () => {
+  it('reviews the admitted partition, names the deferred file and fails closed', () => {
+    // Two personas x two partitions = 4 assignments against a cap of 2: one partition fits.
+    const { calls, outputs, summary, stdout } = runPartitionedReview('none', undefined, { MAX_REVIEW_ASSIGNMENTS: '2' });
+    expect(stdout).toContain('Partitioned into 2');
+    expect(stdout).toContain('Review assignment cap: 2 persona(s) x 2 diff partitions = 4 model assignments exceeds `max-review-assignments` (2).');
+    expect(stdout).toContain('1 partition(s) were NOT reviewed, covering 1 file(s): `src/b.ts`');
+    expect(stdout).toContain('split this pull request so each part needs at most 1 partition(s), or raise `max-review-assignments` to at least 4');
+    expect(stdout).toContain('across 1 of 2 partitions (2/2 assignment cap)');
+    expect(stdout).not.toContain('Refusing to dispatch');
+    // Only the admitted partition was sent to the testing persona.
+    expect(calls).toEqual({ malformedCalls: 0, successfulCalls: 1, exitCode: 0 });
+    expect(outputs).toMatchObject({ 'merge-eligible': 'false', 'files-omitted': '1', 'coverage-pct': '50' });
+    expect(outputs.verdict).not.toBe('SHIP');
+    expect(summary).toContain('1 file(s) NOT reviewed');
+    expect(summary).toContain('Review assignment cap');
   }, 15000);
 });
 

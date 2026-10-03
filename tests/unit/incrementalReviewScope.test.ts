@@ -830,6 +830,58 @@ describe('trusted incremental review scope', () => {
     expect(scope.assessReviewAssignmentBudget(1, 4, 24)).toMatchObject({ planned: 4, admitted: true });
   });
 
+  describe('planReviewAssignmentAdmission', () => {
+    const partition = (...paths: string[]) => ({ files: paths.map((path) => ({ path })) });
+
+    it('admits every partition when the fan-out fits the cap', () => {
+      expect(scope.planReviewAssignmentAdmission([partition('src/a.ts'), partition('src/b.ts')], 6, 24)).toMatchObject({
+        mode: 'full', planned: 12, admittedIndexes: [0, 1], deferredIndexes: [], deferredPaths: [], message: '',
+      });
+    });
+
+    it('degrades the 96-assignment shape to the highest-risk partitions in plan order and names every deferred path', () => {
+      const partitions = [
+        partition('docs/guide.md'), partition('src/feature.ts'), partition('src/auth/session.ts'),
+        partition('tests/feature.test.ts'), partition('.github/workflows/ci.yml'), partition('src/store.ts', 'src/split.ts'),
+        partition('src/split.ts'), partition('db/migrations/001.sql'),
+        ...Array.from({ length: 8 }, (_, index) => partition(`src/module-${index}.ts`)),
+      ];
+      const plan = scope.planReviewAssignmentAdmission(partitions, 6, 24);
+      expect(plan).toMatchObject({ mode: 'degraded', planned: 96, maximum: 24, admitted: false });
+      // 24 / 6 = 4 partitions: the three rank-0 slices (auth, CI, migration) first, then the
+      // earliest source slice in plan order.
+      expect(plan.admittedIndexes).toEqual([1, 2, 4, 7]);
+      expect(plan.deferredIndexes).toHaveLength(12);
+      expect(plan.deferredPaths).toContain('src/split.ts');
+      expect(plan.deferredPaths).not.toContain('src/auth/session.ts');
+      expect(plan.partialPaths).toEqual([]);
+      expect(plan.message).toContain('6 persona(s) x 16 diff partitions = 96 model assignments exceeds `max-review-assignments` (24).');
+      expect(plan.message).toContain('Every persona reviewed the 4 highest-risk partition(s); 12 partition(s) were NOT reviewed');
+      expect(plan.message).toContain('`docs/guide.md`');
+      expect(plan.message).toContain('fail-closed and cannot merge-qualify');
+      expect(plan.message).toContain('split this pull request so each part needs at most 4 partition(s), or raise `max-review-assignments` to at least 96');
+      // Deterministic: the same plan always admits the same partitions.
+      expect(scope.planReviewAssignmentAdmission(partitions, 6, 24)).toEqual(plan);
+    });
+
+    it('reports a file split across admitted and deferred partitions as only partly reviewed', () => {
+      const plan = scope.planReviewAssignmentAdmission(
+        [partition('src/big.ts'), partition('src/big.ts', 'src/other.ts'), partition('src/third.ts')], 2, 4);
+      expect(plan).toMatchObject({ mode: 'degraded', admittedIndexes: [0, 1], deferredPaths: ['src/third.ts'], partialPaths: [] });
+      const split = scope.planReviewAssignmentAdmission([partition('src/big.ts'), partition('src/big.ts')], 2, 2);
+      expect(split).toMatchObject({ mode: 'degraded', admittedIndexes: [0], deferredPaths: ['src/big.ts'], partialPaths: ['src/big.ts'] });
+      expect(split.message).toContain('(1 of them only partly reviewed)');
+    });
+
+    it('still refuses before dispatch when the roster alone exceeds the cap, and says how to fix it', () => {
+      const plan = scope.planReviewAssignmentAdmission([partition('src/a.ts')], 30, 24);
+      expect(plan).toMatchObject({ mode: 'refused', admittedIndexes: [], planned: 30 });
+      expect(plan.message).toContain('30 reviewer persona(s) exceed `max-review-assignments` (24) even for a single diff partition');
+      expect(plan.message).toContain('Reduce the persona roster to at most 24 or raise `max-review-assignments` to at least 30');
+      expect(scope.planReviewAssignmentAdmission(undefined, 3, 24)).toMatchObject({ mode: 'full', planned: 3 });
+    });
+  });
+
   describe('resolveArbitrationDiffFiles (REL-552 Review Yeti PR #444 finding 6)', () => {
     const prContext = { repo: 'exampleorg/example', baseSha: BASE, headSha: HEAD };
     const configRoot = '/tmp/ct-review-bot-test-config-root-does-not-exist';
