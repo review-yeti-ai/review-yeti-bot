@@ -8,12 +8,11 @@
  * the one `findingFingerprint` derives from its own content, and the head must be the run's head.
  */
 import type { Request, Response } from 'express';
-import { z } from 'zod';
 import { sha256 } from '../review/reviewCore';
 import { findingFingerprint } from '../review/findingConvergence';
 import { workerExecutionAuthorized, type Queryable } from '../persistence/incrementalPriorReview';
+import { findingThreadsRequestSchema } from '../review/findingThreadsContract';
 import {
-  MAX_FINDING_THREADS_PUBLISHED_PER_RUN,
   publishFindingThreads,
   readFindingThreads,
   resolveFindingThread,
@@ -22,28 +21,10 @@ import {
 import { isGitHubInstallationToken } from '../github/githubTransportPolicy';
 import { logger } from '../utils/logger';
 
-export const FINDING_THREADS_REQUEST_VERSION = 'FindingThreadsRequest.v1' as const;
-export const MAX_FINDING_THREADS_REQUEST_BYTES = 256 * 1024;
-const MAX_REPORTED_FINGERPRINTS = 400;
+export { MAX_FINDING_THREADS_REQUEST_BYTES } from '../review/findingThreadsContract';
 const MAX_RESOLVED_PER_RUN = 30;
-
-const fingerprint = z.string().regex(/^fp1_[a-f0-9]{24}$/u);
-export const findingThreadsRequestSchema = z.object({
-  version: z.literal(FINDING_THREADS_REQUEST_VERSION),
-  runId: z.string().regex(/^run_[a-f0-9]{32}$/u),
-  executionAttempt: z.number().int().positive().safe(),
-  headSha: z.string().regex(/^[a-f0-9]{40}$/u),
-  publish: z.array(z.object({
-    fingerprint,
-    severity: z.enum(['P0', 'P1', 'P2']),
-    path: z.string().min(1).max(4_000),
-    line: z.number().int().positive().safe(),
-    title: z.string().min(1).max(1_000),
-    body: z.string().min(1).max(16_000),
-  }).strict()).max(MAX_FINDING_THREADS_PUBLISHED_PER_RUN),
-  reported: z.array(fingerprint).max(MAX_REPORTED_FINGERPRINTS),
-}).strict();
-export type FindingThreadsRequest = z.infer<typeof findingThreadsRequestSchema>;
+/** Resolution GraphQL calls in flight at once; each is a separate small mutation. */
+const RESOLVE_CONCURRENCY = 4;
 
 export interface FindingThreadsRouteOptions {
   db: Queryable;
@@ -88,12 +69,14 @@ export function createFindingThreadsHandler(options: FindingThreadsRouteOptions)
       // not report: the anchored code changed and the defect is gone. A current-line thread stays
       // open even when a run did not report it, so model variance can never hide a real finding.
       const reported = new Set(input.reported);
+      const stale = existing
+        .filter((thread) => !thread.resolved && thread.outdated && !reported.has(thread.fingerprint) && thread.threadId)
+        .slice(0, MAX_RESOLVED_PER_RUN);
       let resolved = 0;
-      for (const thread of existing) {
-        if (resolved >= MAX_RESOLVED_PER_RUN) break;
-        if (thread.resolved || !thread.outdated || reported.has(thread.fingerprint) || !thread.threadId) continue;
-        await resolveFindingThread(transport, thread.threadId);
-        resolved += 1;
+      for (let offset = 0; offset < stale.length; offset += RESOLVE_CONCURRENCY) {
+        await Promise.all(stale.slice(offset, offset + RESOLVE_CONCURRENCY)
+          .map((thread) => resolveFindingThread(transport, thread.threadId!)));
+        resolved += Math.min(RESOLVE_CONCURRENCY, stale.length - offset);
       }
       return response.status(200).json({
         version: 'FindingThreadsResult.v1', runId: input.runId,

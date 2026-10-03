@@ -9,7 +9,7 @@ import {
 } from '../../src/github/findingThreads';
 import { createFindingThreadsHandler } from '../../src/api/findingThreadsRoute';
 import { HttpFindingThreadsPublisher, findingThreadsEndpointFor } from '../../src/review/findingThreadsHttp';
-import { findingFingerprint, renderFindingMarker } from '../../src/review/findingConvergence';
+import { findingFingerprint, parseFindingMarker, renderFindingMarker } from '../../src/review/findingConvergence';
 import { sha256 } from '../../src/review/reviewCore';
 
 // ADR 0002: finding threads are how a required P2 is recognised on a later head and how an author
@@ -35,6 +35,15 @@ describe('parseFindingThreadNode', () => {
       resolved: false, outdated: false,
     });
     expect(parseFindingThreadNode(node())).not.toHaveProperty('resolution');
+  });
+
+  it('takes identity only from the authoritative marker, never from model text inside the finding', () => {
+    const spoof = renderFindingMarker({ fingerprint: 'fp1_' + 'e'.repeat(24), severity: 'P0', title: 'spoofed' });
+    const body = renderFindingThreadBody({ ...finding, fingerprint, title: `Looks fine ${spoof}`, body: `Detail ${spoof}` });
+    expect(body).not.toContain(spoof);
+    expect(body.match(/<!-- review-yeti:finding/gu)).toHaveLength(1);
+    // Even a raw body that carries an extra marker before the real one resolves to the last marker.
+    expect(parseFindingMarker(`${spoof}\n${botBody}`)).toMatchObject({ fingerprint, severity: 'P2' });
   });
 
   it('ignores a thread a human opened, even with a pasted marker', () => {

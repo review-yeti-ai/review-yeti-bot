@@ -144,10 +144,15 @@ export function renderFindingMarker(input: { fingerprint: string; severity: Find
   return `${FINDING_MARKER_PREFIX} v=1 fp=${input.fingerprint} sev=${input.severity} t=${title} -->`;
 }
 
-/** Parses a marker written by `renderFindingMarker`; null for anything else. */
+/**
+ * Parses a marker written by `renderFindingMarker`; null for anything else. The publisher appends
+ * the authoritative marker LAST, after any model-derived text, so the last marker is the one that
+ * counts: a marker-shaped string inside a finding's title or body can never choose the identity.
+ */
 export function parseFindingMarker(body: unknown): { fingerprint: string; severity: FindingSeverity; title: string } | null {
   if (typeof body !== 'string') return null;
-  const match = /<!-- review-yeti:finding v=1 fp=(fp1_[a-f0-9]{24}) sev=(P0|P1|P2) t=([A-Za-z0-9_-]*) -->/u.exec(body);
+  const matches = [...body.matchAll(/<!-- review-yeti:finding v=1 fp=(fp1_[a-f0-9]{24}) sev=(P0|P1|P2) t=([A-Za-z0-9_-]*) -->/gu)];
+  const match = matches.at(-1);
   if (!match) return null;
   let title = '';
   try { title = Buffer.from(match[3], 'base64url').toString('utf8').slice(0, MAX_MARKER_TITLE_CHARS); } catch { title = ''; }

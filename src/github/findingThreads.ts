@@ -179,8 +179,11 @@ export function renderFindingThreadBody(finding: PublishableFinding): string {
   const guidance = finding.severity === 'P2'
     ? 'Required before merge. Fix it, or reply here with the reason it does not apply and resolve this conversation; the next review records the resolution.'
     : 'Required before merge. Fix it; a resolved conversation does not clear a P0 or P1.';
-  const title = finding.title.replace(/[\r\n]+/gu, ' ').slice(0, 300);
-  const text = finding.body.slice(0, MAX_FINDING_THREAD_BODY_CHARS - 900);
+  // Model-derived text is neutralised so it cannot carry an HTML comment (and so a marker) into
+  // the thread; the one authoritative marker is appended last.
+  const neutral = (value: string) => value.replace(/<!--/gu, '&lt;!--').replace(/-->/gu, '--&gt;');
+  const title = neutral(finding.title.replace(/[\r\n]+/gu, ' ')).slice(0, 300);
+  const text = neutral(finding.body).slice(0, MAX_FINDING_THREAD_BODY_CHARS - 900);
   return [
     `**[${finding.severity} · required]** **${title}**`,
     '',
@@ -188,7 +191,7 @@ export function renderFindingThreadBody(finding: PublishableFinding): string {
     '',
     `<sub>${guidance}</sub>`,
     '',
-    renderFindingMarker({ fingerprint: finding.fingerprint, severity: finding.severity, title }),
+    renderFindingMarker({ fingerprint: finding.fingerprint, severity: finding.severity, title: finding.title.replace(/[\r\n]+/gu, ' ').slice(0, 300) }),
   ].join('\n');
 }
 
