@@ -111,11 +111,14 @@ export class AbandonedRunReaper {
             const deadline = AbortSignal.timeout(20_000);
             const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline;
             bounded.throwIfAborted();
-            const client = await this.options.checkClientFor(run, bounded);
             const publisherAppId = this.options.publisherAppIdFor?.(run) ?? this.options.publisherAppId;
             if (!Number.isSafeInteger(publisherAppId) || publisherAppId <= 0) {
               throw new Error('repository publisher App id is invalid');
             }
+            if (run.authoritativeGateAppId !== undefined && run.authoritativeGateAppId !== publisherAppId) {
+              throw new Error('reserved Gate publisher App identity mismatch');
+            }
+            const client = await this.options.checkClientFor(run, bounded);
             const outcome = await client.failAbandonedCheck(run, publisherAppId, bounded);
             bounded.throwIfAborted();
             return outcome;

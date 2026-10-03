@@ -1,5 +1,272 @@
 # Changelog
 
+## [1.118.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.118.0...v1.118.1) (2026-10-03)
+
+
+### Bug Fixes
+
+* **action:** fail with a clear error when the dispatch endpoint is not supplied ([#1357](https://github.com/review-yeti-ai/review-yeti-bot/issues/1357)) ([aa903da](https://github.com/review-yeti-ai/review-yeti-bot/commit/aa903da2565ba7ed4032d1bdfd05d265253376f1))
+
+## [1.118.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.2...v1.118.0) (2026-10-03)
+
+
+### Features
+
+* **live:** progressive streaming swarm dataviz with per-task tokens and budget tracking (Refs: REL-1287) ([cb6cbde](https://github.com/review-yeti-ai/review-yeti-bot/commit/cb6cbdef281f0ada5f2e7a57bf6058647b061fbe))
+
+
+### Bug Fixes
+
+* keep the pinned deployment endpoints and record the remaining references ([eff1ec4](https://github.com/review-yeti-ai/review-yeti-bot/commit/eff1ec4d1327e57314f7b9401863dab5cdaad6bf))
+
+## [1.117.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.1...v1.117.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **gateway:** respect provider Retry-After before composed retries ([#1335](https://github.com/review-yeti-ai/review-yeti-bot/issues/1335)) ([2971d6e](https://github.com/review-yeti-ai/review-yeti-bot/commit/2971d6ed37335666ad2748bcaf64e1e7eb081588))
+
+## [1.117.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.117.0...v1.117.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **review:** admit bounded complete lockfile context from trusted policy ([#1332](https://github.com/review-yeti-ai/review-yeti-bot/issues/1332)) ([c315db1](https://github.com/review-yeti-ai/review-yeti-bot/commit/c315db17116bd0838d2d4d9e567d50464527d465))
+
+## [1.117.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.4...v1.117.0) (2026-10-02)
+
+
+### Features
+
+* **analytics:** modern Tremor UX dashboard, repository memory pivot platform, and swarm context compaction ([#1322](https://github.com/review-yeti-ai/review-yeti-bot/issues/1322)) ([d62ed82](https://github.com/review-yeti-ai/review-yeti-bot/commit/d62ed82c352c5dae0f8e2b7df6470a787a73bb1e))
+* **infra:** add review-yeti.example.com custom domain and automated edge deployment workflow ([#1328](https://github.com/review-yeti-ai/review-yeti-bot/issues/1328)) ([84e99a4](https://github.com/review-yeti-ai/review-yeti-bot/commit/84e99a42b7a6a71a412ce25e4ac5ed3373b2cbd9))
+* **live:** interactive 4-tier swarm and infrastructure topology visualizer with hover inspection ([#1325](https://github.com/review-yeti-ai/review-yeti-bot/issues/1325)) ([1e33ca7](https://github.com/review-yeti-ai/review-yeti-bot/commit/1e33ca73becfbadc13225760127cb3f10748d10b))
+
+
+### Bug Fixes
+
+* **ci:** bump the anonymity ratchet for the two files [#1333](https://github.com/review-yeti-ai/review-yeti-bot/issues/1333) grew ([#1337](https://github.com/review-yeti-ai/review-yeti-bot/issues/1337)) ([1cab903](https://github.com/review-yeti-ai/review-yeti-bot/commit/1cab903ba359c80e37bfd629f47df9aa5e2c9cab))
+* **ci:** update the anonymity ratchet for the analytics de-org change ([#1336](https://github.com/review-yeti-ai/review-yeti-bot/issues/1336)) ([a5142c1](https://github.com/review-yeti-ai/review-yeti-bot/commit/a5142c1b29bb9c67e6f37ce02ea7d5b2152e4ef1))
+* **REL-1265:** retain composed evidence on signed ready retries ([#1333](https://github.com/review-yeti-ai/review-yeti-bot/issues/1333)) ([bf7570e](https://github.com/review-yeti-ai/review-yeti-bot/commit/bf7570e73c9187de235bd3cfdfc16d10f119d9cd))
+
+## [1.116.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.3...v1.116.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* **preflight:** distinguish SQL and command fixtures from executable sinks ([#1314](https://github.com/review-yeti-ai/review-yeti-bot/issues/1314)) ([d2acf2b](https://github.com/review-yeti-ai/review-yeti-bot/commit/d2acf2baa7293407de86b0bb9d0ee7b9b8fdd5c6))
+
+## [1.116.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.2...v1.116.3) (2026-10-02)
+
+
+### Bug Fixes
+
+* **auth:** remove the built-in admin password and fail closed without ADMIN_PASSWORD ([#1293](https://github.com/review-yeti-ai/review-yeti-bot/issues/1293)) ([8b3ab78](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b3ab78284927b08776315d87024ed861e3b646f))
+
+## [1.116.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.1...v1.116.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **REL-1287:** bounded source context and immutable archive recovery ([#1267](https://github.com/review-yeti-ai/review-yeti-bot/issues/1267)) ([810b365](https://github.com/review-yeti-ai/review-yeti-bot/commit/810b36593a8ce8553da9ce3d82d5a7e018654c89))
+
+## [1.116.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.116.0...v1.116.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **REL-1265:** re-review disputed tasks with immutable evidence ([#1258](https://github.com/review-yeti-ai/review-yeti-bot/issues/1258)) ([0d177d3](https://github.com/review-yeti-ai/review-yeti-bot/commit/0d177d383f25a121377f39b64fd450c86ae669e2))
+
+## [1.116.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.2...v1.116.0) (2026-10-02)
+
+
+### Features
+
+* **dashboard:** interactive review management portal and analytics dashboard ([#1280](https://github.com/review-yeti-ai/review-yeti-bot/issues/1280)) ([3a377ff](https://github.com/review-yeti-ai/review-yeti-bot/commit/3a377ff138450c74dc09d73b3002a8be7ec14a86))
+
+
+### Bug Fixes
+
+* **REL-1250:** retain small inspected source through review compaction ([#1282](https://github.com/review-yeti-ai/review-yeti-bot/issues/1282)) ([f732aac](https://github.com/review-yeti-ai/review-yeti-bot/commit/f732aac7e1f003d36163b56023f07eb947233fea))
+* **REL-1265:** restore publication build and isolated analytics contracts ([#1290](https://github.com/review-yeti-ai/review-yeti-bot/issues/1290)) ([c221e44](https://github.com/review-yeti-ai/review-yeti-bot/commit/c221e448cbdc279200685178d89e21e3dc6caceb))
+* **review:** restore P2 as advisory so only P0/P1 block the check (REL-1282) ([#1281](https://github.com/review-yeti-ai/review-yeti-bot/issues/1281)) ([7de5424](https://github.com/review-yeti-ai/review-yeti-bot/commit/7de5424096b11203987a394f737f3909abfcc5d0))
+
+## [1.115.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.1...v1.115.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* keep composed WORK task context truthful ([#1275](https://github.com/review-yeti-ai/review-yeti-bot/issues/1275)) ([ff35bc6](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff35bc6117fb93fd0ca25222230ad16081722a35))
+
+## [1.115.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.115.0...v1.115.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **review:** report retry admission only when confirmed ([#1269](https://github.com/review-yeti-ai/review-yeti-bot/issues/1269)) ([4b921c3](https://github.com/review-yeti-ai/review-yeti-bot/commit/4b921c37bfcfeed709aad64097789f2562e2e188))
+
+## [1.115.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.114.1...v1.115.0) (2026-10-02)
+
+
+### Features
+
+* **grounding:** bound Zoekt index memory, add per-repo canary and a container memory floor (REL-1282) ([#1271](https://github.com/review-yeti-ai/review-yeti-bot/issues/1271)) ([2560a26](https://github.com/review-yeti-ai/review-yeti-bot/commit/2560a2639c2704103a15d75f09aee4597398ff2e))
+
+## [1.114.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.114.0...v1.114.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* keep deleted diff paths out of head tree evidence ([#1268](https://github.com/review-yeti-ai/review-yeti-bot/issues/1268)) ([ecfe7c1](https://github.com/review-yeti-ai/review-yeti-bot/commit/ecfe7c1e44df5a337bf8c5a8f7e5d664e8f3a861))
+
+## [1.114.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.113.0...v1.114.0) (2026-10-02)
+
+
+### Features
+
+* **REL-1250:** portable runner families + bounded build heap + same-SHA A/B hook ([#1259](https://github.com/review-yeti-ai/review-yeti-bot/issues/1259)) ([91c42b7](https://github.com/review-yeti-ai/review-yeti-bot/commit/91c42b7865076eb1273b2565e4d5c462f14e8290))
+
+## [1.113.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.2...v1.113.0) (2026-10-02)
+
+
+### Features
+
+* make optional JEV classification part of review planning (REL-1081) ([#1253](https://github.com/review-yeti-ai/review-yeti-bot/issues/1253)) ([bdd868e](https://github.com/review-yeti-ai/review-yeti-bot/commit/bdd868e75da184eb73fd98bd869b770e21b812c0))
+
+## [1.112.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.1...v1.112.2) (2026-10-02)
+
+
+### Bug Fixes
+
+* **review:** split oversized hunks without losing bounded coverage ([#1230](https://github.com/review-yeti-ai/review-yeti-bot/issues/1230)) ([398dd08](https://github.com/review-yeti-ai/review-yeti-bot/commit/398dd08a471ed66df32f9fcd70c5f0ec6019d846))
+
+## [1.112.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.112.0...v1.112.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* recover truncated gateway findings output (REL-1081) ([#1256](https://github.com/review-yeti-ai/review-yeti-bot/issues/1256)) ([22a0d44](https://github.com/review-yeti-ai/review-yeti-bot/commit/22a0d441d12313e5445ec1526ae7e4eb0ef9646d))
+
+## [1.112.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.111.0...v1.112.0) (2026-10-02)
+
+
+### Features
+
+* **policy:** require resolution of P2 advisory findings before merge ([444622d](https://github.com/review-yeti-ai/review-yeti-bot/commit/444622d6eeda9dee9a9cb42a1f50cd96da74bb27))
+
+
+### Bug Fixes
+
+* **k8s:** treat terminal PRReviewJobs as already cancelled when the CRD rejects the patch ([#1255](https://github.com/review-yeti-ai/review-yeti-bot/issues/1255)) ([b9c9f52](https://github.com/review-yeti-ai/review-yeti-bot/commit/b9c9f5292ee7a581342c2bd92a1ab78d211fe477))
+* **review:** reconcile Gate-bound abandoned failure publication ([#1254](https://github.com/review-yeti-ai/review-yeti-bot/issues/1254)) ([b265a56](https://github.com/review-yeti-ai/review-yeti-bot/commit/b265a568d8001e3a662f721f65237303516e1ce8))
+
+## [1.111.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.110.0...v1.111.0) (2026-10-01)
+
+
+### Features
+
+* classify verified deletion evidence with advisory JEV questions (REL-1081) ([#1245](https://github.com/review-yeti-ai/review-yeti-bot/issues/1245)) ([c39ef3d](https://github.com/review-yeti-ai/review-yeti-bot/commit/c39ef3d54c30b37f8ec52cb95836b176b4df4772))
+
+## [1.110.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.109.0...v1.110.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** publish GitHub PR reviews and inline suggestions from review workflow ([907b633](https://github.com/review-yeti-ai/review-yeti-bot/commit/907b6333577c3696bc94a832dcc3858980b5be4d))
+
+## [1.109.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.108.0...v1.109.0) (2026-10-01)
+
+
+### Features
+
+* page original diffs and pinned deleted source (REL-1077) ([#1244](https://github.com/review-yeti-ai/review-yeti-bot/issues/1244)) ([9c7c4df](https://github.com/review-yeti-ai/review-yeti-bot/commit/9c7c4df6c3ab58540e59ea25e8bda5f32870b160))
+
+## [1.108.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.107.0...v1.108.0) (2026-10-01)
+
+
+### Features
+
+* **orchestrator:** add merge-group webhook attestation with composite delta hazard scan ([#1243](https://github.com/review-yeti-ai/review-yeti-bot/issues/1243)) ([792fa99](https://github.com/review-yeti-ai/review-yeti-bot/commit/792fa999b0e3fa2c1a7c5be23b2963c8267b8d4e))
+
+## [1.107.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.106.0...v1.107.0) (2026-10-01)
+
+
+### Features
+
+* **mcp:** support public read MCP access and /mcp route ([49d10a0](https://github.com/review-yeti-ai/review-yeti-bot/commit/49d10a0f47905fef311bcdb4ba36490b37ec89f5))
+* **orchestrator:** add Cloudflare serverless orchestrator alongside k8s-operator ([ff9c54e](https://github.com/review-yeti-ai/review-yeti-bot/commit/ff9c54ea1300add4cf5bf5d69eee242ccb578f12))
+
+
+### Bug Fixes
+
+* defer unused installation client loading in token auth ([#1241](https://github.com/review-yeti-ai/review-yeti-bot/issues/1241)) ([fd4fb6e](https://github.com/review-yeti-ai/review-yeti-bot/commit/fd4fb6e1c42692cf66704cbca66946e97ff87e7a))
+* preserve scoped retrieval evidence and Zoekt budgets (REL-1077) ([#1240](https://github.com/review-yeti-ai/review-yeti-bot/issues/1240)) ([32eb060](https://github.com/review-yeti-ai/review-yeti-bot/commit/32eb0602d9bb1a26a8f7196b762ce36a8a748f56))
+
+## [1.106.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.105.1...v1.106.0) (2026-10-01)
+
+
+### Features
+
+* retain content-free terminal review telemetry ([#1210](https://github.com/review-yeti-ai/review-yeti-bot/issues/1210)) ([42e89e4](https://github.com/review-yeti-ai/review-yeti-bot/commit/42e89e46c05866e476593885b162259b731e4b89))
+
+## [1.105.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.105.0...v1.105.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **mcp:** align compute_plane aliases in getCloudflareStatus ([8703f63](https://github.com/review-yeti-ai/review-yeti-bot/commit/8703f6344dc8df039c4177ae19c96d6d69e4935e))
+
+## [1.105.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.4...v1.105.0) (2026-10-01)
+
+
+### Features
+
+* **mcp:** surface compute_plane in getCloudflareStatus ([6c960d7](https://github.com/review-yeti-ai/review-yeti-bot/commit/6c960d701d94d83387dffa17e1c025a8913b8797))
+
+## [1.104.4](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.3...v1.104.4) (2026-10-01)
+
+
+### Bug Fixes
+
+* **mcp:** align zero-run savings and dynamic window scaling in runtime reports ([7a4c5a6](https://github.com/review-yeti-ai/review-yeti-bot/commit/7a4c5a60fafddc15a1231990a970b701f3b743d4))
+* **mcp:** clarify shadowParity dataSource in getCloudflareStatus ([40a7f99](https://github.com/review-yeti-ai/review-yeti-bot/commit/40a7f99ee0334b83f1e67417efdcaecc4ec73e55))
+
+## [1.104.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.2...v1.104.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* bound schema bootstrap and stabilize qualification fixtures ([#1232](https://github.com/review-yeti-ai/review-yeti-bot/issues/1232)) ([8b24f57](https://github.com/review-yeti-ai/review-yeti-bot/commit/8b24f57922f04822de15d4e8cf7f22ec5b94e12c))
+
+## [1.104.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.1...v1.104.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* preserve incomplete task evidence at findings stop ([#1229](https://github.com/review-yeti-ai/review-yeti-bot/issues/1229)) ([2cbb810](https://github.com/review-yeti-ai/review-yeti-bot/commit/2cbb810e070e2449a793bd405a886777af66832c))
+
+## [1.104.1](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.104.0...v1.104.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **API-3377:** retain findings on graceful composed retries ([#1227](https://github.com/review-yeti-ai/review-yeti-bot/issues/1227)) ([75c5afb](https://github.com/review-yeti-ai/review-yeti-bot/commit/75c5afb27f8590775639f2d7593bf5b4a5a9d936))
+
+## [1.104.0](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.3...v1.104.0) (2026-10-01)
+
+
+### Features
+
+* **composed:** early exit on max review findings and diff-only bypass for lockfiles ([#1221](https://github.com/review-yeti-ai/review-yeti-bot/issues/1221)) ([eeb5d81](https://github.com/review-yeti-ai/review-yeti-bot/commit/eeb5d81706a474d2f417b84b271ed69a5e80a11f))
+* **composed:** swarm subagent context isolation, findings decomposition, and early blocker exit ([#1224](https://github.com/review-yeti-ai/review-yeti-bot/issues/1224)) ([f2f8895](https://github.com/review-yeti-ai/review-yeti-bot/commit/f2f8895175280432bfc5d6d94c4307816cb111ba))
+
+## [1.103.3](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.2...v1.103.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* **ci:** preserve draft validation on ready transition ([#1218](https://github.com/review-yeti-ai/review-yeti-bot/issues/1218)) ([2da96c5](https://github.com/review-yeti-ai/review-yeti-bot/commit/2da96c531946e35adf396346f1a6b41f8194f0fb))
+
 ## [1.103.2](https://github.com/review-yeti-ai/review-yeti-bot/compare/v1.103.1...v1.103.2) (2026-10-01)
 
 

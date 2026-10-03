@@ -30,9 +30,20 @@ describe('legacy-runtime lock graph', () => {
       path.join(rootRepoDir, 'legacy-runtime/package-lock.json'),
       path.join(prefix, 'package-lock.json'),
     );
-    execFileSync('npm', ['ci', '--prefix', '.', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    const userConfig = path.join(prefix, 'test-user.npmrc');
+    const globalConfig = path.join(prefix, 'test-global.npmrc');
+    fs.writeFileSync(userConfig, '');
+    fs.writeFileSync(globalConfig, '');
+    const cleanEnv = { ...process.env };
+    delete cleanEnv.npm_config_allow_scripts;
+    delete cleanEnv.NPM_CONFIG_ALLOW_SCRIPTS;
+    delete cleanEnv.npm_config_allow_scripts_pin;
+    delete cleanEnv.NPM_CONFIG_ALLOW_SCRIPTS_PIN;
+    execFileSync('npm', ['ci', '--prefix', '.', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
+      `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`], {
       cwd: prefix,
       stdio: 'pipe',
+      env: cleanEnv,
     });
     // cwd is the lock directory; --prefix . avoids npm 11 treating the folder name as a package.
     execFileSync('node', [path.join(rootRepoDir, 'scripts/verify-legacy-runtime-graph.mjs'), prefix], {

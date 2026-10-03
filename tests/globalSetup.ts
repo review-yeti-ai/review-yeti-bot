@@ -47,7 +47,7 @@ export default function setup(project: TestProject) {
   // before retiring collection-only leftovers. Identity/unknown errors do not
   // retry or become deletion authority. Watch roots live until the run closes.
   project.vitest.onClose(async () => {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + 30_000;
     while (!cleaned) {
       try { teardown(); }
       catch (error) {

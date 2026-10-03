@@ -1,7 +1,21 @@
 export type LiveStreamEventType =
+  | 'connection:open'
+  | 'task:plan'
+  | 'task:progress'
+  | 'task:complete'
+  | 'context:compaction'
+  | 'finding:anchored'
+  | 'ping'
+  | 'log:chunk'
   | 'persona:start'
   | 'persona:chunk'
+  | 'persona:reasoning'
+  | 'reasoning:chunk'
+  | 'persona:finding'
   | 'persona:complete'
+  | 'tool:start'
+  | 'tool:result'
+  | 'tool:error'
   | 'llm:prompt'
   | 'llm:token'
   | 'llm:error'
@@ -12,6 +26,10 @@ export type LiveStreamEventType =
   | 'job:queued'
   | 'job:dispatched'
   | 'job:complete'
+  | 'stage:transition'
+  | 'turn:step'
+  | 'token:update'
+  | 'token:metrics'
   // Legacy event type shims
   | 'agent_start'
   | 'llm_chunk'
@@ -35,6 +53,15 @@ export type LiveStreamPersona =
   | 'compliance'
   | 'quorum'
   | string;
+
+export type TaskDimension =
+  | 'security'
+  | 'performance'
+  | 'architecture'
+  | 'testing'
+  | 'dependencies'
+  | 'contract'
+  | 'licensing';
 
 /**
  * The bus-side persona/token shapes. REL-573: these previously lived in `src/live/liveStreamBus.ts`
@@ -60,6 +87,45 @@ export interface TokenMetrics {
   completionTokens: number;
   totalTokens: number;
   estimatedCostUSD?: number;
+}
+
+export interface ReasoningChunkPayload {
+  jobId: string;
+  personaId: string;
+  reasoning: string;
+  turn?: number;
+  accumulatedLength?: number;
+  timestamp: string;
+}
+
+export interface ToolExecutionPayload {
+  jobId: string;
+  personaId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  output?: string;
+  outputLength?: number;
+  error?: string;
+  scope?: string;
+  isExhaustive?: boolean;
+  durationMs?: number;
+  turn?: number;
+  timestamp: string;
+}
+
+export interface LiveFindingPayload {
+  jobId: string;
+  personaId: string;
+  findingId: string;
+  severity: 'P0' | 'P1' | 'P2';
+  path: string;
+  line: number;
+  startLine?: number;
+  title: string;
+  description: string;
+  suggestion?: string;
+  replacementCode?: string;
+  timestamp: string;
 }
 
 export interface LiveStreamEventData {
@@ -104,6 +170,25 @@ export interface LiveStreamEventData {
   path?: string;
   isError?: boolean;
   stream?: 'stdout' | 'stderr';
+  reasoning?: string;
+  tool?: string;
+  toolName?: string;
+  args?: Record<string, unknown> | any;
+  output?: string;
+  outputLength?: number;
+  error?: string;
+  scope?: string;
+  isExhaustive?: boolean;
+  findingId?: string;
+  finding?: any;
+  turn?: number;
+  severity?: 'P0' | 'P1' | 'P2' | string;
+  line?: number;
+  startLine?: number;
+  title?: string;
+  description?: string;
+  suggestion?: string;
+  replacementCode?: string;
   [key: string]: any;
 }
 
@@ -216,3 +301,40 @@ export interface LiveDashboardState {
   tokenHistory: TokenMetricHistoryPoint[];
   activeJobs: LiveJobSummary[];
 }
+
+export type ReviewStage =
+  | 'admission'
+  | 'compaction'
+  | 'planning'
+  | 'execution'
+  | 'arbitration'
+  | 'publication'
+  | 'complete';
+
+export interface StageState {
+  stage: ReviewStage;
+  label: string;
+  description: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  progress: number;
+  startedAt?: string;
+  completedAt?: string;
+  durationMs?: number;
+}
+
+export interface TurnStepRecord {
+  id: string;
+  jobId: string;
+  personaId: string;
+  taskId?: string;
+  turn: number;
+  maxTurns: number;
+  action: 'planning' | 'tool_call' | 'reasoning' | 'finding_formulation' | 'finalization' | string;
+  tool?: string;
+  input?: any;
+  output?: any;
+  tokensBurned?: number;
+  latencyMs?: number;
+  timestamp: string;
+}
+

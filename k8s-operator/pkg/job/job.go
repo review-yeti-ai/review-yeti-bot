@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -253,6 +253,8 @@ type PublishingConfig struct {
 	// verbatim as JevShadowEnv when non-empty.
 	JevSecretName string
 	JevShadow     string
+	// Independent, observational deletion-evidence question allowlist.
+	JevEvidence string
 	// REL-1079: deterministic diff shrinking. Forwarded verbatim as
 	// DiffShrinkEnv when non-empty; the worker owns its interpretation (a
 	// comma-separated owner/repo allowlist, or an on/off switch). Empty keeps
@@ -398,6 +400,7 @@ const DiffShrinkEnv = "REVIEW_YETI_DIFF_SHRINK"
 // (REL-1081). The operator forwards the deployment value verbatim; the worker
 // owns its interpretation.
 const JevShadowEnv = "REVIEW_YETI_JEV_SHADOW"
+const JevEvidenceEnv = "REVIEW_YETI_JEV_EVIDENCE"
 
 // JevTransportEnvKeys are the worker's Jev transport variables
 // (src/review/jevTransport.ts). The worker treats all-absent as "Jev disabled"
@@ -661,6 +664,9 @@ func BuildWorkerJob(input Input) (*batchv1.Job, error) {
 		env = append(env, jevTransportEnv(input.Publishing.JevSecretName)...)
 		if input.Publishing.JevShadow != "" {
 			env = append(env, corev1.EnvVar{Name: JevShadowEnv, Value: input.Publishing.JevShadow})
+		}
+		if input.Publishing.JevEvidence != "" {
+			env = append(env, corev1.EnvVar{Name: JevEvidenceEnv, Value: input.Publishing.JevEvidence})
 		}
 		if input.Publishing.DiffShrink != "" {
 			env = append(env, corev1.EnvVar{Name: DiffShrinkEnv, Value: input.Publishing.DiffShrink})
@@ -1068,6 +1074,9 @@ func validatePublishing(config PublishingConfig) error {
 	}
 	if strings.ContainsAny(config.JevShadow, "\r\n\t ") {
 		return configErr("jev shadow flag contains whitespace")
+	}
+	if strings.ContainsAny(config.JevEvidence, "\r\n\t ") {
+		return configErr("jev evidence flag contains whitespace")
 	}
 	// The worker accepts a comma- OR space-separated allowlist, so spaces are
 	// legitimate here (unlike the on/off Jev flag); only a line break, which

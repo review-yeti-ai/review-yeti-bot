@@ -15,10 +15,12 @@ import { computeFindingsDelta } from './kpiCalculator';
 export class SessionRepository {
   private baseDir: string;
   private store: any;
+  private useStoreFallback: boolean;
 
   constructor(baseDir?: string, store?: any) {
     this.baseDir = baseDir || path.join(process.cwd(), 'sessions');
     this.store = store || dashboardStore;
+    this.useStoreFallback = baseDir === undefined || store !== undefined;
   }
 
   public getAllSessions(): SessionRecord[] {
@@ -28,7 +30,7 @@ export class SessionRepository {
   public getSessions(filter?: SessionFilterOptions): SessionRecord[] {
     let sessions = this.loadDiskSessions();
 
-    if (sessions.length === 0) {
+    if (sessions.length === 0 && this.useStoreFallback) {
       sessions = this.loadFallbackSessions();
     }
 

@@ -30,7 +30,7 @@ export interface CancellationSweepFailure {
  * field was pruned, and marking it propagated would stop every retry.
  */
 function cancellationLanded(result: CancellationPatchResult | undefined): boolean {
-  if (result?.status === 'not-found' || result?.status === 'already-cancelled') return true;
+  if (result?.status === 'not-found' || result?.status === 'already-cancelled' || result?.status === 'already-terminal') return true;
   return result?.status === 'patched' && result.cancelRequested === true;
 }
 

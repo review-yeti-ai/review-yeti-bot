@@ -19,6 +19,7 @@
  * not exist anywhere" -- that is the documented root cause of a real false-positive class in this
  * system.
  */
+import { readEvidencePage } from './evidencePages';
 import { mcpFleetManager } from '../mcp/mcpFleetManager';
 import { ASTParser } from '../indexer/astParser';
 import {
@@ -36,6 +37,7 @@ import { createPathMatcher, isGlobQuery, normalizeRepoPath } from './pathMatch';
 /** Read-only inputs a tool call may need. Mirrors the subset of `invoke()`'s options the original block closed over. */
 export interface ToolRuntimeContext {
   changedFiles: any[];
+  originalChangedFiles?: any[];
   repoFileProvider?: RepoFileProvider;
   zoektConfig?: any;
   signal?: AbortSignal;
@@ -117,6 +119,27 @@ export async function runReadOnlyTool(
   args: any,
   context: ToolRuntimeContext,
 ): Promise<ToolRuntimeResult> {
+  if (toolName === 'deletion_manifest' || toolName === 'deletion_evidence') {
+    const scope = 'pinned-deletion-evidence';
+    const response = (value: unknown) => ({ toolOutput: JSON.stringify(value), toolScope: scope, isExhaustive: false });
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return response({ status: 'invalid' });
+    throwIfPanelAborted(context.signal);
+    if (toolName === 'deletion_manifest') {
+      if (Object.keys(args).some((key) => !['offset', 'limit', 'digest'].includes(key))
+        || (args.digest !== undefined && (typeof args.digest !== 'string' || !/^[0-9a-f]{64}$/u.test(args.digest)))
+        || (args.offset > 0 && args.digest === undefined)
+        || (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 0))
+        || (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 24))) return response({ status: 'invalid' });
+      return response(context.repoFileProvider?.deletionManifest?.(args.offset ?? 0, args.limit ?? 24, args.digest) ?? { status: 'unavailable' });
+    }
+    if (Object.keys(args).some((key) => key !== 'path') || typeof args.path !== 'string'
+      || !args.path.trim() || args.path.length > 4096 || args.path.includes('\0') || args.path.split(/[\\/]/u).includes('..')) return response({ status: 'invalid' });
+    if (!context.repoFileProvider?.deletionEvidence) return response({ status: 'unavailable' });
+    const packet = await raceWithPanelAbort(context.repoFileProvider.deletionEvidence(normalizeRepoPath(args.path)), context.signal);
+    throwIfPanelAborted(context.signal);
+    return response(packet);
+  }
+  if (toolName === 'read_file_page' || toolName === 'get_diff_page') return readEvidencePage(toolName, args, context);
   if (toolName === 'read_files') return readFiles(args, context);
   const toolCall = { tool: toolName, args };
   const options = context;
@@ -158,7 +181,9 @@ export async function runReadOnlyTool(
 
   if (['ct_impact', 'ct_mesh_query', 'ct_mesh_stats'].includes(tName)) {
     toolScope = 'cross-repository-ast-mesh';
-    isExhaustive = true;
+    // A mesh hit can guide investigation; its revision, languages and filters
+    // do not establish complete cross-repository consumer coverage.
+    isExhaustive = false;
   } else if (['knowledge_search', 'knowledge_get'].includes(tName)) {
     toolScope = 'governed-knowledge-adr';
     isExhaustive = true;
@@ -264,6 +289,7 @@ export async function runReadOnlyTool(
             const sliced = sliceLines(raw);
             const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
             const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+
             const prefixNote = sliced.sliced
               ? `${tName === 'get_diff' ? 'Patch lines' : 'Lines'} ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
               : '';
@@ -288,6 +314,7 @@ export async function runReadOnlyTool(
             const sliced = sliceLines(content);
             const truncated = sliced.content.length > REPO_READ_FILE_MAX_CHARS;
             const shown = truncated ? sliced.content.slice(0, REPO_READ_FILE_MAX_CHARS) : sliced.content;
+            if (truncated) isExhaustive = false;
             const prefixNote = sliced.sliced
               ? `Lines ${sliced.start}-${sliced.end} of ${sliced.total} for '${targetPath}':\n`
               : '';
@@ -341,32 +368,36 @@ export async function runReadOnlyTool(
       if (options?.repoFileProvider) {
         try {
           const found = await raceWithPanelAbort(options.repoFileProvider.findFiles(searchQ), options?.signal);
-          const repoHits: string[] = Array.isArray(found) ? found : [];
+          const repoHits: string[] = Array.isArray(found) ? [...new Set(found)] : [];
           const truncated = await raceWithPanelAbort(options.repoFileProvider.treeTruncated?.() ?? Promise.resolve(false), options?.signal);
-          // Diff paths first (the PR's own files), then the rest of the tree. A path deleted by
-          // the PR is in the diff but not in the tree at head, so it stays in the list.
-          const all = [...new Set([...diffHits, ...repoHits])];
+          // Deleted PR paths remain useful diff evidence, but are not files at
+          // head. Keep them separate from the pinned tree's existence claims.
+          const headPaths = new Set(repoHits);
+          const diffOnly = [...new Set(diffHits)].filter((path) => !headPaths.has(path));
           toolScope = 'full-repository';
           isExhaustive = !truncated;
           const truncNote = ' The repository tree was TRUNCATED by GitHub (very large repository), so this list may be incomplete.';
-          if (all.length > 0) {
-            toolOutput += `Found ${all.length} path(s) matching '${searchQ}' (${how} match, full-repository tree at the reviewed head, not just the diff): ${listHits(all)}`
+          if (repoHits.length > 0) {
+            toolOutput += `Found ${repoHits.length} path(s) matching '${searchQ}' (${how} match, full-repository tree at the reviewed head, not just the diff): ${listHits(repoHits)}`
               + (truncated ? truncNote : '');
           } else if (truncated) {
-            toolOutput += `No files matching '${searchQ}' (${how} match) in the diff, and none in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
+            toolOutput += `No files matching '${searchQ}' (${how} match) in the PORTION of the repository tree the API returned -- the tree was truncated by GitHub, so the file may still exist. Do not report it as missing on this basis; read_file on the exact path is conclusive.`;
           } else {
             toolOutput += `No files matching '${searchQ}' (${how} match) found anywhere in the repository at the reviewed head (full-repository search, not just the diff).`;
           }
+          if (diffOnly.length > 0) {
+            toolOutput += `\nMatching paths in the PR diff, ${truncated ? 'presence at the reviewed head unconfirmed' : 'absent from the reviewed head tree'}: ${listHits(diffOnly)}. These are diff paths, not verified existing head files; use get_diff or read_file_page with side=merge-base to inspect removed source.`;
+          }
         } catch (err: any) {
-          toolScope = 'full-repository';
+          toolScope = 'changed-patches-only';
           isExhaustive = false;
           toolOutput += `Full-repository file search for '${searchQ}' failed (${err?.message || String(err)}). This is a lookup failure, not confirmation the file is missing -- do not report it as absent or as verified on this basis.`
-            + (diffHits.length > 0 ? ` Matching files in the diff: ${listHits(diffHits)}` : '');
+            + (diffHits.length > 0 ? ` Matching files in the diff: ${listHits(diffHits)}. Current-head presence of these diff paths is unconfirmed.` : '');
         }
       } else if (diffHits.length > 0) {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
-        toolOutput += `Files found in diff: ${listHits(diffHits)} (${how} match; changed files only, so other matching files may still exist elsewhere in the repository)`;
+        toolOutput += `Files found in diff: ${listHits(diffHits)} (${how} match; changed files only, so other matching files may still exist elsewhere in the repository). Current-head presence of these diff paths is unconfirmed.`;
       } else {
         toolScope = 'changed-patches-only';
         isExhaustive = false;
@@ -394,10 +425,13 @@ export async function runReadOnlyTool(
       try {
         const zoektTool = require('../mcp/zoektSearchTool');
         const zoektRes: any = await raceWithPanelAbort(
-          zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig),
+          zoektTool.executeZoektSearch({ query: searchQ }, (options as any)?.zoektConfig, { signal: options?.signal, session: options?.zoektConfig?.searchSession }),
           options?.signal,
         );
-        isExhaustive = zoektRes.status === 'ok';
+        // This is a wire-envelope guard, not the index completeness policy:
+        // reject a contradictory receipt even if its producer says exhaustive.
+        // Index exclusions and revision checks remain owned by the search tool.
+        isExhaustive = zoektRes.status === 'ok' && zoektRes.exhaustive === true && zoektRes.truncated !== true;
         toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: ${isExhaustive}]\n${JSON.stringify(zoektRes, null, 2)}`;
       } catch (err: any) {
         toolOutput += `[SCOPE: full-repository-zoekt | EXHAUSTIVE: false | STATUS: unavailable]\nZoekt search unavailable: ${err?.message || String(err)}`;

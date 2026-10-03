@@ -437,6 +437,67 @@ describe('incomplete P2 recovery context', () => {
     }]);
   });
 
+  it('reads historical P2-inclusive counts without rewriting original evidence', async () => {
+    const fixture = queryableForIncompletePrior();
+    fixture.sourceRows[0].payload.result.blockingFindingCount = 3;
+    const originalDigest = resealCompletion(fixture);
+    const proof = recoveryEvidence(fixture.externalId, {
+      workerSummary: workerSummary().replace('blocking P0/P1: 0', 'blocking P0/P1/P2: 3'),
+    });
+    const originalRows = JSON.stringify(fixture.sourceRows);
+    const originalProof = JSON.stringify(proof);
+    const context = await loadFixture(fixture, { recoveryEvidence: proof });
+    expect(context?.findings).toHaveLength(3);
+    expect(context?.sources[0].workerResultDigest).toBe(originalDigest);
+    expect(JSON.stringify(fixture.sourceRows)).toBe(originalRows);
+    expect(JSON.stringify(proof)).toBe(originalProof);
+  });
+
+  it.each(['summary count', 'stored count', 'payload digest', 'Gate digest', 'Gate evidence'])
+    ('rejects historical P2-inclusive evidence with a mismatched %s', async (mismatch) => {
+      const fixture = queryableForIncompletePrior();
+      fixture.sourceRows[0].payload.result.blockingFindingCount = 3;
+      resealCompletion(fixture);
+      const proof = recoveryEvidence(fixture.externalId, {
+        workerSummary: workerSummary().replace('blocking P0/P1: 0', 'blocking P0/P1/P2: 3'),
+      });
+      if (mismatch === 'summary count') {
+        proof[0].legacyIncompleteRoster!.workerSummary =
+          proof[0].legacyIncompleteRoster!.workerSummary.replace('P0/P1/P2: 3', 'P0/P1/P2: 2');
+      } else if (mismatch === 'stored count') {
+        fixture.sourceRows[0].payload.result.blockingFindingCount = 0;
+        resealCompletion(fixture);
+      } else if (mismatch === 'payload digest') {
+        fixture.sourceRows[0].payload.result.personas[0].findings[0].body = 'Tampered archive';
+      } else if (mismatch === 'Gate digest') {
+        fixture.sourceRows[0].gate_worker_result_digest = 'f'.repeat(64);
+      } else {
+        fixture.sourceRows[0].gate_evidence.p1Count = 1;
+      }
+      await expect(loadFixture(fixture, { recoveryEvidence: proof })).rejects.toThrow();
+    });
+
+  it.each([3, 0, 2])
+    ('authenticates historical declared count %s without an optional stored count', async (declaredCount) => {
+      const fixture = queryableForIncompletePrior();
+      Reflect.deleteProperty(fixture.sourceRows[0].payload.result, 'blockingFindingCount');
+      const originalDigest = resealCompletion(fixture);
+      const proof = recoveryEvidence(fixture.externalId, {
+        workerSummary: workerSummary().replace('blocking P0/P1: 0', `blocking P0/P1/P2: ${declaredCount}`),
+      });
+      const originalRows = JSON.stringify(fixture.sourceRows);
+      const originalProof = JSON.stringify(proof);
+      if (declaredCount === 3) {
+        const context = await loadFixture(fixture, { recoveryEvidence: proof });
+        expect(context?.findings).toHaveLength(3);
+        expect(context?.sources[0].workerResultDigest).toBe(originalDigest);
+      } else {
+        await expect(loadFixture(fixture, { recoveryEvidence: proof })).rejects.toThrow();
+      }
+      expect(JSON.stringify(fixture.sourceRows)).toBe(originalRows);
+      expect(JSON.stringify(proof)).toBe(originalProof);
+    });
+
   it('refuses a completion whose payload no longer matches its immutable digest', async () => {
     const fixture = queryableForIncompletePrior();
     const completion = (fixture.sourceRows[0] as any).payload;

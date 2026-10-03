@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   compactMessageWindow,
   DEFAULT_ACTIVE_TURNS,
+  SMALL_TOOL_RESULT_MAX_BYTES,
+  RETAINED_TOOL_RESULTS_MAX_BYTES,
   PI_TOOL_RESULT_MARKER,
   MessageWindowToolCall,
 } from '../../src/panel/messageWindow';
@@ -208,5 +210,37 @@ describe('compactMessageWindow', () => {
       expect(m.role).toBe(snapshot[i].role);
       expect(m.content).toEqual(snapshot[i].content);
     });
+  });
+});
+
+
+describe('bounded retention of inspected source', () => {
+  it('retains a tiny pin file byte-for-byte after later tool turns while compacting large reads', () => {
+    const tiny = toolResultMessage('worker: ghcr.io/acme/worker@sha256:' + 'a'.repeat(64));
+    const large = toolResultMessage('z'.repeat(SMALL_TOOL_RESULT_MAX_BYTES));
+    const later = buildToolTurns(3, 30);
+    const full = [systemMessage(), openingUserMessage(), assistantToolRequest(0), tiny,
+      assistantToolRequest(1), large, ...later.messages];
+    const result = compactMessageWindow(full, { retainSmallToolResults: true, toolCalls: [
+      { tool: 'read_file', scope: 'full-repository', exhaustive: true },
+      { tool: 'read_file', scope: 'changed-patches-only', exhaustive: false }, ...later.toolCalls,
+    ] });
+    expect(result[3]).toBe(tiny);
+    expect(result[5].content).toContain('scope=changed-patches-only exhaustive=false');
+    expect(result[5].content).not.toContain('z'.repeat(100));
+    expect(full[5]).toBe(large);
+  });
+
+  it('bounds older retained bytes and deterministically retains the newest small results', () => {
+    const turns = buildToolTurns(12, 12 * 1024);
+    const full = [systemMessage(), openingUserMessage(), ...turns.messages];
+    const policy = { activeTurns: 0, retainSmallToolResults: true, toolCalls: turns.toolCalls };
+    const result = compactMessageWindow(full, policy);
+    const retained = result.filter((message) => turns.messages.includes(message) && message.role === 'user');
+    const bytes = retained.reduce((total, message) => total + Buffer.byteLength(message.content as string), 0);
+    expect(bytes).toBeLessThanOrEqual(RETAINED_TOOL_RESULTS_MAX_BYTES);
+    expect(retained).toHaveLength(5);
+    expect(retained).toEqual(turns.messages.filter((message) => message.role === 'user').slice(-5));
+    expect(compactMessageWindow(full, policy)).toEqual(result);
   });
 });

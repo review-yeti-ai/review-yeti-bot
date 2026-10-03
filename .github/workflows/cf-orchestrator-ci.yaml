@@ -1,0 +1,108 @@
+name: Cloudflare Orchestrator CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cf-orchestrator/**"
+      - "src/**"
+      - ".github/workflows/cf-orchestrator-ci.yaml"
+  pull_request:
+    paths:
+      - "cf-orchestrator/**"
+      - "src/**"
+      - ".github/workflows/cf-orchestrator-ci.yaml"
+
+concurrency:
+  group: cf-orchestrator-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+jobs:
+  verify-orchestrator:
+    name: Build, Test & Parity Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cf-orchestrator/package-lock.json
+
+      - name: Install dependencies
+        working-directory: cf-orchestrator
+        run: npm ci
+
+      - name: Compile TypeScript
+        working-directory: cf-orchestrator
+        run: npm run build
+
+      - name: Run Complete Test Suite (Unit, Contract & Adversarial)
+        working-directory: cf-orchestrator
+        run: npm test
+
+      - name: Run End-to-End Integration Suite
+        working-directory: cf-orchestrator
+        run: npm run test:e2e
+
+      - name: Verify Parity Comparison CLI Tool
+        working-directory: cf-orchestrator
+        run: |
+          node scripts/ci/compare-orchestrator-runs.js --help
+
+  deploy-orchestrator:
+    name: Deploy to Cloudflare Edge
+    needs: verify-orchestrator
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Build Next.js Frontend Static Assets
+        run: npm run build:frontend
+
+      - name: Install cf-orchestrator dependencies & compile
+        working-directory: cf-orchestrator
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy to Cloudflare Edge
+        uses: cloudflare/wrangler-action@v3
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          ALLOWED_ORIGINS: ${{ vars.CF_ALLOWED_ORIGINS }}
+          DOKS_FALLBACK_URL: ${{ vars.DOKS_FALLBACK_URL }}
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: 'cf-orchestrator'
+          # The public hostname, the browser origins and the DOKS fallback URL are deployment configuration kept in
+          # repository variables (CF_CUSTOM_DOMAIN, CF_ALLOWED_ORIGINS, DOKS_FALLBACK_URL), not in this repository.
+          vars: |
+            ALLOWED_ORIGINS
+            DOKS_FALLBACK_URL
+          command: deploy ${{ vars.CF_CUSTOM_DOMAIN != '' && format('--domain {0}', vars.CF_CUSTOM_DOMAIN) || '' }}

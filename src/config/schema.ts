@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+  HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS,
+} from '../pipeline/hunkFilter';
 
 export const MAX_FILE_SIZE_DEFAULT = 1_048_576;
 
@@ -341,6 +345,71 @@ export const enforcementPolicySchema = z.object({
   failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).default('fail_closed'),
   require_ticket_link: z.boolean().default(false),
 }).passthrough().default({});
+export type EnforcementPolicyConfig = z.infer<typeof enforcementPolicySchema>;
+
+export const repositoryReviewRulesSchema = z.object({
+  reviews: reviewsSchema.default({}),
+  auto_review: autoReviewSchema.default({}),
+  enforcement_policy: enforcementPolicySchema.default({}),
+}).passthrough();
+
+export type RepositoryReviewRules = z.infer<typeof repositoryReviewRulesSchema>;
+
+export const reviewsUpdateSchema = z.object({
+  profile: z.enum(['chill', 'balanced', 'assertive']).optional(),
+  reviewer_effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  default_max_turns: z.number().int().min(1).max(20).optional(),
+  confidence_threshold: z.number().min(0).max(100).optional(),
+  mascot: z.boolean().optional(),
+  ticket_enforcement: z.boolean().optional(),
+  request_changes_workflow: z.boolean().optional(),
+  high_level_summary: z.boolean().optional(),
+  poem: z.boolean().optional(),
+  review_status: z.boolean().optional(),
+  collapse_walkthrough: z.boolean().optional(),
+  auto_title_instructions: z.string().optional(),
+  sequence_diagrams: z.boolean().optional(),
+  path_instructions: z.array(z.object({
+    path: z.string(),
+    instructions: z.string(),
+  })).optional(),
+}).passthrough();
+
+export const autoReviewUpdateSchema = z.object({
+  enabled: z.boolean().optional(),
+  ignore_drafts: z.boolean().optional(),
+  review_drafts: z.boolean().optional(),
+  triggers: z.array(z.string()).optional(),
+  labels: z.array(z.string()).optional(),
+  ignore_patterns: z.array(z.string()).optional(),
+  drafts: z.boolean().optional(),
+}).passthrough();
+
+export const enforcementPolicyUpdateSchema = z.object({
+  require_all_reviews: z.boolean().optional(),
+  failure_action: z.enum(['fail_closed', 'fail_open', 'quarantine']).optional(),
+  require_ticket_link: z.boolean().optional(),
+}).passthrough();
+
+export const updateRepositoryReviewRulesSchema = z.preprocess((val: any) => {
+  if (val && typeof val === 'object' && !Array.isArray(val)) {
+    const copy = { ...val };
+    if (copy.autoReview && !copy.auto_review) {
+      copy.auto_review = copy.autoReview;
+    }
+    if (copy.enforcementPolicy && !copy.enforcement_policy) {
+      copy.enforcement_policy = copy.enforcementPolicy;
+    }
+    return copy;
+  }
+  return val;
+}, z.object({
+  reviews: reviewsUpdateSchema.optional(),
+  auto_review: autoReviewUpdateSchema.optional(),
+  enforcement_policy: enforcementPolicyUpdateSchema.optional(),
+}).passthrough());
+
+export type UpdateRepositoryReviewRules = z.infer<typeof updateRepositoryReviewRulesSchema>;
 
 export const dialsSchema = z.object({
   memory_engine: z.boolean().default(true),
@@ -523,8 +592,8 @@ export type ReviewEngineName = z.infer<typeof reviewEngineSchema>;
  * Policy-authored bounds for the composed engine (`src/panel/composedEngine.ts`). Every field is
  * optional and, when present, only ever narrows the engine's own hard-coded defaults/caps
  * (`DEFAULT_MAX_TASKS`, `COMPOSED_ENGINE_DEFAULT_MAX_TOTAL_TURNS`, `COMPOSED_TASK_MAX_TURNS`) --
- * policy can lower these, never raise them. `max_tasks` and `max_turns_total` are wired into
- * `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
+ * policy can lower these, never raise them. `max_tasks`, `max_turns_total`, and `max_findings_total`
+ * are wired into `composedEngine.ts`, and `max_turns_per_task` clamps each task's own turn budget.
  *
  * `task_dimensions` is projected and validated for forward-compatible policy authoring but is not
  * yet consumed -- the plan turn still seeds from the engine's own `TASK_DIMENSIONS`. Stated here
@@ -542,6 +611,7 @@ export const composedEngineConfigSchema = z.object({
   max_tasks: z.number().int().positive().max(64).optional(),
   max_turns_total: z.number().int().positive().max(200).optional(),
   max_turns_per_task: z.number().int().positive().max(50).optional(),
+  max_findings_total: z.number().int().positive().max(500).optional(),
   task_dimensions: z.array(z.string().min(1)).min(1).optional(),
 }).strict();
 export type ComposedEngineConfig = z.infer<typeof composedEngineConfigSchema>;
@@ -564,6 +634,11 @@ const ctReviewConfigV3ObjectSchema = z.object({
   turn_window_compaction: z.boolean().optional(),
   max_file_size: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
   max_file_bytes: z.number().int().positive().default(MAX_FILE_SIZE_DEFAULT).optional(),
+  /** Full raw lockfile patch bound; larger lockfiles use the verified summary path or fail closed. */
+  max_reviewed_lockfile_patch_chars: z.number().int()
+    .min(DEFAULT_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
+    .max(HARD_MAX_REVIEWED_LOCKFILE_PATCH_CHARS)
+    .optional(),
 
   // CodeRabbit-mirrored top-level sections
   reviews: reviewsSchema,

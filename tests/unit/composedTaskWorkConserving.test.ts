@@ -121,7 +121,7 @@ afterEach(() => {
 });
 
 describe('work-conserving composed task scheduling', () => {
-  it('dispatches a later task as soon as a slot frees, while retaining plan-order context and results', async () => {
+  it('dispatches later tasks as slots free while preserving isolated context and plan-order results', async () => {
     const taskOneGate = deferred<void>();
     const taskThreeGate = deferred<void>();
     const taskFourGate = deferred<void>();
@@ -143,20 +143,44 @@ describe('work-conserving composed task scheduling', () => {
 
     const run = runReview(5, 100, complete);
     await waitForStarted(taskThreeStarted.promise);
-    // Task 2 settles, freeing one concurrency slot while tasks 1 and 3 remain active.
+    // Task 2 settles, freeing a slot while tasks 1 and 3 remain active. Task 4 gets its own
+    // scoped branch, without raw completion receipts from task 2 or a summary outside the
+    // contiguous settled prefix.
     await waitForStarted(taskFourStarted.promise);
-    expect(await taskFourPrompt.promise).not.toContain('[TASK task-2 COMPLETE');
+    const taskFourContext = await taskFourPrompt.promise;
+    expect(taskFourContext.split('\n').filter((line) => /^- Task task-\d+ \(/u.test(line))).toEqual([]);
+    expect(taskFourContext).not.toContain('[TASK task-2 COMPLETE');
+    expect(taskFourContext).not.toContain('Task task-2 (architecture, paths [src/app.ts])');
+    expect(taskFourContext).not.toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS');
+    expect(taskFourContext).toContain('Task id: task-4');
+    expect(taskFourContext).toContain('Question: Review change 4.');
+    expect(taskFourContext).toContain('+export const value = 2;');
     expect(taskThreeGate.promise).toBeDefined();
 
-    // Once task 1 settles, the contiguous receipt prefix includes tasks 1 and 2. Task 3 is
-    // still pending, so task 4's already-running result cannot leak ahead of it into task 5.
+    // Once task 1 settles, the plan-ordered summary includes tasks 1 and 2. Task 3 is still
+    // pending and task 4 remains blocked, so neither later task appears in task 5's context.
     taskOneGate.resolve();
     await waitForStarted(taskFiveStarted.promise);
     const taskFiveContext = await taskFivePrompt.promise;
-    expect(taskFiveContext).toContain('[TASK task-1 COMPLETE');
-    expect(taskFiveContext).toContain('[TASK task-2 COMPLETE');
-    expect(taskFiveContext).not.toContain('[TASK task-3 COMPLETE');
-    expect(taskFiveContext).not.toContain('[TASK task-4 COMPLETE');
+    expect(taskFiveContext).toContain('=== WORK CONTEXT: ASSIGNED TASK (1 path(s)); see the task directive for exact obligations ===');
+    expect(taskFiveContext).toContain('=== TASK-ASSIGNED CHANGED FILES INDEX (1 file(s)) ===');
+    expect(taskFiveContext).not.toContain('=== PR CHANGED FILES & DIFF SCOPE');
+    expect(taskFiveContext).toContain('+export const value = 2;');
+    expect(taskFiveContext).toContain('=== SWARM CONTEXT: PRIOR SETTLED TASKS (2 completed) ===');
+    expect(taskFiveContext).toContain('- Task task-1 (architecture, paths [src/app.ts]): CLEAN (0 findings)');
+    expect(taskFiveContext).toContain('- Task task-2 (architecture, paths [src/app.ts]): CLEAN (0 findings)');
+    expect(taskFiveContext.split('\n').filter((line) => /^- Task task-\d+ \(/u.test(line))).toEqual([
+      '- Task task-1 (architecture, paths [src/app.ts]): CLEAN (0 findings)',
+      '- Task task-2 (architecture, paths [src/app.ts]): CLEAN (0 findings)',
+    ]);
+    for (let taskNumber = 1; taskNumber < 5; taskNumber += 1) {
+      expect(taskFiveContext).not.toContain(`[TASK task-${taskNumber} COMPLETE`);
+    }
+    expect(taskFiveContext).not.toContain('Task task-3 (architecture, paths [src/app.ts])');
+    expect(taskFiveContext).not.toContain('Task task-4 (architecture, paths [src/app.ts])');
+    expect(taskFiveContext).toContain('=== WORK TURN: TASK 5 OF 5 ===');
+    expect(taskFiveContext).toContain('Task id: task-5');
+    expect(taskFiveContext).toContain('Question: Review change 5.');
 
     taskFourGate.resolve();
     taskThreeGate.resolve();

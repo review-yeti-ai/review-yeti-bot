@@ -1,10 +1,10 @@
 --- FILE: lib/exampleorg/accounts/user_context.ex ---
 diff --git a/lib/exampleorg/accounts/user_context.ex b/lib/exampleorg/accounts/user_context.ex
 @@ -1,6 +1,17 @@
- defmodule exampleorg.Accounts.UserContext do
+ defmodule Exampleorg.Accounts.UserContext do
    import Ecto.Query, warn: false
-   alias exampleorg.Repo
-   alias exampleorg.Accounts.User
+   alias Exampleorg.Repo
+   alias Exampleorg.Accounts.User
  
 +  @doc """
 +  Fetches a user by ID without scoping to the current organization.

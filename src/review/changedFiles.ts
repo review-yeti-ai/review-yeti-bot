@@ -11,7 +11,7 @@
  * and any finding on it was discarded during arbitration. example-api has eight
  * such paths today.
  */
-function unquoteGitPath(raw: string): string {
+export function unquoteGitPath(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed.startsWith('"') || !trimmed.endsWith('"') || trimmed.length < 2) return trimmed;
   const inner = trimmed.slice(1, -1);

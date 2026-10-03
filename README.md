@@ -14,6 +14,7 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 > [!TIP]
 > 🚀 **Explore Pre-Built Resources**:
 > - **[Official Helm 3 Chart](charts/review-yeti/)** & **[Helm Operations Guide](docs/HELM_GUIDE.md)** for production Kubernetes clusters.
+> - **[Cloudflare Portal Setup Guide](docs/CLOUDFLARE_PORTAL_SETUP.md)** to deploy the management and analytics portal to Cloudflare.
 > - **[Examples Gallery](examples/)** featuring 6 production workflows, 4 configuration profiles, and custom persona charters.
 > - **[Production Troubleshooting Guide](docs/TROUBLESHOOTING.md)** for triage and incident resolution.
 
@@ -21,6 +22,7 @@ Review Yeti convenes a panel of specialized AI reviewers—each with a dedicated
 
 ## ✨ Features at a Glance
 
+- 🖥️ **Interactive Web Portal & Analytics Dashboard**: Modern web interface featuring Live Review Inspector with real-time SSE reasoning traces, Executive & Engineering spend analytics, GitHub OAuth repository management, and Human-in-the-Loop verdict overrides ([Cloudflare Guide](docs/CLOUDFLARE_PORTAL_SETUP.md)).
 - 👥 **Multi-Persona Review Panel**: Dedicated reviewers for Security & Tenancy, System Architecture, Performance, QA & Testing, and Dependency Safety.
 - 🔍 **Deterministic Pre-Check Engine**:
   - **Zoekt Cross-File Symbol Discovery**: Deterministically queries code symbols across repository indexes to discover call sites, definitions, and types before persona evaluation turns.
@@ -75,6 +77,28 @@ graph TD
     Fix --> Output
     Block --> Output
 ```
+
+---
+
+## 🖥️ Interactive Management Portal & Dashboard
+
+Review Yeti includes an interactive web portal for engineering teams, security leads, and executives. The hosted URLs below are deployment examples; replace them with your own origin:
+
+| View | Production URL | Cloudflare Edge Worker URL | Local URL | Capabilities |
+| :--- | :--- | :--- | :--- | :--- |
+| 📊 **Executive & Engineering Analytics** | [`https://review-yeti.example.com/analytics`](https://review-yeti.example.com/analytics) | [`https://review-yeti.example.workers.dev/analytics`](https://review-yeti.example.workers.dev/analytics) | `http://localhost:3000/analytics` | Nearest-rank p95 review turnaround latency, token burn curves, model cost per PR/repo, and finding severity ratios (24h/7d/30d). |
+| 📡 **Live Review Inspector** | [`https://review-yeti.example.com/live`](https://review-yeti.example.com/live) | [`https://review-yeti.example.workers.dev/live`](https://review-yeti.example.workers.dev/live) | `http://localhost:3000/live` | Real-time SSE persona reasoning stream (`reasoning:chunk`), tool call traces, and interactive diff viewer with line-anchored finding cards. |
+| 🏢 **Repository & Review Rules** | [`https://review-yeti.example.com/repos`](https://review-yeti.example.com/repos) | [`https://review-yeti.example.workers.dev/repos`](https://review-yeti.example.workers.dev/repos) | `http://localhost:3000/repos` | GitHub organization discovery, active PR inspection, on-demand review dispatch, and per-repo automated review rule toggles. |
+| ⚙️ **Settings & Onboarding** | [`https://review-yeti.example.com/settings`](https://review-yeti.example.com/settings) | [`https://review-yeti.example.workers.dev/settings`](https://review-yeti.example.workers.dev/settings) | `http://localhost:3000/settings` | GitHub App integration, model registry overrides, and platform configuration. |
+
+### ☁️ Serverless Cloudflare Deployment
+
+Because Review Yeti's control plane (Durable Objects, Workflows, Queues, R2) and execution plane already run on Cloudflare Workers (`review-yeti-cf-orchestrator`), the portal is designed to run directly on Cloudflare:
+1. **Unified Cloudflare Worker with Static Assets** (Recommended): Serve the Next.js static export (`out/`) directly from Cloudflare's edge using `[assets]` in `wrangler.toml`. Zero origin servers required.
+2. **Cloudflare Pages**: Deploy the frontend export standalone to Cloudflare Pages edge CDN, with an API proxy to the Worker.
+3. **Cloudflare Tunnel (`cloudflared`)**: For local development or hybrid validation alongside the DOKS Kubernetes operator.
+
+👉 **Read the complete [Cloudflare Portal Setup & Deployment Guide](docs/CLOUDFLARE_PORTAL_SETUP.md)**.
 
 ---
 
@@ -142,7 +166,7 @@ Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](
 
 > [!NOTE]
 > This chart deploys the components the **hosted** Review Yeti queue runs. The
-> Action's dispatch endpoint is currently fixed to that queue, so installing this
+> Action's dispatch is admitted only for allowlisted callers of that queue, so installing this
 > chart into your own cluster will not receive reviews yet. See
 > [Kubernetes Mode](docs/KUBERNETES_MODE.md).
 
@@ -318,6 +342,7 @@ npx review-yeti install-hook
 ## 📚 Documentation Index
 
 - 🚀 **[Onboarding Guide](docs/ONBOARDING_GUIDE.md)** — 30-second setup, deployment patterns, and branch protection.
+- ☁️ **[Cloudflare Portal Setup](docs/CLOUDFLARE_PORTAL_SETUP.md)** — Deploying the interactive management portal and analytics dashboard via Cloudflare Tunnel or Cloudflare Pages.
 - 💬 **[Interactive PR Chat Guide](docs/INTERACTIVE_CHAT.md)** — Mentoring commands (`@review-yeti explain`, `fix`, `ignore`), webhook routing, and ephemeral tokens.
 - 💻 **[CLI Reference & Git Hooks](docs/CLI_REFERENCE.md)** — Local pre-commit checks, 30-second GitHub App wizard, and hook installers.
 - 🧠 **[Team Memory & Nit Suppression](docs/TEAM_MEMORY.md)** — SQLite WAL reflection, community personas (`uses:`), and non-bypassable security gates.
@@ -337,3 +362,7 @@ npx review-yeti install-hook
 ## 📄 License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for details.
+
+### Finding re-review receipts
+
+The MCP `dispute_finding` tool returns `DisputeFindingRecheckReceipt.v1` with `finding_id`, `request_id`, `review_status: "fresh_re_review_requested"` and `remaining_blockers`. It queues fresh review using authenticated, immutable source evidence. Clients should validate the receipt version and follow ordinary review status. The retired `disputed`, `verdict`, `reasoning` and `confidence` adjudication fields are absent: a request receipt does not approve a finding or a Gate. Original evidence and unrelated completed tasks remain intact.

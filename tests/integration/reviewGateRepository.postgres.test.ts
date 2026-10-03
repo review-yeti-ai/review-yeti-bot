@@ -1,5 +1,7 @@
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { createPublishingProgress } from '../../src/telemetry/publishingProgress';
+import { createGetReviewStatusTool } from '../../src/mcp/server/tools/getReviewStatus';
 import { Pool, type PoolClient } from 'pg';
 import {
   deriveReviewGateExternalId,
@@ -35,6 +37,11 @@ import {
   type WorkerReviewCompletion,
 MAX_COMPLETION_BYTES,
 } from '../../src/review/workerReviewCompletion';
+import { canonicalJson, sha256 } from '../../src/review/reviewCore';
+import { getReviewFindingId } from '../../src/mcp/server/tools/findingIdentity';
+import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
+import { INCREMENTAL_REVIEW_CLAIM_VERSION } from '../../src/review/incrementalReviewClaim';
+import { VERDICT_CACHE_CLAIM_VERSION } from '../../src/review/verdictCacheClaim';
 
 const databaseUrl = postgresDatabaseUrl();
 const describeWithPostgres = describeWithPostgresShared;
@@ -172,10 +179,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
           stage TEXT NOT NULL DEFAULT 'admission',
           result_digest VARCHAR(64),
           error_text TEXT,
+          burst_started_at TIMESTAMPTZ, cancel_requested_at TIMESTAMPTZ, cancel_propagated_at TIMESTAMPTZ,
           failure_diagnostics JSONB NOT NULL DEFAULT '{}'::jsonb,
           artifacts JSONB NOT NULL DEFAULT '{}'::jsonb,
           lease_owner TEXT,
           lease_expires_at TIMESTAMPTZ,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE review_dispatch_outbox (
@@ -1037,6 +1046,190 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       return { id, repository, gate, event, trusted, resolve };
     }
 
+    async function disputedGateCompletionFixture(
+      receiptPersisted: boolean,
+      carryForwardClaim?: 'incremental' | 'verdictCache',
+      freshSeverity?: 'P1' | 'P2',
+    ) {
+      const id = runId(1265);
+      const task = { id: 'security-auth', dimension: 'security' as const, paths: ['src/example.ts'],
+        question: 'Does the authorization boundary hold?', rationale: 'The changed path controls tenant access.' };
+      const plan = [task];
+      const sourceFinding = { severity: 'P1' as const, path: 'src/example.ts', line: 1,
+        title: 'The original authorization finding', body: 'The original result lacks a trusted tenant binding.' };
+      const hasFreshFinding = freshSeverity !== undefined;
+      const freshFinding = { severity: freshSeverity ?? 'P2' as const, path: 'src/example.ts', line: 1,
+        title: 'Fresh tenant boundary finding', body: 'The fresh review found an unchecked caller tenant binding.' };
+      const sourceCoordinates = coordinatesFor(id, 1, 2);
+      const currentCoordinates = coordinatesFor(id, 2, 3);
+      const sourceCompletion: WorkerReviewCompletion = {
+        version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: REPOSITORY_ID,
+        owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+        configDigest: CONFIG_DIGEST, executionAttempt: 2,
+        result: { version: 'WorkerReviewResult.v1', completedAt: new Date(COMPLETED_AT - 20_000).toISOString(),
+          personas: [{ id: task.id, decision: 'FINDINGS', status: 'COMPLETE', findings: [sourceFinding] }],
+          taskPlan: plan, coverageComplete: true, quorumSatisfied: true },
+      };
+      const sourceDigest = workerReviewCompletionDigest(sourceCompletion);
+      const sourceJson = JSON.stringify(sourceCompletion);
+      const findingId = getReviewFindingId(id, task.id, sourceFinding);
+      const counterArgument = 'The service rechecks this task from a fresh authenticated provider response.';
+      const unsigned = {
+        requestId: randomUUID(), runId: id, sourceExecutionAttempt: 2, sourceContentDigest: sourceDigest,
+        sourcePlanDigest: sha256(canonicalJson(plan)), sourceGateAttemptId: sourceCoordinates.attemptId,
+        repositoryId: REPOSITORY_ID, owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+        configDigest: CONFIG_DIGEST, findingId, personaId: task.id, taskId: task.id,
+        finding: sourceFinding, counterArgument, counterArgumentDigest: sha256(counterArgument),
+      };
+      const requestDigest = disputedFindingRecheckDigest(unsigned);
+
+      // This fixture pins the production a2→a3 numbering: logical run generations are 1→2,
+      // while the worker executions and Gate IDs are g1-e2→g2-e3.
+      await insertRun(id, 2, 2);
+      await pool!.query(`UPDATE review_runs SET status = 'running', stage = 'personas' WHERE run_id = $1`, [id]);
+      await pool!.query(`UPDATE review_dispatch_outbox SET status = 'projected', worker_token_digest = $2
+        WHERE run_id = $1`, [id, WORKER_PROOF.workerTokenDigest]);
+      await pool!.query(`INSERT INTO review_gate_attempts
+        (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
+         coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
+         current_attempt, worker_result_digest, decision)
+        VALUES ($1, $2, 1, 2, $3, 42, $4, $5::jsonb, $6, 72001, 'bound', 'failure', 1, 1, false, $7,
+          '{"status":"failure","eligible":false,"reason":"blocking-findings"}'::jsonb)`,
+      [sourceCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(sourceCoordinates),
+        deriveReviewGateExternalId(sourceCoordinates), sourceDigest]);
+      await pool!.query(`INSERT INTO review_worker_completions
+        (run_id, execution_attempt, content_digest, payload, byte_length)
+        VALUES ($1, 2, $2, $3::jsonb, $4)`,
+      [id, sourceDigest, sourceJson, Buffer.byteLength(sourceJson, 'utf8')]);
+      await pool!.query(`INSERT INTO review_finding_rechecks
+        (request_id, run_id, source_execution_attempt, source_content_digest, source_plan_digest,
+         source_gate_attempt_id, repository_id, owner, repo, pr_number, head_sha, base_sha,
+         policy_digest, config_digest, finding_id, persona_id, task_id, finding, counter_argument,
+         counter_argument_digest, request_digest, requested_by)
+        VALUES ($1, $2, 2, $3, $4, $5, $6, $7, $8, 42, $9, $10, $11, $12, $13, $14, $15,
+          $16::jsonb, $17, $18, $19, 'rel1265-gate-test')`,
+      [unsigned.requestId, id, sourceDigest, unsigned.sourcePlanDigest, sourceCoordinates.attemptId,
+        REPOSITORY_ID, unsigned.owner, unsigned.repo, unsigned.headSha, unsigned.baseSha, unsigned.policyDigest,
+        CONFIG_DIGEST, findingId, task.id, task.id, JSON.stringify(sourceFinding), counterArgument,
+        unsigned.counterArgumentDigest, requestDigest]);
+      await pool!.query(`INSERT INTO review_gate_attempts
+        (attempt_id, run_id, review_generation, execution_attempt, repository_id, pr_number, expected_app_id,
+         coordinates, external_id, check_id, creation_state, desired_state, desired_version, published_version,
+         current_attempt)
+        VALUES ($1, $2, 2, 3, $3, 42, $4, $5::jsonb, $6, 72002, 'bound', 'queued', 0, -1, true)`,
+      [currentCoordinates.attemptId, id, REPOSITORY_ID, APP_ID, JSON.stringify(currentCoordinates),
+        deriveReviewGateExternalId(currentCoordinates)]);
+
+      if (receiptPersisted) {
+        const checkpoint = {
+          version: 'ReviewExecutionCheckpoint.v1', runId: id, repositoryId: REPOSITORY_ID,
+          owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+          headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+          configDigest: CONFIG_DIGEST, executionAttempt: 3, revision: 1, plan,
+          completedTasks: [{ id: task.id, findings: hasFreshFinding ? [freshFinding] : [] }],
+          satisfiedFindingRecheckIds: [unsigned.requestId],
+        };
+        const json = JSON.stringify(checkpoint);
+        await pool!.query(`INSERT INTO review_execution_checkpoints
+          (run_id, execution_attempt, revision, head_sha, config_digest, payload, byte_length)
+          VALUES ($1, 3, 1, $2, $3, $4::jsonb, $5)`,
+        [id, 'a'.repeat(40), CONFIG_DIGEST, json, Buffer.byteLength(json, 'utf8')]);
+      }
+
+      const event: WorkerReviewCompletion = {
+        version: 'WorkerReviewCompletion.v1', runId: id, repositoryId: REPOSITORY_ID,
+        owner: 'exampleorg', repo: 'example-review-actions', prNumber: 42,
+        headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40), policyDigest: 'c'.repeat(64),
+        configDigest: CONFIG_DIGEST, executionAttempt: 3,
+        result: { version: 'WorkerReviewResult.v1', completedAt: new Date(COMPLETED_AT - 10_000).toISOString(),
+          personas: [{ id: task.id, decision: hasFreshFinding ? 'FINDINGS' : 'APPROVE', status: 'COMPLETE',
+            findings: hasFreshFinding ? [freshFinding] : [] }],
+          taskPlan: plan, coverageComplete: true, quorumSatisfied: true },
+      };
+      if (hasFreshFinding) {
+        event.result.verdict = freshSeverity === 'P1' ? 'FIX_FIRST' : 'SHIP';
+        event.result.findingCount = 1;
+        event.result.blockingFindingCount = freshSeverity === 'P1' ? 1 : 0;
+      }
+      const trusted: TrustedGateCompletionContext = {
+        current: { repositoryId: REPOSITORY_ID, prNumber: 42, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
+          policyDigest: 'c'.repeat(64), open: true, draft: false },
+        coverage: { expectedPersonaIds: [task.id], reviewEngine: 'composed', composedChangedPaths: ['src/example.ts'],
+          composedMaxTasks: 1, changedFiles: [{ path: 'src/example.ts', patch: '@@ -0,0 +1 @@\n+export const access = true;\n' }],
+          coverageComplete: true, quorumSatisfied: true },
+      };
+      if (carryForwardClaim === 'incremental') {
+        event.result.incremental = {
+          version: INCREMENTAL_REVIEW_CLAIM_VERSION,
+          previousRunId: runId(1264), previousExecutionAttempt: 1,
+          previousHeadSha: 'a'.repeat(40), previousBaseSha: 'b'.repeat(40),
+          previousCompletionDigest: 'f'.repeat(64), carriedForwardPaths: ['src/example.ts'],
+        };
+        trusted.coverage.incrementalVerified = true;
+      } else if (carryForwardClaim === 'verdictCache') {
+        event.result.verdictCache = {
+          version: VERDICT_CACHE_CLAIM_VERSION,
+          laneKeys: { [task.id]: 'f'.repeat(64) }, entries: [],
+          hits: { runId: runId(1264), executionAttempt: 1, completionDigest: 'f'.repeat(64),
+            paths: ['src/example.ts'] },
+        };
+        trusted.coverage.verdictCacheVerified = true;
+      }
+      const repository = new PostgresReviewGateRepository(pool!, { lifecycleEvents: 'disabled' });
+      const resolve = vi.fn(async (_gate: StoredReviewGate) => trusted);
+      return { id, repository, event, resolve, requestId: unsigned.requestId };
+    }
+
+    it.each([false, true])('requires a durable completed-task re-review receipt before Gate SHIP (receipt=%s)', async (receiptPersisted) => {
+      const { id, repository, event, resolve, requestId } = await disputedGateCompletionFixture(receiptPersisted);
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+      const state = await snapshot(id);
+      expect(state.run.status).toBe(receiptPersisted ? 'succeeded' : 'failed');
+      expect(state.gates).toHaveLength(2);
+      const current = state.gates.find((gate: any) => gate.current_attempt);
+      expect(current.decision).toMatchObject(receiptPersisted
+        ? { status: 'success', eligible: true }
+        : { status: 'failure', eligible: false, reason: 'invalid-evidence' });
+      expect(current.worker_result_digest).toBe(workerReviewCompletionDigest(event));
+      expect(state.outbox.status).toBe('projected');
+      expect(requestId).toMatch(/^[0-9a-f-]{36}$/u);
+    });
+
+    it.each(['incremental', 'verdictCache'] as const)(
+      'rejects a valid %s carry-forward claim while a disputed finding re-review is pending',
+      async (claim) => {
+        const { id, repository, event, resolve } = await disputedGateCompletionFixture(true, claim);
+        expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+        expect(resolve).toHaveBeenCalledOnce();
+        const state = await snapshot(id);
+        expect(state.run.status).toBe('failed');
+        const current = state.gates.find((gate: any) => gate.current_attempt);
+        expect(current.decision).toMatchObject({ status: 'failure', eligible: false, reason: 'invalid-evidence' });
+        // The fixture supplies trusted verification for the otherwise-valid
+        // carry-forward claim; the pending dispute request is the reason it
+        // cannot make the current Gate eligible.
+        expect(current.evidence).not.toBeNull();
+      },
+    );
+
+    it.each(['P1', 'P2'] as const)('publishes a fresh %s re-review under the normal P0/P1 policy', async (severity) => {
+      const { id, repository, event, resolve } = await disputedGateCompletionFixture(true, undefined, severity);
+      expect(await repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).toBe('recorded');
+      expect(resolve).toHaveBeenCalledOnce();
+      const state = await snapshot(id);
+      const blocking = severity === 'P1';
+      expect(state.run.status).toBe(blocking ? 'failed' : 'succeeded');
+      const current = state.gates.find((gate: any) => gate.current_attempt);
+      expect(current.decision).toMatchObject({ status: blocking ? 'failure' : 'success',
+        eligible: !blocking, reason: blocking ? 'blocking-findings' : 'clean-review' });
+      expect(current.evidence).toMatchObject({ verdict: blocking ? 'FIX_FIRST' : 'SHIP',
+        p0Count: 0, p1Count: blocking ? 1 : 0 });
+      expect(event.result.personas[0].findings[0].severity).toBe(severity);
+      expect(current.worker_result_digest).toBe(workerReviewCompletionDigest(event));
+    });
+
     function expectTerminalState(
       state: Awaited<ReturnType<typeof snapshot>>,
       event: WorkerReviewCompletion,
@@ -1070,6 +1263,37 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         lease_owner: null, lease_token: null, lease_expires_at: null,
       });
     }
+
+    it('stores authenticated timeout observations and exposes only the exact current execution', async()=>{
+      const {id,repository,event,resolve}=await completionFixture();
+      const progress=createPublishingProgress({runId:id,executionAttempt:5},{sink:()=>{}});
+      await progress.instrument({complete:async()=>({model:'safe',content:'SECRET',usage:{prompt:11,completion:7,total:18,cached:2},costUSD:0.004,raw:{}})}).complete({model:'safe',messages:[],timeoutMs:1000});
+      const operationalTelemetry=progress.snapshot?.();
+      event.result.personas=event.result.personas.map(lane=>({...lane,id:'prepared-static-'+lane.id,decision:'ERROR',status:'ERROR',errorClass:'timeout',findings:[]}));
+      event.result.coverageComplete=false; event.result.quorumSatisfied=false;
+      event.result.failureDiagnostics={reason:'worker_terminal_deadline_exceeded',logTail:'timeout',...(operationalTelemetry?{operationalTelemetry}:{})};
+      expect(await repository.recordWorkerResult(event,WORKER_PROOF,resolve,COMPLETED_AT)).toBe('recorded');
+      const state=await snapshot(id);expect(state.run.status).toBe('failed'); expect(state.gates[0].decision.reason).toBe('invalid-evidence');
+      expect(state.gates[0].evidence).toBeNull(); expect(state.run.failure_diagnostics.operationalTelemetry).toMatchObject({providerCalls:{completed:1},responseUsage:{totals:{totalTokens:18}}});
+      const get=async()=>JSON.parse(((await createGetReviewStatusTool(pool!).execute({owner:event.owner,repo:event.repo,pull_number:42,head_sha:event.headSha})).content[0] as {text:string}).text);
+      const current=await get();expect(current.operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);expect(current.verdict).toBe('FAILED');
+      expect(JSON.stringify(current.operational_telemetry)).not.toContain('SECRET');
+      expect(current.operational_telemetry).toMatchObject({cause:'unknown',panel:{invoked:false},phaseCounts:{persona_lane:{started:0},composed_task:{started:0}}});
+      // A stored observation cannot be projected from an unauthenticated digest,
+      // another config, or a gate which stopped being current. Status still fails closed.
+      for(const [tamper,restore] of [
+        ["UPDATE review_worker_completions SET content_digest=repeat('f',64) WHERE run_id=$1","UPDATE review_worker_completions SET content_digest=$2 WHERE run_id=$1"],
+        ["UPDATE review_worker_completions SET payload=jsonb_set(payload,'{configDigest}',to_jsonb(repeat('f',64))) WHERE run_id=$1","UPDATE review_worker_completions SET payload=jsonb_set(payload,'{configDigest}',to_jsonb($2::text)) WHERE run_id=$1"],
+        ["UPDATE review_gate_attempts SET current_attempt=false WHERE run_id=$1","UPDATE review_gate_attempts SET current_attempt=true WHERE run_id=$1"],
+      ] as const) {
+        await pool!.query(tamper,[id]);
+        try { const guarded=await get(); expect(guarded).not.toHaveProperty('operational_telemetry'); expect(guarded.verdict).toBe('FAILED'); }
+        finally { await pool!.query(restore,restore.includes('$2')?[id,restore.includes('content_digest')?state.gates[0].worker_result_digest:event.configDigest]:[id]); }
+        expect((await get()).operational_telemetry).toEqual(state.run.failure_diagnostics.operationalTelemetry);
+      }
+      await pool!.query("UPDATE review_runs SET failure_diagnostics=jsonb_set(failure_diagnostics,'{executionAttempt}','4') WHERE run_id=$1",[id]);
+      expect(await get()).not.toHaveProperty('operational_telemetry');
+    });
 
     it.each([null, APP_ID + 1])('rejects completion without the exact enrolled App marker (%s)', async (appId) => {
       const { id, repository, event, resolve } = await completionFixture();
@@ -1469,9 +1693,10 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
       ['worker-coverage', 'incomplete-review'], ['worker-quorum', 'incomplete-review'],
       ['trusted-coverage', 'incomplete-review'], ['trusted-quorum', 'incomplete-review'],
       ['blocking-finding', 'blocking-findings'], ['invalid-finding', 'invalid-evidence'],
+      ['p2-finding', 'clean-review'],
       ['false-worker-verdict', 'invalid-evidence'], ['false-worker-count', 'invalid-evidence'],
       ['duplicate-lane', 'invalid-evidence'], ['unknown-lane', 'invalid-evidence'],
-    ] as const)('fails closed for %s with atomic non-success intent', async (scenario, reason) => {
+    ] as const)('records current-policy terminal intent for %s', async (scenario, reason) => {
       const { id, repository, event, resolve, trusted } = await completionFixture();
       const lane = event.result.personas[0];
       switch (scenario) {
@@ -1493,14 +1718,19 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         default:
           lane.decision = 'FINDINGS';
           lane.findings = [{
-            severity: 'P1', path: scenario === 'invalid-finding' ? 'src/unreviewed.ts' : 'src/example.ts',
+            severity: scenario === 'p2-finding' ? 'P2' : 'P1',
+            path: scenario === 'invalid-finding' ? 'src/unreviewed.ts' : 'src/example.ts',
             line: 1, title: 'Unsafe change', body: 'The changed code exposes private data.',
           }];
+          if (scenario === 'p2-finding') {
+            event.result.verdict = 'SHIP';
+            event.result.blockingFindingCount = 0;
+          }
           if (scenario === 'false-worker-verdict') event.result.verdict = 'SHIP';
       }
       await expect(repository.recordWorkerResult(event, WORKER_PROOF, resolve, COMPLETED_AT)).resolves.toBe('recorded');
       const state = await snapshot(id);
-      expectTerminalState(state, event, 'failure', reason);
+      expectTerminalState(state, event, scenario === 'p2-finding' ? 'success' : 'failure', reason);
       if (scenario === 'provider-error') {
         expect(state.run.failure_diagnostics).toMatchObject({
           failureClass: 'timeout', reason: 'provider_rate_limited', providerStatus: 429,
@@ -1508,7 +1738,12 @@ describeWithPostgres('PostgresReviewGateRepository real SQL lifecycle', () => {
         expect(JSON.stringify(state.run.failure_diagnostics)).not.toContain('do-not-store');
       }
       if (reason === 'invalid-evidence') expect(state.gates[0].evidence).toBeNull();
-      else expect(state.gates[0].evidence).not.toBeNull();
+      else {
+        expect(state.gates[0].evidence).not.toBeNull();
+        if (scenario === 'p2-finding') {
+          expect(state.gates[0].evidence).toMatchObject({ verdict: 'SHIP', p0Count: 0, p1Count: 0 });
+        }
+      }
     });
 
     it('uses the service receipt time for evidence and stores eligibility independently of draft readiness', async () => {

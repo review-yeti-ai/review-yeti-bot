@@ -189,7 +189,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
       });
     }
     expect(JSON.stringify(telemetry)).not.toContain('synthetic non-JSON reasoning');
-  });
+  }, 15000);
 
   it('preserves the all-successful partition publication and diagnostics', () => {
     const { calls, outputs, telemetry } = runPartitionedReview('none');
@@ -204,7 +204,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
     });
     expect(testing.responseAttempts).toHaveLength(1);
     expect(testing.responseAttempts[0]).toMatchObject({ outcome: 'parsed', finishReason: 'stop' });
-  });
+  }, 15000);
 
   it.each([
     ['first', 'present'], ['last', 'present'], ['first', 'absent'], ['last', 'absent'],
@@ -226,7 +226,7 @@ describe('partitioned Action diagnostics remain bound to the failed partition', 
     expect(testing.responseAttempts).toHaveLength(2);
     expect(testing.responseAttempts.at(-1)).toMatchObject({ outcome: 'malformed_output', provider: 'anthropic' });
     expect(JSON.stringify(telemetry)).not.toContain('synthetic non-JSON reasoning');
-  });
+  }, 15000);
 });
 
 // Every assertion calls the same exported helper used by main(). No source
@@ -235,6 +235,329 @@ function loadPartitionReducer() {
   const filename = path.join(root, '.github/workflows/pipelines/review-pipeline.js');
   return createRequire(import.meta.url)(filename);
 }
+
+function createGuardedPartitionPlan(sourcePatch: string, safeDiffCapacityChars: number, partitionManager?: any) {
+  const pipeline = loadPartitionReducer();
+  const input = {
+    files: [{
+      path: 'src/partition-parity.ts',
+      patch: sourcePatch,
+      originalChars: sourcePatch.length,
+      compactedChars: sourcePatch.length,
+      status: 'modified',
+    }],
+    baseSha: 'a'.repeat(40),
+    headSha: 'b'.repeat(40),
+    safeDiffCapacityChars,
+    modelConfig: {
+      guardedGatewayDestination: true,
+      model: pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS,
+    },
+    ...(partitionManager ? { partitionManager } : {}),
+  };
+  return pipeline.createReviewPartitionPlan(input);
+}
+
+function hunksFromPartitionPatch(patch: string, fileHeader: string): string[] {
+  const lines = patch.slice(fileHeader.length).replace(/\n+$/u, '').split('\n');
+  const hunks: string[] = [];
+  let current: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      if (current.length > 0) hunks.push(current.join('\n'));
+      current = [line];
+    } else if (current.length > 0) {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) hunks.push(current.join('\n'));
+  return hunks;
+}
+
+function runCanonicalPartitionProbe(sourcePatch: string, safeDiffCapacityChars: number, missingHelper?: string) {
+  const pipelinePath = path.join(root, '.github/workflows/pipelines/review-pipeline.js');
+  const script = String.raw`
+    const Module = require('node:module');
+    const originalLoad = Module._load;
+    let parseCalls = 0;
+    let rangeCalls = 0;
+    let canonicalPath = null;
+    Module._load = function canonicalHelperProbe(request, parent, isMain) {
+      const value = originalLoad.call(this, request, parent, isMain);
+      const normalized = String(request).replace(/\\/g, '/');
+      if (!normalized.endsWith('/src/pipeline/shaPartitionManager.ts')) return value;
+      canonicalPath = parent?.filename ? require('node:path').resolve(require('node:path').dirname(parent.filename), request) : normalized;
+      return new Proxy(value, {
+        get(target, key, receiver) {
+          if (key === process.env.MISSING_CANONICAL_HELPER) return undefined;
+          const helper = Reflect.get(target, key, receiver);
+          if (key === 'parseUnifiedHunk' && typeof helper === 'function') {
+            return (...args) => { parseCalls += 1; return Reflect.apply(helper, target, args); };
+          }
+          if (key === 'unifiedFragmentRangeStart' && typeof helper === 'function') {
+            return (...args) => { rangeCalls += 1; return Reflect.apply(helper, target, args); };
+          }
+          return helper;
+        },
+      });
+    };
+    const pipeline = require(process.argv[1]);
+    const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+    let result;
+    try {
+      const plan = pipeline.createReviewPartitionPlan({
+        files: [{ path: 'src/partition-parity.ts', patch: input.sourcePatch, status: 'modified' }],
+        baseSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        headSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        safeDiffCapacityChars: input.safeDiffCapacityChars,
+        modelConfig: { guardedGatewayDestination: true, model: pipeline.DIGEST_PINNED_GATEWAY_MODEL_ALIAS },
+      });
+      result = {
+        partitionCount: plan.partitions.length,
+        partitionChars: plan.partitions.map((partition) => partition.totalChars),
+        patches: plan.partitions.flatMap((partition) => partition.files).sort((a, b) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0)).map((file) => file.patch),
+      };
+    } catch (error) {
+      result = { error: error?.message || String(error) };
+    }
+    process.stdout.write(JSON.stringify({ canonicalPath, parseCalls, rangeCalls, ...result }));
+  `;
+  const childEnv = { ...process.env };
+  delete childEnv.NODE_OPTIONS;
+  delete childEnv.NODE_PATH;
+  for (const key of Object.keys(childEnv)) if (key.startsWith('TS_NODE_')) delete childEnv[key];
+  if (missingHelper) childEnv.MISSING_CANONICAL_HELPER = missingHelper;
+  else delete childEnv.MISSING_CANONICAL_HELPER;
+  const result = spawnSync(process.execPath, ['-e', script, pipelinePath], {
+    cwd: root,
+    env: childEnv,
+    input: JSON.stringify({ sourcePatch, safeDiffCapacityChars }),
+    encoding: 'utf8',
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  if (result.status !== 0) throw new Error(`canonical partition probe failed: ${result.stderr}`);
+  return JSON.parse(result.stdout);
+}
+
+describe('guarded partition producer and validator stay in lossless parity', () => {
+  const filePath = 'src/partition-parity.ts';
+  const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+  const marker = '\\ No newline at end of file';
+
+  it('routes guarded range and body validation through the canonical partition-manager helpers', () => {
+    const sourcePatch = `${fileHeader}@@ -0,0 +1,4 @@ literal insertion\n+one\n+two\n+three\n+four\n`;
+    const expected = [
+      '@@ -0,0 +1,1 @@ literal insertion\n+one',
+      '@@ -0,0 +2,1 @@ literal insertion\n+two',
+      '@@ -0,0 +3,1 @@ literal insertion\n+three',
+      '@@ -0,0 +4,1 @@ literal insertion\n+four',
+    ];
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+    const probe = runCanonicalPartitionProbe(sourcePatch, safeDiffCapacityChars);
+    const actual = probe.patches.flatMap((patch: string) => hunksFromPartitionPatch(patch, fileHeader));
+    expect(probe.partitionCount).toBeGreaterThan(1);
+    expect(actual).toEqual(expected); // independent literal anchor/body oracle
+    expect(probe.parseCalls).toBeGreaterThan(0);
+    expect(probe.rangeCalls).toBeGreaterThan(0);
+  });
+
+  it.each(['parseUnifiedHunk', 'unifiedFragmentRangeStart'] as const)(
+    'fails closed when canonical validator helper %s is unavailable',
+    (helper) => {
+      const sourcePatch = `${fileHeader}@@ -0,0 +1,3 @@ missing helper\n+one\n+two\n+three\n`;
+      const expected = [
+        '@@ -0,0 +1,1 @@ missing helper\n+one',
+        '@@ -0,0 +2,1 @@ missing helper\n+two',
+        '@@ -0,0 +3,1 @@ missing helper\n+three',
+      ];
+      const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+      const probe = runCanonicalPartitionProbe(sourcePatch, safeDiffCapacityChars, helper);
+      expect(probe.error).toBe(`lossless partition validator helper ${helper} is unavailable`);
+    },
+  );
+
+  it.each([
+    {
+      name: 'zero old range at insertion start',
+      sourceHeader: '@@ -0,0 +1,2 @@',
+      body: ['+inserted-one', '+inserted-two'],
+      expected: [
+        '@@ -0,0 +1,1 @@\n+inserted-one',
+        '@@ -0,0 +2,1 @@\n+inserted-two',
+      ],
+    },
+    {
+      name: 'zero old range at insertion end',
+      sourceHeader: '@@ -2,0 +3,2 @@',
+      body: ['+inserted-one', '+inserted-two'],
+      expected: [
+        '@@ -2,0 +3,1 @@\n+inserted-one',
+        '@@ -2,0 +4,1 @@\n+inserted-two',
+      ],
+    },
+    {
+      name: 'zero new range for pure deletion',
+      sourceHeader: '@@ -3,2 +2,0 @@',
+      body: ['-removed-one', '-removed-two'],
+      expected: [
+        '@@ -3,1 +2,0 @@\n-removed-one',
+        '@@ -4,1 +2,0 @@\n-removed-two',
+      ],
+    },
+    {
+      name: 'mixed insertion with a zero-side fragment between context lines',
+      sourceHeader: '@@ -1,2 +1,4 @@',
+      body: [' context-before', '+inserted-one', '+inserted-two', ' context-after'],
+      expected: [
+        '@@ -1,1 +1,1 @@\n context-before',
+        '@@ -1,0 +2,1 @@\n+inserted-one',
+        '@@ -1,0 +3,1 @@\n+inserted-two',
+        '@@ -2,1 +4,1 @@\n context-after',
+      ],
+    },
+    {
+      name: 'omitted single counts in replacement',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-line', '+new-line'],
+      expected: [
+        '@@ -1,1 +0,0 @@\n-old-line',
+        '@@ -1,0 +1,1 @@\n+new-line',
+      ],
+    },
+    {
+      name: 'no-newline marker stays in the atom owned by its preceding deletion',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-without-newline', marker, '+new-with-newline'],
+      expected: [
+        `@@ -1,1 +0,0 @@\n-old-without-newline\n${marker}`,
+        '@@ -1,0 +1,1 @@\n+new-with-newline',
+      ],
+    },
+    {
+      name: 'no-newline marker stays in the atom owned by its preceding addition',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-with-newline', '+new-without-newline', marker],
+      expected: [
+        '@@ -1,1 +0,0 @@\n-old-with-newline',
+        `@@ -1,0 +1,1 @@\n+new-without-newline\n${marker}`,
+      ],
+    },
+    {
+      name: 'both replacement sides own their separate no-newline markers',
+      sourceHeader: '@@ -1 +1 @@',
+      body: ['-old-without-newline', marker, '+new-without-newline', marker],
+      expected: [
+        `@@ -1,1 +0,0 @@\n-old-without-newline\n${marker}`,
+        `@@ -1,0 +1,1 @@\n+new-without-newline\n${marker}`,
+      ],
+    },
+    {
+      name: 'context owns its no-newline marker without consuming an extra range line',
+      sourceHeader: '@@ -1,2 +1,2 @@',
+      body: ['-old-before-unchanged-last-context', '+new-before-unchanged-last-context', ' shared-last-line', marker],
+      expected: [
+        '@@ -1,1 +0,0 @@\n-old-before-unchanged-last-context',
+        '@@ -1,0 +1,1 @@\n+new-before-unchanged-last-context',
+        `@@ -2,1 +2,1 @@\n shared-last-line\n${marker}`,
+      ],
+    },
+  ])('accepts literal canonical ranges for $name', ({ sourceHeader, body, expected }) => {
+    const sourcePatch = `${fileHeader}${sourceHeader}\n${body.join('\n')}\n`;
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+    expect(sourcePatch.length).toBeGreaterThan(safeDiffCapacityChars);
+
+    const plan = createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars);
+    const actual = plan.partitions.flatMap((partition: any) => partition.files)
+      .sort((a: any, b: any) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0))
+      .flatMap((file: any) => hunksFromPartitionPatch(file.patch, fileHeader));
+
+    expect(plan.partitions.length).toBeGreaterThan(1);
+    expect(plan.partitions.every((partition: any) => partition.totalChars <= safeDiffCapacityChars)).toBe(true);
+    // Expected ranges are literal controls independent of either implementation's cursor math.
+    expect(actual).toEqual(expected);
+  });
+
+  it('rejects a producer plan whose zero-count anchor is shifted without changing coverage bytes', () => {
+    const sourceHeader = '@@ -0,0 +1,3 @@';
+    const body = ['+inserted-one', '+inserted-two', '+inserted-three'];
+    const sourcePatch = `${fileHeader}${sourceHeader}\n${body.join('\n')}\n`;
+    const expected = body.map((line, index) => `@@ -0,0 +${index + 1},1 @@\n${line}`);
+    const safeDiffCapacityChars = fileHeader.length + Math.max(...expected.map((fragment) => fragment.length + 1));
+    const pipeline = loadPartitionReducer();
+    const partitionManager = {
+      createPartitionPlan(...args: any[]) {
+        const plan = pipeline.shaPartitionManager.createPartitionPlan(...args);
+        const first = plan.partitions.flatMap((partition: any) => partition.files)[0];
+        first.patch = first.patch.replace(/^@@ -0,0 /mu, '@@ -1,0 ');
+        return plan;
+      },
+    };
+
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars, partitionManager))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+
+  it('rejects moving a no-newline marker to a different changed line in an otherwise valid multi-copy plan', () => {
+    const oldLine = '-old-without-newline';
+    const newLine = '+new-with-newline';
+    const firstHunk = `@@ -1 +1 @@ replacement\n${oldLine}\n${marker}\n${newLine}`;
+    const laterLines = Array.from({ length: 24 }, (_unused, index) => `+later-${index}-${'y'.repeat(20)}`);
+    const laterHunk = `@@ -40,0 +41,24 @@ later insertions\n${laterLines.join('\n')}`;
+    const sourcePatch = `${fileHeader}${firstHunk}\n${laterHunk}\n`;
+    const safeDiffCapacityChars = fileHeader.length + firstHunk.length + 1;
+    const pipeline = loadPartitionReducer();
+    const partitionManager = {
+      createPartitionPlan(...args: any[]) {
+        const plan = pipeline.shaPartitionManager.createPartitionPlan(...args);
+        const target = plan.partitions.flatMap((partition: any) => partition.files)
+          .find((file: any) => file.patch.includes(oldLine));
+        expect(target).toBeDefined();
+        target.patch = target.patch.replace(
+          `${oldLine}\n${marker}\n${newLine}`,
+          `${oldLine}\n${newLine}\n${marker}`,
+        );
+        return plan;
+      },
+    };
+
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars, partitionManager))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+
+  it.each([
+    ['orphaned before any diff line', [marker, '-old', '+new']],
+    ['duplicated after its owning line', ['-old', marker, marker, '+new']],
+  ] as const)('fails closed when source has a %s', (_name, malformedBody) => {
+    const malformedHunk = `@@ -1,1 +1,1 @@ malformed marker control\n${malformedBody.join('\n')}`;
+    const laterLines = Array.from({ length: 24 }, (_unused, index) => `+later-${index}-${'z'.repeat(20)}`);
+    const laterHunk = `@@ -40,0 +41,24 @@ force bounded multi-copy admission\n${laterLines.join('\n')}`;
+    const sourcePatch = `${fileHeader}${malformedHunk}\n${laterHunk}\n`;
+    const safeDiffCapacityChars = fileHeader.length + malformedHunk.length + 160;
+
+    expect(sourcePatch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+
+  it.each([
+    ['incorrect old count', '@@ -1,2 +1,1 @@'],
+    ['incorrect new count', '@@ -1,1 +1,2 @@'],
+    ['unsafe old start', '@@ -9007199254740992,1 +1,1 @@'],
+    ['unsafe new start', '@@ -1,1 +9007199254740992,1 @@'],
+    ['unsafe old count', '@@ -1,9007199254740992 +1,1 @@'],
+    ['unsafe new count', '@@ -1,1 +1,9007199254740992 @@'],
+  ])('fails closed on a source header with %s', (_name, malformedHeader) => {
+    const malformedHunk = `${malformedHeader}\n-old\n+new`;
+    const laterLines = Array.from({ length: 24 }, (_unused, index) => `+later-${index}-${'z'.repeat(20)}`);
+    const laterHunk = `@@ -40,0 +41,24 @@ force bounded multi-copy admission\n${laterLines.join('\n')}`;
+    const sourcePatch = `${fileHeader}${malformedHunk}\n${laterHunk}\n`;
+    const safeDiffCapacityChars = fileHeader.length + malformedHunk.length + 160;
+
+    expect(sourcePatch.length).toBeGreaterThan(safeDiffCapacityChars);
+    expect(() => createGuardedPartitionPlan(sourcePatch, safeDiffCapacityChars))
+      .toThrow('lossless partition manager did not produce complete, bounded file and hunk coverage');
+  });
+});
 
 type TerminalDiagnostics = {
   responseStatus?: number | null;
@@ -467,5 +790,190 @@ describe('production partition reducer attribution and recovery branches', () =>
       provider: base.provider, model: base.model, responseAttempts: base.responseAttempts,
       recoveryAction: 'rate_limit_retry' });
     expect(receipt.recoveryAction).toBe('rate_limit_retry');
+  });
+});
+
+// Observe the real Action entrypoint's module-load and provider/timer boundaries
+// in a credential-free child. The only network seam is the child's fetch stub;
+// this does not call OpenRouter or any configured provider.
+const sdkRouteProbeChild = String.raw`
+const events = [];
+const Module = require('node:module');
+const originalLoad = Module._load;
+Module._load = function observeOpenRouterSdk(request, parent, isMain) {
+  if (request === '@openrouter/sdk') {
+    events.push('openrouter-sdk-load');
+    if (process.env.DENY_OPENROUTER_SDK === 'true') {
+      throw new Error('fixture denied optional OpenRouter SDK load');
+    }
+  }
+  return Reflect.apply(originalLoad, this, [request, parent, isMain]);
+};
+const originalSetInterval = globalThis.setInterval;
+globalThis.setInterval = function observeProviderStart(callback, delay, ...args) {
+  if (delay === 15_000) events.push('provider-heartbeat-timer');
+  return Reflect.apply(originalSetInterval, this, [callback, delay, ...args]);
+};
+globalThis.fetch = async (url) => {
+  const requestUrl = String(url);
+  if (requestUrl.includes('/chat/completions')) {
+    events.push(requestUrl.includes('openrouter.ai')
+      ? 'openrouter-completions-fetch'
+      : requestUrl.includes('api.openai.com')
+        ? 'direct-completions-fetch'
+        : 'gateway-completions-fetch');
+  }
+  return new Response(JSON.stringify({
+    id: 'chatcmpl-fixture', object: 'chat.completion', created: 1_790_000_000,
+    model: 'fixture-model',
+    choices: [{ index: 0, message: { role: 'assistant', content: '{"findings":[]}' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  }), { status: 200, headers: { 'content-type': 'application/json' } });
+};
+const pipeline = require(process.env.PIPELINE);
+events.push('entrypoint-import-complete');
+pipeline.main().then(() => {
+  const exitCode = process.exitCode ?? 0;
+  console.log('SDK_ROUTE_PROBE ' + JSON.stringify({ events, exitCode }));
+  // The child reports the Action's exit code in the fixture record; keep the
+  // harness successful so negative fail-closed cases remain assertable.
+  process.exitCode = 0;
+}).catch(() => { process.exitCode = 1; });
+`;
+
+function runSdkRouteProbe(
+  route: 'none' | 'direct' | 'gateway' | 'openrouter' | 'openrouter-fallback',
+  denySdk = false,
+) {
+  const scratch = createScratchOwner({
+    parentDir: requiredSuiteScratchRoot(),
+    prefix: 'sdk-route-probe-',
+    kind: 'sdk-route-probe-fixture',
+  });
+  try {
+    const openrouterTransport = {
+      name: 'openrouter-fixture', provider: 'openrouter', compat: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1', api_key_env: 'OPENROUTER_API_KEY',
+      model: 'openai/gpt-4o-mini', stream: false,
+    };
+    const directTransport = {
+      name: 'openai-fixture', provider: 'openai',
+      base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY',
+      model: 'gpt-4o-mini', stream: false,
+    };
+    const transports = route === 'none' ? [] : route === 'openrouter'
+      ? [openrouterTransport]
+      : route === 'openrouter-fallback'
+        ? [openrouterTransport, directTransport]
+        : [route === 'gateway'
+          ? {
+              name: 'gateway-fixture', provider: 'openrouter', compat: 'openrouter',
+              base_url: 'https://gateway.exampleorg.invalid/v1', api_key_env: 'OPENROUTER_API_KEY',
+              model: 'pr-reviewer', stream: false,
+            }
+          : directTransport];
+    const result = spawnSync(process.execPath, ['-e', sdkRouteProbeChild], {
+      cwd: scratch.path,
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: scratch.path,
+        PIPELINE: path.join(root, '.github/workflows/pipelines/review-pipeline.js'),
+        NODE_ENV: 'test',
+        VITEST: 'true',
+        GITHUB_ACTIONS: 'false',
+        PR_DIFF: diff,
+        ACTIVE_PERSONAS: JSON.stringify(['security', 'testing']),
+        OPENROUTER_API_KEY: route === 'openrouter' || route === 'gateway' || route === 'openrouter-fallback'
+          ? 'fixture-openrouter-key' : '',
+        OPENAI_API_KEY: route === 'direct' || route === 'openrouter-fallback' ? 'fixture-openai-key' : '',
+        DENY_OPENROUTER_SDK: denySdk ? 'true' : 'false',
+        REVIEW_YETI_TRANSPORTS: JSON.stringify(transports),
+        MAX_DIFF_CHARS: '10000',
+        GITHUB_OUTPUT: path.join(scratch.path, 'output'),
+        GITHUB_STEP_SUMMARY: path.join(scratch.path, 'summary.md'),
+        RUNNER_TEMP: scratch.path,
+        CT_REVIEW_CONFIG_DIR: scratch.path,
+        CT_REVIEW_DATA_DIR: scratch.path,
+      },
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const output = `${result.stdout}${result.stderr}`;
+    const probeLine = output.split('\n').find((line) => line.startsWith('SDK_ROUTE_PROBE '));
+    expect(probeLine).toBeDefined();
+    const outputs = fs.existsSync(path.join(scratch.path, 'output'))
+      ? Object.fromEntries(fs.readFileSync(path.join(scratch.path, 'output'), 'utf8')
+          .trim().split('\n').filter(Boolean).map((line) => {
+            const separator = line.indexOf('=');
+            return [line.slice(0, separator), line.slice(separator + 1)];
+          }))
+      : {};
+    const telemetryName = fs.readdirSync(scratch.path)
+      .find((name) => name.startsWith('review-yeti-provider-telemetry-'));
+    const telemetry = telemetryName
+      ? JSON.parse(fs.readFileSync(path.join(scratch.path, telemetryName), 'utf8'))
+      : null;
+    return {
+      ...(JSON.parse(probeLine!.slice('SDK_ROUTE_PROBE '.length)) as { events: string[]; exitCode: number }),
+      output,
+      outputs,
+      telemetry,
+    };
+  } finally {
+    // The child is closed before this exact scratch owner is cleaned up.
+    scratch.cleanup();
+  }
+}
+
+describe('OpenRouter SDK initialization follows the selected transport', () => {
+  it.each(['none', 'direct', 'gateway'] as const)('does not initialize the SDK for the %s route', (route) => {
+    const { events } = runSdkRouteProbe(route);
+    expect(events).not.toContain('openrouter-sdk-load');
+    if (route === 'direct') expect(events).toContain('direct-completions-fetch');
+    if (route === 'gateway') expect(events).toContain('gateway-completions-fetch');
+    if (route === 'none') expect(events).not.toContain('direct-completions-fetch');
+  });
+
+  it('prewarms the SDK only after OpenRouter is selected and before provider timing starts', () => {
+    const { events } = runSdkRouteProbe('openrouter');
+    const importComplete = events.indexOf('entrypoint-import-complete');
+    const sdkLoad = events.indexOf('openrouter-sdk-load');
+    const providerTimer = events.indexOf('provider-heartbeat-timer');
+    const providerFetch = events.indexOf('openrouter-completions-fetch');
+    expect(importComplete).toBeGreaterThanOrEqual(0);
+    expect(sdkLoad).toBeGreaterThanOrEqual(0);
+    expect(sdkLoad).toBeGreaterThan(importComplete);
+    expect(providerTimer).toBeGreaterThan(sdkLoad);
+    expect(providerFetch).toBeGreaterThan(providerTimer);
+    expect(events.filter((event) => event === 'openrouter-sdk-load')).toHaveLength(1);
+  });
+
+  it('keeps an OpenRouter-only route fail-closed when the optional SDK cannot load', () => {
+    const { events, exitCode, output, outputs, telemetry } = runSdkRouteProbe('openrouter', true);
+    expect(exitCode).not.toBe(0);
+    expect(outputs.verdict).not.toBe('SHIP');
+    expect(output).toContain('OpenRouter official SDK is unavailable: fixture denied optional OpenRouter SDK load');
+    expect(events).not.toContain('openrouter-completions-fetch');
+    expect(telemetry.lanes).toHaveLength(2);
+    expect(telemetry.lanes.every((lane: any) => lane.failureClass === 'unknown')).toBe(true);
+    expect(telemetry.lanes.every((lane: any) => lane.responseAttempts[0]?.failureClass === 'unknown')).toBe(true);
+  });
+
+  it('uses an already-configured direct fallback when the OpenRouter SDK cannot load', () => {
+    const { events, exitCode, outputs, telemetry } = runSdkRouteProbe('openrouter-fallback', true);
+    expect(exitCode).toBe(0);
+    expect(outputs.verdict).toBe('SHIP');
+    expect(events).toContain('openrouter-sdk-load');
+    expect(events).toContain('direct-completions-fetch');
+    expect(events).not.toContain('openrouter-completions-fetch');
+    expect(telemetry.lanes).toHaveLength(2);
+    expect(telemetry.lanes.every((lane: any) => lane.responseAttempts.some(
+      (attempt: any) => attempt.failureClass === 'unknown' && attempt.outcome === 'transport_error',
+    ))).toBe(true);
+    expect(telemetry.lanes.every((lane: any) => lane.responseAttempts.some(
+      (attempt: any) => attempt.outcome === 'parsed',
+    ))).toBe(true);
   });
 });

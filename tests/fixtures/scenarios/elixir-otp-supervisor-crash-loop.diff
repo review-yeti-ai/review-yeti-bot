@@ -5,8 +5,8 @@ diff --git a/lib/exampleorg/workers/supervisor.ex b/lib/exampleorg/workers/super
      children = [
 +      # Flaw: Permanent restart on transient network worker causes supervisor crash loop
 +      %{
-+        id: exampleorg.Workers.TransientWorker,
-+        start: {exampleorg.Workers.TransientWorker, :start_link, [[]]},
++        id: Exampleorg.Workers.TransientWorker,
++        start: {Exampleorg.Workers.TransientWorker, :start_link, [[]]},
 +        restart: :permanent
 +      }
      ]

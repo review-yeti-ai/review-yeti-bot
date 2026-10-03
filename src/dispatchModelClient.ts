@@ -21,7 +21,7 @@ export function resolveModelClientFromEnv(
   try {
     const client = new OpenRouterClient({
       apiKey: modelApiKey,
-      baseUrl: modelBaseUrl,
+      baseUrl: modelBaseUrl || 'https://openrouter.ai/api/v1',
     });
     logger.info('Inbound model client initialized for remote MCP router', {
       baseUrl: modelBaseUrl || 'https://openrouter.ai/api/v1',

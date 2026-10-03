@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatIncompleteRosterGateSummary } from '../../src/review/incompleteRosterSummary';
+import { formatIncompleteRosterGateSummary, parseIncompleteRosterSummary } from '../../src/review/incompleteRosterSummary';
 import { validateReviewGenerationRecoveryEvidence } from '../../src/review/reviewGenerationRecovery';
 
 const HEAD = 'a'.repeat(40);
@@ -49,4 +49,27 @@ describe('incomplete roster Gate summary', () => {
       expectedGeneration: 2, expectedAppId: 77, incompleteP2Recovery: true,
     }, evidence(EXPECTED_GATE_SUMMARY.replace('2 completed', '1 completed')))).toThrow(/generation recovery ledger/u);
   });
+});
+
+describe('current incomplete summary counts', () => {
+  it('rejects raw counts below the canonical total and accepts equality', () => {
+    const summary = WORKER_SUMMARY.replace('Findings: 1', 'Findings: 3');
+    expect(parseIncompleteRosterSummary(summary.replace('1 raw', '2 raw'), HEAD)).toBeNull();
+    expect(parseIncompleteRosterSummary(summary.replace('1 raw', '3 raw'), HEAD)?.canonicalFindingCount).toBe(3);
+  });
+
+  it('keeps historical P2-inclusive wording outside current generation admission', () => {
+    expect(parseIncompleteRosterSummary(WORKER_SUMMARY.replace('P0/P1: 0', 'P0/P1/P2: 1'), HEAD)).toBeNull();
+  });
+});
+
+it('retains exact historical zero-finding recovery without admitting positive historical counts', () => {
+  const historicalZero = WORKER_SUMMARY.replace('Findings: 1', 'Findings: 0').replace('1 raw', '0 raw').replace('P0/P1: 0', 'P0/P1/P2: 0');
+  expect(parseIncompleteRosterSummary(historicalZero, HEAD)?.canonicalFindingCount).toBe(0);
+  const proof = evidence();
+  proof[0].legacyIncompleteRoster.workerSummary = historicalZero;
+  expect(validateReviewGenerationRecoveryEvidence({
+    owner: 'example', repo: 'repo', headSha: HEAD, runId: RUN,
+    expectedGeneration: 2, expectedAppId: 77,
+  }, proof)).toHaveLength(1);
 });

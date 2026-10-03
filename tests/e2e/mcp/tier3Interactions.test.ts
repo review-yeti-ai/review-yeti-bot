@@ -137,7 +137,7 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
     expect(explainRes.status).toBe(200);
     expect(explainRes.result.satisfies_requirement).toBe(true);
 
-    // 3. Developer submits dispute with technical justification
+    // 3. A request without accepted completion evidence cannot change the finding.
     const disputeRes = await env.callTool('dispute_finding', {
       owner: 'exampleorg',
       repo: 'example-api',
@@ -146,9 +146,12 @@ describe('Tier 3: Cross-Feature Interactions (tests/e2e/mcp/tier3Interactions.te
       counter_argument: 'We implemented LRUCache bounded to 1000 items in store.ts with automatic eviction.',
     });
 
-    expect(disputeRes.status).toBe(200);
-    expect(disputeRes.result.verdict).toBe('overruled');
-    expect(disputeRes.result.remaining_blockers).toBe(0);
+    expect(disputeRes.error?.message).toMatch(/temporarily unavailable/i);
+    const findingsAfterDispute = await env.callTool('get_review_findings', {
+      owner: 'exampleorg', repo: 'example-api', pull_number: 803,
+    });
+    expect(findingsAfterDispute.result.total_count).toBe(1);
+    expect(env.deepSeek.disputeCalls).toHaveLength(0);
 
     // 4. Synthesize unified fix diff for codebase application
     const fixRes = await env.callTool('generate_fix_diff', {

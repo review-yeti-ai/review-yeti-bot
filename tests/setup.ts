@@ -105,6 +105,10 @@ process.env.REVIEW_YETI_DASHBOARD_STORE = path.join(suiteStateRoot, `test_store_
 process.env.CT_REVIEW_PLATFORM_DB = process.env.CT_REVIEW_PLATFORM_DB || ':memory:';
 process.env.WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'test_webhook_secret';
 process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
+// Keep the harness independent of an operator's shell rollback setting. With the
+// variable absent, trusted publishing boundaries use their strict default while
+// the lower-level arbitration kernel retains its documented opt-in behavior.
+delete process.env.REVIEW_YETI_REQUIRE_ADVISORY;
 // REL-1069: the gateway standard is OPENAI_API_KEY + OPENAI_BASE_URL, and the
 // app's client now fails closed rather than defaulting to a vendor URL. This
 // harness simulates a CONFIGURED environment, so it must supply both, exactly
@@ -115,6 +119,8 @@ process.env.GITHUB_APP_ID = process.env.GITHUB_APP_ID || '123456';
 process.env.GITHUB_APP_PRIVATE_KEY = process.env.GITHUB_APP_PRIVATE_KEY || '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0Z3\n-----END RSA PRIVATE KEY-----';
 process.env.OMNIROUTE_BASE_URL = process.env.OMNIROUTE_BASE_URL || 'http://localhost:8080';
 process.env.ADMIN_PASSWORD = 'admin123';
+// Central review identity is deployment configuration with no default (see reviewCheckIdentity.ts).
+process.env.REVIEW_YETI_CENTRAL_REPOSITORY = process.env.REVIEW_YETI_CENTRAL_REPOSITORY || 'exampleorg/example-review-actions';
 
 // Disable proxy environment variables during unit/e2e testing
 delete process.env.http_proxy;

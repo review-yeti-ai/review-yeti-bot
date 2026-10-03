@@ -11,7 +11,7 @@ const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
 const FIXTURE_SOURCE = Object.freeze({
   repository: 'exampleorg/example-review-actions',
   commit: 'f28022666c4f32e22c8a4394ae12a3e72083c636',
-  digest: '5ab2aab69d774c057c05e01c192a6d9a489622f6071742bbcec18321d2ffdbb2',
+  digest: '0e90d4d8df1948e3aef44eb059f4f8f4fa8f72f0a06602b1e1659d01816e0154',
 });
 
 const BASE_URL_BY_CLASS: Record<string, string> = Object.freeze({
@@ -205,7 +205,7 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
     expect(FIXTURE_SOURCE).toEqual({
       repository: 'exampleorg/example-review-actions',
       commit: 'f28022666c4f32e22c8a4394ae12a3e72083c636',
-      digest: '5ab2aab69d774c057c05e01c192a6d9a489622f6071742bbcec18321d2ffdbb2',
+      digest: '0e90d4d8df1948e3aef44eb059f4f8f4fa8f72f0a06602b1e1659d01816e0154',
     });
   });
 
@@ -270,8 +270,8 @@ describe('exampleorg Rank 2A execution plan through the real Action request path
             { role: 'user', content: '<panel-assignment-prompt>' },
           ],
           reasoning: { effort: 'high' },
-          session_id: 'review-yeti-v1-e667c32550a7b7dc2330b4dd1a350d9ddef4ba86497382c1',
-          prompt_cache_key: 'review-yeti-v1-e667c32550a7b7dc2330b4dd1a350d9ddef4ba86497382c1',
+          session_id: 'review-yeti-v1-d0bb8c699bc551532feca20aa446d995db96f69da538b28a',
+          prompt_cache_key: 'review-yeti-v1-d0bb8c699bc551532feca20aa446d995db96f69da538b28a',
           provider: {
             allow_fallbacks: true,
             require_parameters: true,

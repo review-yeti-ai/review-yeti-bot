@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
 import {
   createPartitionPlan,
   detectFileStatus,
@@ -19,6 +20,10 @@ import {
   PartitionPlan,
   FileStatus,
 } from '../../src/pipeline/shaPartitionManager';
+import * as partitionManagerModule from '../../src/pipeline/shaPartitionManager';
+
+const pipeline = createRequire(import.meta.url)('../../.github/workflows/pipelines/review-pipeline.js');
+const { assessReviewAssignmentBudget } = createRequire(import.meta.url)('../../.github/workflows/pipelines/incremental-review-scope.js');
 
 // Re-export for any test suites importing from this test file
 export {
@@ -29,6 +34,9 @@ export {
 };
 export type { DiffPartition, PartitionPlan, FileStatus };
 
+const sourceOrderedFiles = (plan: PartitionPlan) => plan.partitions.flatMap((partition) => partition.files)
+  .sort((a, b) => (a.sourceSliceIndex ?? 0) - (b.sourceSliceIndex ?? 0));
+
 // ============================================================================
 // TEST SUITE: TIERS 1 TO 4
 // ============================================================================
@@ -36,6 +44,321 @@ export type { DiffPartition, PartitionPlan, FileStatus };
 describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
   const BASE_SHA = '0123456789abcdef0123456789abcdef01234567';
   const HEAD_SHA = 'fedcba9876543210fedcba9876543210fedcba98';
+
+  describe('lossless first-fit-decreasing admission', () => {
+    const file = (index: number, size: number) => {
+      const path = `src/packing-${index}.ts`;
+      const prefix = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -0,0 +1 @@\n+`;
+      return { path, patch: prefix + 'x'.repeat(size - prefix.length - 1) + '\n' };
+    };
+    const request = (files: ReturnType<typeof file>[], cap: number) => ({
+      files, baseSha: BASE_SHA, headSha: HEAD_SHA, safeDiffCapacityChars: cap,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    });
+
+    it('repairs next-fit fragmentation without changing the five-persona roster or 24-assignment cap', () => {
+      const files = [600, 600, 400, 600, 400, 600, 400, 400].map((size, index) => file(index, size));
+      const before = structuredClone(files);
+      const plan = pipeline.createReviewPartitionPlan(request(files, 1000));
+      expect(plan.partitions.map((part: DiffPartition) => part.totalChars)).toEqual([1000, 1000, 1000, 1000]);
+      expect(assessReviewAssignmentBudget(plan.partitions.length, 5, 24)).toMatchObject({ admitted: true, planned: 20 });
+      expect(assessReviewAssignmentBudget(5, 5, 24)).toMatchObject({ admitted: false, planned: 25 });
+      expect(plan.partitions.map((part: DiffPartition) => part.files.map((piece) => piece.path)))
+        .toEqual([[0, 2], [1, 4], [3, 6], [5, 7]].map((indices) => indices.map((index) => files[index].path)));
+      expect(plan).toMatchObject({ coveragePercent: 100, omittedFilesCount: 0, totalFiles: 8 });
+      expect(plan.partitions.flatMap((part: DiffPartition) => part.files).map((piece: { patch: string }) => piece.patch).sort())
+        .toEqual(files.map((piece) => piece.patch).sort());
+      expect(files).toEqual(before);
+      expect(pipeline.createReviewPartitionPlan(request(files, 1000))).toEqual(plan);
+    });
+
+    it('keeps irreducible whole slices blocked by the same assignment cap', () => {
+      const files = Array.from({ length: 5 }, (_, index) => file(index, 600));
+      const plan = pipeline.createReviewPartitionPlan(request(files, 1000));
+      expect(plan.partitions).toHaveLength(5);
+      expect(plan).toMatchObject({ coveragePercent: 100, omittedFilesCount: 0 });
+      expect(assessReviewAssignmentBudget(plan.partitions.length, 5, 24)).toMatchObject({ admitted: false, planned: 25 });
+    });
+
+    it('validates reordered split slices in source order and rejects corrupted ordinal metadata', () => {
+      const path = 'src/split-packing.ts';
+      const header = `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n`;
+      const first = '@@ -0,0 +1 @@ first\n+small';
+      const second = '@@ -1,0 +2 @@ second\n+' + 'y'.repeat(200);
+      const files = [{ path, patch: `${header}${first}\n${second}\n` }];
+      const input = request(files, header.length + second.length + 1);
+      const plan = pipeline.createReviewPartitionPlan(input);
+      const pieces = plan.partitions.flatMap((part: DiffPartition) => part.files);
+      expect(pieces.map((piece: { sourceSliceIndex: number }) => piece.sourceSliceIndex)).toEqual([1, 0]);
+      expect([...pieces].sort((a, b) => a.sourceSliceIndex - b.sourceSliceIndex).map((piece) => piece.patch.slice(header.length).trimEnd()))
+        .toEqual([first, second]);
+      for (const index of [-1, 0, 1.5, 2, undefined]) {
+        const corrupted = structuredClone(plan);
+        corrupted.partitions[0].files[0].sourceSliceIndex = index;
+        expect(() => pipeline.createReviewPartitionPlan({ ...input, partitionManager: { createPartitionPlan: () => corrupted } }))
+          .toThrow('complete, bounded file and hunk coverage');
+      }
+      const duplicate = structuredClone(plan);
+      duplicate.partitions[1].files[0].patch = duplicate.partitions[0].files[0].patch;
+      duplicate.partitions[1].totalChars = duplicate.partitions[1].files[0].patch.length;
+      expect(() => pipeline.createReviewPartitionPlan({ ...input, partitionManager: { createPartitionPlan: () => duplicate } }))
+        .toThrow('complete, bounded file and hunk coverage');
+      const changed = structuredClone(plan);
+      changed.partitions[1].files[0].patch = changed.partitions[1].files[0].patch.replace('+small', '+other');
+      expect(() => pipeline.createReviewPartitionPlan({ ...input, partitionManager: { createPartitionPlan: () => changed } }))
+        .toThrow('complete, bounded file and hunk coverage');
+    });
+  });
+
+  describe('canonical unified-hunk validation helpers', () => {
+    const helpers = partitionManagerModule as unknown as Record<string, unknown>;
+
+    it('exports the parser and range cursor used by the Action validator', () => {
+      expect(typeof helpers.parseUnifiedHunk).toBe('function');
+      expect(typeof helpers.unifiedFragmentRangeStart).toBe('function');
+    });
+
+    it('parses counted and omitted-count hunks and rejects an orphan no-newline marker', () => {
+      const parseUnifiedHunk = helpers.parseUnifiedHunk as (hunk: string) => unknown;
+      expect(parseUnifiedHunk('@@ -0,0 +1,2 @@ insertion\n+one\n+two')).toEqual({
+        oldStart: 0,
+        oldCount: 0,
+        newStart: 1,
+        newCount: 2,
+        section: ' insertion',
+        body: ['+one', '+two'],
+      });
+      expect(parseUnifiedHunk('@@ -1 +1 @@ replacement\n-old\n+new')).toEqual({
+        oldStart: 1,
+        oldCount: 1,
+        newStart: 1,
+        newCount: 1,
+        section: ' replacement',
+        body: ['-old', '+new'],
+      });
+      expect(parseUnifiedHunk('@@ -1,1 +1,1 @@ malformed\n\\ No newline at end of file\n-old\n+new')).toBeNull();
+    });
+
+    it('computes literal zero-side anchors from the shared source cursor', () => {
+      const rangeStart = helpers.unifiedFragmentRangeStart as (
+        sourceStart: number,
+        sourceCount: number,
+        consumedCount: number,
+        fragmentCount: number,
+      ) => number;
+      expect(rangeStart(0, 0, 0, 0)).toBe(0); // insertion at the beginning
+      expect(rangeStart(1, 2, 1, 1)).toBe(2); // second inserted line
+      expect(rangeStart(2, 0, 0, 0)).toBe(2); // pure deletion at source end
+      expect(rangeStart(3, 2, 2, 0)).toBe(4); // zero new-side range after two old lines
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('rejects an unrecognized source and fragment body prefix: %s', (line) => {
+      const source = '@@ -10,1 +10,1 @@ replacement\n-old\n+new';
+      const fragment = '@@ -10,1 +9,0 @@ replacement\n-old';
+      expect(partitionManagerModule.parseUnifiedHunk(source)).not.toBeNull();
+      expect(partitionManagerModule.parseUnifiedHunk(fragment)).not.toBeNull();
+      // Counts remain 1/1 and 1/0 if this line is silently ignored. No marker or
+      // invalid header can mask the unrecognized-body rejection under test.
+      expect(partitionManagerModule.parseUnifiedHunk(source.replace('\n+new', `\n${line}\n+new`))).toBeNull();
+      expect(partitionManagerModule.parseUnifiedHunk(`${fragment}\n${line}`)).toBeNull();
+    });
+  });
+
+  describe('unrecognized-body public producer and Action admission', () => {
+    const filePath = 'src/unrecognized-body.ts';
+    const fileHeader = `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n`;
+    const request = (patch: string, safeDiffCapacityChars: number) => ({
+      files: [{ path: filePath, patch, status: 'modified' }],
+      baseSha: BASE_SHA,
+      headSha: HEAD_SHA,
+      safeDiffCapacityChars,
+      modelConfig: { guardedGatewayDestination: true, model: 'pr-reviewer' },
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('preserves an oversized malformed source instead of manufacturing fragments: %s', (line) => {
+      const body = ['-old-line', ...Array.from({ length: 4 }, (_unused, index) => `+added-line-${index}-${'x'.repeat(20)}`)];
+      const validPatch = `${fileHeader}@@ -1,1 +1,4 @@\n${body.join('\n')}\n`;
+      const patch = validPatch.replace('\n+added-line-0', `\n${line}\n+added-line-0`);
+      const cap = fileHeader.length + 70;
+      const plan = (candidate: string) => createPartitionPlan(
+        [{ path: filePath, patch: candidate }], BASE_SHA, HEAD_SHA, cap, { splitOversizedHunksAtLines: true },
+      );
+
+      expect(plan(validPatch).partitions.length).toBeGreaterThan(1);
+      expect(plan(validPatch).partitions.every((partition) => partition.totalChars <= cap)).toBe(true);
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(plan(patch).partitions.flatMap((partition) => partition.files.map((file) => file.patch))).toEqual([patch]);
+      expect(() => pipeline.createReviewPartitionPlan(request(patch, cap)))
+        .toThrow('complete, bounded file and hunk coverage');
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('rejects a count-matching malformed source through the real Action validator: %s', (line) => {
+      const firstHunk = '@@ -1,1 +1,1 @@ first\n-old\n+new';
+      const secondHunk = `@@ -2,1 +2,1 @@ second\n-${'o'.repeat(30)}\n+${'n'.repeat(30)}`;
+      const malformedHunk = firstHunk.replace('\n+new', `\n${line}\n+new`);
+      const cap = fileHeader.length + Math.max(malformedHunk.length, secondHunk.length) + 1;
+      const validPatch = `${fileHeader}${firstHunk}\n${secondHunk}\n`;
+      const patch = `${fileHeader}${malformedHunk}\n${secondHunk}\n`;
+      expect(validPatch.length).toBeGreaterThan(cap);
+      expect(pipeline.createReviewPartitionPlan(request(validPatch, cap)).partitions).toHaveLength(2);
+
+      // Both emitted copies fit the cap and retain every byte; rejection must
+      // validate the source hunk, not rely on overflow, missing files or counts.
+      const plan = createPartitionPlan([{ path: filePath, patch }], BASE_SHA, HEAD_SHA, cap, { splitOversizedHunksAtLines: true });
+      expect(plan.partitions).toHaveLength(2);
+      expect(plan.partitions.every((partition) => partition.totalChars <= cap)).toBe(true);
+      expect(sourceOrderedFiles(plan)[0].patch).toBe(`${fileHeader}${malformedHunk}\n`);
+      expect(() => pipeline.createReviewPartitionPlan(request(patch, cap)))
+        .toThrow('complete, bounded file and hunk coverage');
+    });
+
+    it.each(['?unexpected', 'not a diff line'])('rejects a count-matching malformed fragment through the real Action parser: %s', (line) => {
+      const firstHunk = '@@ -1,1 +1,1 @@ first\n-old\n+new';
+      const secondHunk = `@@ -2,1 +2,1 @@ second\n-${'o'.repeat(30)}\n+${'n'.repeat(30)}`;
+      const patch = `${fileHeader}${firstHunk}\n${secondHunk}\n`;
+      const cap = fileHeader.length + secondHunk.length + 1;
+      const input = request(patch, cap);
+      const validPlan: PartitionPlan = pipeline.createReviewPartitionPlan(input);
+      expect(validPlan.partitions).toHaveLength(2);
+      const malformedPlan = structuredClone(validPlan);
+      const fragment = firstHunk.replace('\n+new', `\n${line}\n+new`);
+      const partition = malformedPlan.partitions[0];
+      const plannedFile = partition.files[0];
+      plannedFile.patch = `${fileHeader}${fragment}\n`;
+      plannedFile.originalChars = plannedFile.patch.length;
+      plannedFile.compactedChars = plannedFile.patch.length;
+      partition.totalChars = plannedFile.patch.length;
+      expect(malformedPlan.partitions.every((planned) => planned.totalChars <= cap)).toBe(true);
+
+      expect(pipeline.shaPartitionManager.parseUnifiedHunk(firstHunk)).not.toBeNull();
+      expect(pipeline.shaPartitionManager.parseUnifiedHunk(fragment)).toBeNull();
+      expect(() => pipeline.createReviewPartitionPlan({
+        ...input,
+        partitionManager: { createPartitionPlan: () => malformedPlan },
+      })).toThrow('complete, bounded file and hunk coverage');
+    });
+  });
+
+  describe('shared legacy and guarded hunk scanner compatibility', () => {
+    const filePath = 'src/shared-scan.ts';
+    const fileHeader = `diff --git a/${filePath} b/${filePath}\n--- a/${filePath}\n+++ b/${filePath}\n`;
+    const firstHunk = '@@ -1,1 +1,1 @@ first\n-old\n+new';
+    const secondHunk = '@@ -2,1 +2,1 @@ second\n-old\n+new';
+
+    const split = (patch: string, safeDiffChars: number, guarded: boolean) => {
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch,
+        originalChars: patch.length,
+        compactedChars: patch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, guarded ? { splitOversizedHunksAtLines: true } : {});
+      return sourceOrderedFiles(plan).map((file) => file.patch);
+    };
+
+    it.each([
+      { name: 'no terminal newline', suffix: '' },
+      { name: 'one terminal newline', suffix: '\n' },
+      { name: 'two terminal newlines', suffix: '\n\n' },
+    ])('returns a one-hunk legacy patch byte-for-byte with $name', ({ suffix }) => {
+      const patch = `${fileHeader}${firstHunk}${suffix}`;
+      expect(split(patch, patch.length - 1, false)).toEqual([patch]);
+    });
+
+    it.each([
+      { name: 'no terminal newline', suffix: '', legacyTail: '\n', guardedTail: '\n' },
+      { name: 'one terminal newline', suffix: '\n', legacyTail: '\n\n', guardedTail: '\n' },
+      { name: 'two terminal newlines', suffix: '\n\n', legacyTail: '\n\n\n', guardedTail: '\n\n' },
+    ])('preserves literal legacy bytes and guarded one-line transport normalization for $name', ({ suffix, legacyTail, guardedTail }) => {
+      const patch = `${fileHeader}${firstHunk}\n${secondHunk}${suffix}`;
+
+      const legacyCap = fileHeader.length + Math.max(firstHunk.length, secondHunk.length + suffix.length) + 1;
+      expect(patch.length).toBeGreaterThan(legacyCap);
+      expect(split(patch, legacyCap, false)).toEqual([
+        `${fileHeader}${firstHunk}\n`,
+        `${fileHeader}${secondHunk}${legacyTail}`,
+      ]);
+
+      const guardedResidualNewlines = Math.max(0, suffix.length - 1);
+      const guardedCap = fileHeader.length + Math.max(firstHunk.length, secondHunk.length + guardedResidualNewlines) + 1;
+      expect(patch.length).toBeGreaterThan(guardedCap);
+      expect(split(patch, guardedCap, true)).toEqual([
+        `${fileHeader}${firstHunk}\n`,
+        `${fileHeader}${secondHunk}${guardedTail}`,
+      ]);
+    });
+
+    it('retains whole-hunk legacy overflow but fails closed for malformed or indivisible guarded hunks', () => {
+      const oversizedBody = `+${'x'.repeat(180)}`;
+      const oversizedHunk = `@@ -0,0 +1,1 @@ indivisible\n${oversizedBody}`;
+      const malformed = `${fileHeader}@@ -1,2 +1,2 @@ malformed\n${oversizedBody}`;
+      const indivisible = `${fileHeader}${oversizedHunk}`;
+      const cap = fileHeader.length + 80;
+
+      expect(split(`${fileHeader}${firstHunk}\n${oversizedHunk}`, cap, false)).toEqual([
+        `${fileHeader}${firstHunk}\n`,
+        `${fileHeader}${oversizedHunk}\n`,
+      ]);
+      expect(split(malformed, cap, true)).toEqual([malformed]);
+      expect(split(indivisible, cap, true)).toEqual([indivisible]);
+    });
+
+    const marker = '\\ No newline at end of file';
+
+    it.each([
+      {
+        name: 'both replacement sides',
+        header: '@@ -1 +1 @@',
+        body: ['-old-without-newline', marker, '+new-without-newline', marker],
+        fragments: [
+          `@@ -1,1 +0,0 @@\n-old-without-newline\n${marker}`,
+          `@@ -1,0 +1,1 @@\n+new-without-newline\n${marker}`,
+        ],
+      },
+      {
+        name: 'unchanged EOF context',
+        header: '@@ -1,2 +1,2 @@',
+        body: ['-old-before-unchanged-last-context', '+new-before-unchanged-last-context', ' shared-last-line', marker],
+        fragments: [
+          '@@ -1,1 +0,0 @@\n-old-before-unchanged-last-context',
+          '@@ -1,0 +1,1 @@\n+new-before-unchanged-last-context',
+          `@@ -2,1 +2,1 @@\n shared-last-line\n${marker}`,
+        ],
+      },
+    ])('keeps literal marker atoms attached for $name through the public guarded plan', ({ header, body, fragments }) => {
+      const patch = `${fileHeader}${header}\n${body.join('\n')}\n`;
+      const cap = fileHeader.length + Math.max(...fragments.map((fragment) => fragment.length + 1));
+      const expected = fragments.map((fragment) => `${fileHeader}${fragment}\n`);
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(split(patch, cap, false)).toEqual([patch]); // legacy does not split a single source hunk
+      expect(split(patch, cap, true)).toEqual(expected);
+      expect(expected.every((fragment) => fragment.length <= cap)).toBe(true);
+    });
+
+    it.each([
+      { name: 'orphan', prefix: [marker, '-old'] },
+      { name: 'duplicate', prefix: ['-old', marker, marker] },
+      { name: 'detached', prefix: ['-old', '', marker] },
+      { name: 'invalid body line', prefix: ['-old', 'not a diff line', marker] },
+    ])('refuses to fragment an oversized source with a $name marker owner', ({ prefix }) => {
+      const additions = ['+one-long-added-line', '+two-long-added-line', '+three-long-added-line', '+four-long-added-line'];
+      const patch = `${fileHeader}@@ -1 +1,4 @@ marker refusal\n${[...prefix, ...additions].join('\n')}\n`;
+      // This cap fits even the duplicate-marker atom: refusal must come from ownership validation,
+      // not an accidentally indivisible line. The additions still require multiple fragments.
+      const cap = `${fileHeader}@@ -1,1 +0,0 @@ marker refusal\n-old\n${marker}\n${marker}\n`.length;
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(split(patch, cap, true)).toEqual([patch]);
+    });
+
+    it('refuses to detach a valid marker merely to fit its owning line under the public cap', () => {
+      const oldLine = `-${'o'.repeat(60)}`;
+      const newLine = `+${'n'.repeat(60)}`;
+      const patch = `${fileHeader}@@ -1 +1 @@\n${oldLine}\n${marker}\n${newLine}\n`;
+      const cap = `${fileHeader}@@ -1,1 +0,0 @@\n${oldLine}\n`.length;
+      expect(patch.length).toBeGreaterThan(cap);
+      expect(split(patch, cap, true)).toEqual([patch]);
+    });
+  });
 
   // ==========================================================================
   // TIER 1: COMMIT SHA RANGE FORMATTING & VALIDATION
@@ -160,12 +483,12 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       ];
 
       const plan = createPartitionPlan(files, BASE_SHA, HEAD_SHA, 20000);
-      expect(plan.partitions.length).toBe(3);
-      expect(plan.partitions[1].files[0].path).toBe('src/giant.ts');
+      expect(plan.partitions.length).toBe(2);
+      expect(plan.partitions[0].files.map((file) => file.path)).toEqual(['src/giant.ts']);
       expect(plan.coveragePercent).toBe(100);
     });
 
-    it('TEST_T2_05: multi-hunk oversized file splits across hunk boundaries into consecutive partitions', () => {
+    it('TEST_T2_05: multi-hunk oversized file preserves its source-ordered slices across bounded partitions', () => {
       const hunk1 = '@@ -1,10 +1,15 @@\n' + '+lineA\n'.repeat(500); // ~3500 chars
       const hunk2 = '@@ -50,10 +55,15 @@\n' + '+lineB\n'.repeat(500); // ~3500 chars
       const hunk3 = '@@ -100,10 +110,15 @@\n' + '+lineC\n'.repeat(500); // ~3500 chars
@@ -179,11 +502,373 @@ describe('ShaPartitionManager Unit & Coverage Tests (Tiers 1-4)', () => {
       const plan = createPartitionPlan(files, BASE_SHA, HEAD_SHA, 5000);
 
       expect(plan.partitions.length).toBe(3);
-      expect(plan.partitions[0].files[0].patch).toContain('+lineA');
-      expect(plan.partitions[1].files[0].patch).toContain('+lineB');
-      expect(plan.partitions[2].files[0].patch).toContain('+lineC');
+      const slices = sourceOrderedFiles(plan);
+      expect(slices[0].patch).toContain('+lineA');
+      expect(slices[1].patch).toContain('+lineB');
+      expect(slices[2].patch).toContain('+lineC');
       expect(plan.coveragePercent).toBe(100);
       expect(plan.omittedFilesCount).toBe(0);
+    });
+
+    it('splits a single oversized unified hunk losslessly and recalculates each fragment range', () => {
+      const filePath = 'src/large.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = [
+        ' context-before',
+        ...Array.from({ length: 30 }, (_unused, index) => [
+          `-removed-${index}`,
+          `+added-${index}`,
+          `+additional-${index}`,
+        ]).flat(),
+        ' context-after',
+      ];
+      const oldCount = body.filter((line) => !line.startsWith('+')).length;
+      const newCount = body.filter((line) => !line.startsWith('-')).length;
+      const patch = `${fileHeader}@@ -100,${oldCount} +200,${newCount} @@ function changed() {\n${body.join('\n')}\n`;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch,
+        originalChars: patch.length,
+        compactedChars: patch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, 175, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(plan.partitions.every((partition) => partition.totalChars <= 175)).toBe(true);
+
+      const hunks = pieces.flatMap((piece) => {
+        const parsed: Array<{ oldStart: number; oldCount: number; newStart: number; newCount: number; body: string[] }> = [];
+        let current: typeof parsed[number] | undefined;
+        for (const line of piece.patch.split('\n')) {
+          const match = line.match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@/u);
+          if (match) {
+            if (current) parsed.push(current);
+            current = {
+              oldStart: Number(match[1]),
+              oldCount: Number(match[2]),
+              newStart: Number(match[3]),
+              newCount: Number(match[4]),
+              body: [],
+            };
+          } else if (current && line !== '') {
+            current.body.push(line);
+          }
+        }
+        if (current) parsed.push(current);
+        return parsed;
+      });
+
+      expect(hunks.length).toBeGreaterThan(1);
+      expect(hunks.flatMap((hunk) => hunk.body)).toEqual(body);
+      let oldConsumed = 0;
+      let newConsumed = 0;
+      for (const hunk of hunks) {
+        const actualOldCount = hunk.body.filter((line) => !line.startsWith('+') && line !== '\\ No newline at end of file').length;
+        const actualNewCount = hunk.body.filter((line) => !line.startsWith('-') && line !== '\\ No newline at end of file').length;
+        const oldCursor = 100 + (oldCount === 0 ? 1 : 0) + oldConsumed;
+        const newCursor = 200 + (newCount === 0 ? 1 : 0) + newConsumed;
+        expect(hunk.oldStart).toBe(hunk.oldCount === 0 ? oldCursor - 1 : oldCursor);
+        expect(hunk.newStart).toBe(hunk.newCount === 0 ? newCursor - 1 : newCursor);
+        expect(hunk.oldCount).toBe(actualOldCount);
+        expect(hunk.newCount).toBe(actualNewCount);
+        oldConsumed += actualOldCount;
+        newConsumed += actualNewCount;
+      }
+      expect(oldConsumed).toBe(oldCount);
+      expect(newConsumed).toBe(newCount);
+    });
+
+    it('uses canonical zero-count anchors at insertion, deletion, mixed, and omitted-single-count boundaries', () => {
+      const filePath = 'src/zero-range.ts';
+      const fileHeader = 'diff --git a/' + filePath + ' b/' + filePath + '\n'
+        + 'index 0000000..1111111 100644\n'
+        + '--- a/' + filePath + '\n'
+        + '+++ b/' + filePath + '\n';
+      const cases: Array<{
+        name: string;
+        sourceHeader: string;
+        body: string[];
+        expected: Array<{ header: string; body: string[] }>;
+      }> = [
+        {
+          name: 'mixed insertion between context lines',
+          sourceHeader: '@@ -1,2 +1,4 @@',
+          body: [' context-before', '+inserted-one', '+inserted-two', ' context-after'],
+          expected: [
+            { header: '@@ -1,1 +1,1 @@', body: [' context-before'] },
+            { header: '@@ -1,0 +2,1 @@', body: ['+inserted-one'] },
+            { header: '@@ -1,0 +3,1 @@', body: ['+inserted-two'] },
+            { header: '@@ -2,1 +4,1 @@', body: [' context-after'] },
+          ],
+        },
+        {
+          name: 'insertion at the beginning of an empty old range',
+          sourceHeader: '@@ -0,0 +1,2 @@',
+          body: ['+inserted-one', '+inserted-two'],
+          expected: [
+            { header: '@@ -0,0 +1,1 @@', body: ['+inserted-one'] },
+            { header: '@@ -0,0 +2,1 @@', body: ['+inserted-two'] },
+          ],
+        },
+        {
+          name: 'insertion at the end of an empty old range',
+          sourceHeader: '@@ -2,0 +3,2 @@',
+          body: ['+inserted-one', '+inserted-two'],
+          expected: [
+            { header: '@@ -2,0 +3,1 @@', body: ['+inserted-one'] },
+            { header: '@@ -2,0 +4,1 @@', body: ['+inserted-two'] },
+          ],
+        },
+        {
+          name: 'pure deletion with an empty new range',
+          sourceHeader: '@@ -3,2 +2,0 @@',
+          body: ['-removed-one', '-removed-two'],
+          expected: [
+            { header: '@@ -3,1 +2,0 @@', body: ['-removed-one'] },
+            { header: '@@ -4,1 +2,0 @@', body: ['-removed-two'] },
+          ],
+        },
+        {
+          name: 'omitted single counts with replacement',
+          sourceHeader: '@@ -1 +1 @@',
+          body: ['-old-line', '+new-line'],
+          expected: [
+            { header: '@@ -1,1 +0,0 @@', body: ['-old-line'] },
+            { header: '@@ -1,0 +1,1 @@', body: ['+new-line'] },
+          ],
+        },
+      ];
+
+      for (const testCase of cases) {
+        const sourcePatch = fileHeader + testCase.sourceHeader + '\n' + testCase.body.join('\n') + '\n';
+        const expectedFragments = testCase.expected.map((fragment) => fragment.header + '\n' + fragment.body.join('\n'));
+        const safeDiffChars = fileHeader.length + Math.max(...expectedFragments.map((fragment) => fragment.length + 1));
+        expect(sourcePatch.length, testCase.name).toBeGreaterThan(safeDiffChars);
+
+        const plan = createPartitionPlan([{
+          path: filePath,
+          patch: sourcePatch,
+          originalChars: sourcePatch.length,
+          compactedChars: sourcePatch.length,
+          status: 'modified',
+        }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+        const pieces = sourceOrderedFiles(plan);
+        const actualFragments = pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''));
+
+        expect(plan.partitions.every((partition) => partition.totalChars <= safeDiffChars), testCase.name).toBe(true);
+        expect(actualFragments, testCase.name).toEqual(expectedFragments);
+      }
+    });
+
+    it('accounts for decimal count growth at the exact JS-character cap', () => {
+      const filePath = 'src/decimal-count-growth.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = Array.from({ length: 10 }, () => ' x');
+      const sourcePatch = `${fileHeader}@@ -1,10 +1,10 @@\n${body.join('\n')}\n`;
+      const firstNine = `@@ -1,9 +1,9 @@\n${body.slice(0, 9).join('\n')}`;
+      const safeDiffChars = fileHeader.length + firstNine.length + 1 + 3;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+      expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''))).toEqual([
+        firstNine,
+        '@@ -10,1 +10,1 @@\n x',
+      ]);
+      expect(pieces.every((piece) => piece.patch.length <= safeDiffChars)).toBe(true);
+      expect('@@ -1,10 +1,10 @@\n' + body.join('\n')).toHaveLength(firstNine.length + 5);
+    });
+
+    it('fails closed when a range-start digit makes the next indivisible atom exceed the cap', () => {
+      const filePath = 'src/decimal-start-growth.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = ['+same-width-line', '+same-width-line'];
+      const sourcePatch = `${fileHeader}@@ -0,0 +9,2 @@\n${body.join('\n')}\n`;
+      const firstFragment = '@@ -0,0 +9,1 @@\n+same-width-line';
+      const safeDiffChars = fileHeader.length + firstFragment.length + 1;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect(firstFragment.length + fileHeader.length + 1).toBe(safeDiffChars);
+      expect('@@ -0,0 +10,1 @@\n+same-width-line'.length + fileHeader.length + 1).toBe(safeDiffChars + 1);
+      expect(pieces).toHaveLength(1);
+      expect(pieces[0].patch).toBe(sourcePatch);
+    });
+
+    it('uses UTF-16 code-unit lengths for an exact-cap supplementary-character atom', () => {
+      const filePath = 'src/js-character-cap.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const first = '@@ -0,0 +1,1 @@\n+🧪';
+      const second = '@@ -0,0 +2,1 @@\n+';
+      const sourcePatch = `${fileHeader}@@ -0,0 +1,2 @@\n+🧪\n+\n`;
+      const safeDiffChars = fileHeader.length + Math.max(first.length, second.length) + 1;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect('🧪'.length).toBe(2);
+      expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, ''))).toEqual([first, second]);
+      expect(pieces.every((piece) => piece.patch.length <= safeDiffChars)).toBe(true);
+      expect(Math.max(...pieces.map((piece) => piece.patch.length))).toBe(safeDiffChars);
+    });
+
+    it('keeps a no-newline marker attached to its source line while splitting', () => {
+      const filePath = 'src/no-newline.ts';
+      const fileHeader = 'diff --git a/' + filePath + ' b/' + filePath + '\n'
+        + 'index 0000000..1111111 100644\n'
+        + '--- a/' + filePath + '\n'
+        + '+++ b/' + filePath + '\n';
+      const oldLine = '-' + 'old-without-newline-'.repeat(3);
+      const marker = '\\ No newline at end of file';
+      const newLine = '+' + 'new-without-newline-'.repeat(3);
+      const sourceHeader = '@@ -1 +1 @@';
+      const sourcePatch = fileHeader + sourceHeader + '\n' + oldLine + '\n' + marker + '\n' + newLine + '\n';
+      const expectedFragments = [
+        '@@ -1,1 +0,0 @@\n' + oldLine + '\n' + marker,
+        '@@ -1,0 +1,1 @@\n' + newLine,
+      ];
+      const safeDiffChars = fileHeader.length + Math.max(...expectedFragments.map((fragment) => fragment.length + 1));
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect(pieces.map((piece) => piece.patch.slice(fileHeader.length).replace(/\n+$/u, '')))
+        .toEqual(expectedFragments);
+      expect(pieces.some((piece) => piece.patch.trimEnd().endsWith('\n' + marker))).toBe(true);
+    });
+
+    // These are observable bounded-output and byte-fidelity controls, not
+    // computational-copy or latency proofs. Assembly may use join or concat.
+    it('preserves bounded literal bodies and contiguous ranges across a large single hunk', () => {
+      const filePath = 'src/large-linear-hunk.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const body = Array.from({ length: 360 }, (_unused, index) =>
+        ` context-${String(index).padStart(4, '0')}-${'x'.repeat(40)}`);
+      const sourcePatch = `${fileHeader}@@ -1,360 +1,360 @@ large body\n${body.join('\n')}\n`;
+      const safeDiffChars = fileHeader.length + 900;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(plan).toMatchObject({
+        baseSha: BASE_SHA, headSha: HEAD_SHA, totalFiles: 1,
+        totalOriginalChars: sourcePatch.length, totalCompactedChars: sourcePatch.length,
+        coveragePercent: 100, omittedFilesCount: 0,
+        fileManifest: [{ path: filePath, status: 'modified', partitionIndex: 0 }],
+      });
+      let consumedLines = 0;
+      for (const piece of pieces) {
+        expect(piece.path).toBe(filePath);
+        expect(piece.patch.startsWith(fileHeader)).toBe(true);
+        expect(piece.patch.length).toBeLessThanOrEqual(safeDiffChars);
+        expect(piece.originalChars).toBe(piece.patch.length);
+        expect(piece.compactedChars).toBe(piece.patch.length);
+        const lines = piece.patch.slice(fileHeader.length).split('\n');
+        expect(lines.pop()).toBe(''); // exactly one terminal transport newline
+        const range = lines.shift()?.match(/^@@ -(\d+),(\d+) \+(\d+),(\d+) @@ large body$/u);
+        expect(range).not.toBeNull();
+        expect(range).toBeDefined();
+        expect(lines.length).toBeGreaterThan(0);
+        expect(range!.slice(1).map(Number)).toEqual([
+          consumedLines + 1, lines.length, consumedLines + 1, lines.length,
+        ]);
+        const expectedBody = body.slice(consumedLines, consumedLines + lines.length);
+        expect(piece.patch).toBe(`${fileHeader}@@ -${consumedLines + 1},${lines.length} +${consumedLines + 1},${lines.length} @@ large body\n${expectedBody.join('\n')}\n`);
+        consumedLines += lines.length;
+      }
+      expect(consumedLines).toBe(360);
+      for (const [index, partition] of plan.partitions.entries()) {
+        expect(partition).toMatchObject({
+          partitionIndex: index, totalPartitions: plan.partitions.length,
+          baseSha: BASE_SHA, headSha: HEAD_SHA,
+        });
+        expect(partition.totalChars).toBe(partition.files.reduce((sum, piece) => sum + piece.patch.length, 0));
+        expect(partition.totalChars).toBeLessThanOrEqual(safeDiffChars);
+      }
+    });
+
+    it('preserves bounded literal hunk counts, ranges and order across many small hunks', () => {
+      const filePath = 'src/many-linear-hunks.ts';
+      const fileHeader = `diff --git a/${filePath} b/${filePath}\nindex 0000000..1111111 100644\n--- a/${filePath}\n+++ b/${filePath}\n`;
+      const hunks = Array.from({ length: 900 }, (_unused, index) =>
+        `@@ -${index + 1},1 +${index + 1},1 @@ section-${index}\n context-${String(index).padStart(4, '0')}`);
+      const sourcePatch = `${fileHeader}${hunks.join('\n')}\n`;
+      const safeDiffChars = fileHeader.length + 900;
+      const plan = createPartitionPlan([{
+        path: filePath,
+        patch: sourcePatch,
+        originalChars: sourcePatch.length,
+        compactedChars: sourcePatch.length,
+        status: 'modified',
+      }], BASE_SHA, HEAD_SHA, safeDiffChars, { splitOversizedHunksAtLines: true });
+      const pieces = sourceOrderedFiles(plan);
+
+      expect(sourcePatch.length).toBeGreaterThan(safeDiffChars);
+      expect(pieces.length).toBeGreaterThan(1);
+      expect(plan).toMatchObject({
+        baseSha: BASE_SHA, headSha: HEAD_SHA, totalFiles: 1,
+        totalOriginalChars: sourcePatch.length, totalCompactedChars: sourcePatch.length,
+        coveragePercent: 100, omittedFilesCount: 0,
+        fileManifest: [{ path: filePath, status: 'modified', partitionIndex: 0 }],
+      });
+      let consumedHunks = 0;
+      for (const piece of pieces) {
+        expect(piece.path).toBe(filePath);
+        expect(piece.patch.startsWith(fileHeader)).toBe(true);
+        expect(piece.patch.length).toBeLessThanOrEqual(safeDiffChars);
+        expect(piece.originalChars).toBe(piece.patch.length);
+        expect(piece.compactedChars).toBe(piece.patch.length);
+        const lines = piece.patch.slice(fileHeader.length).split('\n');
+        expect(lines.pop()).toBe('');
+        expect(lines.length).toBeGreaterThan(0);
+        expect(lines.length % 2).toBe(0); // every literal hunk is one header + one context line
+        const count = lines.length / 2;
+        // Independent fixture literals include both 1/1 counts, exact old/new
+        // positions, section and body. Do not filter away unexpected lines.
+        expect(piece.patch).toBe(`${fileHeader}${hunks.slice(consumedHunks, consumedHunks + count).join('\n')}\n`);
+        consumedHunks += count;
+      }
+      expect(consumedHunks).toBe(900);
+      for (const [index, partition] of plan.partitions.entries()) {
+        expect(partition).toMatchObject({
+          partitionIndex: index, totalPartitions: plan.partitions.length,
+          baseSha: BASE_SHA, headSha: HEAD_SHA,
+        });
+        expect(partition.totalChars).toBe(partition.files.reduce((sum, piece) => sum + piece.patch.length, 0));
+        expect(partition.totalChars).toBeLessThanOrEqual(safeDiffChars);
+      }
     });
 
     it('TEST_T2_06: empty input files returns single partition with 0 files and 100% coverage', () => {

@@ -23,6 +23,7 @@ test-results/
 # Review Yeti secrets
 *.pem
 .review-yeti/
+.worktrees/
 
 # Compiled operator binary. `make` writes it here (k8s-operator/Makefile:
 # BINARY_NAME ?= bin/manager), so it is build output, not source. A 30 MB

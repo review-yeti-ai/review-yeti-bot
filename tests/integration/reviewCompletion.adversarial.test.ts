@@ -19,11 +19,13 @@ import {
   appendLifecycleEventForRun,
 } from '../../src/persistence/reviewEventRepository';
 import { withFencedDispatch } from '../support/completionRepositoryDouble';
+import { describeWithPostgres, postgresDatabaseUrl, requireDatabaseUrlInCi } from '../support/postgresSuite';
 
+requireDatabaseUrlInCi();
 const TEST_SCHEMA = 'test_challenger_m2';
-const DATABASE_URL = process.env.REVIEW_YETI_TEST_DATABASE_URL || 'postgres://localhost/postgres';
+const DATABASE_URL = postgresDatabaseUrl();
 
-describe('Milestone 2 Empirical Challenger Stress Tests', () => {
+describeWithPostgres('Milestone 2 Empirical Challenger Stress Tests', () => {
   let pool: Pool;
   let repository: PostgresReviewCompletionRepository;
   let lifecycleRepository: PostgresReviewCompletionRepository;

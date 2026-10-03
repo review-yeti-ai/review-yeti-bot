@@ -10,7 +10,25 @@ import {
   OnboardingScanResult,
   ProviderConfigRecord,
   ModelRegistryItem,
+  GitHubOrganizationSummary,
+  ActivePullRequestSummary,
+  RepositoryReviewRules,
 } from '@/types/dashboard';
+import type {
+  PromptGuidanceItem,
+  VerdictOverrideRecord,
+  ReviewAuditEvent,
+  VerdictOverrideResponse,
+} from '@/types/hitl';
+import type { AnchoredFinding } from '@/types/diff';
+import type {
+  AnalyticsTimeRange,
+  AnalyticsSummaryData,
+  LatencyMetricsResponse,
+  CostBreakdownResponse,
+  TokenBurnResponse,
+  FindingsQualityResponse,
+} from '@/types/analytics';
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
@@ -106,6 +124,85 @@ export async function createRepository(payload: {
   });
   return res.repository;
 }
+
+// GitHub Discovery API
+export async function fetchGitHubOrgs(): Promise<GitHubOrganizationSummary[]> {
+  const res = await request<{ success: boolean; organizations: GitHubOrganizationSummary[] }>('/api/github/orgs');
+  return res.organizations || [];
+}
+
+export async function fetchGitHubRepos(
+  org?: string,
+  monitored?: boolean
+): Promise<{ repositories: RepositorySetting[]; totalCount: number; activeCount: number }> {
+  const params = new URLSearchParams();
+  if (org) params.set('org', org);
+  if (monitored !== undefined) params.set('monitored', String(monitored));
+  const res = await request<{ success: boolean; repositories: RepositorySetting[]; totalCount: number; activeCount: number }>(
+    `/api/github/repos?${params.toString()}`
+  );
+  return {
+    repositories: res.repositories || [],
+    totalCount: res.totalCount || 0,
+    activeCount: res.activeCount || 0,
+  };
+}
+
+export async function fetchRepoPullRequests(
+  owner: string,
+  repo: string,
+  state: 'open' | 'closed' | 'all' = 'open'
+): Promise<ActivePullRequestSummary[]> {
+  const res = await request<{ success: boolean; pullRequests: ActivePullRequestSummary[] }>(
+    `/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${state}`
+  );
+  return res.pullRequests || [];
+}
+
+export const fetchRepositoryPullRequests = fetchRepoPullRequests;
+
+export async function triggerPullRequestReview(
+  owner: string,
+  repo: string,
+  prNumber: number
+): Promise<{ success: boolean; message: string; jobId?: string }> {
+  return request<{ success: boolean; message: string; jobId?: string }>(
+    `/api/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${prNumber}/review`,
+    {
+      method: 'POST',
+    }
+  );
+}
+
+export async function fetchRepositoryReviewRules(
+  owner: string,
+  repo: string
+): Promise<RepositoryReviewRules> {
+  const res = await request<{
+    success: boolean;
+    owner: string;
+    repo: string;
+    rules: RepositoryReviewRules;
+  }>(`/api/dashboard/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules`);
+  return res.rules;
+}
+
+export async function updateRepositoryReviewRules(
+  owner: string,
+  repo: string,
+  rules: Partial<RepositoryReviewRules>
+): Promise<RepositoryReviewRules> {
+  const res = await request<{
+    success: boolean;
+    owner: string;
+    repo: string;
+    rules: RepositoryReviewRules;
+  }>(`/api/dashboard/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules`, {
+    method: 'PUT',
+    body: JSON.stringify(rules),
+  });
+  return res.rules;
+}
 // Integrations API
 export async function fetchIntegrations(): Promise<IntegrationItem[]> {
   const res = await request<{ success: boolean; integrations: IntegrationItem[] }>('/api/dashboard/integrations');
@@ -172,6 +269,33 @@ export async function searchMemoryCode(query = 'security', limit = 10): Promise<
 export async function fetchMemoryLearnings(repo?: string): Promise<any> {
   const queryParam = repo ? `?repo=${encodeURIComponent(repo)}` : '';
   return request(`/api/memory/learnings${queryParam}`);
+}
+
+export async function fetchMemoryStats(): Promise<any> {
+  return request('/api/memory/stats');
+}
+
+export async function queryMemoryPlatform(params: {
+  q?: string;
+  repo?: string;
+  category?: string;
+}): Promise<any> {
+  const sp = new URLSearchParams();
+  if (params.q) sp.set('q', params.q);
+  if (params.repo) sp.set('repo', params.repo);
+  if (params.category) sp.set('category', params.category);
+  return request(`/api/memory/query?${sp.toString()}`);
+}
+
+export async function exportMemorySnapshot(format: 'json' | 'markdown' | 'csv' = 'json', repo?: string): Promise<any> {
+  const sp = new URLSearchParams();
+  sp.set('format', format);
+  if (repo) sp.set('repo', repo);
+  return request(`/api/memory/export?${sp.toString()}`);
+}
+
+export async function purgeMemoryCache(): Promise<{ success: boolean; message: string; deletedCount: number }> {
+  return request('/api/memory/purge', { method: 'POST' });
 }
 
 // MCP Fleet API
@@ -318,5 +442,165 @@ export async function remapPersonasAndDisableProvider(
   const provider = await updateProvider(providerId, providerPatch);
   return { personas: updatedPersonas, provider };
 }
+
+// =========================================================================
+// Human-in-the-Loop (HITL) Controls API (M3)
+// =========================================================================
+
+// Finding Dismissal
+export async function dismissFinding(
+  reviewId: string,
+  findingId: string,
+  reason: string,
+  dismissedBy = 'reviewer'
+): Promise<{ success: boolean; reviewId: string; findingId: string; status: 'dismissed'; remainingActiveCount: number }> {
+  return request(`/api/reviews/${encodeURIComponent(reviewId)}/findings/${encodeURIComponent(findingId)}/dismiss`, {
+    method: 'POST',
+    body: JSON.stringify({ reason, dismissedBy }),
+  });
+}
+
+// Severity Adjustment
+export async function adjustFindingSeverity(
+  reviewId: string,
+  findingId: string,
+  severity: 'P0' | 'P1' | 'P2',
+  updatedBy = 'reviewer'
+): Promise<{ success: boolean; reviewId: string; findingId: string; severity: 'P0' | 'P1' | 'P2'; previousSeverity: string }> {
+  return request(`/api/reviews/${encodeURIComponent(reviewId)}/findings/${encodeURIComponent(findingId)}/severity`, {
+    method: 'PATCH',
+    body: JSON.stringify({ severity, updatedBy }),
+  });
+}
+
+// Review Prompt Guidance
+export async function submitPromptGuidance(
+  reviewId: string,
+  guidanceText: string,
+  targetPersonas?: string[],
+  createdBy = 'reviewer'
+): Promise<{ success: boolean; guidance: PromptGuidanceItem }> {
+  return request(`/api/reviews/${encodeURIComponent(reviewId)}/guidance`, {
+    method: 'POST',
+    body: JSON.stringify({ guidanceText, targetPersonas, createdBy }),
+  });
+}
+
+export async function fetchPromptGuidance(
+  reviewId: string
+): Promise<PromptGuidanceItem[]> {
+  const res = await request<{ success: boolean; guidance: PromptGuidanceItem[] }>(
+    `/api/reviews/${encodeURIComponent(reviewId)}/guidance`
+  );
+  return res.guidance || [];
+}
+
+// Manual Verdict Override
+export async function submitVerdictOverride(
+  reviewId: string,
+  overrideVerdict: 'SHIP' | 'BLOCK',
+  reason: string,
+  overriddenBy = 'reviewer'
+): Promise<VerdictOverrideResponse> {
+  return request(`/api/reviews/${encodeURIComponent(reviewId)}/override`, {
+    method: 'POST',
+    body: JSON.stringify({ overrideVerdict, reason, overriddenBy }),
+  });
+}
+
+// Review Audit Trail
+export async function fetchAuditTrail(
+  reviewId: string
+): Promise<ReviewAuditEvent[]> {
+  const res = await request<{ success: boolean; events: ReviewAuditEvent[] }>(
+    `/api/reviews/${encodeURIComponent(reviewId)}/audit-trail`
+  );
+  return res.events || [];
+}
+
+// Review Findings
+export async function fetchReviewFindings(
+  reviewId: string
+): Promise<AnchoredFinding[]> {
+  const res = await request<{ success: boolean; findings: AnchoredFinding[] }>(
+    `/api/reviews/${encodeURIComponent(reviewId)}/findings`
+  );
+  return res.findings || [];
+}
+
+// ============================================================================
+// Analytics Dashboard Endpoints (M4 / R3)
+// ============================================================================
+
+export async function fetchAnalyticsSummary(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<AnalyticsSummaryData> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  const res = await request<{ success: boolean; summary: AnalyticsSummaryData }>(
+    `/api/analytics/summary${qStr}`
+  );
+  return res.summary;
+}
+
+export async function fetchLatencyMetrics(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<LatencyMetricsResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<LatencyMetricsResponse>(`/api/analytics/latency${qStr}`);
+}
+
+export async function fetchCostBreakdown(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<CostBreakdownResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<CostBreakdownResponse>(`/api/analytics/costs${qStr}`);
+}
+
+export async function fetchTokenBurn(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+  interval?: string;
+}): Promise<TokenBurnResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  if (params?.interval) query.set('interval', params.interval);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<TokenBurnResponse>(`/api/analytics/tokens${qStr}`);
+}
+
+export async function fetchFindingsQuality(params?: {
+  range?: AnalyticsTimeRange;
+  window?: AnalyticsTimeRange;
+  repo?: string;
+}): Promise<FindingsQualityResponse> {
+  const query = new URLSearchParams();
+  const rangeVal = params?.range || params?.window;
+  if (rangeVal) query.set('range', rangeVal);
+  if (params?.repo) query.set('repo', params.repo);
+  const qStr = query.toString() ? `?${query.toString()}` : '';
+  return request<FindingsQualityResponse>(`/api/analytics/findings${qStr}`);
+}
+
 
 

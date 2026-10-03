@@ -1179,10 +1179,10 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: 'lib/exampleorg/accounts/user_context.ex',
         patch: `@@ -1,6 +1,17 @@
- defmodule exampleorg.Accounts.UserContext do
+ defmodule Exampleorg.Accounts.UserContext do
    import Ecto.Query, warn: false
-   alias exampleorg.Repo
-   alias exampleorg.Accounts.User
+   alias Exampleorg.Repo
+   alias Exampleorg.Accounts.User
  
 +  @doc """
 +  Fetches a user by ID without scoping to the current organization.
@@ -1282,8 +1282,8 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
      children = [
 +      # Flaw: Permanent restart on transient network worker causes supervisor crash loop
 +      %{
-+        id: exampleorg.Workers.TransientWorker,
-+        start: {exampleorg.Workers.TransientWorker, :start_link, [[]]},
++        id: Exampleorg.Workers.TransientWorker,
++        start: {Exampleorg.Workers.TransientWorker, :start_link, [[]]},
 +        restart: :permanent
 +      }
      ]
@@ -1415,8 +1415,8 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
         patch: `@@ -12,5 +12,9 @@
    def process_invoice(account, amount) do
 +    # Unhandled pattern match: will raise MatchError when Gateway returns {:error, reason}
-+    {:ok, invoice} = exampleorg.PaymentGateway.charge(account.customer_id, amount)
-+    exampleorg.Repo.insert!(invoice)
++    {:ok, invoice} = Exampleorg.PaymentGateway.charge(account.customer_id, amount)
++    Exampleorg.Repo.insert!(invoice)
    end`,
       },
     ],
@@ -1430,7 +1430,7 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
         titlePattern: 'pattern match|matcherror|unhandled|fallible|error handling',
         category: 'testing',
         description: 'Pattern matching directly on {:ok, invoice} will crash the calling process with a MatchError whenever PaymentGateway.charge/2 returns an error tuple {:error, reason}.',
-        suggestion: 'Use with {:ok, invoice} <- exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end',
+        suggestion: 'Use with {:ok, invoice} <- Exampleorg.PaymentGateway.charge(...) do ... else {:error, reason} -> {:error, reason} end',
       },
     ],
     expectedVerdict: 'FIX_FIRST',
@@ -1454,7 +1454,7 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: 'lib/exampleorg/pool/dynamic_worker_supervisor.ex',
         patch: `@@ -1,5 +1,18 @@
- defmodule exampleorg.Pool.DynamicWorkerSupervisor do
+ defmodule Exampleorg.Pool.DynamicWorkerSupervisor do
    use DynamicSupervisor
  
    def start_link(init_arg) do
@@ -1467,7 +1467,7 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
 +  end
 +
 +  def start_worker(args) do
-+    spec = {exampleorg.Pool.Worker, args}
++    spec = {Exampleorg.Pool.Worker, args}
 +    DynamicSupervisor.start_child(__MODULE__, spec)
 +  end
 +end`,
@@ -1475,7 +1475,7 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: 'lib/exampleorg/pool/worker.ex',
         patch: `@@ -1,5 +1,19 @@
- defmodule exampleorg.Pool.Worker do
+ defmodule Exampleorg.Pool.Worker do
    use GenServer, restart: :transient
  
    def start_link(args) do
@@ -1497,9 +1497,9 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: 'test/exampleorg/pool/worker_test.exs',
         patch: `@@ -1,5 +1,16 @@
- defmodule exampleorg.Pool.WorkerTest do
+ defmodule Exampleorg.Pool.WorkerTest do
    use ExUnit.Case, async: true
-   alias exampleorg.Pool.Worker
+   alias Exampleorg.Pool.Worker
 +
 +  describe "worker execution" do
 +    test "executes task and returns ok tuple" do
@@ -1539,7 +1539,7 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: 'lib/exampleorg/crypto/signature.ex',
         patch: `@@ -1,5 +1,14 @@
- defmodule exampleorg.Crypto.Signature do
+ defmodule Exampleorg.Crypto.Signature do
    @moduledoc """
    Provides secure HMAC-SHA256 signature generation and constant-time verification.
    """
@@ -1557,9 +1557,9 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: 'test/exampleorg/crypto/signature_test.exs',
         patch: `@@ -1,5 +1,15 @@
- defmodule exampleorg.Crypto.SignatureTest do
+ defmodule Exampleorg.Crypto.SignatureTest do
    use ExUnit.Case, async: true
-   alias exampleorg.Crypto.Signature
+   alias Exampleorg.Crypto.Signature
 +
 +  test "signs and verifies valid hmac signatures" do
 +    secret = "test-secret-key"
@@ -3544,7 +3544,7 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: "lib/example_org/quota/ets_tracker.ex",
         patch: `@@ -1,6 +1,19 @@
- defmodule exampleorg.Quota.EtsTracker do
+ defmodule Exampleorg.Quota.EtsTracker do
    @table :call_quota_table
 
    def init_table do
@@ -3756,9 +3756,9 @@ export const EVALUATION_SCENARIOS: EvaluationScenario[] = [
       {
         path: "lib/example_org/importer/bulk_cdr_importer.ex",
         patch: `@@ -1,6 +1,20 @@
- defmodule exampleorg.Importer.BulkCdrImporter do
-   alias exampleorg.CdrParser
-   alias exampleorg.Repo
+ defmodule Exampleorg.Importer.BulkCdrImporter do
+   alias Exampleorg.CdrParser
+   alias Exampleorg.Repo
 
 +  def import_cdr_stream(file_stream) do
 +    file_stream

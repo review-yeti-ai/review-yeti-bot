@@ -26,6 +26,7 @@ import { createIntegrationsRouter } from './dashboard/integrationsApi';
 import { createLiveRouter } from './api/liveApi';
 import { createGitHubAppApiRouter } from './api/githubAppApi';
 import { createOnboardingRouter } from './api/onboarding';
+import { createReviewHitlRouter } from './api/reviewHitlApi';
 import { createActionDispatchRouter, createWorkerCompletionVerifier } from './api/actionDispatchApi';
 import { GitHubActionsOidcVerifier, githubActionsOidcPolicyFromEnv } from './auth/githubActionsOidc';
 import { actionDispatchConfigFromEnv } from './config/actionDispatchConfig';
@@ -444,6 +445,10 @@ export async function runReviewPipeline(payload: ParsedPRPayload): Promise<any> 
           engineVersion: 'review-core-v1',
           changedFiles,
         });
+        LiveStreamBus.getInstance().setJobSnapshot(jobId, reviewSnapshot);
+        if (durableRun?.runId) {
+          LiveStreamBus.getInstance().setJobSnapshot(durableRun.runId, reviewSnapshot);
+        }
         await durablePersist('snapshot', reviewSnapshot as unknown as import('./review/reviewRun').JsonValue);
         await durableTransition('config');
         await durablePersist('config', config as unknown as import('./review/reviewRun').JsonValue);
@@ -930,6 +935,9 @@ export function createApp(): Express {
   app.use('/api/analytics', createAnalyticsRouter());
   app.use('/api/github', createGitHubAppApiRouter());
   app.use('/api', createMemoryRouter());
+  const reviewHitlRouter = createReviewHitlRouter();
+  app.use('/api/reviews', reviewHitlRouter);
+  app.use('/api/dashboard/reviews', reviewHitlRouter);
 
   // GitHub Webhooks Router
   app.use(createWebhookRouter({
@@ -1011,6 +1019,8 @@ export function createApp(): Express {
     const txtFilename = filename.replace(/\.html$/, '.txt');
     const candidatePaths = [
       targetFile,
+      path.join(process.cwd(), 'dist/public', filename),
+      path.join(__dirname, 'public', filename),
       path.join(process.cwd(), 'public', filename),
       path.join(__dirname, '../public', filename),
       path.join(__dirname, '../../public', filename),
@@ -1019,6 +1029,8 @@ export function createApp(): Express {
       path.join(process.cwd(), 'public', txtFilename),
       path.join(__dirname, '../public', txtFilename),
       path.join(__dirname, '../../public', txtFilename),
+      path.join(process.cwd(), 'dist/public', txtFilename),
+      path.join(__dirname, 'public', txtFilename),
       path.join(process.cwd(), 'out', txtFilename),
     ];
 
@@ -1032,6 +1044,10 @@ export function createApp(): Express {
     }
 
     const indexCandidates = [
+      path.join(process.cwd(), 'dist/public/index.html'),
+      path.join(process.cwd(), 'dist/public/index.txt'),
+      path.join(__dirname, 'public/index.html'),
+      path.join(__dirname, 'public/index.txt'),
       path.join(process.cwd(), 'public/index.html'),
       path.join(process.cwd(), 'public/index.txt'),
       path.join(__dirname, '../public/index.html'),
@@ -1055,6 +1071,10 @@ export function createApp(): Express {
   // Next.js Clean SPA Route Fallback Handlers
   app.get('/onboarding', (_req: Request, res: Response) => {
     sendHtmlPage(res, path.join(__dirname, '../public/onboarding.html'));
+  });
+
+  app.get('/analytics', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/analytics.html'));
   });
 
   app.get('/live', (_req: Request, res: Response) => {
@@ -1090,6 +1110,10 @@ export function createApp(): Express {
   });
 
   // Legacy /dashboard/* Route Aliases
+  app.get('/dashboard/analytics', (_req: Request, res: Response) => {
+    sendHtmlPage(res, path.join(__dirname, '../public/analytics.html'));
+  });
+
   app.get('/dashboard/live', (_req: Request, res: Response) => {
     sendHtmlPage(res, path.join(__dirname, '../public/live.html'));
   });
@@ -1130,8 +1154,12 @@ export function createApp(): Express {
     },
   };
 
+  app.use('/_next', express.static(path.join(process.cwd(), 'dist/public/_next'), staticHeadersOptions));
+  app.use('/_next', express.static(path.join(__dirname, 'public/_next'), staticHeadersOptions));
   app.use('/_next', express.static(path.join(process.cwd(), 'public/_next'), staticHeadersOptions));
   app.use('/_next', express.static(path.join(process.cwd(), 'out/_next'), staticHeadersOptions));
+  app.use(express.static(path.join(process.cwd(), 'dist/public'), staticHeadersOptions));
+  app.use(express.static(path.join(__dirname, 'public'), staticHeadersOptions));
   app.use(express.static(path.join(process.cwd(), 'public'), staticHeadersOptions));
   app.use(express.static(path.join(__dirname, '../public'), staticHeadersOptions));
 

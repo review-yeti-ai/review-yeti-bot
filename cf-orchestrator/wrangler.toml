@@ -1,0 +1,87 @@
+name = "review-yeti-cf-orchestrator"
+main = "src/worker.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# The public hostname is deployment configuration, not code: the deploy job attaches the custom domain
+# (`wrangler deploy --domain`) and passes ALLOWED_ORIGINS and DOKS_FALLBACK_URL from repository variables.
+
+# 🎨 Serve the Next.js Portal directly from Cloudflare Edge
+[assets]
+directory = "../out"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# Durable Object bindings
+[durable_objects]
+bindings = [
+  { name = "REPO_GATE", class_name = "RepoGateDO" },
+  { name = "REVIEW_RUN", class_name = "ReviewRunDO" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RepoGateDO", "ReviewRunDO"]
+
+# Cloudflare Workflows binding
+[[workflows]]
+name = "review-job-workflow"
+binding = "REVIEW_JOB_WORKFLOW"
+class_name = "ReviewJobWorkflow"
+
+# Cloudflare Queues for 60s commit debouncing
+[[queues.producers]]
+binding = "REVIEW_DEBOUNCE_QUEUE"
+queue = "review-yeti-debounce"
+
+[[queues.consumers]]
+queue = "review-yeti-debounce"
+max_batch_size = 10
+max_batch_timeout = 5
+
+# R2 Bucket for workspace & Zoekt index caching
+[[r2_buckets]]
+binding = "WORKSPACE_CACHE_BUCKET"
+bucket_name = "review-yeti-workspace-cache"
+
+# Cloudflare D1 Relational SQL Database
+[[d1_databases]]
+binding = "DB"
+database_name = "review-yeti-production-d1"
+database_id = "c90d8ca4-d063-4f5f-89b4-7908b1888810"
+migrations_dir = "migrations"
+
+# KV Namespace for GitHub App installation token caching
+[[kv_namespaces]]
+binding = "AUTH_CACHE"
+id = "dbd1e6d53ed2470cb11cec13a7949cff"
+
+# Hyperdrive binding for PostgreSQL connection pooling (uncomment once created via wrangler hyperdrive create)
+# [[hyperdrive]]
+# binding = "HYPERDRIVE"
+# id = "hyperdrive-postgres-reviewyeti"
+
+# Cloudflare Containers execution binding (when deploying with container instances)
+# [[services]]
+# binding = "CONTAINERS"
+# service = "review-yeti-worker"
+
+# Environment Variables
+[vars]
+ENVIRONMENT = "production"
+PARALLEL_MODE = "true"
+PARALLEL_CHECK_NAME = "Review Yeti (Cloudflare Canary)"
+PILOT_REPOSITORIES = "all"
+DEFAULT_WORKER_IMAGE = "ghcr.io/review-yeti-ai/review-yeti-worker:latest"
+MAX_CONCURRENT_JOBS = "5"
+DEBOUNCE_WINDOW_SECONDS = "60"
+PARALLEL_FILE_CONCURRENCY = "5"
+RUNNER_TYPE = "cloudflare" # Cloudflare Containers (default; falls back to DigitalOcean if CONTAINERS binding is not attached)
+DO_AGENT_ID = "review-yeti-swarm" # Secondary option when RUNNER_TYPE is "digitalocean" or when used as fallback
+PUBLIC_READ_MCP = "true" # Enables public read access to status, metrics, reports, dashboards
+
+# Cron trigger for 1-hour aggressive R2 workspace cache purge
+[triggers]
+crons = ["0 * * * *"]
+

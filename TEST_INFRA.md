@@ -1,271 +1,230 @@
-# E2E Test Infra: DOKS Runner Agentic Harness Improvements (API-3330 & API-3333)
+# E2E Test Infra: Review Yeti Interactive Dashboard & Management Suite (M1-M4)
 
 ## Test Philosophy
-- **Opaque-Box & Requirement-Driven**: Tests validate external wire contracts, Kubernetes manifests, operator reconciliation behavior, and lifecycle invariants derived strictly from `ORIGINAL_REQUEST.md` and `PROJECT.md § Feature Inventory`.
-- **Zero Internal Dependency**: No reliance on private methods, unexposed AST functions, or synthetic monkey-patches. All tests interact exclusively through public APIs, wire JSON parsers, schema validators, and Kubernetes CR/Job projections.
-- **Strict Invariant Verification**: Rigorous enforcement of tripartite fencing (fencing epoch vs. execution attempt vs. worker lease token), 100% wire parity with `urn:review-yeti:agent-harness:v1`, strict `.000Z` timestamps, payload limits (<=65,536 bytes), controlled namespace boundary (`ct-review-system`), and UNKNOWN effect safety.
-- **Methodology**: 4-Tier Test Architecture combining Category-Partition, Boundary Value Analysis (BVA), Pairwise Combinatorial Interaction, and Real-World Lifecycle Scenarios.
+- **Opaque-Box & Requirement-Driven**: Tests validate external HTTP/SSE REST contracts, payload schemas, and event stream invariants derived strictly from `ORIGINAL_REQUEST.md` (2026-10-01T14:02:49Z) and `PROJECT.md § Feature Inventory`.
+- **Zero Internal Monkey-Patching**: All tests interact exclusively through public Express routes, Server-Sent Events streams, and standard authentication headers (`Authorization: Bearer <token>`).
+- **Deterministic & Offline-Verifiable**: Zero reliance on live external cloud providers or live GitHub network connections. All upstream services (GitHub OAuth, GitHub App REST API, LLM Gateways) have deterministic in-memory/mock qualification paths.
+- **4-Tier Test Architecture**:
+  - **Tier 1: Feature Coverage (Category-Partition)**: Isolation happy paths testing primary behavior for each feature (>=5 per feature).
+  - **Tier 2: Boundary & Corner Cases (BVA)**: Stress testing edge values, malformed inputs, CSRF state mismatches, invalid tokens, 400/401/404 handling (>=5 per feature).
+  - **Tier 3: Cross-Feature Combinations (Pairwise)**: Multi-step integration sequences exercising contract boundaries between auth, repos, PR dispatch, streaming, HITL overrides, and analytics.
+  - **Tier 4: Real-World Workload Scenarios**: Complete end-to-end workflows modeling enterprise developer and executive personas.
 
 ---
 
 ## Feature Inventory
 
-Every feature from `PROJECT.md § Feature Inventory` is mapped across all 4 tiers:
+Mapping all requirements (R1 - R4) from `PROJECT.md` and `ORIGINAL_REQUEST.md` across all 4 tiers:
 
-| # | Feature | Description | Source | Tier 1 (Coverage) | Tier 2 (Boundaries) | Tier 3 (Cross-Feature) | Tier 4 (Real-World) | Total Tests |
-|---|---------|-------------|--------|:-----------------:|:-------------------:|:----------------------:|:-------------------:|:-----------:|
-| 1 | TS Harness Wire Contracts & Zod Schemas | Schema validation, RFC 8785 canonical JSON, request digest hashing, receipt validation | ORIGINAL_REQUEST R1 & spec_miner | 5 | 5 | ✓ | ✓ | 10+ |
-| 2 | Runner WorkRequest Envelope Generation | `K8sJobRunner.buildWorkRequest` with 9 mandatory scope fields, <=65,536 bytes, `.000Z` millis | ORIGINAL_REQUEST R1 & explorer_survey_ts | 5 | 5 | ✓ | ✓ | 10+ |
-| 3 | Runner Identity & Fencing Injection | Container environment (`CT_*`), Downward API, volume staging via initContainer | ORIGINAL_REQUEST R1 & explorer_survey_ts | 5 | 5 | ✓ | ✓ | 10+ |
-| 4 | Runner Pod Completion & Receipt Validation | Pod wait, receipt extraction, request digest match, evidence invariant enforcement | ORIGINAL_REQUEST R1 & explorer_survey_ts | 5 | 5 | ✓ | ✓ | 10+ |
-| 5 | Task Observer Lifecycle Hooks & Phase Mapping | Phase mapping (`INTENT`->`INTENDED`, etc.), <=5 proposals capping, permission denial stop | ORIGINAL_REQUEST R3 & spec_miner | 5 | 5 | ✓ | ✓ | 10+ |
-| 6 | Go CRD Identity & Fencing Epoch Fields | `PRReviewJobSpec` & `Status` fencing fields, tripartite identity separation, CEL rules | ORIGINAL_REQUEST R2 & explorer_survey_go | 5 | 5 | ✓ | ✓ | 10+ |
-| 7 | Go Operator Fencing Fail-Closed Reconciliation | Epoch & lease token comparison, fail-closed condition setting on mismatch | ORIGINAL_REQUEST R2 & explorer_survey_go | 5 | 5 | ✓ | ✓ | 10+ |
-| 8 | Go Operator Safe Pod Termination & UNKNOWN Effect Guard | Preemption/eviction handling, UNKNOWN effect preservation, immutable termination record | ORIGINAL_REQUEST R2 & explorer_survey_go | 5 | 5 | ✓ | ✓ | 10+ |
-| 9 | Go Operator Terminal Deletion Receipt Auditability | Persist receipt digest & evidence before resource deletion and secret cleanup | ORIGINAL_REQUEST R2 & explorer_survey_go | 5 | 5 | ✓ | ✓ | 10+ |
-| 10 | Controlled Execution Environment Enforcement | Strict namespaced boundary (`ct-review-system`), reject `default` / `kube-*`, zero cluster mutations | ORIGINAL_REQUEST R4 | 5 | 5 | ✓ | ✓ | 10+ |
-| 11 | Comprehensive E2E Testing Suite (Tiers 1-4) | Systematic multi-tier tests, runner script, status reporting, exit code semantics | Project Pattern E2E Track | 5 | 5 | ✓ | ✓ | 10+ |
-| 12 | Final Integration & Offline Contract Qualification | Parity with `example-meta` Python validator, Go controller tests, TS unit tests | ORIGINAL_REQUEST Acceptance | 5 | 5 | ✓ | ✓ | 10+ |
-| **Total** | | | | **60** | **60** | **8** | **6** | **134** |
+| # | Feature Area | Description | Requirement | Tier 1 (Coverage) | Tier 2 (Boundaries) | Tier 3 (Cross-Feature) | Tier 4 (Real-World) | Total Tests |
+|---|--------------|-------------|:-----------:|:-----------------:|:-------------------:|:----------------------:|:-------------------:|:-----------:|
+| F1 | GitHub OAuth Initiation Route | `GET /api/auth/github` client ID resolution, CSRF state nonce, authorize redirect URL | R4 | 5 | 5 | ✓ | ✓ | 10+ |
+| F2 | GitHub Session Validation & Logout | `GET /api/auth/session`, `DELETE /api/auth/session`, user role & profile | R4 | 5 | 5 | ✓ | ✓ | 10+ |
+| F3 | Accessible Orgs & Repos Listing | `GET /api/github/orgs`, `GET /api/github/repos`, 1-click monitoring toggle | R4 | 5 | 5 | ✓ | ✓ | 10+ |
+| F4 | Active PR Discovery & Review Dispatch | `GET /api/github/repos/:owner/:repo/pulls`, on-demand review dispatch | R4 | 5 | 5 | ✓ | ✓ | 10+ |
+| F5 | SSE Live Streaming & Reasoning | `/api/live/stream`, `reasoning:chunk`, `tool:start`, active jobs query | R1 | 5 | 5 | ✓ | ✓ | 10+ |
+| F6 | Interactive Diff Retrieval & Hunks | `GET /api/live/diff`, unified diff hunks, addition/deletion line anchors | R1 | 5 | 5 | ✓ | ✓ | 10+ |
+| F7 | Finding Dismissal & Severity Adjustment | `POST /api/reviews/:id/findings/:findingId/dismiss`, `PATCH .../severity` | R2 | 5 | 5 | ✓ | ✓ | 10+ |
+| F8 | Review Prompt Guidance Injection | `POST /api/reviews/:id/guidance`, dynamic persona rule injection | R2 | 5 | 5 | ✓ | ✓ | 10+ |
+| F9 | Authoritative Manual Verdict Overrides | `POST /api/reviews/:id/override` (SHIP vs BLOCK), Check Run version bump | R2 | 5 | 5 | ✓ | ✓ | 10+ |
+| F10 | Executive & Engineering Analytics | `/api/analytics/summary`, `/costs`, `/tokens`, `/findings` (24h/7d/30d) | R3 | 5 | 5 | ✓ | ✓ | 10+ |
+| **Total** | | | | **50** | **50** | **8** | **5** | **113** |
 
 ---
 
 ## Test Architecture
 
-- **Primary Test Runner**: Vitest (`npx vitest run tests/e2e/agentHarnessE2E.test.ts`)
-- **Standalone CLI Runner**: Node.js (`node tests/e2e/run-agent-harness-e2e.mjs`)
-- **Test File Location**: `tests/e2e/agentHarnessE2E.test.ts`
-- **Runner Script Location**: `tests/e2e/run-agent-harness-e2e.mjs`
+- **Primary Test Runner**: Vitest (`npx vitest run tests/e2e/reviewYetiDashboardE2E.test.ts`)
+- **API Testing Client**: Supertest v7.0.0
+- **Test File Location**: `tests/e2e/reviewYetiDashboardE2E.test.ts`
 - **Pass/Fail Semantics**: Clean exit code `0` on 100% pass; non-zero exit code (`1`) on any test failure.
-- **Execution Target**: Offline, deterministic, zero network consumption, zero live token budget consumption.
+- **Execution Target**: Deterministic, offline, zero token consumption, isolated ephemeral scratch lifecycle.
 
 ---
 
 ## Coverage Goals by Tier
 
-### Tier 1: Feature Coverage (Isolation Happy Paths — >=5 per feature = 60 tests)
+### Tier 1: Core Feature Coverage (Happy Paths — 10 Features x 5 Tests = 50 Tests)
 
-#### F1: TS Harness Wire Contracts & Zod Schemas
-- `TEST_T1_F1_01`: WorkRequest Schema Validation — Validates a fully-formed `ct-agent-work-request.v1` payload with all 18 closed properties.
-- `TEST_T1_F1_02`: ExecutionReceipt Schema Validation — Validates a conforming `ct-agent-execution-receipt.v1` payload with all 12 closed properties.
-- `TEST_T1_F1_03`: RFC 8785 Canonical JSON Serialization — Confirms deterministic lexicographical key ordering, UTF-16 code unit ordering, `-0` converted to `"0"`, and unpadded formatting.
-- `TEST_T1_F1_04`: Cryptographic Request Digest Hasher — Confirms SHA-256 calculation matches canonical payload with `sha256:` prefix and 64 lowercase hex characters.
-- `TEST_T1_F1_05`: Receipt Binding Qualification — Evaluates `checkReceiptBinding` verifying scope, request digest, lease token, clock sequence, and budget constraints.
+#### F1: GitHub OAuth Initiation Route
+- `TEST_T1_F1_01`: Resolves client ID from env/store and generates 302 redirect to GitHub authorize URL.
+- `TEST_T1_F1_02`: Returns JSON authorization URL when `Accept: application/json` is requested.
+- `TEST_T1_F1_03`: Generates cryptographically secure, unique CSRF state parameter for each request.
+- `TEST_T1_F1_04`: Includes default requested OAuth scopes (`read:user`, `user:email`, `read:org`, `repo`).
+- `TEST_T1_F1_05`: Respects custom `return_to` parameter preserving post-login navigation path.
 
-#### F2: Runner WorkRequest Envelope Generation
-- `TEST_T1_F2_01`: WorkRequest Explicit Scope Generation — Confirms `K8sJobRunner.buildWorkRequest` produces valid envelope when all 9 scope fields are explicitly provided.
-- `TEST_T1_F2_02`: WorkRequest Default Scope Resolution — Confirms `tenant_id: 'ct'`, `environment_id: 'qualification'`, `workspace_id: 'factory'`, `generation: 1`, `fencing_epoch: 1` are correctly defaulted.
-- `TEST_T1_F2_03`: Repository URL Normalization — Normalizes HTTPS, SSH (`git@github.com:...`), and `.git` URLs into standard `owner/repo` format.
-- `TEST_T1_F2_04`: Strict Millisecond Timestamp Formatting — Asserts `created_at` and `deadline` strictly match `YYYY-MM-DDTHH:mm:ss.000Z` format with `created_at < deadline`.
-- `TEST_T1_F2_05`: Input References & Synthetic Commit Digest — Confirms `input_refs` includes commit artifact with SHA-256 digest and `classification: 'synthetic'`.
+#### F2: GitHub Session Validation & Logout
+- `TEST_T1_F2_01`: Successfully validates active Bearer session token returning user profile, role, and expiry.
+- `TEST_T1_F2_02`: Supports public demo session tokens (`demo_token_public`, `public_viewer_token`) with viewer role.
+- `TEST_T1_F2_03`: Returns 200 and revokes session token upon `DELETE /api/auth/session`.
+- `TEST_T1_F2_04`: Validates user session created via OAuth callback with GitHub user metadata.
+- `TEST_T1_F2_05`: Session introspection reports ISO-8601 UTC timestamp format for `expiresAt`.
 
-#### F3: Runner Identity & Fencing Injection
-- `TEST_T1_F3_01`: Container Environment Identity Injection — Asserts all 12 `CT_*` environment variables (`CT_LOGICAL_CHILD_ID`, `CT_FENCING_EPOCH`, `CT_MISSION_ID`, `CT_GENERATION`, `CT_EXECUTION_ID`, `CT_TENANT_ID`, `CT_ENVIRONMENT_ID`, `CT_WORKSPACE_ID`, `CT_REPOSITORY`, `CT_REQUEST_DIGEST`, `CT_WORK_REQUEST_PATH`, `CT_EXECUTION_RECEIPT_PATH`) are properly injected into reviewer container.
-- `TEST_T1_F3_02`: Downward API Identity Injection — Asserts `CT_POD_NAME` and `CT_POD_NAMESPACE` use Kubernetes `fieldRef` pointing to `metadata.name` and `metadata.namespace`.
-- `TEST_T1_F3_03`: InitContainer WorkRequest Staging — Verifies initContainer `stage-work-request` carries canonical JSON payload in `CT_WORK_REQUEST_PAYLOAD` and writes to `/workspace/.ct-harness/work-request.json`.
-- `TEST_T1_F3_04`: Job Metadata Labels & Annotations — Confirms Job and Pod templates inject `review-yeti.ai/logical-child-id`, `review-yeti.ai/fencing-epoch`, and `review-yeti.ai/request-digest`.
-- `TEST_T1_F3_05`: Pod Security Context Invariants — Confirms `runAsNonRoot: true`, `runAsUser: 1000`, `allowPrivilegeEscalation: false`, and `capabilities: { drop: ['ALL'] }`.
+#### F3: Accessible Organizations & Repositories Listing
+- `TEST_T1_F3_01`: `GET /api/github/orgs` returns list of accessible organizations with avatar, login, and monitored repo counts.
+- `TEST_T1_F3_02`: `GET /api/github/repos` returns repositories belonging to user or organization.
+- `TEST_T1_F3_03`: Repository listing includes 1-click monitoring toggle status (`automationEnabled: boolean`).
+- `TEST_T1_F3_04`: Repository listing correlates strictness profile (`chill` | `balanced` | `assertive`).
+- `TEST_T1_F3_05`: Supports filtering repositories by organization name query parameter (`?org=example-org`).
 
-#### F4: Runner Pod Completion & Receipt Validation
-- `TEST_T1_F4_01`: Successful Receipt Extraction & Validation — Validates receipt with outcome `succeeded`, non-empty `evidence_refs`, and all effects `SUCCEEDED`.
-- `TEST_T1_F4_02`: Failed Receipt Extraction & Validation — Validates receipt with outcome `failed`, `evidence_refs`, and failure diagnostics.
-- `TEST_T1_F4_03`: Canceled Receipt Extraction & Validation — Validates receipt with outcome `cancelled`, verifying effects remain non-promoted.
-- `TEST_T1_F4_04`: Request Digest Parity Verification — Validates that `receipt.request_digest` strictly equals `requestDigest(workRequest)`.
-- `TEST_T1_F4_05`: Scope Parity Verification — Validates that `receipt.scope` matches `workRequest.scope` across all 9 scope fields.
+#### F4: Active Pull Requests Discovery & Review Dispatch
+- `TEST_T1_F4_01`: `GET /api/github/repos/:owner/:repo/pulls` returns open PRs with title, author, branch, head SHA, and draft status.
+- `TEST_T1_F4_02`: Pull requests are joined with existing Review Yeti review logs (verdict, findings count, duration).
+- `TEST_T1_F4_03`: `POST /api/github/repos/:owner/:repo/pulls/:prNumber/review` initiates on-demand review and returns job status.
+- `TEST_T1_F4_04`: Review dispatch publishes `job:queued` or `job:dispatched` event to `LiveStreamBus`.
+- `TEST_T1_F4_05`: Supports state filtering (`?state=open`, `?state=closed`, `?state=all`).
 
-#### F5: Task Observer Lifecycle Hooks & Phase Mapping
-- `TEST_T1_F5_01`: Authoritative Phase Projection — Validates `projectEffectState` accurately projects candidate phases (`INTENT`->`INTENDED`, `EXECUTING`->`IN_FLIGHT`, `SUCCEEDED`->`SUCCEEDED`, `FAILED`->`FAILED`, `UNKNOWN`->`UNKNOWN`, `RECONCILING`->`UNKNOWN`, `MANUAL`->`UNKNOWN`).
-- `TEST_T1_F5_02`: Standard Forward Phase Transition — Validates `checkEffectTransition` allows `INTENT` -> `EXECUTING` -> `SUCCEEDED` with valid evidence digest.
-- `TEST_T1_F5_03`: Reconciling Phase Transition Sequence — Validates `checkEffectTransition` allows `EXECUTING` -> `UNKNOWN` -> `RECONCILING` -> `SUCCEEDED`.
-- `TEST_T1_F5_04`: Checkpoint Proposal Creation & Impact Sorting — Confirms proposals are sorted by impact (`high` > `medium` > `low`) then recurrence descending.
-- `TEST_T1_F5_05`: Hard Stop Permission Denial Recording — Confirms `createTaskObserverCheckpoint` records `permission_denied: true` as an immutable hard stop signal.
+#### F5: SSE Live Streaming & Reasoning Endpoints
+- `TEST_T1_F5_01`: `GET /api/live/stream?jobId=...` establishes Server-Sent Events connection with `Content-Type: text/event-stream`.
+- `TEST_T1_F5_02`: SSE stream broadcasts `reasoning:chunk` events containing live persona reasoning traces.
+- `TEST_T1_F5_03`: SSE stream broadcasts `tool:start` and `tool:result` events for sandboxed read-only tools.
+- `TEST_T1_F5_04`: `GET /api/live/active` returns active in-flight review jobs and queue metrics.
+- `TEST_T1_F5_05`: `GET /api/live/history?jobId=...` replays cached event buffer for specified job ID.
 
-#### F6: Go CRD Identity & Fencing Epoch Fields
-- `TEST_T1_F6_01`: Spec Fencing Fields Serialization — Asserts `PRReviewJobSpec` correctly unmarshals `fencingEpoch`, `workerLeaseToken`, and `logicalChildId`.
-- `TEST_T1_F6_02`: Status Audit Fields Serialization — Asserts `PRReviewJobStatus` correctly unmarshals `authoritativeFencingEpoch`, `activeWorkerLeaseToken`, `receiptDigest`.
-- `TEST_T1_F6_03`: Tripartite Identity Field Independence — Asserts Mission Fencing Epoch, Child Execution Attempt, and Worker Lease Token are separate non-interchangeable fields.
-- `TEST_T1_F6_04`: Condition Constants Definition — Asserts `ConditionFencingEpochMismatch`, `ConditionStaleWorkerLease`, and `ConditionUnknownEffectPending` exist and conform to Kubernetes API standards.
-- `TEST_T1_F6_05`: CRD Spec Immutability CEL Assertion — Validates that CEL rule enforces immutability of `fencingEpoch`, `workerLeaseToken`, and `logicalChildId` across spec updates.
+#### F6: Interactive Diff Retrieval & Hunk Slicing
+- `TEST_T1_F6_01`: `GET /api/live/diff?jobId=...` returns list of changed files with additions, deletions, and status.
+- `TEST_T1_F6_02`: Diff response provides structured unified patch hunks with old/new line numbers and header.
+- `TEST_T1_F6_03`: Supports retrieving diff by review run ID (`/api/dashboard/reviews/:runId/diff`).
+- `TEST_T1_F6_04`: File patch correctly distinguishes added lines (`+`), deleted lines (`-`), and context lines.
+- `TEST_T1_F6_05`: Maps changed files to persona lane affinity (e.g. security lane for auth files).
 
-#### F7: Go Operator Fencing Fail-Closed Reconciliation
-- `TEST_T1_F7_01`: Matching Fencing Epoch Reconcile Success — Verifies reconciliation proceeds when `spec.FencingEpoch == authoritativeEpoch`.
-- `TEST_T1_F7_02`: Matching Worker Lease Token Reconcile Success — Verifies reconciliation proceeds when `spec.WorkerLeaseToken == activeLeaseToken`.
-- `TEST_T1_F7_03`: Epoch Mismatch Fail-Closed Reconciliation — Verifies reconciliation immediately halts and sets `ConditionFencingEpochMismatch = True` on epoch discrepancy.
-- `TEST_T1_F7_04`: Stale Lease Token Fail-Closed Reconciliation — Verifies reconciliation immediately halts and sets `ConditionStaleWorkerLease = True` on stale worker lease.
-- `TEST_T1_F7_05`: Reconcile Idempotence on Stale Epoch — Verifies subsequent reconciliation loops remain halted and never overwrite the failure condition.
+#### F7: Line-Anchored Finding Dismissals & Severity Adjustments
+- `TEST_T1_F7_01`: Generates deterministic finding ID via `sha256(repo + ':' + file + ':' + line + ':' + title)`.
+- `TEST_T1_F7_02`: `POST /api/reviews/:id/findings/:findingId/dismiss` marks finding as dismissed with reason.
+- `TEST_T1_F7_03`: `PATCH /api/reviews/:id/findings/:findingId/severity` updates finding severity (`P0` -> `P1` -> `P2`).
+- `TEST_T1_F7_04`: Line anchoring correctly associates finding with file path and 1-indexed line number in diff hunk.
+- `TEST_T1_F7_05`: Dismissing a finding updates active findings count and recalculates gate eligibility.
 
-#### F8: Go Operator Safe Pod Termination & UNKNOWN Effect Guard
-- `TEST_T1_F8_01`: Clean Pod Completion Recording — Asserts `WorkerTerminationStatus` records `exitCode: 0`, `reason: "Completed"`, transitioning status phase to `Succeeded`.
-- `TEST_T1_F8_02`: Pod OOMKilled Termination Capture — Asserts `WorkerTerminationStatus` records `exitCode: 137`, `reason: "OOMKilled"`, transitioning phase to `Failed`.
-- `TEST_T1_F8_03`: Pod Eviction Recording — Asserts `WorkerTerminationStatus` records `podReason: "Evicted"` without corrupting status history.
-- `TEST_T1_F8_04`: UNKNOWN External Effect Guard — Asserts that when a pod terminates with unresolved external effects, the status retains `UNKNOWN` and sets `ConditionUnknownEffectPending = True`.
-- `TEST_T1_F8_05`: Termination Status Immutability — Asserts that once `WorkerTerminationStatus` is written, subsequent pod events never overwrite it.
+#### F8: Review Prompt Guidance Injection
+- `TEST_T1_F8_01`: `POST /api/reviews/:id/guidance` persists human reviewer steering instructions.
+- `TEST_T1_F8_02`: Guidance payload includes `guidanceText`, `createdBy`, and optional `targetPersonas`.
+- `TEST_T1_F8_03`: Dynamically injects steering guidance into persona `rules` for subsequent review turns.
+- `TEST_T1_F8_04`: `GET /api/reviews/:id/guidance` retrieves existing guidance history for the review.
+- `TEST_T1_F8_05`: Emits `guidance:added` audit log event upon successful submission.
 
-#### F9: Go Operator Terminal Deletion Receipt Auditability
-- `TEST_T1_F9_01`: Receipt Digest Persisted Prior to Secret Deletion — Asserts `status.ReceiptDigest` is durably written before per-run Secret is deleted.
-- `TEST_T1_F9_02`: Receipt Evidence Ref Persisted — Asserts `status.ReceiptEvidenceRef` is recorded before finalizer removal.
-- `TEST_T1_F9_03`: Finalizer Sequence Ordering — Verifies `reviewjob.finalizers.review-yeti.ai` blocks resource removal until secret cleanup and status audit sync complete.
-- `TEST_T1_F9_04`: Forensic Auditability After Pod TTL Deletion — Asserts PRReviewJob status retains full forensic termination and receipt data after worker Pod is collected.
-- `TEST_T1_F9_05`: Idempotent Secret Cleanup — Asserts reconciler safely handles already-deleted run Secrets without blocking finalizer removal.
+#### F9: Authoritative Manual Verdict Overrides & Downstream Check Sync
+- `TEST_T1_F9_01`: `POST /api/reviews/:id/override` accepts manual verdict override (`SHIP` vs `BLOCK`).
+- `TEST_T1_F9_02`: Override records `overrideVerdict`, `reason`, `overriddenBy`, and ISO timestamp.
+- `TEST_T1_F9_03`: Increments `desired_version` in `review_gate_attempts` triggering downstream check sync.
+- `TEST_T1_F9_04`: Manual override to `SHIP` clears blocking state even if open P0/P1 findings remain.
+- `TEST_T1_F9_05`: Manual override to `BLOCK` forces gate failure even if panel consensus was SHIP.
 
-#### F10: Controlled Execution Environment Enforcement
-- `TEST_T1_F10_01`: Default Controlled Namespace Target — Asserts `K8sJobRunner` targets `ct-review-system` by default.
-- `TEST_T1_F10_02`: Valid Custom Namespace Acceptance — Asserts `K8sJobRunner` accepts valid non-system namespaces (e.g., `ct-review-staging`).
-- `TEST_T1_F10_03`: Generated Manifest Namespace Target — Asserts `manifest.metadata.namespace` is explicitly set to `ct-review-system`.
-- `TEST_T1_F10_04`: Operator Namespaced Client Scope — Asserts operator reconciler is scoped exclusively to `ct-review-system`.
-- `TEST_T1_F10_05`: Non-Root Security Boundaries — Asserts all generated Job specs enforce non-root execution and drop all capabilities.
-
-#### F11: Comprehensive E2E Testing Suite (Tiers 1-4)
-- `TEST_T1_F11_01`: Test Suite Discovery & Execution — Verifies all E2E test files are discovered and executed by Vitest.
-- `TEST_T1_F11_02`: Pass/Fail Exit Code Semantics — Asserts test runner returns exit code `0` on success and non-zero on failure.
-- `TEST_T1_F11_03`: Tier Classification Reporting — Asserts test report outputs distinct metrics for Tiers 1, 2, 3, and 4.
-- `TEST_T1_F11_04`: Opaque-Box Independence — Asserts tests execute without importing or mutating unexported class internals.
-- `TEST_T1_F11_05`: Deterministic Execution Invariance — Asserts multiple consecutive runs produce identical results with zero network dependency.
-
-#### F12: Final Integration & Offline Contract Qualification
-- `TEST_T1_F12_01`: Upstream Python Schema Parity — Validates that TS wire JSON conforms to `urn:review-yeti:agent-harness:v1` validated by Python validator.
-- `TEST_T1_F12_02`: Cross-Language Request Digest Equality — Confirms SHA-256 calculated by TS `requestDigest` matches Python `compute_request_digest`.
-- `TEST_T1_F12_03`: Go Operator Reconciliation Tests Pass — Verifies `k8s-operator` controller tests pass cleanly.
-- `TEST_T1_F12_04`: TypeScript Unit Test Suite Passes — Verifies `npm test tests/unit/...` passes with zero regressions.
-- `TEST_T1_F12_05`: End-to-End Contract Flow Qualification — Validates end-to-end pipeline: WorkRequest -> Job Manifest -> Receipt -> Reconcile.
+#### F10: Executive & Engineering Analytics Dashboard
+- `TEST_T1_F10_01`: `GET /api/analytics/summary` returns review counts, p95 latency, total spend, tokens, and success rate.
+- `TEST_T1_F10_02`: `GET /api/analytics/costs` returns model spend breakdown and per-repository spend.
+- `TEST_T1_F10_03`: `GET /api/analytics/tokens` returns token time-series with cumulative burn curve.
+- `TEST_T1_F10_04`: `GET /api/analytics/findings` returns severity breakdown (P0/P1/P2) and acceptance vs dismissal rates.
+- `TEST_T1_F10_05`: Analytics endpoints support selectable time filters (`?range=24h`, `?range=7d`, `?range=30d`).
 
 ---
 
-### Tier 2: Boundary & Corner Cases (>=5 per feature = 60 tests)
+### Tier 2: Boundary & Corner Cases (10 Features x 5 Tests = 50 Tests)
 
-#### F1: TS Harness Wire Contracts & Zod Schemas
-- `TEST_T2_F1_01`: Maximum Payload Size Boundary (65,536 bytes) — Payload of exactly 65,536 bytes passes; payload of 65,537 bytes fails closed with `PAYLOAD_TOO_LARGE`.
-- `TEST_T2_F1_02`: Floating Point Rejection in Wire JSON Parser — Rejects numbers with decimal points (`100.5`) or exponents (`1e6`) with `INVALID_JSON`.
-- `TEST_T2_F1_03`: Duplicate Key Rejection in Wire JSON Parser — Rejects payloads with duplicate keys (`{"schema":"...", "schema":"..."}`) with `DUPLICATE_JSON_KEY`.
-- `TEST_T2_F1_04`: Strict Millisecond Precision Regex Boundary — Rejects timestamps lacking milliseconds (`2026-09-27T18:00:00Z`) or with 4 digits (`.1234Z`) with `INVALID_SHAPE`.
-- `TEST_T2_F1_05`: Self-Parenting Execution ID Rejection — Rejects WorkRequests where `parent_execution_id === scope.execution_id` with `SELF_PARENT`.
+#### F1: GitHub OAuth Initiation Route
+- `TEST_T2_F1_01`: Rejects or fails closed with 500/503 when OAuth client ID is completely unconfigured.
+- `TEST_T2_F1_02`: Handles open redirect defense (rejects non-relative or external `return_to` like `https://attacker.com`).
+- `TEST_T2_F1_03`: Rejects oversized or invalid custom scopes exceeding maximum allowed length.
+- `TEST_T2_F1_04`: Rejects empty or whitespace-only scope parameters.
+- `TEST_T2_F1_05`: Handles state collision or replay attack protection (ensures state nonce is single-use).
 
-#### F2: Runner WorkRequest Envelope Generation
-- `TEST_T2_F2_01`: Falsy String Coercion Guard — Asserts `tenantId: ""`, `logicalChildId: ""`, or `executionId: ""` fail closed with `INVALID_SHAPE` rather than falling back to defaults.
-- `TEST_T2_F2_02`: Fencing Epoch Boundary Value (<= 0) — Asserts `fencingEpoch: 0`, `-1`, `-999` fail closed with `FENCING_MISMATCH`.
-- `TEST_T2_F2_03`: PR Number Boundary Value (<= 0) — Asserts `prNumber: 0`, `-5` fail closed with `INVALID_SHAPE`.
-- `TEST_T2_F2_04`: Malformed Repository Patterns — Asserts invalid repository URLs (`http://malformed`, `org/repo/extra`, `noslash`) fail closed with `INVALID_SHAPE`.
-- `TEST_T2_F2_05`: Maximum Budget Overflow Protection — Asserts oversized budgets or capabilities lists exceeding limits fail closed with `INVALID_SHAPE`.
+#### F2: GitHub Session Validation & Logout
+- `TEST_T2_F2_01`: Returns 401 Unauthorized when Authorization header is missing.
+- `TEST_T2_F2_02`: Returns 401 Unauthorized for malformed Bearer prefix (`Basic abc`, `Token xyz`, bare token).
+- `TEST_T2_F2_03`: Returns 401 Unauthorized for nonexistent, forged, or random session token.
+- `TEST_T2_F2_04`: Returns 401 Unauthorized when session token has expired (`expiresAt < Date.now()`).
+- `TEST_T2_F2_05`: Calling `DELETE /api/auth/session` with invalid token returns 200 idempotently without crashing.
 
-#### F3: Runner Identity & Fencing Injection
-- `TEST_T2_F3_01`: Environment Variable Injection Collision Guard — Confirms custom `spec.envVars` with `CT_*` keys are stripped to prevent overriding authoritative harness identity.
-- `TEST_T2_F3_02`: Empty String Image and PVC Claim Guard — Asserts `image: ""` or `pvcClaimName: ""` fail closed with `INVALID_SHAPE`.
-- `TEST_T2_F3_03`: Job Name RFC 1123 DNS Subdomain Validation — Asserts uppercase or invalid characters in `jobName` (`ct_agent_job!`) fail closed with `INVALID_SHAPE`.
-- `TEST_T2_F3_04`: Kubernetes Label Length Boundary (63 chars) — Asserts labels exceeding 63 characters (e.g. `logical_child_id`) are safely truncated to <= 63 characters.
-- `TEST_T2_F3_05`: Volume SubPath Path Traversal Guard — Asserts repo URLs containing `../` or special characters are safely sanitized in volume subPaths.
+#### F3: Accessible Organizations & Repositories Listing
+- `TEST_T2_F3_01`: Returns 401 Unauthorized for `GET /api/github/orgs` when unauthenticated.
+- `TEST_T2_F3_02`: Returns empty array or 404 for unknown or unauthorized organization filter (`?org=nonexistent_org`).
+- `TEST_T2_F3_03`: Rejects malformed organization names containing illegal characters or path traversal (`?org=../`).
+- `TEST_T2_F3_04`: Handles empty repository lists gracefully without throwing null pointer exceptions.
+- `TEST_T2_F3_05`: Pagination parameter boundary handling (negative `page`, excessive `per_page` clamped to maximum).
 
-#### F4: Runner Pod Completion & Receipt Validation
-- `TEST_T2_F4_01`: Succeeded Outcome Missing Evidence Rejection — Asserts outcome `succeeded` with `evidence_refs: []` fails closed with `SUCCESS_EVIDENCE_REQUIRED`.
-- `TEST_T2_F4_02`: Succeeded Outcome with Unresolved Effects Rejection — Asserts outcome `succeeded` with an effect in state `UNKNOWN` fails closed with `UNRESOLVED_EFFECT`.
-- `TEST_T2_F4_03`: Effect SUCCEEDED/FAILED Missing Evidence Ref — Asserts effect in `SUCCEEDED` or `FAILED` with `evidence_ref: null` fails closed with `EFFECT_EVIDENCE_REQUIRED`.
-- `TEST_T2_F4_04`: Temporal Paradox Rejection (`started_at > observed_at`) — Asserts receipt where `started_at` is after `observed_at` fails closed with `INVALID_RECEIPT_TIME`.
-- `TEST_T2_F4_05`: Budget Limit Exceeded Rejection — Asserts receipt where `metering.cost_microusd > request.budget.max_cost_microusd` fails closed with `BUDGET_EXCEEDED`.
+#### F4: Active Pull Requests Discovery & Review Dispatch
+- `TEST_T2_F4_01`: Returns 404 Not Found when owner/repo does not exist.
+- `TEST_T2_F4_02`: Returns 400 Bad Request when PR number is non-numeric, 0, or negative.
+- `TEST_T2_F4_03`: Returns 400/409 Conflict when attempting to trigger review on a closed PR without override flag.
+- `TEST_T2_F4_04`: Rejects dispatch when repository automation is explicitly disabled (`automationEnabled: false`).
+- `TEST_T2_F4_05`: Returns 401 Unauthorized when attempting to trigger review without valid session or API key.
 
-#### F5: Task Observer Lifecycle Hooks & Phase Mapping
-- `TEST_T2_F5_01`: Forbidden Phase Transition: UNKNOWN to EXECUTING — Asserts `checkEffectTransition('UNKNOWN', 'EXECUTING')` fails closed with `INVALID_EFFECT_TRANSITION`.
-- `TEST_T2_F5_02`: Forbidden Terminal State Transition — Asserts `checkEffectTransition('SUCCEEDED', 'EXECUTING')` fails closed with `INVALID_EFFECT_TRANSITION`.
-- `TEST_T2_F5_03`: Checkpoint Proposal Budget Boundary (> 5 Proposals) — Asserts 10 input proposals are strictly capped at 5 and `overflow_count` is set to 5.
-- `TEST_T2_F5_04`: Malformed Proposal Shape Rejection — Asserts proposals with negative recurrence, invalid impact, or unknown phase fail closed with `INVALID_SHAPE`.
-- `TEST_T2_F5_05`: Non-Boolean Permission Denied Rejection — Asserts non-boolean `permission_denied` (`"true"`, `null`, `1`) fails closed with `INVALID_SHAPE`.
+#### F5: SSE Live Streaming & Reasoning Endpoints
+- `TEST_T2_F5_01`: Handles client disconnect mid-stream cleanly without leaking listeners or throwing unhandled errors.
+- `TEST_T2_F5_02`: Returns empty history array (count 0) for non-existent or expired `jobId`.
+- `TEST_T2_F5_03`: Event buffer capping boundary (buffer does not exceed 500 events per job, dropping oldest).
+- `TEST_T2_F5_04`: Rejects malformed publish payloads on `POST /api/live/publish` with 400 Bad Request.
+- `TEST_T2_F5_05`: Handles extreme job ID strings (empty, special characters, 256+ characters) safely.
 
-#### F6: Go CRD Identity & Fencing Epoch Fields
-- `TEST_T2_F6_01`: Fencing Epoch Boundary Value (<= 0) in CRD — Asserts CRD CEL rule rejects `fencingEpoch: 0` or negative integers.
-- `TEST_T2_F6_02`: Fencing Epoch Non-Integer Value in CRD — Asserts CRD schema rejects float or string values for `fencingEpoch`.
-- `TEST_T2_F6_03`: Worker Lease Token Empty String in CRD — Asserts CEL minLength rejects `workerLeaseToken: ""`.
-- `TEST_T2_F6_04`: Logical Child ID Invalid Pattern in CRD — Asserts regex rejects invalid characters or leading dashes in `logicalChildId`.
-- `TEST_T2_F6_05`: Receipt Digest Invalid SHA-256 Pattern in CRD — Asserts CEL pattern rejects non-SHA-256 strings in `status.receiptDigest`.
+#### F6: Interactive Diff Retrieval & Hunk Slicing
+- `TEST_T2_F6_01`: Returns 404 Not Found when requested `jobId` or `runId` has no associated diff or snapshot.
+- `TEST_T2_F6_02`: Returns 400 Bad Request when `jobId` query parameter is missing or empty.
+- `TEST_T2_F6_03`: Gracefully handles binary files or unpatchable assets (`patch: null` or `isBinary: true`).
+- `TEST_T2_F6_04`: Handles empty PR diffs (0 changed files) with 200 OK and empty files list.
+- `TEST_T2_F6_05`: Massive diff boundary: safely truncates or paginates files exceeding size limit (>500KB patch).
 
-#### F7: Go Operator Fencing Fail-Closed Reconciliation
-- `TEST_T2_F7_01`: Stale Epoch Regression Attempt — Asserts job spec with epoch 1 when mission epoch is 2 fails closed immediately.
-- `TEST_T2_F7_02`: Revoked Authoritative Lease Token — Asserts reconciliation fails closed when authoritative lease is revoked or nil while spec holds a token.
-- `TEST_T2_F7_03`: Stale Worker Lease with Matching Epoch — Asserts matching epoch does not bypass stale worker lease token rejection.
-- `TEST_T2_F7_04`: Mid-Execution Mission Epoch Advancement — Asserts advancing mission epoch while a pod is running prevents the stale pod outcome from committing.
-- `TEST_T2_F7_05`: Dynamic Client Malformed Type Injection — Asserts operator reconciler fails closed if dynamic client provides invalid attribute types.
+#### F7: Line-Anchored Finding Dismissals & Severity Adjustments
+- `TEST_T2_F7_01`: Returns 404 Not Found when review ID or finding ID does not exist.
+- `TEST_T2_F7_02`: Returns 400 Bad Request when dismissal request is missing `reason` or `dismissedBy`.
+- `TEST_T2_F7_03`: Returns 400 Bad Request when setting an invalid severity value (`P3`, `CRITICAL`, `UNKNOWN`).
+- `TEST_T2_F7_04`: Dismissal idempotency: dismissing an already-dismissed finding succeeds without duplicate audit entries.
+- `TEST_T2_F7_05`: Rejects finding mutation when review ID format is malformed or invalid UUID/slug.
 
-#### F8: Go Operator Safe Pod Termination & UNKNOWN Effect Guard
-- `TEST_T2_F8_01`: Preemption Mid-Execution without Receipt — Asserts abrupt SIGKILL preemption retains effects in `UNKNOWN` state without promoting to success.
-- `TEST_T2_F8_02`: Termination Message Max Length Truncation (1024 chars) — Asserts termination logs exceeding 1024 characters are safely truncated to the last non-empty line <= 1024 characters.
-- `TEST_T2_F8_03`: Credential Redaction in Termination Message — Asserts authorization tokens (`ghp_*`, `Bearer *`, `sk-*`) are redacted before writing to status.
-- `TEST_T2_F8_04`: ExitCode Omission for Unscheduled Pods — Asserts eviction before container execution leaves `exitCode` absent and records `podReason: "Evicted"`.
-- `TEST_T2_F8_05`: Reconcile Loop Deadlock Guard — Asserts pending `UNKNOWN` effect condition does not spin reconcile loop in a hot busy-wait.
+#### F8: Review Prompt Guidance Injection
+- `TEST_T2_F8_01`: Returns 400 Bad Request when `guidanceText` is empty, whitespace-only, or missing.
+- `TEST_T2_F8_02`: Rejects prompt guidance exceeding maximum character limit (e.g. > 4,000 characters).
+- `TEST_T2_F8_03`: Returns 404 Not Found when review ID does not exist.
+- `TEST_T2_F8_04`: Handles invalid persona IDs in `targetPersonas` array (rejects unknown personas).
+- `TEST_T2_F8_05`: Rejects unauthenticated guidance submission with 401 Unauthorized.
 
-#### F9: Go Operator Terminal Deletion Receipt Auditability
-- `TEST_T2_F9_01`: Deletion Attempt with Missing Receipt Digest — Asserts deleting PRReviewJob without receipt digest logs warning and preserves finalizer until terminal state is resolved.
-- `TEST_T2_F9_02`: Secret Deletion Transient Error Requeue — Asserts transient error during Secret deletion requeues reconciliation and preserves finalizer.
-- `TEST_T2_F9_03`: Deletion Timestamp Set during Active Run — Asserts graceful cancellation sets `cancelRequestedAt` and preserves receipt digest if completed.
-- `TEST_T2_F9_04`: Corrupted Receipt Digest Pattern in Status — Asserts malformed receipt digest in status is caught and rejected before secret cleanup.
-- `TEST_T2_F9_05`: Cascade Deletion Namespace Boundary Guard — Asserts namespace termination does not cause un-audited external effects to orphan.
+#### F9: Authoritative Manual Verdict Overrides & Downstream Check Sync
+- `TEST_T2_F9_01`: Returns 400 Bad Request when `overrideVerdict` is not `SHIP` or `BLOCK` (e.g. `MAYBE`, `PASS`).
+- `TEST_T2_F9_02`: Returns 400 Bad Request when override `reason` is missing or shorter than minimum required length.
+- `TEST_T2_F9_03`: Returns 404 Not Found when target review ID does not exist.
+- `TEST_T2_F9_04`: Returns 403 Forbidden when user role is `viewer` (only `admin` or `reviewer` permitted).
+- `TEST_T2_F9_05`: Rejects override on already finalized or superseded review runs.
 
-#### F10: Controlled Execution Environment Enforcement
-- `TEST_T2_F10_01`: Forbidden Namespace Rejection: 'default' — Asserts `new K8sJobRunner({ namespace: 'default' })` fails closed with `INVALID_SHAPE`.
-- `TEST_T2_F10_02`: Forbidden Namespace Rejection: 'kube-system' — Asserts `new K8sJobRunner({ namespace: 'kube-system' })` fails closed with `INVALID_SHAPE`.
-- `TEST_T2_F10_03`: Forbidden Namespace Prefix Rejection: 'kube-*' — Asserts namespaces starting with `kube-` (e.g. `kube-public`, `kube-node-lease`, `kube-custom`) fail closed with `INVALID_SHAPE`.
-- `TEST_T2_F10_04`: Empty String Namespace Rejection — Asserts `namespace: ""` fails closed with `INVALID_SHAPE` without fallback to default.
-- `TEST_T2_F10_05`: RFC 1123 Namespace Pattern Validation — Asserts uppercase or invalid characters in `namespace` (`ct_review!`) fail closed with `INVALID_SHAPE`.
-
-#### F11: Comprehensive E2E Testing Suite (Tiers 1-4)
-- `TEST_T2_F11_01`: Individual Test Timeout Isolation — Asserts individual test timeout does not terminate test runner process prematurely.
-- `TEST_T2_F11_02`: Unhandled Promise Rejection Trap — Asserts unhandled rejections within test cases are trapped and attributed to the offending test.
-- `TEST_T2_F11_03`: Concurrency State Isolation — Asserts parallel test workers do not mutate shared global configuration or state.
-- `TEST_T2_F11_04`: Mock Cleanup Guarantee — Asserts mock calls and timers are cleanly reset between test runs.
-- `TEST_T2_F11_05`: Process Environment Restoration — Asserts modified `process.env` keys are restored to baseline values in `afterEach`.
-
-#### F12: Final Integration & Offline Contract Qualification
-- `TEST_T2_F12_01`: Cross-Language Unicode Normalization — Asserts unicode characters (e.g. emojis, accents) produce identical byte lengths and digests in TS and Python.
-- `TEST_T2_F12_02`: Safe Integer Boundary Invariance — Asserts max safe integer `9007199254740991` is preserved identically across TS, Go, and Python.
-- `TEST_T2_F12_03`: Negative Zero `-0` Serialization Parity — Asserts `-0` is serialized to `"0"` identically across TS and Python per RFC 8785.
-- `TEST_T2_F12_04`: Compact Unformatted JSON Invariance — Asserts zero extraneous whitespace or newlines in serialized wire contracts.
-- `TEST_T2_F12_05`: Unsupported Schema Kind Rejection — Asserts unrecognized schema identifier (e.g., `ct-agent-work-request.v2`) fails closed across all validators.
+#### F10: Executive & Engineering Analytics Dashboard
+- `TEST_T2_F10_01`: Returns 400 Bad Request for unsupported time range (`?range=90d`, `?range=year`, `?range=invalid`).
+- `TEST_T2_F10_02`: Returns empty/zero metrics gracefully when database has zero review runs in time window.
+- `TEST_T2_F10_03`: Repository filter boundary: returns empty metrics for unknown repository filter (`?repo=nonexistent/repo`).
+- `TEST_T2_F10_04`: Calculates p95 accurately with small sample sets (e.g. 1 review, 2 reviews, 5 reviews).
+- `TEST_T2_F10_05`: Returns 401 Unauthorized when accessing analytics without authentication.
 
 ---
 
-### Tier 3: Cross-Feature Combinations (Pairwise Interactions — >=8 tests)
+### Tier 3: Cross-Feature Combinations (Pairwise Interaction Workflows — 8 Tests)
 
-- `TEST_T3_PAIR_01`: WorkRequest Generation + Receipt Binding Verification (F2 + F4)
-  - Interacts `K8sJobRunner.buildWorkRequest` with `checkReceiptBinding`. Generates a valid WorkRequest envelope, simulates an execution receipt with matching scope and `request_digest`, and asserts `checkReceiptBinding` passes with an authoritative `AdmissionSnapshot`.
-- `TEST_T3_PAIR_02`: Fencing Epoch Injection + Operator Fail-Closed Reconciliation (F3 + F7)
-  - Interacts `K8sJobRunner.generateJobManifest` injecting `CT_FENCING_EPOCH: 2` with operator reconciliation where active mission epoch is advanced to 3. Asserts operator reconciliation fails closed, sets `ConditionFencingEpochMismatch`, and blocks pod dispatch.
-- `TEST_T3_PAIR_03`: Task Observer Phase Transitions + Receipt Effects Qualification (F4 + F5)
-  - Interacts task observer state progression (`INTENT` -> `EXECUTING` -> `SUCCEEDED`) with execution receipt validation. Asserts that all effects projected by `projectEffectState` match owner effect intents and that `validateExecutionReceipt` succeeds.
-- `TEST_T3_PAIR_04`: WorkRequest Envelope Generation + Controlled Boundary Namespace Enforcement (F2 + F10)
-  - Interacts envelope generation and namespace validation. Confirms valid `ct-review-system` generates conforming WorkRequest and Job manifest, while attempting to target `kube-system` halts before envelope construction.
-- `TEST_T3_PAIR_05`: Task Observer Permission Denial + Receipt Outcome Canceled/Quarantined (F4 + F5)
-  - Interacts task observer hard stop signal (`permission_denied: true`) with receipt outcome processing. Asserts runner produces receipt with outcome `cancelled` and diagnostic code `AUTHORITY_DENIED`, verifying effects remain non-promoted.
-- `TEST_T3_PAIR_06`: Worker Preemption + UNKNOWN Effect Preservation + Terminal Receipt Auditability (F8 + F9)
-  - Interacts pod preemption, effect safety, and terminal auditability. Asserts that when a worker pod is killed with pending external effects, `WorkerTerminationStatus` captures exit, effects remain `UNKNOWN`, and `status.ReceiptDigest` is preserved before run Secret deletion.
-- `TEST_T3_PAIR_07`: Tripartite Fencing Separation across Runner and CRD Spec (F1 + F6 + F7)
-  - Interacts Mission Fencing Epoch (`scope.fencing_epoch: 5`), Child Attempt (`attempt: 2`), and Worker Lease Token (`fencing_token: 101`). Asserts updating lease token does not invalidate fencing epoch, but stale lease token halts reconciliation.
-- `TEST_T3_PAIR_08`: Cross-Language Digest Parity + InitContainer Staged WorkRequest (F1 + F3 + F12)
-  - Interacts initContainer staging command with Python contract validator. Asserts staged `CT_WORK_REQUEST_PAYLOAD` parses cleanly in Python `agent_harness_contract.py` and produces identical SHA-256 digest matching `CT_REQUEST_DIGEST`.
-
----
-
-### Tier 4: Real-World Scenarios (End-to-End Workflows — >=5 tests)
-
-- `TEST_T4_SCENARIO_01`: Standard Clean PR Review Workflow with Conforming Receipt
-  - Full-lifecycle PR review on `review-yeti-ai/review-yeti-bot` (PR #402). `K8sJobRunner` constructs compliant WorkRequest envelope; generates batch/v1 Job manifest with initContainer staging; simulates worker execution producing evidence artifact; verifies conforming `ct-agent-execution-receipt.v1` with outcome `succeeded`; operator reconciles completion and archives audit receipt.
-- `TEST_T4_SCENARIO_02`: Spot Node Preemption with UNKNOWN External Effect Preservation
-  - Simulates worker pod preemption on a DOKS spot node during a multi-file review while an external review comment effect is in flight (`EXECUTING`). Operator `worker_termination.go` captures `WorkerTerminationStatus` (`exitCode: 137`, `reason: "OOMKilled"`/`Evicted`); external effect is preserved as `UNKNOWN`; condition `UnknownEffectPending = True` is recorded; zero effects promoted to success.
-- `TEST_T4_SCENARIO_03`: Stale Worker Lease & Fencing Epoch Mismatch Fence Closure
-  - Simulates a race condition where a network partition causes delayed job submission after mission fencing epoch bumped from 1 to 2. TypeScript runner submits job with epoch 1; operator reconciler compares against authoritative mission epoch 2; triggers fail-closed reconciliation, sets `ConditionFencingEpochMismatch = True`, and aborts pod scheduling.
-- `TEST_T4_SCENARIO_04`: Task Observer Classifier Permission Denial Hard Halt
-  - Simulates an agent attempting to inspect an unauthorized path or policy-restricted tool. Task observer hook triggers `permission_denied: true`; runner treats denial as a hard stop signal; halts execution immediately; emits execution receipt with `outcome: "cancelled"` and diagnostic `AUTHORITY_DENIED`; zero raw transcripts or diff memories retained.
-- `TEST_T4_SCENARIO_05`: Large Payload Truncation, Budget Capping & Checkpoint Proposal Trimming
-  - Simulates a large PR (150+ files) generating 12 candidate review findings. Task observer proposal budget trims proposals to exactly 5 sorted by impact and recurrence; sets `overflow_count: 7`; canonical JSON serializer asserts payload byte length <= 65,536 bytes; WorkRequest and Receipt pass validation cleanly without memory bloat.
-- `TEST_T4_SCENARIO_06`: Boundary Namespace Injection Tampering Attempt & Audit Preservation
-  - Simulates an adversarial attempt to submit a PR review job targeting `kube-system` or `default`. `K8sJobRunner` intercepts and fails closed with `INVALID_SHAPE`; audit alert logged; operator verifies zero resources created outside `ct-review-system`.
+- `TEST_T3_PAIR_01`: **OAuth Login -> Session Introspection -> Accessible Organizations & Repositories Discovery (F1 + F2 + F3)**
+  - Exchanges mock OAuth authorization code, obtains session token, introspects session profile, and queries accessible organizations and repositories.
+- `TEST_T3_PAIR_02`: **Repository Selection -> Active PR Inspection -> On-Demand Review Dispatch (F3 + F4)**
+  - Selects monitored repository, discovers open pull requests, selects an unreviewed PR, and triggers an on-demand review run.
+- `TEST_T3_PAIR_03`: **Review Dispatch -> SSE Stream Connection -> Live Reasoning Token Broadcast (F4 + F5)**
+  - Connects client to `/api/live/stream?jobId=...`, triggers review run, and verifies reception of `reasoning:chunk` events as personas deliberate.
+- `TEST_T3_PAIR_04`: **Live Review Execution -> Read-Only Tool Invocation -> Live Tool Event Emission (F5 + F6)**
+  - Observes reviewer persona executing a read-only analysis tool (e.g. `ast_lookup`), verifying immediate emission of `tool:start` and `tool:result` on the SSE stream.
+- `TEST_T3_PAIR_05`: **Review Completion -> Unified Diff Retrieval -> Inline Line-Anchored Finding Discovery (F5 + F6 + F7)**
+  - Receives review completion event, fetches unified diff hunks, verifies line-anchored annotations match diff line coordinates and severity badges.
+- `TEST_T3_PAIR_06`: **Finding Discovery -> False-Positive Dismissal -> Review Audit Trail Recording (F7 + F8)**
+  - Dismisses a false-positive P1 finding with audit reasoning; confirms finding status transitions to `dismissed` and audit event is recorded in audit trail.
+- `TEST_T3_PAIR_07`: **Finding Discovery -> Manual Verdict Override -> Downstream Gate Check Attempt Sync (F7 + F9)**
+  - Review panel reports `BLOCK` due to P0 finding; human reviewer submits authoritative verdict override `SHIP`; confirms `desired_version` increments and gate check updates to Approved.
+- `TEST_T3_PAIR_08`: **Review Execution & Dismissal Activity -> Executive Analytics Summary & Severity Ratio Update (F7 + F10)**
+  - Completes review execution and triage; queries `/api/analytics/summary` and `/api/analytics/findings`; confirms metrics accurately reflect turnaround latency, spend, and acceptance/dismissal ratios.
 
 ---
 
-## Total Minimum Tests Target: 134 Tests
+### Tier 4: Real-World Scenarios (Comprehensive End-to-End Workflows — 5 Tests)
 
-| Tier | Category | Minimum Test Count | Status |
-|------|----------|:------------------:|:------:|
-| Tier 1 | Core Feature Coverage (12 Features x 5 Tests) | 60 | Defined |
-| Tier 2 | Boundary & Corner Cases (12 Features x 5 Tests) | 60 | Defined |
-| Tier 3 | Cross-Feature Pairwise Combinations | 8 | Defined |
-| Tier 4 | Real-World Application Scenarios | 6 | Defined |
-| **Total** | | **134** | **Complete** |
+- `TEST_T4_SCENARIO_01`: **Developer Happy-Path: OAuth Login -> Repo Discovery -> Active PR Review -> Clean SSE Stream -> SHIP Consensus**
+  - Full engineer workflow: logs in via GitHub OAuth, navigates to `example-org/example-service`, selects active PR #402, monitors live reasoning feed over SSE, all 11 personas finish with zero P0/P1 findings, panel issues SHIP verdict, and PR check marks success.
+- `TEST_T4_SCENARIO_02`: **Human-in-the-Loop False-Positive Triage: Security Lane P1 Finding Dismissal -> Auto-Approval Gate Update**
+  - Security persona flags a suspected secret in test fixture; developer inspects inline finding card on diff viewer; clicks "Dismiss as False Positive" with justification; active findings drop to 0; gate automatically clears and downstream check updates to SHIP.
+- `TEST_T4_SCENARIO_03`: **Authoritative Executive Override: Critical Blocked Review Overridden to SHIP for Emergency Hotfix Deployment**
+  - High-priority production incident hotfix PR triggers review; quality persona raises blocking P0 finding; engineering director performs manual verdict override to `SHIP` with incident justification; gate attempt updates `desired_version`; check run transitions to Approved.
+- `TEST_T4_SCENARIO_04`: **Prompt Steering Mid-Review: Prompt Guidance Injected to Guide Reviewer Personas on Architecture Patterns**
+  - Multi-turn review running in sandbox; tech lead submits inline prompt guidance instructing personas to evaluate against RFC-8785 canonical JSON; subsequent persona reasoning traces incorporate guidance into deliberation.
+- `TEST_T4_SCENARIO_05`: **Executive Spend & Velocity Intelligence: Multi-PR Batch Evaluation -> 24h/7d/30d Spend, Token Burn & p95 Analytics**
+  - Engineering manager reviews team velocity; filters analytics across 24h, 7d, 30d; compares token burn curves against monthly budget; inspects p95 turnaround duration and per-repository spend breakdown.
 
 ---
 
@@ -273,25 +232,15 @@ Every feature from `PROJECT.md § Feature Inventory` is mapped across all 4 tier
 
 ### 1. Run Vitest E2E Suite
 ```bash
-npx vitest run tests/e2e/agentHarnessE2E.test.ts
+npx vitest run tests/e2e/reviewYetiDashboardE2E.test.ts
 ```
 
-### 2. Run Standalone Node E2E Runner
+### 2. Run All E2E Suites
 ```bash
-node tests/e2e/run-agent-harness-e2e.mjs
+npm run test:e2e
 ```
 
-### 3. Verify Upstream Python Contract Qualification
+### 3. Verify TypeScript Build
 ```bash
-python3 /Users/jasonbarbee/ct-worktrees/example-meta-main/test/agent_harness_contract_test.py
-```
-
-### 4. Verify Go Operator Controller Tests
-```bash
-cd k8s-operator && go test -count=1 ./controllers/...
-```
-
-### 5. Verify TypeScript Unit Suite
-```bash
-npm test tests/unit/agentHarnessContracts.test.ts tests/unit/k8sJobRunner.contract.test.ts
+npm run build:backend
 ```

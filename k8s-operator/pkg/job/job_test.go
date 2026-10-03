@@ -1,5 +1,5 @@
 /*
-Copyright 2026 exampleorg.
+Copyright 2026 Review Yeti.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -1413,6 +1413,42 @@ func TestBuildWorkerJobRefusesMalformedJevConfig(t *testing.T) {
 	input.Publishing.JevShadow = "on\n"
 	if _, err := job.BuildWorkerJob(input); err == nil || !strings.Contains(err.Error(), "jev shadow") {
 		t.Fatalf("whitespace in the Jev shadow flag must refuse the Job, got %v", err)
+	}
+}
+
+func TestBuildWorkerJobDeletionEvidenceFlag(t *testing.T) {
+	now := time.Date(2026, 10, 1, 20, 0, 0, 0, time.UTC)
+	review := reviewFixture(now)
+	review.Spec.PublicationMode = "app-gate"
+	input := buildInput(review, now)
+	input.Publishing = publishingFixture()
+	initial, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnv(initial.Spec.Template.Spec.Containers[0], job.JevEvidenceEnv) {
+		t.Fatal("evidence questions must default off")
+	}
+	input.Publishing.JevEvidence = "owner/repo,owner/other"
+	active, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envValue(active.Spec.Template.Spec.Containers[0], job.JevEvidenceEnv) != input.Publishing.JevEvidence {
+		t.Fatal("allowlist not projected")
+	}
+	review.Spec.PublicationMode = "disabled"
+	disabled, err := job.BuildWorkerJob(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasEnv(disabled.Spec.Template.Spec.Containers[0], job.JevEvidenceEnv) {
+		t.Fatal("receipt-only job received classifier flag")
+	}
+	review.Spec.PublicationMode = "app-gate"
+	input.Publishing.JevEvidence = "owner/repo\n"
+	if _, err := job.BuildWorkerJob(input); err == nil {
+		t.Fatal("malformed allowlist accepted")
 	}
 }
 
