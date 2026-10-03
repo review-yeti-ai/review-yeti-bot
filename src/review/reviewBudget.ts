@@ -64,9 +64,7 @@ import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { DiffShrinkDisclosure, NotSentInFullReason } from '../types/diffShrink';
 import { scopeFilesForPersona, type EffectiveReviewFile, type ReviewApplicability } from './personaApplicability';
-import { isDataOrConfigPath, isDocumentationOrAssetPath } from './reviewableContent';
-import { isSecuritySensitivePath } from './securitySensitivePaths';
-import { CI_IAC_PATTERNS, TEST_PATTERNS } from './pathRiskTables';
+import { budgetCategoryRank as sharedBudgetCategoryRank, classifyBudgetCategory as sharedClassifyBudgetCategory } from './pathRiskPolicy';
 
 export type {
   BudgetCategory,
@@ -142,22 +140,15 @@ export function loadReviewBudgetInput(options: {
 // Category and rank (deterministic, path only)
 // ---------------------------------------------------------------------------
 
-// CI/IaC and test rank tables live in `./pathRiskTables.js`, shared with the GitHub Action pipeline.
+/** The category and packing rank are defined once in `./pathRiskPolicy.js` (shared with the
+ * GitHub Action pipeline's partition admission); these are typed re-exports. */
 export function classifyBudgetCategory(filePath: string): BudgetCategory {
-  if (isSecuritySensitivePath(filePath)) return 'security-sensitive';
-  const path = filePath.replace(/\\/gu, '/');
-  if (CI_IAC_PATTERNS.some((pattern) => pattern.test(path))) return 'ci-iac';
-  if (TEST_PATTERNS.some((pattern) => pattern.test(path))) return 'test';
-  if (isDocumentationOrAssetPath(path)) return 'docs';
-  if (isDataOrConfigPath(path)) return 'config';
-  return 'source';
+  return sharedClassifyBudgetCategory(filePath);
 }
 
 /** Packing rank: 0 is always full depth; 1 and 2 may be summarized, 1 before 2. */
 export function budgetCategoryRank(category: BudgetCategory): 0 | 1 | 2 {
-  if (category === 'security-sensitive' || category === 'ci-iac') return 0;
-  if (category === 'source') return 1;
-  return 2;
+  return sharedBudgetCategoryRank(category);
 }
 
 /** A category whose files are never summarized or listed while they fit the request cap. */

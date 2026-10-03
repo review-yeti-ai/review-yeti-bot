@@ -19,102 +19,18 @@
  * consulted here.
  */
 
-import {
-  BUILD_SCRIPT_PATTERNS,
-  CI_PATTERNS,
-  CONTAINER_PATTERNS,
-  DEPENDENCY_MANIFEST_PATTERNS,
-  DEPENDENCY_MANIFESTS,
-  IAC_PATTERNS,
-  LOCKFILE_NAMES,
-  LOCKFILE_PATTERNS,
-  MIGRATION_PATTERNS,
-  REPO_CONTROL_PATTERNS,
-  SECRET_MATERIAL_PATTERNS,
-  SENSITIVE_CAMEL_STEM,
-  SENSITIVE_SEGMENT,
-  SENSITIVE_STEM,
-  TOOLCHAIN_PIN_NAMES,
-} from './pathRiskTables';
 
-/** Which arm of the predicate matched, for logs and disclosure. */
-export type SecuritySensitivePathClass =
-  | 'malformed'
-  | 'ci'
-  | 'container'
-  | 'iac'
-  | 'repo_control'
-  | 'secret_material'
-  | 'build_script'
-  | 'migration'
-  | 'lockfile'
-  | 'toolchain_pin'
-  | 'dependency_manifest'
-  | 'auth_crypto_secrets';
-
-// The tables themselves live in `./pathRiskTables.js`, shared with the GitHub Action pipeline.
-// Edit them there; this module owns the predicate and its classification order.
-function normalizePath(filePath: string): string {
-  return filePath.replace(/\\/gu, '/').replace(/^\.\//u, '');
-}
-
-function baseNameOf(normalized: string): string {
-  return (normalized.split('/').pop() || normalized).toLowerCase();
-}
-
-export function isLockfilePath(filePath: string): boolean {
-  const normalized = normalizePath(String(filePath || ''));
-  return LOCKFILE_NAMES.has(baseNameOf(normalized)) || LOCKFILE_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
-export function isToolchainPinPath(filePath: string): boolean {
-  return TOOLCHAIN_PIN_NAMES.has(baseNameOf(normalizePath(String(filePath || ''))));
-}
-
-export function isDependencyManifestPath(filePath: string): boolean {
-  const normalized = normalizePath(String(filePath || ''));
-  return DEPENDENCY_MANIFESTS.has(baseNameOf(normalized))
-    || DEPENDENCY_MANIFEST_PATTERNS.some((pattern) => pattern.test(normalized));
-}
-
-const CLASSED_PATTERNS: ReadonlyArray<readonly [SecuritySensitivePathClass, readonly RegExp[]]> = [
-  ['ci', CI_PATTERNS],
-  ['container', CONTAINER_PATTERNS],
-  ['iac', IAC_PATTERNS],
-  ['repo_control', REPO_CONTROL_PATTERNS],
-  ['secret_material', SECRET_MATERIAL_PATTERNS],
-  ['build_script', BUILD_SCRIPT_PATTERNS],
-  ['migration', MIGRATION_PATTERNS],
-];
-
-/**
- * Which arm of the predicate a path matches, or null when it is not sensitive.
- * First match wins, so the answer is stable; being sensitive at all does not
- * depend on the order.
- */
-export function securitySensitivePathClass(filePath: unknown): SecuritySensitivePathClass | null {
-  if (typeof filePath !== 'string' || filePath.trim().length === 0) return 'malformed';
-  const normalized = normalizePath(filePath);
-  for (const [pathClass, patterns] of CLASSED_PATTERNS) {
-    if (patterns.some((pattern) => pattern.test(normalized))) return pathClass;
-  }
-  if (isLockfilePath(normalized)) return 'lockfile';
-  if (isToolchainPinPath(normalized)) return 'toolchain_pin';
-  if (isDependencyManifestPath(normalized)) return 'dependency_manifest';
-  if (SENSITIVE_SEGMENT.test(normalized) || SENSITIVE_STEM.test(normalized) || SENSITIVE_CAMEL_STEM.test(normalized)) {
-    return 'auth_crypto_secrets';
-  }
-  return null;
-}
-
-/**
- * True when a path must always be reviewed at full depth. Case-insensitive,
- * separator-normalized, and conservative: an empty or non-string path is
- * treated as sensitive so that malformed input never unlocks a reduction.
- */
-export function isSecuritySensitivePath(filePath: unknown): boolean {
-  return securitySensitivePathClass(filePath) !== null;
-}
+// The predicate itself -- tables, classification order and the arm that matched -- lives in
+// `./pathRiskPolicy.js`, which the GitHub Action pipeline also requires, so both review runtimes
+// run one implementation. Edit it there.
+export {
+  isDependencyManifestPath,
+  isLockfilePath,
+  isSecuritySensitivePath,
+  isToolchainPinPath,
+  securitySensitivePathClass,
+  type SecuritySensitivePathClass,
+} from './pathRiskPolicy';
 
 /**
  * The fast-ship screen's substring tokens (moved here from `classifierEngine`

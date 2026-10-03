@@ -327,45 +327,12 @@ function assessReviewAssignmentBudget(partitionCount, personaCount, maxAssignmen
   return { planned, maximum, admitted: planned <= maximum };
 }
 
-// Risk rank for partition admission when the assignment cap binds: the review budget's packing
-// rank, `budgetCategoryRank(classifyBudgetCategory(path))` in src/review/reviewBudget.ts.
-//   0 -- security-sensitive (src/review/securitySensitivePaths.ts) or CI/IaC
-//   1 -- other source
-//   2 -- tests, documentation/assets, data/config
-// The tables are not copied: they are required from src/review/pathRiskTables.js, the one
-// definition the TypeScript classifiers import too. Only the short classification order below is
-// restated (this CommonJS pipeline cannot load the TypeScript predicates); a corpus test in
-// tests/unit/incrementalReviewScope.test.ts pins it to the TypeScript ranks. The rank never decides
+// Risk rank for partition admission when the assignment cap binds: exactly the review budget's
+// packing rank (0 security-sensitive or CI/IaC, 1 other source, 2 tests/docs/data-config). It is
+// not restated here: `src/review/pathRiskPolicy.js` is the one definition -- tables, predicates
+// and classification order -- that the TypeScript worker re-exports too. The rank never decides
 // coverage: every deferred path is reported as not reviewed.
-const PATH_RISK_TABLES = require('../../../src/review/pathRiskTables');
-const ADMISSION_SENSITIVE_PATTERN_GROUPS = [
-  PATH_RISK_TABLES.CI_PATTERNS, PATH_RISK_TABLES.CONTAINER_PATTERNS, PATH_RISK_TABLES.IAC_PATTERNS,
-  PATH_RISK_TABLES.REPO_CONTROL_PATTERNS, PATH_RISK_TABLES.SECRET_MATERIAL_PATTERNS,
-  PATH_RISK_TABLES.BUILD_SCRIPT_PATTERNS, PATH_RISK_TABLES.MIGRATION_PATTERNS,
-  PATH_RISK_TABLES.LOCKFILE_PATTERNS, PATH_RISK_TABLES.DEPENDENCY_MANIFEST_PATTERNS,
-];
-
-function isAdmissionSecuritySensitive(normalized) {
-  const tables = PATH_RISK_TABLES;
-  if (ADMISSION_SENSITIVE_PATTERN_GROUPS.some((patterns) => patterns.some((pattern) => pattern.test(normalized)))) return true;
-  const baseName = (normalized.split('/').pop() || normalized).toLowerCase();
-  if (tables.LOCKFILE_NAMES.has(baseName) || tables.TOOLCHAIN_PIN_NAMES.has(baseName) || tables.DEPENDENCY_MANIFESTS.has(baseName)) return true;
-  return tables.SENSITIVE_SEGMENT.test(normalized) || tables.SENSITIVE_STEM.test(normalized)
-    || tables.SENSITIVE_CAMEL_STEM.test(normalized);
-}
-
-function admissionRiskRank(filePath) {
-  if (typeof filePath !== 'string' || filePath.trim().length === 0) return 0;
-  if (isAdmissionSecuritySensitive(filePath.replace(/\\/gu, '/').replace(/^\.\//u, ''))) return 0;
-  const value = filePath.replace(/\\/gu, '/');
-  if (PATH_RISK_TABLES.CI_IAC_PATTERNS.some((pattern) => pattern.test(value))) return 0;
-  if (PATH_RISK_TABLES.TEST_PATTERNS.some((pattern) => pattern.test(value))) return 2;
-  const lower = value.toLowerCase();
-  const runArtifact = PATH_RISK_TABLES.RUN_ARTIFACT_DIRECTORY.test(lower) && PATH_RISK_TABLES.RUN_ARTIFACT_EXTENSION.test(lower);
-  if (runArtifact || PATH_RISK_TABLES.DOCUMENTATION_OR_ASSET_EXTENSION.test(lower)) return 2;
-  if (PATH_RISK_TABLES.DATA_OR_CONFIG_EXTENSION.test(value) || PATH_RISK_TABLES.DOTENV_CONFIG_FILE.test(value)) return 2;
-  return 1;
-}
+const { pathRiskRank: admissionRiskRank } = require('../../../src/review/pathRiskPolicy');
 
 /**
  * The one pre-dispatch decision for a partition-by-persona fan-out that would exceed the hard

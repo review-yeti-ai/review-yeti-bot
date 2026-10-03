@@ -183,6 +183,15 @@ describe('composed task-level retry', () => {
     expect(harness.callsByTask.get('task-3')).toBe(1);
   }, 20_000);
 
+  it('keeps a non-timeout task error fatal: it is neither retried nor recorded as a timeout lane', async () => {
+    const harness = recordingClient(({ taskId, nonce }) => (
+      taskId === 'task-2' ? new Error('provider exploded') : clean(taskId, nonce)));
+    await expect(executeComposedReview({
+      config: configFor(), changedFiles, repository: 'acme/app', headSha: '4'.repeat(40), client: harness.client,
+    })).rejects.toThrow('provider exploded');
+    expect(harness.attempts('task-2')).toBe(1);
+  });
+
   it('resumes an exact-head checkpoint, retries only the pending task, and records it once', async () => {
     const harness = recordingClient(({ taskId, nonce, attempt }) => (
       taskId === 'task-3' && attempt === 1 ? malformedVariants.nonce_mismatch(taskId) : clean(taskId, nonce)));
