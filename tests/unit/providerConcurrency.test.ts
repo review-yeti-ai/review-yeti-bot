@@ -110,6 +110,22 @@ describe('cross-review provider concurrency (shared coordinator)', () => {
     expect(clock).toBeLessThanOrEqual(60_000);
   });
 
+  it('stops waiting at the worker deadline even when the call\'s own timeout is later', async () => {
+    let clock = 0;
+    const board = new MemoryLeaseBoard({ capacity: { [MODEL]: 1 }, ttlMs: 10_000_000, now: () => clock });
+    board.grab(MODEL, 'other-worker');
+    const inner = vi.fn(async (req: OpenRouterRequest) => ({ model: req.model, content: 'ok', usage: null, costUSD: null, raw: {} }));
+    const client = createConcurrencyLimitedModelClient({ complete: inner }, {
+      coordinator: board.coordinatorFor('live'), deadlineAtMs: 40_000, now: () => clock, random: () => 1,
+      sleep: async (ms) => { clock += ms; },
+    });
+    await client.complete(request({ timeoutMs: 600_000 }));
+    expect(client.stats().waitExhausted).toBe(1);
+    // Bounded by the 40s cutoff (half of it kept for the call), not by the 600s call timeout.
+    expect(clock).toBeLessThanOrEqual(20_000);
+    expect(inner.mock.calls[0][0].timeoutMs).toBe(600_000 - clock);
+  });
+
   it('renews a long call\'s lease on a heartbeat and releases it exactly once afterwards', async () => {
     vi.useFakeTimers();
     const board = new MemoryLeaseBoard({ capacity: { [MODEL]: 4 }, ttlMs: 6_000 });
