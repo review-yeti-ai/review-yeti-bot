@@ -139,6 +139,7 @@ import {
 } from '../review/findingConvergence';
 import type { PullRequestRef } from '../github/findingThreads';
 import type { FindingThreadsPublisher } from '../review/findingThreadsHttp';
+import { MAX_FINDING_THREADS_PER_REQUEST, MAX_REPORTED_FINGERPRINTS } from '../review/findingThreadsContract';
 export { parseChangedFiles, type ChangedFile } from '../review/changedFiles';
 export { resolveWorkerConfig, getCompiledDomainIndex, getPersonaEcosystemPaths } from '../config/publishingWorkerConfig';
 
@@ -2933,7 +2934,7 @@ export async function runPublishingReviewWorker(
               && typeof entry.finding.path === 'string' && Number.isSafeInteger(Number(entry.finding.line))
               && String(entry.finding.title || '').length > 0 && String(entry.finding.title).length <= 1_000
               && String(entry.finding.body || '').length > 0)
-            .slice(0, 30)
+            .slice(0, MAX_FINDING_THREADS_PER_REQUEST)
             .map((entry) => ({
               fingerprint: entry.fingerprint,
               severity: entry.severity,
@@ -2942,7 +2943,7 @@ export async function runPublishingReviewWorker(
               title: String(entry.finding.title),
               body: String(entry.finding.body).slice(0, 16_000),
             }));
-          const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, 400);
+          const reported = [...new Set(convergence.entries.map((entry) => entry.fingerprint))].slice(0, MAX_REPORTED_FINGERPRINTS);
           const published = await deps.findingThreads.publish({ headSha: identity.headSha, publish, reported }, deps.signal);
           logger.info('Finding review threads published', { runId: identity.runId, ...published });
         } catch (error) {
