@@ -110,6 +110,13 @@ jobs:
             echo "::warning::Could not compute the merge base of ${BASE_SHA} and ${HEAD_SHA}; running the full suite"
           fi
 
+      - name: Audit commit metadata in the pull request range
+        if: github.event_name == 'pull_request' && steps.base.outputs.merge-base != ''
+        env:
+          MERGE_BASE: ${{ steps.base.outputs.merge-base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci/audit-commit-metadata.mjs "${MERGE_BASE}..${HEAD_SHA}"
+
       - id: plan
         name: Select the test files this run executes
         env:

@@ -8,7 +8,7 @@ const modulePath = path.resolve(__dirname, '../../scripts/dispatch-doks-action.m
 
 function environment(overrides: Record<string, string> = {}) {
   return {
-    DOKS_DISPATCH_URL: 'https://review-bot.calltelemetry.com/api/dispatch/action',
+    DOKS_DISPATCH_URL: 'https://review-bot.example.com/api/dispatch/action',
     DOKS_OIDC_AUDIENCE: 'review-yeti-doks-dispatch',
     DOKS_PUBLISH_MODE: 'disabled',
     ACTION_SHA: 'a'.repeat(40),
@@ -173,18 +173,29 @@ describe('DOKS Action dispatch client', () => {
     expect(request.refreshExecutionAttempt).toBeUndefined();
   });
 
-  it('accepts only the fixed HTTPS dispatch origin and exact path', async () => {
+  it('accepts only an https DNS endpoint with the exact admission path and no credentials', async () => {
     const { validateDispatchEndpoint } = await import(modulePath);
-    expect(validateDispatchEndpoint('https://review-bot.calltelemetry.com/api/dispatch/action').href)
-      .toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
+    for (const ok of [
+      'https://review-bot.example.com/api/dispatch/action',
+      'https://dispatch.internal.example.org/api/dispatch/action',
+    ]) {
+      expect(validateDispatchEndpoint(ok).href).toBe(ok);
+    }
 
     for (const unsafe of [
-      'http://review-bot.calltelemetry.com/api/dispatch/action',
-      'https://attacker.example/api/dispatch/action',
-      'https://user:pass@review-bot.calltelemetry.com/api/dispatch/action',
-      'https://review-bot.calltelemetry.com/api/dispatch/action?next=evil',
-      'https://review-bot.calltelemetry.com/api/dispatch/action#fragment',
-      'https://review-bot.calltelemetry.com/api/dispatch/other',
+      'http://review-bot.example.com/api/dispatch/action',
+      'https://user:pass@review-bot.example.com/api/dispatch/action',
+      'https://review-bot.example.com/api/dispatch/action?next=evil',
+      'https://review-bot.example.com/api/dispatch/action#fragment',
+      'https://review-bot.example.com/api/dispatch/other',
+      'https://review-bot.example.com:8443/api/dispatch/action',
+      'https://localhost/api/dispatch/action',
+      'https://app.localhost/api/dispatch/action',
+      'https://intranet/api/dispatch/action',
+      'https://127.0.0.1/api/dispatch/action',
+      'https://[::1]/api/dispatch/action',
+      '',
+      'not a url',
     ]) {
       expect(() => validateDispatchEndpoint(unsafe), unsafe).toThrow(/dispatch endpoint/i);
     }
@@ -226,7 +237,7 @@ describe('DOKS Action dispatch client', () => {
     expect(oidcUrl.origin).toBe(`https://${oidcHost}`);
     expect(oidcUrl.searchParams.get('audience')).toBe('review-yeti-doks-dispatch');
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer actions-runtime-token');
-    expect(fetchMock.mock.calls[1][0]).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
+    expect(fetchMock.mock.calls[1][0]).toBe('https://review-bot.example.com/api/dispatch/action');
     expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(`Bearer signed-github-oidc-${'x'.repeat(32)}`);
   });
 
@@ -280,7 +291,7 @@ describe('DOKS Action dispatch client', () => {
     expect(sleep).toHaveBeenCalledWith(1_000);
     expect(new URL(String(fetchMock.mock.calls[0][0])).hostname).toBe('pipelines.actions.githubusercontent.com');
     expect(fetchMock.mock.calls[1][0]).toEqual(fetchMock.mock.calls[0][0]);
-    expect(fetchMock.mock.calls[2][0]).toBe('https://review-bot.calltelemetry.com/api/dispatch/action');
+    expect(fetchMock.mock.calls[2][0]).toBe('https://review-bot.example.com/api/dispatch/action');
   });
 
   it('retries transient OIDC HTTP failures and rejects permanent OIDC failures immediately', async () => {

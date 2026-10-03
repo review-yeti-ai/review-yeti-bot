@@ -188,11 +188,11 @@ describe('Review Yeti MCP Router & Protocol (JSON-RPC 2.0)', () => {
     it('handles OPTIONS request with CORS headers', async () => {
       const req = new Request('https://review-yeti.test/api/mcp', {
         method: 'OPTIONS',
-        headers: { Origin: 'https://review-bot.calltelemetry.com' },
+        headers: { Origin: 'https://review-bot.example.com' },
       });
-      const res = await defaultMcpRouter.handleHttpRequest(req, {});
+      const res = await defaultMcpRouter.handleHttpRequest(req, { ALLOWED_ORIGINS: 'https://review-bot.example.com' });
       assert.equal(res.status, 204);
-      assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://review-bot.calltelemetry.com');
+      assert.equal(res.headers.get('Access-Control-Allow-Origin'), 'https://review-bot.example.com');
       assert.ok(res.headers.get('Access-Control-Allow-Methods')?.includes('POST'));
     });
 

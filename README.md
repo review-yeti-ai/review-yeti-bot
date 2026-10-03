@@ -166,7 +166,7 @@ Review Yeti provides a production-grade Helm 3 chart in [`charts/review-yeti/`](
 
 > [!NOTE]
 > This chart deploys the components the **hosted** Review Yeti queue runs. The
-> Action's dispatch endpoint is currently fixed to that queue, so installing this
+> Action's dispatch is admitted only for allowlisted callers of that queue, so installing this
 > chart into your own cluster will not receive reviews yet. See
 > [Kubernetes Mode](docs/KUBERNETES_MODE.md).
 

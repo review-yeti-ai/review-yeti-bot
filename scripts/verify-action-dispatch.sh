@@ -25,7 +25,7 @@ fi
 
 status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
   --request POST --header 'content-type: application/json' --data '{}' \
-  https://review-bot.example.com/api/dispatch/action)"
+  "${REVIEW_BOT_HOST:?set REVIEW_BOT_HOST to the service origin (https://...)}/api/dispatch/action")"
 if [[ "$status" != "401" ]]; then
   echo "verify-action-dispatch: expected authenticated endpoint to reject an anonymous request with 401, got $status" >&2
   exit 1

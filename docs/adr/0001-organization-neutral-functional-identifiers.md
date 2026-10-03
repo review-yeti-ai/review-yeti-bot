@@ -58,14 +58,15 @@ including tests and fixtures, were removed from the tree and from history by a o
 (`git filter-repo`) with deterministic replacement rules; digests, cassette cache keys and fixtures that depend on the
 rewritten text were re-derived and committed on top.
 
-Deliberately left, with the reason:
+Nothing is left on the allowlist. The two sets that first looked unmovable were migrated to configuration instead:
 
-- The pinned dispatch endpoint (`action.yml` default, `scripts/dispatch-doks-action.mjs`) and the files that assert it.
-  The pin is a security control (the action refuses any other endpoint) and the documented hosted-only contract; the
-  endpoint is the public service hostname, which cannot be replaced without a new hostname, DNS and certificate.
-- The edge worker deployment configuration (`cf-orchestrator/wrangler.toml` custom domain and fallback URL, and the
-  MCP origin allowlist in `cf-orchestrator/src/mcp/mcpRouter.ts`) and its tests, for the same reason.
+- The dispatch endpoint (`action.yml`, `scripts/dispatch-doks-action.mjs`) is supplied by the calling workflow and
+  validated structurally (https, DNS hostname, exact path, no credentials). The former exact-host pin guarded against
+  a caller pointing the Action elsewhere, but admission is already bound service-side by GitHub Actions OIDC to an
+  allowlisted workflow identity, so a different host grants nothing. `docs/KUBERNETES_MODE.md` states this.
+- The edge worker's public hostname, browser-origin allowlist and fallback URL are deployment configuration: repository
+  variables `CF_CUSTOM_DOMAIN`, `CF_ALLOWED_ORIGINS` and `DOKS_FALLBACK_URL` are passed by the deploy job
+  (`wrangler deploy --domain`, `vars`), and the router reads `ALLOWED_ORIGINS` at runtime.
 
-Both sets are public hostnames only and are recorded in `tests/fixtures/public-anonymity-allowlist.json` with a
-digest, so they can only shrink. Retire them by moving the hostname into deployment configuration once a neutral
-service hostname exists.
+Commit metadata is covered too: `scripts/ci/audit-commit-metadata.mjs` rejects organization identities and names in the
+commits of a pull request, and `scripts/use-neutral-git-identity.sh` sets a neutral identity per clone.
