@@ -2164,3 +2164,179 @@ describe('Dynamic Model Context Window Discovery & Budget Calculation', () => {
     });
   });
 });
+
+describe('public compatibility transports and SDK fallback', () => {
+  it.each([true, false])('accepts a JSON body from a supported response-like transport on stream=%s', async stream => {
+    const fetchImplementation = vi.fn(async () => ({ body: JSON.stringify(sdkChatResult('COMPAT_BODY')) }) as unknown as Response);
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    await expect(client.complete({ ...request, stream })).resolves.toMatchObject({ content: 'COMPAT_BODY' });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+  it.each([true, false])('uses a JSON reader on a supported response-like transport on stream=%s', async stream => {
+    const json = vi.fn(async () => sdkChatResult('COMPAT_JSON'));
+    const fetchImplementation = vi.fn(async () => ({ json, status: 200 }) as unknown as Response);
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    await expect(client.complete({ ...request, stream })).resolves.toMatchObject({ content: 'COMPAT_JSON' });
+    expect(json).toHaveBeenCalledOnce();
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+  it.each([true, false])('falls back to a text reader after a non-JSON compatibility reader fails on stream=%s', async stream => {
+    const json = vi.fn(async () => { throw new SyntaxError('synthetic incompatible JSON reader'); });
+    const text = vi.fn(async () => JSON.stringify(sdkChatResult('COMPAT_TEXT')));
+    const fetchImplementation = vi.fn(async () => ({ json, text, status: 200, headers: new Headers({ 'x-generation-id': 'synthetic-generation' }) }) as unknown as Response);
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    await expect(client.complete({ ...request, stream })).resolves.toMatchObject({ content: 'COMPAT_TEXT' });
+    expect(json).toHaveBeenCalledOnce();
+    expect(text).toHaveBeenCalledOnce();
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+  it.each([true, false])('keeps an explicit compatibility JSON timeout terminal instead of attempting text conversion on stream=%s', async stream => {
+    const text = vi.fn();
+    const timeout = new OpenRouterTimeoutError('synthetic JSON conversion timeout', 'request');
+    const fetchImplementation = vi.fn(async () => ({ json: async () => { throw timeout; }, text }) as unknown as Response);
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    const failure = await client.complete({ ...request, stream }).catch(error => error);
+    if (stream) {
+      expect(failure).toBe(timeout);
+    } else {
+      expect(failure).toBeInstanceOf(OpenRouterConnectionError);
+      expect(failure.causeChain).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'OpenRouterTimeoutError', message: 'synthetic JSON conversion timeout' }),
+      ]));
+    }
+    expect(text).not.toHaveBeenCalled();
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+  it('uses usable raw choices when a compatible upstream envelope fails official SDK validation', async () => {
+    const response = { ...sdkChatResult('RAW_FALLBACK'), created: 'nonstandard upstream timestamp' };
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    await expect(client.complete(request)).resolves.toMatchObject({ content: 'RAW_FALLBACK', raw: response });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+  it('refuses an invalid SDK envelope without usable raw choices', async () => {
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify({ created: 'invalid', choices: [] }), { headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    const failure = await client.complete(request).catch(error => error);
+    expect(failure).toBeInstanceOf(OpenRouterResponseError);
+    expect(failure.message).toContain('malformed response');
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+  it('does not convert a native SDK body connection reset into a timeout', async () => {
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error('synthetic SDK body reset')); } });
+    const fetchImplementation = vi.fn(async () => new Response(body, { headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    const failure = await client.complete(request).catch(error => error);
+    expect(failure).toBeInstanceOf(OpenRouterConnectionError);
+    expect(failure).not.toBeInstanceOf(OpenRouterTimeoutError);
+    expect(failure.message).toContain('OpenRouter SDK connection failure');
+    expect(failure.causeChain).toEqual(expect.arrayContaining([
+      expect.objectContaining({ depth: 0, name: 'TypeError', message: '[REDACTED]' }),
+    ]));
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { stream: true, reader: 'json' },
+    { stream: false, reader: 'json' },
+    { stream: true, reader: 'text' },
+    { stream: false, reader: 'text' },
+  ])('cancels a late $reader compatibility conversion after caller abort on stream=$stream', async ({ stream, reader }) => {
+    let settle!: (value: unknown) => void;
+    const conversion = new Promise<unknown>(resolve => { settle = resolve; });
+    const read = vi.fn(() => conversion);
+    const cancel = vi.fn(async () => {});
+    const transport = { [reader]: read, cancel };
+    const fetchImplementation = vi.fn(async () => transport as unknown as Response);
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    const controller = new AbortController();
+    const lateValue = reader === 'json' ? sdkChatResult('LATE_CONVERSION') : JSON.stringify(sdkChatResult('LATE_CONVERSION'));
+    try {
+      const rejected = client.complete({ ...request, stream, signal: controller.signal }).catch(error => error);
+      await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+      controller.abort();
+      const failure = await rejected;
+      expect(failure).toBeInstanceOf(OpenRouterTimeoutError);
+      expect(failure.kind).toBe('request');
+      settle(lateValue);
+      await vi.waitFor(() => expect(cancel).toHaveBeenCalledExactlyOnceWith('request deadline'));
+      expect(read).toHaveBeenCalledOnce();
+      expect(fetchImplementation).toHaveBeenCalledOnce();
+    } finally {
+      controller.abort();
+      settle(lateValue);
+      await conversion;
+    }
+  });
+
+  it.each([true, false])('normalizes mixed string and text-block compatible completions on stream=%s', async stream => {
+    const response = {
+      ...sdkChatResult(''),
+      choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: [' FIRST ', { type: 'text', text: 'SECOND ' }, { type: 'image_url' }, null] } }],
+    };
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify(response), { headers: { 'content-type': 'application/json' } }));
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    await expect(client.complete({ ...request, stream })).resolves.toMatchObject({ content: stream ? 'FIRST SECOND' : 'SECOND ' });
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+});
+
+describe('public completion validation and overall deadline', () => {
+  it('rejects whitespace-only credentials before invoking the provider', async () => {
+    const fetchImplementation = vi.fn();
+    const client = new OpenRouterClient({ apiKey: '   ', fetchImplementation });
+    await expect(client.complete(request)).rejects.toBeInstanceOf(OpenRouterConnectionError);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid timeout budget %s before invoking the provider', async timeoutMs => {
+    const fetchImplementation = vi.fn();
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation });
+    await expect(client.complete({ ...request, timeoutMs })).rejects.toBeInstanceOf(TypeError);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { jobId: undefined, persona: undefined, providerId: undefined },
+    { jobId: 'synthetic-deadline-defaults', persona: undefined, providerId: undefined },
+    { jobId: 'synthetic-deadline-labelled', persona: 'synthetic-reviewer', providerId: 'synthetic-provider' },
+  ])('stops before fetch at the exact overall deadline and attributes telemetry for $jobId', async labels => {
+    const fetchImplementation = vi.fn();
+    const now = vi.fn().mockReturnValueOnce(0).mockReturnValue(request.timeoutMs);
+    const publishEvent = vi.spyOn(LiveStreamBus.getInstance(), 'publishEvent').mockImplementation(() => {});
+    try {
+      const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation, now });
+      await expect(client.complete({ ...request, ...labels })).rejects.toMatchObject({
+        name: 'OpenRouterTimeoutError', kind: 'request',
+      });
+      expect(fetchImplementation).not.toHaveBeenCalled();
+      if (labels.jobId) {
+        expect(publishEvent).toHaveBeenCalledExactlyOnceWith({
+          jobId: labels.jobId, timestamp: new Date(request.timeoutMs).toISOString(),
+          type: 'openrouter:metric', persona: labels.persona || 'openrouter',
+          data: { outcome: 'failed', failureClass: 'timeout', requestedModel: request.model,
+            provider: labels.providerId || 'openrouter', latencyMs: request.timeoutMs, timeoutKind: 'request' },
+        });
+      } else {
+        expect(publishEvent).not.toHaveBeenCalled();
+      }
+    } finally {
+      publishEvent.mockRestore();
+    }
+  });
+
+  it('honors caller backoff bounds and prevents a second fetch after the overall deadline', async () => {
+    let clock = 0;
+    const fetchImplementation = vi.fn(async () => new Response(JSON.stringify({ error: { message: 'synthetic unavailable' } }), {
+      status: 503, headers: { 'content-type': 'application/json' },
+    }));
+    const sleep = vi.fn(async () => { clock = request.timeoutMs; });
+    const client = new OpenRouterClient({ apiKey: 'synthetic-key', fetchImplementation, now: () => clock, maxRetries: 0 });
+    await expect(client.complete({ ...request, maxRetries: 1, initialRetryDelayMs: 100,
+      maxRetryDelayMs: 10, random: () => 0.5, sleep })).rejects.toMatchObject({
+      name: 'OpenRouterTimeoutError', kind: 'request',
+    });
+    expect(sleep).toHaveBeenCalledExactlyOnceWith(5);
+    expect(fetchImplementation).toHaveBeenCalledOnce();
+  });
+});
