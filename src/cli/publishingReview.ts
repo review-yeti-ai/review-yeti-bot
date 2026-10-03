@@ -14,7 +14,9 @@
  *    `openrouter.ai` and its repository to a hardcoded fallback. Reaching it from a
  *    DOKS dispatch would review the wrong repository against the wrong provider.
  *    Here the gateway base URL and key are *required*; there is no default and no
- *    second transport.
+ *    second transport. That includes rate limiting: a provider 429 is ridden out on the same
+ *    gateway (cross-review concurrency leases, then the engines' rate-limit ladder), never by
+ *    falling back to another transport or provider -- see `providerPublishingModelClient`.
  *
  * 2. **Fail closed.** Only a clean panel verdict produces `success`. Provider
  *    failure, panel failure, a non-shipping verdict, or any unexpected error all
@@ -24,7 +26,7 @@
  */
 import { createPanelDeadlineSignal, executePersonaPanel, PanelConfigurationError, PanelDeadlineExceededError, raceWithPanelAbort, throwIfPanelAborted, type RepoFileProvider } from '../panel/panelEngine';
 import { workerFailureClasses } from '../types/workerFailure';
-import { WORKER_TERMINAL_DEADLINE_ENV, workerPanelDeadlineBudget } from '../config/workerTerminalDeadline';
+import { WORKER_PANEL_RESERVE_MS, WORKER_TERMINAL_DEADLINE_ENV, workerPanelDeadlineBudget, workerTerminalDeadlineAtMs } from '../config/workerTerminalDeadline';
 import { githubRetryDeadlineFromEnv, type GitHubRetryOptions } from '../github/githubRetry';
 import {
   buildGracefulComposedPanelResult,
@@ -54,6 +56,9 @@ import {
 } from '../gateway/openRouterClient';
 import type { ReviewModelClient } from '../gateway/openRouterClient';
 import { UpstreamCapacityRejectionError } from '../gateway/providerCapacityManager';
+import { withProviderConcurrencyLimit } from '../gateway/concurrencyLimitedModelClient';
+import { providerConcurrencyWorkerConfigFromEnv } from '../config/providerConcurrency';
+import type { ProviderLeaseCoordinator } from '../review/providerLease';
 import { resolveWorkerConfig } from '../config/publishingWorkerConfig';
 import {
   openaiTransport,
@@ -160,6 +165,35 @@ function boundedPublishingModelClient(client: ReviewModelClient): ReviewModelCli
       return client.complete({ ...request, maxTokens });
     },
   };
+}
+
+/**
+ * The publishing worker's model client: the bounded Bifrost client, wrapped with the cross-review
+ * provider concurrency limit (`../gateway/concurrencyLimitedModelClient`).
+ *
+ * Deliberately NO fallback transport. The policy schema's provider pool
+ * (`../gateway/providerPool`) can describe several providers, but this lane is Bifrost-only by
+ * invariant (module header): the gateway owns model routing and any fallback targets. When the one
+ * upstream behind the review alias is saturated, the remedies are the ones applied here -- hold at
+ * most the configured number of concurrent calls across all reviews (leases) and per worker (local
+ * cap), and let the engines' rate-limit ladder wait out a 429 within the run's budget -- never a
+ * second transport. With neither leases nor a local cap configured, the client is unchanged.
+ */
+export function providerPublishingModelClient(
+  client: ReviewModelClient,
+  env: Readonly<Record<string, string | undefined>>,
+  coordinator: ProviderLeaseCoordinator | undefined,
+  now: () => number = Date.now,
+): ReviewModelClient {
+  const config = providerConcurrencyWorkerConfigFromEnv(env);
+  const terminalAt = workerTerminalDeadlineAtMs(env);
+  return withProviderConcurrencyLimit(client, {
+    ...(config.leasesEnabled && coordinator ? { coordinator } : {}),
+    ...(config.localConcurrency !== undefined ? { localConcurrency: config.localConcurrency } : {}),
+    ...(config.fixedKey ? { fixedKey: config.fixedKey } : {}),
+    ...(terminalAt !== undefined ? { deadlineAtMs: terminalAt - WORKER_PANEL_RESERVE_MS } : {}),
+    now,
+  });
 }
 
 export const PUBLICATION_MODE_APP_GATE = 'app-gate';
@@ -983,6 +1017,12 @@ export interface PublishingReviewDeps {
    * is served from cache (entries are still recorded when this run's comparison is readable).
    */
   verdictCacheBase?: VerdictCacheBaseSource;
+  /**
+   * Cross-review provider concurrency coordinator (`REVIEW_YETI_PROVIDER_LEASES`). Built by
+   * `publishingWorkerAdapters` only when the flag is on; absent (or unreachable) means the worker's
+   * local cap alone bounds its provider calls.
+   */
+  providerLease?: ProviderLeaseCoordinator;
   /** REL-1085 test seam; production compares with this run's `GH_TOKEN`. */
   verdictCacheCompareReader?: ComparisonContentReader;
 }
@@ -1639,9 +1679,9 @@ export async function runPublishingReviewWorker(
       },
     } : undefined;
 
-    const modelClient = boundedPublishingModelClient(
+    const modelClient = providerPublishingModelClient(boundedPublishingModelClient(
       deps.client || new OpenRouterClient({ baseUrl: transport.baseUrl, apiKey: transport.apiKey }),
-    );
+    ), env, deps.providerLease, now);
     // REL-1132: every call the engines make is metered into this run's ledger. The composed shadow
     // engine gets its own label so its cost never reads as panel cost.
     // Phase events describe only this gating publisher execution. Shadow review remains separate

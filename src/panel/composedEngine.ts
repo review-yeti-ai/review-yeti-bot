@@ -41,6 +41,7 @@ import {
   retryAfterFloorMs,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
+import { planRateLimitRetry } from '../gateway/rateLimitBackoff';
 import {
   DOCUMENTATION_ONLY_RATIONALE, attachReviewDepthDisclosure, reviewDepthDisclosureOf, type ReviewDepthDisclosure,
 } from '../review/personaApplicability';
@@ -97,6 +98,7 @@ import {
   isEmptyCompletionError,
   transportRetryDelayMs,
   isTransientLaneTransportError,
+  isProviderRateLimitError,
   panelDelay,
   EMPTY_COMPLETION_MAX_ATTEMPTS,
   EMPTY_COMPLETION_RETRY_DELAY_MS,
@@ -478,6 +480,8 @@ async function callTurn(params: {
   let emptyCompletionAttempts = 0;
   let transportAttempts = 0;
   let genericAttempts = 0;
+  let rateLimitRetries = 0;
+  let firstRateLimitAt: number | undefined;
   let response: Awaited<ReturnType<ReviewModelClient['complete']>>;
   for (;;) {
     throwIfPanelAborted(params.signal);
@@ -513,6 +517,30 @@ async function callTurn(params: {
         logger.warn(`[composed] empty completion from '${params.providerId}' (attempt ${emptyCompletionAttempts}/${EMPTY_COMPLETION_MAX_ATTEMPTS}); re-issuing against the same alias so its routing can pick a different backend.`);
         await panelDelay(emptyCompletionDelayMs, params.signal);
         continue;
+      }
+
+      // A capacity rejection (429) rides the rate-limit ladder shared with `runPersona`
+      // (`../gateway/rateLimitBackoff`): full jitter, floored at Retry-After, bounded by this run's
+      // deadline. When no further wait fits, fail now with the 429 (classified `rate_limit`);
+      // never hand it to the transport or generic ladders for more retries.
+      if (isProviderRateLimitError(error)) {
+        const nowMs = (params.now ?? Date.now)();
+        if (firstRateLimitAt === undefined) firstRateLimitAt = nowMs;
+        const plan = planRateLimitRetry({
+          retriesSoFar: rateLimitRetries,
+          firstFailureAtMs: firstRateLimitAt,
+          nowMs,
+          retryAfterFloorMs: cooldownFloorMs,
+          budgetLeftMs: budgetLeftMs,
+        });
+        if (plan.retry) {
+          rateLimitRetries = plan.retryNumber;
+          logger.warn(`[composed] '${params.providerId}' rate-limited this turn; backing off ${plan.delayMs}ms before rate-limit retry ${plan.retryNumber}.`);
+          await panelDelay(plan.delayMs, params.signal);
+          continue;
+        }
+        logger.warn(`[composed] rate-limit retry budget for '${params.providerId}' exhausted after ${rateLimitRetries} retr${rateLimitRetries === 1 ? 'y' : 'ies'} (${plan.reason}).`);
+        throw error;
       }
 
       const backoffMs = Math.max(transportRetryDelayMs(transportAttempts + 1), cooldownFloorMs);
