@@ -213,18 +213,47 @@ describe('MemoryPage public neutral state and export controls', () => {
     await renderMemoryPage();
     selectMemoryTab(/Knowledge Ledger/);
     const search = screen.getByPlaceholderText(/Filter by keyword, symbol/);
-    for (const query of ['boundary', 'public filtering', 'src/example-0', 'example/sample-cdr', 'sample convention', 'src/nit-0', 'sample-rule-0', 'interfaces stable', 'src/adr-0', 'no-such-symbol']) {
+    const records = ['Quoted "boundary" rule', 'Architecture ledger', 'Quoted "sample" 0', 'Quoted "sample" 1', 'Sample ADR 0', 'Sample ADR 1'];
+    const expectVisibleRecords = (expected: string[]) => {
+      for (const title of records) {
+        if (expected.includes(title)) expect(screen.getByText(title)).toBeInTheDocument();
+        else expect(screen.queryByText(title)).not.toBeInTheDocument();
+      }
+    };
+    const searches: Array<{ query: string; expected: string[] }> = [
+      { query: 'boundary', expected: [records[0]] },
+      { query: 'public filtering', expected: [records[0], records[1]] },
+      { query: 'src/example-0', expected: [records[0]] },
+      { query: 'example/sample-cdr', expected: [records[0]] },
+      { query: 'sample convention', expected: [records[2], records[3]] },
+      { query: 'Quoted "sample" 0', expected: [records[2]] },
+      { query: 'src/nit-0', expected: [records[2]] },
+      { query: 'sample-rule-0', expected: [records[2]] },
+      { query: 'Sample ADR 0', expected: [records[4]] },
+      { query: 'interfaces stable', expected: [records[4], records[5]] },
+      { query: 'src/adr-0', expected: [records[4]] },
+      { query: 'no-such-symbol', expected: [] },
+    ];
+    for (const { query, expected } of searches) {
       fireEvent.change(search, { target: { value: query } });
       expect(search).toHaveValue(query);
-      if (query === 'no-such-symbol') expect(screen.queryByText('Sample ADR 0')).not.toBeInTheDocument();
+      expectVisibleRecords(expected);
     }
     fireEvent.click(screen.getByText('✕'));
     expect(search).toHaveValue('');
-    for (const label of ['Sec', 'Arch', 'Perf', 'Nits', 'ADRs', 'All']) {
+    expectVisibleRecords(records);
+    const categories = [
+      { label: 'Sec', expected: [records[0]] },
+      { label: 'Arch', expected: [records[1]] },
+      { label: 'Perf', expected: [] },
+      { label: 'Nits', expected: [records[2], records[3]] },
+      { label: 'ADRs', expected: [records[4], records[5]] },
+      { label: 'All', expected: records },
+    ];
+    for (const { label, expected } of categories) {
       fireEvent.click(screen.getByRole('button', { name: label }));
-      expect(screen.getByRole('button', { name: label }).className).toContain('font-semibold');
+      expectVisibleRecords(expected);
     }
-    expect(screen.getByText('Quoted "boundary" rule')).toBeInTheDocument();
   });
 
   it('exports only the chosen sample scope in JSON, Markdown and quote-safe CSV', async () => {
