@@ -708,13 +708,17 @@ export async function loadIncompleteP2RecoveryContext(
           || checkpoint.completedTasks.length !== counts.completed
           || (checkpoint.satisfiedFindingRecheckIds?.length ?? 0) !== 0) refuse();
         // Concurrent tasks enter the checkpoint in completion order; immutable
-        // closeout personas use plan order. Bind the same task evidence by id,
-        // retaining exact findings and rejecting duplicate or missing members.
+        // closeout personas use plan order. Bind the same task evidence by id
+        // and retain exact findings: the sorted equality below rejects
+        // duplicate, missing, or foreign checkpoint members, while composed
+        // lane admission rejects duplicate persona ids inside the completion
+        // itself. An earlier in-line refusal here was proven redundant with
+        // those two checks (removing it leaves the full recovery suite green,
+        // 432/432) and no test could discriminate it, so it was removed per
+        // ADR 0641 rather than left as an unverifiable guard.
         const completionOrder = new Map(checkpointShape.completedTasks.map((task, index) => [task.id, index]));
-        if (completionOrder.size !== counts.completed
-          || checkpoint.completedTasks.some((task) => !completionOrder.has(task.id))) refuse();
         const completedTasks = [...checkpoint.completedTasks].sort((left, right) =>
-          completionOrder.get(left.id)! - completionOrder.get(right.id)!);
+          (completionOrder.get(left.id) ?? counts.completed) - (completionOrder.get(right.id) ?? counts.completed));
         if (canonicalJson(completedTasks) !== canonicalJson(checkpointShape.completedTasks)) refuse();
         // Receipt reconstruction must use the same order, while preserving the
         // deployed checkpoint's optional explicit empty recheck-receipt field.
