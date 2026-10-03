@@ -246,7 +246,8 @@ export function evaluateFindingConvergence<F extends ConvergenceFinding>(input: 
     let status: ConvergenceStatus = matchedThread ? 'carried' : 'new';
     let resolution: FindingThreadResolution | undefined;
     if (severity === 'P2') {
-      if (matchedThread?.resolved === true && matchedThread.resolution) {
+      if (matchedThread?.resolved === true && matchedThread.resolution
+        && statedResolutionReason(matchedThread.resolution.reason) !== null) {
         status = 'satisfied';
         resolution = matchedThread.resolution;
       } else if (!insideDiff(finding, index)) {

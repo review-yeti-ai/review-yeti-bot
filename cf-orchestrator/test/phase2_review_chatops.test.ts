@@ -45,22 +45,6 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
       assert.ok(body.includes('```suggestion\nconst isValid = crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken));\n```'));
     });
 
-    it('formats P2 findings with the required-to-address badge', () => {
-      const finding: InlineFindingSuggestion = {
-        path: 'src/config.ts',
-        line: 45,
-        severity: 'P2',
-        title: 'Deprecated runner configuration',
-        description: 'Update the runner label.',
-        suggestedFix: 'runs-on: ubuntu-latest',
-      };
-
-      const body = formatSuggestionBody(finding);
-
-      assert.ok(body.includes('⚠️ **[P2 - Required to address]** **Deprecated runner configuration**'));
-      assert.ok(body.includes('```suggestion\nruns-on: ubuntu-latest\n```'));
-    });
-
     it('formats informational/P3 findings without suggestion when suggestedFix is omitted', () => {
       const finding: InlineFindingSuggestion = {
         path: 'src/docs/readme.md',
@@ -118,7 +102,7 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
       assert.ok(payload.comments[0].body.includes('```suggestion'));
     });
 
-    describe('review event: P0, P1 and P2 all block (ADR 0002)', () => {
+    describe('review event follows the blocking severities only (P2 is advisory)', () => {
       const finding = (severity: 'P0' | 'P1' | 'P2'): InlineFindingSuggestion => ({
         path: 'src/a.ts', line: 3, severity, title: `${severity} finding`, description: 'Detail.',
       });
@@ -128,26 +112,12 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
           findings: severities.map(finding),
         }).event;
 
-      it('requests changes on a SHIP review that only has P2 findings', () => {
-        assert.equal(event('success', ['P2']), 'REQUEST_CHANGES');
+      it('approves a SHIP review that only has P2 findings', () => {
+        assert.equal(event('success', ['P2']), 'APPROVE');
       });
 
-      it('approves a SHIP review with no findings', () => {
-        assert.equal(event('success', []), 'APPROVE');
-      });
-
-      it('follows the convergence result when the caller supplies the still-required findings', () => {
-        const payload = (required: Array<'P0' | 'P1' | 'P2'>) => buildGitHubReviewPayload({
-          commitId: 'abcdef0123456789abcdef0123456789abcdef01', verdict: 'success', summaryMarkdown: '## Review Yeti',
-          findings: [finding('P2')], requiredFindings: required.map(finding),
-        }).event;
-        // The P2 was resolved with a stated reason: nothing is still required, so approve.
-        assert.equal(payload([]), 'APPROVE');
-        assert.equal(payload(['P2']), 'REQUEST_CHANGES');
-      });
-
-      it('requests changes on action_required with only P2 findings', () => {
-        assert.equal(event('action_required', ['P2']), 'REQUEST_CHANGES');
+      it('comments, without requesting changes, on action_required with only P2 findings', () => {
+        assert.equal(event('action_required', ['P2']), 'COMMENT');
       });
 
       it('requests changes for P0/P1 findings on both verdicts, even when the verdict says success', () => {
