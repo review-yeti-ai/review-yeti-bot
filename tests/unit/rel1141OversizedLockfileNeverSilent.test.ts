@@ -89,6 +89,22 @@ function oversizedNpmLock(name: string, extra: string[] = []): string {
   ].join('\n');
 }
 
+/**
+ * An oversized mix.lock diff of \`entryCount\` Hex bumps, each entry one changed
+ * line pair, byte-shaped like the file Hex writes.
+ */
+function oversizedMixLock(entryCount: number): string {
+  return Array.from({ length: entryCount }, (_, index) => {
+    const name = `pkg_${index}`;
+    const entry = (version: string) => `  "${name}": {:hex, :${name}, "${version}", "${'a'.repeat(64)}", [:mix], [], "hexpm", "${'b'.repeat(64)}"},`;
+    return [
+      `@@ -${10 + index * 4},3 +${10 + index * 4},3 @@`,
+      `-${entry(`1.0.${index}`)}`,
+      `+${entry(`1.1.${index}`)}`,
+    ].join('\n');
+  }).join('\n');
+}
+
 /** A realistic oversized Yarn diff whose GitHub tarball source cannot be summarized safely. */
 function remoteYarnLockPatch(entryCount: number): string {
   return Array.from({ length: entryCount }, (_, index) => {
@@ -230,6 +246,30 @@ describe('REL-1141: a changed lockfile beside a reviewed diff is never silently 
     const lock = decision.effectiveFiles.find((file) => file.path === 'yarn.lock');
     expect(lock?.patch).toContain('dep-199: 1.0.199 -> 1.1.199');
     expect(decision.summarizedLockfiles.map((file) => [file.path, file.packageChanges])).toEqual([['yarn.lock', 200]]);
+  });
+
+  it('summarizes an oversized Elixir mix.lock beside a reviewed source file (#1334)', () => {
+    const patch = oversizedMixLock(300);
+    expect(patch.length).toBeGreaterThan(MAX_FILE_PATCH_CHARS);
+    const decision = resolveReviewApplicability(enabled(), [
+      { path: 'mix.exs', patch: '@@ -1 +1 @@\n-      {:jason, "~> 1.4"},\n+      {:jason, "~> 1.4"},\n+      {:oban, "~> 2.18"},', mode: '100644' },
+      { path: 'mix.lock', patch, mode: '100644' },
+    ]);
+    // Before the collector existed this was the reported defect: every lane
+    // skipped the lockfile, summarizeLockfileChange refused it, and the run
+    // ended in "BLOCK" with zero blocking findings and incomplete coverage.
+    expect(decision.unreviewableLockfiles).toEqual([]);
+    expect(decision.omittedSourcePaths).toEqual([]);
+    const lock = decision.effectiveFiles.find((file) => file.path === 'mix.lock');
+    expect(lock).toBeDefined();
+    expect(lock!.patch).toContain('pkg_0: 1.0.0 -> 1.1.0');
+    expect(lock!.patch).toContain('pkg_299: 1.0.299 -> 1.1.299');
+    expect(lock!.patch).not.toContain('cannot be summarized');
+    expect(lock!.patch!.length).toBeLessThanOrEqual(MAX_FILE_PATCH_CHARS);
+    expect(decision.summarizedLockfiles.map((file) => [file.path, file.packageChanges])).toEqual([['mix.lock', 300]]);
+    // The required lane reads it (routed), so coverage stays complete.
+    expect(decision.routedFiles).toContainEqual({ path: 'mix.lock', laneIds: ['sec-lane'], reason: 'summarized-lockfile' });
+    expect(decision.applicable.length).toBeGreaterThan(0);
   });
 
   it('summarizes an oversized new-package lockfile even when it is the only change (zero configured lanes)', () => {

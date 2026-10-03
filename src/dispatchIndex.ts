@@ -34,6 +34,8 @@ import { PostgresIncrementalBaseLookup } from './persistence/incrementalPriorRev
 import { incrementalMaxAgeMsFrom } from './review/incrementalReview';
 import { PostgresVerdictCacheBaseLookup } from './persistence/verdictCacheSource';
 import { verdictCacheMaxAgeMsFrom } from './review/verdictCache';
+import { PROVIDER_CONCURRENCY_ENV, providerLeaseServiceConfigFromEnv } from './config/providerConcurrency';
+import { PostgresProviderLeaseStore } from './persistence/providerConcurrencyLeaseRepository';
 
 function required(environment: NodeJS.ProcessEnv, name: string): string {
   const value = environment[name]?.trim();
@@ -90,6 +92,17 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
   const store = new PostgresStore();
   await store.initialize();
   const pool = store.getPool();
+  // Cross-review provider concurrency. Off unless configured; a malformed value leaves the route
+  // unmounted (workers fail open to their local cap) instead of stopping this service.
+  const providerLeaseConfig = providerLeaseServiceConfigFromEnv(environment);
+  if (providerLeaseConfig.status === 'invalid') {
+    logger.error('Provider concurrency leases disabled: invalid configuration', {
+      variable: PROVIDER_CONCURRENCY_ENV, reason: providerLeaseConfig.reason,
+    });
+  }
+  const providerLease = providerLeaseConfig.status === 'enabled'
+    ? new PostgresProviderLeaseStore(pool, providerLeaseConfig.config)
+    : undefined;
   const authoritative = authoritativeConfig ? createAuthoritativeReviewService({
     config: authoritativeConfig, appId, privateKey, baseUrl,
     findingThreadAuthor: () => boundedBotLogin({ appId, privateKey, baseUrl }),
@@ -239,6 +252,7 @@ async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void>
       },
     },
     verdictCacheBase: new PostgresVerdictCacheBaseLookup(pool, { maxAgeMs: verdictCacheMaxAgeMs }),
+    ...(providerLease ? { providerLease } : {}),
     databaseReady: async () => (await pool.query('SELECT 1 AS ready')).rows[0]?.ready === 1,
     resolveInstallationId: (owner, repo) => getBoundedRepositoryInstallationId(
       installationCredentialsForRepository(owner, repo)),

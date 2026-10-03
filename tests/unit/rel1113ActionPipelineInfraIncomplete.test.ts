@@ -279,6 +279,58 @@ describe('REL-1113 Action pipeline: in-budget lane re-attempts', () => {
     expect(shared.isNonRetryableClientStatus(502)).toBe(false);
   });
 
+  it('re-runs lanes lost to a rate limit beside a sibling P2 finding, so the verdict stops being a missing-lane BLOCK', async () => {
+    const P2 = { severity: 'P2', path: 'src/a.ts', line: 1, title: 'Nit', body: 'Prefer a named constant.' };
+    const lanes = [
+      lane('security', { decision: 'FINDINGS', findings: [P2] }),
+      lane('architecture'),
+      lane('testing', { decision: 'ERROR', error: 'HTTP 429: concurrent limit reached', responseStatus: 429 }),
+      lane('dependencies', { decision: 'ERROR', error: 'HTTP 429: concurrent limit reached', responseStatus: 429 }),
+    ];
+    // The shared run-level decision refuses INCOMPLETE because a finding exists...
+    expect(pipeline.resolveInfrastructureIncomplete(lanes, { coverageComplete: true })).toBeNull();
+    expect(pipeline.computeArbitrationQuorum(lanes, lanes.length, { changedFiles: [{ path: 'src/a.ts' }] }).verdict).toBe('BLOCK');
+    // ...but the lost lanes are re-run alone; the sibling's finding is never re-rolled.
+    expect(pipeline.resolveLaneLevelInfrastructureRetry(lanes, { coverageComplete: true })).toMatchObject({
+      lanes: [{ id: 'testing', failureClass: 'rate_limit' }, { id: 'dependencies', failureClass: 'rate_limit' }],
+    });
+    const rerun = vi.fn(async (index: number) => lane(lanes[index].personaId as string));
+    const { results, retries, stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+      coverageComplete: true, deadlineMs: Date.now() + 780_000, laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet,
+    });
+    expect(rerun.mock.calls.map(([index]) => index)).toEqual([2, 3]);
+    expect(retries).toBe(1);
+    expect(stopReason).toBe('resolved');
+    expect(results[0]).toBe(lanes[0]);
+    expect(results.map((entry: any) => entry.decision)).toEqual(['FINDINGS', 'APPROVE', 'APPROVE', 'APPROVE']);
+    expect(pipeline.computeArbitrationQuorum(results, results.length, { changedFiles: [{ path: 'src/a.ts' }] }).verdict).not.toBe('BLOCK');
+  });
+
+  it('does not re-run lost lanes beside a blocking (P0/P1) finding, beside an omitted file, or when a failure is not infrastructure', async () => {
+    const P0 = { severity: 'P0', path: 'src/a.ts', line: 1, title: 'Secret logged', body: 'The token is written to the log.' };
+    const lost = lane('testing', { decision: 'ERROR', error: 'HTTP 429: slow down', responseStatus: 429 });
+    const withP0 = [lane('security', { decision: 'FINDINGS', findings: [P0] }), lost];
+    const withP1 = [lane('security', { decision: 'FINDINGS', findings: [{ ...P0, severity: 'P1' }] }), lost];
+    const malformed = [lane('security', { decision: 'FINDINGS', findings: [{ ...P0, severity: 'P2' }] }),
+      lane('testing', { decision: 'ERROR', error: 'Model response contained no parseable findings JSON.', failureClass: 'malformed_output' })];
+    const complete = { coverageComplete: true };
+    expect(pipeline.resolveLaneLevelInfrastructureRetry(withP0, complete)).toBeNull();
+    expect(pipeline.resolveLaneLevelInfrastructureRetry(withP1, complete)).toBeNull();
+    expect(pipeline.resolveLaneLevelInfrastructureRetry(malformed, complete)).toBeNull();
+    expect(pipeline.resolveLaneLevelInfrastructureRetry([lane('security', { decision: 'FINDINGS', findings: [{ ...P0, severity: 'P2' }] }), lost],
+      { coverageComplete: false })).toBeNull();
+    expect(pipeline.resolveLaneLevelInfrastructureRetry([lane('security')], complete)).toBeNull();
+    expect(pipeline.resolveLaneLevelInfrastructureRetry(undefined, complete)).toBeNull();
+    for (const lanes of [withP0, withP1, malformed]) {
+      const rerun = vi.fn(async () => lane('testing'));
+      const { stopReason } = await pipeline.retryInfrastructureFailedLanes(lanes, rerun, {
+        coverageComplete: true, deadlineMs: Date.now() + 780_000, laneTimeoutMs: 1, sleep: async () => {}, random: () => 0, log: quiet,
+      });
+      expect(rerun).not.toHaveBeenCalled();
+      expect(stopReason).toBe('resolved');
+    }
+  });
+
   it('a deadline cut keeps a re-attempt that completed and restores only the lane the cut interrupted', async () => {
     const lanes = [
       lane('security'),
@@ -431,9 +483,11 @@ globalThis.fetch = async (url, init) => {
   if (/You are [^ ]+ Testing/i.test(system)) {
     testingCalls += 1;
     if (mode === 'auth') return new Response('{"error":{"message":"unauthorized"}}', { status: 401, headers: { 'content-type': 'application/json' } });
-    if (mode === 'fail' || mode === 'findings' || (mode === 'recover' && testingCalls === 1)) throw new TypeError('terminated');
+    if (mode === 'fail' || mode === 'findings' || ((mode === 'recover' || mode === 'nit-recover') && testingCalls === 1)) throw new TypeError('terminated');
   } else if (mode === 'findings') {
     findings = [{ severity: 'P0', path: 'src/a.ts', line: 1, title: 'Exported constant leaks a secret', body: 'Breaks when the module is imported by a client bundle.' }];
+  } else if (mode === 'nit-recover') {
+    findings = [{ severity: 'P2', path: 'src/a.ts', line: 1, title: 'Prefer a named constant', body: 'The literal has no name explaining it.' }];
   }
   const content = JSON.stringify({ decision: findings.length ? 'FINDINGS' : 'APPROVE', findings });
   if (body.stream) {
@@ -517,6 +571,15 @@ pipeline.main().then(() => console.log('MAIN_DONE exitCode=' + (process.exitCode
     expect(stdout).not.toContain('Re-attempting');
     expect(stdout).not.toContain('INCOMPLETE');
     expect(outputs.verdict).toBe('BLOCK');
+    expect(outputs['incomplete-reason']).toBe('');
+  }, 15_000);
+
+  it('a lost lane beside a non-blocking finding is re-run alone and main() publishes the real verdict, not BLOCK', () => {
+    const { stdout, outputs } = runMain('nit-recover', ['security', 'testing'], { REVIEW_ACTION_BUDGET_MS: '600000', REVIEW_LANE_TIMEOUT_MS: '5000' });
+    expect(stdout).toContain('Re-attempting lane(s) testing (1/5)');
+    expect(stdout).toContain('MAIN_DONE exitCode=0 testingCalls=2');
+    expect(stdout).not.toContain('persona lane(s) failed');
+    expect(outputs.verdict).not.toBe('BLOCK');
     expect(outputs['incomplete-reason']).toBe('');
   }, 15_000);
 

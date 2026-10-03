@@ -324,13 +324,31 @@ export class McpRouter {
   public async handleHttpRequest(request: Request, env: any): Promise<Response> {
     // 1. Scoped CORS headers (reject wildcard * on mutating control endpoint)
     const reqOrigin = request.headers.get('Origin') || '';
+    // Allowed origins are deployment configuration (ALLOWED_ORIGINS, comma separated): an exact origin such as
+    // https://dashboard.example.com, or `*.example.com` for any https subdomain. Loopback origins are always
+    // allowed for local development. With nothing configured only same-origin and non-browser callers work.
+    const configuredOrigins = String(env?.ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map((entry: string) => entry.trim())
+      .filter(Boolean);
+    const matchesConfigured = (origin: string): boolean => configuredOrigins.some((entry: string) => {
+      if (entry.startsWith('*.')) {
+        try {
+          const url = new URL(origin);
+          return url.protocol === 'https:' && url.hostname.endsWith(entry.slice(1));
+        } catch {
+          return false;
+        }
+      }
+      return origin === entry;
+    });
     const isAllowedOrigin =
       !reqOrigin ||
-      reqOrigin === 'https://review-bot.example.com' ||
-      reqOrigin.endsWith('.example.com') ||
+      matchesConfigured(reqOrigin) ||
       reqOrigin.startsWith('http://localhost:') ||
       reqOrigin.startsWith('http://127.0.0.1:');
-    const allowedOrigin = isAllowedOrigin && reqOrigin ? reqOrigin : 'https://review-bot.example.com';
+    const fallbackOrigin = configuredOrigins.find((entry: string) => !entry.startsWith('*.')) ?? new URL(request.url).origin;
+    const allowedOrigin = isAllowedOrigin && reqOrigin ? reqOrigin : fallbackOrigin;
 
     const corsHeaders: Record<string, string> = {
       'Access-Control-Allow-Origin': allowedOrigin,

@@ -1564,6 +1564,60 @@ describe('authoritative prepared publishing worker', () => {
         .toEqual({ status: 'failure', eligible: false, reason: 'incomplete-review' });
     });
 
+    it('names a composed task whose fresh attempts were all malformed instead of publishing BLOCK with 0 findings', async () => {
+      const f = fixture({ reviewEngine: 'composed' });
+      const taskPlan = [
+        { id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
+          question: 'Does the change preserve the contract?', rationale: 'Review the changed source.' },
+        { id: 'task-b', dimension: 'security' as const, paths: ['src/a.ts'],
+          question: 'Is the storage authority preserved?', rationale: 'Review the changed source.' },
+      ];
+      f.deps.composedReviewRunner = vi.fn().mockResolvedValue({ ...f.panel,
+        taskPlan, applicablePersonaIds: ['task-a', 'task-b'],
+        personas: [{ ...f.panel.personas[0], id: 'task-a' }],
+        unreportedLanes: [unreportedLaneFailure(taskPlan[1], 'exhausted', {
+          reason: 'invalid_findings', turnsUsed: 3, correctionAttempts: 2,
+          toolTurns: 0, finishReason: 'stop', lastToolOutcome: 'none',
+        }, 3)],
+      });
+
+      const receipt = await runPublishingReviewWorker(f.env, f.deps);
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check).toMatchObject({ conclusion: 'failure', title: 'Review Yeti: review did not complete' });
+      expect(check?.title).not.toMatch(/BLOCK/u);
+      expect(check?.summary).toContain('task-b');
+      expect(check?.summary).toContain('after 3 fresh attempts');
+      expect(check?.summary).toContain('reason=invalid_findings');
+      expect(check?.summary).not.toContain('Verdict `BLOCK`');
+      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', failureClass: 'malformed_output' });
+    });
+
+    it('publishes a composed task that stalled on every attempt as INCOMPLETE infrastructure naming the task', async () => {
+      const f = fixture({ reviewEngine: 'composed' });
+      f.env.REVIEW_EXECUTION_ATTEMPT = '1';
+      const taskPlan = [
+        { id: 'task-a', dimension: 'architecture' as const, paths: ['src/a.ts'],
+          question: 'Does the change preserve the contract?', rationale: 'Review the changed source.' },
+        { id: 'task-b', dimension: 'architecture' as const, paths: ['src/a.ts'],
+          question: 'Are transactions stable?', rationale: 'Review the changed source.' },
+      ];
+      f.deps.composedReviewRunner = vi.fn().mockResolvedValue({ ...f.panel,
+        taskPlan, applicablePersonaIds: ['task-a', 'task-b'],
+        personas: [{ ...f.panel.personas[0], id: 'task-a' }],
+        optionalFailures: [{ id: 'task-b', failureClass: 'timeout',
+          error: 'Task task-b (architecture) stalled on a provider timeout in 3 fresh attempt(s) (retries exhausted); path(s) [src/a.ts] were not reviewed by this task' }],
+        unreportedLanes: [],
+        quorum: { ...f.panel.quorum, satisfied: false },
+      });
+
+      const receipt = await runPublishingReviewWorker(f.env, f.deps);
+      const check = f.checkClient.completeCheck.mock.calls[0]?.[0];
+      expect(check?.conclusion).toBe('failure');
+      expect(check?.title).toMatch(/^Review Yeti: INCOMPLETE — infrastructure \(.*lane task-b failed: timeout\)$/u);
+      expect(check?.title).not.toMatch(/BLOCK/u);
+      expect(receipt).toMatchObject({ verdict: 'INCOMPLETE', conclusion: 'failure' });
+    });
+
     it.each(['finding', 'wrong unreported id', 'unreadable diff', 'no unreported evidence', 'budget exhaustion'])('does not relabel %s as a no-verdict panel', async (kind) => {
       const f = fixture();
       f.panel.personas = [f.panel.personas[0]];

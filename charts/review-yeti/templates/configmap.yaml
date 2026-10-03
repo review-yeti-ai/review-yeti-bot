@@ -18,4 +18,10 @@ data:
   ACTION_DISPATCH_OWNER_IDS: {{ .Values.dispatcher.config.ownerIds | quote }}
   ACTION_DISPATCH_WORKFLOW_REFS: {{ .Values.dispatcher.config.workflowRefs | quote }}
   ACTION_DISPATCH_WORKFLOW_SHAS: {{ .Values.dispatcher.config.workflowShas | quote }}
+  {{- if .Values.dispatcher.config.providerConcurrency }}
+  REVIEW_YETI_PROVIDER_CONCURRENCY: {{ .Values.dispatcher.config.providerConcurrency | quote }}
+  {{- end }}
+  {{- if .Values.dispatcher.config.providerLeaseTtlMs }}
+  REVIEW_YETI_PROVIDER_LEASE_TTL_MS: {{ .Values.dispatcher.config.providerLeaseTtlMs | quote }}
+  {{- end }}
 {{- end }}

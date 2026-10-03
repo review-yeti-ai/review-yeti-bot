@@ -41,6 +41,7 @@ import {
   retryAfterFloorMs,
 } from '../gateway/openRouterClient';
 import { runInSpan } from '../telemetry';
+import { planRateLimitRetry } from '../review/laneInfrastructure';
 import {
   DOCUMENTATION_ONLY_RATIONALE, attachReviewDepthDisclosure, reviewDepthDisclosureOf, type ReviewDepthDisclosure,
 } from '../review/personaApplicability';
@@ -97,6 +98,7 @@ import {
   isEmptyCompletionError,
   transportRetryDelayMs,
   isTransientLaneTransportError,
+  isProviderRateLimitError,
   panelDelay,
   EMPTY_COMPLETION_MAX_ATTEMPTS,
   EMPTY_COMPLETION_RETRY_DELAY_MS,
@@ -334,6 +336,74 @@ export function resolveComposedTaskConcurrency(
   return Math.min(COMPOSED_TASK_CONCURRENCY_CEILING, resolveMaxConcurrentLanes(env));
 }
 
+/**
+ * Fresh-context attempts one composed task may run after its first attempt stalls (a provider
+ * timeout escaped the per-turn retry ladder) or ends without a usable final result (malformed
+ * JSON, wrong nonce, invalid findings, ...). Each retry re-runs ONLY that task, from the same
+ * immutable task-scoped prefix, with a newly minted nonce; completed sibling tasks, their
+ * checkpoint and their findings are untouched. One bad lane must not cost the whole review.
+ */
+export const COMPOSED_TASK_MAX_EXTRA_ATTEMPTS = 2;
+/** Smallest wall-clock window a fresh task attempt is assumed to need before the evidence cutoff. */
+export const COMPOSED_TASK_RETRY_MIN_WINDOW_MS = 60_000;
+
+/** Final-result defects a fresh attempt can plausibly clear. Turn-budget exhaustion is not one. */
+const RETRYABLE_TASK_FAILURE_REASONS: ReadonlySet<ComposedTaskFailureDiagnostics['reason']> = new Set([
+  'non_json_task_result', 'tool_requested_during_finalization', 'task_id_mismatch', 'nonce_mismatch',
+  'invalid_status', 'invalid_findings', 'invalid_result_fields',
+] satisfies ComposedTaskFailureDiagnostics['reason'][]);
+
+export function isRetryableComposedTaskFailure(reason: ComposedTaskFailureDiagnostics['reason']): boolean {
+  return RETRYABLE_TASK_FAILURE_REASONS.has(reason);
+}
+
+/** A provider timeout (inactivity, time-to-first-token, request or total) that escaped `callTurn`. */
+export function isComposedTaskStall(error: unknown): boolean {
+  return typeof error === 'object' && error !== null
+    && (error as { name?: unknown }).name === 'OpenRouterTimeoutError';
+}
+
+export type ComposedTaskRetryDecision =
+  | { retry: true; turns: number; requiredWindowMs: number }
+  | { retry: false; reason: 'attempts_exhausted' | 'deadline' | 'turn_budget'; requiredWindowMs: number };
+
+/**
+ * Whether one more fresh attempt of a single composed task may start. Pure and deterministic.
+ *
+ * Time: the retry must be expected to FINISH before the evidence cutoff, not merely start. The
+ * expected duration is the longest of the attempt that just failed, the mean duration of tasks
+ * that already settled in this run, and a fixed floor. A retry that cannot finish would only
+ * turn a named task failure into an anonymous evidence-deadline closeout.
+ *
+ * Turns: the retry draws from the shared review turn budget (completed usage plus every other
+ * task's live reservation is untouchable). It needs at least a bound finalization window.
+ */
+export function decideComposedTaskRetry(input: {
+  attemptsUsed: number;
+  nowMs: number;
+  deadlineAtMs?: number;
+  failedAttemptDurationMs: number;
+  settledTaskDurationsMs: readonly number[];
+  availableTurns: number;
+  taskTurnCeiling: number;
+  maxExtraAttempts?: number;
+}): ComposedTaskRetryDecision {
+  const settled = input.settledTaskDurationsMs.filter((value) => Number.isFinite(value) && value >= 0);
+  const meanSettledMs = settled.length > 0 ? settled.reduce((sum, value) => sum + value, 0) / settled.length : 0;
+  const requiredWindowMs = Math.ceil(Math.max(COMPOSED_TASK_RETRY_MIN_WINDOW_MS,
+    Math.max(0, input.failedAttemptDurationMs), meanSettledMs));
+  if (input.attemptsUsed > (input.maxExtraAttempts ?? COMPOSED_TASK_MAX_EXTRA_ATTEMPTS)) {
+    return { retry: false, reason: 'attempts_exhausted', requiredWindowMs };
+  }
+  if (input.deadlineAtMs !== undefined && input.deadlineAtMs - input.nowMs < requiredWindowMs) {
+    return { retry: false, reason: 'deadline', requiredWindowMs };
+  }
+  const minimumTurns = Math.min(Math.max(1, input.taskTurnCeiling), TASK_FINALIZATION_TURNS + 1);
+  const turns = Math.min(Math.max(1, input.taskTurnCeiling), Math.max(0, input.availableTurns));
+  if (turns < minimumTurns) return { retry: false, reason: 'turn_budget', requiredWindowMs };
+  return { retry: true, turns, requiredWindowMs };
+}
+
 // ---------------------------------------------------------------------------
 // Small local helpers (deliberately NOT imported from panelEngine.ts's private scope -- these
 // are new, composed-engine-specific pieces, not the shared surface `./toolRuntime.ts` and
@@ -478,6 +548,8 @@ async function callTurn(params: {
   let emptyCompletionAttempts = 0;
   let transportAttempts = 0;
   let genericAttempts = 0;
+  let rateLimitRetries = 0;
+  let firstRateLimitAt: number | undefined;
   let response: Awaited<ReturnType<ReviewModelClient['complete']>>;
   for (;;) {
     throwIfPanelAborted(params.signal);
@@ -513,6 +585,30 @@ async function callTurn(params: {
         logger.warn(`[composed] empty completion from '${params.providerId}' (attempt ${emptyCompletionAttempts}/${EMPTY_COMPLETION_MAX_ATTEMPTS}); re-issuing against the same alias so its routing can pick a different backend.`);
         await panelDelay(emptyCompletionDelayMs, params.signal);
         continue;
+      }
+
+      // A capacity rejection (429) rides the rate-limit ladder shared with `runPersona`
+      // (`planRateLimitRetry` in `../review/laneInfrastructure`): full jitter, floored at Retry-After, bounded by this run's
+      // deadline. When no further wait fits, fail now with the 429 (classified `rate_limit`);
+      // never hand it to the transport or generic ladders for more retries.
+      if (isProviderRateLimitError(error)) {
+        const nowMs = (params.now ?? Date.now)();
+        if (firstRateLimitAt === undefined) firstRateLimitAt = nowMs;
+        const plan = planRateLimitRetry({
+          retriesSoFar: rateLimitRetries,
+          firstFailureAtMs: firstRateLimitAt,
+          nowMs,
+          retryAfterFloorMs: cooldownFloorMs,
+          budgetLeftMs: budgetLeftMs,
+        });
+        if (plan.retry) {
+          rateLimitRetries = plan.retryNumber;
+          logger.warn(`[composed] '${params.providerId}' rate-limited this turn; backing off ${plan.delayMs}ms before rate-limit retry ${plan.retryNumber}.`);
+          await panelDelay(plan.delayMs, params.signal);
+          continue;
+        }
+        logger.warn(`[composed] rate-limit retry budget for '${params.providerId}' exhausted after ${rateLimitRetries} retr${rateLimitRetries === 1 ? 'y' : 'ies'} (${plan.reason}).`);
+        throw error;
       }
 
       const backoffMs = Math.max(transportRetryDelayMs(transportAttempts + 1), cooldownFloorMs);
@@ -1277,7 +1373,10 @@ async function runPlanPhase(input: {
 type TaskOutcome =
   | { type: 'complete'; findings: PanelFinding[]; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
   | { type: 'blocked'; turnUsages: LaneTurnUsage[]; toolCalls: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }>; toolTurns: number; durationMs: number }
-  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics };
+  | { type: 'exhausted'; turnUsages: LaneTurnUsage[]; diagnostics: ComposedTaskFailureDiagnostics; attempts?: number }
+  /** Every attempt stalled on a provider timeout; recorded as a named failed lane, never fatal. */
+  | { type: 'stalled'; turnUsages: LaneTurnUsage[]; attempts: number; durationMs: number;
+    stopReason: 'attempts_exhausted' | 'deadline' | 'turn_budget' };
 
 async function runTaskWorkPhase(input: {
   task: ReviewTask;
@@ -1320,6 +1419,9 @@ async function runTaskWorkPhase(input: {
   ];
   let taskMessages = [...initialTaskMessages];
   const turnUsages = input.progressState?.turnUsages ?? [];
+  // A task-level retry reuses the shared usage array so every attempt's spend stays accounted;
+  // the coded diagnostics describe this attempt alone.
+  const attemptStartTurn = turnUsages.length;
   const toolCallsLog: Array<{ tool: string; args?: any; scope?: string; exhaustive?: boolean }> = [];
   let toolTurns = 0;
   let correctionAttempts = 0;
@@ -1328,7 +1430,7 @@ async function runTaskWorkPhase(input: {
   let lastToolOutcome: ComposedTaskFailureDiagnostics['lastToolOutcome'] = 'none';
   const exhausted = (reason: ComposedTaskFailureDiagnostics['reason']): TaskOutcome => ({
     type: 'exhausted', turnUsages,
-    diagnostics: { reason, turnsUsed: turnUsages.length, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
+    diagnostics: { reason, turnsUsed: turnUsages.length - attemptStartTurn, correctionAttempts, toolTurns, finishReason, lastToolOutcome },
   });
   const localMaxTurns = resolveTaskTurnCeiling(input.maxTurnsPerTask, input.turnsRemaining(), input.task.paths?.length || 1);
   const finalizationTurns = Math.min(TASK_FINALIZATION_TURNS, Math.max(1, localMaxTurns - 1));
@@ -1483,6 +1585,7 @@ export function unreportedLaneFailure(
   task: ReviewTask,
   reason: 'no_budget' | 'exhausted' | 'evidence_deadline' | 'findings_stop',
   diagnostics?: ComposedTaskFailureDiagnostics,
+  attempts = 1,
 ): NonNullable<PanelResult['unreportedLanes']>[number] {
   if (reason === 'findings_stop') {
     return {
@@ -1508,7 +1611,9 @@ export function unreportedLaneFailure(
   return {
     id: task.id,
     error: `Task ${task.id} (${task.dimension}) ran and produced no verdict`
-      + (diagnostics ? ` [reason=${diagnostics.reason}; turns=${diagnostics.turnsUsed}; corrections=${diagnostics.correctionAttempts}; tool_turns=${diagnostics.toolTurns}; finish_reason=${diagnostics.finishReason ?? 'unavailable'}; last_tool_outcome=${diagnostics.lastToolOutcome}]` : ''),
+      + (attempts > 1 ? ` after ${attempts} fresh attempts` : '')
+      + (diagnostics ? ` [reason=${diagnostics.reason}; turns=${diagnostics.turnsUsed}; corrections=${diagnostics.correctionAttempts}; tool_turns=${diagnostics.toolTurns}; finish_reason=${diagnostics.finishReason ?? 'unavailable'}; last_tool_outcome=${diagnostics.lastToolOutcome}]` : '')
+      + (attempts > 1 ? `; planned coverage of [${task.paths.join(', ')}] is incomplete -- request an exact-head rerun (completed tasks resume from the checkpoint) or split the change` : ''),
     failureClass: diagnostics?.reason === 'total_turn_budget_exhausted' || diagnostics?.reason === 'task_turn_budget_exhausted'
       ? 'budget_exhausted' : 'malformed_output',
     ...(diagnostics ? { diagnostics } : {}),
@@ -1990,11 +2095,41 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
       unreportedLanes.push(unreportedLaneFailure(task, 'no_budget'));
     };
 
+    // Wall-clock durations of tasks that settled in this run: the retry decision's estimate of how
+    // long one fresh task attempt takes.
+    const settledTaskDurationsMs: number[] = [];
+    const clock = deadline.now;
+
     const runReservedTask = async (reserved: ReservedTask, taskBaseMessages: OpenRouterMessage[], taskSignal: AbortSignal,
       taskTurnUsages: LaneTurnUsage[]): Promise<SettledTask> => {
-      const { task, index, reservedTurns } = reserved;
+      const { task, index } = reserved;
       const diagnosticLane = composedTaskDiagnosticLane(index);
       const taskStartedAt = Date.now();
+      const taskClockStartedAt = clock();
+      const taskTurnCeiling = resolveTaskTurnCeiling(
+        config.composed?.max_turns_per_task, COMPOSED_TASK_MAX_TURNS_HARD_CAP, task.paths?.length || 1);
+      // One more fresh attempt of THIS task alone, or a reason it cannot run. On success the task's
+      // own reservation is widened from unreserved review turns only: completed usage and every
+      // sibling's live reservation stay untouchable, so `accountTaskUsage` still holds.
+      const tryReserveRetry = (attemptsUsed: number, attemptStartedAt: number): ComposedTaskRetryDecision => {
+        const ownSpent = taskTurnUsages.length;
+        const reservedForOthers = reservedTurns - reserved.reservedTurns;
+        const decision = decideComposedTaskRetry({
+          attemptsUsed,
+          nowMs: clock(),
+          deadlineAtMs: composedDeadlineAtMs,
+          failedAttemptDurationMs: clock() - attemptStartedAt,
+          settledTaskDurationsMs,
+          availableTurns: totalTurnBudget - totalTurnsUsed - reservedForOthers - ownSpent,
+          taskTurnCeiling,
+        });
+        if (decision.retry) {
+          const widened = Math.max(reserved.reservedTurns, ownSpent + decision.turns);
+          reservedTurns += widened - reserved.reservedTurns;
+          reserved.reservedTurns = widened;
+        }
+        return decision;
+      };
       logger.info('[composed] task started', {
         event: 'composed_task_started',
         taskId: task.id,
@@ -2009,34 +2144,76 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
         provider: providerId, model, required: true,
       });
       try {
-        const outcome = await runTaskWorkPhase({
-          maxTurnsPerTask: config.composed?.max_turns_per_task,
-          deadlineAtMs: composedDeadlineAtMs,
-          now: deadline.now,
-          task,
-          taskIndex: index,
-          totalTasks: planOutcome.tasks.length,
-          disputedFindingRechecks: rechecksByTask.get(task.id),
-          client,
-          model,
-          providerId,
-          baseMessages: taskBaseMessages,
-          changedFilesForTools: toolFiles,
-          originalFiles: changedFiles,
-          ...(requestCapBytes ? { requestCapBytes } : {}),
-          timeoutMs,
-          inactivityTimeoutMs,
-          requestPolicy,
-          jobId,
-          signal: taskSignal,
-          repoFileProvider,
-          zoektConfig,
-          // The shared budget counts completed usage and every in-flight reservation. A task may
-          // spend only its reserved slice; unused turns are refunded as soon as this task settles.
-          turnsRemaining: () => reservedTurns - taskTurnUsages.length,
-          progress: options.progress,
-          progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
-        });
+        let attempt = 0;
+        let outcome!: TaskOutcome;
+        for (;;) {
+          attempt += 1;
+          const attemptStartedAt = clock();
+          let stalled = false;
+          try {
+            outcome = await runTaskWorkPhase({
+              maxTurnsPerTask: config.composed?.max_turns_per_task,
+              deadlineAtMs: composedDeadlineAtMs,
+              now: deadline.now,
+              task,
+              taskIndex: index,
+              totalTasks: planOutcome.tasks.length,
+              disputedFindingRechecks: rechecksByTask.get(task.id),
+              client,
+              model,
+              providerId,
+              baseMessages: taskBaseMessages,
+              changedFilesForTools: toolFiles,
+              originalFiles: changedFiles,
+              ...(requestCapBytes ? { requestCapBytes } : {}),
+              timeoutMs,
+              inactivityTimeoutMs,
+              requestPolicy,
+              jobId,
+              signal: taskSignal,
+              repoFileProvider,
+              zoektConfig,
+              // The shared budget counts completed usage and every in-flight reservation. A task may
+              // spend only its reserved slice; unused turns are refunded as soon as this task settles.
+              turnsRemaining: () => reserved.reservedTurns - taskTurnUsages.length,
+              progress: options.progress,
+              progressState: { startedAt: taskStartedAt, turnUsages: taskTurnUsages },
+            });
+          } catch (error) {
+            // Aborts, deadlines, early stops and every non-timeout failure keep their existing
+            // fatal/closeout semantics. Only a provider stall is this task's own retryable fault.
+            if (taskSignal.aborted || !isComposedTaskStall(error)) throw error;
+            stalled = true;
+          }
+          const retryable = stalled
+            || (outcome.type === 'exhausted' && isRetryableComposedTaskFailure(outcome.diagnostics.reason));
+          if (!retryable || taskSignal.aborted) break;
+          const decision = tryReserveRetry(attempt, attemptStartedAt);
+          if (decision.retry) {
+            logger.warn('[composed] retrying one task alone with a fresh context', {
+              event: 'composed_task_retry',
+              taskId: task.id,
+              diagnosticLane,
+              attempt: attempt + 1,
+              maxAttempts: 1 + COMPOSED_TASK_MAX_EXTRA_ATTEMPTS,
+              cause: stalled ? 'provider_timeout' : (outcome as Extract<TaskOutcome, { type: 'exhausted' }>).diagnostics.reason,
+              reservedTurns: reserved.reservedTurns,
+            });
+            continue;
+          }
+          logger.warn('[composed] task retry not started', {
+            event: 'composed_task_retry_skipped', taskId: task.id, diagnosticLane, attempts: attempt,
+            reason: decision.reason, requiredWindowMs: decision.requiredWindowMs,
+          });
+          if (stalled) {
+            outcome = { type: 'stalled', turnUsages: taskTurnUsages, attempts: attempt,
+              durationMs: Date.now() - taskStartedAt, stopReason: decision.reason };
+          } else if (outcome.type === 'exhausted') {
+            outcome = { ...outcome, attempts: attempt };
+          }
+          break;
+        }
+        if (outcome.type === 'complete' || outcome.type === 'blocked') settledTaskDurationsMs.push(clock() - taskClockStartedAt);
         logger.info('[composed] task completed', {
           event: 'composed_task_completed',
           taskId: task.id,
@@ -2045,6 +2222,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           outcomeType: outcome.type,
           findingsCount: outcome.type === 'complete' ? outcome.findings.length : 0,
           turnCount: outcome.turnUsages.length,
+          attempts: attempt,
           durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
           diagnosticLane,
         });
@@ -2055,6 +2233,7 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           durationMs: outcome.type === 'exhausted' ? Date.now() - taskStartedAt : outcome.durationMs,
           turn: outcome.turnUsages.length,
           ...(outcome.type === 'exhausted' ? { rejectionCode: composedTaskRejectionCode(outcome.diagnostics.reason) } : {}),
+          ...(outcome.type === 'stalled' ? { rejectionCode: 'timeout' as const } : {}),
           usage: progressUsage(outcome.turnUsages),
         });
         if (outcome.type === 'complete') {
@@ -2123,11 +2302,34 @@ export async function executeComposedReview(options: ComposedReviewOptions): Pro
           { role: 'user', content: `[TASK ${task.id} BLOCKED]` },
         ];
         settledTaskSummaries.push(`- Task ${task.id} (${task.dimension}, paths [${task.paths.join(', ')}]): BLOCKED`);
+      } else if (outcome.type === 'stalled') {
+        // A named failed lane with the infrastructure class it is: the shared publication decision
+        // turns a run whose only gaps are infrastructure (and that found nothing) into INCOMPLETE
+        // with a bounded exact-head re-attempt, which resumes every completed task from the
+        // checkpoint. Sibling tasks were never aborted for it.
+        optionalFailures.push({
+          id: task.id,
+          error: `Task ${task.id} (${task.dimension}) stalled on a provider timeout in ${outcome.attempts} fresh attempt(s)`
+            + ` (${outcome.stopReason === 'attempts_exhausted' ? 'retries exhausted'
+              : outcome.stopReason === 'deadline' ? 'no time left before the evidence cutoff for another attempt'
+                : 'no review turn budget left for another attempt'})`
+            + `; path(s) [${task.paths.join(', ')}] were not reviewed by this task`,
+          failureClass: 'timeout',
+        });
+        persistentMessages = [
+          ...persistentMessages,
+          { role: 'assistant', content: `Task ${task.id} stalled.` },
+          { role: 'user', content: `[TASK ${task.id} STALLED]` },
+        ];
+        settledTaskSummaries.push(`- Task ${task.id} (${task.dimension}, paths [${task.paths.join(', ')}]): STALLED`);
+        logger.warn('[composed] task stalled on every attempt', {
+          event: 'composed_task_stalled', taskId: task.id, attempts: outcome.attempts, stopReason: outcome.stopReason,
+        });
       } else {
         // Exhausted work remains absent from the returned roster and cannot satisfy coverage.
-        unreportedLanes.push(unreportedLaneFailure(task, 'exhausted', outcome.diagnostics));
+        unreportedLanes.push(unreportedLaneFailure(task, 'exhausted', outcome.diagnostics, outcome.attempts ?? 1));
         logger.warn('[composed] task finalization incomplete', {
-          event: 'composed_task_incomplete', taskId: task.id, ...outcome.diagnostics,
+          event: 'composed_task_incomplete', taskId: task.id, attempts: outcome.attempts ?? 1, ...outcome.diagnostics,
         });
       }
     };

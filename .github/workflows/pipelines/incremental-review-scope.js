@@ -327,6 +327,63 @@ function assessReviewAssignmentBudget(partitionCount, personaCount, maxAssignmen
   return { planned, maximum, admitted: planned <= maximum };
 }
 
+// Risk rank for partition admission when the assignment cap binds: exactly the review budget's
+// packing rank (0 security-sensitive or CI/IaC, 1 other source, 2 tests/docs/data-config). It is
+// not restated here: `src/review/pathRiskPolicy.js` is the one definition -- tables, predicates
+// and classification order -- that the TypeScript worker re-exports too. The rank never decides
+// coverage: every deferred path is reported as not reviewed.
+const { pathRiskRank: admissionRiskRank } = require('../../../src/review/pathRiskPolicy');
+
+/**
+ * The one pre-dispatch decision for a partition-by-persona fan-out that would exceed the hard
+ * assignment cap (`max-review-assignments`, default 24 -- e.g. 6 personas x 4 partitions).
+ *
+ * It used to refuse the whole run. It now degrades deterministically: every persona reviews the
+ * `floor(cap / personas)` highest-risk partitions (risk rank, then plan order), and every path of
+ * a deferred partition is reported as NOT reviewed, so the run fails closed instead of claiming a
+ * verdict over the whole change. Only a roster larger than the cap -- not even one partition fits
+ * -- still refuses before dispatch. Pure; the message names exactly what was skipped and what the
+ * author can do about it.
+ */
+function planReviewAssignmentAdmission(partitions, personaCount, maxAssignments) {
+  const list = Array.isArray(partitions) && partitions.length > 0 ? partitions : [{ files: [] }];
+  const budget = assessReviewAssignmentBudget(list.length, personaCount, maxAssignments);
+  const personas = Math.max(0, Number.parseInt(String(personaCount || 0), 10) || 0);
+  const allIndexes = list.map((_, index) => index);
+  if (budget.admitted) {
+    return { ...budget, mode: 'full', admittedIndexes: allIndexes, deferredIndexes: [], deferredPaths: [], partialPaths: [], message: '' };
+  }
+  const capacity = personas > 0 ? Math.floor(budget.maximum / personas) : 0;
+  if (capacity < 1) {
+    return {
+      ...budget, mode: 'refused', admittedIndexes: [], deferredIndexes: allIndexes, deferredPaths: [], partialPaths: [],
+      message: `Review assignment cap: ${personas} reviewer persona(s) exceed \`max-review-assignments\` (${budget.maximum}) even for a single diff partition, so no review was dispatched. Reduce the persona roster to at most ${budget.maximum} or raise \`max-review-assignments\` to at least ${personas}, then rerun.`,
+    };
+  }
+  const rankOf = (partition) => Math.min(2, ...((partition && Array.isArray(partition.files)) ? partition.files : [])
+    .map((file) => admissionRiskRank(file && file.path)));
+  const admitted = new Set(allIndexes
+    .map((index) => ({ index, rank: rankOf(list[index]) }))
+    .sort((left, right) => left.rank - right.rank || left.index - right.index)
+    .slice(0, capacity)
+    .map((entry) => entry.index));
+  const admittedIndexes = allIndexes.filter((index) => admitted.has(index));
+  const deferredIndexes = allIndexes.filter((index) => !admitted.has(index));
+  const pathsOf = (indexes) => [...new Set(indexes.flatMap((index) => ((list[index] && list[index].files) || [])
+    .map((file) => String(file && file.path || '')).filter(Boolean)))];
+  const reviewedPaths = new Set(pathsOf(admittedIndexes));
+  const deferredPaths = pathsOf(deferredIndexes).sort();
+  const partialPaths = deferredPaths.filter((filePath) => reviewedPaths.has(filePath));
+  const listed = deferredPaths.slice(0, 15).map((filePath) => `\`${filePath}\``).join(', ');
+  const more = deferredPaths.length > 15 ? ` and ${deferredPaths.length - 15} more` : '';
+  const message = `Review assignment cap: ${personas} persona(s) x ${list.length} diff partitions = ${budget.planned} model assignments exceeds \`max-review-assignments\` (${budget.maximum}). `
+    + `Every persona reviewed the ${admittedIndexes.length} highest-risk partition(s); ${deferredIndexes.length} partition(s) were NOT reviewed, covering ${deferredPaths.length} file(s)`
+    + `${partialPaths.length > 0 ? ` (${partialPaths.length} of them only partly reviewed)` : ''}: ${listed}${more}. `
+    + 'This result is fail-closed and cannot merge-qualify. '
+    + `To review everything, split this pull request so each part needs at most ${capacity} partition(s), or raise \`max-review-assignments\` to at least ${budget.planned}, then rerun.`;
+  return { ...budget, mode: 'degraded', admittedIndexes, deferredIndexes, deferredPaths, partialPaths, message };
+}
+
 function extractReportFromArtifact(archiveBytes) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'review-yeti-scope-'));
   const archivePath = path.join(directory, 'report.zip');
@@ -557,6 +614,8 @@ module.exports = {
   planIncrementalLanes,
   mergeIncrementalPersonaResults,
   assessReviewAssignmentBudget,
+  planReviewAssignmentAdmission,
+  admissionRiskRank,
   extractReportFromArtifact,
   resolveIncrementalReviewScope,
 };

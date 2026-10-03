@@ -12,16 +12,11 @@ import path from 'node:path';
 //   - a file inside it may never gain references,
 //   - an entry whose references reach zero must be deleted from the allowlist.
 // The terms are assembled from parts so this file does not itself contain them.
-const ORG = ['call', 'telemetry'].join('');
-const PRIVATE_REPOS = ['cisco-' + 'cdr', 'ct-' + 'meta', 'ct-' + 'release', 'ct-' + 'infrastructure', 'ct-' + 'quasar',
-  'ct-' + 'uat', 'ct-' + 'dashboard', 'ct-' + 'lab', 'ai-' + 'workspace', 'pr-manager-' + 'mcp', 'ct-review-' + 'actions'];
+// The term policy lives in one place, shared with the commit-metadata audit.
+import { ORG, FORBIDDEN_PATTERN } from '../../scripts/ci/audit-commit-metadata.mjs';
 const root = path.resolve(__dirname, '../..');
 
-const FORBIDDEN = new RegExp([
-  ORG, `call-${'telemetry'}`, `call_${'telemetry'}`, `call[ \\t]+${'telemetry'}`,
-  // Hyphen, underscore or space between the words of a repository name.
-  ...PRIVATE_REPOS.map((name) => `(?<![a-z0-9])${name.split('-').join('[-_ ]')}(?![a-z0-9])`),
-].join('|'), 'giu');
+const FORBIDDEN = new RegExp(FORBIDDEN_PATTERN, 'giu');
 
 // Binary assets are read as raw bytes; lockfiles are text and are scanned like everything else.
 const BINARY = /\.(png|db|ico|jpe?g|gif|woff2?)$/iu;
