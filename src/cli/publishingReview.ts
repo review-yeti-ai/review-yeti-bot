@@ -134,7 +134,7 @@ import type { JevAsker } from '../gateway/jevClient';
 import { TokenLedger, meterModelClient, renderTokenAccountingSummary, tokenAccountingLogFields, type TokenAccounting } from '../telemetry/tokenLedger';
 import { createPublishingProgress, type PublishingProgressReporter } from '../telemetry/publishingProgress';
 import {
-  evaluateFindingConvergence, renderConvergenceSummary,
+  evaluateFindingConvergence, isCriticalSeverity, normalizeFindingSeverity, renderConvergenceSummary,
   type ConvergenceResult, type PriorFindingThread,
 } from '../review/findingConvergence';
 import type { PullRequestRef } from '../github/findingThreads';
@@ -397,16 +397,10 @@ export {
 };
 export type { OpenAITransportConfig };
 
-/**
- * ADR 0002: P0, P1 and P2 findings all block a merge. Which findings still block on a given head
- * is decided by `evaluateFindingConvergence` (fixed findings drop, known findings keep their
- * identity, a P2 the author resolved with a stated reason is satisfied, a P2 outside the head's
- * diff is advisory). There is deliberately no environment switch: the policy is not a deployment
- * option.
- */
-export const REQUIRED_SEVERITIES: ReadonlySet<string> = new Set(['P0', 'P1', 'P2']);
-/** P0/P1 only: kept for the per-lane metric and the historical summary wording. */
-const CRITICAL_SEVERITIES = new Set(['P0', 'P1']);
+// ADR 0002: P0, P1 and P2 findings all block a merge. The severity ladder and which findings still
+// block on a head are defined once, in `../review/findingConvergence` (`normalizeFindingSeverity`,
+// `isCriticalSeverity`, `evaluateFindingConvergence`); this module only renders their result.
+// There is deliberately no environment switch: the policy is not a deployment option.
 
 /**
  * Coverage the conclusion may independently verify. Structural: the caller
@@ -2341,9 +2335,7 @@ export async function runPublishingReviewWorker(
       // set the conclusion may be computed from.
       const findings = (canonical.findings || []) as ReviewFinding[];
       const discardedFindingCount = Math.max(0, rawFindings.length - findings.length);
-      const criticalCount = findings.filter(
-        (finding) => CRITICAL_SEVERITIES.has(String(finding?.severity || 'P2').toUpperCase()),
-      ).length;
+      const criticalCount = findings.filter(isCriticalSeverity).length;
       // ADR 0002: every severity is required; convergence decides which findings still block on
       // this head. Thread state is read with this run's own read token; a failed read leaves no P2
       // resolved, so the conclusion can only be stricter, never looser.
@@ -2447,9 +2439,7 @@ export async function runPublishingReviewWorker(
 
     const personaMetrics: PublishingReviewPersonaMetrics[] = (panelResult.personas || []).map((p: any) => {
       const pFindings = p.findings || [];
-      const pBlocking = pFindings.filter((f: any) =>
-        CRITICAL_SEVERITIES.has(String(f?.severity || 'P2').toUpperCase())
-      );
+      const pBlocking = pFindings.filter(isCriticalSeverity);
       return {
         id: p.id,
         decision: p.decision || 'UNKNOWN',
@@ -2918,13 +2908,14 @@ export async function runPublishingReviewWorker(
           const line = Number.isSafeInteger(Number(finding?.line)) && Number(finding?.line) > 0
             ? Number(finding.line)
             : 1;
-          const severity = String(finding?.severity || 'P2').toUpperCase();
+          const severity = normalizeFindingSeverity(finding);
+          // From the convergence entry, never a second severity rule: a required finding is a
+          // failure annotation; a satisfied or out-of-diff P2 is a notice.
           return {
             path: String(finding.path),
             start_line: line,
             end_line: line,
-            annotation_level: requiredFindings.has(finding) ? 'failure' as const
-              : REQUIRED_SEVERITIES.has(severity) ? 'notice' as const : 'warning' as const,
+            annotation_level: requiredFindings.has(finding) ? 'failure' as const : 'notice' as const,
             title: `${severity}: ${String(finding?.title || 'finding').slice(0, 120)}`,
             message: String(finding?.body || finding?.title || 'No detail provided.').slice(0, 4_000),
           };

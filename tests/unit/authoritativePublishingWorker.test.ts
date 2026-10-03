@@ -1847,15 +1847,15 @@ describe('authoritative prepared publishing worker', () => {
       if (String(input) === rawEndpoint && init?.method === 'POST') {
         return new Response(JSON.stringify({ id: 4242 }), { status: 200 });
       }
-      // ADR 0002: the entrypoint reads the bot's finding threads (none yet) and then asks the
-      // service to publish the new required P2 as a thread.
-      if (String(input) === 'https://api.github.com/graphql' && init?.method === 'POST') {
-        return new Response(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
-          pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] } } } } }), { status: 200 });
-      }
+      // ADR 0002: the entrypoint reads the App's finding threads through the service (none yet)
+      // and then asks it to publish the new required P2 as a thread.
       if (String(input) === ENDPOINT.replace(/\/completion$/u, '/finding-threads') && init?.method === 'POST') {
         const request = JSON.parse(String(init.body));
         threadRequests.push(request);
+        if (request.version === 'FindingThreadsRead.v1') {
+          return new Response(JSON.stringify({ version: 'FindingThreadsReadResult.v1', runId: f.env.REVIEW_RUN_ID,
+            threads: [] }), { status: 200 });
+        }
         return new Response(JSON.stringify({ version: 'FindingThreadsResult.v1', runId: f.env.REVIEW_RUN_ID,
           created: request.publish.length, skipped: 0, resolved: 0 }), { status: 200 });
       }
@@ -1917,8 +1917,10 @@ describe('authoritative prepared publishing worker', () => {
     expect(completed.output.text).toContain(finding.body);
     expect(completed.output.title).toBe('Review Yeti: FIX_FIRST (1 required P2)');
     expect(completed.output.summary).toContain('Required findings: 1 (P0: 0, P1: 0, P2: 1)');
-    expect(threadRequests).toHaveLength(1);
-    expect(threadRequests[0]).toMatchObject({ version: 'FindingThreadsRequest.v1', headSha: HEAD,
+    expect(threadRequests).toHaveLength(2);
+    expect(threadRequests[0]).toEqual({ version: 'FindingThreadsRead.v1', runId: f.env.REVIEW_RUN_ID,
+      executionAttempt: Number(f.env.REVIEW_EXECUTION_ATTEMPT), headSha: HEAD });
+    expect(threadRequests[1]).toMatchObject({ version: 'FindingThreadsRequest.v1', headSha: HEAD,
       publish: [{ severity: 'P2', path: finding.path, line: 1, title: finding.title, body: finding.body }] });
     if (delivery === 'off-diff raw finding') {
       expect(completed.output.summary).toContain('1 raw finding(s) were discarded as unanchorable');

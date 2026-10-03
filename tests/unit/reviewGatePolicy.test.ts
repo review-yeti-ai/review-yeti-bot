@@ -5,7 +5,7 @@ const candidate = { repositoryId: 123, prNumber: 42, headSha: 'a'.repeat(40), ba
 const current = { ...candidate, open: true, draft: false };
 const clean: ReviewGateEvidence = {
   verdict: 'SHIP', completedAt: '2026-09-09T12:00:00Z', coverageComplete: true,
-  quorumSatisfied: true, infrastructureFailure: false, p0Count: 0, p1Count: 0,
+  quorumSatisfied: true, infrastructureFailure: false, p0Count: 0, p1Count: 0, p2Count: 0,
   expectedLanes: 6, completedLanes: 6,
 };
 const acceptance: ReviewRiskAcceptance = {
@@ -71,9 +71,12 @@ describe('ADR 0002: a required P2 blocks the Gate exactly like a P0/P1', () => {
   it('fails a SHIP review that still carries a required P2', () => {
     expect(evaluate({ ...clean, p2Count: 1 })).toEqual({ status: 'failure', eligible: false, reason: 'blocking-findings' });
   });
-  it('approves a SHIP review whose P2s were all fixed or satisfied, and reads a historical record without the field', () => {
+  it('approves a SHIP review whose P2s were all fixed or satisfied', () => {
     expect(evaluate({ ...clean, p2Count: 0 })).toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
-    expect(evaluate(clean)).toEqual({ status: 'success', eligible: true, reason: 'clean-review' });
+  });
+  it('refuses evidence that omits the required P2 count instead of treating it as zero (fail closed)', () => {
+    const { p2Count: _omitted, ...withoutCount } = clean;
+    expect(evaluate(withoutCount as typeof clean)).toMatchObject({ status: 'failure', reason: 'invalid-evidence' });
   });
   it('rejects a malformed count and never lets an exemption carry a required P2', () => {
     expect(evaluate({ ...clean, p2Count: -1 })).toMatchObject({ reason: 'invalid-evidence' });

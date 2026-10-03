@@ -113,6 +113,11 @@ export class AuthoritativeReviewReader {
     fetchImplementation?: typeof fetch;
     /** REL-1080: git-derived evidence for a 406 diff. Absent keeps the compare-only path. */
     gitDiffSource?: GitDiffSource;
+    /**
+     * ADR 0002: resolves the review App's bot login, called only by `findingThreads`. Only that
+     * login's threads may carry a satisfying resolution; unresolved, resolutions stay untrusted.
+     */
+    findingThreadAuthor?: () => Promise<string | undefined>;
   }) {
     if (!isGitHubInstallationToken(options.token)) throw new Error('Review reader requires an installation credential');
     let url: URL;
@@ -243,8 +248,11 @@ export class AuthoritativeReviewReader {
   /** ADR 0002: the bot's finding review threads on this pull request (`pull_requests: read`). */
   async findingThreads(input: ReviewRepositoryIdentity & { prNumber: number }, signal?: AbortSignal): Promise<PriorFindingThread[]> {
     const { target } = this.route(input);
+    const botLogin = this.options.findingThreadAuthor
+      ? await this.options.findingThreadAuthor().catch(() => undefined) : undefined;
     return readFindingThreads({
       token: this.options.token, baseUrl: this.api, fetchImplementation: this.fetcher, timeoutMs: this.timeoutMs,
+      ...(botLogin ? { botLogin } : {}),
       ...(signal ? { signal } : {}),
     }, { owner: target.owner, repo: target.repo, prNumber: input.prNumber });
   }

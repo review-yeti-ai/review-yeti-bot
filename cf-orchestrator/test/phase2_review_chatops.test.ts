@@ -136,6 +136,16 @@ describe('Phase 2: PR Review Experience & ChatOps Ingress Suite', () => {
         assert.equal(event('success', []), 'APPROVE');
       });
 
+      it('follows the convergence result when the caller supplies the still-required findings', () => {
+        const payload = (required: Array<'P0' | 'P1' | 'P2'>) => buildGitHubReviewPayload({
+          commitId: 'abcdef0123456789abcdef0123456789abcdef01', verdict: 'success', summaryMarkdown: '## Review Yeti',
+          findings: [finding('P2')], requiredFindings: required.map(finding),
+        }).event;
+        // The P2 was resolved with a stated reason: nothing is still required, so approve.
+        assert.equal(payload([]), 'APPROVE');
+        assert.equal(payload(['P2']), 'REQUEST_CHANGES');
+      });
+
       it('requests changes on action_required with only P2 findings', () => {
         assert.equal(event('action_required', ['P2']), 'REQUEST_CHANGES');
       });

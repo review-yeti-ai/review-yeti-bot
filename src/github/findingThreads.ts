@@ -25,6 +25,12 @@ export const MAX_FINDING_THREAD_BODY_CHARS = 4_000;
 
 export interface FindingThreadTransport {
   token: string;
+  /**
+   * The review App's bot login. When set, only threads that login opened are finding threads, and
+   * only those can carry a resolution. When unknown, threads are still recognised for identity
+   * (carried / dropped) but never satisfy a P2: an unverified author cannot clear a finding.
+   */
+  botLogin?: string;
   baseUrl?: string;
   fetchImplementation?: typeof fetch;
   timeoutMs?: number;
@@ -117,20 +123,28 @@ function stripPresentation(body: string): string {
     .slice(0, 400);
 }
 
+/** GraphQL reports an App bot's login as its slug; REST appends `[bot]`. Compare both forms. */
+function normalizedLogin(login: unknown): string {
+  return typeof login === 'string' ? login.trim().toLowerCase().replace(/\[bot\]$/u, '') : '';
+}
+
 /** Parses one GraphQL review-thread node into a prior finding thread, or null when the thread is
  * not a bot-published finding thread. Exported for tests. */
-export function parseFindingThreadNode(node: any): PriorFindingThread | null {
+export function parseFindingThreadNode(node: any, botLogin?: string): PriorFindingThread | null {
   const comments: any[] = Array.isArray(node?.comments?.nodes) ? node.comments.nodes : [];
   const first = comments[0];
-  // Only a thread the bot opened is a finding thread; a human pasting the marker is not.
+  // Only a thread the review App opened is a finding thread; a human (or another bot) pasting the
+  // marker is not.
   if (!first || first.author?.__typename !== 'Bot') return null;
+  const expected = normalizedLogin(botLogin);
+  if (expected && normalizedLogin(first.author?.login) !== expected) return null;
   const marker = parseFindingMarker(first.body);
   if (!marker || !isFindingFingerprint(marker.fingerprint)) return null;
   const path = typeof node.path === 'string' ? node.path : '';
   if (!path) return null;
   const resolved = node.isResolved === true;
   let resolution: PriorFindingThread['resolution'];
-  if (resolved) {
+  if (resolved && expected) {
     for (const comment of comments.slice(1)) {
       if (comment?.author?.__typename === 'Bot') continue;
       const reason = statedResolutionReason(comment?.body);
@@ -165,7 +179,7 @@ export async function readFindingThreads(transport: FindingThreadTransport, pr: 
     const connection = data?.repository?.pullRequest?.reviewThreads;
     if (!connection || !Array.isArray(connection.nodes)) throw new Error('GitHub finding-thread response was malformed');
     for (const node of connection.nodes) {
-      const parsed = parseFindingThreadNode(node);
+      const parsed = parseFindingThreadNode(node, transport.botLogin);
       if (parsed) threads.push(parsed);
     }
     if (connection.pageInfo?.hasNextPage !== true || typeof connection.pageInfo?.endCursor !== 'string') break;

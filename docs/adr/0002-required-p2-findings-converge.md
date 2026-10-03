@@ -45,6 +45,10 @@ Mechanism:
 - Findings are published as pull-request review threads with a hidden marker
   (`<!-- review-yeti:finding v=1 fp=... sev=... t=... -->`). The worker reads threads with its
   repository read token (`pull_requests: read`).
+- Only the review App's own threads are trusted: the dispatch service reads threads for the worker
+  (and for the Gate) and keeps only those whose author is the App's bot login, resolved once from
+  GitHub's authenticated `/app` endpoint. A thread whose author cannot be verified is still used for
+  identity (carried or dropped) but never satisfies a P2.
 - The worker never holds `pull_requests: write`. It sends new required findings to the dispatch
   service (`POST /api/dispatch/finding-threads`, authenticated with the per-run worker bearer). The
   service checks the execution, the head and that each fingerprint matches its content, mints a
@@ -54,8 +58,10 @@ Mechanism:
   When the verdict is SHIP but a required P2 remains, the published title reads
   `Review Yeti: FIX_FIRST (N required P2)` and the summary says why, so the check never reads SHIP
   next to a failure again.
-- The Gate evidence carries `p2Count`, the required P2 count after convergence on the service's own
-  diff and thread read. A record without the field (written before this decision) reads as zero.
+- The Gate evidence carries a required `p2Count`, the required P2 count after convergence on the
+  service's own diff and thread read. Fresh evidence without it is invalid (fail closed); a stored
+  gate row written before this decision is normalized to zero at the single place stored rows are
+  read for prior-review reuse.
 
 Guardrails this forbids: a P2 switch in configuration; counting a P2 as satisfied when thread state
 could not be read (a failed read makes the check stricter, never looser); a resolution clearing a
