@@ -16,7 +16,7 @@ import {
   SymbolResolutionEntry,
 } from '../services/symbolResolutionAppendix';
 import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, filterHypothesesForPersona, PreCheckSummary } from '../sandbox/analyzerRunner';
-import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, UpstreamCapacityRejectionError, isExplicitUpstreamRejection, resolveCachedTokens } from '../gateway/openRouterClient';
+import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, UpstreamCapacityRejectionError, isExplicitUpstreamRejection, resolveCachedTokens, retryAfterFloorMs } from '../gateway/openRouterClient';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
@@ -25,6 +25,9 @@ import {
   classifyProviderResponseStatus,
   isNonRetryableClientStatus,
   isTransientGatewayMessage,
+  laneProviderStatus,
+  planRateLimitRetry,
+  RATE_LIMIT_MAX_RETRIES,
   TRANSIENT_GATEWAY_STATUSES,
   TRANSPORT_MAX_RETRIES,
   TRANSPORT_RETRY_TERMINAL_MARGIN_MS,
@@ -1355,6 +1358,28 @@ export function isTransientLaneTransportError(error: unknown): boolean {
   const message = panelErrorMessage(error);
   if (isNonRetryableClientStatus(message)) return false;
   return classifyPersonaAttemptFailure(error) === 'transport' || isTransientGatewayMessage(message);
+}
+
+/**
+ * Whether one attempt was REJECTED for capacity -- a provider/gateway 429 ("Concurrent limit
+ * reached ... 15/15 slots in use", "rate limit exceeded") or an explicit upstream capacity
+ * rejection -- as opposed to failing on the path to the model or on anything the model said.
+ *
+ * Not a second classification ladder: it requires `classifyPersonaAttemptFailure(error) ===
+ * 'rate_limit'` (the class the lane publishes) AND an observed 429 status, and leaves the
+ * empty-completion signature to its own ladder. Both
+ * engines send these to the dedicated rate-limit ladder (`planRateLimitRetry` in `../review/laneInfrastructure`) instead of
+ * the transport ladder: a 429 says "wait for a slot", which needs a longer, deadline-bounded,
+ * Retry-After-honouring schedule, not five outage retries in a minute.
+ */
+export function isProviderRateLimitError(error: unknown): boolean {
+  if (classifyPersonaAttemptFailure(error) !== 'rate_limit') return false;
+  if (error instanceof UpstreamCapacityRejectionError) return true;
+  // Only an OBSERVED 429 answer: the typed response status, or the `HTTP 429` an upstream error
+  // carries (read by the shared `laneProviderStatus`). Free-form "rate limited" wording with no
+  // observed status keeps its existing fast-failover / fail-now handling.
+  if (error instanceof OpenRouterResponseError) return error.status === 429 && !isEmptyCompletionError(error);
+  return laneProviderStatus(error) === 429;
 }
 
 /** REL-1113: milliseconds left before a transport backoff would crowd the
@@ -2911,6 +2936,10 @@ async function runPersona(
       // REL-1113: when this lane first saw a transport failure; bounds the whole
       // backoff sequence by TRANSPORT_RETRY_WINDOW_MS.
       let firstTransportFailureAt: number | undefined;
+      // Rate-limit retries (429 / capacity rejection) are tracked apart from transport retries:
+      // they follow their own deadline-bounded schedule (`planRateLimitRetry`).
+      let rateLimitRetries = 0;
+      let firstRateLimitAt: number | undefined;
 
       for (;;) {
         throwIfPanelAborted(signal);
@@ -3301,6 +3330,52 @@ async function runPersona(
           // deployment, where failover means "fail the lane" -- does it ride the transport budget.
           const fastFailoverAvailable = isExplicitUpstreamRejection(error)
             && providersToTry.indexOf(providerId) < providersToTry.length - 1;
+          // A capacity rejection on the last (or only) provider identity rides the dedicated
+          // rate-limit ladder (`planRateLimitRetry` in `../review/laneInfrastructure`, shared with the composed engine):
+          // full-jitter exponential backoff floored at the sanitized Retry-After and bounded by the
+          // persona, panel and terminal budgets -- not by the transport ladder's five retries.
+          // When the budget cannot fit another wait the lane fails now, classified `rate_limit`;
+          // it never falls through to the transport ladder for a second round of retries.
+          if (isProviderRateLimitError(error) && !fastFailoverAvailable) {
+            const nowMs = Date.now();
+            if (firstRateLimitAt === undefined) firstRateLimitAt = nowMs;
+            const plan = planRateLimitRetry({
+              retriesSoFar: rateLimitRetries,
+              firstFailureAtMs: firstRateLimitAt,
+              nowMs,
+              retryAfterFloorMs: retryAfterFloorMs(error, nowMs),
+              budgetLeftMs: Math.min(
+                MAX_PERSONA_BUDGET_MS - (nowMs - personaStartedAt),
+                remainingPanelTimeoutMs?.() ?? Infinity,
+                remainingTerminalDeadlineMs(process.env, nowMs),
+              ),
+            });
+            if (plan.retry) {
+              rateLimitRetries = plan.retryNumber;
+              logger.warn(`Provider '${providerId}' rate-limited persona ${persona.id}; backing off ${plan.delayMs}ms before rate-limit retry ${plan.retryNumber}`, {
+                persona: persona.id,
+                provider: providerId,
+                rateLimitRetry: plan.retryNumber,
+                rateLimitMaxRetries: RATE_LIMIT_MAX_RETRIES,
+                backoffMs: plan.delayMs,
+                ...(error instanceof OpenRouterResponseError && error.status !== undefined ? { providerStatus: error.status } : {}),
+                error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+              });
+              await panelDelay(plan.delayMs, signal);
+              continue;
+            }
+            logger.warn(`Rate-limit retry budget for provider '${providerId}' exhausted for persona ${persona.id} after ${rateLimitRetries} retr${rateLimitRetries === 1 ? 'y' : 'ies'}`, {
+              persona: persona.id,
+              provider: providerId,
+              rateLimitRetries,
+              stopReason: plan.reason,
+              ...(error instanceof OpenRouterResponseError && error.status !== undefined ? { providerStatus: error.status } : {}),
+              error: redactWorkerFailureLogTail(panelErrorMessage(error)),
+            });
+            errors.push(`${providerId}: ${panelErrorMessage(error)}`);
+            lastFailureClass = 'rate_limit';
+            break;
+          }
           if (isTransientLaneTransportError(error) && !fastFailoverAvailable) {
             const nowMs = Date.now();
             if (firstTransportFailureAt === undefined) firstTransportFailureAt = nowMs;

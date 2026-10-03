@@ -186,6 +186,10 @@ func publishingConfigFromEnv() job.PublishingConfig {
 		// comma-separated owner/repo allowlist for pilots). Enabling it is
 		// gated on example-meta ADR 0687.
 		SkipEmptyModeration: strings.TrimSpace(os.Getenv(job.SkipEmptyModerationEnv)),
+		// Cross-review provider concurrency, off unless the deployment sets it.
+		ProviderLeases:           strings.TrimSpace(os.Getenv(job.ProviderLeasesEnv)),
+		ProviderLeaseKey:         strings.TrimSpace(os.Getenv(job.ProviderLeaseKeyEnv)),
+		ProviderLocalConcurrency: strings.TrimSpace(os.Getenv(job.ProviderLocalConcurrencyEnv)),
 		// REL-1104: worker metrics push target (VictoriaMetrics OTLP). An
 		// invalid value is dropped at projection time, never refusing a Job.
 		WorkerMetricsEndpoint: strings.TrimSpace(os.Getenv(job.WorkerMetricsEndpointEnv)),

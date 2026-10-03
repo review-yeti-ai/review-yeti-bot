@@ -12,12 +12,26 @@ import type { McpServerConfig } from './config/actionDispatchConfig';
 import { McpAuthenticator } from './mcp/server/mcpAuthenticator';
 import { SlidingWindowRateLimiter } from './mcp/server/mcpRateLimiter';
 import { createRemoteMcpRouter } from './mcp/server/remoteMcpRouter';
+import { createProviderLeaseHandler, providerLeaseRateLimitKey } from './api/providerLeaseRoute';
+import type { ProviderLeaseStore } from './persistence/providerConcurrencyLeaseRepository';
+
+/**
+ * Per-run budget for the provider lease route. One review makes an acquire, a release and a few
+ * renewals per model call, plus jittered re-asks while every slot is held, so the shared 60/min
+ * dispatch limiter (keyed by client address, which every worker behind one egress shares) would
+ * throttle coordination itself. Keyed by the run's bearer digest instead.
+ */
+export const PROVIDER_LEASE_RATE_LIMIT_PER_MINUTE = 1_200;
 
 export interface ActionDispatchAppOptions extends ActionDispatchRouterOptions {
   databaseReady(): Promise<boolean>;
   rateLimiter?: RequestHandler;
   metricsAuthToken?: string;
   ci?: ReviewCiRouterOptions;
+  /** Cross-review provider concurrency leases; absent leaves the route unmounted (workers fail open). */
+  providerLease?: ProviderLeaseStore;
+  /** Test seam for the lease route's own limiter. */
+  providerLeaseRateLimiter?: RequestHandler;
   githubWebhook?: {
     secret: string;
     onEvent(event: GitHubWebhookAdmissionEvent): Promise<Record<string, unknown>>;
@@ -184,6 +198,12 @@ export function createActionDispatchApp(options: ActionDispatchAppOptions): Expr
   });
 
   if (options.ci) app.use('/api/dispatch/ci', limiter, createReviewCiRouter(options.ci));
+  if (options.providerLease) {
+    const leaseLimiter = options.providerLeaseRateLimiter ?? createRateLimiter({
+      windowMs: 60_000, max: PROVIDER_LEASE_RATE_LIMIT_PER_MINUTE, trustProxy: true, keyGenerator: providerLeaseRateLimitKey,
+    });
+    app.post('/api/dispatch/provider-lease', leaseLimiter, createProviderLeaseHandler(options.providerLease));
+  }
   app.use('/api/dispatch', limiter, createActionDispatchRouter(options));
   app.use((error: unknown, _request: Request, response: Response, next: NextFunction) => {
     const err = error as { type?: string; status?: number; statusCode?: number };

@@ -50,6 +50,7 @@ their transitive closure; provenance is generated from the exact clean release c
 1. [Optional-service Configuration File Resolution](#optional-service-configuration-file-resolution)
 2. [Optional-service Top-Level Schema Overview](#optional-service-top-level-schema-overview)
 3. [V4 Execution Policy](#v4-execution-policy)
+   - [Provider concurrency and rate limiting (service and worker environment)](#provider-concurrency-and-rate-limiting)
 4. [Optional-service Standard Sections](#optional-service-standard-sections)
    - [1. `reviews`](#1-reviews)
    - [2. `chat`](#2-chat)
@@ -146,6 +147,58 @@ commit IDs, while `recursive` records an incomplete review until a nested snapsh
 available. An incomplete submodule review cannot produce `SHIP`. Trusted Action inputs may narrow
 these settings, but immutable safety caps always win; the effective policy digest is part of the
 run identity.
+
+<a id="provider-concurrency-and-rate-limiting"></a>
+
+### Provider concurrency and rate limiting (service and worker environment)
+
+Each review runs in its own worker pod and fans out several concurrent provider calls (persona
+lanes, map-reduce chunks, composed tasks, moderator and arbiter). When the one upstream account
+behind the review model has a hard concurrent-request cap, for example 15 slots shared with other
+gateway keys, several reviews in flight exceed it together and the upstream rejects the overflow
+with HTTP 429 `Concurrent limit reached ... 15/15 slots in use`. Three mechanisms address that.
+All are off by default; an un-upgraded or unconfigured deployment behaves exactly as before.
+
+**1. Cross-review concurrency leases.** The dispatch service keeps a Postgres lease table
+(`provider_concurrency_leases`, created by the schema gate) keyed by provider/model. Before each
+provider call a worker leases one slot over its authenticated channel
+(`POST /api/dispatch/provider-lease`, the same per-run bearer as the checkpoint route), renews it
+while the call runs (every third of the TTL) and releases it afterwards. Acquire reaps expired
+leases and counts the remaining ones under a per-key transaction lock, so two workers can never take
+the last slot together; a crashed worker's slot frees itself when its lease expires. When every slot
+is held, the worker waits with jitter and asks again, never past its call's deadline (it keeps up to
+60 s, at most half the call budget, for the call itself) and never past the worker's work cutoff.
+
+**Fail open.** A coordinator that is not configured, unreachable, slow, throttled or answering
+malformed data never fails a review: the worker proceeds under its local cap and skips the
+coordinator for 30 s. A wait that runs out of budget proceeds without a lease. At worst the
+provider then answers 429 and the rate-limit ladder below rides it out.
+
+**2. Per-worker local cap.** An in-process FIFO cap on concurrent provider calls in one worker.
+
+**3. Rate-limit retry ladder.** Both review engines (fan-out and composed) send an observed 429 to a
+dedicated ladder instead of the five-retry outage ladder: exponential backoff with full jitter (base
+2 s, factor 2, at most 30 s per sleep), floored at the sanitized `Retry-After`, bounded by the
+remaining persona/panel/terminal budget (and a 15-minute safety window) rather than a small attempt
+count. When no further wait fits, the lane fails with failure class `rate_limit`. A free-form
+"rate limited" message with no observed 429 keeps its existing fast-failover behaviour.
+
+**No fallback transport.** The publishing worker is Bifrost-only by invariant: the gateway owns model
+routing and any fallback targets. Rate limiting is never answered by switching to another transport
+or provider; the provider pool in the policy schema does not change that for this lane.
+
+| Variable | Where | Default | Meaning |
+|---|---|---|---|
+| `REVIEW_YETI_PROVIDER_CONCURRENCY` | dispatch service | unset (route not mounted) | Comma-separated `key=slots` pairs, keys lower-cased (for example `pr-reviewer=12`). `*=N` sets the capacity for any other key; without it, unlisted keys are unmanaged (workers use only their local cap). A malformed value is logged and leaves the route unmounted; it never stops the service. |
+| `REVIEW_YETI_PROVIDER_LEASE_TTL_MS` | dispatch service | `60000` | Lease time-to-live, 5000 to 600000. A holder that stops renewing frees its slot after this long. |
+| `REVIEW_YETI_PROVIDER_LEASES` | worker | unset (off) | `true` to lease a slot from the service before each provider call. |
+| `REVIEW_YETI_PROVIDER_LEASE_KEY` | worker | the request model, lower-cased | Fixed capacity key for every call. Set it when every model the worker uses routes to the same upstream account. |
+| `REVIEW_YETI_PROVIDER_LOCAL_CONCURRENCY` | worker | unset: no local cap; `8` when leases are on | Per-worker cap on concurrent provider calls, 1 to 64. It is also the bound that applies when the coordinator is unreachable. |
+
+Sizing: give the review key fewer slots than the upstream's real cap when the account is shared with
+other keys (for example 12 of 15), and keep the gateway's own provider concurrency setting at or
+below the upstream cap. Both the service and the workers must be configured: the service variable
+mounts the route, the worker flag makes workers use it. Either side alone is a no-op.
 
 ---
 

@@ -110,6 +110,13 @@ dispatcher:
     ownerIds: ""
     workflowRefs: ""
     workflowShas: ""
+    # Cross-review provider concurrency leases (docs/CONFIGURATION_REFERENCE.md). Empty by default:
+    # the lease route is not mounted and workers use only their local cap. Example for one review
+    # key on an upstream account with 15 slots shared with other keys: "pr-reviewer=12".
+    # A malformed value is logged and leaves the route unmounted; it never stops the service.
+    providerConcurrency: ""
+    # Lease time-to-live in milliseconds (5000-600000); empty means the service default, 60000.
+    providerLeaseTtlMs: ""
 
   nodeSelector: {}
   tolerations: []
@@ -370,6 +377,16 @@ publishing:
   # or a comma-separated owner/repo allowlist. Do not enable it before ADR 0687 is accepted.
   # Revert path: set back to "" (a line break in the value refuses app-gate Jobs).
   skipEmptyModeration: ""
+  # Cross-review provider concurrency (docs/CONFIGURATION_REFERENCE.md). All empty by default, so
+  # nothing is forwarded and workers behave exactly as before. providerLeases: "true" makes
+  # app-gate workers lease a slot from the dispatch service before each provider call (the service
+  # needs dispatcher.config.providerConcurrency too); providerLeaseKey: optional fixed capacity key;
+  # providerLocalConcurrency: per-worker cap on concurrent provider calls (1-64; 8 when leases are
+  # on and this is empty). Workers fail open to the local cap when the coordinator is unavailable.
+  # Revert path: set back to "".
+  providerLeases: ""
+  providerLeaseKey: ""
+  providerLocalConcurrency: ""
   # REL-1160: asynchronous streaming review continuations (enabled by default).
   # "true" enables decoupled prep/continuation phases across all repositories.
   # Revert path: set to "false" to force monolithic execution.
