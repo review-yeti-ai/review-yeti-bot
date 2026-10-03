@@ -189,10 +189,11 @@ export function LiveSwarmTopologyCanvas({
     ];
 
     // 3. Tier 3: Autonomous Swarm Agents
-    const fallbackTasks: LiveSwarmTask[] = [
+    const fallbackTasks: SwarmTaskItem[] = [
       {
         id: 'task_sec_boundary',
         dimension: 'security',
+        description: 'Enforce security boundary: secret redaction, credential scanning, and edge isolation',
         paths: ['src/gateway/edgeCompactionEngine.ts'],
         priority: 1,
         status: 'COMPLETED',
@@ -209,6 +210,7 @@ export function LiveSwarmTopologyCanvas({
       {
         id: 'task_arch_compaction',
         dimension: 'architecture',
+        description: 'Context compaction audit: verify AST outline depth and eliminate diff leakage across turns',
         paths: ['src/gateway/edgeCompactionEngine.ts', 'cf-orchestrator/src/worker.ts'],
         priority: 2,
         status: 'IN_FLIGHT',
@@ -226,6 +228,7 @@ export function LiveSwarmTopologyCanvas({
       {
         id: 'task_perf_worker_budget',
         dimension: 'performance',
+        description: 'Cloudflare Worker budget: CPU execution time and memory limits validation',
         paths: ['cf-orchestrator/src/worker.ts'],
         priority: 3,
         status: 'IN_FLIGHT',
@@ -243,6 +246,7 @@ export function LiveSwarmTopologyCanvas({
       {
         id: 'task_test_coverage',
         dimension: 'testing',
+        description: 'Test coverage & invariant verification across Edge orchestrator routes',
         paths: ['cf-orchestrator/test/dashboardRoutes.test.ts'],
         priority: 4,
         status: 'PENDING',
