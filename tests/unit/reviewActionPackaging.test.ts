@@ -82,6 +82,7 @@ describe('action.yml — installable GitHub Action contract', () => {
     expect(action.inputs['doks-publish-mode'].default).toBe('app-gate');
     // The endpoint is supplied by the caller; the Action carries no hostname default.
     expect(action.inputs['doks-dispatch-url'].default).toBe('');
+    expect(fs.readFileSync(actionPath, 'utf8')).toContain('doks-dispatch-url is required when execution-backend is not local');
 
     const raw = fs.readFileSync(actionPath, 'utf8');
     const dispatcher = fs.readFileSync(path.join(rootRepoDir, 'scripts/dispatch-doks-action.mjs'), 'utf8');
