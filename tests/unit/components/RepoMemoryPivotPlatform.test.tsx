@@ -3,8 +3,6 @@ import React from 'react';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, within, waitFor, act } from '@testing-library/react';
 import { RepoMemoryPivotPlatform } from '@/components/analytics/RepoMemoryPivotPlatform';
-import MemoryPage from '@/app/memory/page';
-import { fetchMemoryStats, purgeMemoryCache, exportMemorySnapshot } from '@/lib/api-client';
 
 describe('RepoMemoryPivotPlatform Component Suite', () => {
   it('renders the interactive pivot control bar with all repository tabs', () => {
@@ -17,8 +15,8 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     // Check repository pivot buttons
     expect(screen.getByText(/All Repositories \(3\)/)).toBeInTheDocument();
     expect(screen.getByText('review-yeti-bot')).toBeInTheDocument();
-    expect(screen.getByText('example-api')).toBeInTheDocument();
-    expect(screen.getByText('example-meta')).toBeInTheDocument();
+    expect(screen.getByText('sample-cdr')).toBeInTheDocument();
+    expect(screen.getByText('sample-meta')).toBeInTheDocument();
 
     // Check timeline buttons
     expect(screen.getByText('24h')).toBeInTheDocument();
@@ -40,8 +38,8 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     expect(screen.getByText(/Repository Matrix/i)).toBeInTheDocument();
     const tbody = screen.getByTestId('repo-matrix-tbody');
     expect(within(tbody).getByText('reviewyeti-ai/review-yeti-bot')).toBeInTheDocument();
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
-    expect(within(tbody).getByText('reviewyeti-ai/example-meta')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-meta')).toBeInTheDocument();
 
     // Check hit rate and size numbers inside table
     expect(within(tbody).getByText('95.8%')).toBeInTheDocument();
@@ -55,22 +53,22 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
   it('filters data matrix when switching repository pivot tabs', () => {
     render(<RepoMemoryPivotPlatform initialRepo="all" initialWindow="7d" />);
 
-    // Click 'example-api' button
-    const ciscoBtn = screen.getByText('example-api');
+    // Click 'sample-cdr' button
+    const ciscoBtn = screen.getByText('sample-cdr');
     fireEvent.click(ciscoBtn);
 
-    // Only example-api should remain in the filtered matrix table
+    // Only sample-cdr should remain in the filtered matrix table
     const tbody = screen.getByTestId('repo-matrix-tbody');
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
     expect(within(tbody).queryByText('reviewyeti-ai/review-yeti-bot')).not.toBeInTheDocument();
-    expect(within(tbody).queryByText('reviewyeti-ai/example-meta')).not.toBeInTheDocument();
+    expect(within(tbody).queryByText('example/sample-meta')).not.toBeInTheDocument();
 
     // Reset back to All Repositories
     const allBtn = screen.getByText(/All Repositories \(3\)/);
     fireEvent.click(allBtn);
 
     expect(within(tbody).getByText('reviewyeti-ai/review-yeti-bot')).toBeInTheDocument();
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
   });
 
   it('switches timeline horizon and metric dimensions', () => {
@@ -131,15 +129,16 @@ describe('RepoMemoryPivotPlatform Component Suite', () => {
     fireEvent.change(searchInput, { target: { value: 'Elixir' } });
 
     const tbody = screen.getByTestId('repo-matrix-tbody');
-    expect(within(tbody).getByText('exampleorg/example-api')).toBeInTheDocument();
+    expect(within(tbody).getByText('example/sample-cdr')).toBeInTheDocument();
     expect(within(tbody).queryByText('reviewyeti-ai/review-yeti-bot')).not.toBeInTheDocument();
-    expect(within(tbody).queryByText('reviewyeti-ai/example-meta')).not.toBeInTheDocument();
+    expect(within(tbody).queryByText('example/sample-meta')).not.toBeInTheDocument();
 
     // Clear search
     fireEvent.change(searchInput, { target: { value: '' } });
     expect(within(tbody).getByText('reviewyeti-ai/review-yeti-bot')).toBeInTheDocument();
   });
 });
+
 
 vi.mock('@/lib/api-client', async () => ({
   ...await vi.importActual<typeof import('@/lib/api-client')>('@/lib/api-client'),
@@ -148,10 +147,11 @@ vi.mock('@/lib/api-client', async () => ({
   exportMemorySnapshot: vi.fn(),
 }));
 
-
+import MemoryPage from '@/app/memory/page';
+import { fetchMemoryStats, purgeMemoryCache, exportMemorySnapshot } from '@/lib/api-client';
 
 function memoryResponse() {
-  const repositories = ['exampleorg/example-api', 'reviewyeti-ai/example-meta'];
+  const repositories = ['example/sample-cdr', 'example/sample-meta'];
   return {
     success: true,
     r2: { bucket: 'example-memory', objectCount: 2, totalBytes: 2048, hitRatePercent: 95 },
@@ -199,10 +199,10 @@ describe('MemoryPage public neutral state and export controls', () => {
     selectMemoryTab(/Workspaces & R2 Cache/);
     expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
     expect(screen.getByText('example-outline-1', { exact: false })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'example-api' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-cdr' } });
     expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
     expect(screen.queryByText('example-outline-1', { exact: false })).not.toBeInTheDocument();
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'example-meta' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-meta' } });
     expect(screen.getByText('example-outline-1', { exact: false })).toBeInTheDocument();
     fireEvent.click(screen.getByText('Clear filters'));
     expect(screen.getByText('example-outline-0', { exact: false })).toBeInTheDocument();
@@ -224,7 +224,7 @@ describe('MemoryPage public neutral state and export controls', () => {
       { query: 'boundary', expected: [records[0]] },
       { query: 'public filtering', expected: [records[0], records[1]] },
       { query: 'src/example-0', expected: [records[0]] },
-      { query: 'exampleorg/example-api', expected: [records[0]] },
+      { query: 'example/sample-cdr', expected: [records[0]] },
       { query: 'sample convention', expected: [records[2], records[3]] },
       { query: 'Quoted "sample" 0', expected: [records[2]] },
       { query: 'src/nit-0', expected: [records[2]] },
@@ -258,25 +258,25 @@ describe('MemoryPage public neutral state and export controls', () => {
 
   it('exports only the chosen sample scope in JSON, Markdown and quote-safe CSV', async () => {
     await renderMemoryPage();
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'example-api' } });
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'sample-cdr' } });
     fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
     const dialog = await screen.findByRole('dialog');
-    await waitFor(() => expect(exportMemorySnapshot).toHaveBeenCalledWith('json', 'example-api'));
+    await waitFor(() => expect(exportMemorySnapshot).toHaveBeenCalledWith('json', 'sample-cdr'));
     const preview = within(dialog).getByRole('textbox') as HTMLTextAreaElement;
     await waitFor(() => expect(JSON.parse(preview.value).sha256Digest).toBe('a'.repeat(64)));
     const data = JSON.parse(preview.value);
-    expect(data.organization).toBe('exampleorg');
+    expect(data.organization).toBe('example');
     expect(data.workspaces).toHaveLength(1);
-    expect(data.learnings[0].repo).toBe('exampleorg/example-api');
+    expect(data.learnings[0].repo).toBe('example/sample-cdr');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Executive Markdown Report' }));
-    expect(preview.value).toContain('Organization: exampleorg');
-    expect(preview.value).toContain('exampleorg/example-api');
-    expect(preview.value).not.toContain('reviewyeti-ai/example-meta');
+    expect(preview.value).toContain('Organization: example');
+    expect(preview.value).toContain('example/sample-cdr');
+    expect(preview.value).not.toContain('example/sample-meta');
     fireEvent.click(within(dialog).getByRole('button', { name: 'CSV Spreadsheet' }));
     expect(preview.value).toContain('"Quoted ""boundary"" rule"');
     expect(preview.value).toContain('"Quoted ""sample"" 0"');
     fireEvent.click(within(dialog).getByRole('button', { name: 'JSON Schema v2.1' }));
-    expect(JSON.parse(preview.value).organization).toBe('exampleorg');
+    expect(JSON.parse(preview.value).organization).toBe('example');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
@@ -313,13 +313,13 @@ describe('MemoryPage public neutral state and export controls', () => {
     for (const button of copies) {
       fireEvent.click(button);
       expect(navigator.clipboard.writeText).toHaveBeenCalled();
-      expect(JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)![0]).repo).toMatch(/^(?:exampleorg\/example-api|reviewyeti-ai\/example-meta)$/);
+      expect(JSON.parse(vi.mocked(navigator.clipboard.writeText).mock.calls.at(-1)![0]).repo).toMatch(/^example\/sample-/);
       await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
     }
     expect(screen.queryByRole('button', { name: 'Copied' })).not.toBeInTheDocument();
   });
 
-  it('refreshes and purges successfully and displays the reloaded workspace', async () => {
+  it('refreshes and purges successfully, dismissing the actual completion notice', async () => {
     await renderMemoryPage();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(fetchMemoryStats).toHaveBeenCalledTimes(2));
@@ -347,7 +347,7 @@ describe('MemoryPage public neutral state and export controls', () => {
     expect(screen.queryByText('Workspace cache swept. Ephemeral outlines purged successfully.')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Export Memory' }));
     const dialog = await screen.findByRole('dialog');
-    await waitFor(() => expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).organization).toBe('exampleorg'));
+    await waitFor(() => expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).organization).toBe('example'));
     expect(JSON.parse((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).workspaces).toHaveLength(2);
   });
 
