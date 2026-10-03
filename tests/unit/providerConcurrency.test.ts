@@ -16,7 +16,7 @@ import {
   RATE_LIMIT_RETRY_MAX_DELAY_MS,
   RATE_LIMIT_RETRY_WINDOW_MS,
   rateLimitRetryDelayMs,
-} from '../../src/gateway/rateLimitBackoff';
+} from '../../src/review/laneInfrastructure';
 import { HttpProviderLeaseCoordinator, providerLeaseEndpointFor } from '../../src/review/providerLeaseHttp';
 import { providerPublishingModelClient } from '../../src/cli/publishingReview';
 import type { OpenRouterRequest, ReviewModelClient } from '../../src/gateway/openRouterClient';

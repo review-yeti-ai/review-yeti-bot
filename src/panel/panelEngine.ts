@@ -17,7 +17,6 @@ import {
 } from '../services/symbolResolutionAppendix';
 import { runPreCheckAnalyzers, formatCandidateHypothesesPrompt, filterHypothesesForPersona, PreCheckSummary } from '../sandbox/analyzerRunner';
 import { OpenRouterConnectionError, OpenRouterContentBlock, OpenRouterMessage, OpenRouterRequest, OpenRouterResponse, OpenRouterResponseError, OpenRouterTimeoutError, ReviewModelClient, TokensUsed, UpstreamCapacityRejectionError, isExplicitUpstreamRejection, resolveCachedTokens, retryAfterFloorMs } from '../gateway/openRouterClient';
-import { planRateLimitRetry, RATE_LIMIT_MAX_RETRIES } from '../gateway/rateLimitBackoff';
 import { PRMemoryStore } from '../memory/prMemoryStore';
 import { GraphLearningEngine } from '../memory/graphLearningEngine';
 import { logger } from '../utils/logger';
@@ -27,6 +26,8 @@ import {
   isNonRetryableClientStatus,
   isTransientGatewayMessage,
   laneProviderStatus,
+  planRateLimitRetry,
+  RATE_LIMIT_MAX_RETRIES,
   TRANSIENT_GATEWAY_STATUSES,
   TRANSPORT_MAX_RETRIES,
   TRANSPORT_RETRY_TERMINAL_MARGIN_MS,
@@ -1367,7 +1368,7 @@ export function isTransientLaneTransportError(error: unknown): boolean {
  * Not a second classification ladder: it requires `classifyPersonaAttemptFailure(error) ===
  * 'rate_limit'` (the class the lane publishes) AND an observed 429 status, and leaves the
  * empty-completion signature to its own ladder. Both
- * engines send these to the dedicated rate-limit ladder (`../gateway/rateLimitBackoff`) instead of
+ * engines send these to the dedicated rate-limit ladder (`planRateLimitRetry` in `../review/laneInfrastructure`) instead of
  * the transport ladder: a 429 says "wait for a slot", which needs a longer, deadline-bounded,
  * Retry-After-honouring schedule, not five outage retries in a minute.
  */
@@ -2936,7 +2937,7 @@ async function runPersona(
       // backoff sequence by TRANSPORT_RETRY_WINDOW_MS.
       let firstTransportFailureAt: number | undefined;
       // Rate-limit retries (429 / capacity rejection) are tracked apart from transport retries:
-      // they follow their own deadline-bounded schedule (`../gateway/rateLimitBackoff`).
+      // they follow their own deadline-bounded schedule (`planRateLimitRetry`).
       let rateLimitRetries = 0;
       let firstRateLimitAt: number | undefined;
 
@@ -3330,7 +3331,7 @@ async function runPersona(
           const fastFailoverAvailable = isExplicitUpstreamRejection(error)
             && providersToTry.indexOf(providerId) < providersToTry.length - 1;
           // A capacity rejection on the last (or only) provider identity rides the dedicated
-          // rate-limit ladder (`../gateway/rateLimitBackoff`, shared with the composed engine):
+          // rate-limit ladder (`planRateLimitRetry` in `../review/laneInfrastructure`, shared with the composed engine):
           // full-jitter exponential backoff floored at the sanitized Retry-After and bounded by the
           // persona, panel and terminal budgets -- not by the transport ladder's five retries.
           // When the budget cannot fit another wait the lane fails now, classified `rate_limit`;

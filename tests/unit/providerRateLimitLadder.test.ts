@@ -1,5 +1,6 @@
 /**
- * The dedicated rate-limit ladder in both review engines (`../../src/gateway/rateLimitBackoff`).
+ * The dedicated rate-limit ladder in both review engines (`planRateLimitRetry` in
+ * `../../src/review/laneInfrastructure`).
  *
  * Shape under test: a shared provider account with 15 concurrent slots answers the overflow with
  * HTTP 429 "Concurrent limit reached ... 15/15 slots in use". The five-retry transport ladder gave
