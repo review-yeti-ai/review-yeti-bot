@@ -91,18 +91,31 @@ describe('sample repository identity is one contract, asserted across layers', (
     applyMigration(upgraded, '0002_neutralize_sample_repositories.sql');
     expect((upgraded.prepare('SELECT count(*) c FROM repositories').get() as any).c).toBe(2);
 
-    // Path 3: a fresh database applying the shipped 0001 seed then 0002 converges.
+    // Path 3: a database with NEITHER the old nor the new rows -- the only state
+    // that actually exercises the migration's `INSERT OR IGNORE`. Every earlier
+    // path pre-seeds the OLD ids, so the UPDATEs satisfy the rename and the
+    // INSERT is a no-op there. This path is what proves the create-from-scratch
+    // branch works; without it that statement was never executed.
+    const empty = new DatabaseSync(':memory:');
+    empty.exec(createTable);
+    applyMigration(empty, '0002_neutralize_sample_repositories.sql');
+    const emptyIds = (empty.prepare('SELECT id FROM repositories ORDER BY id').all() as any[]).map((r) => r.id);
+    expect(emptyIds).toEqual([SAMPLE_REPO_CDR, SAMPLE_REPO_META].sort());
+
+    // Path 4: a fresh database applying the shipped 0001 seed then 0002 converges
+    // to the same state as Path 1 (the upgrade path a live environment takes).
     const fresh = new DatabaseSync(':memory:');
     fresh.exec(createTable);
     fresh.exec(`INSERT OR IGNORE INTO repositories (id, owner, repo, default_branch, automation_enabled, generate_flowchart, custom_profile, created_at, updated_at)
       VALUES ('reviewyeti-ai/example-api','reviewyeti-ai','example-api','main',1,1,'assertive',1,1),
              ('reviewyeti-ai/example-meta','reviewyeti-ai','example-meta','main',1,1,'balanced',1,1);`);
     applyMigration(fresh, '0002_neutralize_sample_repositories.sql');
-    const freshIds = (fresh.prepare('SELECT id FROM repositories ORDER BY id').all() as any[]).map((r) => r.id);
-    expect(freshIds).toEqual([SAMPLE_REPO_CDR, SAMPLE_REPO_META].sort());
+    expect((fresh.prepare('SELECT id FROM repositories ORDER BY id').all() as any[]).map((r) => r.id))
+      .toEqual(emptyIds);
 
-    upgraded.close();
+    empty.close();
     fresh.close();
+    upgraded.close();
   });
 
   it('the Durable Object query layer imports the constant instead of repeating it', () => {
