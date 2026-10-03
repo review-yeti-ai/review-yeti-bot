@@ -1,1 +1,42 @@
-{}
+{
+ "action.yml": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "cf-orchestrator/src/mcp/mcpRouter.ts": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "cf-orchestrator/test/mcp/mcpRouter.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "cf-orchestrator/test/mcp/mcpWorkerIntegration.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "cf-orchestrator/wrangler.toml": {
+  "count": 3,
+  "digest": "86b79c3b9a6946e3"
+ },
+ "scripts/dispatch-doks-action.mjs": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/integration/actionDispatchApi.test.ts": {
+  "count": 2,
+  "digest": "98755f4be2680d90"
+ },
+ "tests/unit/actionDoksDispatch.test.ts": {
+  "count": 10,
+  "digest": "4ac0e15909e91064"
+ },
+ "tests/unit/kubernetesModeDocsAccuracy.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ },
+ "tests/unit/reviewActionPackaging.test.ts": {
+  "count": 1,
+  "digest": "eede0415576da9c5"
+ }
+}
