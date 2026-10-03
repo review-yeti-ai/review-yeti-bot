@@ -11,6 +11,7 @@
 import {
   FINDING_MARKER_PREFIX,
   isFindingFingerprint,
+  isResolutionSatisfiable,
   parseFindingMarker,
   renderFindingMarker,
   statedResolutionReason,
@@ -192,7 +193,10 @@ export async function readFindingThreads(transport: FindingThreadTransport, pr: 
 
 /** The thread body a required finding is published with. */
 export function renderFindingThreadBody(finding: PublishableFinding): string {
-  const guidance = finding.severity === 'P2'
+  // The published rule is derived from the same predicate the convergence
+  // decision enforces, so the guidance authors follow cannot drift from what
+  // actually satisfies a finding on the next head.
+  const guidance = isResolutionSatisfiable(finding.severity)
     ? 'Required before merge. Fix it, or reply here with the reason it does not apply and resolve this conversation; the next review records the resolution.'
     : 'Required before merge. Fix it; a resolved conversation does not clear a P0 or P1.';
   // Model-derived text is neutralised so it cannot carry an HTML comment (and so a marker) into
