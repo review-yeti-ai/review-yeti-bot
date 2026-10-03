@@ -701,7 +701,7 @@ describe('Empirical Challenger Suite: Milestone M7 MCP Resources & SSE Subscript
 
     it('EMPIRICAL OBSERVATION: Subscribing with mixed-case repo does not match lower-case notification URI', async () => {
       const mockWrite = vi.fn();
-      const mixedCaseUri = 'review-yeti://runs/exampleorg/example-api/123';
+      const mixedCaseUri = 'review-yeti://runs/ExampleOrg/Example-API/123';
       const canonicalUri = 'review-yeti://runs/exampleorg/example-api/123';
 
       const s = router.sessionManager.createSession({

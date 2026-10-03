@@ -303,7 +303,7 @@ describe('Onboarding Wizard Steps - Tier 1 & Tier 2 Component Unit Tests', () =>
       });
 
       const searchInput = screen.getByPlaceholderText('Filter repositories...');
-      fireEvent.change(searchInput, { target: { value: 'cisco' } });
+      fireEvent.change(searchInput, { target: { value: 'example-api' } });
 
       expect(screen.getByText('example-api')).toBeInTheDocument();
       expect(screen.queryByText('api-gateway')).not.toBeInTheDocument();
