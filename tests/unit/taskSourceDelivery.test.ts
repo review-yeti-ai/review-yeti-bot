@@ -56,6 +56,16 @@ describe('source delivery receipts', () => {
     expect(delivery.acknowledgeRequest(messages('page message')).complete).toBe(true);
   });
 
+  it.each([{pageComplete:false}, {status:'error'}, {offsetUnit:'bytes'}])(
+    'does not certify a complete-looking page with rejected metadata: %j', (override) => {
+      const delivery=tracker();
+      const output=JSON.stringify({...JSON.parse(page(0,10)),...override});
+      delivery.stageDiffPage(output,output,'rejected envelope');
+      expect(delivery.acknowledgeRequest(messages('rejected envelope')).complete).toBe(false);
+      expect(delivery.snapshot().files[0].ranges).toEqual([]);
+      expect(validateTaskSourceReceipt(delivery.snapshot(),binding)).toBeNull();
+    });
+
   it('requires every original character, merges overlaps, and rejects stale or forged bytes', () => {
     const delivery=tracker();
     const first=page(0,4),last=page(6,10);

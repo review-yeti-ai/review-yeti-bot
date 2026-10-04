@@ -244,7 +244,9 @@ describe('composed task logs-only model-reported blocked reason', () => {
     const harness = diagnosticHarness({ blockedReason: 'analysis_unresolved' }, { status, checkpointed: true });
     const result = await harness.run();
     expect(harness.checkpoints.length).toBeGreaterThan(0);
-    expect(harness.checkpoints.at(-1)?.completedTasks).toEqual(status === 'BLOCKED' ? [] : [{ id: 'verify-change', findings: [] }]);
+    expect(harness.checkpoints.at(-1)?.completedTasks).toEqual(status === 'BLOCKED' ? [] : [expect.objectContaining({
+      id: 'verify-change', findings: [], sourceDelivery: expect.objectContaining({complete:true}),
+    })]);
     expectNoDiagnosticOutsideLogs({ result, checkpoints: harness.checkpoints, progress: harness.progress });
   });
 
