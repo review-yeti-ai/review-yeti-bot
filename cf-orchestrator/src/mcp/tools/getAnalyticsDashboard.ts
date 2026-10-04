@@ -183,7 +183,7 @@ export const getAnalyticsDashboardTool: McpToolHandler = {
       topViolatedRules,
       findingHotspots,
       recentActivity,
-      dataSource: hasDb ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
+      dataSource: hasDb ? 'live_telemetry' : 'baseline_sample_telemetry',
     };
 
     const kpi = dashboard.kpis;

@@ -63,6 +63,10 @@ export interface Env {
   PARALLEL_CHECK_NAME: string;
   PILOT_REPOSITORIES: string;
   DOKS_FALLBACK_URL?: string;
+  /** Base host of the operator run-status API; deployments bind the real internal operator host here. */
+  OPERATOR_STATUS_BASE_URL?: string;
+  /** Comma-separated full names of the repositories whose live gate state the dashboard reports. */
+  REVIEWED_REPOSITORIES?: string;
   /** Comma-separated browser origins allowed for the MCP endpoint (exact origin or `*.suffix`). */
   ALLOWED_ORIGINS?: string;
   DEFAULT_WORKER_IMAGE: string;
@@ -75,6 +79,7 @@ export interface Env {
   DO_BASE_URL?: string;
   GITHUB_WEBHOOK_SECRET?: string;
   GITHUB_APP_ID?: string;
+  GITHUB_APP_INSTALLATION_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   REVIEW_YETI_MCP_AUTH_TOKEN?: string;
   GITHUB_TOKEN?: string;

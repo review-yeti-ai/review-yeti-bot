@@ -94,7 +94,7 @@ export const getRuntimeMetricsTool: McpToolHandler = {
       repo: repo || undefined,
       windowHours,
       sampleCount: sorted.length,
-      dataSource: hasDb ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
+      dataSource: hasDb ? 'live_telemetry' : 'baseline_sample_telemetry',
       percentilesWallLatencyMs: {
         min: sorted[0] || 0,
         p50: computePercentile(sorted, 50),
