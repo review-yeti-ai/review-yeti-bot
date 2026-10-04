@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { Env } from '../../src/types.js';
 import type { ReviewFindingItem, ToolResult } from '../../src/mcp/types.js';
 import { getAnalyticsDashboardTool } from '../../src/mcp/tools/getAnalyticsDashboard.js';
+import { getBillableRuntimeReportTool } from '../../src/mcp/tools/getBillableRuntimeReport.js';
 import { getRuntimeMetricsTool } from '../../src/mcp/tools/getRuntimeMetrics.js';
 import { queryFindingsTool } from '../../src/mcp/tools/queryFindings.js';
 import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../../src/sampleRepositories.js';
@@ -70,6 +71,29 @@ function payload(result: ToolResult) {
 }
 
 describe('MCP edge telemetry contracts', () => {
+  for (const { tool, description } of [
+    {
+      tool: getAnalyticsDashboardTool,
+      description: `Repository name to filter dashboard (e.g. "${SAMPLE_REPO_CDR}")`,
+    },
+    {
+      tool: getRuntimeMetricsTool,
+      description: `Repository name to filter metrics (e.g. "${SAMPLE_REPO_CDR}")`,
+    },
+    {
+      tool: getBillableRuntimeReportTool,
+      description: `Repository name filter (e.g. "${SAMPLE_REPO_CDR}")`,
+    },
+    {
+      tool: queryFindingsTool,
+      description: `Repository name (e.g. "${SAMPLE_REPO_CDR}")`,
+    },
+  ]) {
+    it(`${tool.definition.name} advertises the canonical owner/repository example`, () => {
+      assert.equal(tool.definition.inputSchema.properties.repo.description, description);
+    });
+  }
+
   for (const fullName of [SAMPLE_REPO_CDR, SAMPLE_REPO_META]) {
     it(`returns seeded sample repository ${fullName} with its canonical owner and ID`, async () => {
       const repositories = await fetchRepositoriesFromDb();

@@ -64,13 +64,56 @@ describe('public onboarding defaults', () => {
   ] as const)('reports only the failed %s loader without substituting sample credentials', async (name, loader) => {
     vi.mocked(loader).mockRejectedValue(new Error('unavailable'));
     render(<FiveStepWizard />);
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(`Could not load ${name}. Sync Store`));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(`Could not load ${name}. Sync Store to retry; no sample configuration has been substituted.`));
     const alert = screen.getByRole('alert');
     for (const other of ['GitHub App configuration', 'repositories', 'AI providers', 'personas']) {
       if (other !== name) expect(alert).not.toHaveTextContent(other);
     }
     expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('');
     expect(screen.getByPlaceholderText('whsec_...')).toHaveValue('');
+  });
+
+  it('reports a synchronous loader throw without inventing settings and restores real configuration on retry', async () => {
+    vi.mocked(apiClient.fetchGitHubAppConfig).mockImplementationOnce(() => {
+      throw new Error('synchronous loader failure');
+    });
+    render(<FiveStepWizard />);
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe(
+      'Could not load onboarding settings. Sync Store to retry; no sample configuration has been substituted.',
+    ));
+    expect(screen.getByRole('button', { name: /Sync Store/i })).toBeEnabled();
+    expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('');
+    expect(screen.getByPlaceholderText('e.g. 5829104')).toHaveValue('');
+    expect(screen.getByPlaceholderText('whsec_...')).toHaveValue('');
+    expect(screen.getByPlaceholderText('-----BEGIN [REDACTED_KEY]-----...')).toHaveValue('');
+    expect(apiClient.fetchRepositories).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Next Step: Step 2/i }));
+    expect(screen.getByText('0 / 0 Active')).toBeInTheDocument();
+    expect(screen.getByText(/No repositories found/i)).toBeInTheDocument();
+
+    vi.mocked(apiClient.fetchGitHubAppConfig).mockResolvedValue({
+      ...unconfigured, appId: '9001', installationId: '9002', status: 'configured', privateKeyConfigured: true,
+    });
+    vi.mocked(apiClient.fetchRepositories).mockResolvedValue([
+      { owner: 'operator-org', repo: 'configured-service', automationEnabled: true, customProfile: 'balanced', updatedAt: '' },
+    ]);
+    fireEvent.click(screen.getByRole('button', { name: /Sync Store/i }));
+
+    await waitFor(() => expect(screen.getByText('configured-service')).toBeInTheDocument());
+    expect(screen.getByText('1 / 1 Active')).toBeInTheDocument();
+    expect(screen.queryByText(/No repositories found/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Sync Store/i })).toBeEnabled();
+    expect(apiClient.fetchGitHubAppConfig).toHaveBeenCalledTimes(2);
+    expect(apiClient.fetchRepositories).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: /Previous Step/i }));
+    expect(screen.getByPlaceholderText('e.g. 1048293')).toHaveValue('9001');
+    expect(screen.getByPlaceholderText('e.g. 5829104')).toHaveValue('9002');
+    expect(screen.getByPlaceholderText('whsec_...')).toHaveValue('');
+    expect(apiClient.updateGitHubAppConfig).not.toHaveBeenCalled();
+    expect(apiClient.createRepository).not.toHaveBeenCalled();
   });
 
   it('does not report a load error for successfully loaded empty settings', async () => {

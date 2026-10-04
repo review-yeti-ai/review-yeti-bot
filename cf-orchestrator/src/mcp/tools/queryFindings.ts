@@ -1,6 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, ReviewFindingItem } from '../types.js';
 import { fetchFindingsFromDb } from '../../storage/d1Client.js';
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
+import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
 
 export const queryFindingsTool: McpToolHandler = {
   definition: {
@@ -12,7 +12,7 @@ export const queryFindingsTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: `Repository name (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
+          description: `Repository name (e.g. "${SAMPLE_REPO_CDR}")`,
         },
         prNumber: {
           type: 'number',

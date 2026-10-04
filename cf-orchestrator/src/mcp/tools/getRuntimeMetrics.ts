@@ -1,6 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, RuntimeMetricsReport } from '../types.js';
 import { fetchReviewsFromDb } from '../../storage/d1Client.js';
-import { SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
+import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
 
 function computePercentile(sortedValues: number[], percentile: number): number {
   if (sortedValues.length === 0) return 0;
@@ -22,7 +22,7 @@ export const getRuntimeMetricsTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: `Repository name to filter metrics (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
+          description: `Repository name to filter metrics (e.g. "${SAMPLE_REPO_CDR}")`,
         },
         windowHours: {
           type: 'number',
