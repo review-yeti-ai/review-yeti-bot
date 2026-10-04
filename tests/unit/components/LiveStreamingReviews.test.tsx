@@ -202,7 +202,10 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
       expect(turnBadge).toHaveTextContent('T3/20');
     });
 
-    it.each([undefined, []])('keeps standby state for absent or empty tasks (%j)', (tasks) => {
+    it.each([
+      { label: 'absent', tasks: undefined },
+      { label: 'empty', tasks: [] },
+    ])('keeps standby state for $label tasks', ({ tasks }) => {
       render(<SwarmTaskMatrix tasks={tasks} activeTurnByTask={{ task_sec_boundary: { current: 3, max: 20 } }} />);
 
       expect(screen.getByText('Swarm Standby — 0 Tasks In Flight')).toBeInTheDocument();

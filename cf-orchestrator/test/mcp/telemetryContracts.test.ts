@@ -125,7 +125,10 @@ describe('MCP edge telemetry contracts', () => {
     assert.equal(dashboard.dataSource, 'baseline_sample_telemetry');
     assert.equal(runtime.dataSource, 'baseline_sample_telemetry');
     assert.equal(findings.dataSource, 'baseline_sample_telemetry');
+    assert.ok(runtime.sampleCount > 0, 'the no-DB runtime dataset must contain samples');
+    assert.ok(dashboard.recentActivity.length > 0, 'the no-DB dashboard dataset must contain recent reviews');
     assert.ok(dashboard.recentActivity.every((review: { repo: string }) => review.repo === SAMPLE_REPO_CDR));
+    assert.ok(findings.findings.length > 0, 'the no-DB findings dataset must contain findings');
     assert.ok(findings.findings.every((finding: { repo: string }) => finding.repo === SAMPLE_REPO_CDR));
   });
 });
