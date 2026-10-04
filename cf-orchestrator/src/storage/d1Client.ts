@@ -3,6 +3,8 @@
  * Provides relational persistence for reviews, findings, repositories, and analytics.
  */
 
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../sampleRepositories.js';
+
 export interface RepositoryRecord {
   id: string;
   owner: string;
@@ -83,11 +85,11 @@ class InMemoryStore {
       },
     ],
     [
-      'reviewyeti-ai/example-api',
+      SAMPLE_REPO_CDR,
       {
-        id: 'reviewyeti-ai/example-api',
-        owner: 'reviewyeti-ai',
-        repo: 'example-api',
+        id: SAMPLE_REPO_CDR,
+        owner: SAMPLE_REPO_CDR.split('/')[0],
+        repo: SAMPLE_REPO_CDR.split('/')[1],
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -97,11 +99,11 @@ class InMemoryStore {
       },
     ],
     [
-      'reviewyeti-ai/example-meta',
+      SAMPLE_REPO_META,
       {
-        id: 'reviewyeti-ai/example-meta',
-        owner: 'reviewyeti-ai',
-        repo: 'example-meta',
+        id: SAMPLE_REPO_META,
+        owner: SAMPLE_REPO_META.split('/')[0],
+        repo: SAMPLE_REPO_META.split('/')[1],
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -820,5 +822,4 @@ export async function saveAdrConstraintToDb(db: any, adr: ADRConstraintRecord): 
     // Ignore DB error
   }
 }
-
 
