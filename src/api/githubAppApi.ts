@@ -433,7 +433,7 @@ export function createGitHubAppApiRouter(): Router {
           orgsMap.set(ownerLower, {
             id: Math.abs(hashCode(ownerLower)),
             login,
-            name: login === 'calltelemetry' ? 'Call Telemetry' : login,
+            name: login === 'example-org' ? 'Example Org' : login,
             avatarUrl: `https://avatars.githubusercontent.com/${encodeURIComponent(login)}`,
             installationId: appConfig.installationId
               ? Number(appConfig.installationId)
@@ -446,11 +446,11 @@ export function createGitHubAppApiRouter(): Router {
 
       // Default fallback if store is brand new
       if (orgsMap.size === 0) {
-        orgsMap.set('calltelemetry', {
+        orgsMap.set('example-org', {
           id: 1001,
-          login: 'calltelemetry',
-          name: 'Call Telemetry',
-          avatarUrl: 'https://avatars.githubusercontent.com/calltelemetry',
+          login: 'example-org',
+          name: 'Example Org',
+          avatarUrl: 'https://avatars.githubusercontent.com/example-org',
           installationId: 58923019,
           monitoredCount: 0,
           totalReposCount: 0,

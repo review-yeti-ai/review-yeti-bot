@@ -1,3 +1,4 @@
+import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
 import type { McpToolHandler, McpExecutionContext, ToolResult, CloudflareStatusReport } from '../types.js';
 
 export const getCloudflareStatusTool: McpToolHandler = {
@@ -10,14 +11,14 @@ export const getCloudflareStatusTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name to check concurrency for (default: "calltelemetry/cisco-cdr")',
+          description: `Repository name to check concurrency for (default: "${SAMPLE_REPO_CDR}")`,
         },
       },
     },
   },
 
   async execute(args: Record<string, any>, context: McpExecutionContext): Promise<ToolResult> {
-    const repo = (args.repo || 'calltelemetry/cisco-cdr').trim();
+    const repo = (args.repo || SAMPLE_REPO_CDR).trim();
     const env = context.env || {};
 
     let activeSlots = 0;
@@ -133,7 +134,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
       `- **R2 Workspace Cache:** Bucket \`${report.r2WorkspaceCache.bucket}\` | **${report.r2WorkspaceCache.totalObjects} objects** (~${cacheMb} MB)\n` +
       `- **Cache Lifecycle:** ${report.r2WorkspaceCache.retentionPolicy}\n` +
       `- **Shadow Parity Status:** \`${report.shadowParity.status}\` (${report.shadowParity.consecutiveMatches} consecutive shadow matches in CI - baseline telemetry; live ledger not attached)\n` +
-      `- **DOKS Fallback Stream:** \`${env.DOKS_FALLBACK_URL || 'https://review-bot.calltelemetry.com/api/webhooks/github'}\`\n`;
+      `- **DOKS Fallback Stream:** \`${env.DOKS_FALLBACK_URL || 'https://review-bot.example.com/api/webhooks/github'}\`\n`;
 
     return {
       content: [

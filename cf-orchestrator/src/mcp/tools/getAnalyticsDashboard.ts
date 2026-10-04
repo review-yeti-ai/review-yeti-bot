@@ -1,5 +1,6 @@
 import type { McpToolHandler, McpExecutionContext, ToolResult, AnalyticsDashboardReport } from '../types.js';
 import { formatCostUsd, formatDuration } from '../../runners/runnerCost.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG } from '../../sampleRepositories.js';
 import { fetchReviewsFromDb, fetchFindingsFromDb } from '../../storage/d1Client.js';
 
 export const getAnalyticsDashboardTool: McpToolHandler = {
@@ -12,7 +13,7 @@ export const getAnalyticsDashboardTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name to filter dashboard (e.g. "cisco-cdr")',
+          description: `Repository name to filter dashboard (e.g. "${SAMPLE_REPO_CDR_SLUG}")`,
         },
         timeframe: {
           type: 'string',
@@ -25,7 +26,7 @@ export const getAnalyticsDashboardTool: McpToolHandler = {
   },
 
   async execute(args: Record<string, any>, context: McpExecutionContext): Promise<ToolResult> {
-    const repo = (args.repo || 'cisco-cdr').trim();
+    const repo = (args.repo || SAMPLE_REPO_CDR_SLUG).trim();
     const timeframe = args.timeframe || '7d';
 
     const hasDb = Boolean(context.env?.DB);
@@ -182,7 +183,7 @@ export const getAnalyticsDashboardTool: McpToolHandler = {
       topViolatedRules,
       findingHotspots,
       recentActivity,
-      dataSource: hasDb ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
+      dataSource: hasDb ? 'live_telemetry' : 'baseline_sample_telemetry',
     };
 
     const kpi = dashboard.kpis;

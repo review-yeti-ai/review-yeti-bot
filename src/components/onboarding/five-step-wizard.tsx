@@ -50,22 +50,22 @@ export function FiveStepWizard() {
 
   const [repositories, setRepositories] = React.useState<RepositorySetting[]>([
     {
-      owner: 'calltelemetry',
-      repo: 'cisco-cdr',
+      owner: 'reviewyeti-ai',
+      repo: 'sample-cdr',
       automationEnabled: true,
       customProfile: 'balanced',
       updatedAt: new Date().toISOString(),
     },
     {
-      owner: 'calltelemetry',
-      repo: 'ct-meta',
+      owner: 'reviewyeti-ai',
+      repo: 'sample-meta',
       automationEnabled: true,
       customProfile: 'balanced',
       updatedAt: new Date().toISOString(),
     },
     {
-      owner: 'calltelemetry',
-      repo: 'ct-review-bot',
+      owner: 'reviewyeti-ai',
+      repo: 'review-yeti-bot',
       automationEnabled: true,
       customProfile: 'assertive',
       updatedAt: new Date().toISOString(),

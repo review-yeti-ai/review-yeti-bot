@@ -316,7 +316,12 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           { timeout: '25 minutes', retries: { limit: 0 } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
-            const statusUrl = `https://operator.calltelemetry.internal/api/dispatch/runs/${runId}/status`;
+            // The operator status endpoint is deployment-specific configuration, not a
+            // code constant: deployments bind OPERATOR_STATUS_BASE_URL to the host the
+            // operator actually answers on. Falling back to the pre-#1367 placeholder
+            // keeps the scrub honest while a deployment that forgets the binding fails
+            // loudly (unresolvable host) instead of silently reporting to itself.
+            const statusUrl = `${this.env.OPERATOR_STATUS_BASE_URL || 'https://operator.internal.example'}/api/dispatch/runs/${runId}/status`;
 
             const result = await this.getRunner(spec.runner).dispatchJob({
               jobId: `job-${runId}`,

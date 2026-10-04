@@ -1,4 +1,5 @@
 import type { Env } from '../types.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META_SLUG } from '../sampleRepositories.js';
 import {
   getAnalyticsDashboardTool,
   getRuntimeMetricsTool,
@@ -168,8 +169,8 @@ export async function handleDashboardApi(
       dbAdrs,
     ] = await Promise.all([
       queryRepoGateStatus(env, 'reviewyeti-ai/review-yeti-bot'),
-      queryRepoGateStatus(env, 'reviewyeti-ai/cisco-cdr'),
-      queryRepoGateStatus(env, 'reviewyeti-ai/ct-meta'),
+      queryRepoGateStatus(env, SAMPLE_REPO_CDR),
+      queryRepoGateStatus(env, SAMPLE_REPO_META),
       queryR2Metrics(env),
       queryActiveJobsTool.execute({}, context),
       getAnalyticsDashboardTool.execute({ timeframe: '7d' }, context),
@@ -270,8 +271,8 @@ export async function handleDashboardApi(
       },
       liveDurableObjects: {
         'reviewyeti-ai/review-yeti-bot': botGate || { activeCount: 0, queueLength: 0 },
-        'reviewyeti-ai/cisco-cdr': ciscoGate || { activeCount: 0, queueLength: 0 },
-        'reviewyeti-ai/ct-meta': metaGate || { activeCount: 0, queueLength: 0 },
+        SAMPLE_REPO_CDR: ciscoGate || { activeCount: 0, queueLength: 0 },
+        SAMPLE_REPO_META: metaGate || { activeCount: 0, queueLength: 0 },
       },
       dataSource: hasStorage ? 'cloudflare-edge-live' : 'test-harness',
     };
@@ -331,7 +332,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'learn-sec-003',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: SAMPLE_REPO_CDR,
         prNumber: 142,
         category: 'security',
         title: 'Prevent Secret Ingestion in LLM Prompt Buffers',
@@ -357,7 +358,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'learn-arch-002',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: SAMPLE_REPO_CDR,
         prNumber: 139,
         category: 'architecture',
         title: 'Universal Telemetry Emission & Audit Trail Ledger (ADR-004)',
@@ -422,7 +423,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'learn-perf-003',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: SAMPLE_REPO_CDR,
         prNumber: 136,
         category: 'performance',
         title: 'Hyperdrive Connection Pooling for High-Throughput Edge Queries',
@@ -462,7 +463,7 @@ export async function handleDashboardApi(
       {
         id: 'nit-003',
         ruleId: 'nit-elixir-test-timestamps',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: SAMPLE_REPO_CDR,
         prNumber: 141,
         pattern: 'timestamp format in test harnesses',
         filePath: 'test/**/*.exs',
@@ -473,7 +474,7 @@ export async function handleDashboardApi(
       {
         id: 'nit-004',
         ruleId: 'nit-generated-proto-docstrings',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: SAMPLE_REPO_CDR,
         prNumber: 138,
         pattern: 'docstring length in generated gRPC stubs',
         filePath: 'lib/cdrcisco/generated/**',
@@ -497,7 +498,7 @@ export async function handleDashboardApi(
       },
       {
         id: 'adr-004',
-        repo: 'calltelemetry/cisco-cdr',
+        repo: SAMPLE_REPO_CDR,
         adrNumber: 4,
         title: 'Universal Telemetry Emission & Audit Trail Ledger',
         status: 'accepted',
@@ -533,8 +534,8 @@ export async function handleDashboardApi(
         lastHydratedAt: '2026-10-02T12:45:00Z',
       },
       {
-        key: 'calltelemetry/cisco-cdr/pr-142.tar.zst',
-        repository: 'calltelemetry/cisco-cdr',
+        key: `${SAMPLE_REPO_CDR}/pr-142.tar.zst`,
+        repository: SAMPLE_REPO_CDR,
         prNumber: 142,
         symbolCount: 1840,
         outlineDepth: 4,
@@ -546,8 +547,8 @@ export async function handleDashboardApi(
         lastHydratedAt: '2026-10-02T12:30:00Z',
       },
       {
-        key: 'reviewyeti-ai/ct-meta/pr-19.tar.zst',
-        repository: 'reviewyeti-ai/ct-meta',
+        key: `${SAMPLE_REPO_META}/pr-19.tar.zst`,
+        repository: SAMPLE_REPO_META,
         prNumber: 19,
         symbolCount: 610,
         outlineDepth: 3,
@@ -578,8 +579,8 @@ export async function handleDashboardApi(
       ],
       repoMetrics: [
         { repo: 'reviewyeti-ai/review-yeti-bot', cachedBytes: 798720, hitRate: 95.8, symbols: 2420, activeRules: 6 },
-        { repo: 'calltelemetry/cisco-cdr', cachedBytes: 1146880, hitRate: 93.4, symbols: 1840, activeRules: 4 },
-        { repo: 'reviewyeti-ai/ct-meta', cachedBytes: 266240, hitRate: 97.1, symbols: 610, activeRules: 2 },
+        { repo: SAMPLE_REPO_CDR, cachedBytes: 1146880, hitRate: 93.4, symbols: 1840, activeRules: 4 },
+        { repo: SAMPLE_REPO_META, cachedBytes: 266240, hitRate: 97.1, symbols: 610, activeRules: 2 },
       ],
     };
 
@@ -732,7 +733,7 @@ export async function handleDashboardApi(
       const exportData = {
         version: '2.1.0',
         exportedAt: exportDate,
-        organization: 'calltelemetry',
+        organization: 'example',
         scope: repo === 'all' ? 'All Workspaces' : repo,
         storage: {
           r2Bucket: 'review-yeti-workspace-cache',
@@ -766,7 +767,7 @@ export async function handleDashboardApi(
       if (format === 'markdown') {
         const md = [
           `# Review Yeti Codebase Knowledge Graph & Memory Ledger`,
-          `> Generated: ${exportDate} | Scope: ${repo} | Organization: calltelemetry`,
+          `> Generated: ${exportDate} | Scope: ${repo} | Organization: example`,
           `> Cryptographic Digest (SHA-256): \`${sha256Digest}\``,
           ``,
           `## Executive Summary`,
@@ -1296,14 +1297,14 @@ export async function handleDashboardApi(
           totalTokens: 840000,
         },
         {
-          repo: 'reviewyeti-ai/cisco-cdr',
+          repo: SAMPLE_REPO_CDR,
           spendUsd: Number((totalSpend * 0.32).toFixed(3)),
           reviewCount: 28,
           avgSpendPerPR: Number(((totalSpend * 0.32) / 28).toFixed(4)),
           totalTokens: 460000,
         },
         {
-          repo: 'reviewyeti-ai/ct-meta',
+          repo: SAMPLE_REPO_META,
           spendUsd: Number((totalSpend * 0.1).toFixed(3)),
           reviewCount: 8,
           avgSpendPerPR: Number(((totalSpend * 0.1) / 8).toFixed(4)),
@@ -1683,15 +1684,15 @@ export async function handleDashboardApi(
     // Query active runs from RepoGateDOs
     const [botGate, ciscoGate, metaGate, d1Reviews] = await Promise.all([
       queryRepoGateStatus(env, 'reviewyeti-ai/review-yeti-bot'),
-      queryRepoGateStatus(env, 'reviewyeti-ai/cisco-cdr'),
-      queryRepoGateStatus(env, 'reviewyeti-ai/ct-meta'),
+      queryRepoGateStatus(env, SAMPLE_REPO_CDR),
+      queryRepoGateStatus(env, SAMPLE_REPO_META),
       fetchReviewsFromDb(env?.DB, { limit: 10 }),
     ]);
 
     for (const [gateName, gate] of [
       ['reviewyeti-ai/review-yeti-bot', botGate],
-      ['reviewyeti-ai/cisco-cdr', ciscoGate],
-      ['reviewyeti-ai/ct-meta', metaGate],
+      [SAMPLE_REPO_CDR, ciscoGate],
+      [SAMPLE_REPO_META, metaGate],
     ] as const) {
       if (gate && gate.activeJobs && Array.isArray(gate.activeJobs)) {
         for (const rId of gate.activeJobs) {
@@ -1791,8 +1792,8 @@ export async function handleDashboardApi(
       try {
         const [botGate, ciscoGate, metaGate, d1Reviews] = await Promise.all([
           queryRepoGateStatus(env, 'reviewyeti-ai/review-yeti-bot'),
-          queryRepoGateStatus(env, 'reviewyeti-ai/cisco-cdr'),
-          queryRepoGateStatus(env, 'reviewyeti-ai/ct-meta'),
+          queryRepoGateStatus(env, SAMPLE_REPO_CDR),
+          queryRepoGateStatus(env, SAMPLE_REPO_META),
           fetchReviewsFromDb(env?.DB, { limit: 10 }),
         ]);
         const activeJobsCount = (botGate?.activeJobs?.length || 0) + (ciscoGate?.activeJobs?.length || 0) + (metaGate?.activeJobs?.length || 0);
@@ -1853,7 +1854,7 @@ export async function handleDashboardApi(
   if (path === '/api/live/diff') {
     const jobId = url.searchParams.get('jobId') || 'run_live_reviewyeti_pr1282';
     const owner = url.searchParams.get('owner') || 'reviewyeti-ai';
-    const repo = url.searchParams.get('repo') || (jobId.includes('cisco-cdr') ? 'cisco-cdr' : 'review-yeti-bot');
+    const repo = url.searchParams.get('repo') || (jobId.includes(SAMPLE_REPO_CDR_SLUG) ? SAMPLE_REPO_CDR_SLUG : 'review-yeti-bot');
     const prNumberMatch = jobId.match(/pr(\d+)/i) || (url.searchParams.get('prNumber') ? url.searchParams.get('prNumber')?.match(/(\d+)/) : null);
     const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : 1282;
 
