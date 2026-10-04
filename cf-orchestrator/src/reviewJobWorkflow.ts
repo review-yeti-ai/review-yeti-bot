@@ -316,7 +316,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           { timeout: '25 minutes', retries: { limit: 0 } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
-            const statusUrl = `https://operator.example.internal/api/dispatch/runs/${runId}/status`;
+            const statusUrl = `https://operator.internal.example/api/dispatch/runs/${runId}/status`;
 
             const result = await this.getRunner(spec.runner).dispatchJob({
               jobId: `job-${runId}`,

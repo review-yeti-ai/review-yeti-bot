@@ -1,3 +1,4 @@
+import { SAMPLE_REPO_CDR } from '../../sampleRepositories.js';
 import type { McpToolHandler, McpExecutionContext, ToolResult, CloudflareStatusReport } from '../types.js';
 
 export const getCloudflareStatusTool: McpToolHandler = {
@@ -10,14 +11,14 @@ export const getCloudflareStatusTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: 'Repository name to check concurrency for (default: "exampleorg/example-api")',
+          description: `Repository name to check concurrency for (default: "${SAMPLE_REPO_CDR}")`,
         },
       },
     },
   },
 
   async execute(args: Record<string, any>, context: McpExecutionContext): Promise<ToolResult> {
-    const repo = (args.repo || 'exampleorg/example-api').trim();
+    const repo = (args.repo || SAMPLE_REPO_CDR).trim();
     const env = context.env || {};
 
     let activeSlots = 0;

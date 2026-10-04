@@ -128,8 +128,8 @@ export const PROVIDER_GUIDES = [
     url: 'https://codex.example.com',
     keyFormat: 'cx-...',
     steps: [
-      'exampleorg internal high-throughput code review engine.',
-      'Obtain API credentials from exampleorg Enterprise Portal.',
+      'Review Yeti internal high-throughput code review engine.',
+      'Obtain API credentials from the Review Yeti deployment portal.',
     ],
   },
   {
@@ -153,7 +153,7 @@ export function HowToGuideCard() {
 
   const sampleManifestSnippet = `{
   "name": "ct-review-bot-app",
-  "url": "https://github.com/exampleorg",
+  "url": "https://github.com/example-org",
   "hook_attributes": {
     "url": "https://api.example.com/api/webhooks/github",
     "active": true
