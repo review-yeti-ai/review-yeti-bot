@@ -320,8 +320,10 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
             // default in this public runtime. Accept either explicit binding;
             // with neither configured, omit the hint.
             const statusBaseUrl = this.env.DISPATCH_STATUS_BASE_URL || this.env.OPERATOR_STATUS_BASE_URL;
-            const statusUrl = statusBaseUrl
-              ? new URL(`/api/dispatch/runs/${encodeURIComponent(runId)}/status`, statusBaseUrl).toString()
+            const statusBase = statusBaseUrl ? new URL(statusBaseUrl) : undefined;
+            if (statusBase && !statusBase.pathname.endsWith('/')) statusBase.pathname += '/';
+            const statusUrl = statusBase
+              ? new URL(`api/dispatch/runs/${encodeURIComponent(runId)}/status`, statusBase).toString()
               : undefined;
 
             const result = await this.getRunner(spec.runner).dispatchJob({
