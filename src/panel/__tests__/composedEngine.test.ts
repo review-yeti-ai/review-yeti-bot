@@ -9,6 +9,7 @@ import {
   resolveComposedTaskConcurrency,
   unreportedLaneFailure,
 } from '../composedEngine';
+import { TaskSourceDelivery } from '../../review/taskSourceDelivery';
 import { TASK_ID_PATTERN } from '../../reviewTaskContract';
 import { isBypassDiffOnlyPath } from '../../pathDomainContract';
 import { computeArbitration } from '../../review/reviewCore';
@@ -151,7 +152,10 @@ describe('executeComposedReview', () => {
             executionAttempt: 2, revision: 5, plan,
             completedTasks: [
               { id: authTask.id, findings: [priorAuthFinding] },
-              { id: testsTask.id, findings: [priorTestsFinding] },
+              { id: testsTask.id, findings: [priorTestsFinding], sourceDelivery: new TaskSourceDelivery({
+                taskId: testsTask.id, paths: testsTask.paths, files: CODE_FILES,
+                headSha: unsigned.headSha, prefix: CODE_FILES[0].patch, inlinedPaths: testsTask.paths,
+              }).acknowledgeRequest([{ role: 'user', content: CODE_FILES[0].patch }]) },
             ] },
           save: async (snapshot) => { saved.push(structuredClone(snapshot)); },
         },
@@ -185,14 +189,14 @@ describe('executeComposedReview', () => {
         expect(saved.at(-1)).toMatchObject({
           satisfiedFindingRecheckIds: [unsigned.requestId],
           completedTasks: expect.arrayContaining([
-            { id: testsTask.id, findings: [priorTestsFinding] },
-            { id: authTask.id, findings: [] },
+            expect.objectContaining({ id: testsTask.id, findings: [priorTestsFinding], sourceDelivery: expect.objectContaining({ complete: true }) }),
+            expect.objectContaining({ id: authTask.id, findings: [], sourceDelivery: expect.objectContaining({ complete: true }) }),
           ]),
         });
       } else {
         expect(result.optionalFailures?.some((lane) => lane.id === authTask.id)).toBe(true);
         expect(saved.some((snapshot) => snapshot.satisfiedFindingRecheckIds?.includes(unsigned.requestId))).toBe(false);
-        expect(saved.at(-1)?.completedTasks).toEqual([{ id: testsTask.id, findings: [priorTestsFinding] }]);
+        expect(saved.at(-1)?.completedTasks).toEqual([expect.objectContaining({ id: testsTask.id, findings: [priorTestsFinding], sourceDelivery: expect.objectContaining({ complete: true }) })]);
       }
     },
   );

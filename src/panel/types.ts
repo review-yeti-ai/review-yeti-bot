@@ -12,6 +12,7 @@ import type { IncrementalReviewDisclosure } from '../types/incrementalReview';
 import type { ReviewBudgetDisclosure } from '../types/reviewBudget';
 import type { VerdictCacheDisclosure } from '../types/verdictCache';
 import type { MapReduceDisclosure } from '../types/mapReduceReview';
+import type { TaskSourceReceipt } from '../review/taskSourceDelivery';
 
 export type FindingSeverity = 'P0' | 'P1' | 'P2';
 
@@ -74,6 +75,7 @@ export const COMPOSED_TASK_FAILURE_REASONS = Object.freeze([
   'total_turn_budget_exhausted', 'task_turn_budget_exhausted', 'non_json_task_result',
   'tool_requested_during_finalization', 'task_id_mismatch', 'nonce_mismatch', 'invalid_status',
   'invalid_findings', 'invalid_result_fields',
+  'source_not_delivered',
 ] as const);
 export const COMPOSED_TASK_FINISH_REASONS = Object.freeze([
   'stop', 'length', 'content_filter', 'tool_calls', 'function_call', 'unrecognized',
@@ -116,6 +118,7 @@ export interface LaneAggregateUsage {
 }
 
 export interface PersonaLaneResult {
+  sourceDelivery?: TaskSourceReceipt;
   id: string;
   required: boolean;
   providerId: ProviderId;
@@ -147,6 +150,7 @@ export interface PersonaLaneResult {
 }
 
 export interface PanelResult {
+  sourceDelivery?: TaskSourceReceipt[];
   /**
    * Evidence collection stopped at its reserved cutoff and the engine returned
    * validated work instead of throwing it away. Missing tasks keep the result

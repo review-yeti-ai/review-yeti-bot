@@ -193,13 +193,19 @@ describe('composed task-level retry', () => {
   });
 
   it('resumes an exact-head checkpoint, retries only the pending task, and records it once', async () => {
+    const priorSnapshots: any[] = [];
+    const priorClient = recordingClient(({ taskId, nonce }) => clean(taskId, nonce));
+    await executeComposedReview({ config: configFor(), changedFiles, repository: 'acme/app',
+      headSha: 'c'.repeat(40), client: priorClient.client,
+      checkpoint: { save: async (snapshot: any) => { priorSnapshots.push(structuredClone(snapshot)); } } as never });
+    const deliveredTasks = priorSnapshots.at(-1).completedTasks.filter((task: any) => task.id !== 'task-3');
     const harness = recordingClient(({ taskId, nonce, attempt }) => (
       taskId === 'task-3' && attempt === 1 ? malformedVariants.nonce_mismatch(taskId) : clean(taskId, nonce)));
     const saved: any[] = [];
     const result = await executeComposedReview({
       config: configFor(), changedFiles, repository: 'acme/app', headSha: 'c'.repeat(40), client: harness.client,
       checkpoint: {
-        resumed: { revision: 3, plan: TASKS, completedTasks: [{ id: 'task-1', findings: [] }, { id: 'task-2', findings: [] }] },
+        resumed: { revision: 3, plan: TASKS, completedTasks: deliveredTasks },
         save: async (snapshot: any) => { saved.push(structuredClone(snapshot)); },
       } as never,
     });

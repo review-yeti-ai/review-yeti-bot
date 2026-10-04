@@ -1,4 +1,5 @@
 import { canonicalJson, sha256 } from '../review/reviewCore';
+import { taskSourceReceiptSchema, type TaskSourceReceipt } from '../review/taskSourceDelivery';
 import {
   MAX_TASKS_HARD_CAP,
   MAX_TASK_TEXT_LENGTH,
@@ -77,6 +78,7 @@ export interface ComposedTaskOutcomeRetentionRequest extends RetentionRequestBas
     findings?: readonly Readonly<PanelFinding>[];
     diagnostics?: Readonly<ComposedTaskFailureDiagnostics>;
     usage: Readonly<ComposedTaskOutcomeRetentionUsage>;
+    sourceDelivery?: Readonly<TaskSourceReceipt>;
   }>;
 }
 
@@ -340,11 +342,12 @@ export function createComposedTaskOutcomeRetentionRequest(input: {
   findings?: readonly PanelFinding[];
   diagnostics?: ComposedTaskFailureDiagnostics;
   usage: ComposedTaskOutcomeRetentionUsage;
+  sourceDelivery?: TaskSourceReceipt;
 }): ComposedTaskOutcomeRetentionRequest {
   let taskIndexHint: unknown = null;
   try {
     const values = ownDataValues(input,
-      ['selectors', 'planDigest', 'taskIndex', 'taskId', 'status', 'findings', 'diagnostics', 'usage'],
+      ['selectors', 'planDigest', 'taskIndex', 'taskId', 'status', 'findings', 'diagnostics', 'usage', 'sourceDelivery'],
       ['selectors', 'planDigest', 'taskIndex', 'taskId', 'status', 'usage']);
     if (!values) throw new Error();
     taskIndexHint = values.taskIndex;
@@ -438,6 +441,7 @@ export function createComposedTaskOutcomeRetentionRequest(input: {
       ...(findingValues ? { findings: cloneJson(findingValues) as PanelFinding[] } : {}),
       ...(diagnostics ? { diagnostics } : {}),
       usage,
+      ...(values.sourceDelivery !== undefined ? { sourceDelivery: taskSourceReceiptSchema.parse(cloneJson(values.sourceDelivery)) } : {}),
     };
     return sealRequest({
       version: COMPOSED_TASK_RETENTION_REQUEST_VERSION,
