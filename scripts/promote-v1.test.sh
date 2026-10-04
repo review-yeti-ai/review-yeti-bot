@@ -25,23 +25,25 @@ case "$request" in
     printf '2222222222222222222222222222222222222222\n'
     ;;
   *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/pulls?per_page=100"*)
-    printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"head123"},"merge_commit_sha":"2222222222222222222222222222222222222222","merged_at":"2026-08-19T15:00:00Z"}]]\n'
+    printf '[[{"number":42,"base":{"ref":"main"},"head":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"merge_commit_sha":"2222222222222222222222222222222222222222","merged_at":"2026-08-19T15:00:00Z"}]]\n'
     ;;
   *"repos/exampleorg/example-review-actions/commits/2222222222222222222222222222222222222222/check-runs?filter=all&per_page=100"*)
     printf '{"check_runs":[{"id":11,"name":"validate","status":"completed","conclusion":"success","completed_at":"2026-08-19T15:01:00Z"}]}\n'
     ;;
   *"repos/exampleorg/example-review-actions/pulls/42/commits?per_page=100"*)
-    printf '[[{"sha":"oldhead1"},{"sha":"head123"}]]\n'
+    printf '[[{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]]\n'
     ;;
-  *"repos/exampleorg/example-review-actions/commits/oldhead1/check-runs?filter=all&per_page=100"*)
+  *"repos/exampleorg/example-review-actions/commits/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/check-runs?filter=all&per_page=100"*)
     if [[ "${FAKE_EARLIER_GREEN:-}" == true ]]; then
       printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"success","completed_at":"2026-08-19T14:58:00Z"}]}\n'
     else
       printf '{"check_runs":[{"id":1,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T14:58:00Z"}]}\n'
     fi
     ;;
-  *"repos/exampleorg/example-review-actions/commits/head123/check-runs?filter=all&per_page=100"*)
-    if [[ "${FAKE_HEAD_RED:-}" == true ]]; then
+  *"repos/exampleorg/example-review-actions/commits/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/check-runs?filter=all&per_page=100"*)
+    if [[ "${FAKE_HEAD_ABSENT:-}" == true ]]; then
+      printf '{"check_runs":[]}\n'
+    elif [[ "${FAKE_HEAD_RED:-}" == true ]]; then
       printf '{"check_runs":[{"id":3,"name":"Review Yeti","app":{"id":4385771},"status":"completed","conclusion":"failure","completed_at":"2026-08-19T15:04:00Z"}]}\n'
     elif [[ "${FAKE_STALE_THEN_FRESH:-}" == true ]]; then
       # A prior attempt on this exact head SHA (e.g. a transient failure that was rerun)
@@ -343,7 +345,7 @@ pending_output="$({
     FAKE_PENDING_ONCE=true FAKE_PENDING_MARKER="$pending_marker" \
     "$repo_root/scripts/promote-v1.sh"
 } 2>&1)"
-grep -Fq 'Waiting for PR #42 head head123: Review Yeti' <<<"$pending_output"
+grep -Fq 'Waiting for PR #42 head bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb: Review Yeti' <<<"$pending_output"
 
 # A stale, already-completed FAILURE check-run must never permanently shadow a fresher rerun
 # (higher id) on the same head SHA that is still in flight (or has since succeeded). Deadlock
@@ -421,7 +423,50 @@ if [[ "$spoof_rc" -eq 0 ]]; then
 fi
 grep -Fq 'Required central check did not pass' <<<"$spoof_output"
 
-# The dry-run audit uses exact, caller-supplied old/new SHAs and local refs only.
+# v1-promotion deadlock exit: a MERGED PR whose head never got the raw check
+# (the worker refuses closed PRs) walks the PR commits newest -> oldest and
+# promotes on the newest green App-owned review found. The receipt must record
+# the review coordinate as an earlier PR commit, and the push must be identical
+# to the exact-head path (same SHAs, same leases).
+walk_log="$tmp_dir/walk.log"
+walk_receipt="$tmp_dir/walk-receipt.json"
+walk_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_HEAD_ABSENT=true FAKE_EARLIER_GREEN=true FAKE_LOG="$walk_log" \
+    PROMOTION_RECEIPT_PATH="$walk_receipt" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"
+grep -Fq 'using the newest green review on earlier PR commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' <<<"$walk_output"
+grep -Fq 'Promoted Review Yeti v1 from 1111111111111111111111111111111111111111 to 2222222222222222222222222222222222222222 via PR #42.' <<<"$walk_output"
+grep -Fxq 'push --atomic --force-with-lease=refs/heads/main:2222222222222222222222222222222222222222 --force-with-lease=refs/heads/v1:1111111111111111111111111111111111111111 origin 2222222222222222222222222222222222222222:refs/heads/main 2222222222222222222222222222222222222222:refs/heads/v1' "$walk_log"
+jq -e '
+  .validation.review_sha == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" and
+  .validation.review_origin == "earlier-pr-commit" and
+  .validation.review_app_id == 4385771 and
+  .validation.review_check_run_id == 1 and
+  .result == "promoted"
+' "$walk_receipt" >/dev/null
+
+# A MERGED PR with NO green review on ANY commit must still refuse: the walk
+# never rescues an unreviewed merge.
+unreviewed_walk_log="$tmp_dir/unreviewed-walk.log"
+if unreviewed_walk_output="$({
+  PATH="$tmp_dir/bin:$PATH" \
+    GH_TOKEN=test SOURCE_SHA=2222222222222222222222222222222222222222 GITHUB_REPOSITORY=exampleorg/example-review-actions \
+    FAKE_HEAD_ABSENT=true FAKE_LOG="$unreviewed_walk_log" \
+    "$repo_root/scripts/promote-v1.sh"
+} 2>&1)"; then
+  echo "expected a merged PR with no green review on any commit to refuse" >&2
+  exit 1
+fi
+grep -Fq 'no successful App-owned review found on any PR commit' <<<"$unreviewed_walk_output"
+if grep -Fq 'push ' "$unreviewed_walk_log"; then
+  echo "unreviewed-merge walk attempted a ref update" >&2
+  exit 1
+fi
+
+# The dry-run audit uses exact, caller-supplied old/new SHAs and local refs only."
 # It must model fast-forward, idempotent rerun, divergence, stale expected-old,
 # and rollback inputs without fetching, pushing, or requiring credentials.
 audit_bin="$tmp_dir/audit-bin"

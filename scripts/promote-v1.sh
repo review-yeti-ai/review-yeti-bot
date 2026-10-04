@@ -122,11 +122,76 @@ validate_check_id="$required_check_id"
 # similarly named Actions job. The legacy local `Review Yeti Gate` alias is not
 # promotion evidence; that name remains reserved in DOKS for the separately
 # controlled service-owned gate rollout.
-require_success "$pr_check_runs" 'Review Yeti' "PR #${pr_number} head ${pr_head}" \
-  "repos/${repository}/commits/${pr_head}/check-runs?filter=all&per_page=100" \
-  "$review_yeti_app_id"
-green_review_sha="$pr_head"
-green_review_check_id="$required_check_id"
+pr_merged="$(jq -r '.merged_at // empty' <<<"$merged_pr")"
+green_review_sha=""
+green_review_check_id=""
+green_review_origin="head"
+
+pr_latest_review="$(jq -c --arg app_id "$review_yeti_app_id" '
+  [.check_runs[]
+   | select(.name == "Review Yeti")
+   | select((.app.id | tostring) == $app_id)] |
+  sort_by(.id) | last // {}' <<<"$pr_check_runs")"
+pr_head_status="$(jq -r '.status // empty' <<<"$pr_latest_review")"
+pr_head_conclusion="$(jq -r '.conclusion // empty' <<<"$pr_latest_review")"
+
+if [[ "$pr_head_status" == completed && "$pr_head_conclusion" == success ]]; then
+  green_review_sha="$pr_head"
+  green_review_check_id="$(jq -r '.id // empty' <<<"$pr_latest_review")"
+elif [[ -n "$pr_merged" ]] && ! jq -e --arg app_id "$review_yeti_app_id" '
+    [.check_runs[]
+     | select(.name == "Review Yeti")
+     | select((.app.id | tostring) == $app_id)] | length > 0
+  ' <<<"$pr_check_runs" >/dev/null 2>&1; then
+  # v1-promotion deadlock exit (README: "v1 promotion can deadlock on a merged
+  # PR"): the DOKS worker publishes the raw App-owned check only while the PR
+  # is OPEN -- a merged head refuses repository_dispatch with "PR is not
+  # open" -- so a merge whose head check never published could never be
+  # promoted and the channel froze on a stale-but-healthy commit. The merge
+  # commit itself is centrally validated, so walk the PR commits newest ->
+  # oldest for the newest completed App-owned successful Review Yeti check.
+  # Exact-head is preserved for OPEN PRs (a present-but-red head check still
+  # takes the require_success path below, never the walk). A merged PR with no
+  # successful review on ANY commit still refuses.
+  pr_commits="$(gh api "repos/${repository}/pulls/${pr_number}/commits?per_page=100")"
+  walked_sha=""
+  while read -r commit_sha; do
+    [[ "$commit_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+    walked_runs="$(gh api "repos/${repository}/commits/${commit_sha}/check-runs?filter=all&per_page=100" 2>/dev/null)" || continue
+    if jq -e --arg app_id "$review_yeti_app_id" '
+      [.check_runs[]
+       | select(.name == "Review Yeti")
+       | select((.app.id | tostring) == $app_id)
+       | select(.status == "completed" and .conclusion == "success")] | length > 0
+    ' <<<"$walked_runs" >/dev/null 2>&1; then
+      walked_sha="$commit_sha"
+      break
+    fi
+  done < <(jq -r '.[] | (.[]?) | .sha' <<<"$pr_commits")
+  if [[ -n "$walked_sha" ]]; then
+    walked_runs="$(gh api "repos/${repository}/commits/${walked_sha}/check-runs?filter=all&per_page=100")"
+    green_review_check_id="$(jq -r --arg app_id "$review_yeti_app_id" '
+      [.check_runs[]
+       | select(.name == "Review Yeti")
+       | select((.app.id | tostring) == $app_id)
+       | select(.status == "completed" and .conclusion == "success")]
+      | sort_by(.id) | last | .id' <<<"$walked_runs")"
+    green_review_sha="$walked_sha"
+    green_review_origin="earlier-pr-commit"
+    echo "PR head ${pr_head} has no completed App-owned Review Yeti check; using the newest green review on earlier PR commit ${walked_sha}."
+  else
+    echo "::error::Required central check did not pass for PR #${pr_number} head ${pr_head}: Review Yeti (no successful App-owned review found on any PR commit; refusing to promote an unreviewed merge)."
+    exit 1
+  fi
+else
+  require_success "$pr_check_runs" 'Review Yeti' "PR #${pr_number} head ${pr_head}" \
+    "repos/${repository}/commits/${pr_head}/check-runs?filter=all&per_page=100" \
+    "$review_yeti_app_id"
+  green_review_sha="$pr_head"
+  green_review_check_id="$required_check_id"
+fi
+
+green_review_origin="${green_review_origin}"
 
 [[ "$green_review_check_id" =~ ^[0-9]+$ ]] || {
   echo "::error::Review Yeti evidence has no immutable check-run id."
@@ -178,10 +243,11 @@ validation_payload="$(jq -cn \
   --argjson pr_number "$pr_number" \
   --arg pr_head_sha "$pr_head" \
   --arg review_sha "$green_review_sha" \
+  --arg review_origin "$green_review_origin" \
   --argjson review_app_id "$review_yeti_app_id" \
   --argjson validate_check_run_id "$validate_check_id" \
   --argjson review_check_run_id "$green_review_check_id" \
-  '{repository:$repository,source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha,review_sha:$review_sha,review_app_id:$review_app_id,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id}')"
+  '{repository:$repository,source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha,review_sha:$review_sha,review_origin:$review_origin,review_app_id:$review_app_id,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id}')"
 
 sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -210,6 +276,7 @@ prepare_receipt() {
     --argjson pr_number "$pr_number" \
     --arg pr_head_sha "$pr_head" \
     --arg review_sha "$green_review_sha" \
+    --arg review_origin "$green_review_origin" \
     --argjson review_app_id "$review_yeti_app_id" \
     --argjson validate_check_run_id "$validate_check_id" \
     --argjson review_check_run_id "$green_review_check_id" \
@@ -219,7 +286,7 @@ prepare_receipt() {
     --arg new_v1_sha "$SOURCE_SHA" \
     --arg result "$result" \
     --argjson write_performed "$write_performed" \
-    '{schema:"exampleorg.review-yeti-v1-promotion-receipt.v1",actor:$actor,promoted_at:$promoted_at,repository:$repository,release:{source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha},validation:{review_sha:$review_sha,review_app_id:$review_app_id,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id,digest:$validation_digest},refs:{expected_old_v1_sha:$expected_old_v1_sha,observed_old_v1_sha:$observed_old_v1_sha,new_v1_sha:$new_v1_sha},rollback:{strategy:"create-reviewed-revert-on-main-then-promote",baseline_sha:$observed_old_v1_sha,direct_ref_rewind_allowed:false},result:$result,write_performed:$write_performed}' \
+    '{schema:"exampleorg.review-yeti-v1-promotion-receipt.v1",actor:$actor,promoted_at:$promoted_at,repository:$repository,release:{source_sha:$source_sha,pr_number:$pr_number,pr_head_sha:$pr_head_sha},validation:{review_sha:$review_sha,review_origin:$review_origin,review_app_id:$review_app_id,validate_check_run_id:$validate_check_run_id,review_check_run_id:$review_check_run_id,digest:$validation_digest},refs:{expected_old_v1_sha:$expected_old_v1_sha,observed_old_v1_sha:$observed_old_v1_sha,new_v1_sha:$new_v1_sha},rollback:{strategy:"create-reviewed-revert-on-main-then-promote",baseline_sha:$observed_old_v1_sha,direct_ref_rewind_allowed:false},result:$result,write_performed:$write_performed}' \
     >"$prepared_receipt_tmp"
 }
 
