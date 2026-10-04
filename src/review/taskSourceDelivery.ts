@@ -98,6 +98,7 @@ export class TaskSourceDelivery {
     if (rawOutput !== deliveredOutput) return;
     let page: any;
     try { page = JSON.parse(rawOutput); } catch { return; }
+    if (!page || typeof page !== 'object' || Array.isArray(page)) return;
     const patch = this.patches.get(page.path);
     if (patch === undefined || page.status !== 'ok' || page.pageComplete !== true
       || page.offsetUnit !== 'utf16-code-units' || !/^[a-f0-9]{64}$/u.test(page.digest)
@@ -129,7 +130,7 @@ export class TaskSourceDelivery {
       }
       file.ranges = merged;
     }
-    const contextDigest = digest(JSON.stringify(text));
+    const contextDigest = digest(JSON.stringify(messages));
     if (!this.receipt.contextDigests.includes(contextDigest)) this.receipt.contextDigests.push(contextDigest);
     this.receipt.complete = this.receipt.files.every(file => file.patchDigest !== null && file.totalChars !== null
       && (file.totalChars === 0 ? file.inline : file.ranges.length === 1 && file.ranges[0][0] === 0 && file.ranges[0][1] === file.totalChars));

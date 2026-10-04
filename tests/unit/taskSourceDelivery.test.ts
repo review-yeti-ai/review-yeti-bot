@@ -36,6 +36,14 @@ describe('source delivery receipts', () => {
     expect(validateTaskSourceReceipt(receipt,binding)).toEqual(receipt);
   });
 
+  it('rejects malformed page envelopes without changing or certifying delivery', () => {
+    const delivery=tracker();
+    for(const output of ['null','true','[]','"text"','{']) {
+      expect(() => delivery.stageDiffPage(output,output,'bad page')).not.toThrow();
+      expect(delivery.acknowledgeRequest(messages('bad page')).complete).toBe(false);
+    }
+  });
+
   it('does not count queued pages, clipped pages, or pages removed before delivery', () => {
     const delivery=tracker();
     const output=page(0,10);
