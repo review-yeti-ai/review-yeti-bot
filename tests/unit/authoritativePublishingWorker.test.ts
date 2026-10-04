@@ -38,6 +38,8 @@ import {
   MAX_INCOMPLETE_P2_RECOVERY_BYTES,
 } from '../../src/review/incompleteP2Recovery';
 import { disputedFindingRecheckDigest } from '../../src/review/disputedFindingRecheck';
+import { createFindingThreadsHandler } from '../../src/api/findingThreadsRoute';
+import { HttpFindingThreadsPublisher } from '../../src/review/findingThreadsHttp';
 
 const HEAD = 'a'.repeat(40);
 const BASE = 'b'.repeat(40);
@@ -121,6 +123,147 @@ function cleanResult(): WorkerReviewResult {
       telemetry: { model: transport.model, durationMs: 25 } })),
     coverageComplete: true, quorumSatisfied: true };
 }
+
+/** Synthetic DB/GitHub I/O only: the worker uses the real HTTP adapter, route,
+ * active-execution authorization and finding-thread serializer. No server or provider runs. */
+function threadPublicationFixture(options: { blocking?: boolean; publishFails?: boolean } = {}) {
+  const f = fixture();
+  const order: string[] = [];
+  const statuses: number[] = [];
+  let runStatus = 'running';
+  let githubReads = 0;
+  const finding = { severity: 'P2' as const, path: 'src/a.ts', line: 1,
+    title: 'Required local fixture', body: 'Preserve the required finding independently of thread delivery.' };
+  if (options.blocking !== false) {
+    f.panel.personas[0].decision = 'FINDINGS';
+    f.panel.personas[0].findings = [finding];
+  }
+  const githubFetch = vi.fn<typeof fetch>(async (url) => {
+    if (String(url) === 'https://api.github.com/graphql') {
+      githubReads += 1;
+      if (options.publishFails && options.blocking === false && githubReads > 1) {
+        return new Response('{}', { status: 503 });
+      }
+      return new Response(JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: {
+        pageInfo: { hasNextPage: false }, nodes: [],
+      } } } } }));
+    }
+    expect(String(url)).toBe('https://api.github.com/repos/example/project/pulls/42/comments');
+    return new Response('{}', { status: options.publishFails ? 503 : 201 });
+  });
+  const transportFor = vi.fn(async () => ({ token: 'ghs_synthetic_thread_service',
+    botLogin: 'review-app[bot]', fetchImplementation: githubFetch }));
+  const handler = createFindingThreadsHandler({
+    db: { query: async (sql, values) => {
+      if (sql.includes('SELECT runs.status')) {
+        expect(values).toEqual([f.env.REVIEW_RUN_ID, 2]);
+        return { rows: [{ status: runStatus, worker_token_digest: sha256(TOKEN) }] };
+      }
+      expect(sql).toContain('SELECT owner, repo, pr_number, head_sha');
+      expect(values).toEqual([f.env.REVIEW_RUN_ID]);
+      return { rows: [{ owner: 'example', repo: 'project', pr_number: 42, head_sha: HEAD }] };
+    } }, transportFor,
+  });
+  const threadFetch = vi.fn<typeof fetch>(async (url, init) => {
+    expect(String(url)).toBe(ENDPOINT.replace(/\/completion$/u, '/finding-threads'));
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body));
+    order.push(body.version === 'FindingThreadsRead.v1' ? 'thread-read' : 'thread-publish');
+    let status = 200;
+    let payload: unknown;
+    const response = {
+      status: (value: number) => { status = value; return response; },
+      json: (value: unknown) => { payload = value; return response; },
+    };
+    await handler({ body, header: (name: string) => new Headers(init?.headers).get(name) } as never,
+      response as never);
+    statuses.push(status);
+    return new Response(JSON.stringify(payload), { status });
+  });
+  const threads = new HttpFindingThreadsPublisher({ token: TOKEN, completionEndpoint: ENDPOINT,
+    runId: f.env.REVIEW_RUN_ID!, executionAttempt: 2, fetchImplementation: threadFetch });
+  f.deps.findingThreadReader = async () => threads.read(HEAD);
+  f.deps.findingThreads = threads;
+  const decisions: ReturnType<typeof evaluateReviewGate>[] = [];
+  f.reportReviewResult.mockImplementation(async (event) => {
+    const { version: _version, result: _result, ...expectedCoordinates } =
+      parseWorkerReviewCompletion(expectedEvent(f, cleanResult()));
+    const derived = deriveCanonicalWorkerReviewEvidence(event, {
+      expectedCoordinates, expectedPersonaIds: f.prepared.expectedPersonaIds,
+      changedFiles: parseChangedFiles(DIFF).files, coverageComplete: true, quorumSatisfied: true,
+    });
+    expect(derived.valid).toBe(true);
+    if (!derived.valid) throw new Error('Invalid synthetic completion evidence');
+    const candidate = { repositoryId: 123, prNumber: 42, headSha: HEAD, baseSha: BASE,
+      policyDigest: f.prepared.policy.effectivePolicyDigest };
+    const decision = evaluateReviewGate({ candidate, current: { ...candidate, open: true, draft: false },
+      evidence: derived.evidence });
+    decisions.push(decision);
+    // Model recordWorkerResult's committed terminal status before acknowledging completion.
+    runStatus = decision.status === 'success' ? 'succeeded' : 'failed';
+    order.push('completion');
+  });
+  f.checkClient.completeCheck.mockImplementation(async () => { order.push('raw-check'); });
+  return { f, order, statuses, threads, finding, decisions, githubFetch, transportFor };
+}
+
+describe('finding-thread publication before authoritative retirement', () => {
+  it('publishes through the active route before terminal completion, then rejects the retired execution', async () => {
+    const t = threadPublicationFixture();
+    const receipt = await runPublishingReviewWorker(t.f.env, t.f.deps);
+    expect(t.statuses).toEqual([200, 200]);
+    expect(t.order).toEqual(['thread-read', 'thread-publish', 'completion', 'raw-check']);
+    expect(t.githubFetch.mock.calls.filter(([url]) => String(url).endsWith('/comments'))).toHaveLength(1);
+    expect(t.decisions).toEqual([expect.objectContaining({ status: 'failure', eligible: false })]);
+    expect(receipt).toMatchObject({ verdict: 'SHIP', conclusion: 'failure', findingCount: 1 });
+    expect(t.f.reportReviewResult).toHaveBeenCalledOnce();
+    expect(t.f.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      conclusion: 'failure', title: 'Review Yeti: FIX_FIRST (1 required P2)',
+    }));
+    const mintedBefore = t.transportFor.mock.calls.length;
+    await expect(t.threads.publish({ headSha: HEAD, publish: [], reported: [] }))
+      .rejects.toThrow('Finding threads could not be published');
+    expect(t.statuses.at(-1)).toBe(403);
+    expect(t.transportFor).toHaveBeenCalledTimes(mintedBefore);
+    expect(t.f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('thread delivery failure preserves the exact verdict (blocking=%s)', async (blocking) => {
+    const t = threadPublicationFixture({ blocking, publishFails: true });
+    const receipt = await runPublishingReviewWorker(t.f.env, t.f.deps);
+    expect(t.statuses.at(-1)).toBe(503);
+    expect(t.order).toEqual(['thread-read', 'thread-publish', 'completion', 'raw-check']);
+    expect(t.f.reportReviewResult).toHaveBeenCalledOnce();
+    expect(t.f.checkClient.completeCheck).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      conclusion: blocking ? 'failure' : 'success',
+    }));
+    expect(t.decisions).toEqual([expect.objectContaining({
+      status: blocking ? 'failure' : 'success', eligible: !blocking,
+    })]);
+    expect(receipt).toMatchObject({ verdict: 'SHIP', conclusion: blocking ? 'failure' : 'success' });
+    expect(t.f.fetch).not.toHaveBeenCalled();
+  });
+
+  it('retains legacy raw-check, thread, evidence and success callback ordering', async () => {
+    const t = threadPublicationFixture({ blocking: false });
+    delete t.f.env.REVIEW_AUTHORITATIVE_GATE;
+    delete t.f.env.REVIEW_PREPARED_CONFIG_JSON;
+    delete t.f.deps.reviewCompletion;
+    const evidence = vi.fn(async () => { t.order.push('evidence'); });
+    const success = vi.fn(async () => { t.order.push('success'); });
+    t.f.deps.completion = { reportTerminalFailure: t.f.legacyFailure,
+      reportReviewEvidence: evidence, reportTerminalSuccess: success };
+    await runPublishingReviewWorker(t.f.env, t.f.deps);
+    expect(t.order).toEqual(['thread-read', 'raw-check', 'thread-publish', 'evidence', 'success']);
+    expect(t.statuses).toEqual([200, 200]);
+    expect(t.f.reportReviewResult).not.toHaveBeenCalled();
+    expect(t.f.checkClient.completeCheck).toHaveBeenCalledOnce();
+    expect(evidence).toHaveBeenCalledOnce();
+    expect(success).toHaveBeenCalledOnce();
+    expect(t.f.legacyFailure).not.toHaveBeenCalled();
+    expect(t.f.fetch).not.toHaveBeenCalled();
+  });
+});
 
 function retainedContext(f: ReturnType<typeof fixture>, overrides: Record<string, unknown> = {}) {
   const source = { executionAttempt: 1, workerResultDigest: 'd'.repeat(64), workerCheckId: 5001,

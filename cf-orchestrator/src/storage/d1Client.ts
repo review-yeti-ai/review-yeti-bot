@@ -1,9 +1,8 @@
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META_SLUG } from '../sampleRepositories.js';
 /**
  * Cloudflare D1 Client & Persistence Engine for Review Yeti
  * Provides relational persistence for reviews, findings, repositories, and analytics.
  */
-
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../sampleRepositories.js';
 
 export interface RepositoryRecord {
   id: string;
@@ -89,7 +88,7 @@ class InMemoryStore {
       {
         id: SAMPLE_REPO_CDR,
         owner: SAMPLE_REPO_CDR.split('/')[0],
-        repo: SAMPLE_REPO_CDR.split('/')[1],
+        repo: SAMPLE_REPO_CDR_SLUG,
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -103,7 +102,7 @@ class InMemoryStore {
       {
         id: SAMPLE_REPO_META,
         owner: SAMPLE_REPO_META.split('/')[0],
-        repo: SAMPLE_REPO_META.split('/')[1],
+        repo: SAMPLE_REPO_META_SLUG,
         defaultBranch: 'main',
         automationEnabled: true,
         generateFlowchart: true,
@@ -822,4 +821,3 @@ export async function saveAdrConstraintToDb(db: any, adr: ADRConstraintRecord): 
     // Ignore DB error
   }
 }
-

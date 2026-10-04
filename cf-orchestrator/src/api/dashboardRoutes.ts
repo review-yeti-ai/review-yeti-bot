@@ -1,4 +1,5 @@
 import type { Env } from '../types.js';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG } from '../sampleRepositories.js';
 import {
   getAnalyticsDashboardTool,
   getRuntimeMetricsTool,
@@ -18,7 +19,6 @@ import {
   fetchAdrConstraintsFromDb,
 } from '../storage/d1Client.js';
 import { fetchLivePullRequests, getInstallationToken, fetchLivePullRequestDiff } from '../auth/githubEdgeAuth.js';
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '../sampleRepositories.js';
 
 
 function extractToolJson<T>(result: ToolResult): T | null {
@@ -1859,7 +1859,7 @@ export async function handleDashboardApi(
   if (path === '/api/live/diff') {
     const jobId = url.searchParams.get('jobId') || 'run_live_reviewyeti_pr1282';
     const owner = url.searchParams.get('owner') || 'reviewyeti-ai';
-    const repo = url.searchParams.get('repo') || 'review-yeti-bot';
+    const repo = url.searchParams.get('repo') || (jobId.includes(SAMPLE_REPO_CDR_SLUG) ? SAMPLE_REPO_CDR_SLUG : 'review-yeti-bot');
     const prNumberMatch = jobId.match(/pr(\d+)/i) || (url.searchParams.get('prNumber') ? url.searchParams.get('prNumber')?.match(/(\d+)/) : null);
     const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : 1282;
 

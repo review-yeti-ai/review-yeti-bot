@@ -186,10 +186,11 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
           tasks={[{
             id: 'task_sec_boundary',
             dimension: 'security',
-            description: 'Explicit security task fixture',
+            description: 'Enforce security floor: secret redaction, credential scanning, and edge boundary fences',
+            paths: ['src/gateway/edgeCompactionEngine.ts'],
             priority: 1,
-            status: 'RUNNING',
-            progress: 50,
+            status: 'COMPLETED',
+            progress: 100,
             findingsCount: 0,
           }]}
           activeTurnByTask={activeTurns}

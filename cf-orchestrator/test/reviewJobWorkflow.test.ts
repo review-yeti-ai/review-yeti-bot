@@ -104,20 +104,26 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.ok(executedSteps.includes('cleanup-and-release'));
   });
 
-  it('uses the explicit deployment-owned dispatch status origin', async () => {
-    const env = { ...createMockEnv(), DISPATCH_STATUS_BASE_URL: 'https://operator.example.com' };
-    const runner = new MockContainerRunner();
-    const workflow = new ReviewJobWorkflow(env, runner);
-    const mockStep = {
-      async do(_name: string, arg2: any, arg3?: any) {
-        return (typeof arg2 === 'function' ? arg2 : arg3)();
-      },
-      async sleep() {},
-    };
-    const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-status-origin' } }, mockStep as any);
-    assert.equal(result.status, 'succeeded');
-    assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, 'https://operator.example.com/api/dispatch/runs/run-status-origin/status');
-  });
+  for (const { name, settings, expectedOrigin } of [
+    { name: 'dispatch setting', settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com' }, expectedOrigin: 'https://operator.example.com' },
+    { name: 'operator compatibility setting', settings: { OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com' }, expectedOrigin: 'https://legacy.example.com' },
+    { name: 'dispatch setting when both are configured', settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com', OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com' }, expectedOrigin: 'https://operator.example.com' },
+  ]) {
+    it(`uses the explicit deployment-owned ${name}`, async () => {
+      const env = { ...createMockEnv(), ...settings };
+      const runner = new MockContainerRunner();
+      const workflow = new ReviewJobWorkflow(env, runner);
+      const mockStep = {
+        async do(_name: string, arg2: any, arg3?: any) {
+          return (typeof arg2 === 'function' ? arg2 : arg3)();
+        },
+        async sleep() {},
+      };
+      const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-status-origin' } }, mockStep as any);
+      assert.equal(result.status, 'succeeded');
+      assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, `${expectedOrigin}/api/dispatch/runs/run-status-origin/status`);
+    });
+  }
 
   it('guarantees repo slot release in finally block even if container dispatch throws', async () => {
     const env = createMockEnv();
@@ -452,4 +458,3 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
   });
 });
-
