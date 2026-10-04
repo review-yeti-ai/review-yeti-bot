@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { taskSourceReceiptSchema, type TaskSourceReceipt } from './taskSourceDelivery';
 import { MAX_DISPUTE_RECHECKS_PER_REVIEW } from './disputedFindingRecheckLimits';
 import {
   MAX_CHANGED_FILES,
@@ -54,6 +55,7 @@ const findingSchema = z.object({
 const completedTaskSchema = z.object({
   id: z.string().regex(TASK_ID_PATTERN),
   findings: z.array(findingSchema).max(400),
+  sourceDelivery: taskSourceReceiptSchema.optional(),
 }).strict();
 
 const checkpointSchema = z.object({
@@ -92,7 +94,7 @@ const checkpointSchema = z.object({
 
 export type ReviewExecutionCheckpoint = Omit<z.output<typeof checkpointSchema>, 'plan' | 'completedTasks'> & {
   plan: ReviewTask[];
-  completedTasks: Array<{ id: string; findings: PanelFinding[] }>;
+  completedTasks: Array<{ id: string; findings: PanelFinding[]; sourceDelivery?: TaskSourceReceipt }>;
 };
 
 export function parseReviewExecutionCheckpoint(input: unknown): ReviewExecutionCheckpoint {

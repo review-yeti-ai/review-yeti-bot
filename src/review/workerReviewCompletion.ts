@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { taskSourceReceiptSchema } from './taskSourceDelivery';
 import { evaluateFindingConvergence, type PriorFindingThread } from './findingConvergence';
 import { DELETION_CLASSIFICATION_VERSION } from './deletionClassification';
 import { computeAppVerdict } from './reviewAdapters';
@@ -219,6 +220,7 @@ export function buildPersonaTelemetryPayload(lane: {
 }
 
 const personaSchema = z.object({
+  sourceDelivery: taskSourceReceiptSchema.optional(),
   id: z.string().regex(TASK_ID_PATTERN),
   decision: z.enum(['APPROVE', 'FINDINGS', 'ERROR']),
   status: z.enum(['COMPLETE', 'ERROR']).optional(),

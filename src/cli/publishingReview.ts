@@ -111,6 +111,7 @@ import {
 } from '../review/incrementalReview';
 import { createIncrementalCompareReader } from '../github/incrementalCompareReader';
 import { loadReviewBudgetInput, renderReviewBudgetSummary, reviewBudgetEnabledFor } from '../review/reviewBudget';
+import { renderTaskSourceDelivery } from '../review/taskSourceDelivery';
 import { summarizeReviewBudgetSavings } from '../telemetry/reviewBudgetSavings';
 import {
   buildVerdictCacheRecord, planVerdictCache, renderVerdictCacheSummary, verdictCacheEnabledFor, verdictCacheLaneKeys,
@@ -2603,6 +2604,7 @@ export async function runPublishingReviewWorker(
           ...renderDiffShrinkSummary(diffShrinkDisclosure),
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
+          ...renderTaskSourceDelivery(panelResult),
           // REL-1085: every file served from the verdict cache, or why none was.
           ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
           ...renderMapReduceSummary(panelResult.mapReduce),
@@ -2640,6 +2642,7 @@ export async function runPublishingReviewWorker(
           // REL-1084: every carried-forward file, or why the review stayed full.
           ...renderIncrementalSummary(incrementalDisclosure, incrementalPlan),
           ...renderReviewBudgetSummary(panelResult.reviewBudget),
+          ...renderTaskSourceDelivery(panelResult),
           // REL-1085: every file served from the verdict cache, or why none was.
           ...renderVerdictCacheSummary(verdictCacheDisclosure, verdictCachePlan, verdictCacheRecord),
           ...renderMapReduceSummary(panelResult.mapReduce),
@@ -2727,6 +2730,7 @@ export async function runPublishingReviewWorker(
               .filter(([key, value]) => findingKeys.has(key) && value !== undefined))];
           }),
           ...(telemetry ? { telemetry } : {}),
+          ...(persona.sourceDelivery ? { sourceDelivery: persona.sourceDelivery } : {}),
         };
       });
       // Same coded-reason-first precedence as the published check's `failedLanes` above: this is

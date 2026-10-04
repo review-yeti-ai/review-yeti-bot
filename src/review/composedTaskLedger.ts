@@ -6,6 +6,7 @@ import { MAX_TASKS_HARD_CAP, MAX_TASK_TEXT_LENGTH, TASK_DIMENSIONS, TASK_ID_PATT
 import { MAX_COMPLETION_BYTES, MAX_TURN_USAGES, workerReviewCompletionSchema } from './workerReviewCompletion';
 import { MAX_CHANGED_FILES, MAX_CHANGED_FILE_PATCH_BYTES, MAX_PATH_CHARACTERS } from './reviewEvidenceLimits';
 import type { ComposedTaskFailureDiagnostics } from '../panel/types';
+import { taskSourceReceiptSchema, validateTaskSourceReceipt } from './taskSourceDelivery';
 
 /** Retention only. No cursor, approval, provider reservation or budget refund. */
 export const COMPOSED_TASK_LEDGER_VERSION = 'ComposedTaskLedger.v1' as const;
@@ -74,6 +75,7 @@ const failureReasons: Record<ComposedTaskFailureDiagnostics['reason'], true> = {
   total_turn_budget_exhausted: true, task_turn_budget_exhausted: true, non_json_task_result: true,
   tool_requested_during_finalization: true, task_id_mismatch: true, nonce_mismatch: true,
   invalid_status: true, invalid_findings: true, invalid_result_fields: true,
+  source_not_delivered: true,
 };
 const diagnosticsSchema: z.ZodType<ComposedTaskFailureDiagnostics> = z.object({
   reason: z.custom<ComposedTaskFailureDiagnostics['reason']>(value => typeof value === 'string'
@@ -83,7 +85,8 @@ const diagnosticsSchema: z.ZodType<ComposedTaskFailureDiagnostics> = z.object({
   lastToolOutcome: z.enum(['none', 'returned', 'requested_after_finalization']),
 }).strict();
 const outcomeBase = { version: z.literal(COMPOSED_TASK_OUTCOME_VERSION).default(COMPOSED_TASK_OUTCOME_VERSION),
-  planDigest: digest, taskId: z.string().regex(TASK_ID_PATTERN), usage: usageSchema };
+  planDigest: digest, taskId: z.string().regex(TASK_ID_PATTERN), usage: usageSchema,
+  sourceDelivery: taskSourceReceiptSchema.optional() };
 const outcomeSchema = z.discriminatedUnion('status', [
   z.object({ ...outcomeBase, status: z.literal('complete'), findings: findingsSchema }).strict(),
   z.object({ ...outcomeBase, status: z.literal('blocked') }).strict(),
@@ -181,6 +184,10 @@ export function createComposedTaskOutcome(plan: ComposedTaskRecord<ComposedTaskP
     const task = plan.payload.tasks.find(candidate => candidate.id === outcome.taskId);
     if (!task || outcome.planDigest !== plan.digest) throw new Error();
     if (outcome.status === 'complete') {
+      if (outcome.sourceDelivery && !validateTaskSourceReceipt(outcome.sourceDelivery, {
+        taskId:task.id, paths:task.paths, files:changedFiles, headSha:plan.payload.identity.headSha,
+        baseSha:plan.payload.identity.baseSha,
+      })) throw new Error();
       if (outcome.findings.some(finding => !task.paths.includes(finding.path))) throw new Error();
       const normalized = validateReviewFindings(outcome.findings, [...changedFiles]);
       if (!normalized.valid || canonicalJson(normalized.findings) !== canonicalJson(outcome.findings)) throw new Error();

@@ -60,6 +60,8 @@ export interface ReviewBudgetLaneDisclosure {
 }
 
 export interface ReviewBudgetDisclosure {
+  /** Composed PLAN context is distinct from task WORK source delivery. */
+  phase?: 'plan';
   /** What ordered the packing. Jev risk is not used until it is calibrated (plan section 5, item 6). */
   ordering: 'deterministic-category';
   requestCapBytes: number;
