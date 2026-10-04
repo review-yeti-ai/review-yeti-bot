@@ -597,8 +597,14 @@ describe('Dashboard log identity deduplication', () => {
           bind(...values: unknown[]) {
             return {
               async all() {
-                // The real analytics tool requests 100 rows; the D1 log feed requests 50.
-                return { results: sql.includes('FROM reviews') ? values.at(-1) === 100 ? activityRows : storedRows : [] };
+                // Analytics filters reviews by repository; the authoritative log query is unfiltered.
+                // These semantic query shapes are independent of either caller's row limit.
+                if (!sql.includes('FROM reviews')) return { results: [] };
+                if (/\bWHERE\s+repo\s*=\s*\?/.test(sql)) {
+                  assert.equal(values[0], SAMPLE_REPO_CDR);
+                  return { results: activityRows };
+                }
+                return { results: storedRows };
               },
             };
           },

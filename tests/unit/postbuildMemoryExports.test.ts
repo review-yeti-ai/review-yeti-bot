@@ -6,7 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 const fixtures: string[] = [];
 const repositoryRoot = resolve(__dirname, '../..');
-const aliases = ['memory.html', 'memory.txt', 'dashboard/memory', 'dashboard/memory.html', 'dashboard/memory.txt'];
+const routes = ['memory', 'onboarding'];
+const aliases = routes.flatMap(route => [`${route}.html`, `${route}.txt`, `dashboard/${route}`, `dashboard/${route}.html`, `dashboard/${route}.txt`]);
 
 function writeFixture(root: string, path: string, content: string) {
   const target = join(root, path);
@@ -18,7 +19,7 @@ afterEach(() => {
   for (const fixture of fixtures.splice(0)) rmSync(fixture, { recursive: true, force: true });
 });
 
-describe('memory static export regeneration', () => {
+describe('memory and onboarding static export regeneration', () => {
   it.each([false, true])('executes production frontend wiring and propagates postbuild failure=%s', (failPostbuild) => {
     const manifest = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8'));
     const fixture = mkdtempSync(join(tmpdir(), 'yeti-frontend-wiring-'));
@@ -36,6 +37,8 @@ if (process.argv[2] !== 'build') process.exit(2);
 fs.mkdirSync('out/dashboard', { recursive: true });
 fs.writeFileSync('out/memory.html', 'fresh production wiring');
 fs.writeFileSync('out/dashboard/memory.html', 'fresh production wiring');
+fs.writeFileSync('out/onboarding.html', 'fresh production wiring');
+fs.writeFileSync('out/dashboard/onboarding.html', 'fresh production wiring');
 if (process.env.FAIL_POSTBUILD === 'yes') fs.writeFileSync('dist', 'not a directory');
 `);
     // Do not consult unrelated workstation build processes in this fixture.
@@ -75,10 +78,10 @@ if (process.env.FAIL_POSTBUILD === 'yes') fs.writeFileSync('dist', 'not a direct
       const script = `_next/static/chunks/memory-${revision}.js`;
       const style = `_next/static/css/memory-${revision}.css`;
       const assets = `<link rel="stylesheet" href="/${style}"><script src="/${script}"></script>`;
-      const rootPage = `<!doctype html><html><body>memory-${revision}${assets}</body></html>`;
-      const dashboardPage = `<!doctype html><html><body>dashboard-memory-${revision}${assets}</body></html>`;
-      writeFixture(fixture, `${source}/memory.html`, rootPage);
-      writeFixture(fixture, `${source}/dashboard/memory.html`, dashboardPage);
+      for (const route of routes) {
+        writeFixture(fixture, `${source}/${route}.html`, `<!doctype html><html><body>${route}-${revision}${assets}</body></html>`);
+        writeFixture(fixture, `${source}/dashboard/${route}.html`, `<!doctype html><html><body>dashboard-${route}-${revision}${assets}</body></html>`);
+      }
       const assetRoot = source === 'out' ? 'out/_next/static' : '.next/static';
       writeFixture(fixture, `${assetRoot}/chunks/memory-${revision}.js`, `script-${revision}`);
       writeFixture(fixture, `${assetRoot}/css/memory-${revision}.css`, `style-${revision}`);
@@ -88,7 +91,9 @@ if (process.env.FAIL_POSTBUILD === 'yes') fs.writeFileSync('dist', 'not a direct
         stdio: 'pipe',
       });
       for (const alias of aliases) {
-        const expected = alias.startsWith('dashboard/') ? dashboardPage : rootPage;
+        const route = alias.includes('onboarding') ? 'onboarding' : 'memory';
+        const page = alias.startsWith('dashboard/') ? `dashboard-${route}` : route;
+        const expected = `<!doctype html><html><body>${page}-${revision}${assets}</body></html>`;
         expect(readFileSync(join(fixture, 'public', alias), 'utf8')).toBe(expected);
         expect(readFileSync(join(fixture, 'dist/public', alias), 'utf8')).toBe(expected);
       }
