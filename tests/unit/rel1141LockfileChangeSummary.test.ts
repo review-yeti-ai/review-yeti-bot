@@ -238,7 +238,7 @@ describe('REL-1334: Elixir mix.lock', () => {
     // two may legitimately differ. That divergence on an UNCHANGED context line
     // is not a corruption signal — only a CHANGED entry keying to a different
     // package is. Refusing the whole summary over it blocked a real review
-    // (cisco-cdr#5028) whose lock context carried exactly these entries.
+    // (the customer dependency-CVE PR) whose lock context carried exactly these entries.
     const context = ` "chatterbox": {:hex, :ts_chatterbox, "0.15.1", "aa", [:mix], [], "hexpm", "bb"},
  "hpack": {:hex, :hpack_erl, "0.3.0", "cc", [:rebar3], [], "hexpm", "dd"},`;
     const text = ok(summarizeLockfileChange('mix.lock', [
