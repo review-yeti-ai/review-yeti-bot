@@ -20,8 +20,8 @@ export const OMNIROUTE_PROVIDERS = [
   { id: 'doppler', name: 'Doppler Secret Vault', defaultBaseUrl: 'https://api.doppler.com/v3' },
   { id: 'ollama', name: 'Ollama Local Engine', defaultBaseUrl: 'http://localhost:11434/v1' },
   { id: 'custom-openai', name: 'Custom OpenAI-Compatible', defaultBaseUrl: 'https://api.custom-ai.internal/v1' },
-  { id: 'codex', name: 'Codex AI Engine', defaultBaseUrl: 'https://codex.calltelemetry.com/v1' },
-  { id: 'agy', name: 'AGY Thinking Engine', defaultBaseUrl: 'https://agy.calltelemetry.com/v1' },
+  { id: 'codex', name: 'Codex AI Engine', defaultBaseUrl: 'https://codex.example.com/v1' },
+  { id: 'agy', name: 'AGY Thinking Engine', defaultBaseUrl: 'https://agy.example.com/v1' },
 ];
 
 interface Step3AIProvidersProps {

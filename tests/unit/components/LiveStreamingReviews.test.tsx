@@ -183,6 +183,16 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
 
       render(
         <SwarmTaskMatrix
+          tasks={[{
+            id: 'task_sec_boundary',
+            dimension: 'security',
+            description: 'Enforce security floor: secret redaction, credential scanning, and edge boundary fences',
+            paths: ['src/gateway/edgeCompactionEngine.ts'],
+            priority: 1,
+            status: 'COMPLETED',
+            progress: 100,
+            findingsCount: 0,
+          }]}
           activeTurnByTask={activeTurns}
         />
       );

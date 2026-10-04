@@ -148,7 +148,7 @@ export async function resolveReviewDiff(jobId: string): Promise<ReviewDiffRespon
     }
     // Synthetic or test review fallback (strictly gated behind test environment)
     if ((cleanJobId.startsWith('job-test-') || (matchedLog as any).isSynthetic) && process.env.NODE_ENV === 'test') {
-      return generateSyntheticDiff(cleanJobId, matchedLog.repo || 'calltelemetry/cisco-cdr', matchedLog.prNumber || 108, matchedLog.title);
+      return generateSyntheticDiff(cleanJobId, matchedLog.repo || 'example/sample-cdr', matchedLog.prNumber || 108, matchedLog.title);
     }
   }
 
@@ -225,8 +225,8 @@ export function generateSyntheticDiff(jobId: string, repo: string, prNumber: num
   ].join('\n');
 
   return parseSnapshotDiff(jobId, {
-    owner: repo.split('/')[0] || 'calltelemetry',
-    repo: repo.split('/')[1] || 'cisco-cdr',
+    owner: repo.split('/')[0] || 'example-org',
+    repo: repo.split('/')[1] || 'sample-cdr',
     prNumber,
     headSha: 'a1b2c3d4e5f678901234567890abcdef12345678',
     baseSha: '0987654321fedcba0987654321fedcba09876543',
