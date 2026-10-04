@@ -233,6 +233,24 @@ describe('REL-1334: Elixir mix.lock', () => {
       .toEqual({ ok: false, reason });
   });
 
+  it('tolerates an UNCHANGED entry whose quoted key differs from its Hex atom (legal Hex naming: chatterbox -> ts_chatterbox)', () => {
+    // mix.lock keys are the APP name; the Hex atom is the PACKAGE name, and the
+    // two may legitimately differ. That divergence on an UNCHANGED context line
+    // is not a corruption signal — only a CHANGED entry keying to a different
+    // package is. Refusing the whole summary over it blocked a real review
+    // (example-api#5028) whose lock context carried exactly these entries.
+    const context = ` "chatterbox": {:hex, :ts_chatterbox, "0.15.1", "aa", [:mix], [], "hexpm", "bb"},
+ "hpack": {:hex, :hpack_erl, "0.3.0", "cc", [:rebar3], [], "hexpm", "dd"},`;
+    const text = ok(summarizeLockfileChange('mix.lock', [
+      '@@ -3,4 +3,4 @@',
+      context,
+      '-  "grpc": {:hex, :grpc, "0.11.5", "ee", [:mix], [], "hexpm", "ff"},',
+      '+  "grpc": {:hex, :grpc, "1.0.5", "gg", [:mix], [], "hexpm", "hh"},',
+    ].join('\n')));
+    expect(text).toContain('grpc: 0.11.5 -> 1.0.5');
+    expect(text).not.toContain('declaration disagree');
+  });
+
   it('reads mix.lock and still refuses every format it cannot read', () => {
     expect(isSummarizableLockfilePath('mix.lock')).toBe(true);
     expect(isSummarizableLockfilePath('deps/MIX.LOCK')).toBe(true);
