@@ -127,6 +127,52 @@ describe('ManifestDrawer callback and submission contract', () => {
     expect(readManifest().redirect_url).toBe('https://edited.example.com/api/github/manifest-callback');
   });
 
+  it('ignores a stale resolved configuration after an explicit webhook replaces the pending load', async () => {
+    const pending = deferred<GitHubAppConfig>();
+    vi.mocked(fetchGitHubAppConfig).mockReturnValueOnce(pending.promise);
+    const { rerender } = render(<ManifestDrawer open orgName="operator-org" webhookUrl={undefined} providers={{}} personas={{}} />);
+    expect(fetchGitHubAppConfig).toHaveBeenCalledOnce();
+
+    const currentWebhook = 'https://current.example.com/deployment/hooks/github';
+    rerender(<ManifestDrawer open orgName="operator-org" webhookUrl={currentWebhook} providers={{}} personas={{}} />);
+    expect(screen.getByLabelText('Deployment Webhook URL')).toHaveValue(currentWebhook);
+    await act(async () => {
+      pending.resolve(configuration('https://stale.example.com/deployment/hooks'));
+      await pending.promise;
+    });
+
+    expect(screen.getByLabelText('Deployment Webhook URL')).toHaveValue(currentWebhook);
+    expect(readManifest().hook_attributes.url).toBe(currentWebhook);
+    expect(readManifest().redirect_url).toBe('https://current.example.com/api/github/manifest-callback');
+    expect(readManifest().callback_urls).toEqual(['https://current.example.com/api/github/manifest-callback']);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(createButton()).toBeEnabled();
+    expect(fetchGitHubAppConfig).toHaveBeenCalledOnce();
+  });
+
+  it('ignores a stale rejected configuration after an explicit webhook replaces the pending load', async () => {
+    const pending = deferred<GitHubAppConfig>();
+    vi.mocked(fetchGitHubAppConfig).mockReturnValueOnce(pending.promise);
+    const { rerender } = render(<ManifestDrawer open orgName="operator-org" webhookUrl={undefined} providers={{}} personas={{}} />);
+    expect(fetchGitHubAppConfig).toHaveBeenCalledOnce();
+
+    const currentWebhook = 'https://current.example.com/deployment/hooks/github';
+    rerender(<ManifestDrawer open orgName="operator-org" webhookUrl={currentWebhook} providers={{}} personas={{}} />);
+    expect(screen.getByLabelText('Deployment Webhook URL')).toHaveValue(currentWebhook);
+    await act(async () => {
+      pending.reject(new Error('obsolete configuration request failed'));
+      await pending.promise.catch(() => {});
+    });
+
+    expect(screen.getByLabelText('Deployment Webhook URL')).toHaveValue(currentWebhook);
+    expect(readManifest().hook_attributes.url).toBe(currentWebhook);
+    expect(readManifest().redirect_url).toBe('https://current.example.com/api/github/manifest-callback');
+    expect(readManifest().callback_urls).toEqual(['https://current.example.com/api/github/manifest-callback']);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(createButton()).toBeEnabled();
+    expect(fetchGitHubAppConfig).toHaveBeenCalledOnce();
+  });
+
   it('resolves a configured relative webhook against this deployment', async () => {
     vi.mocked(fetchGitHubAppConfig).mockResolvedValue(configuration('/configured/github-hook'));
     render(<ManifestDrawer open orgName="operator-org" providers={{}} personas={{}} />);
