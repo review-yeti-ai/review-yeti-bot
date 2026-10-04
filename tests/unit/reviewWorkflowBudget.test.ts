@@ -10,6 +10,7 @@ describe('direct Review Bot workflow budget', () => {
     );
     expect(workflow).toMatch(/\n    timeout-minutes: 25\n/u);
     expect(workflow).toContain("action-budget-ms: '1200000'");
+    expect(workflow).toContain("max-review-assignments: '120'");
     expect(workflow).not.toMatch(/\n    timeout-minutes: (?:2[6-9]|[3-9]\d|\d{3,})\n/u);
     expect(workflow).not.toContain('max-diff-chars:');
     expect(workflow).not.toContain("vars.MAX_DIFF_CHARS");
