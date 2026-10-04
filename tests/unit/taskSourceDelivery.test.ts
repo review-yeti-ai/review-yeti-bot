@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { TaskSourceDelivery, attachTaskSourceDelivery, taskSourceReceiptSchema, validateTaskSourceReceipt } from '../../src/review/taskSourceDelivery';
+import { TaskSourceDelivery, attachTaskSourceDelivery, renderTaskSourceDelivery, taskSourceReceiptSchema, validateTaskSourceReceipt } from '../../src/review/taskSourceDelivery';
 import { createComposedTaskPlan, createComposedTaskOutcome } from '../../src/review/composedTaskLedger';
 import { createComposedTaskOutcomeRetentionRequest } from '../../src/panel/composedTaskRetention';
 import { parseWorkerReviewCompletion } from '../../src/review/workerReviewCompletion';
@@ -104,6 +104,25 @@ describe('source delivery receipts', () => {
     }
     expect(validateTaskSourceReceipt(undefined,binding)).toBeNull();
     expect(taskSourceReceiptSchema.safeParse({...receipt,complete:false}).success).toBe(false);
+  });
+
+  it('reports actual delivered task counts and bounds safe disclosure output', () => {
+    const full=tracker(true).acknowledgeRequest(messages(INLINE_PREFIX));
+    const partial={...tracker().snapshot(),taskId:'missing-task'};
+    expect(renderTaskSourceDelivery({taskPlan:[{id:full.taskId}]})).toEqual([]);
+    expect(renderTaskSourceDelivery({sourceDelivery:[full]})).toEqual([]);
+    const lines=renderTaskSourceDelivery({taskPlan:[{id:full.taskId},{id:partial.taskId}],sourceDelivery:[full,partial]});
+    expect(lines[0]).toContain('1/2 assigned task(s)');
+    expect(lines[0]).toContain('source delivery complete=false');
+    expect(renderTaskSourceDelivery({taskPlan:[{id:full.taskId}],sourceDelivery:[full]})[0])
+      .toContain('source delivery complete=true');
+    const unsafe={...full,taskId:'`<source>\n'};
+    const capped=renderTaskSourceDelivery({taskPlan:[{id:unsafe.taskId}],sourceDelivery:Array.from({length:30},()=>unsafe)});
+    expect(capped).toHaveLength(25);
+    expect(capped[1]).toContain('Task `  source  `');
+    expect(capped[1]).not.toContain('<source>');
+    expect(capped[1]).not.toContain('\n');
+    expect(capped[1]).toMatch(/receipt SHA256 `[a-f0-9]{64}`/u);
   });
 
   it('restores a planning reduction only when all assigned tasks have full delivered source', () => {

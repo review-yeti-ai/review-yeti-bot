@@ -21,15 +21,19 @@ const fileSchema = z.object({
     previousEnd = end;
   }
 });
+function isDeliveryComplete(files: readonly z.infer<typeof fileSchema>[], contextDigests: readonly string[]): boolean {
+  return contextDigests.length > 0 && files.length > 0 && files.every(file =>
+    file.patchDigest !== null && file.totalChars !== null && (file.totalChars === 0
+      ? file.inline : file.ranges.length === 1 && file.ranges[0][0] === 0 && file.ranges[0][1] === file.totalChars));
+}
+
 export const taskSourceReceiptSchema = z.object({
   version: z.literal('TaskSourceDelivery.v1'), taskId: z.string().min(1).max(128),
   headSha: z.string().min(1).max(64), baseSha: z.string().min(1).max(64).nullable(),
   contextDigests: z.array(hash).max(64), files: z.array(fileSchema).min(1).max(MAX_CHANGED_FILES),
   complete: z.boolean(),
 }).strict().superRefine((receipt, context) => {
-  const complete = receipt.contextDigests.length > 0 && receipt.files.every(file =>
-    file.patchDigest !== null && file.totalChars !== null && (file.totalChars === 0
-      ? file.inline : file.ranges.length === 1 && file.ranges[0][0] === 0 && file.ranges[0][1] === file.totalChars));
+  const complete = isDeliveryComplete(receipt.files, receipt.contextDigests);
   if (receipt.complete !== complete || new Set(receipt.files.map(file => file.path)).size !== receipt.files.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'delivery completeness does not match its evidence' });
   }
@@ -132,8 +136,7 @@ export class TaskSourceDelivery {
     }
     const contextDigest = digest(JSON.stringify(messages));
     if (!this.receipt.contextDigests.includes(contextDigest)) this.receipt.contextDigests.push(contextDigest);
-    this.receipt.complete = this.receipt.files.every(file => file.patchDigest !== null && file.totalChars !== null
-      && (file.totalChars === 0 ? file.inline : file.ranges.length === 1 && file.ranges[0][0] === 0 && file.ranges[0][1] === file.totalChars));
+    this.receipt.complete = isDeliveryComplete(this.receipt.files, this.receipt.contextDigests);
     return this.snapshot();
   }
 
