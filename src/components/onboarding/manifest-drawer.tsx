@@ -20,7 +20,7 @@ import { FileJson, FileCode, Download, Settings, Sparkles, ExternalLink, ShieldC
 import { ProviderConfigRecord, PersonaSetting } from '@/types/dashboard';
 import { getEnabledProviders, isModelEnabled, getProviderIdForModel, getFallbackModelForPersona } from '@/lib/model-filtering';
 import { PERSONA_ENSEMBLE_DEFINITIONS, AVAILABLE_MODEL_OPTIONS } from './steps/step-4-persona-ensemble';
-import { fetchProviders, fetchPersonas } from '@/lib/api-client';
+import { fetchGitHubAppConfig, fetchProviders, fetchPersonas } from '@/lib/api-client';
 
 export interface ManifestDrawerProps {
   open?: boolean;
@@ -37,9 +37,9 @@ export function ManifestDrawer({
   open: controlledOpen,
   onOpenChange: setControlledOpen,
   trigger,
-  orgName: initialOrg = 'calltelemetry',
+  orgName: initialOrg = '',
   appName: initialApp = 'ct-review-bot-app',
-  webhookUrl: initialWebhook = 'https://api.calltelemetry.com/api/webhooks/github',
+  webhookUrl: initialWebhook,
   providers,
   personas,
 }: ManifestDrawerProps) {
@@ -74,11 +74,47 @@ export function ManifestDrawer({
   // Customization state
   const [org, setOrg] = React.useState(initialOrg);
   const [appName, setAppName] = React.useState(initialApp);
-  const [webhookUrl, setWebhookUrl] = React.useState(initialWebhook);
-  const [webhookSecret, setWebhookSecret] = React.useState('whsec_prod_secret_key_82710');
+  const [webhookUrl, setWebhookUrl] = React.useState(initialWebhook || '');
+  const [webhookLoadError, setWebhookLoadError] = React.useState<string | null>(null);
+  const webhookEdited = React.useRef(false);
   const [defaultBranch, setDefaultBranch] = React.useState('main');
   const [spendingCap, setSpendingCap] = React.useState('150');
   const [strictness, setStrictness] = React.useState<'chill' | 'balanced' | 'assertive'>('balanced');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    webhookEdited.current = false;
+    setWebhookLoadError(null);
+    const resolveWebhookUrl = (url: string) => {
+      if (!url.trim()) return '';
+      try { return new URL(url, window.location.origin).href; } catch { return url; }
+    };
+    if (initialWebhook !== undefined) {
+      setWebhookUrl(resolveWebhookUrl(initialWebhook));
+    } else {
+      // Default to this deployment, then honor its stored webhook configuration.
+      setWebhookUrl(resolveWebhookUrl('/api/webhooks/github'));
+      fetchGitHubAppConfig().then((config) => {
+        const configuredUrl = (config as { webhookUrl?: string })?.webhookUrl;
+        if (!cancelled && !webhookEdited.current && configuredUrl) {
+          setWebhookUrl(resolveWebhookUrl(configuredUrl));
+        }
+      }).catch(() => {
+        if (!cancelled) setWebhookLoadError('Could not load the configured webhook URL. Verify the current deployment URL below before creating the App.');
+      });
+    }
+    return () => { cancelled = true; };
+  }, [initialWebhook]);
+
+  const callbackUrl = React.useMemo(() => {
+    try {
+      const url = new URL(webhookUrl);
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
+      return new URL('/api/github/manifest-callback', url.origin).href;
+    } catch {
+      return null;
+    }
+  }, [webhookUrl]);
 
   // Generated GitHub App Manifest JSON object
   const manifestJsonObject = React.useMemo(() => {
@@ -89,8 +125,7 @@ export function ManifestDrawer({
         url: webhookUrl,
         active: true,
       },
-      redirect_url: `https://${org}.calltelemetry.com/api/github/manifest-callback`,
-      callback_urls: [`https://${org}.calltelemetry.com/api/github/manifest-callback`],
+      ...(callbackUrl ? { redirect_url: callbackUrl, callback_urls: [callbackUrl] } : {}),
       public: false,
       default_events: [
         'pull_request',
@@ -111,7 +146,7 @@ export function ManifestDrawer({
         merge_queues: 'read',
       },
     };
-  }, [appName, org, webhookUrl]);
+  }, [appName, org, webhookUrl, callbackUrl]);
 
   const manifestJsonString = React.useMemo(
     () => JSON.stringify(manifestJsonObject, null, 2),
@@ -193,7 +228,8 @@ ${providerPriorityYamlLines}
   };
 
   const handleGitHubManifestSubmit = () => {
-    const targetUrl = `https://github.com/organizations/${org}/settings/apps/new`;
+    if (!org.trim() || !callbackUrl) return;
+    const targetUrl = `https://github.com/organizations/${encodeURIComponent(org.trim())}/settings/apps/new`;
     const form = document.createElement('form');
     form.method = 'POST';
     form.action = targetUrl;
@@ -244,7 +280,7 @@ ${providerPriorityYamlLines}
               <Input
                 value={org}
                 onChange={(e) => setOrg(e.target.value)}
-                placeholder="calltelemetry"
+                placeholder="your-github-org"
                 className="bg-background/80 h-8 text-xs font-mono"
               />
             </div>
@@ -269,6 +305,23 @@ ${providerPriorityYamlLines}
             </div>
           </div>
 
+          <div className="space-y-2 text-xs">
+            <label className="font-medium text-muted-foreground block" htmlFor="manifest-webhook-url">Deployment Webhook URL</label>
+            <Input
+              id="manifest-webhook-url"
+              value={webhookUrl}
+              onChange={(e) => {
+                webhookEdited.current = true;
+                setWebhookUrl(e.target.value);
+              }}
+              placeholder="https://your-deployment.example.com/api/webhooks/github"
+              className="bg-background/80 text-xs font-mono"
+            />
+            <p className="text-muted-foreground">App callbacks use this webhook URL's origin. Confirm it is your deployed service.</p>
+            {webhookLoadError && <p role="alert" className="text-amber-400">{webhookLoadError}</p>}
+            {!callbackUrl && <p role="alert" className="text-amber-400">Enter a valid HTTP(S) deployment webhook URL before creating the App.</p>}
+          </div>
+
           {/* Configuration Code Preview Tabs */}
           <Tabs defaultValue="manifest_json" className="space-y-4">
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -286,6 +339,7 @@ ${providerPriorityYamlLines}
               <div className="flex items-center gap-2">
                 <Button
                   onClick={handleGitHubManifestSubmit}
+                  disabled={!org.trim() || !callbackUrl}
                   className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs gap-1.5 h-8 font-semibold"
                 >
                   <ExternalLink className="h-3.5 w-3.5" />

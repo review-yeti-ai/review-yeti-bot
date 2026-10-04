@@ -433,7 +433,7 @@ export function createGitHubAppApiRouter(): Router {
           orgsMap.set(ownerLower, {
             id: Math.abs(hashCode(ownerLower)),
             login,
-            name: login === 'calltelemetry' ? 'Call Telemetry' : login,
+            name: login,
             avatarUrl: `https://avatars.githubusercontent.com/${encodeURIComponent(login)}`,
             installationId: appConfig.installationId
               ? Number(appConfig.installationId)
@@ -442,19 +442,6 @@ export function createGitHubAppApiRouter(): Router {
             totalReposCount: stats.total,
           });
         }
-      }
-
-      // Default fallback if store is brand new
-      if (orgsMap.size === 0) {
-        orgsMap.set('calltelemetry', {
-          id: 1001,
-          login: 'calltelemetry',
-          name: 'Call Telemetry',
-          avatarUrl: 'https://avatars.githubusercontent.com/calltelemetry',
-          installationId: 58923019,
-          monitoredCount: 0,
-          totalReposCount: 0,
-        });
       }
 
       return res.status(200).json({

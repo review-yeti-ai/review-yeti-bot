@@ -3,6 +3,7 @@ import { dashboardStore } from '../persistence/dashboardStore';
 import { postgresStore } from '../persistence/postgresStore';
 import type { PRSnapshot, PRSnapshotFile } from './prSnapshot';
 import type { DiffHunk, ChangedFileDiff, ReviewDiffResponse } from '../types/diff';
+import { SAMPLE_REPO_CDR } from '../lib/sampleRepositories';
 
 export type { DiffHunk, ChangedFileDiff, ReviewDiffResponse };
 
@@ -148,7 +149,7 @@ export async function resolveReviewDiff(jobId: string): Promise<ReviewDiffRespon
     }
     // Synthetic or test review fallback (strictly gated behind test environment)
     if ((cleanJobId.startsWith('job-test-') || (matchedLog as any).isSynthetic) && process.env.NODE_ENV === 'test') {
-      return generateSyntheticDiff(cleanJobId, matchedLog.repo || 'calltelemetry/cisco-cdr', matchedLog.prNumber || 108, matchedLog.title);
+      return generateSyntheticDiff(cleanJobId, matchedLog.repo || SAMPLE_REPO_CDR, matchedLog.prNumber || 108, matchedLog.title);
     }
   }
 
@@ -225,8 +226,8 @@ export function generateSyntheticDiff(jobId: string, repo: string, prNumber: num
   ].join('\n');
 
   return parseSnapshotDiff(jobId, {
-    owner: repo.split('/')[0] || 'calltelemetry',
-    repo: repo.split('/')[1] || 'cisco-cdr',
+    owner: repo.split('/')[0] || SAMPLE_REPO_CDR.split('/')[0],
+    repo: repo.split('/')[1] || SAMPLE_REPO_CDR.split('/')[1],
     prNumber,
     headSha: 'a1b2c3d4e5f678901234567890abcdef12345678',
     baseSha: '0987654321fedcba0987654321fedcba09876543',

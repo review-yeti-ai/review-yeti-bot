@@ -316,7 +316,11 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
           { timeout: '25 minutes', retries: { limit: 0 } },
           async () => {
             const workerImage = spec.workerImage || this.env.DEFAULT_WORKER_IMAGE;
-            const statusUrl = `https://operator.calltelemetry.internal/api/dispatch/runs/${runId}/status`;
+            // The operator endpoint is deployment-owned, not a tenant-specific
+            // default in this public runtime. With no binding, omit the hint.
+            const statusUrl = this.env.DISPATCH_STATUS_BASE_URL
+              ? new URL(`/api/dispatch/runs/${encodeURIComponent(runId)}/status`, this.env.DISPATCH_STATUS_BASE_URL).toString()
+              : undefined;
 
             const result = await this.getRunner(spec.runner).dispatchJob({
               jobId: `job-${runId}`,
@@ -336,7 +340,7 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
                 HEAD_SHA: headSha,
                 BASE_SHA: baseSha,
                 R2_CACHE_BUCKET: 'review-yeti-workspace-cache',
-                DISPATCH_STATUS_URL: statusUrl,
+                ...(statusUrl ? { DISPATCH_STATUS_URL: statusUrl } : {}),
                 PARALLEL_CHECK_NAME: this.env.PARALLEL_CHECK_NAME,
                 PARALLEL_FILE_CONCURRENCY: this.env.PARALLEL_FILE_CONCURRENCY || '5',
                 DIFF_SHRINK: spec.diffShrink || 'true',
@@ -447,4 +451,3 @@ export class ReviewJobWorkflow extends WorkflowEntrypoint<Env, ReviewRunSpec> {
     };
   }
 }
-

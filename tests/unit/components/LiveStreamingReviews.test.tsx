@@ -183,6 +183,15 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
 
       render(
         <SwarmTaskMatrix
+          tasks={[{
+            id: 'task_sec_boundary',
+            dimension: 'security',
+            description: 'Explicit security task fixture',
+            priority: 1,
+            status: 'RUNNING',
+            progress: 50,
+            findingsCount: 0,
+          }]}
           activeTurnByTask={activeTurns}
         />
       );
@@ -190,6 +199,15 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
       const turnBadge = screen.getByTestId('task-turn-badge-task_sec_boundary');
       expect(turnBadge).toBeInTheDocument();
       expect(turnBadge).toHaveTextContent('T3/20');
+    });
+
+    it.each([undefined, []])('keeps standby state for absent or empty tasks (%j)', (tasks) => {
+      render(<SwarmTaskMatrix tasks={tasks} activeTurnByTask={{ task_sec_boundary: { current: 3, max: 20 } }} />);
+
+      expect(screen.getByText('Swarm Standby — 0 Tasks In Flight')).toBeInTheDocument();
+      expect(screen.getByText('0/0 Done')).toBeInTheDocument();
+      expect(screen.getByText('Idle')).toBeInTheDocument();
+      expect(screen.queryByTestId('task-turn-badge-task_sec_boundary')).not.toBeInTheDocument();
     });
   });
 });

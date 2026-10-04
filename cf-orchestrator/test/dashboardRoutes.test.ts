@@ -645,17 +645,20 @@ describe('Integrated public topology route boundaries', () => {
     }
   });
 
-  it('retains an explicit job identifier without invoking mutable review or storage bindings', async () => {
-    let bindingCalls = 0;
-    const env = { ...createMockEnv(), REVIEW_RUN: { idFromName: () => { bindingCalls++; throw new Error('Unexpected review mutation'); } }, DB: { prepare: () => { bindingCalls++; throw new Error('Unexpected database mutation'); } } } as unknown as Env;
+  it('retains an explicit job identifier with zero metrics when a bound storage read fails', async () => {
+    let reviewMutations = 0;
+    let storageReads = 0;
+    const env = { ...createMockEnv(), REVIEW_RUN: { idFromName: () => { reviewMutations++; throw new Error('Unexpected review mutation'); } }, DB: { prepare: () => { storageReads++; throw new Error('Storage read unavailable'); } } } as unknown as Env;
     const response = await worker.fetch(new Request('https://worker.dev/api/live/topology?jobId=example-topology-run'), env);
     assert.equal(response.status, 200);
     const topology = await response.json() as any;
     assert.equal(topology.jobId, 'example-topology-run');
-    assert.equal(topology.globalThroughputTokSec, 384);
-    assert.equal(topology.edgeP95RttMs, 14.2);
-    assert.equal(topology.r2CacheHitRate, 95.8);
-    assert.equal(bindingCalls, 0);
+    assert.equal(topology.globalThroughputTokSec, 0);
+    assert.equal(topology.edgeP95RttMs, 0);
+    assert.equal(topology.r2CacheHitRate, 0);
+    assert.equal(topology.healthScore, 0);
+    assert.equal(reviewMutations, 0);
+    assert.ok(storageReads > 0);
   });
 
   it('preserves topology CORS preflight without returning a topology payload', async () => {
@@ -713,8 +716,8 @@ describe('Bound gate read fallback regressions', () => {
     assert.equal(active[0].prNumber, 41);
     assert.equal(active[0].status, 'pending');
     assert.equal(active[0].verdict, 'PENDING');
-    assert.equal(active[0].latencyMs, 12000);
-    assert.equal(active[0].headSha, '9b8a7c6d');
+    assert.equal(active[0].latencyMs, 0);
+    assert.equal(active[0].headSha, '');
     assert.equal(active[0].quorum, 'Swarm In-Flight');
     assert.ok(Number.isFinite(Date.parse(active[0].timestamp)));
   });

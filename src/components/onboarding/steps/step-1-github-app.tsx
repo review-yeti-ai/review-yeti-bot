@@ -43,12 +43,16 @@ export function Step1GitHubApp({
     message?: string;
   }>({});
 
-  const defaultWebhookUrl =
-    typeof window !== 'undefined'
-      ? `${window.location.origin}/api/webhooks/github`
-      : 'https://api.calltelemetry.com/api/webhooks/github';
-
-  const webhookUrl = config.webhookSecretConfigured ? (config as any).webhookUrl || defaultWebhookUrl : defaultWebhookUrl;
+  const [deploymentOrigin, setDeploymentOrigin] = React.useState('');
+  React.useEffect(() => {
+    setDeploymentOrigin(window.location.origin);
+  }, []);
+  const configuredWebhookUrl = (config as Partial<GitHubAppConfig> & { webhookUrl?: string }).webhookUrl;
+  const webhookPath = configuredWebhookUrl || '/api/webhooks/github';
+  let webhookUrl = webhookPath;
+  if (deploymentOrigin) {
+    try { webhookUrl = new URL(webhookPath, deploymentOrigin).href; } catch { /* Keep explicit invalid configuration visible. */ }
+  }
 
   const handleCopyWebhook = () => {
     navigator.clipboard.writeText(webhookUrl);
