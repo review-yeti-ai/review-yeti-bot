@@ -36,3 +36,7 @@ export const SAMPLE_REPO_META = 'example/sample-meta';
 export const SAMPLE_REPOS = [SAMPLE_REPO_CDR, SAMPLE_REPO_META] as const;
 
 export type SampleRepo = (typeof SAMPLE_REPOS)[number];
+
+/** The short option values the memory page's repository dropdown submits. */
+export const SAMPLE_REPO_CDR_SLUG = SAMPLE_REPO_CDR.split('/')[1];
+export const SAMPLE_REPO_META_SLUG = SAMPLE_REPO_META.split('/')[1];

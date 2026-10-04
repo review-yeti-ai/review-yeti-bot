@@ -75,7 +75,7 @@ export const queryFindingsTool: McpToolHandler = {
           rule: f.title.toLowerCase().replace(/[^a-z0-9]+/g, '.'),
           body: f.description,
           suggestedPatch: '',
-          status: f.status === 'dismissed' ? 'dismissed' : f.status === 'resolved' ? 'resolved' : 'open',
+          status: f.status === 'resolved' ? 'resolved' : f.status === 'disputed' ? 'disputed' : 'open',
           authorPersona: 'security-architect',
         }));
       } catch {
