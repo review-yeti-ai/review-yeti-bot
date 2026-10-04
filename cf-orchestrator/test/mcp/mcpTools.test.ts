@@ -106,6 +106,7 @@ describe('Review Yeti MCP Tools Implementation', () => {
     assert.equal(parsed.repoGate.activeSlotsUsed, 2);
     assert.equal(parsed.shadowParity.status, 'MATCHING');
     assert.equal(parsed.shadowParity.dataSource, 'baseline_sample_telemetry');
+    assert.equal(parsed.dataSource, 'live_edge_telemetry');
     assert.equal(parsed.computePlane.activeRunner, 'cloudflare');
     assert.equal(parsed.computePlane.defaultRunner, 'cloudflare');
     assert.deepEqual(parsed.computePlane.supportedRunners, ['cloudflare', 'digitalocean']);

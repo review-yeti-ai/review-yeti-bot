@@ -342,16 +342,21 @@ export async function testMcpServer(payload: { url?: string; command?: string; a
 
 // GitHub App API
 export async function fetchGitHubAppConfig(): Promise<GitHubAppConfig> {
-  const res = await request<{ success: boolean; config: GitHubAppConfig }>('/api/github/app-config');
-  return res.config;
+  const res = await request<{ success: boolean; appConfig?: GitHubAppConfig; config?: GitHubAppConfig }>('/api/github/app-config');
+  // The API's canonical key is appConfig; older deployments used config.
+  const config = res.appConfig ?? res.config;
+  if (!config) throw new Error('GitHub App configuration was missing from the response');
+  return config;
 }
 
 export async function updateGitHubAppConfig(config: Partial<GitHubAppConfig>): Promise<GitHubAppConfig> {
-  const res = await request<{ success: boolean; config: GitHubAppConfig }>('/api/github/app-config', {
+  const res = await request<{ success: boolean; appConfig?: GitHubAppConfig; config?: GitHubAppConfig }>('/api/github/app-config', {
     method: 'POST',
     body: JSON.stringify(config),
   });
-  return res.config;
+  const updatedConfig = res.appConfig ?? res.config;
+  if (!updatedConfig) throw new Error('Updated GitHub App configuration was missing from the response');
+  return updatedConfig;
 }
 
 export async function verifyGitHubApp(credentials: any): Promise<{ success: boolean; verified: boolean; error?: string }> {
@@ -601,6 +606,5 @@ export async function fetchFindingsQuality(params?: {
   const qStr = query.toString() ? `?${query.toString()}` : '';
   return request<FindingsQualityResponse>(`/api/analytics/findings${qStr}`);
 }
-
 
 

@@ -37,6 +37,7 @@ vi.mock('next/navigation', () => ({
 
 // Mock api-client for settings page
 vi.mock('@/lib/api-client', () => ({
+  fetchGitHubAppConfig: vi.fn().mockResolvedValue({ status: 'unconfigured' }),
   fetchPersonas: vi.fn().mockResolvedValue({
     security: { id: 'security', displayName: 'Security', model: 'claude-3-5-sonnet', effort: 'low', confidenceThreshold: 85, enabled: true },
   }),

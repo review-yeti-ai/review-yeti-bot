@@ -35,42 +35,19 @@ export function FiveStepWizard() {
   const [currentStep, setCurrentStep] = React.useState(1);
   const [completedSteps, setCompletedSteps] = React.useState<number[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
   const [finishSuccess, setFinishSuccess] = React.useState(false);
 
   // State data for 5 steps
   const [appConfig, setAppConfig] = React.useState<Partial<GitHubAppConfig>>({
-    appId: '1048293',
-    installationId: '5829104',
-    webhookSecretConfigured: true,
-    webhookSecretRaw: 'whsec_test_secret_key_12345',
-    privateKeyConfigured: true,
-    privateKeyPemRaw: '-----BEGIN [REDACTED_KEY]-----\nMIIEowIBAAKCAQEA0M...\n-----END [REDACTED_KEY]-----',
-    status: 'configured',
+    appId: '',
+    installationId: '',
+    webhookSecretConfigured: false,
+    privateKeyConfigured: false,
+    status: 'unconfigured',
   });
 
-  const [repositories, setRepositories] = React.useState<RepositorySetting[]>([
-    {
-      owner: 'reviewyeti-ai',
-      repo: 'sample-cdr',
-      automationEnabled: true,
-      customProfile: 'balanced',
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      owner: 'reviewyeti-ai',
-      repo: 'sample-meta',
-      automationEnabled: true,
-      customProfile: 'balanced',
-      updatedAt: new Date().toISOString(),
-    },
-    {
-      owner: 'reviewyeti-ai',
-      repo: 'review-yeti-bot',
-      automationEnabled: true,
-      customProfile: 'assertive',
-      updatedAt: new Date().toISOString(),
-    },
-  ]);
+  const [repositories, setRepositories] = React.useState<RepositorySetting[]>([]);
 
   const [providers, setProviders] = React.useState<Record<string, ProviderConfigRecord>>({});
   const [personas, setPersonas] = React.useState<Record<string, PersonaSetting>>({});
@@ -78,6 +55,7 @@ export function FiveStepWizard() {
   // Initial data loading
   const loadWizardData = React.useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const [cfgRes, repoRes, provRes, persRes] = await Promise.allSettled([
         fetchGitHubAppConfig(),
@@ -89,7 +67,7 @@ export function FiveStepWizard() {
       if (cfgRes.status === 'fulfilled' && cfgRes.value) {
         setAppConfig((prev) => ({ ...prev, ...cfgRes.value }));
       }
-      if (repoRes.status === 'fulfilled' && repoRes.value && repoRes.value.length > 0) {
+      if (repoRes.status === 'fulfilled' && repoRes.value) {
         setRepositories(repoRes.value);
       }
       if (provRes.status === 'fulfilled' && provRes.value && provRes.value.providers) {
@@ -98,8 +76,18 @@ export function FiveStepWizard() {
       if (persRes.status === 'fulfilled' && persRes.value) {
         setPersonas(persRes.value);
       }
+      const failedLoads = [
+        ['GitHub App configuration', cfgRes],
+        ['repositories', repoRes],
+        ['AI providers', provRes],
+        ['personas', persRes],
+      ] as const;
+      const failedNames = failedLoads.filter(([, result]) => result.status === 'rejected').map(([name]) => name);
+      if (failedNames.length > 0) {
+        setLoadError(`Could not load ${failedNames.join(', ')}. Sync Store to retry; no sample configuration has been substituted.`);
+      }
     } catch {
-      // Keep defaults on fallback
+      setLoadError('Could not load onboarding settings. Sync Store to retry; no sample configuration has been substituted.');
     } finally {
       setLoading(false);
     }
@@ -208,6 +196,11 @@ export function FiveStepWizard() {
         />
 
         {/* Step Component Content */}
+        {loadError && (
+          <p role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-400">
+            {loadError}
+          </p>
+        )}
         <div className="pt-2">
           {currentStep === 1 && (
             <Step1GitHubApp

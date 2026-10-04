@@ -151,11 +151,9 @@ jobs:
           # REL-1113: lane re-attempts after an infrastructure failure must finish inside this job's
           # Stop evidence work at minute 20; the final five minutes belong to synthesis/publication.
           action-budget-ms: '1200000'
-          # 5 required personas x a 21-partition analytics-sized diff = 105 assignments;
-          # the default 24 caps any single run at 4 partitions and fails closed with a
-          # coverage gap (review_assignment_cap) once a diff spans more than 4 partitions.
-          # Budgeted spend still bounds the run; this only stops the pre-dispatch cap
-          # from declaring unreviewable diffs unmergeable.
+          # Allow the five required personas to cover up to 24 bounded partitions.
+          # Deferred assignments still fail closed; the unchanged wall-clock budget
+          # and lane timeouts bound spend, not this pre-dispatch coverage envelope.
           max-review-assignments: '120'
           # REVIEW_BOT_TOKEN is required for cross-repo dispatch: the default GITHUB_TOKEN is
           # scoped to this repository and cannot read or comment on another repository's PR.

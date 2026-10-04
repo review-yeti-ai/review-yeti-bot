@@ -11,7 +11,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
       properties: {
         repo: {
           type: 'string',
-          description: `Repository name to check concurrency for (default: "${SAMPLE_REPO_CDR}")`,
+          description: `Repository name to check concurrency for (default sample: "${SAMPLE_REPO_CDR}")`,
         },
       },
     },
@@ -106,7 +106,8 @@ export const getCloudflareStatusTool: McpToolHandler = {
         status: 'MATCHING',
         consecutiveMatches: 100,
         doksFallbackConfigured: Boolean(env.DOKS_FALLBACK_URL),
-        dataSource: hasLiveTelemetry ? 'live_edge_telemetry' : 'baseline_sample_telemetry',
+        // Gate/cache reads do not supply a shadow comparison ledger.
+        dataSource: 'baseline_sample_telemetry',
       },
       computePlane: {
         activeRunner: (env.RUNNER_TYPE || 'cloudflare').toLowerCase(),
@@ -134,7 +135,7 @@ export const getCloudflareStatusTool: McpToolHandler = {
       `- **R2 Workspace Cache:** Bucket \`${report.r2WorkspaceCache.bucket}\` | **${report.r2WorkspaceCache.totalObjects} objects** (~${cacheMb} MB)\n` +
       `- **Cache Lifecycle:** ${report.r2WorkspaceCache.retentionPolicy}\n` +
       `- **Shadow Parity Status:** \`${report.shadowParity.status}\` (${report.shadowParity.consecutiveMatches} consecutive shadow matches in CI - baseline telemetry; live ledger not attached)\n` +
-      `- **DOKS Fallback Stream:** \`${env.DOKS_FALLBACK_URL || 'https://review-bot.example.com/api/webhooks/github'}\`\n`;
+      `- **DOKS Fallback Stream:** \`${env.DOKS_FALLBACK_URL || 'Not configured'}\`\n`;
 
     return {
       content: [

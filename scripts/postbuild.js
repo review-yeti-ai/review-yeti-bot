@@ -64,10 +64,15 @@ if (fs.existsSync(outDir)) {
 }
 
 // 1b. Explicitly sync out/_next and .next/static into public/_next/static
-const nextStaticSrc = fs.existsSync(path.join(outDir, '_next'))
+const hasExportedNextAssets = fs.existsSync(path.join(outDir, '_next'));
+const nextStaticSrc = hasExportedNextAssets
   ? path.join(outDir, '_next')
   : path.join(rootDir, '.next/static');
-const nextStaticDest = path.join(publicDir, '_next');
+// Export output already contains static/; server output starts inside static/.
+// Preserve the /_next/static URL shape in both supported build modes.
+const nextStaticDest = hasExportedNextAssets
+  ? path.join(publicDir, '_next')
+  : path.join(publicDir, '_next/static');
 if (fs.existsSync(nextStaticSrc)) {
   try {
     fs.mkdirSync(nextStaticDest, { recursive: true });

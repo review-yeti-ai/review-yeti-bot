@@ -201,6 +201,18 @@ describe('Live Streaming Reviews - UI Component Suite', () => {
       expect(turnBadge).toBeInTheDocument();
       expect(turnBadge).toHaveTextContent('T3/20');
     });
+
+    it.each([
+      { label: 'absent', tasks: undefined },
+      { label: 'empty', tasks: [] },
+    ])('keeps standby state for $label tasks', ({ tasks }) => {
+      render(<SwarmTaskMatrix tasks={tasks} activeTurnByTask={{ task_sec_boundary: { current: 3, max: 20 } }} />);
+
+      expect(screen.getByText('Swarm Standby — 0 Tasks In Flight')).toBeInTheDocument();
+      expect(screen.getByText('0/0 Done')).toBeInTheDocument();
+      expect(screen.getByText('Idle')).toBeInTheDocument();
+      expect(screen.queryByTestId('task-turn-badge-task_sec_boundary')).not.toBeInTheDocument();
+    });
   });
 });
 

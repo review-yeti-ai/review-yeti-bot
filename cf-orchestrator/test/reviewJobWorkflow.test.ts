@@ -54,6 +54,7 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.equal(runner.dispatched[0].runId, 'run_wf_001');
     assert.equal(runner.dispatched[0].prNumber, 42);
     assert.ok(runner.dispatched[0].env.GITHUB_TOKEN.startsWith('ghs_ephemeral_'));
+    assert.equal(Object.hasOwn(runner.dispatched[0].env, 'DISPATCH_STATUS_URL'), false);
 
     // Verify slot released in RepoGateDO
     const repoGate = env.REPO_GATE.get('review-yeti-ai/review-yeti-bot');
@@ -101,6 +102,137 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     assert.ok(executedSteps.includes('poll-slot-1'));
     assert.ok(executedSteps.includes('dispatch-container'));
     assert.ok(executedSteps.includes('cleanup-and-release'));
+  });
+
+  for (const { name, settings, expectedOrigin } of [
+    { name: 'dispatch setting', settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com' }, expectedOrigin: 'https://operator.example.com' },
+    { name: 'operator compatibility setting', settings: { OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com' }, expectedOrigin: 'https://legacy.example.com' },
+    { name: 'dispatch setting when both are configured', settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com', OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com' }, expectedOrigin: 'https://operator.example.com' },
+  ]) {
+    it(`uses the explicit deployment-owned ${name}`, async () => {
+      const env = { ...createMockEnv(), ...settings };
+      const runner = new MockContainerRunner();
+      const workflow = new ReviewJobWorkflow(env, runner);
+      const mockStep = {
+        async do(_name: string, arg2: any, arg3?: any) {
+          return (typeof arg2 === 'function' ? arg2 : arg3)();
+        },
+        async sleep() {},
+      };
+      const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-status-origin' } }, mockStep as any);
+      assert.equal(result.status, 'succeeded');
+      assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, `${expectedOrigin}/api/dispatch/runs/run-status-origin/status`);
+    });
+  }
+
+  for (const { name, settings, runId, expectedUrl } of [
+    {
+      name: 'bare origin',
+      settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com' },
+      runId: 'run-bare-origin',
+      expectedUrl: 'https://operator.example.com/api/dispatch/runs/run-bare-origin/status',
+    },
+    {
+      name: 'configured path prefix',
+      settings: { DISPATCH_STATUS_BASE_URL: 'https://operator.example.com/gateway/review-yeti' },
+      runId: 'run-path-prefix',
+      expectedUrl: 'https://operator.example.com/gateway/review-yeti/api/dispatch/runs/run-path-prefix/status',
+    },
+    {
+      name: 'trailing-slash path prefix and encoded run ID',
+      settings: { OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com/gateway/review-yeti/' },
+      runId: 'run/slash ?#%',
+      expectedUrl: 'https://legacy.example.com/gateway/review-yeti/api/dispatch/runs/run%2Fslash%20%3F%23%25/status',
+    },
+    {
+      name: 'preferred dispatch path prefix when both settings exist',
+      settings: {
+        DISPATCH_STATUS_BASE_URL: 'https://operator.example.com/preferred',
+        OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com/ignored/',
+      },
+      runId: 'run-preferred-prefix',
+      expectedUrl: 'https://operator.example.com/preferred/api/dispatch/runs/run-preferred-prefix/status',
+    },
+  ]) {
+    it(`preserves dispatch status ${name}`, async () => {
+      const runner = new MockContainerRunner();
+      const workflow = new ReviewJobWorkflow({ ...createMockEnv(), ...settings }, runner);
+      const mockStep = {
+        async do(_name: string, arg2: any, arg3?: any) {
+          return (typeof arg2 === 'function' ? arg2 : arg3)();
+        },
+        async sleep() {},
+      };
+      const result = await workflow.run({ payload: { ...sampleSpec, runId } }, mockStep as any);
+      assert.equal(result.status, 'succeeded');
+      assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, expectedUrl);
+    });
+  }
+
+  for (const { name, value } of [
+    { name: 'malformed URL', value: 'https://' },
+    { name: 'schemeless URL', value: 'operator.example.com/gateway' },
+    { name: 'unsupported protocol', value: 'ftp://operator.example.com/gateway' },
+    { name: 'embedded credentials', value: 'https://fixture-user:fixture-password@operator.example.com/gateway' },
+    { name: 'embedded username', value: 'https://fixture-user@operator.example.com/gateway' },
+    { name: 'embedded password', value: 'https://:fixture-password@operator.example.com/gateway' },
+  ]) {
+    for (const { label, binding } of [
+      { label: 'preferred setting', binding: 'DISPATCH_STATUS_BASE_URL' },
+      { label: 'compatibility setting', binding: 'OPERATOR_STATUS_BASE_URL' },
+    ]) {
+      it(`omits invalid dispatch status hint for a ${name} from the ${label} without stopping dispatch`, async () => {
+        const runner = new MockContainerRunner();
+        const workflow = new ReviewJobWorkflow({ ...createMockEnv(), [binding]: value }, runner);
+        const mockStep = {
+          async do(_name: string, arg2: any, arg3?: any) {
+            return (typeof arg2 === 'function' ? arg2 : arg3)();
+          },
+          async sleep() {},
+        };
+        const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-invalid-status-hint' } }, mockStep as any);
+        assert.equal(result.status, 'succeeded');
+        assert.equal(runner.dispatched.length, 1);
+        assert.equal(Object.hasOwn(runner.dispatched[0].env, 'DISPATCH_STATUS_URL'), false);
+      });
+    }
+  }
+
+  it('omits an invalid preferred status hint without falling back to the compatibility setting', async () => {
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow({
+      ...createMockEnv(),
+      DISPATCH_STATUS_BASE_URL: 'https://',
+      OPERATOR_STATUS_BASE_URL: 'https://legacy.example.com/gateway',
+    }, runner);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+    const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run-invalid-preferred-status-hint' } }, mockStep as any);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(runner.dispatched.length, 1);
+    assert.equal(Object.hasOwn(runner.dispatched[0].env, 'DISPATCH_STATUS_URL'), false);
+  });
+
+  it('accepts an explicit HTTP status hint while preserving its prefix and encoded run ID', async () => {
+    const runner = new MockContainerRunner();
+    const workflow = new ReviewJobWorkflow({
+      ...createMockEnv(),
+      DISPATCH_STATUS_BASE_URL: 'http://operator.example.com/gateway/',
+    }, runner);
+    const mockStep = {
+      async do(_name: string, arg2: any, arg3?: any) {
+        return (typeof arg2 === 'function' ? arg2 : arg3)();
+      },
+      async sleep() {},
+    };
+    const result = await workflow.run({ payload: { ...sampleSpec, runId: 'run/http ?#%' } }, mockStep as any);
+    assert.equal(result.status, 'succeeded');
+    assert.equal(runner.dispatched.length, 1);
+    assert.equal(runner.dispatched[0].env.DISPATCH_STATUS_URL, 'http://operator.example.com/gateway/api/dispatch/runs/run%2Fhttp%20%3F%23%25/status');
   });
 
   it('guarantees repo slot release in finally block even if container dispatch throws', async () => {
@@ -436,5 +568,3 @@ describe('ReviewJobWorkflow Durable Execution', () => {
     });
   });
 });
-
-

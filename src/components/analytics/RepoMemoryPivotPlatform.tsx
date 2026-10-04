@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
-import { SAMPLE_REPO_CDR, SAMPLE_REPO_META, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META_SLUG } from '@/lib/sampleRepositories';
 import Link from 'next/link';
 import {
   ResponsiveContainer,
@@ -52,6 +51,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META, SAMPLE_REPO_META_SLUG } from '@/lib/sampleRepositories';
 
 export type TimeHorizon = '24h' | '7d' | '30d' | '90d';
 export type MetricDimension = 'hit_rate' | 'compaction' | 'symbols' | 'velocity';

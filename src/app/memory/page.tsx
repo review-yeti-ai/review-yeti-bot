@@ -57,8 +57,8 @@ import {
   purgeMemoryCache,
   exportMemorySnapshot,
 } from '@/lib/api-client';
-import { SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META_SLUG, SAMPLE_REPO_CDR, SAMPLE_REPO_META } from '@/lib/sampleRepositories';
 import { RepoMemoryPivotPlatform } from '@/components/analytics/RepoMemoryPivotPlatform';
+import { SAMPLE_REPO_CDR, SAMPLE_REPO_CDR_SLUG, SAMPLE_REPO_META, SAMPLE_REPO_META_SLUG } from '@/lib/sampleRepositories';
 
 interface WorkspaceCacheEntry {
   key: string;

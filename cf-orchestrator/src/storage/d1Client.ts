@@ -87,7 +87,7 @@ class InMemoryStore {
       SAMPLE_REPO_CDR,
       {
         id: SAMPLE_REPO_CDR,
-        owner: 'reviewyeti-ai',
+        owner: SAMPLE_REPO_CDR.split('/')[0],
         repo: SAMPLE_REPO_CDR_SLUG,
         defaultBranch: 'main',
         automationEnabled: true,
@@ -101,7 +101,7 @@ class InMemoryStore {
       SAMPLE_REPO_META,
       {
         id: SAMPLE_REPO_META,
-        owner: 'reviewyeti-ai',
+        owner: SAMPLE_REPO_META.split('/')[0],
         repo: SAMPLE_REPO_META_SLUG,
         defaultBranch: 'main',
         automationEnabled: true,
@@ -821,5 +821,3 @@ export async function saveAdrConstraintToDb(db: any, adr: ADRConstraintRecord): 
     // Ignore DB error
   }
 }
-
-
